@@ -1,0 +1,153 @@
+/*
+ * Conduit Design System
+ * HSL-based color tokens with 11-level scales
+ * Based on Figma: Conduit High-Fi - Website
+ */
+
+:root {
+  /* Base hue/saturation for color calculations */
+  --base-h: 0;
+  --base-s: 0%;
+
+  /* Primary - Purple */
+  --primary-h: 280;
+  --primary-s: 94%;
+  --primary-50: hsla(var(--primary-h), var(--primary-s), 97%, 1);
+  --primary-100: hsla(var(--primary-h), var(--primary-s), 94%, 1);
+  --primary-150: hsla(var(--primary-h), var(--primary-s), 90%, 1);
+  --primary-200: hsla(var(--primary-h), var(--primary-s), 85%, 1);
+  --primary-300: hsla(var(--primary-h), var(--primary-s), 75%, 1);
+  --primary-400: hsla(var(--primary-h), var(--primary-s), 65%, 1);
+  --primary-500: hsla(var(--primary-h), var(--primary-s), 50%, 1);
+  --primary-600: hsla(var(--primary-h), var(--primary-s), 40%, 1);
+  --primary-700: hsla(var(--primary-h), var(--primary-s), 30%, 1);
+  --primary-800: hsla(var(--primary-h), var(--primary-s), 20%, 1);
+  --primary-900: hsla(var(--primary-h), var(--primary-s), 12%, 1);
+  --primary-950: hsla(var(--primary-h), var(--primary-s), 6%, 1);
+
+  /* Secondary - Orange */
+  --secondary-h: 24;
+  --secondary-s: 77%;
+  --secondary-50: hsla(var(--secondary-h), var(--secondary-s), 97%, 1);
+  --secondary-100: hsla(var(--secondary-h), var(--secondary-s), 94%, 1);
+  --secondary-150: hsla(var(--secondary-h), var(--secondary-s), 90%, 1);
+  --secondary-200: hsla(var(--secondary-h), var(--secondary-s), 85%, 1);
+  --secondary-300: hsla(var(--secondary-h), var(--secondary-s), 75%, 1);
+  --secondary-400: hsla(var(--secondary-h), var(--secondary-s), 65%, 1);
+  --secondary-500: hsla(var(--secondary-h), var(--secondary-s), 50%, 1);
+  --secondary-600: hsla(var(--secondary-h), var(--secondary-s), 40%, 1);
+  --secondary-700: hsla(var(--secondary-h), var(--secondary-s), 30%, 1);
+  --secondary-800: hsla(var(--secondary-h), var(--secondary-s), 20%, 1);
+  --secondary-900: hsla(var(--secondary-h), var(--secondary-s), 12%, 1);
+  --secondary-950: hsla(var(--secondary-h), var(--secondary-s), 6%, 1);
+
+  /* Tertiary - Rose */
+  --tertiary-h: 338;
+  --tertiary-s: 54%;
+  --tertiary-50: hsla(var(--tertiary-h), var(--tertiary-s), 97%, 1);
+  --tertiary-100: hsla(var(--tertiary-h), var(--tertiary-s), 94%, 1);
+  --tertiary-150: hsla(var(--tertiary-h), var(--tertiary-s), 90%, 1);
+  --tertiary-200: hsla(var(--tertiary-h), var(--tertiary-s), 85%, 1);
+  --tertiary-300: hsla(var(--tertiary-h), var(--tertiary-s), 75%, 1);
+  --tertiary-400: hsla(var(--tertiary-h), var(--tertiary-s), 65%, 1);
+  --tertiary-500: hsla(var(--tertiary-h), var(--tertiary-s), 50%, 1);
+  --tertiary-600: hsla(var(--tertiary-h), var(--tertiary-s), 40%, 1);
+  --tertiary-700: hsla(var(--tertiary-h), var(--tertiary-s), 30%, 1);
+  --tertiary-800: hsla(var(--tertiary-h), var(--tertiary-s), 20%, 1);
+  --tertiary-900: hsla(var(--tertiary-h), var(--tertiary-s), 12%, 1);
+  --tertiary-950: hsla(var(--tertiary-h), var(--tertiary-s), 6%, 1);
+
+  /* Accent - Indigo */
+  --accent-h: 255;
+  --accent-s: 67%;
+  --accent-50: hsla(var(--accent-h), var(--accent-s), 97%, 1);
+  --accent-100: hsla(var(--accent-h), var(--accent-s), 94%, 1);
+  --accent-150: hsla(var(--accent-h), var(--accent-s), 90%, 1);
+  --accent-200: hsla(var(--accent-h), var(--accent-s), 85%, 1);
+  --accent-300: hsla(var(--accent-h), var(--accent-s), 75%, 1);
+  --accent-400: hsla(var(--accent-h), var(--accent-s), 65%, 1);
+  --accent-500: hsla(var(--accent-h), var(--accent-s), 50%, 1);
+  --accent-600: hsla(var(--accent-h), var(--accent-s), 40%, 1);
+  --accent-700: hsla(var(--accent-h), var(--accent-s), 30%, 1);
+  --accent-800: hsla(var(--accent-h), var(--accent-s), 20%, 1);
+  --accent-900: hsla(var(--accent-h), var(--accent-s), 12%, 1);
+  --accent-950: hsla(var(--accent-h), var(--accent-s), 6%, 1);
+
+  /* Neutral - Gray */
+  --neutral-h: 220;
+  --neutral-s: 10%;
+  --neutral-50: hsla(var(--neutral-h), var(--neutral-s), 98%, 1);
+  --neutral-100: hsla(var(--neutral-h), var(--neutral-s), 96%, 1);
+  --neutral-150: hsla(var(--neutral-h), var(--neutral-s), 92%, 1);
+  --neutral-200: hsla(var(--neutral-h), var(--neutral-s), 88%, 1);
+  --neutral-300: hsla(var(--neutral-h), var(--neutral-s), 78%, 1);
+  --neutral-400: hsla(var(--neutral-h), var(--neutral-s), 62%, 1);
+  --neutral-500: hsla(var(--neutral-h), var(--neutral-s), 46%, 1);
+  --neutral-600: hsla(var(--neutral-h), var(--neutral-s), 36%, 1);
+  --neutral-700: hsla(var(--neutral-h), var(--neutral-s), 26%, 1);
+  --neutral-800: hsla(var(--neutral-h), var(--neutral-s), 16%, 1);
+  --neutral-900: hsla(var(--neutral-h), var(--neutral-s), 10%, 1);
+  --neutral-950: hsla(var(--neutral-h), var(--neutral-s), 5%, 1);
+
+  /* Semantic Colors */
+  --success: hsla(142, 71%, 45%, 1);
+  --warning: hsla(38, 92%, 50%, 1);
+  --error: hsla(0, 84%, 60%, 1);
+  --info: hsla(217, 91%, 60%, 1);
+
+  /* Background & Surface */
+  --background: var(--neutral-50);
+  --surface: white;
+  --surface-elevated: white;
+
+  /* Text */
+  --text-primary: var(--neutral-900);
+  --text-secondary: var(--neutral-600);
+  --text-muted: var(--neutral-400);
+  --text-inverse: white;
+
+  /* Border */
+  --border: var(--neutral-200);
+  --border-focus: var(--primary-500);
+
+  /* Spacing scale */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-20: 5rem;
+  --space-24: 6rem;
+
+  /* Border radius */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.5rem;
+  --radius-full: 9999px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: var(--neutral-950);
+    --surface: var(--neutral-900);
+    --surface-elevated: var(--neutral-800);
+    --text-primary: var(--neutral-50);
+    --text-secondary: var(--neutral-300);
+    --text-muted: var(--neutral-500);
+    --border: var(--neutral-700);
+  }
+}
