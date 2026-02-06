@@ -1,0 +1,28 @@
+{
+  "name": "conduit-mono",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "bun run --filter '*' dev",
+    "dev:market": "bun run --filter @conduit/market dev",
+    "dev:merchant": "bun run --filter @conduit/merchant dev",
+    "dev:store-builder": "bun run --filter @conduit/store-builder dev",
+    "build": "bun run --filter @conduit/core build && bun run --filter @conduit/ui build && bun run --filter './apps/*' build",
+    "build:packages": "bun run --filter @conduit/core build && bun run --filter @conduit/ui build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "lint": "bun run --filter '*' lint",
+    "test": "bun test",
+    "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
