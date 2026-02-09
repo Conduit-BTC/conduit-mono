@@ -9,17 +9,32 @@ export const EVENT_KINDS = {
   /** NIP-09: Event deletion */
   DELETION: 5,
 
+  /** NIP-17: Private direct messages */
+  DIRECT_MESSAGE: 14,
+
+  /** NIP-59: Sealed event (inner DM) */
+  SEAL: 13,
+
+  /** NIP-17: Gift wrap for encrypted DMs */
+  GIFT_WRAP: 1059,
+
+  /** NIP-57: Zap request */
+  ZAP_REQUEST: 9734,
+
+  /** NIP-57: Zap receipt */
+  ZAP_RECEIPT: 9735,
+
   /** NIP-65: Relay list metadata */
   RELAY_LIST: 10002,
 
   /** NIP-15: Marketplace product listing (replaceable) */
   PRODUCT: 30402,
 
-  /** NIP-17: Private direct messages */
-  DIRECT_MESSAGE: 14,
+  /** Shipping option for a product */
+  SHIPPING_OPTION: 30406,
 
-  /** Gift wrap for encrypted DMs */
-  GIFT_WRAP: 1059,
+  /** NIP-04: Legacy encrypted DM */
+  DM_LEGACY: 4,
 } as const
 
 export type EventKind = (typeof EVENT_KINDS)[keyof typeof EVENT_KINDS]

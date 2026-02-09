@@ -4,7 +4,7 @@ import { forwardRef, type ButtonHTMLAttributes } from "react"
 import { cn } from "../utils"
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)] disabled:pointer-events-none disabled:opacity-50",
   {
     variants: {
       variant: {
@@ -15,11 +15,11 @@ const buttonVariants = cva(
         accent:
           "bg-accent-500 text-white hover:bg-accent-600 focus-visible:ring-accent-500",
         outline:
-          "border border-neutral-300 bg-transparent hover:bg-neutral-100 focus-visible:ring-neutral-500",
+          "border border-[var(--border)] bg-transparent text-[var(--text-primary)] hover:bg-[var(--surface-elevated)] focus-visible:ring-primary-500",
         ghost:
-          "bg-transparent hover:bg-neutral-100 focus-visible:ring-neutral-500",
+          "bg-transparent text-[var(--text-primary)] hover:bg-[var(--surface-elevated)] focus-visible:ring-primary-500",
         muted:
-          "bg-neutral-100 text-neutral-700 hover:bg-neutral-200 focus-visible:ring-neutral-500",
+          "bg-[var(--surface-elevated)] text-[var(--text-primary)] hover:opacity-90 focus-visible:ring-primary-500",
         destructive:
           "bg-error text-white hover:bg-red-600 focus-visible:ring-red-500",
         link: "text-primary-500 underline-offset-4 hover:underline focus-visible:ring-primary-500",
