@@ -1,0 +1,77 @@
+@import "./theme.css";
+@import "./typography.css";
+
+@layer base {
+  html {
+    box-sizing: border-box;
+    scroll-behavior: smooth;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: inherit;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body #root {
+    display: grid;
+    grid-auto-rows: auto 1fr auto;
+    min-height: 100vh;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  picture {
+    display: block;
+    overflow: hidden;
+  }
+
+  img,
+  svg {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  button,
+  label {
+    cursor: pointer;
+  }
+}
+
+@layer components {
+  /* Shared scrollbar styling (legacy look). */
+  * {
+    -ms-overflow-style: none;
+    scrollbar-width: 4px;
+  }
+
+  *::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: linear-gradient(to bottom, var(--primary-500), var(--secondary-500));
+    border-radius: var(--radius-lg);
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    filter: brightness(1.15);
+  }
+}
+

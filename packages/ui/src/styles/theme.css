@@ -98,9 +98,10 @@
   --info: hsla(217, 91%, 60%, 1);
 
   /* Background & Surface */
-  --background: var(--neutral-950);
-  --surface: var(--neutral-900);
-  --surface-elevated: var(--neutral-800);
+  /* Legacy MVP background (deep indigo) */
+  --background: #05001d;
+  --surface: rgba(255, 255, 255, 0.04);
+  --surface-elevated: rgba(255, 255, 255, 0.06);
 
   /* Text */
   --text-primary: var(--neutral-50);
@@ -109,7 +110,7 @@
   --text-inverse: var(--neutral-950);
 
   /* Border */
-  --border: var(--neutral-700);
+  --border: rgba(255, 255, 255, 0.12);
   --border-focus: var(--primary-500);
 
   /* Spacing scale */
