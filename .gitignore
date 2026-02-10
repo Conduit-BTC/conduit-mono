@@ -28,7 +28,7 @@ pnpm-debug.log*
 coverage/
 
 # Ephemeral context files (call transcripts, meeting notes, temp checklists)
-context/
+/context/
 
 # Vite
 *.local
