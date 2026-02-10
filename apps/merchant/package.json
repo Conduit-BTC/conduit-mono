@@ -8,13 +8,13 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src/"
+    "lint": "eslint \"src/**/*.{ts,tsx}\""
   },
   "dependencies": {
     "@conduit/core": "workspace:*",
     "@conduit/ui": "workspace:*",
     "@hookform/resolvers": "^3.9.1",
-    "@nostr-dev-kit/ndk": "^2.10.0",
+    "@nostr-dev-kit/ndk": "^2.14.0",
     "@tanstack/react-query": "^5.62.8",
     "@tanstack/react-router": "^1.93.0",
     "react": "^19.0.0",

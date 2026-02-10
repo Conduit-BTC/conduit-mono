@@ -10,7 +10,12 @@
     "./types": "./src/types/index.ts",
     "./protocol": "./src/protocol/index.ts",
     "./schemas": "./src/schemas/index.ts",
-    "./utils": "./src/utils/index.ts"
+    "./utils": "./src/utils/index.ts",
+    "./config": "./src/config.ts",
+    "./db": "./src/db/index.ts",
+    "./billing": "./src/billing/entitlements.ts",
+    "./context/*": "./src/context/*.tsx",
+    "./hooks/*": "./src/hooks/*.ts"
   },
   "scripts": {
     "build": "tsc",
@@ -18,12 +23,14 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@nostr-dev-kit/ndk": "^2.12.0",
+    "@nostr-dev-kit/ndk": "^2.14.0",
     "clsx": "^2.1.1",
+    "dexie": "^4.0.0",
     "tailwind-merge": "^3.3.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@types/react": "^19.0.2",
     "typescript": "^5.7.3"
   }
 }

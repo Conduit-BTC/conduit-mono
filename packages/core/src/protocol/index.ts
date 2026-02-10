@@ -1,2 +1,12 @@
 export * from "./kinds"
-export * from "./ndk"
+export {
+  getNdk,
+  connectNdk,
+  disconnectNdk,
+  setSigner,
+  removeSigner,
+  subscribeNdkState,
+  getNdkState,
+  type NdkConnectionState,
+  type NdkState,
+} from "./ndk"

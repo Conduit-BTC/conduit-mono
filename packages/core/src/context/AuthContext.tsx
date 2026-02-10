@@ -1,0 +1,100 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
+import { NDKNip07Signer } from "@nostr-dev-kit/ndk"
+import { setSigner, removeSigner } from "../protocol/ndk"
+
+export type AuthStatus = "disconnected" | "connecting" | "connected" | "error"
+
+export interface AuthContextValue {
+  pubkey: string | null
+  status: AuthStatus
+  error: string | null
+  connect: () => Promise<void>
+  disconnect: () => void
+}
+
+const AUTH_STORAGE_KEY = "conduit:auth"
+
+const AuthContext = createContext<AuthContextValue | null>(null)
+
+export function hasNip07(): boolean {
+  return typeof window !== "undefined" && !!window.nostr
+}
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [pubkey, setPubkey] = useState<string | null>(null)
+  const [status, setStatus] = useState<AuthStatus>("disconnected")
+  const [error, setError] = useState<string | null>(null)
+  const connecting = useRef(false)
+
+  const connect = useCallback(async () => {
+    if (connecting.current) return
+    connecting.current = true
+
+    setStatus("connecting")
+    setError(null)
+
+    // Extensions inject window.nostr asynchronously - wait briefly
+    if (!hasNip07()) {
+      await new Promise((r) => setTimeout(r, 200))
+    }
+    if (!hasNip07()) {
+      setStatus("error")
+      setError("No NIP-07 extension found. Install a Nostr signer extension.")
+      connecting.current = false
+      return
+    }
+
+    try {
+      const signer = new NDKNip07Signer()
+      const user = await signer.user()
+      const pk = user.pubkey
+
+      setSigner(signer)
+      setPubkey(pk)
+      setStatus("connected")
+      localStorage.setItem(AUTH_STORAGE_KEY, pk)
+    } catch (err) {
+      setStatus("error")
+      setError(err instanceof Error ? err.message : "Failed to connect signer")
+    } finally {
+      connecting.current = false
+    }
+  }, [])
+
+  const disconnect = useCallback(() => {
+    removeSigner()
+    setPubkey(null)
+    setStatus("disconnected")
+    setError(null)
+    localStorage.removeItem(AUTH_STORAGE_KEY)
+  }, [])
+
+  useEffect(() => {
+    const stored = localStorage.getItem(AUTH_STORAGE_KEY)
+    if (stored && hasNip07()) {
+      connect()
+    }
+  }, [connect])
+
+  return (
+    <AuthContext.Provider value={{ pubkey, status, error, connect, disconnect }}>
+      {children}
+    </AuthContext.Provider>
+  )
+}
+
+export function useAuth(): AuthContextValue {
+  const ctx = useContext(AuthContext)
+  if (!ctx) {
+    throw new Error("useAuth must be used within an AuthProvider")
+  }
+  return ctx
+}

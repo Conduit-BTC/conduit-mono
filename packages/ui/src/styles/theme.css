@@ -5,6 +5,8 @@
  */
 
 :root {
+  color-scheme: dark;
+
   /* Base hue/saturation for color calculations */
   --base-h: 0;
   --base-s: 0%;
@@ -96,18 +98,18 @@
   --info: hsla(217, 91%, 60%, 1);
 
   /* Background & Surface */
-  --background: var(--neutral-50);
-  --surface: white;
-  --surface-elevated: white;
+  --background: var(--neutral-950);
+  --surface: var(--neutral-900);
+  --surface-elevated: var(--neutral-800);
 
   /* Text */
-  --text-primary: var(--neutral-900);
-  --text-secondary: var(--neutral-600);
-  --text-muted: var(--neutral-400);
-  --text-inverse: white;
+  --text-primary: var(--neutral-50);
+  --text-secondary: var(--neutral-300);
+  --text-muted: var(--neutral-500);
+  --text-inverse: var(--neutral-950);
 
   /* Border */
-  --border: var(--neutral-200);
+  --border: var(--neutral-700);
   --border-focus: var(--primary-500);
 
   /* Spacing scale */
@@ -139,15 +141,17 @@
   --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
 }
 
-/* Dark mode */
-@media (prefers-color-scheme: dark) {
+/* Light mode (opt-in via OS) */
+@media (prefers-color-scheme: light) {
   :root {
-    --background: var(--neutral-950);
-    --surface: var(--neutral-900);
-    --surface-elevated: var(--neutral-800);
-    --text-primary: var(--neutral-50);
-    --text-secondary: var(--neutral-300);
-    --text-muted: var(--neutral-500);
-    --border: var(--neutral-700);
+    color-scheme: light;
+    --background: var(--neutral-50);
+    --surface: white;
+    --surface-elevated: white;
+    --text-primary: var(--neutral-900);
+    --text-secondary: var(--neutral-600);
+    --text-muted: var(--neutral-400);
+    --text-inverse: white;
+    --border: var(--neutral-200);
   }
 }

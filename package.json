@@ -19,8 +19,17 @@
     "test": "bun test",
     "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules"
   },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
   "devDependencies": {
-    "typescript": "^5.7.3"
+    "@eslint/js": "^9.19.0",
+    "eslint": "^9.19.0",
+    "eslint-plugin-react": "^7.37.4",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.22.0"
   },
   "engines": {
     "node": ">=20.0.0"
