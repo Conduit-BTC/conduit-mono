@@ -27,6 +27,14 @@ Build the Conduit monorepo fresh, using legacy repos (`conduit-market-client`, `
 | Product CRUD | - | ✅ | Kind 30402 publish/edit/delete |
 | Profile management | ✅ | ✅ | Kind 0 |
 
+### MVP Stretch Milestones (Optional, Still Within Phases 3-4)
+
+These are nice-to-have milestones that should not block the Phase 4 Merchant Portal v1 delivery.
+
+| Milestone | Phase | Market | Merchant | Notes |
+|----------|-------|--------|----------|------|
+| One-way checkout (pay handle + proof) | 4 | ✅ | ✅ | Buyer pays merchant directly, then sends `PaymentProof` via NIP-17; merchant verifies async. No custody, no invoices. |
+
 ### NOT in MVP (Post-MVP Phases)
 
 | Feature | Phase | Why Deferred |
@@ -35,11 +43,12 @@ Build the Conduit monorepo fresh, using legacy repos (`conduit-market-client`, `
 | Auto invoice generation | 6 (Coordinator) | Requires NIP-46 remote signing |
 | Inventory sync | 6 (Coordinator) | Requires event processing |
 | Custom relay | 5 (Relay) | Public relays work for MVP |
+| NIP-46 auth (Remote signer) | 6 (Coordinator) | Extra connection UX + reliability surface; bundle with automation/hardening |
 | Store Builder | 7 | Nice-to-have, not core loop |
 | Shipping integrations | Added Value | ShipStation/EasyPost |
 | Monetization | 8 (Monetization) | Membership, credits, ads, hosting |
 
-### MVP Payment Flow
+### MVP Payment Flow (Baseline)
 
 **Manual but functional:**
 1. Buyer creates order → NIP-17 DM to merchant
@@ -50,6 +59,16 @@ Build the Conduit monorepo fresh, using legacy repos (`conduit-market-client`, `
 6. Merchant ships → sends tracking via DM
 
 See `docs/ARCHITECTURE.md` for flow diagrams comparing MVP vs Coordinator.
+
+### Milestone: One-Way Checkout (Optional)
+
+Buyer-initiated, non-custodial flow:
+1. Merchant publishes payment handle(s) (e.g. Lightning Address, stablecoin address) in Portal settings
+2. Buyer creates order → NIP-17 DM to merchant
+3. Buyer pays merchant directly (outside Conduit custody)
+4. Buyer sends `PaymentProof` payload to merchant via NIP-17 DM
+5. Merchant verifies independently and marks the order "Paid (verified)"
+6. Fulfillment proceeds asynchronously
 
 ---
 
@@ -307,7 +326,8 @@ track("order_confirmed")
 
 **Auth:**
 ```typescript
-track("signer_connect_started", { type: "nip07" | "nip46" })
+// MVP: NIP-07 only. (NIP-46 is Phase 6 / post-MVP.)
+track("signer_connect_started", { type: "nip07" })
 track("signer_connected", { type: "nip07" })
 track("signer_connect_failed", { type: "nip07", reason: "rejected" })
 track("signer_disconnected")
@@ -712,20 +732,20 @@ export const config = {
 📍 packages/core/protocol + context
 🔗 F6
 
-**NIP-07 (Browser Extension):**
+**MVP: NIP-07 (Browser Extension)**
 - Detect window.nostr
 - Request pubkey
 - Sign events
 - Encrypt/decrypt (NIP-04, NIP-44)
 
-**NIP-46 (Remote Signer):**
-- Nostr Connect flow
-- Permission request/grant
-- Revocation handling
+**Deferred (Post-MVP): NIP-46 (Remote Signer)**
+- Do not implement in Phase 2.
+- Implement alongside Coordinator hardening in Phase 6 (see F27).
+- Keep the AuthContext surface area compatible with adding NIP-46 later.
 
 **AuthContext:**
 - pubkey state
-- connect(), disconnect()
+- connect(), disconnect() (NIP-07 only in MVP)
 - isConnecting, isConnected, error states
 - Persist connection preference (localStorage)
 
@@ -932,14 +952,14 @@ class ConduitDB extends Dexie {
 **Order Creation:**
 - Generate order from cart
 - Send order DM to merchant (NIP-17)
-- ⚠️ MVP: Buyer waits for merchant to send invoice manually
+- Baseline MVP: buyer waits for merchant to send invoice manually
 
-**Payment Flow (MVP - Manual):**
+**Payment Flow (Baseline MVP - Manual):**
 - Receive invoice via NIP-17 DM from merchant
 - Display Lightning invoice (QR + copy)
 - Invoice expiration timer
 - Poll for payment confirmation OR receive status update DM
-- ⚠️ MVP: No auto-invoice - merchant generates manually in Portal
+- No auto-invoice - merchant generates manually in Portal
 
 **Order Confirmation:**
 - Success state with order details
@@ -948,6 +968,11 @@ class ConduitDB extends Dexie {
 
 > **Note:** See ARCHITECTURE.md "Payment Flow" for MVP vs Coordinator comparison.
 > Automated payments (auto-invoice, auto-confirm) are Phase 6 (Coordinator).
+
+**Milestone (Optional): One-way checkout**
+- Requires merchant-published payment handles (Phase 4 Settings).
+- Add behind a feature flag until Portal v1 is complete.
+- UX: buyer pays directly, then sends `PaymentProof` via NIP-17.
 
 ### F16: Order History 🔐
 📍 apps/market/routes/orders
@@ -1022,8 +1047,8 @@ class ConduitDB extends Dexie {
 
 **Login Page (/login):**
 - NIP-07 connect button
-- NIP-46 connect option
 - Signer detection with helpful messages
+> NIP-46 is post-MVP (Phase 6).
 
 **Sidebar Layout:**
 - Dashboard, Products, Orders, Messages, Settings
@@ -1089,6 +1114,11 @@ class ConduitDB extends Dexie {
 - ⚠️ MVP: Merchant must be online to process orders
 - ⚠️ Post-MVP: Coordinator automates all of this (Phase 6)
 
+**Milestone (Optional): One-way checkout support**
+- Display incoming `PaymentProof` payloads on the order detail view.
+- Add actions: "Mark paid (verified)" and "Reject proof" (with a DM template back to buyer).
+- Merchant verification remains independent/manual in MVP.
+
 **Order State Machine:**
 - pending → invoiced (invoice sent to buyer)
 - invoiced → paid (payment confirmed)
@@ -1141,6 +1171,12 @@ class ConduitDB extends Dexie {
 - Connect NWC wallet
 - Connection status
 - Test invoice generation
+
+**Payment Settings (for One-way Checkout milestone):**
+- Lightning Address / LNURL-pay handle (public)
+- Stablecoin address + accepted token(s) + memo convention (public, optional)
+- Hosted checkout URL (public, optional)
+- Accepted methods + default currency (public)
 
 ---
 
@@ -1202,7 +1238,7 @@ class ConduitDB extends Dexie {
 - Publish updated product event
 
 **Merchant Integration:**
-- NIP-46 remote signer connection
+- NIP-46 remote signer connection (post-MVP)
 - Per-merchant configuration
 - Multi-tenant support
 
