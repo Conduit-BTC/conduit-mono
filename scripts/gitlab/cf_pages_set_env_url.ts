@@ -70,6 +70,14 @@ async function cloudflareListDeployments(
   return res.result ?? []
 }
 
+function normalizeExternalUrl(url: string): string {
+  const trimmed = url.trim()
+  if (!trimmed) return trimmed
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed
+  if (trimmed.startsWith("//")) return `https:${trimmed}`
+  return `https://${trimmed}`
+}
+
 function toCreatedOnMs(d: CloudflarePagesDeployment): number {
   if (!d.created_on) return 0
   const ms = Date.parse(d.created_on)
@@ -102,15 +110,15 @@ function pickDeploymentUrl(opts: {
   const byCommit = commitHash
     ? preview.find((d) => d.deployment_trigger?.metadata?.commit_hash === commitHash)
     : undefined
-  if (byCommit?.url) return byCommit.url
+  if (byCommit?.url) return normalizeExternalUrl(byCommit.url)
 
   const byBranch = branch ? preview.find((d) => d.deployment_trigger?.metadata?.branch === branch) : undefined
-  if (byBranch?.url) return byBranch.url
+  if (byBranch?.url) return normalizeExternalUrl(byBranch.url)
 
   // Fallback to most recent preview deployment.
-  if (preview[0]?.url) return preview[0].url
+  if (preview[0]?.url) return normalizeExternalUrl(preview[0].url)
   // As a last resort, take any environment.
-  if (withUrl[0]?.url) return withUrl[0].url
+  if (withUrl[0]?.url) return normalizeExternalUrl(withUrl[0].url)
 
   return null
 }
@@ -172,7 +180,10 @@ async function main() {
     // If we matched by commit hash, we're done.
     const matchedByCommit =
       !!pickedUrl &&
-      deployments.some((d) => d.url === pickedUrl && d.deployment_trigger?.metadata?.commit_hash === commitHash)
+      deployments.some((d) => {
+        const u = d.url ? normalizeExternalUrl(d.url) : null
+        return u === pickedUrl && d.deployment_trigger?.metadata?.commit_hash === commitHash
+      })
     if (matchedByCommit) break
 
     if (i < 19) await sleep(15000)
