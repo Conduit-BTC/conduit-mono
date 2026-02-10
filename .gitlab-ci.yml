@@ -5,7 +5,6 @@ stages:
   - typecheck
   - test
   - build
-  - deploy
 
 cache:
   key: ${CI_COMMIT_REF_SLUG}
@@ -54,36 +53,3 @@ build:
       - apps/market/dist/
       - apps/merchant/dist/
       - apps/store-builder/dist/
-
-.pages_deploy_template:
-  stage: deploy
-  extends: .bun_install
-  needs: ["build"]
-  rules:
-    - if: $CI_COMMIT_BRANCH
-  variables:
-    # Wrangler looks for these names by default.
-    CLOUDFLARE_API_TOKEN: $CLOUDFLARE_API_TOKEN
-    CLOUDFLARE_ACCOUNT_ID: $CLOUDFLARE_ACCOUNT_ID
-  script:
-    - bunx wrangler --version
-    - bunx wrangler pages deploy "$DIST_DIR" --project-name "$PAGES_PROJECT" --branch "$CI_COMMIT_REF_SLUG"
-
-deploy:pages:market:
-  extends: .pages_deploy_template
-  variables:
-    DIST_DIR: "apps/market/dist"
-    PAGES_PROJECT: $CF_PAGES_MARKET_PROJECT
-
-deploy:pages:merchant:
-  extends: .pages_deploy_template
-  variables:
-    DIST_DIR: "apps/merchant/dist"
-    PAGES_PROJECT: $CF_PAGES_MERCHANT_PROJECT
-
-deploy:pages:store-builder:
-  extends: .pages_deploy_template
-  variables:
-    DIST_DIR: "apps/store-builder/dist"
-    PAGES_PROJECT: $CF_PAGES_STORE_BUILDER_PROJECT
-
