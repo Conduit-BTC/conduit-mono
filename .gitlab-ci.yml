@@ -1,6 +1,7 @@
 image: oven/bun:1.3.5
 
 stages:
+  - review
   - lint
   - typecheck
   - test
@@ -53,3 +54,14 @@ build:
       - apps/market/dist/
       - apps/merchant/dist/
       - apps/store-builder/dist/
+
+codex_review:
+  stage: review
+  extends: .bun_install
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: on_success
+    - when: never
+  script:
+    - bun scripts/gitlab/codex_mr_review.ts
+  allow_failure: true

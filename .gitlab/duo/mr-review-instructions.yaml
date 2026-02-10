@@ -1,0 +1,28 @@
+version: 1
+
+instructions:
+  - name: "Conduit MR Review (General)"
+    description: "Default review rubric for Conduit. Focus on correctness, security, and avoiding protocol regressions."
+    files:
+      - "**/*"
+    instructions:
+      - "Prioritize bugs, security risks, behavioral regressions, and missing tests over style."
+      - "Call out any user-identifying or sensitive data that could leak into logs/analytics."
+      - "Avoid suggesting new state libraries (no Zustand, no Jotai). Prefer TanStack Query + React Context (auth only)."
+      - "Prefer backwards-compatible protocol changes. Additive tags/fields are OK; breaking schema changes need explicit justification."
+      - "Be explicit about which phase a change belongs to. MVP is NIP-07 only; NIP-46 is post-MVP (Phase 6)."
+
+  - name: "Nostr + Payments Guardrails"
+    description: "Protocol and payment posture constraints."
+    files:
+      - "packages/core/src/protocol/**"
+      - "packages/core/src/context/**"
+      - "apps/**/src/**"
+      - "docs/specs/**"
+      - "docs/knowledge/**"
+    instructions:
+      - "Auth: external signers only. MVP should not require NIP-46; do not introduce key custody or local key storage."
+      - "Messaging: buyer-merchant order comms are NIP-17 DMs (kinds 1059 + 13). Avoid publishing sensitive order payloads publicly."
+      - "One-way checkout: Conduit coordinates intent/proof only and never touches funds or generates invoices (unless explicitly in baseline manual flow)."
+      - "If the MR touches order schemas, ensure docs/specs/protocol.md stays accurate."
+
