@@ -102,3 +102,33 @@ codex_review_manual:
   script:
     - bun scripts/gitlab/codex_mr_review.ts
   allow_failure: true
+
+pages_preview_market:
+  stage: review
+  extends: .bun_install
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: on_success
+    - when: never
+  variables:
+    CLOUDFLARE_PAGES_PROJECT: "conduit-market"
+  environment:
+    name: review/market/$CI_MERGE_REQUEST_IID
+  script:
+    - bun scripts/gitlab/cf_pages_set_env_url.ts
+  allow_failure: true
+
+pages_preview_merchant:
+  stage: review
+  extends: .bun_install
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: on_success
+    - when: never
+  variables:
+    CLOUDFLARE_PAGES_PROJECT: "conduit-merchant"
+  environment:
+    name: review/merchant/$CI_MERGE_REQUEST_IID
+  script:
+    - bun scripts/gitlab/cf_pages_set_env_url.ts
+  allow_failure: true
