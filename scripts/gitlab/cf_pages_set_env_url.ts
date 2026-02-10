@@ -3,6 +3,12 @@ type CloudflarePagesDeployment = {
   url?: string
   environment?: string
   created_on?: string
+  // Cloudflare often returns these fields but they are not guaranteed.
+  is_skipped?: boolean
+  latest_stage?: {
+    name?: string
+    status?: string
+  }
   deployment_trigger?: {
     metadata?: {
       branch?: string
@@ -64,23 +70,41 @@ async function cloudflareListDeployments(
   return res.result ?? []
 }
 
+function toCreatedOnMs(d: CloudflarePagesDeployment): number {
+  if (!d.created_on) return 0
+  const ms = Date.parse(d.created_on)
+  return Number.isFinite(ms) ? ms : 0
+}
+
+function isSuccessfulPreviewDeployment(d: CloudflarePagesDeployment): boolean {
+  if (d.environment !== "preview") return false
+  if (d.is_skipped) return false
+  // If Cloudflare gives us stage status, require success; otherwise allow.
+  const st = d.latest_stage?.status
+  if (!st) return true
+  return st === "success"
+}
+
 function pickDeploymentUrl(opts: {
   deployments: CloudflarePagesDeployment[]
   branch?: string
   commitHash?: string
 }): string | null {
   const { deployments, branch, commitHash } = opts
-  const withUrl = deployments.filter((d) => typeof d.url === "string" && d.url)
-  const preview = withUrl.filter((d) => d.environment === "preview")
+  // Normalize ordering: treat the newest deployment as first.
+  const sorted = deployments
+    .slice()
+    .sort((a, b) => toCreatedOnMs(b) - toCreatedOnMs(a))
+
+  const withUrl = sorted.filter((d) => typeof d.url === "string" && d.url)
+  const preview = withUrl.filter(isSuccessfulPreviewDeployment)
 
   const byCommit = commitHash
     ? preview.find((d) => d.deployment_trigger?.metadata?.commit_hash === commitHash)
     : undefined
   if (byCommit?.url) return byCommit.url
 
-  const byBranch = branch
-    ? preview.find((d) => d.deployment_trigger?.metadata?.branch === branch)
-    : undefined
+  const byBranch = branch ? preview.find((d) => d.deployment_trigger?.metadata?.branch === branch) : undefined
   if (byBranch?.url) return byBranch.url
 
   // Fallback to most recent preview deployment.
@@ -141,7 +165,7 @@ async function main() {
   // Poll briefly in case Cloudflare is still building this commit.
   let deployments: CloudflarePagesDeployment[] = []
   let pickedUrl: string | null = null
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 20; i++) {
     deployments = await cloudflareListDeployments(cfAccountId, cfProject, cfToken)
     pickedUrl = pickDeploymentUrl({ deployments, branch, commitHash })
 
@@ -151,7 +175,7 @@ async function main() {
       deployments.some((d) => d.url === pickedUrl && d.deployment_trigger?.metadata?.commit_hash === commitHash)
     if (matchedByCommit) break
 
-    if (i < 11) await sleep(15000)
+    if (i < 19) await sleep(15000)
   }
 
   if (!pickedUrl) {
@@ -176,4 +200,3 @@ main().catch((err) => {
   console.error(err instanceof Error ? err.message : String(err))
   process.exit(1)
 })
-
