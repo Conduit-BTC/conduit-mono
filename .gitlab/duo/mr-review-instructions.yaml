@@ -6,6 +6,7 @@ instructions:
     files:
       - "**/*"
     instructions:
+      - "Use these repo docs as source of truth when relevant: `docs/plans/IMPLEMENTATION.md` (phases/order), `docs/specs/protocol.md` (order + DM payloads), `docs/knowledge/one-way-checkout-multi-rail-payments.md` (payment posture), `docs/ARCHITECTURE.md` (system design; do not propose changes lightly)."
       - "Prioritize bugs, security risks, behavioral regressions, and missing tests over style."
       - "Call out any user-identifying or sensitive data that could leak into logs/analytics."
       - "Avoid suggesting new state libraries (no Zustand, no Jotai). Prefer TanStack Query + React Context (auth only)."
@@ -25,4 +26,3 @@ instructions:
       - "Messaging: buyer-merchant order comms are NIP-17 DMs (kinds 1059 + 13). Avoid publishing sensitive order payloads publicly."
       - "One-way checkout: Conduit coordinates intent/proof only and never touches funds or generates invoices (unless explicitly in baseline manual flow)."
       - "If the MR touches order schemas, ensure docs/specs/protocol.md stays accurate."
-
