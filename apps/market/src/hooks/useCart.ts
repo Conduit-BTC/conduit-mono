@@ -18,25 +18,38 @@ const CART_STORAGE_KEY = "conduit:cart"
 type Listener = () => void
 const listeners = new Set<Listener>()
 
+let state: CartState = { items: [] }
+let initialized = false
+let storageListenerCount = 0
+
 function notify(): void {
   listeners.forEach((l) => l())
 }
 
-function readState(): CartState {
-  if (typeof window === "undefined") return { items: [] }
+function loadFromStorage(): void {
+  if (initialized) return
+  initialized = true
+
+  if (typeof window === "undefined") return
   try {
     const raw = localStorage.getItem(CART_STORAGE_KEY)
-    if (!raw) return { items: [] }
+    if (!raw) return
     const parsed = JSON.parse(raw) as Partial<CartState>
-    return {
+    state = {
       items: Array.isArray(parsed.items) ? (parsed.items as CartItem[]) : [],
     }
   } catch {
-    return { items: [] }
+    // ignore
   }
 }
 
+function readSnapshot(): CartState {
+  loadFromStorage()
+  return state
+}
+
 function writeState(next: CartState): void {
+  state = next
   if (typeof window === "undefined") return
   try {
     localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(next))
@@ -48,14 +61,40 @@ function writeState(next: CartState): void {
 
 function subscribe(listener: Listener): () => void {
   listeners.add(listener)
-  return () => listeners.delete(listener)
+
+  if (typeof window !== "undefined") {
+    if (storageListenerCount === 0) {
+      window.addEventListener("storage", onStorage)
+    }
+    storageListenerCount++
+  }
+
+  return () => {
+    listeners.delete(listener)
+    if (typeof window !== "undefined") {
+      storageListenerCount = Math.max(0, storageListenerCount - 1)
+      if (storageListenerCount === 0) {
+        window.removeEventListener("storage", onStorage)
+      }
+    }
+  }
+}
+
+function onStorage(e: StorageEvent): void {
+  if (e.storageArea !== localStorage) return
+  if (e.key !== CART_STORAGE_KEY) return
+
+  // Refresh snapshot and notify subscribers.
+  initialized = false
+  loadFromStorage()
+  notify()
 }
 
 export function useCart() {
-  const state = useSyncExternalStore(subscribe, readState, readState)
+  const snap = useSyncExternalStore(subscribe, readSnapshot, readSnapshot)
 
   const addItem = useCallback((item: Omit<CartItem, "quantity">, quantity = 1) => {
-    const curr = readState()
+    const curr = readSnapshot()
     const existing = curr.items.find((i) => i.productId === item.productId)
     const nextItems = existing
       ? curr.items.map((i) =>
@@ -67,14 +106,14 @@ export function useCart() {
 
   const setQuantity = useCallback((productId: string, quantity: number) => {
     const q = Math.max(1, Math.floor(quantity))
-    const curr = readState()
+    const curr = readSnapshot()
     writeState({
       items: curr.items.map((i) => (i.productId === productId ? { ...i, quantity: q } : i)),
     })
   }, [])
 
   const removeItem = useCallback((productId: string) => {
-    const curr = readState()
+    const curr = readSnapshot()
     writeState({ items: curr.items.filter((i) => i.productId !== productId) })
   }, [])
 
@@ -83,7 +122,7 @@ export function useCart() {
   }, [])
 
   const totals = useMemo(() => {
-    return state.items.reduce(
+    return snap.items.reduce(
       (acc, i) => {
         acc.count += i.quantity
         acc.subtotal += i.price * i.quantity
@@ -91,10 +130,10 @@ export function useCart() {
       },
       { count: 0, subtotal: 0 }
     )
-  }, [state.items])
+  }, [snap.items])
 
   return {
-    items: state.items,
+    items: snap.items,
     totals,
     addItem,
     setQuantity,
