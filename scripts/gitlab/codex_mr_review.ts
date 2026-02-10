@@ -12,6 +12,13 @@ type GitLabMrChangesResponse = {
   }>
 }
 
+type GitLabMrNote = {
+  id: number
+  body?: string
+  created_at?: string
+  system?: boolean
+}
+
 function mustGetEnv(name: string): string {
   const v = process.env[name]
   if (!v) throw new Error(`Missing required env var: ${name}`)
@@ -125,10 +132,32 @@ function buildPrompt(mr: GitLabMrChangesResponse, diffs: string): string {
     .join("\n")
 }
 
+async function listMrNotes(apiUrl: string, projectId: string, mrIid: string, token: string): Promise<GitLabMrNote[]> {
+  const url = `${apiUrl}/projects/${encodeURIComponent(projectId)}/merge_requests/${encodeURIComponent(mrIid)}/notes?per_page=100&sort=desc&order_by=created_at`
+  return gitlabRequest<GitLabMrNote[]>("GET", url, token)
+}
+
+function findTriggerNoteId(notes: GitLabMrNote[], triggerText: string): number | null {
+  for (const n of notes) {
+    const body = n.body ?? ""
+    if (body.includes(triggerText)) return n.id
+  }
+  return null
+}
+
+function hasAlreadyRespondedToTrigger(notes: GitLabMrNote[], triggerNoteId: number): boolean {
+  const marker = `codex:trigger_note_id=${triggerNoteId}`
+  for (const n of notes) {
+    const body = n.body ?? ""
+    if (body.includes(marker)) return true
+  }
+  return false
+}
+
 async function main() {
   const apiUrl = getEnv("GITLAB_API_URL", "https://gitlab.com/api/v4")
-  const projectId = mustGetEnv("CI_PROJECT_ID")
-  const mrIid = mustGetEnv("CI_MERGE_REQUEST_IID")
+  const projectId = process.env["CI_PROJECT_ID"] ?? mustGetEnv("CODEX_REVIEW_PROJECT_ID")
+  const mrIid = process.env["CI_MERGE_REQUEST_IID"] ?? mustGetEnv("CODEX_REVIEW_MR_IID")
 
   const gitlabToken = mustGetEnv("GITLAB_BOT_TOKEN")
   const openaiKey = mustGetEnv("OPENAI_API_KEY")
@@ -136,6 +165,27 @@ async function main() {
 
   const mrUrl = `${apiUrl}/projects/${encodeURIComponent(projectId)}/merge_requests/${encodeURIComponent(mrIid)}`
   const changesUrl = `${mrUrl}/changes`
+
+  const requireTrigger = getEnv("CODEX_REVIEW_REQUIRE_TRIGGER", "false") === "true"
+  const triggerText = getEnv("CODEX_REVIEW_TRIGGER_TEXT", "/codex review")
+  const explicitTriggerNoteIdRaw = process.env["CODEX_REVIEW_TRIGGER_NOTE_ID"]
+  const explicitTriggerNoteId = explicitTriggerNoteIdRaw ? Number(explicitTriggerNoteIdRaw) : null
+
+  let triggerNoteId: number | null = null
+  if (requireTrigger || explicitTriggerNoteId !== null) {
+    const notes = await listMrNotes(apiUrl, projectId, mrIid, gitlabToken)
+    triggerNoteId = explicitTriggerNoteId ?? findTriggerNoteId(notes, triggerText)
+
+    if (triggerNoteId === null) {
+      console.log("No trigger comment found; skipping Codex review.")
+      return
+    }
+
+    if (hasAlreadyRespondedToTrigger(notes, triggerNoteId)) {
+      console.log("Codex already responded to this trigger note; skipping.")
+      return
+    }
+  }
 
   const mr = await gitlabRequest<GitLabMrChangesResponse>("GET", changesUrl, gitlabToken)
 
@@ -155,6 +205,7 @@ async function main() {
   const noteUrl = `${mrUrl}/notes`
   const body = [
     "## Codex MR Review",
+    triggerNoteId ? `\n<!-- codex:trigger_note_id=${triggerNoteId} -->` : "",
     "",
     review,
   ].join("\n")
@@ -168,4 +219,3 @@ main().catch((err) => {
   console.error(err instanceof Error ? err.message : String(err))
   process.exit(1)
 })
-

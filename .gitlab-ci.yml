@@ -61,6 +61,19 @@ codex_review:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "trigger" && $CODEX_REVIEW_MR_IID'
+      when: on_success
+    - when: never
+  script:
+    - bun scripts/gitlab/codex_mr_review.ts
+  allow_failure: true
+
+codex_review_manual:
+  stage: review
+  extends: .bun_install
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: manual
     - when: never
   script:
     - bun scripts/gitlab/codex_mr_review.ts
