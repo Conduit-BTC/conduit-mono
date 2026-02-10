@@ -6,8 +6,15 @@ export const Route = createFileRoute("/")({
 })
 
 function HomePage() {
+  const search = Route.useSearch() as any
   const { pubkey, status, error } = useAuth()
   const ndk = useNdkState()
+
+  const authRequired =
+    search?.authRequired === true ||
+    search?.authRequired === "true" ||
+    search?.authRequired === 1 ||
+    search?.authRequired === "1"
 
   return (
     <div className="space-y-4">
@@ -23,6 +30,12 @@ function HomePage() {
       <div className="text-sm text-[var(--text-secondary)]">
         {pubkey ? `Signed in as ${formatPubkey(pubkey)}` : `Status: ${status}`}
       </div>
+
+      {authRequired && !pubkey && (
+        <p className="text-sm text-[var(--text-secondary)]">
+          Connect your signer to continue to checkout.
+        </p>
+      )}
 
       {error && <p className="text-sm text-error">{error}</p>}
 

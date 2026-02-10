@@ -1,4 +1,5 @@
 export * from "./kinds"
+export * from "./products"
 export {
   getNdk,
   connectNdk,
