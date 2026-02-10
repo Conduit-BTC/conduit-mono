@@ -16,7 +16,7 @@ This is the Conduit monorepo - a decentralized Nostr-based commerce platform. Se
 Review `docs/plans/IMPLEMENTATION.md` Phase 0:
 - Extract protocol schemas from legacy repos
 - Extract design tokens from legacy/Figma
-- Verify `nostr-commerce-schema` package availability
+- Use `@conduit/core` Zod schemas for validation (spec-first; interop parsing is best-effort)
 
 ## Critical Protocol Constraints
 
@@ -85,7 +85,7 @@ import { getNdk, connectNdk } from "@conduit/core/protocol"
 | Persistence | localStorage (cart, preferences) |
 | Database | Dexie (IndexedDB) - orders, messages, cache |
 | Forms | react-hook-form + Zod |
-| Validation | nostr-commerce-schema |
+| Validation | Zod schemas in `@conduit/core` |
 | UI | shadcn/ui + Tailwind |
 | Analytics | Plausible + PostHog (privacy configured) |
 

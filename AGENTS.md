@@ -41,7 +41,7 @@ conduit-mono/
 | Database | Dexie (IndexedDB) for orders, messages, cache |
 | UI | shadcn/ui + Tailwind CSS |
 | Forms | react-hook-form + Zod |
-| Validation | nostr-commerce-schema |
+| Validation | Zod schemas in `@conduit/core` |
 | Protocol | Nostr via NDK |
 | Analytics | Plausible (traffic) + PostHog (events/errors) |
 

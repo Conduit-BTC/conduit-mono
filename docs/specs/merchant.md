@@ -178,17 +178,24 @@ const productEvent = {
 
 ### Validation
 
-Use `nostr-commerce-schema` package:
-```typescript
-import { validateProductListing } from "nostr-commerce-schema"
+Use Conduit's internal schemas (`@conduit/core`) instead of `nostr-commerce-schema`.
 
-const { success, error } = validateProductListing(event)
+Validate the normalized product object before emitting tags/content, and use best-effort parsing for inbound events:
+```typescript
+import { parseProductEvent, productSchema } from "@conduit/core"
+
+// Inbound (from relays): parse + validate into a stable shape
+const product = parseProductEvent(event)
+
+// Outbound (from form state): validate the normalized object before mapping to tags
+const res = productSchema.safeParse(candidateProduct)
+if (!res.success) throw new Error(res.error.message)
 ```
 
 ### Publishing Flow
 
 1. Convert form state to tags array
-2. Validate with `validateProductListing()`
+2. Validate with `@conduit/core` schemas (e.g. `productSchema.safeParse(...)`)
 3. Create NDKEvent with kind 30402
 4. Sign with NIP-07/46 signer
 5. Publish to relay set
