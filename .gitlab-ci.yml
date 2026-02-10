@@ -28,24 +28,48 @@ variables:
 lint:
   stage: lint
   extends: .bun_install
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: on_success
+    - when: never
   script:
     - bun run lint
 
 typecheck:
   stage: typecheck
   extends: .bun_install
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: on_success
+    - when: never
   script:
     - bun run typecheck
 
 test:
   stage: test
   extends: .bun_install
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: on_success
+    - when: never
   script:
     - bun test
 
 build:
   stage: build
   extends: .bun_install
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: on_success
+    - when: never
   script:
     - bun run build
   artifacts:
