@@ -58,6 +58,7 @@ function CartPage() {
                     className="w-20 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-2 py-1 text-[var(--text-primary)]"
                     type="number"
                     min={1}
+                    aria-label={`Quantity for ${i.title}`}
                     value={i.quantity}
                     onChange={(e) => cart.setQuantity(i.productId, Number(e.target.value))}
                   />
@@ -89,4 +90,3 @@ function CartPage() {
     </div>
   )
 }
-

@@ -38,8 +38,12 @@ function readState(): CartState {
 
 function writeState(next: CartState): void {
   if (typeof window === "undefined") return
-  localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(next))
-  notify()
+  try {
+    localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(next))
+    notify()
+  } catch {
+    // localStorage can fail (quota, privacy mode). Keep behavior non-blocking for MVP.
+  }
 }
 
 function subscribe(listener: Listener): () => void {
@@ -79,9 +83,14 @@ export function useCart() {
   }, [])
 
   const totals = useMemo(() => {
-    const count = state.items.reduce((acc, i) => acc + i.quantity, 0)
-    const subtotal = state.items.reduce((acc, i) => acc + i.price * i.quantity, 0)
-    return { count, subtotal }
+    return state.items.reduce(
+      (acc, i) => {
+        acc.count += i.quantity
+        acc.subtotal += i.price * i.quantity
+        return acc
+      },
+      { count: 0, subtotal: 0 }
+    )
   }, [state.items])
 
   return {
@@ -93,4 +102,3 @@ export function useCart() {
     clear,
   }
 }
-

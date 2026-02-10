@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router"
 import { EVENT_KINDS, getNdk, parseProductEvent, type Product } from "@conduit/core"
 import { useQuery } from "@tanstack/react-query"
 import { Button } from "@conduit/ui"
+import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
 
 export const Route = createFileRoute("/products/")({
   component: ProductsPage,
@@ -9,14 +10,14 @@ export const Route = createFileRoute("/products/")({
 
 async function fetchProducts(merchant?: string): Promise<Product[]> {
   const ndk = getNdk()
-  const filter: any = {
+  const filter: NDKFilter = {
     kinds: [EVENT_KINDS.PRODUCT],
     limit: 50,
   }
   if (merchant) filter.authors = [merchant]
 
-  const events = await (ndk as any).fetchEvents(filter)
-  const list = Array.from(events ?? []) as any[]
+  const events = await ndk.fetchEvents(filter)
+  const list = Array.from(events) as NDKEvent[]
   return list
     .map((e) => {
       try {
@@ -29,7 +30,7 @@ async function fetchProducts(merchant?: string): Promise<Product[]> {
 }
 
 function ProductsPage() {
-  const search = Route.useSearch() as any
+  const search = Route.useSearch() as { merchant?: unknown }
   const merchant = typeof search?.merchant === "string" ? search.merchant : undefined
   const productsQuery = useQuery({
     queryKey: ["products", merchant ?? "all"],
@@ -73,7 +74,7 @@ function ProductsPage() {
             <Link
               key={p.id}
               to="/products/$productId"
-              params={{ productId: encodeURIComponent(p.id) }}
+              params={{ productId: p.id }}
               className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 transition hover:bg-[var(--surface-elevated)]"
             >
               <div className="flex items-start justify-between gap-3">

@@ -6,7 +6,7 @@ export const Route = createFileRoute("/")({
 })
 
 function HomePage() {
-  const search = Route.useSearch() as any
+  const search = Route.useSearch() as { authRequired?: unknown }
   const { pubkey, status, error } = useAuth()
   const ndk = useNdkState()
 

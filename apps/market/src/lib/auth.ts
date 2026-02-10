@@ -13,11 +13,11 @@ export function getStoredPubkey(): string | null {
 
 export function requireAuth(): void {
   const pk = getStoredPubkey()
-  if (!pk) {
+  const isValidHex64 = typeof pk === "string" && /^[0-9a-f]{64}$/i.test(pk)
+  if (!isValidHex64) {
     throw redirect({
       to: "/",
       search: { authRequired: true },
     })
   }
 }
-

@@ -3,6 +3,7 @@ import { EVENT_KINDS, getNdk, parseProductEvent, type Product } from "@conduit/c
 import { useQuery } from "@tanstack/react-query"
 import { Button } from "@conduit/ui"
 import { useCart } from "../../hooks/useCart"
+import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
 
 export const Route = createFileRoute("/products/$productId")({
   component: ProductPage,
@@ -22,20 +23,20 @@ async function fetchProduct(productId: string): Promise<Product | null> {
   const ndk = getNdk()
 
   if (addr && addr.kind === EVENT_KINDS.PRODUCT) {
-    const filter: any = {
+    const filter: NDKFilter = {
       kinds: [EVENT_KINDS.PRODUCT],
       authors: [addr.pubkey],
       "#d": [addr.d],
       limit: 1,
     }
-    const ev = await (ndk as any).fetchEvent(filter)
+    const ev = (await ndk.fetchEvent(filter)) as NDKEvent | null
     if (!ev) return null
     return parseProductEvent(ev)
   }
 
   // Fallback: treat as event id if caller passed a raw id.
-  const filter: any = { ids: [decodeURIComponent(productId)] }
-  const ev = await (ndk as any).fetchEvent(filter)
+  const filter: NDKFilter = { ids: [decodeURIComponent(productId)] }
+  const ev = (await ndk.fetchEvent(filter)) as NDKEvent | null
   if (!ev) return null
   return parseProductEvent(ev)
 }
@@ -118,4 +119,3 @@ function ProductPage() {
     </div>
   )
 }
-
