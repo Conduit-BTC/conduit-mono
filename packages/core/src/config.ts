@@ -18,14 +18,31 @@ function getEnv(key: string, fallback: string): string {
   return fallback
 }
 
+function parseRelayList(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((r) => r.trim())
+    .filter(Boolean)
+    .filter((v, i, a) => a.indexOf(v) === i)
+}
+
+function getDefaultRelays(): string[] {
+  // Support both names:
+  // - VITE_DEFAULT_RELAY_URL (single relay URL, historically used in docs)
+  // - VITE_DEFAULT_RELAYS (comma-separated list)
+  //
+  // If a custom list is provided, we do NOT automatically append public relays. This keeps
+  // local development deterministic (local relay only) unless the developer opts in.
+  const rawList = getEnv("VITE_DEFAULT_RELAYS", "").trim()
+  const rawSingle = getEnv("VITE_DEFAULT_RELAY_URL", "").trim()
+  const raw = rawList || rawSingle
+  if (!raw) return DEFAULT_RELAYS
+  return parseRelayList(raw)
+}
+
 export const config: ConduitConfig = {
   relayUrl: getEnv("VITE_RELAY_URL", "wss://relay.conduit.market"),
-  defaultRelays: getEnv("VITE_DEFAULT_RELAYS", "")
-    .split(",")
-    .filter(Boolean)
-    .map((r) => r.trim())
-    .concat(DEFAULT_RELAYS)
-    .filter((v, i, a) => a.indexOf(v) === i),
+  defaultRelays: getDefaultRelays(),
   lightningNetwork: getEnv("VITE_LIGHTNING_NETWORK", "mainnet") as ConduitConfig["lightningNetwork"],
 }
 

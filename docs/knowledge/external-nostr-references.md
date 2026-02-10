@@ -33,3 +33,15 @@ Notes:
 - We can propose and land changes (with rough consensus), but must preserve interoperability.
 - Prefer backwards-compatible evolution. Breaking changes should be treated as exceptional and will be scrutinized heavily.
 
+Additional guidance:
+- Treat `spec.md` as the canonical normative text. The README provides high-level intent and links.
+- External implementations (e.g. Plebeian) are compatibility targets, not authorities.
+
+## External Markets (Compatibility Targets)
+
+### Plebeian Market (Primary reference for now)
+
+- Repo: https://github.com/PlebeianApp/market
+- Notes:
+  - Reported to interoperate via NIP-99 listings. Use it to catch real-world parsing/compat footguns.
+  - Do not copy non-spec behavior into core logic; isolate quirks behind explicit compat adapters.

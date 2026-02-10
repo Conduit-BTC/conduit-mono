@@ -8,6 +8,12 @@
     "packages/*"
   ],
   "scripts": {
+    "seed:nsec": "bun -e 'import { nip19 } from \"@nostr-dev-kit/ndk\"; import { randomBytes } from \"node:crypto\"; console.log(nip19.nsecEncode(randomBytes(32)));'",
+    "seed:products": "bun scripts/dev/seed_products.ts",
+    "check:products": "bun scripts/dev/check_products.ts",
+    "relay:local:start": "mkdir -p context/relay-db && docker rm -f conduit-relay-local >/dev/null 2>&1 || true && docker run -d --name conduit-relay-local -p 7777:8080 --mount src=$(pwd)/context/relay-db,target=/usr/src/app/db,type=bind scsibug/nostr-rs-relay:latest",
+    "relay:local:logs": "docker logs -f conduit-relay-local",
+    "relay:local:stop": "docker rm -f conduit-relay-local",
     "dev": "bun run --filter '*' dev",
     "dev:market": "bun run --filter @conduit/market dev",
     "dev:merchant": "bun run --filter @conduit/merchant dev",
@@ -24,6 +30,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@nostr-dev-kit/ndk": "^2.14.0",
     "@eslint/js": "^9.19.0",
     "eslint": "^9.19.0",
     "eslint-plugin-react": "^7.37.4",

@@ -49,7 +49,7 @@ export const EVENT_KINDS = {
   ZAP_RECEIPT: 9735,       // Zap receipt (NIP-57)
   RELAY_LIST: 10002,       // Relay list (NIP-65)
   DM_GIFT_WRAP: 1059,      // NIP-17 gift wrap
-  PRODUCT: 30402,          // Product listing (NIP-15)
+  PRODUCT: 30402,          // Product listing (NIP-99 + GammaMarkets `market-spec`)
 } as const
 ```
 
