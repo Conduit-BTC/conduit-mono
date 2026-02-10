@@ -97,21 +97,55 @@
   --error: hsla(0, 84%, 60%, 1);
   --info: hsla(217, 91%, 60%, 1);
 
-  /* Background & Surface */
-  /* Legacy MVP background (deep indigo) */
+  /*
+   * shadcn/ui semantic tokens (canonical)
+   * Keep these as the primary contract for shared UI components.
+   */
   --background: #05001d;
-  --surface: rgba(255, 255, 255, 0.04);
-  --surface-elevated: rgba(255, 255, 255, 0.06);
+  --foreground: var(--neutral-50);
+
+  --card: rgba(255, 255, 255, 0.04);
+  --card-foreground: var(--foreground);
+
+  --popover: rgba(255, 255, 255, 0.06);
+  --popover-foreground: var(--foreground);
+
+  --primary: var(--primary-500);
+  --primary-foreground: white;
+
+  --secondary: var(--secondary-500);
+  --secondary-foreground: white;
+
+  --muted: rgba(255, 255, 255, 0.06);
+  --muted-foreground: var(--neutral-300);
+
+  --accent: var(--accent-500);
+  --accent-foreground: white;
+
+  --destructive: var(--error);
+  --destructive-foreground: white;
 
   /* Text */
-  --text-primary: var(--neutral-50);
-  --text-secondary: var(--neutral-300);
+  /*
+   * Back-compat aliases (non-shadcn)
+   * We can remove these after UI has been migrated to shadcn token names.
+   */
+  --text-primary: var(--foreground);
+  --text-secondary: var(--muted-foreground);
   --text-muted: var(--neutral-500);
-  --text-inverse: var(--neutral-950);
+  --text-inverse: var(--background);
+
+  /* Back-compat surfaces */
+  --surface: var(--card);
+  --surface-elevated: var(--popover);
 
   /* Border */
   --border: rgba(255, 255, 255, 0.12);
-  --border-focus: var(--primary-500);
+  --input: var(--border);
+  --ring: var(--primary-500);
+
+  /* Back-compat alias */
+  --border-focus: var(--ring);
 
   /* Spacing scale */
   --space-1: 0.25rem;
@@ -134,6 +168,7 @@
   --radius-xl: 1rem;
   --radius-2xl: 1.5rem;
   --radius-full: 9999px;
+  --radius: var(--radius-md);
 
   /* Shadows */
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
@@ -147,12 +182,26 @@
   :root {
     color-scheme: light;
     --background: var(--neutral-50);
-    --surface: white;
-    --surface-elevated: white;
-    --text-primary: var(--neutral-900);
-    --text-secondary: var(--neutral-600);
-    --text-muted: var(--neutral-400);
+    --foreground: var(--neutral-900);
+
+    --card: white;
+    --card-foreground: var(--foreground);
+
+    --popover: white;
+    --popover-foreground: var(--foreground);
+
+    --muted: var(--neutral-100);
+    --muted-foreground: var(--neutral-600);
+
+    --text-primary: var(--foreground);
+    --text-secondary: var(--muted-foreground);
+    --text-muted: var(--neutral-500);
     --text-inverse: white;
+
+    --surface: var(--card);
+    --surface-elevated: var(--popover);
+
     --border: var(--neutral-200);
+    --input: var(--border);
   }
 }

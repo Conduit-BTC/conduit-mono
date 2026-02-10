@@ -1,18 +1,9 @@
+@import "./reset.css";
+@import "./setup.css";
 @import "./theme.css";
 @import "./typography.css";
 
 @layer base {
-  html {
-    box-sizing: border-box;
-    scroll-behavior: smooth;
-  }
-
-  *,
-  *::before,
-  *::after {
-    box-sizing: inherit;
-  }
-
   body {
     background-color: var(--background);
     color: var(--text-primary);
@@ -30,26 +21,8 @@
     min-height: 100vh;
   }
 
-  a {
-    color: inherit;
-    text-decoration: none;
-  }
-
-  picture {
-    display: block;
-    overflow: hidden;
-  }
-
-  img,
-  svg {
-    display: block;
-    width: 100%;
-    height: auto;
-  }
-
-  button,
-  label {
-    cursor: pointer;
+  #root {
+    position: relative;
   }
 }
 
@@ -75,3 +48,33 @@
   }
 }
 
+@layer utilities {
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.7s both;
+  }
+
+  .animate-fade-in-slow {
+    animation: fadeIn 1.5s both;
+  }
+
+  .hide-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+.halftone {
+  background-color: var(--neutral-900);
+  background-image: radial-gradient(circle at center, var(--neutral-700) 10%, transparent 0);
+  background-size: 1rem 1rem;
+  background-repeat: round;
+}

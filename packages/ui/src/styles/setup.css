@@ -1,0 +1,46 @@
+@layer base {
+  html {
+    box-sizing: border-box;
+    scroll-behavior: smooth;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: inherit;
+  }
+
+  a {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+  }
+
+  p a {
+    display: inline;
+    text-decoration: underline;
+    font-size: inherit;
+  }
+
+  picture {
+    display: block;
+    overflow: hidden;
+  }
+
+  img,
+  svg {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  :where(:not(:defined)) {
+    display: block;
+  }
+
+  button,
+  label {
+    cursor: pointer;
+  }
+}
+

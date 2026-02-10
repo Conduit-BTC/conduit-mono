@@ -12,6 +12,9 @@
   --font-body: "Poppins", system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", "Fira Code", monospace;
 
+  /* shadcn-friendly aliases */
+  --font-sans: var(--font-body);
+
   /* Font weights */
   --font-normal: 400;
   --font-medium: 500;
