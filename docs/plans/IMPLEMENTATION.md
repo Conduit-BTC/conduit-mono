@@ -1548,26 +1548,35 @@ From context doc analysis, these were missing:
 ## Verification Milestones
 
 ### Infrastructure (Goal: 2/12)
-- [ ] shadcn components render correctly
-- [ ] NDK connects to relays
-- [ ] NIP-07 auth works
-- [ ] Query hooks fetch real products
+- [x] shadcn components render correctly
+- [x] NDK connects to relays
+- [x] NIP-07 auth works
+- [x] Query hooks fetch real products
 - [ ] Dexie database works
 
 ### Market (Goal: 2/26)
-- [ ] Products display from relays
-- [ ] Cart works (localStorage)
-- [ ] Checkout creates order
+- [x] Products display from relays
+- [x] Cart works (localStorage)
+- [x] Checkout creates order (NIP-17 order DM)
 - [ ] Payment flow completes
 - [ ] Messages send/receive
 
 ### Merchant (Goal: 3/12)
 - [ ] Product CRUD works
-- [ ] Orders display and update
-- [ ] Shipping info captured
+- [x] Orders inbox displays NIP-17 orders
+- [ ] Order actions work (send invoice, status updates, shipping/tracking)
+- [x] Shipping info captured
 - [ ] Wallet connected
 
 ### MVP (Goal: 3/12)
 - [ ] Market deployed to shop.conduit.market
 - [ ] Portal deployed to sell.conduit.market
 - [ ] End-to-end purchase works
+
+### Design Polish (Post E2E Loop)
+
+These items should come after the end-to-end loop is working, so we can iterate on visuals without destabilizing the core flows.
+
+- [ ] Extract tokens (color/typography/spacing) from Figma into `packages/ui`
+- [ ] Bring Market pages in line with Figma (layout, typography, components)
+- [ ] Bring Merchant pages in line with Figma (layout, typography, components)
