@@ -28,6 +28,19 @@ export function hasNip07(): boolean {
   return typeof window !== "undefined" && !!window.nostr
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs)
+  })
+
+  try {
+    return await Promise.race([promise, timeout])
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId)
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [pubkey, setPubkey] = useState<string | null>(null)
   const [status, setStatus] = useState<AuthStatus>("disconnected")
@@ -42,7 +55,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null)
 
     // Extensions inject window.nostr asynchronously - wait briefly
-    if (!hasNip07()) {
+    for (let i = 0; i < 10 && !hasNip07(); i++) {
       await new Promise((r) => setTimeout(r, 200))
     }
     if (!hasNip07()) {
@@ -54,7 +67,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     try {
       const signer = new NDKNip07Signer()
-      const user = await signer.user()
+      const user = await withTimeout(
+        signer.user(),
+        8000,
+        "Signer connection timed out. Unlock/approve your NIP-07 extension (e.g., Alby) and retry."
+      )
       const pk = user.pubkey
 
       setSigner(signer)
