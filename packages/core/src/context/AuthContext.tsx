@@ -59,10 +59,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await new Promise((r) => setTimeout(r, 200))
     }
     if (!hasNip07()) {
+      const msg = "No NIP-07 extension found. Install a Nostr signer extension."
       setStatus("error")
-      setError("No NIP-07 extension found. Install a Nostr signer extension.")
+      setError(msg)
       connecting.current = false
-      return
+      throw new Error(msg)
     }
 
     try {
@@ -79,8 +80,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setStatus("connected")
       localStorage.setItem(AUTH_STORAGE_KEY, pk)
     } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to connect signer"
       setStatus("error")
-      setError(err instanceof Error ? err.message : "Failed to connect signer")
+      setError(msg)
+      throw err instanceof Error ? err : new Error(msg)
     } finally {
       connecting.current = false
     }
@@ -97,7 +100,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const stored = localStorage.getItem(AUTH_STORAGE_KEY)
     if (stored && hasNip07()) {
-      connect()
+      // Don't crash the app on auto-reconnect failure; surface state via `error`.
+      void connect().catch(() => undefined)
     }
   }, [connect])
 
