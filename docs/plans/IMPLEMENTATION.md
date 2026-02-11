@@ -1548,23 +1548,24 @@ From context doc analysis, these were missing:
 ## Verification Milestones
 
 ### Infrastructure (Goal: 2/12)
-- [ ] shadcn components render correctly
-- [ ] NDK connects to relays
-- [ ] NIP-07 auth works
-- [ ] Query hooks fetch real products
+- [x] shadcn components render correctly
+- [x] NDK connects to relays
+- [x] NIP-07 auth works
+- [x] Query hooks fetch real products
 - [ ] Dexie database works
 
 ### Market (Goal: 2/26)
-- [ ] Products display from relays
-- [ ] Cart works (localStorage)
-- [ ] Checkout creates order
+- [x] Products display from relays
+- [x] Cart works (localStorage)
+- [x] Checkout creates order (NIP-17 order DM)
 - [ ] Payment flow completes
 - [ ] Messages send/receive
 
 ### Merchant (Goal: 3/12)
 - [ ] Product CRUD works
-- [ ] Orders display and update
-- [ ] Shipping info captured
+- [x] Orders inbox displays NIP-17 orders
+- [ ] Order actions work (send invoice, status updates, shipping/tracking)
+- [x] Shipping info captured
 - [ ] Wallet connected
 
 ### MVP (Goal: 3/12)
@@ -1572,46 +1573,14 @@ From context doc analysis, these were missing:
 - [ ] Portal deployed to sell.conduit.market
 - [ ] End-to-end purchase works
 
-### UI Match Scope (Post E2E Loop)
+### Design Polish (Post E2E Loop)
 
-Use this checklist to track exact parity targets against legacy + Figma, after the end-to-end loop is stable.
+These items should come after the end-to-end loop is working, so we can iterate on visuals without destabilizing the core flows.
 
-Market app:
-- [ ] Header + nav parity (`apps/market/src/routes/__root.tsx`)
-  - [ ] Logo lockup and sizing
-  - [ ] Desktop nav spacing/hierarchy
-  - [ ] Mobile drawer nav structure
-- [ ] Products grid parity (`apps/market/src/routes/products/index.tsx`)
-  - [ ] Card layout (media ratio, padding, hover, borders)
-  - [ ] Typography hierarchy (title, merchant, price)
-  - [ ] Loading/empty/error surface styling
-- [ ] Product detail parity (`apps/market/src/routes/products/$productId.tsx`)
-  - [ ] Media gallery/presentation
-  - [ ] Merchant info block
-  - [ ] Price + CTA arrangement
-- [ ] Cart parity (`apps/market/src/routes/cart.tsx`)
-  - [ ] Merchant cart grouping treatment
-  - [ ] Quantity/remove controls
-  - [ ] Subtotal + checkout action section
-- [ ] Checkout parity (`apps/market/src/routes/checkout.tsx`)
-  - [ ] Order summary layout
-  - [ ] Form spacing and visual hierarchy
-  - [ ] Success/error state styling
-
-Merchant app:
-- [ ] Shell/layout parity (`apps/merchant/src/routes/__root.tsx`)
-  - [ ] Navigation information architecture
-  - [ ] Mobile behavior
-- [ ] Orders parity (`apps/merchant/src/routes/orders.tsx`)
-  - [ ] List/table structure
-  - [ ] Status badges and row actions
-- [ ] Product management parity (`apps/merchant/src/routes/products/*`) once CRUD lands
-  - [ ] Product list/table visuals
-  - [ ] Product editor form layout
-  - [ ] Publish/edit/delete action affordances
-
-Shared design system:
-- [ ] Font stack and type scale aligned to Figma tokens
-- [ ] Color/spacing/radius tokens aligned in `@conduit/ui`
-- [ ] Button/input/card variant audit against intended usage
-- [ ] Placeholder/fallback media usage aligned (from `apps/market/public/images/placeholders/`)
+- [ ] Extract tokens (color/typography/spacing) from Figma into `packages/ui`
+- [ ] Bring Market pages in line with Figma (layout, typography, components)
+- [ ] Bring Merchant pages in line with Figma (layout, typography, components)
+- [ ] Market header + nav parity (`apps/market/src/routes/__root.tsx`)
+- [ ] Market products grid/detail parity (`apps/market/src/routes/products/index.tsx`, `apps/market/src/routes/products/$productId.tsx`)
+- [ ] Market cart/checkout parity (`apps/market/src/routes/cart.tsx`, `apps/market/src/routes/checkout.tsx`)
+- [ ] Merchant shell/orders/products parity (`apps/merchant/src/routes/__root.tsx`, `apps/merchant/src/routes/orders.tsx`, `apps/merchant/src/routes/products.tsx`)
