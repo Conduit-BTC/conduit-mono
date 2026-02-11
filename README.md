@@ -46,6 +46,56 @@ bun run dev:market      # localhost:3000
 bun run dev:merchant    # localhost:3001
 ```
 
+## Local Development (Recommended)
+
+For reliable, deterministic testing (no relay noise/rate limits), run a local relay and seed sample products into it.
+
+### 1) Start a Local Relay (Docker)
+
+We recommend `nostr-rs-relay` for local development.
+
+```bash
+bun run relay:local:start
+bun run relay:local:logs
+```
+
+This exposes a relay at `ws://127.0.0.1:7777`.
+
+If you get a “Cannot connect to the Docker daemon” error, start Docker Desktop or OrbStack first.
+
+Stop it with:
+```bash
+bun run relay:local:stop
+```
+
+### 2) Point the Apps at the Local Relay
+
+Market:
+```bash
+echo 'VITE_DEFAULT_RELAY_URL=ws://127.0.0.1:7777' > apps/market/.env.local
+```
+
+Merchant:
+```bash
+echo 'VITE_DEFAULT_RELAY_URL=ws://127.0.0.1:7777' > apps/merchant/.env.local
+```
+
+### 3) Seed Sample Listings
+
+```bash
+SEED_NSEC=... SEED_RELAY_URLS=ws://127.0.0.1:7777 bun run seed:products
+```
+
+Then run:
+```bash
+bun run dev:market
+bun run dev:merchant
+```
+
+Notes:
+- Cloudflare Pages previews are served over `https://` and must use `wss://` relays (no `ws://` mixed-content).
+- The seeding script is dev-only; keep the `nsec` out of apps and repos.
+
 ---
 
 ## 📋 Roadmap

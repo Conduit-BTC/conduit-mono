@@ -1,0 +1,80 @@
+@import "./reset.css";
+@import "./setup.css";
+@import "./theme.css";
+@import "./typography.css";
+
+@layer base {
+  body {
+    background-color: var(--background);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body #root {
+    display: grid;
+    grid-auto-rows: auto 1fr auto;
+    min-height: 100vh;
+  }
+
+  #root {
+    position: relative;
+  }
+}
+
+@layer components {
+  /* Shared scrollbar styling (legacy look). */
+  * {
+    -ms-overflow-style: none;
+    scrollbar-width: 4px;
+  }
+
+  *::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: linear-gradient(to bottom, var(--primary-500), var(--secondary-500));
+    border-radius: var(--radius-lg);
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    filter: brightness(1.15);
+  }
+}
+
+@layer utilities {
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.7s both;
+  }
+
+  .animate-fade-in-slow {
+    animation: fadeIn 1.5s both;
+  }
+
+  .hide-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+.halftone {
+  background-color: var(--neutral-900);
+  background-image: radial-gradient(circle at center, var(--neutral-700) 10%, transparent 0);
+  background-size: 1rem 1rem;
+  background-repeat: round;
+}

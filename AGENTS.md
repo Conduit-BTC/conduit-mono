@@ -41,7 +41,7 @@ conduit-mono/
 | Database | Dexie (IndexedDB) for orders, messages, cache |
 | UI | shadcn/ui + Tailwind CSS |
 | Forms | react-hook-form + Zod |
-| Validation | nostr-commerce-schema |
+| Validation | Zod schemas in `@conduit/core` |
 | Protocol | Nostr via NDK |
 | Analytics | Plausible (traffic) + PostHog (events/errors) |
 
@@ -53,7 +53,7 @@ Core event kinds used:
 - **Kind 0** - User profile metadata
 - **Kind 5** - Event deletion (NIP-09)
 - **Kind 10002** - Relay list (NIP-65)
-- **Kind 30402** - Product listings (NIP-15 replaceable)
+- **Kind 30402** - Product listings (NIP-99 + GammaMarkets `market-spec`)
 
 Authentication: External signers only (NIP-07, NIP-46). No key custody.
 Messaging: NIP-17 encrypted DMs for buyer-merchant communication.

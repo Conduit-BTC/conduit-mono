@@ -33,6 +33,8 @@ export function SignerSwitch() {
       await connect()
       setPendingSwitch(false)
       setOpen(false)
+    } catch {
+      // keep dialog open so user can see error + retry
     } finally {
       setIsWorking(false)
     }

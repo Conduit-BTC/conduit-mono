@@ -126,6 +126,8 @@ pages_preview_merchant:
       when: on_success
     - when: never
   variables:
+    # Workaround: Cloudflare Pages preview TLS provisioning was broken on the original merchant project.
+    # The TLS-fixed project is now named `conduit-merchant` (subdomain `conduit-merchant-arq.pages.dev`).
     CLOUDFLARE_PAGES_PROJECT: "conduit-merchant"
   environment:
     name: review/merchant/$CI_MERGE_REQUEST_IID

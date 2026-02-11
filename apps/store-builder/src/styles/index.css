@@ -1,5 +1,4 @@
-@import "@conduit/ui/styles/theme.css";
-@import "@conduit/ui/styles/typography.css";
+@import "@conduit/ui/styles/site.css";
 
 @tailwind base;
 @tailwind components;

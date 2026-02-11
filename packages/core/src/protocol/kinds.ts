@@ -18,6 +18,9 @@ export const EVENT_KINDS = {
   /** NIP-17: Gift wrap for encrypted DMs */
   GIFT_WRAP: 1059,
 
+  /** Conduit MVP: Order message (wrapped in NIP-17) */
+  ORDER: 16,
+
   /** NIP-57: Zap request */
   ZAP_REQUEST: 9734,
 
@@ -27,7 +30,7 @@ export const EVENT_KINDS = {
   /** NIP-65: Relay list metadata */
   RELAY_LIST: 10002,
 
-  /** NIP-15: Marketplace product listing (replaceable) */
+  /** NIP-99: Marketplace product listing (addressable) */
   PRODUCT: 30402,
 
   /** Shipping option for a product */

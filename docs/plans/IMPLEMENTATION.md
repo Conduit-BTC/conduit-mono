@@ -83,7 +83,7 @@ Before starting infrastructure work, extract these from legacy repos and documen
 Source: /conduit-market-client/src/lib/nostr/createOrder.ts
 ```
 - Tags: `p` (merchant), `subject`, `type`, `order` (ID), `amount`, `item[]`, `shipping`, `address`, `phone`, `email`
-- Uses `nostr-commerce-schema` package for validation
+- Use Conduit's internal Zod schemas in `@conduit/core` for validation (interop parsing is best-effort)
 - Wrapped in Kind 1059 (gift wrap) + Kind 13 (seal)
 
 **Order Event Types:**
@@ -110,7 +110,7 @@ Source: /conduit-market-client/src/stores/useCartStore.ts
 ### Decisions Made
 - **localStorage** - Cart, shipping info, user preferences
 - **Dexie (IndexedDB)** - Orders, messages, event cache (larger datasets, offline support)
-- **nostr-commerce-schema** - Reuse existing validation package
+- **Zod schemas in `@conduit/core`** - Validate normalized objects; emit spec-aligned events; parse external events best-effort
 
 ### Storage Architecture
 ```
@@ -139,7 +139,7 @@ A dedicated `protocol.md` should consolidate:
 - [ ] All event kind definitions with tag schemas
 - [ ] NIP-17 wrapping flow (seal + gift wrap)
 - [ ] Order event types (order, payment_request, status_update, shipping_update, receipt)
-- [ ] Validation with `nostr-commerce-schema` package
+- [ ] Validation with `@conduit/core` Zod schemas (product/order/etc)
 - [ ] Payment flow (NWC invoice generation, zap receipts)
 
 **Key Legacy Files for Reference:**
@@ -198,7 +198,6 @@ Extract from Figma:
 ```
 
 ### P0.3: Verify Dependencies
-- [ ] Check if `nostr-commerce-schema` package is published/usable
 - [ ] Confirm NDK version compatibility
 - [ ] List other reusable packages from legacy
 
@@ -218,7 +217,7 @@ Extract from Figma:
 | Database | **Dexie (IndexedDB)** | Orders, messages, event cache |
 | Forms | react-hook-form + Zod | Validation |
 | UI | **shadcn/ui** + Tailwind | Composable, accessible |
-| Validation | nostr-commerce-schema | Order/event validation |
+| Validation | `@conduit/core` (Zod) | Order/event validation |
 | Analytics | **Plausible** | Privacy-focused traffic |
 | Events/Errors | **PostHog** | Funnels, errors, feature flags (privacy configured) |
 

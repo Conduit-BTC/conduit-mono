@@ -85,7 +85,7 @@ Content:
 
 Notes:
 - Legacy uses `["type","1"]` in one place; Conduit MVP should use the descriptive string `order` for clarity.
-- Validation should use `nostr-commerce-schema` where available, but the on-wire format must remain compatible with existing tags.
+- Validation should use Conduit's internal Zod schemas in `@conduit/core` (best-effort parsing for interop), but the on-wire format must remain compatible with existing tags.
 
 ### `payment_request` message schema (baseline MVP)
 
@@ -194,4 +194,3 @@ De-commerce interoperability is a priority. Prefer backwards-compatible tag addi
 
 Primary external reference:
 - GammaMarkets market spec: https://github.com/GammaMarkets/market-spec
-
