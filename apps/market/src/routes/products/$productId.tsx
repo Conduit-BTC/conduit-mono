@@ -21,6 +21,7 @@ function parseAddress(productId: string): { kind: number; pubkey: string; d: str
 async function fetchProduct(productId: string): Promise<Product | null> {
   const addr = parseAddress(productId)
   const ndk = getNdk()
+  const decodedId = decodeURIComponent(productId)
 
   if (addr && addr.kind === EVENT_KINDS.PRODUCT) {
     const filter: NDKFilter = {
@@ -30,12 +31,29 @@ async function fetchProduct(productId: string): Promise<Product | null> {
       limit: 1,
     }
     const ev = (await ndk.fetchEvent(filter)) as NDKEvent | null
-    if (!ev) return null
-    return parseProductEvent(ev)
+    if (ev) return parseProductEvent(ev)
+
+    // Some relays don't index #d lookups consistently.
+    // Fallback to author's recent products and match locally by d-tag/address id.
+    const byAuthor = Array.from(
+      (await ndk.fetchEvents({
+        kinds: [EVENT_KINDS.PRODUCT],
+        authors: [addr.pubkey],
+        limit: 100,
+      })) as Set<NDKEvent>
+    ) as NDKEvent[]
+
+    const matched = byAuthor.find((event) => {
+      const dTag = event.tags.find((t) => t[0] === "d")?.[1]
+      if (!dTag) return false
+      const addressId = `30402:${event.pubkey}:${dTag}`
+      return addressId === decodedId
+    })
+    if (matched) return parseProductEvent(matched)
   }
 
   // Fallback: treat as event id if caller passed a raw id.
-  const filter: NDKFilter = { ids: [decodeURIComponent(productId)] }
+  const filter: NDKFilter = { ids: [decodedId] }
   const ev = (await ndk.fetchEvent(filter)) as NDKEvent | null
   if (!ev) return null
   return parseProductEvent(ev)
@@ -51,6 +69,7 @@ function ProductPage() {
   })
 
   const p = productQuery.data
+  const image = p?.images[0]?.url ?? "/images/placeholders/landscape.jpg"
 
   return (
     <div className="space-y-4">
@@ -79,39 +98,59 @@ function ProductPage() {
       )}
 
       {p && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-5">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <h1 className="text-3xl font-medium text-[var(--text-primary)]">{p.title}</h1>
-              {p.summary && (
-                <p className="mt-2 text-sm text-[var(--text-secondary)]">{p.summary}</p>
-              )}
-              <div className="mt-3 text-sm text-[var(--text-secondary)]">
-                Merchant: <span className="font-mono">{p.pubkey}</span>
-              </div>
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(320px,1fr)]">
+          <div className="overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)]">
+            <div className="aspect-square bg-[var(--background)] lg:aspect-video">
+              <img
+                src={image}
+                alt={p.title}
+                className="h-full w-full object-cover"
+                onError={(e) => {
+                  ;(e.currentTarget as HTMLImageElement).src = "/images/placeholders/landscape.jpg"
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5">
+            <h1 className="text-3xl font-semibold text-[var(--text-primary)]">{p.title}</h1>
+            {p.summary && (
+              <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">{p.summary}</p>
+            )}
+            <div className="mt-4 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-xs">
+              <div className="text-[var(--text-secondary)]">Merchant</div>
+              <div className="mt-1 font-mono text-[var(--text-primary)]">{p.pubkey}</div>
             </div>
 
-            <div className="shrink-0 text-right">
-              <div className="text-xl font-medium text-[var(--text-primary)]">
+            <div className="mt-5 border-t border-[var(--border)] pt-5">
+              <div className="text-2xl font-bold text-[var(--text-primary)]">
                 {p.price} {p.currency}
               </div>
-              <Button
-                className="mt-3"
-                onClick={() =>
-                  cart.addItem(
-                    {
-                      productId: p.id,
-                      merchantPubkey: p.pubkey,
-                      title: p.title,
-                      price: p.price,
-                      currency: p.currency,
-                    },
-                    1
-                  )
-                }
-              >
-                Add to cart
-              </Button>
+              <div className="mt-1 text-sm text-[var(--text-secondary)]">
+                Shipping and payment finalized in checkout
+              </div>
+              <div className="mt-4 flex gap-2">
+                <Button
+                  className="flex-1"
+                  onClick={() =>
+                    cart.addItem(
+                      {
+                        productId: p.id,
+                        merchantPubkey: p.pubkey,
+                        title: p.title,
+                        price: p.price,
+                        currency: p.currency,
+                      },
+                      1
+                    )
+                  }
+                >
+                  Add to cart
+                </Button>
+                <Button asChild variant="outline">
+                  <Link to="/cart">View cart</Link>
+                </Button>
+              </div>
             </div>
           </div>
         </div>

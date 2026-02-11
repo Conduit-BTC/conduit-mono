@@ -1567,3 +1567,47 @@ From context doc analysis, these were missing:
 - [ ] Market deployed to shop.conduit.market
 - [ ] Portal deployed to sell.conduit.market
 - [ ] End-to-end purchase works
+
+### UI Match Scope (Post E2E Loop)
+
+Use this checklist to track exact parity targets against legacy + Figma, after the end-to-end loop is stable.
+
+Market app:
+- [ ] Header + nav parity (`apps/market/src/routes/__root.tsx`)
+  - [ ] Logo lockup and sizing
+  - [ ] Desktop nav spacing/hierarchy
+  - [ ] Mobile drawer nav structure
+- [ ] Products grid parity (`apps/market/src/routes/products/index.tsx`)
+  - [ ] Card layout (media ratio, padding, hover, borders)
+  - [ ] Typography hierarchy (title, merchant, price)
+  - [ ] Loading/empty/error surface styling
+- [ ] Product detail parity (`apps/market/src/routes/products/$productId.tsx`)
+  - [ ] Media gallery/presentation
+  - [ ] Merchant info block
+  - [ ] Price + CTA arrangement
+- [ ] Cart parity (`apps/market/src/routes/cart.tsx`)
+  - [ ] Merchant cart grouping treatment
+  - [ ] Quantity/remove controls
+  - [ ] Subtotal + checkout action section
+- [ ] Checkout parity (`apps/market/src/routes/checkout.tsx`)
+  - [ ] Order summary layout
+  - [ ] Form spacing and visual hierarchy
+  - [ ] Success/error state styling
+
+Merchant app:
+- [ ] Shell/layout parity (`apps/merchant/src/routes/__root.tsx`)
+  - [ ] Navigation information architecture
+  - [ ] Mobile behavior
+- [ ] Orders parity (`apps/merchant/src/routes/orders.tsx`)
+  - [ ] List/table structure
+  - [ ] Status badges and row actions
+- [ ] Product management parity (`apps/merchant/src/routes/products/*`) once CRUD lands
+  - [ ] Product list/table visuals
+  - [ ] Product editor form layout
+  - [ ] Publish/edit/delete action affordances
+
+Shared design system:
+- [ ] Font stack and type scale aligned to Figma tokens
+- [ ] Color/spacing/radius tokens aligned in `@conduit/ui`
+- [ ] Button/input/card variant audit against intended usage
+- [ ] Placeholder/fallback media usage aligned (from `apps/market/public/images/placeholders/`)
