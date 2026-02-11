@@ -218,8 +218,8 @@ Extract from Figma:
 | Forms | react-hook-form + Zod | Validation |
 | UI | **shadcn/ui** + Tailwind | Composable, accessible |
 | Validation | `@conduit/core` (Zod) | Order/event validation |
-| Analytics | **Plausible** | Privacy-focused traffic |
-| Events/Errors | **PostHog** | Funnels, errors, feature flags (privacy configured) |
+| Analytics | **Optional (default-off)** | Aggregate-only, self-hosted preferred |
+| Events/Errors | **Optional (default-off)** | Operational metrics only, strict allowlist |
 
 **No Zustand. No Jotai. No state library.**
 
@@ -229,289 +229,20 @@ Extract from Figma:
 
 ### Philosophy
 
-Track aggregate behavior and errors, never individual users:
-- No session recordings
-- No persistent user IDs
-- No IP logging
-- No tracking of message content, addresses, or order details
+Conduit follows a privacy-first observability model:
+- telemetry is optional and default-off
+- investor reporting uses aggregate metrics, not user-level traces
+- no persistent product-analytics identifiers
+- no message/order/payment content in telemetry
 
-### Tools
+Authoritative policy:
+- `docs/specs/privacy-observability.md`
 
-| Tool | Purpose | Data Collected |
-|------|---------|----------------|
-| **Plausible** | Traffic analytics | Page views, referrers, device/country (anonymous) |
-| **PostHog** | Events, errors, funnels, feature flags | Custom events, error counts (no user identity) |
-
-### Plausible Setup
-
-```typescript
-// In index.html or main.tsx
-<script defer data-domain="shop.conduit.market" src="https://plausible.io/js/script.js"></script>
-```
-
-Tracks automatically:
-- Page views
-- Traffic sources
-- Device / browser / country
-
-### PostHog Setup
-
-```typescript
-// packages/core/src/lib/analytics.ts
-import posthog from "posthog-js"
-
-export function initAnalytics() {
-  if (typeof window === "undefined") return
-
-  posthog.init(import.meta.env.VITE_POSTHOG_KEY, {
-    api_host: import.meta.env.VITE_POSTHOG_HOST ?? "https://app.posthog.com",
-
-    // Privacy settings - REQUIRED
-    disable_session_recording: true,
-    disable_persistence: true,
-    disable_cookie: true,
-    ip: false,
-    property_blacklist: ["$ip", "$device_id"],
-
-    // Anonymous session ID (not persistent)
-    bootstrap: {
-      distinctId: `anon_${crypto.randomUUID()}`,
-    },
-  })
-}
-
-export function track(event: string, props?: Record<string, unknown>) {
-  posthog.capture(event, props)
-}
-
-export function trackError(error: Error, context: string) {
-  posthog.capture("error", {
-    error_message: error.message,
-    error_context: context,
-    // Never include: stack trace, pubkey, addresses, order content
-  })
-}
-```
-
-### Events to Track
-
-#### Market App
-
-**Discovery & Browse:**
-```typescript
-track("product_viewed", { category: "electronics" })
-track("product_search", { query_length: 12, results_count: 24 })
-track("category_filtered", { category: "art" })
-track("merchant_store_viewed")
-```
-
-**Cart:**
-```typescript
-track("cart_item_added", { item_count: 1 })
-track("cart_item_removed")
-track("cart_viewed", { item_count: 3, cart_total_sats: 50000 })
-```
-
-**Checkout & Payment:**
-```typescript
-track("checkout_started", { item_count: 2 })
-track("shipping_info_entered")
-track("invoice_generated", { amount_sats: 50000 })
-track("invoice_copied")
-track("invoice_expired")
-track("payment_completed", { amount_sats: 50000 })
-track("order_confirmed")
-```
-
-**Auth:**
-```typescript
-// MVP: NIP-07 only. (NIP-46 is Phase 6 / post-MVP.)
-track("signer_connect_started", { type: "nip07" })
-track("signer_connected", { type: "nip07" })
-track("signer_connect_failed", { type: "nip07", reason: "rejected" })
-track("signer_disconnected")
-```
-
-**Messaging:**
-```typescript
-track("conversation_opened")
-track("message_sent")
-track("message_failed", { reason: "relay_error" })
-```
-
-#### Merchant Portal
-
-**Products:**
-```typescript
-track("product_created")
-track("product_updated")
-track("product_deleted")
-track("product_published")
-track("image_uploaded", { count: 3 })
-```
-
-**Orders:**
-```typescript
-track("order_received")
-track("order_viewed")
-track("order_marked_shipped", { has_tracking: true })
-track("order_cancelled")
-```
-
-**Settings:**
-```typescript
-track("wallet_connected", { provider: "nwc" })
-track("wallet_disconnected")
-track("relay_added")
-track("relay_removed")
-track("profile_updated")
-```
-
-#### Error Events (Both Apps)
-
-```typescript
-// Relay errors
-trackError(error, "relay_connect")
-trackError(error, "relay_publish")
-trackError(error, "relay_subscribe")
-
-// Payment errors
-trackError(error, "invoice_generation")
-trackError(error, "payment_timeout")
-trackError(error, "nwc_connection")
-
-// Auth errors
-trackError(error, "signer_connect")
-trackError(error, "signer_sign")
-trackError(error, "signer_encrypt")
-
-// Data errors
-trackError(error, "product_parse")
-trackError(error, "order_parse")
-trackError(error, "message_decrypt")
-```
-
-#### System Health Events
-
-```typescript
-track("relay_health", {
-  relay: "relay.damus.io",  // OK to log relay URL
-  status: "connected" | "failed",
-  latency_ms: 120
-})
-
-track("app_loaded", {
-  load_time_ms: 1200,
-  network: "mainnet" | "mutinynet" | "mock"
-})
-```
-
-### What We NEVER Track
-
-```typescript
-// ❌ NEVER include in any event:
-pubkey                    // User identity
-npub / nsec              // Keys
-address / email / phone  // Contact info
-message_content          // DM content
-order_items              // What people buy
-product_titles           // Specific products viewed (only category)
-invoice_string           // Payment details
-ip_address               // Location (PostHog config blocks this)
-```
-
-### Feature Flags (PostHog)
-
-```typescript
-// Check feature flag
-if (posthog.isFeatureEnabled("new_checkout_flow")) {
-  // Show new checkout
-}
-
-// Useful for:
-// - Gradual rollout of new features
-// - A/B testing UI changes
-// - Kill switch for broken features
-```
-
-### PostHog Logs (Debugging)
-
-Anonymized logs for debugging production issues:
-
-```typescript
-// packages/core/src/lib/logger.ts
-import posthog from "posthog-js"
-
-type LogLevel = "debug" | "info" | "warn" | "error"
-
-export function log(level: LogLevel, context: string, message: string, data?: Record<string, unknown>) {
-  // Only send to PostHog in production, console in dev
-  if (import.meta.env.DEV) {
-    console[level](`[${context}]`, message, data)
-    return
-  }
-
-  posthog.capture("$log", {
-    level,
-    context,
-    message,
-    ...sanitize(data), // Strip any PII
-    timestamp: Date.now(),
-  })
-}
-
-function sanitize(data?: Record<string, unknown>) {
-  if (!data) return {}
-  const sanitized = { ...data }
-  // Remove anything that could identify users
-  delete sanitized.pubkey
-  delete sanitized.npub
-  delete sanitized.address
-  delete sanitized.content
-  delete sanitized.invoice
-  return sanitized
-}
-```
-
-**Log examples:**
-```typescript
-// Relay debugging
-log("info", "relay", "connecting", { url: "wss://relay.damus.io" })
-log("warn", "relay", "connection_timeout", { url: "wss://relay.damus.io", timeout_ms: 5000 })
-log("error", "relay", "subscription_failed", { kinds: [30402], error_type: "closed" })
-
-// Payment flow debugging
-log("info", "payment", "invoice_generated", { amount_sats: 50000, network: "mainnet" })
-log("warn", "payment", "invoice_expiring", { seconds_remaining: 60 })
-log("error", "payment", "nwc_error", { error_type: "connection_refused" })
-
-// Order flow debugging
-log("info", "order", "dm_sent", { recipient_relay_count: 3 })
-log("warn", "order", "partial_relay_ack", { sent: 3, acked: 1 })
-```
-
-**What we log:**
-- Relay URLs (public info)
-- Event kinds (public info)
-- Timing data (latency, timeouts)
-- Error types (not messages with user content)
-- Flow stages (started, completed, failed)
-
-**What we NEVER log:**
-- Pubkeys, npubs
-- Message content
-- Invoice strings
-- Addresses, contact info
-- Product details being purchased
-
-### Environment Config
-
-```bash
-# .env.example
-VITE_PLAUSIBLE_DOMAIN=shop.conduit.market
-VITE_POSTHOG_KEY=phc_xxx
-VITE_POSTHOG_HOST=https://app.posthog.com  # or self-hosted
-```
+Implementation rules:
+- If enabled, use aggregate-only counters and operational health metrics.
+- Prefer self-hosted telemetry backends.
+- Maintain a strict event allowlist and CI guard against unauthorized tracking SDKs.
+- Centralized billing metrics are allowed for accounting (MRR, top-ups, credits spent), not surveillance.
 
 ---
 
@@ -1536,6 +1267,7 @@ From context doc analysis, these were missing:
   - Add conflict handling for concurrent edits (last-write-wins warning or optimistic lock)
   - Add CRUD edge-case tests (dedupe freshness, malformed events, delete semantics)
   - Revisit polling strategy for production-scale relay usage
+- Automated testing plan/spec: see `docs/specs/testing-e2e.md`
 
 ---
 
@@ -1577,6 +1309,15 @@ From context doc analysis, these were missing:
 - [ ] Market deployed to shop.conduit.market
 - [ ] Portal deployed to sell.conduit.market
 - [ ] End-to-end purchase works
+
+### Automated Testing (Hardening Track)
+
+Non-blocking for MVP merge velocity, but should be added immediately after core flow stabilization.
+
+- [ ] Add deterministic local relay smoke suite (`docs/specs/testing-e2e.md`)
+- [ ] Add merchant product CRUD automated smoke coverage
+- [ ] Add market checkout -> merchant inbox automated smoke coverage
+- [ ] Add CI smoke execution for local relay-based E2E
 
 ### Design Polish (Post E2E Loop)
 

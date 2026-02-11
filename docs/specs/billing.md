@@ -7,6 +7,7 @@ Server-side billing infrastructure for membership management, credit system, and
 **Related specs:**
 - [monetization.md](./monetization.md) - Business model, tiers, pricing
 - [store-builder.md](./store-builder.md) - Store hosting billing
+- [privacy-observability.md](./privacy-observability.md) - Privacy-safe telemetry policy
 
 ---
 
@@ -63,6 +64,16 @@ Server-side billing infrastructure for membership management, credit system, and
 | Store records | Supabase | Billing + deployment state |
 | Entitlement cache | Cloudflare KV | Fast edge lookups |
 | Usage events | PostHog | Analytics, not billing |
+
+### Billing Privacy Boundary
+
+Supabase is used for billing/accounting and entitlements, not user behavior surveillance.
+
+Required constraints:
+- No storage of message content, order item details, or payment payloads in analytics tools.
+- No user-level behavior timelines for product analytics.
+- Billing data may be aggregated for investor reporting (MRR, churn, top-ups, credits spent).
+- Any operational telemetry must follow `privacy-observability.md` allowlist rules.
 
 ---
 

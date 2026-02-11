@@ -8,6 +8,7 @@ Revenue generation while preserving Conduit's ethos: no surveillance, no lock-in
 
 **Related specs:**
 - [billing.md](./billing.md) - Technical infrastructure (Supabase schema, APIs, entitlements)
+- [privacy-observability.md](./privacy-observability.md) - Privacy-safe metrics and telemetry constraints
 
 ---
 
@@ -19,6 +20,15 @@ Revenue generation while preserving Conduit's ethos: no surveillance, no lock-in
 4. **No custody** - Credits are like prepaid tokens, not held funds
 5. **Privacy-first** - No tracking or profiling to manage memberships
 6. **Graceful degradation** - Free tier always works
+
+## Privacy-Safe Evidence of Traction
+
+Conduit reports traction using aggregate metrics only:
+- protocol-level activity counts (listings, order events, merchant activity)
+- aggregated reliability/operational metrics
+- centralized billing totals (MRR, top-ups, credits spent)
+
+No identity-level behavior tracking is required for investor reporting.
 
 ---
 
