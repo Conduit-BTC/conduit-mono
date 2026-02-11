@@ -126,7 +126,9 @@ pages_preview_merchant:
       when: on_success
     - when: never
   variables:
-    CLOUDFLARE_PAGES_PROJECT: "conduit-merchant"
+    # Workaround: Cloudflare Pages preview TLS provisioning is broken for `conduit-merchant.pages.dev`
+    # (no certificate presented for preview subdomains). Use a new Pages project with functioning wildcard TLS.
+    CLOUDFLARE_PAGES_PROJECT: "conduit-merchant-arq"
   environment:
     name: review/merchant/$CI_MERGE_REQUEST_IID
   script:
