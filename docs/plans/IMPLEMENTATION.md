@@ -1531,6 +1531,11 @@ From context doc analysis, these were missing:
 ### Hardening Notes
 
 - GitLab Duo followups from MR `!5`: see `docs/knowledge/followups-duo-mr5.md`
+- GitLab Duo followups from MR `!10` (merchant product CRUD):
+  - Add explicit d-tag format validation for product creation
+  - Add conflict handling for concurrent edits (last-write-wins warning or optimistic lock)
+  - Add CRUD edge-case tests (dedupe freshness, malformed events, delete semantics)
+  - Revisit polling strategy for production-scale relay usage
 
 ---
 
