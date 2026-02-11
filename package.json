@@ -30,6 +30,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@tanstack/router-generator": "^1.158.1",
     "@nostr-dev-kit/ndk": "^2.14.0",
     "@eslint/js": "^9.19.0",
     "eslint": "^9.19.0",
