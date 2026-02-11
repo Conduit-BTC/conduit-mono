@@ -69,3 +69,21 @@ export const orderItemSchema = z.object({
 })
 
 export type OrderItemSchema = z.infer<typeof orderItemSchema>
+
+/**
+ * Conduit MVP order payload (sent as JSON in a NIP-17 wrapped kind-16 rumor).
+ *
+ * Note: This is an internal schema for our MVP flow; interop parsing should be best-effort.
+ */
+export const orderSchema = z.object({
+  id: z.string(),
+  merchantPubkey: z.string(),
+  buyerPubkey: z.string(),
+  items: z.array(orderItemSchema).min(1),
+  subtotal: z.number().min(0),
+  currency: z.string(),
+  note: z.string().max(2000).optional(),
+  createdAt: z.number(),
+})
+
+export type OrderSchema = z.infer<typeof orderSchema>
