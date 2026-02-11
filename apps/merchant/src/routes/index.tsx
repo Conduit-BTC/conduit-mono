@@ -1,5 +1,6 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, Link } from "@tanstack/react-router"
 import { useAuth, useNdkState, formatPubkey } from "@conduit/core"
+import { Button } from "@conduit/ui"
 
 export const Route = createFileRoute("/")({
   component: DashboardPage,
@@ -28,6 +29,15 @@ function DashboardPage() {
 
       <div className="text-xs text-[var(--text-muted)]">
         Relay: {ndk.status} ({ndk.connectedRelays.length} connected)
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 pt-2">
+        <Button asChild>
+          <Link to="/products">Manage products</Link>
+        </Button>
+        <Button asChild variant="outline">
+          <Link to="/orders">View orders</Link>
+        </Button>
       </div>
     </div>
   )

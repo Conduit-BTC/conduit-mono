@@ -12,6 +12,9 @@ export const Route = createRootRoute({
               Conduit Merchant
             </Link>
             <nav className="hidden items-center gap-3 text-sm text-[var(--text-secondary)] md:flex">
+              <Link to="/products" activeProps={{ className: "text-[var(--text-primary)]" }}>
+                Products
+              </Link>
               <Link to="/orders" activeProps={{ className: "text-[var(--text-primary)]" }}>
                 Orders
               </Link>

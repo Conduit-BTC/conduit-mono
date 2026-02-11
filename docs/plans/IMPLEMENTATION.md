@@ -1562,7 +1562,7 @@ From context doc analysis, these were missing:
 - [ ] Messages send/receive
 
 ### Merchant (Goal: 3/12)
-- [ ] Product CRUD works
+- [x] Product CRUD works
 - [x] Orders inbox displays NIP-17 orders
 - [ ] Order actions work (send invoice, status updates, shipping/tracking)
 - [x] Shipping info captured
