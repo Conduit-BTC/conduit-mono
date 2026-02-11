@@ -1,30 +1,49 @@
 import { createFileRoute, Link } from "@tanstack/react-router"
-import { Badge, Button, Input, Label } from "@conduit/ui"
-import { EVENT_KINDS, getNdk, useAuth } from "@conduit/core"
-import { useCart } from "../hooks/useCart"
-import { requireAuth } from "../lib/auth"
 import { NDKEvent, NDKUser, giftWrap } from "@nostr-dev-kit/ndk"
 import { useMemo, useState } from "react"
+import { EVENT_KINDS, formatPubkey, getNdk, useAuth } from "@conduit/core"
+import { Badge, Button, Input, Label } from "@conduit/ui"
+import { useCart } from "../hooks/useCart"
+import { requireAuth } from "../lib/auth"
 
 export const Route = createFileRoute("/checkout")({
   beforeLoad: () => {
     requireAuth()
   },
+  validateSearch: (search: Record<string, unknown>) => ({
+    merchant: typeof search.merchant === "string" ? search.merchant : undefined,
+  }),
   component: CheckoutPage,
 })
 
 function CheckoutPage() {
   const { pubkey } = useAuth()
   const cart = useCart()
+  const search = Route.useSearch()
+  const selectedMerchant = search.merchant
   const [note, setNote] = useState("")
   const [sending, setSending] = useState(false)
   const [sentOrderId, setSentOrderId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  const checkoutItems = useMemo(() => {
+    if (!selectedMerchant) return cart.items
+    return cart.items.filter((i) => i.merchantPubkey === selectedMerchant)
+  }, [cart.items, selectedMerchant])
+
   const merchants = useMemo(() => {
-    const set = new Set(cart.items.map((i) => i.merchantPubkey).filter(Boolean))
+    const set = new Set(checkoutItems.map((i) => i.merchantPubkey).filter(Boolean))
     return Array.from(set)
-  }, [cart.items])
+  }, [checkoutItems])
+  const total = useMemo(
+    () => checkoutItems.reduce((sum, item) => sum + item.price * item.quantity, 0),
+    [checkoutItems]
+  )
+  const currencies = useMemo(
+    () => Array.from(new Set(checkoutItems.map((item) => item.currency).filter(Boolean))),
+    [checkoutItems]
+  )
+  const totalCurrency = currencies.length === 1 ? currencies[0] : null
 
   const merchantPubkey = merchants.length === 1 ? merchants[0] : null
   const isMultiMerchant = merchants.length > 1
@@ -32,7 +51,7 @@ function CheckoutPage() {
   async function placeOrder(): Promise<void> {
     if (!pubkey) return
     if (!merchantPubkey) return
-    if (cart.items.length === 0) return
+    if (checkoutItems.length === 0) return
 
     setSending(true)
     setError(null)
@@ -41,8 +60,8 @@ function CheckoutPage() {
       const orderId = crypto.randomUUID()
 
       // MVP constraint: single merchant per order.
-      const currency = cart.items[0]?.currency ?? "USD"
-      const items = cart.items.map((i) => ({
+      const currency = checkoutItems[0]?.currency ?? "USD"
+      const items = checkoutItems.map((i) => ({
         productId: i.productId,
         quantity: i.quantity,
         priceAtPurchase: i.price,
@@ -54,7 +73,7 @@ function CheckoutPage() {
         merchantPubkey,
         buyerPubkey: pubkey,
         items,
-        subtotal: cart.totals.subtotal,
+        subtotal: total,
         currency,
         note: note.trim() ? note.trim() : undefined,
         createdAt: Date.now(),
@@ -86,7 +105,11 @@ function CheckoutPage() {
       await Promise.all([wrappedToMerchant.publish(), wrappedToSelf.publish()])
 
       setSentOrderId(orderId)
-      cart.clear()
+      if (selectedMerchant) {
+        cart.clearMerchant(selectedMerchant)
+      } else {
+        cart.clear()
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to send order")
     } finally {
@@ -100,7 +123,7 @@ function CheckoutPage() {
         <div>
           <h1 className="text-3xl font-medium text-[var(--text-primary)]">Checkout</h1>
           <p className="mt-1 text-sm text-[var(--text-secondary)]">
-            MVP: send an order to the merchant via NIP-17 (kind {EVENT_KINDS.GIFT_WRAP}) wrapping a kind{" "}
+            Send the order to the merchant via NIP-17 (kind {EVENT_KINDS.GIFT_WRAP}) wrapping a kind{" "}
             {EVENT_KINDS.ORDER} rumor.
           </p>
         </div>
@@ -134,54 +157,64 @@ function CheckoutPage() {
         </div>
       )}
 
-      {cart.items.length === 0 ? (
+      {checkoutItems.length === 0 ? (
         <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-          Your cart is empty.
+          {selectedMerchant ? "No items for this merchant." : "Your cart is empty."}
         </div>
       ) : (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
-          <div className="text-sm text-[var(--text-secondary)]">Items</div>
-          <div className="mt-3 space-y-2">
-            {cart.items.map((i) => (
-              <div key={i.productId} className="flex items-center justify-between gap-3 text-sm">
-                <div className="text-[var(--text-primary)]">
-                  {i.title} <span className="text-[var(--text-secondary)]">x{i.quantity}</span>
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_360px]">
+          <section className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
+            <div className="text-sm text-[var(--text-secondary)]">Order items</div>
+            <div className="mt-3 space-y-2">
+              {checkoutItems.map((i) => (
+                <div key={i.productId} className="flex items-center justify-between gap-3 text-sm">
+                  <div className="text-[var(--text-primary)]">
+                    {i.title} <span className="text-[var(--text-secondary)]">x{i.quantity}</span>
+                  </div>
+                  <div className="text-[var(--text-secondary)]">
+                    {i.price * i.quantity} {i.currency}
+                  </div>
                 </div>
-                <div className="text-[var(--text-secondary)]">
-                  {i.price * i.quantity} {i.currency}
-                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 flex items-center justify-between border-t border-[var(--border)] pt-4">
+              <div className="text-sm text-[var(--text-secondary)]">Total</div>
+              <div className="text-base font-medium text-[var(--text-primary)]">
+                {total}
+                {totalCurrency ? ` ${totalCurrency}` : ""}
               </div>
-            ))}
-          </div>
-
-          <div className="mt-4 flex items-center justify-between border-t border-[var(--border)] pt-4">
-            <div className="text-sm text-[var(--text-secondary)]">Total</div>
-            <div className="text-base font-medium text-[var(--text-primary)]">
-              {cart.totals.subtotal}
             </div>
-          </div>
+          </section>
 
-          <div className="mt-4 grid gap-2">
-            <Label htmlFor="note">Order note (optional)</Label>
-            <Input
-              id="note"
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder="Anything the merchant should know…"
-            />
-          </div>
-
-          {error && (
-            <div className="mt-4 rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
-              {error}
+          <aside className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
+            <div className="text-sm text-[var(--text-secondary)]">Merchant</div>
+            <div className="mt-1 font-mono text-sm text-[var(--text-primary)]">
+              {merchantPubkey ? formatPubkey(merchantPubkey, 12) : "Multiple merchants"}
             </div>
-          )}
 
-          <div className="mt-4 flex items-center justify-end">
-            <Button disabled={sending || !merchantPubkey} onClick={placeOrder}>
-              {sending ? "Sending…" : "Place order"}
-            </Button>
-          </div>
+            <div className="mt-4 grid gap-2">
+              <Label htmlFor="note">Order note (optional)</Label>
+              <Input
+                id="note"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Anything the merchant should know…"
+              />
+            </div>
+
+            {error && (
+              <div className="mt-4 rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
+                {error}
+              </div>
+            )}
+
+            <div className="mt-4 flex items-center justify-end">
+              <Button className="w-full" disabled={sending || !merchantPubkey} onClick={placeOrder}>
+                {sending ? "Sending…" : "Place order"}
+              </Button>
+            </div>
+          </aside>
         </div>
       )}
     </div>

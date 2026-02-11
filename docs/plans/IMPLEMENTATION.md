@@ -1580,3 +1580,7 @@ These items should come after the end-to-end loop is working, so we can iterate 
 - [ ] Extract tokens (color/typography/spacing) from Figma into `packages/ui`
 - [ ] Bring Market pages in line with Figma (layout, typography, components)
 - [ ] Bring Merchant pages in line with Figma (layout, typography, components)
+- [ ] Market header + nav parity (`apps/market/src/routes/__root.tsx`)
+- [ ] Market products grid/detail parity (`apps/market/src/routes/products/index.tsx`, `apps/market/src/routes/products/$productId.tsx`)
+- [ ] Market cart/checkout parity (`apps/market/src/routes/cart.tsx`, `apps/market/src/routes/checkout.tsx`)
+- [ ] Merchant shell/orders/products parity (`apps/merchant/src/routes/__root.tsx`, `apps/merchant/src/routes/orders.tsx`, `apps/merchant/src/routes/products.tsx`)
