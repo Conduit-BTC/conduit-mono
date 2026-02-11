@@ -17,6 +17,7 @@ type MerchantProduct = {
   eventId: string
   addressId: string
   dTag: string | null
+  eventCreatedAt: number
   product: ProductSchema
 }
 
@@ -75,6 +76,10 @@ function parseTags(tagsCsv: string): string[] {
     .filter(Boolean)
 }
 
+function toEventCreatedAtSeconds(event: Pick<NDKEvent, "created_at">): number {
+  return event.created_at ?? 0
+}
+
 async function fetchMerchantProducts(merchantPubkey: string): Promise<MerchantProduct[]> {
   const ndk = getNdk()
   const events = Array.from(
@@ -94,14 +99,18 @@ async function fetchMerchantProducts(merchantPubkey: string): Promise<MerchantPr
       const dTag = getTagValue(event.tags ?? [], "d")
       const addressId = dTag ? `30402:${event.pubkey}:${dTag}` : parsed.id
       const dedupeKey = dTag ?? parsed.id
-      if (byAddress.has(dedupeKey)) continue
-
-      byAddress.set(dedupeKey, {
+      const candidate: MerchantProduct = {
         eventId: event.id,
         addressId,
         dTag,
+        eventCreatedAt: toEventCreatedAtSeconds(event),
         product: parsed,
-      })
+      }
+
+      const existing = byAddress.get(dedupeKey)
+      if (!existing || candidate.eventCreatedAt >= existing.eventCreatedAt) {
+        byAddress.set(dedupeKey, candidate)
+      }
     } catch {
       // ignore malformed product events
     }
@@ -173,16 +182,22 @@ async function publishProduct(
 async function deleteProduct(merchantPubkey: string, product: MerchantProduct): Promise<void> {
   const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
+  if (product.product.pubkey !== merchantPubkey) {
+    throw new Error("Product pubkey mismatch; refusing to publish deletion event")
+  }
 
   const deletion = new NDKEvent(ndk)
   deletion.kind = EVENT_KINDS.DELETION
   deletion.created_at = Math.floor(Date.now() / 1000)
-  deletion.tags = [
+  const tags: string[][] = [
     ["e", product.eventId],
-    ["a", product.addressId],
     ["k", String(EVENT_KINDS.PRODUCT)],
-    ["p", merchantPubkey],
+    ["p", product.product.pubkey],
   ]
+  if (product.dTag) {
+    tags.push(["a", `30402:${product.product.pubkey}:${product.dTag}`])
+  }
+  deletion.tags = tags
   deletion.content = `Delete product ${product.addressId}`
 
   await deletion.sign(ndk.signer)
@@ -421,7 +436,10 @@ function ProductsPage() {
                   variant="outline"
                   size="sm"
                   disabled={isDeleting}
-                  onClick={() => deleteMutation.mutate(item)}
+                  onClick={() => {
+                    const ok = window.confirm(`Delete "${item.product.title}"?`)
+                    if (ok) deleteMutation.mutate(item)
+                  }}
                 >
                   {isDeleting ? "Deleting…" : "Delete"}
                 </Button>
