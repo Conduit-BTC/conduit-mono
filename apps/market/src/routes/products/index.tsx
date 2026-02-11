@@ -3,6 +3,8 @@ import { EVENT_KINDS, getNdk, parseProductEvent, type Product } from "@conduit/c
 import { useQuery } from "@tanstack/react-query"
 import { Button } from "@conduit/ui"
 import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
+import { ProductGridCard, ProductGridCardSkeleton } from "../../components/ProductGridCard"
+import { useCart } from "../../hooks/useCart"
 
 export const Route = createFileRoute("/products/")({
   component: ProductsPage,
@@ -30,6 +32,7 @@ async function fetchProducts(merchant?: string): Promise<Product[]> {
 }
 
 function ProductsPage() {
+  const cart = useCart()
   const search = Route.useSearch() as { merchant?: unknown }
   const merchant = typeof search?.merchant === "string" ? search.merchant : undefined
   const productsQuery = useQuery({
@@ -52,7 +55,13 @@ function ProductsPage() {
       </div>
 
       {productsQuery.isLoading && (
-        <div className="text-sm text-[var(--text-secondary)]">Loading...</div>
+        <ul className="grid list-none grid-cols-1 gap-4 p-0 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {Array.from({ length: 8 }).map((_, idx) => (
+            <li key={idx}>
+              <ProductGridCardSkeleton />
+            </li>
+          ))}
+        </ul>
       )}
       {productsQuery.error && (
         <div className="text-sm text-error">
@@ -69,30 +78,27 @@ function ProductsPage() {
       )}
 
       {productsQuery.data && productsQuery.data.length > 0 && (
-        <div className="grid gap-3 md:grid-cols-2">
+        <ul className="grid list-none grid-cols-1 gap-4 p-0 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {productsQuery.data.map((p) => (
-            <Link
-              key={p.id}
-              to="/products/$productId"
-              params={{ productId: p.id }}
-              className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 transition hover:bg-[var(--surface-elevated)]"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-base font-medium text-[var(--text-primary)]">{p.title}</div>
-                  {p.summary && (
-                    <div className="mt-1 line-clamp-2 text-sm text-[var(--text-secondary)]">
-                      {p.summary}
-                    </div>
-                  )}
-                </div>
-                <div className="shrink-0 text-sm text-[var(--text-secondary)]">
-                  {p.price} {p.currency}
-                </div>
-              </div>
-            </Link>
+            <li key={p.id}>
+              <ProductGridCard
+                product={p}
+                onAddToCart={() =>
+                  cart.addItem(
+                    {
+                      productId: p.id,
+                      merchantPubkey: p.pubkey,
+                      title: p.title,
+                      price: p.price,
+                      currency: p.currency,
+                    },
+                    1
+                  )
+                }
+              />
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </div>
   )

@@ -11,6 +11,7 @@
     "seed:nsec": "bun -e 'import { nip19 } from \"@nostr-dev-kit/ndk\"; import { randomBytes } from \"node:crypto\"; console.log(nip19.nsecEncode(randomBytes(32)));'",
     "seed:products": "bun scripts/dev/seed_products.ts",
     "check:products": "bun scripts/dev/check_products.ts",
+    "figma:variables": "bun scripts/figma/get_variable_defs.ts",
     "relay:local:start": "mkdir -p context/relay-db && docker rm -f conduit-relay-local >/dev/null 2>&1 || true && docker run -d --name conduit-relay-local -p 7777:8080 --mount src=$(pwd)/context/relay-db,target=/usr/src/app/db,type=bind scsibug/nostr-rs-relay:latest",
     "relay:local:logs": "docker logs -f conduit-relay-local",
     "relay:local:stop": "docker rm -f conduit-relay-local",

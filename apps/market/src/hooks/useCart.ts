@@ -121,6 +121,13 @@ export function useCart() {
     writeState({ items: [] })
   }, [])
 
+  const clearMerchant = useCallback((merchantPubkey: string) => {
+    const curr = readSnapshot()
+    writeState({
+      items: curr.items.filter((i) => i.merchantPubkey !== merchantPubkey),
+    })
+  }, [])
+
   const totals = useMemo(() => {
     return snap.items.reduce(
       (acc, i) => {
@@ -139,5 +146,6 @@ export function useCart() {
     setQuantity,
     removeItem,
     clear,
+    clearMerchant,
   }
 }
