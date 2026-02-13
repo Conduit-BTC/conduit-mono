@@ -1315,7 +1315,7 @@ From context doc analysis, these were missing:
 Non-blocking for MVP merge velocity, but should be added immediately after core flow stabilization.
 
 - [ ] Add deterministic local relay smoke suite (`docs/specs/testing-e2e.md`)
-- [ ] Add merchant product CRUD automated smoke coverage
+- [x] Add merchant product CRUD automated smoke coverage (`tests/merchant-products-crud.relay.test.ts`)
 - [ ] Add market checkout -> merchant inbox automated smoke coverage
 - [ ] Add CI smoke execution for local relay-based E2E
 
