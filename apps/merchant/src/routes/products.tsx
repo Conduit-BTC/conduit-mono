@@ -2,7 +2,7 @@ import { useMemo, useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
-import { EVENT_KINDS, getNdk, parseProductEvent, type ProductSchema, useAuth } from "@conduit/core"
+import { EVENT_KINDS, parseProductEvent, requireNdkConnected, type ProductSchema, useAuth } from "@conduit/core"
 import { Badge, Button, Input, Label } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 
@@ -105,7 +105,7 @@ async function fetchDeletionTimestamps(
   productEventIds: string[],
   productAddresses: string[]
 ): Promise<DeletionTimestamps> {
-  const ndk = getNdk()
+  const ndk = await requireNdkConnected()
   const byEventId = new Map<string, number>()
   const byAddressId = new Map<string, number>()
 
@@ -174,7 +174,7 @@ function isDeletedByNip09(
 }
 
 async function fetchMerchantProducts(merchantPubkey: string): Promise<MerchantProduct[]> {
-  const ndk = getNdk()
+  const ndk = await requireNdkConnected()
   const events = Array.from(
     await ndk.fetchEvents({
       kinds: [EVENT_KINDS.PRODUCT],
@@ -221,7 +221,7 @@ async function publishProduct(
   form: ProductFormState,
   existing?: MerchantProduct
 ): Promise<void> {
-  const ndk = getNdk()
+  const ndk = await requireNdkConnected()
   if (!ndk.signer) throw new Error("Signer not connected")
   const signerPubkey = (await ndk.signer.user()).pubkey
   if (signerPubkey !== merchantPubkey) {
@@ -281,7 +281,7 @@ async function publishProduct(
 }
 
 async function deleteProduct(merchantPubkey: string, product: MerchantProduct): Promise<void> {
-  const ndk = getNdk()
+  const ndk = await requireNdkConnected()
   if (!ndk.signer) throw new Error("Signer not connected")
   if (product.product.pubkey !== merchantPubkey) {
     throw new Error("Product pubkey mismatch; refusing to publish deletion event")

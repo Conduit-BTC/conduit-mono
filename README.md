@@ -50,23 +50,31 @@ bun run dev:merchant    # localhost:3001
 
 For reliable, deterministic testing (no relay noise/rate limits), run a local relay and seed sample products into it.
 
-### 1) Start a Local Relay (Docker)
+### 1) Start a Local Relay
 
-We recommend `nostr-rs-relay` for local development.
+Both modes expose a relay at `ws://127.0.0.1:7777`.
 
+Docker mode (`nostr-rs-relay` image):
+```bash
+bun run relay:local:start:docker
+bun run relay:local:logs:docker
+bun run relay:local:stop:docker
+```
+
+Bun mode (built-in lightweight local relay):
+```bash
+bun run relay:local:start:bun
+bun run relay:local:stop:bun
+```
+
+Default aliases:
 ```bash
 bun run relay:local:start
 bun run relay:local:logs
-```
-
-This exposes a relay at `ws://127.0.0.1:7777`.
-
-If you get a “Cannot connect to the Docker daemon” error, start Docker Desktop or OrbStack first.
-
-Stop it with:
-```bash
 bun run relay:local:stop
 ```
+
+`relay:local:start` auto-selects Docker when available, otherwise falls back to Bun mode.
 
 ### 2) Point the Apps at the Local Relay
 

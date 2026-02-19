@@ -4,6 +4,7 @@ export * from "./orders"
 export {
   getNdk,
   connectNdk,
+  requireNdkConnected,
   disconnectNdk,
   setSigner,
   removeSigner,

@@ -17,6 +17,7 @@ let state: NdkState = {
   connectedRelays: [],
   error: null,
 }
+let connectPromise: Promise<void> | null = null
 const listeners = new Set<Listener>()
 
 function setState(partial: Partial<NdkState>): void {
@@ -45,30 +46,63 @@ export function getNdk(): NDK {
 export async function connectNdk(timeoutMs = 5000): Promise<void> {
   const ndk = getNdk()
 
-  if (state.status === "connecting" || state.status === "connected") {
+  if (state.status === "connected") {
+    return
+  }
+
+  if (connectPromise) {
+    await connectPromise
     return
   }
 
   setState({ status: "connecting", error: null })
 
-  try {
-    await ndk.connect(timeoutMs)
+  connectPromise = (async () => {
+    try {
+      await ndk.connect(timeoutMs)
 
-    const connected = Array.from(ndk.pool?.relays?.entries() ?? [])
-      .filter(([, r]) => r.status === 1)
-      .map(([url]) => url)
+      const connected = Array.from(ndk.pool?.relays?.entries() ?? [])
+        .filter(([, r]) => r.status === 1)
+        .map(([url]) => url)
 
+      setState({
+        status: "connected",
+        connectedRelays: connected,
+      })
+    } catch (err) {
+      setState({
+        status: "error",
+        error: err instanceof Error ? err.message : "Failed to connect to relays",
+        connectedRelays: [],
+      })
+    } finally {
+      connectPromise = null
+    }
+  })()
+
+  await connectPromise
+}
+
+export async function requireNdkConnected(timeoutMs = 5000): Promise<NDK> {
+  await connectNdk(timeoutMs)
+  const ndk = getNdk()
+  const connectedRelays = Array.from(ndk.pool?.relays?.entries() ?? [])
+    .filter(([, relay]) => relay.status === 1)
+    .map(([url]) => url)
+
+  if (connectedRelays.length === 0) {
+    throw new Error(state.error ?? "Failed to connect to relays")
+  }
+
+  if (state.connectedRelays.length !== connectedRelays.length) {
     setState({
       status: "connected",
-      connectedRelays: connected,
-    })
-  } catch (err) {
-    setState({
-      status: "error",
-      error: err instanceof Error ? err.message : "Failed to connect to relays",
-      connectedRelays: [],
+      connectedRelays,
+      error: null,
     })
   }
+
+  return ndk
 }
 
 export function setSigner(signer: NDKSigner): void {
