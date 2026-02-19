@@ -211,7 +211,6 @@ describeIfRelay("merchant products CRUD (relay smoke)", () => {
       deletion.created_at = Math.floor(Date.now() / 1000)
       deletion.tags = [
         ["e", latestAfterUpdate.id],
-        ["k", String(EVENT_KINDS.PRODUCT)],
         ["p", pubkey],
         ["a", `30402:${pubkey}:${dTag}`],
       ]

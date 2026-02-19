@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
 import { EVENT_KINDS, getNdk, parseProductEvent, type ProductSchema, useAuth } from "@conduit/core"
 import { Badge, Button, Input, Label } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
@@ -80,6 +80,99 @@ function toEventCreatedAtSeconds(event: Pick<NDKEvent, "created_at">): number {
   return event.created_at ?? 0
 }
 
+type DeletionTimestamps = {
+  byEventId: Map<string, number>
+  byAddressId: Map<string, number>
+}
+
+function setLatestTimestamp(map: Map<string, number>, key: string, value: number): void {
+  const existing = map.get(key) ?? -1
+  if (value >= existing) map.set(key, value)
+}
+
+function collectProductAddresses(events: NDKEvent[]): string[] {
+  const addresses = new Set<string>()
+  for (const event of events) {
+    const dTag = getTagValue(event.tags ?? [], "d")
+    if (!dTag) continue
+    addresses.add(`30402:${event.pubkey}:${dTag}`)
+  }
+  return Array.from(addresses)
+}
+
+async function fetchDeletionTimestamps(
+  merchantPubkey: string,
+  productEventIds: string[],
+  productAddresses: string[]
+): Promise<DeletionTimestamps> {
+  const ndk = getNdk()
+  const byEventId = new Map<string, number>()
+  const byAddressId = new Map<string, number>()
+
+  const filters: NDKFilter[] = []
+  if (productEventIds.length > 0) {
+    filters.push({
+      kinds: [EVENT_KINDS.DELETION],
+      authors: [merchantPubkey],
+      "#e": productEventIds,
+      limit: 300,
+    })
+  }
+  if (productAddresses.length > 0) {
+    filters.push({
+      kinds: [EVENT_KINDS.DELETION],
+      authors: [merchantPubkey],
+      "#a": productAddresses,
+      limit: 300,
+    })
+  }
+
+  const deletionEvents: NDKEvent[] = []
+  for (const filter of filters) {
+    const fetched = Array.from(await ndk.fetchEvents(filter)) as NDKEvent[]
+    deletionEvents.push(...fetched)
+  }
+
+  // Fallback for relays that ignore tag-scoped deletion queries.
+  if (deletionEvents.length === 0) {
+    const fallback = Array.from(
+      await ndk.fetchEvents({
+        kinds: [EVENT_KINDS.DELETION],
+        authors: [merchantPubkey],
+        limit: 300,
+      })
+    ) as NDKEvent[]
+    deletionEvents.push(...fallback)
+  }
+
+  for (const deletion of deletionEvents) {
+    const deletedAt = toEventCreatedAtSeconds(deletion)
+    for (const tag of deletion.tags ?? []) {
+      const tagName = tag[0]
+      const tagValue = tag[1]
+      if (!tagValue) continue
+      if (tagName === "e") setLatestTimestamp(byEventId, tagValue, deletedAt)
+      if (tagName === "a") setLatestTimestamp(byAddressId, tagValue, deletedAt)
+    }
+  }
+
+  return { byEventId, byAddressId }
+}
+
+function isDeletedByNip09(
+  event: Pick<NDKEvent, "id" | "created_at">,
+  addressId: string,
+  deletionTimestamps: DeletionTimestamps
+): boolean {
+  const createdAt = toEventCreatedAtSeconds(event)
+  if (event.id) {
+    const deletedAt = deletionTimestamps.byEventId.get(event.id) ?? -1
+    if (deletedAt >= createdAt) return true
+  }
+  const deletedAtAddress = deletionTimestamps.byAddressId.get(addressId) ?? -1
+  return deletedAtAddress >= createdAt
+}
+
 async function fetchMerchantProducts(merchantPubkey: string): Promise<MerchantProduct[]> {
   const ndk = getNdk()
   const events = Array.from(
@@ -91,6 +184,9 @@ async function fetchMerchantProducts(merchantPubkey: string): Promise<MerchantPr
   ) as NDKEvent[]
 
   events.sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
+  const productEventIds = events.map((event) => event.id).filter(Boolean) as string[]
+  const productAddresses = collectProductAddresses(events)
+  const deletionTimestamps = await fetchDeletionTimestamps(merchantPubkey, productEventIds, productAddresses)
 
   const byAddress = new Map<string, MerchantProduct>()
   for (const event of events) {
@@ -98,6 +194,7 @@ async function fetchMerchantProducts(merchantPubkey: string): Promise<MerchantPr
       const parsed = parseProductEvent(event)
       const dTag = getTagValue(event.tags ?? [], "d")
       const addressId = dTag ? `30402:${event.pubkey}:${dTag}` : parsed.id
+      if (isDeletedByNip09(event, addressId, deletionTimestamps)) continue
       const dedupeKey = dTag ?? parsed.id
       const candidate: MerchantProduct = {
         eventId: event.id,
@@ -126,6 +223,10 @@ async function publishProduct(
 ): Promise<void> {
   const ndk = getNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
+  const signerPubkey = (await ndk.signer.user()).pubkey
+  if (signerPubkey !== merchantPubkey) {
+    throw new Error("Active signer does not match current merchant pubkey")
+  }
 
   const title = form.title.trim()
   if (!title) throw new Error("Title is required")
@@ -136,8 +237,8 @@ async function publishProduct(
   const currency = form.currency.trim().toUpperCase() || "USD"
   const summary = form.summary.trim()
   const imageUrl = form.imageUrl.trim()
-  if (imageUrl && !/^https?:\/\//.test(imageUrl)) {
-    throw new Error("Image URL must start with http:// or https://")
+  if (imageUrl && !/^https:\/\//.test(imageUrl)) {
+    throw new Error("Image URL must start with https://")
   }
 
   const dTag = existing?.dTag ?? `${slugify(title) || "product"}-${randomSuffix()}`
@@ -145,8 +246,8 @@ async function publishProduct(
   const tags = parseTags(form.tags)
 
   const product: ProductSchema = {
-    id: `30402:${merchantPubkey}:${dTag}`,
-    pubkey: merchantPubkey,
+    id: `30402:${signerPubkey}:${dTag}`,
+    pubkey: signerPubkey,
     title,
     summary: summary || undefined,
     price,
@@ -191,7 +292,6 @@ async function deleteProduct(merchantPubkey: string, product: MerchantProduct): 
   deletion.created_at = Math.floor(Date.now() / 1000)
   const tags: string[][] = [
     ["e", product.eventId],
-    ["k", String(EVENT_KINDS.PRODUCT)],
     ["p", product.product.pubkey],
   ]
   if (product.dTag) {
