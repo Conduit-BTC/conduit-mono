@@ -13,6 +13,22 @@ Non-goals (MVP):
 - Coordinator automation (post-MVP, Phase 6)
 - Refunds/disputes/escrow
 
+## Post-MVP: Client App Versioning + Open Source Note
+
+After MVP, prioritize client-facing versioning and compatibility tracking for:
+- Conduit Market
+- Merchant Portal
+- Store Builder
+
+Planned approach:
+- Version each client app with SemVer and publish release notes for protocol-impacting changes.
+- Maintain a lightweight compatibility matrix (client app version -> supported protocol profile/version tags).
+- Emit optional provenance/version tags on outbound events where Conduit is the emitter (for example `["client","conduit-merchant/<version>"]` and `["v","<protocol_version>"]`).
+- Continue parsing legacy/no-version events as backward-compatible defaults during migration windows.
+
+Open-source direction:
+- We should open-source client protocol integration layers and reference implementations once post-MVP release/security workflows are stable, in the spirit of Nostr ecosystem collaboration (similar to Plebeian Market being open and inspectable).
+
 ## Authentication
 
 MVP requires external signing via NIP-07 (`window.nostr`) only.

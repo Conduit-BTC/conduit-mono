@@ -208,7 +208,9 @@ const deletionEvent = {
   kind: 5,
   tags: [
     ["e", productEventId],      // Event to delete
-    ["k", "30402"],             // Kind being deleted
+    ["k", "30402"],             // Kind requested for deletion (NIP-09 compatibility)
+    ["p", merchantPubkey],      // Merchant pubkey
+    ["a", "30402:<merchant_pubkey>:<d_tag>"], // Address for replaceable listing
   ],
   content: ""
 }
