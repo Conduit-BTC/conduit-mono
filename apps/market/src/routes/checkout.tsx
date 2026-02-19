@@ -144,9 +144,14 @@ function CheckoutPage() {
               <div className="text-sm text-[var(--text-secondary)]">Order sent</div>
               <div className="mt-1 font-mono text-sm text-[var(--text-primary)]">{sentOrderId}</div>
             </div>
-            <Badge variant="secondary" className="border-[var(--border)]">
-              Awaiting merchant
-            </Badge>
+            <div className="flex items-center gap-2">
+              <Badge variant="secondary" className="border-[var(--border)]">
+                Awaiting merchant
+              </Badge>
+              <Button asChild variant="outline" size="sm">
+                <Link to="/messages">Open messages</Link>
+              </Button>
+            </div>
           </div>
         </div>
       )}

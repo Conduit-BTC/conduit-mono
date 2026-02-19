@@ -87,3 +87,63 @@ export const orderSchema = z.object({
 })
 
 export type OrderSchema = z.infer<typeof orderSchema>
+
+/**
+ * Kind-16 message types used in MVP order conversations.
+ */
+export const orderMessageTypeSchema = z.enum([
+  "order",
+  "payment_request",
+  "status_update",
+  "shipping_update",
+  "receipt",
+  "payment_proof",
+])
+
+export type OrderMessageTypeSchema = z.infer<typeof orderMessageTypeSchema>
+
+/**
+ * MVP order status updates sent over NIP-17.
+ */
+export const orderStatusSchema = z.enum([
+  "pending",
+  "invoiced",
+  "paid",
+  "processing",
+  "shipped",
+  "complete",
+  "cancelled",
+])
+
+export type OrderStatusSchema = z.infer<typeof orderStatusSchema>
+
+export const paymentRequestMessageSchema = z.object({
+  invoice: z.string().min(1),
+  amount: z.number().min(0).optional(),
+  currency: z.string().min(1).optional(),
+  note: z.string().max(2000).optional(),
+})
+
+export type PaymentRequestMessageSchema = z.infer<typeof paymentRequestMessageSchema>
+
+export const statusUpdateMessageSchema = z.object({
+  status: orderStatusSchema,
+  note: z.string().max(2000).optional(),
+})
+
+export type StatusUpdateMessageSchema = z.infer<typeof statusUpdateMessageSchema>
+
+export const shippingUpdateMessageSchema = z.object({
+  carrier: z.string().min(1).optional(),
+  trackingNumber: z.string().min(1).optional(),
+  trackingUrl: z.string().url().optional(),
+  note: z.string().max(2000).optional(),
+})
+
+export type ShippingUpdateMessageSchema = z.infer<typeof shippingUpdateMessageSchema>
+
+export const receiptMessageSchema = z.object({
+  note: z.string().max(2000).optional(),
+})
+
+export type ReceiptMessageSchema = z.infer<typeof receiptMessageSchema>

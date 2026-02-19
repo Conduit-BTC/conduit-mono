@@ -56,6 +56,11 @@ export function MarketHeader() {
               Checkout
             </Link>
           </Button>
+          <Button asChild variant="ghost" className="h-10 px-3">
+            <Link to="/messages" activeProps={{ className: "text-[var(--text-primary)]" }}>
+              Messages
+            </Link>
+          </Button>
         </nav>
 
         <div className="ml-auto flex items-center gap-2 lg:ml-0">
@@ -96,6 +101,9 @@ export function MarketHeader() {
                     <Link to="/checkout" search={{ merchant: undefined }}>
                       Checkout
                     </Link>
+                  </Button>
+                  <Button asChild variant="ghost" className="justify-start">
+                    <Link to="/messages">Messages</Link>
                   </Button>
                 </div>
 
