@@ -292,6 +292,7 @@ async function deleteProduct(merchantPubkey: string, product: MerchantProduct): 
   deletion.created_at = Math.floor(Date.now() / 1000)
   const tags: string[][] = [
     ["e", product.eventId],
+    ["k", String(EVENT_KINDS.PRODUCT)],
     ["p", product.product.pubkey],
   ]
   if (product.dTag) {

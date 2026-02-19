@@ -211,6 +211,7 @@ describeIfRelay("merchant products CRUD (relay smoke)", () => {
       deletion.created_at = Math.floor(Date.now() / 1000)
       deletion.tags = [
         ["e", latestAfterUpdate.id],
+        ["k", String(EVENT_KINDS.PRODUCT)],
         ["p", pubkey],
         ["a", `30402:${pubkey}:${dTag}`],
       ]
@@ -218,15 +219,39 @@ describeIfRelay("merchant products CRUD (relay smoke)", () => {
       await deletion.sign(signer)
       await deletion.publish()
 
-      const eventsAfterDelete = await pollUntil(
+      const deletionFilter: NDKFilter = {
+        kinds: [EVENT_KINDS.DELETION],
+        authors: [pubkey],
+        "#e": [latestAfterUpdate.id],
+        "#a": [`30402:${pubkey}:${dTag}`],
+        limit: 10,
+      }
+
+      const deletionEvents = await pollUntil(
         async () => {
-          const events = await ndk.fetchEvents(filter)
+          const events = await ndk.fetchEvents(deletionFilter)
           return Array.from(events) as NDKEvent[]
         },
-        (events) => events.length === 0
+        (events) => events.length > 0
       )
 
-      expect(eventsAfterDelete.length).toBe(0)
+      expect(deletionEvents.length).toBeGreaterThan(0)
+
+      const eventsAfterDelete = await ndk.fetchEvents(filter)
+      const visibleProductsAfterDelete = (Array.from(eventsAfterDelete) as NDKEvent[]).filter((event) => {
+        const eventCreatedAt = event.created_at ?? 0
+        const eventAddress = `30402:${event.pubkey}:${dTag}`
+        return !deletionEvents.some((deletionEvent) => {
+          const deletionCreatedAt = deletionEvent.created_at ?? 0
+          if (deletionCreatedAt < eventCreatedAt) return false
+
+          return deletionEvent.tags.some(
+            (tag) => (tag[0] === "e" && tag[1] === event.id) || (tag[0] === "a" && tag[1] === eventAddress)
+          )
+        })
+      })
+
+      expect(visibleProductsAfterDelete.length).toBe(0)
     },
     30_000
   )
