@@ -25,6 +25,12 @@ function setState(partial: Partial<NdkState>): void {
   listeners.forEach((fn) => fn())
 }
 
+function getConnectedRelayUrls(ndk: NDK): string[] {
+  return Array.from(ndk.pool?.relays?.entries() ?? [])
+    .filter(([, r]) => r.status === 1)
+    .map(([url]) => url)
+}
+
 export function subscribeNdkState(listener: Listener): () => void {
   listeners.add(listener)
   return () => listeners.delete(listener)
@@ -46,7 +52,8 @@ export function getNdk(): NDK {
 export async function connectNdk(timeoutMs = 10_000): Promise<void> {
   const ndk = getNdk()
 
-  if (state.status === "connected") {
+  // If already connected with live relays, skip
+  if (state.status === "connected" && getConnectedRelayUrls(ndk).length > 0) {
     return
   }
 
@@ -61,14 +68,17 @@ export async function connectNdk(timeoutMs = 10_000): Promise<void> {
     try {
       await ndk.connect(timeoutMs)
 
-      const connected = Array.from(ndk.pool?.relays?.entries() ?? [])
-        .filter(([, r]) => r.status === 1)
-        .map(([url]) => url)
+      const connected = getConnectedRelayUrls(ndk)
 
-      setState({
-        status: "connected",
-        connectedRelays: connected,
-      })
+      if (connected.length > 0) {
+        setState({ status: "connected", connectedRelays: connected, error: null })
+      } else {
+        setState({
+          status: "error",
+          error: "No relays responded within timeout",
+          connectedRelays: [],
+        })
+      }
     } catch (err) {
       setState({
         status: "error",
@@ -85,34 +95,28 @@ export async function connectNdk(timeoutMs = 10_000): Promise<void> {
 
 export async function requireNdkConnected(timeoutMs = 10_000): Promise<NDK> {
   await connectNdk(timeoutMs)
-  const ndk = getNdk()
-  const connectedRelays = Array.from(ndk.pool?.relays?.entries() ?? [])
-    .filter(([, relay]) => relay.status === 1)
-    .map(([url]) => url)
 
-  if (connectedRelays.length === 0) {
-    // Retry once with a longer timeout — public relays can be slow on cold starts
-    await connectNdk(timeoutMs * 2)
-    const retryRelays = Array.from(ndk.pool?.relays?.entries() ?? [])
-      .filter(([, relay]) => relay.status === 1)
-      .map(([url]) => url)
-
-    if (retryRelays.length === 0) {
-      throw new Error(state.error ?? "Failed to connect to relays")
-    }
-
-    setState({ status: "connected", connectedRelays: retryRelays, error: null })
+  let ndk = getNdk()
+  if (getConnectedRelayUrls(ndk).length > 0) {
+    setState({ status: "connected", connectedRelays: getConnectedRelayUrls(ndk), error: null })
     return ndk
   }
 
-  if (state.connectedRelays.length !== connectedRelays.length) {
-    setState({
-      status: "connected",
-      connectedRelays,
-      error: null,
-    })
+  // First attempt failed — reset the NDK instance for fresh websocket connections and retry
+  const savedSigner = ndk.signer
+  ndkInstance = null
+  connectPromise = null
+  ndk = getNdk()
+  if (savedSigner) ndk.signer = savedSigner
+
+  await connectNdk(timeoutMs * 2)
+
+  const retryRelays = getConnectedRelayUrls(ndk)
+  if (retryRelays.length === 0) {
+    throw new Error(state.error ?? "Failed to connect to relays")
   }
 
+  setState({ status: "connected", connectedRelays: retryRelays, error: null })
   return ndk
 }
 
