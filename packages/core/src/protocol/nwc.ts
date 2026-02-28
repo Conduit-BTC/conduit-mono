@@ -164,6 +164,9 @@ async function waitForNwcResponse(
     sub = ndk.subscribe(filter, { closeOnEose: false })
 
     sub.on("event", async (event: NDKEvent) => {
+      // Reject responses not authored by the configured wallet (prevents relay-level forgery)
+      if (event.pubkey !== walletUser.pubkey) return
+
       clearTimeout(timer)
       sub?.stop()
 

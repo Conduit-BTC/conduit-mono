@@ -4,13 +4,13 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   EVENT_KINDS,
   formatPubkey,
-  getNdk,
   parseOrderMessageRumorEvent,
+  requireNdkConnected,
   type ParsedOrderMessage,
   useAuth,
 } from "@conduit/core"
 import { Badge, Button } from "@conduit/ui"
-import { giftUnwrap, NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
+import { giftUnwrap, NDKEvent, type NDKFilter, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { QRCodeSVG } from "qrcode.react"
 import { requireAuth } from "../lib/auth"
 
@@ -32,11 +32,17 @@ type Conversation = {
   totalSummary: string | null
 }
 
+async function tryUnwrap(event: NDKEvent, signer: NDKSigner) {
+  try { return await giftUnwrap(event, undefined, signer, "nip44") } catch {}
+  try { return await giftUnwrap(event, undefined, signer, "nip04") } catch {}
+  return null
+}
+
 async function fetchBuyerMessages(buyerPubkey: string): Promise<ParsedOrderMessage[]> {
-  const ndk = getNdk()
+  const ndk = await requireNdkConnected()
   const signer = ndk.signer
   if (!signer) {
-    throw new Error("No signer configured. Connect your signer to decrypt messages.")
+    throw new Error("Connect your Nostr signer to view messages.")
   }
 
   const filter: NDKFilter = {
@@ -46,12 +52,11 @@ async function fetchBuyerMessages(buyerPubkey: string): Promise<ParsedOrderMessa
   }
 
   const wrapped = Array.from(await ndk.fetchEvents(filter)) as NDKEvent[]
-  const unwrapped = await Promise.allSettled(wrapped.map((event) => giftUnwrap(event, undefined, signer, "nip44")))
+  const unwrapped = await Promise.all(wrapped.map((event) => tryUnwrap(event, signer)))
 
   const parsed: ParsedOrderMessage[] = []
-  for (const result of unwrapped) {
-    if (result.status !== "fulfilled") continue
-    const rumor = result.value
+  for (const rumor of unwrapped) {
+    if (!rumor) continue
     if (rumor.kind !== EVENT_KINDS.ORDER) continue
     try {
       parsed.push(parseOrderMessageRumorEvent(rumor))
@@ -65,19 +70,17 @@ async function fetchBuyerMessages(buyerPubkey: string): Promise<ParsedOrderMessa
 }
 
 function buildBuyerConversations(messages: ParsedOrderMessage[], buyerPubkey: string): Conversation[] {
+  // Group by orderId only to avoid thread splitting when "p" tag is absent on inner rumor
   const grouped = new Map<string, ParsedOrderMessage[]>()
 
   for (const message of messages) {
-    const merchantPubkey =
-      message.senderPubkey === buyerPubkey ? message.recipientPubkey : message.senderPubkey
-    const key = `${message.orderId}:${merchantPubkey}`
-    const bucket = grouped.get(key) ?? []
+    const bucket = grouped.get(message.orderId) ?? []
     bucket.push(message)
-    grouped.set(key, bucket)
+    grouped.set(message.orderId, bucket)
   }
 
   const conversations: Conversation[] = []
-  for (const [id, bucket] of grouped.entries()) {
+  for (const [orderId, bucket] of grouped.entries()) {
     bucket.sort((a, b) => a.createdAt - b.createdAt)
     const latest = bucket[bucket.length - 1]
     if (!latest) continue
@@ -87,12 +90,15 @@ function buildBuyerConversations(messages: ParsedOrderMessage[], buyerPubkey: st
       .reverse()
       .find((message) => message.type === "status_update")
 
-    const merchantPubkey =
-      latest.senderPubkey === buyerPubkey ? latest.recipientPubkey : latest.senderPubkey
+    // Derive merchant pubkey from the first non-buyer participant
+    const otherParticipants = Array.from(new Set(
+      bucket.map((m) => m.senderPubkey === buyerPubkey ? m.recipientPubkey : m.senderPubkey).filter(Boolean)
+    ))
+    const merchantPubkey = otherParticipants[0] ?? ""
 
     conversations.push({
-      id,
-      orderId: latest.orderId,
+      id: orderId,
+      orderId,
       merchantPubkey,
       messages: bucket,
       latestAt: latest.createdAt,
@@ -130,10 +136,10 @@ function InvoiceCard({
     }
   }, [invoice])
 
-  // Lightning invoices should use the lightning: URI scheme for wallet links
-  const walletUri = invoice.toLowerCase().startsWith("lnbc") || invoice.toLowerCase().startsWith("lntb")
-    ? `lightning:${invoice}`
-    : null
+  // Strip lightning: prefix if present, detect any bolt11 variant (lnbc, lntb, lnbcrt)
+  const bolt11 = invoice.replace(/^lightning:/i, "")
+  const isBolt11 = /^ln(bc|tb|bcrt)/i.test(bolt11)
+  const walletUri = isBolt11 ? `lightning:${bolt11}` : null
 
   return (
     <div className="space-y-3">
@@ -146,7 +152,7 @@ function InvoiceCard({
       )}
 
       <div className="flex justify-center rounded-md border border-[var(--border)] bg-white p-4">
-        <QRCodeSVG value={invoice.toUpperCase()} size={200} level="M" />
+        <QRCodeSVG value={bolt11.toUpperCase()} size={200} level="M" />
       </div>
 
       <div className="break-all rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-xs text-[var(--text-secondary)]">
@@ -251,7 +257,7 @@ function MessageCard({
                 className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
                 href={message.payload.trackingUrl}
                 target="_blank"
-                rel="noreferrer"
+                rel="noopener noreferrer"
               >
                 Open tracking link
               </a>

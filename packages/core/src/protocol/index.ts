@@ -2,6 +2,7 @@ export * from "./kinds"
 export * from "./products"
 export * from "./orders"
 export * from "./nwc"
+export * from "./webln"
 export {
   getNdk,
   connectNdk,

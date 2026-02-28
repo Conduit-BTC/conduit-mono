@@ -106,7 +106,8 @@ export type OrderMessageTypeSchema = z.infer<typeof orderMessageTypeSchema>
 /**
  * MVP order status updates sent over NIP-17.
  */
-export const orderStatusSchema = z.enum([
+/** Known status values for our emitters. */
+export const orderStatusEnum = z.enum([
   "pending",
   "invoiced",
   "paid",
@@ -115,6 +116,9 @@ export const orderStatusSchema = z.enum([
   "complete",
   "cancelled",
 ])
+
+/** Accepts known statuses and any unknown string for forward-compatibility. */
+export const orderStatusSchema = z.union([orderStatusEnum, z.string().min(1)])
 
 export type OrderStatusSchema = z.infer<typeof orderStatusSchema>
 

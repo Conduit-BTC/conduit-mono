@@ -22,6 +22,7 @@ function CheckoutPage() {
   const search = Route.useSearch()
   const selectedMerchant = search.merchant
   const [note, setNote] = useState("")
+  const [needsShipping, setNeedsShipping] = useState(true)
   const [shipping, setShipping] = useState<ShippingAddressSchema>({
     name: "",
     street: "",
@@ -34,7 +35,7 @@ function CheckoutPage() {
   const [sentOrderId, setSentOrderId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const shippingValid = shipping.name.trim() !== "" && shipping.street.trim() !== "" && shipping.city.trim() !== "" && shipping.postalCode.trim() !== "" && shipping.country.trim().length >= 2
+  const shippingValid = !needsShipping || (shipping.name.trim() !== "" && shipping.street.trim() !== "" && shipping.city.trim() !== "" && shipping.postalCode.trim() !== "" && shipping.country.trim().length >= 2)
 
   function updateShipping(field: keyof ShippingAddressSchema, value: string) {
     setShipping((prev) => ({ ...prev, [field]: value }))
@@ -89,7 +90,7 @@ function CheckoutPage() {
         items,
         subtotal: total,
         currency,
-        shippingAddress: shippingValid ? {
+        shippingAddress: needsShipping && shippingValid ? {
           name: shipping.name.trim(),
           street: shipping.street.trim(),
           city: shipping.city.trim(),
@@ -195,37 +196,52 @@ function CheckoutPage() {
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_360px]">
           <div className="space-y-4">
           <section className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
-            <div className="text-sm font-medium text-[var(--text-primary)]">Shipping address</div>
-            <div className="mt-3 grid gap-3">
-              <div className="grid gap-1.5">
-                <Label htmlFor="ship-name">Full name</Label>
-                <Input id="ship-name" value={shipping.name} onChange={(e) => updateShipping("name", e.target.value)} placeholder="Jane Doe" />
-              </div>
-              <div className="grid gap-1.5">
-                <Label htmlFor="ship-street">Street address</Label>
-                <Input id="ship-street" value={shipping.street} onChange={(e) => updateShipping("street", e.target.value)} placeholder="123 Main St" />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="ship-city">City</Label>
-                  <Input id="ship-city" value={shipping.city} onChange={(e) => updateShipping("city", e.target.value)} placeholder="Austin" />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="ship-state">State / Province</Label>
-                  <Input id="ship-state" value={shipping.state ?? ""} onChange={(e) => updateShipping("state", e.target.value)} placeholder="TX" />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="ship-postal">Postal code</Label>
-                  <Input id="ship-postal" value={shipping.postalCode} onChange={(e) => updateShipping("postalCode", e.target.value)} placeholder="78701" />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="ship-country">Country (ISO)</Label>
-                  <Input id="ship-country" value={shipping.country} onChange={(e) => updateShipping("country", e.target.value)} placeholder="US" maxLength={2} />
-                </div>
-              </div>
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium text-[var(--text-primary)]">Shipping address</div>
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-[var(--text-secondary)]">
+                <input
+                  type="checkbox"
+                  checked={needsShipping}
+                  onChange={(e) => setNeedsShipping(e.target.checked)}
+                  className="rounded border-[var(--border)]"
+                />
+                Requires shipping
+              </label>
             </div>
+            {needsShipping ? (
+              <div className="mt-3 grid gap-3">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="ship-name">Full name</Label>
+                  <Input id="ship-name" value={shipping.name} onChange={(e) => updateShipping("name", e.target.value)} placeholder="Jane Doe" />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="ship-street">Street address</Label>
+                  <Input id="ship-street" value={shipping.street} onChange={(e) => updateShipping("street", e.target.value)} placeholder="123 Main St" />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="ship-city">City</Label>
+                    <Input id="ship-city" value={shipping.city} onChange={(e) => updateShipping("city", e.target.value)} placeholder="Austin" />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="ship-state">State / Province</Label>
+                    <Input id="ship-state" value={shipping.state ?? ""} onChange={(e) => updateShipping("state", e.target.value)} placeholder="TX" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="ship-postal">Postal code</Label>
+                    <Input id="ship-postal" value={shipping.postalCode} onChange={(e) => updateShipping("postalCode", e.target.value)} placeholder="78701" />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="ship-country">Country (ISO)</Label>
+                    <Input id="ship-country" value={shipping.country} onChange={(e) => updateShipping("country", e.target.value)} placeholder="US" maxLength={2} />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className="mt-3 text-xs text-[var(--text-secondary)]">No shipping required for this order (digital product or local pickup).</p>
+            )}
           </section>
 
           <section className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
@@ -279,7 +295,7 @@ function CheckoutPage() {
               <Button className="w-full" disabled={sending || !merchantPubkey || !shippingValid} onClick={placeOrder}>
                 {sending ? "Sending…" : "Place order"}
               </Button>
-              {!shippingValid && (
+              {needsShipping && !shippingValid && (
                 <p className="mt-1 text-xs text-[var(--text-secondary)]">Fill in shipping address to continue.</p>
               )}
             </div>

@@ -5,9 +5,12 @@ import {
   EVENT_KINDS,
   formatPubkey,
   getNdk,
+  hasWebLN,
   nwcMakeInvoice,
   parseNwcUri,
   parseOrderMessageRumorEvent,
+  requireNdkConnected,
+  weblnMakeInvoice,
   type NwcConnection,
   type ParsedOrderMessage,
   type StatusUpdateMessageSchema,
@@ -16,7 +19,7 @@ import {
 import { Badge, Button, Input, Label } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import { giftUnwrap, giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
-import type { NDKFilter } from "@nostr-dev-kit/ndk"
+import type { NDKFilter, NDKSigner } from "@nostr-dev-kit/ndk"
 
 export const Route = createFileRoute("/orders")({
   beforeLoad: () => {
@@ -36,8 +39,14 @@ type Conversation = {
   totalSummary: string | null
 }
 
+async function tryUnwrap(event: NDKEvent, signer: NDKSigner) {
+  try { return await giftUnwrap(event, undefined, signer, "nip44") } catch {}
+  try { return await giftUnwrap(event, undefined, signer, "nip04") } catch {}
+  return null
+}
+
 async function fetchMerchantMessages(merchantPubkey: string): Promise<ParsedOrderMessage[]> {
-  const ndk = getNdk()
+  const ndk = await requireNdkConnected()
 
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.GIFT_WRAP],
@@ -49,15 +58,14 @@ async function fetchMerchantMessages(merchantPubkey: string): Promise<ParsedOrde
 
   const signer = ndk.signer
   if (!signer) {
-    throw new Error("No signer configured. Connect your signer to decrypt orders.")
+    throw new Error("Connect your Nostr signer to view orders.")
   }
 
-  const unwrapped = await Promise.allSettled(wrapped.map((w) => giftUnwrap(w, undefined, signer, "nip44")))
+  const unwrapped = await Promise.all(wrapped.map((w) => tryUnwrap(w, signer)))
 
   const parsed: ParsedOrderMessage[] = []
-  for (const result of unwrapped) {
-    if (result.status !== "fulfilled") continue
-    const rumor = result.value
+  for (const rumor of unwrapped) {
+    if (!rumor) continue
     if (rumor.kind !== EVENT_KINDS.ORDER) continue
     try {
       parsed.push(parseOrderMessageRumorEvent(rumor))
@@ -74,16 +82,13 @@ function buildMerchantConversations(messages: ParsedOrderMessage[], merchantPubk
   const grouped = new Map<string, ParsedOrderMessage[]>()
 
   for (const message of messages) {
-    const buyerPubkey =
-      message.senderPubkey === merchantPubkey ? message.recipientPubkey : message.senderPubkey
-    const key = `${message.orderId}:${buyerPubkey}`
-    const bucket = grouped.get(key) ?? []
+    const bucket = grouped.get(message.orderId) ?? []
     bucket.push(message)
-    grouped.set(key, bucket)
+    grouped.set(message.orderId, bucket)
   }
 
   const conversations: Conversation[] = []
-  for (const [id, bucket] of grouped.entries()) {
+  for (const [orderId, bucket] of grouped.entries()) {
     bucket.sort((a, b) => a.createdAt - b.createdAt)
     const latest = bucket[bucket.length - 1]
     if (!latest) continue
@@ -93,12 +98,14 @@ function buildMerchantConversations(messages: ParsedOrderMessage[], merchantPubk
       .reverse()
       .find((message) => message.type === "status_update")
 
-    const buyerPubkey =
-      latest.senderPubkey === merchantPubkey ? latest.recipientPubkey : latest.senderPubkey
+    const otherParticipants = Array.from(new Set(
+      bucket.map((m) => m.senderPubkey === merchantPubkey ? m.recipientPubkey : m.senderPubkey).filter(Boolean)
+    ))
+    const buyerPubkey = otherParticipants[0] ?? ""
 
     conversations.push({
-      id,
-      orderId: latest.orderId,
+      id: orderId,
+      orderId,
       buyerPubkey,
       messages: bucket,
       latestAt: latest.createdAt,
@@ -244,7 +251,7 @@ function MessageCard({
                 className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
                 href={message.payload.trackingUrl}
                 target="_blank"
-                rel="noreferrer"
+                rel="noopener noreferrer"
               >
                 Open tracking link
               </a>
@@ -325,6 +332,15 @@ function OrdersPage() {
   const [shippingNote, setShippingNote] = useState("")
   const [showNwcSetup, setShowNwcSetup] = useState(false)
   const [successFlash, setSuccessFlash] = useState<string | null>(null)
+  const [weblnAvailable, setWeblnAvailable] = useState(false)
+
+  useEffect(() => {
+    // Detect WebLN (Alby extension) — may load after page render
+    const check = () => setWeblnAvailable(hasWebLN())
+    check()
+    const timer = setTimeout(check, 1000)
+    return () => clearTimeout(timer)
+  }, [])
 
   const flash = useCallback((message: string) => {
     setSuccessFlash(message)
@@ -364,20 +380,33 @@ function OrdersPage() {
     setInvoiceCurrency(firstOrder.payload.currency)
   }, [selected?.id])
 
-  // NWC: generate invoice via wallet then auto-send as payment_request DM
+  // Generate invoice via WebLN (Alby) or NWC, then auto-send as payment_request DM
   const generateInvoiceMutation = useMutation({
     mutationFn: async () => {
-      if (!nwc.connection) throw new Error("NWC wallet not connected")
       if (!pubkey || !selected) throw new Error("No conversation selected")
 
       const amountSats = Number(invoiceAmount) || 0
       if (amountSats <= 0) throw new Error("Amount must be greater than 0")
 
-      // NWC uses millisats
-      const result = await nwcMakeInvoice(nwc.connection, {
-        amountMsats: amountSats * 1000,
-        description: `Conduit order ${selected.orderId}`,
-      })
+      let bolt11: string
+
+      if (weblnAvailable) {
+        // Primary path: WebLN (Alby browser extension) — zero config
+        const result = await weblnMakeInvoice({
+          amountSats,
+          memo: `Conduit order ${selected.orderId}`,
+        })
+        bolt11 = result.invoice
+      } else if (nwc.connection) {
+        // Fallback: NWC connection URI
+        const result = await nwcMakeInvoice(nwc.connection, {
+          amountMsats: amountSats * 1000,
+          description: `Conduit order ${selected.orderId}`,
+        })
+        bolt11 = result.invoice
+      } else {
+        throw new Error("No wallet available. Install Alby extension or connect NWC.")
+      }
 
       // Auto-send the invoice DM to the buyer
       await publishOrderConversationMessage({
@@ -391,14 +420,14 @@ function OrdersPage() {
           ["payment_method", "lightning"],
         ],
         payload: {
-          invoice: result.invoice,
+          invoice: bolt11,
           amount: amountSats,
           currency: invoiceCurrency.trim().toUpperCase() || "USD",
           note: invoiceNote.trim() || undefined,
         },
       })
 
-      return result
+      return { invoice: bolt11 }
     },
     onSuccess: async () => {
       setInvoice("")
@@ -500,8 +529,8 @@ function OrdersPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant={nwc.connection ? "outline" : "muted"} size="sm" onClick={() => setShowNwcSetup(!showNwcSetup)}>
-            {nwc.connection ? "NWC connected" : "Connect wallet"}
+          <Button variant={weblnAvailable || nwc.connection ? "outline" : "muted"} size="sm" onClick={() => setShowNwcSetup(!showNwcSetup)}>
+            {weblnAvailable ? "Alby detected" : nwc.connection ? "NWC connected" : "Connect wallet"}
           </Button>
           <Button asChild variant="muted">
             <Link to="/">Home</Link>
@@ -511,6 +540,13 @@ function OrdersPage() {
 
       {showNwcSetup && (
         <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
+          {weblnAvailable && (
+            <div className="mb-3 flex items-center gap-2 text-xs text-green-400">
+              <span className="inline-block h-2 w-2 rounded-full bg-green-400" />
+              Alby extension detected — invoices will be generated via WebLN (no NWC URI needed).
+            </div>
+          )}
+
           <div className="text-sm font-medium text-[var(--text-primary)]">Nostr Wallet Connect (NIP-47)</div>
 
           {nwc.connection ? (
@@ -545,13 +581,13 @@ function OrdersPage() {
                   <li>3. Copy the <span className="font-mono">nostr+walletconnect://</span> URI and paste below</li>
                 </ol>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <a href="https://albyhub.com" target="_blank" rel="noreferrer" className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]">
+                  <a href="https://albyhub.com" target="_blank" rel="noopener noreferrer" className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]">
                     Alby Hub
                   </a>
-                  <a href="https://lnbits.com" target="_blank" rel="noreferrer" className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]">
+                  <a href="https://lnbits.com" target="_blank" rel="noopener noreferrer" className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]">
                     LNbits
                   </a>
-                  <a href="https://nwc.dev" target="_blank" rel="noreferrer" className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]">
+                  <a href="https://nwc.dev" target="_blank" rel="noopener noreferrer" className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]">
                     nwc.dev
                   </a>
                 </div>
@@ -692,7 +728,7 @@ function OrdersPage() {
                       placeholder="Optional note"
                     />
 
-                    {nwc.connection ? (
+                    {weblnAvailable || nwc.connection ? (
                       <div className="space-y-2">
                         <Button
                           type="button"
@@ -732,7 +768,7 @@ function OrdersPage() {
                     )}
 
                     <p className="text-xs text-[var(--text-secondary)]">
-                      {nwc.connection ? "Invoice generated via NWC and sent as DM." : "Connect NWC wallet above for one-click invoicing."}
+                      {weblnAvailable ? "Invoice via Alby extension." : nwc.connection ? "Invoice via NWC wallet." : "Install Alby or connect NWC for one-click invoicing."}
                     </p>
                   </div>
 
