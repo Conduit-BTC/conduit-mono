@@ -5,6 +5,7 @@ stages:
   - typecheck
   - test
   - build
+  - deploy
   - review
 
 cache:
@@ -79,6 +80,46 @@ build:
       - apps/merchant/dist/
       - apps/store-builder/dist/
 
+deploy_market:
+  stage: deploy
+  extends: .bun_install
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: on_success
+    - when: never
+  needs:
+    - job: build
+      artifacts: true
+  environment:
+    name: review/market/$CI_MERGE_REQUEST_IID
+    url: https://${CI_COMMIT_REF_SLUG}.conduit-market.pages.dev
+  script:
+    - bunx wrangler pages deploy apps/market/dist
+        --project-name conduit-market
+        --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
+        --commit-hash "$CI_COMMIT_SHA"
+  allow_failure: true
+
+deploy_merchant:
+  stage: deploy
+  extends: .bun_install
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: on_success
+    - when: never
+  needs:
+    - job: build
+      artifacts: true
+  environment:
+    name: review/merchant/$CI_MERGE_REQUEST_IID
+    url: https://${CI_COMMIT_REF_SLUG}.conduit-merchant-arq.pages.dev
+  script:
+    - bunx wrangler pages deploy apps/merchant/dist
+        --project-name conduit-merchant
+        --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
+        --commit-hash "$CI_COMMIT_SHA"
+  allow_failure: true
+
 codex_review:
   stage: review
   extends: .bun_install
@@ -101,38 +142,6 @@ codex_review_manual:
     - when: never
   script:
     - bun scripts/gitlab/codex_mr_review.ts
-  allow_failure: true
-
-pages_preview_market:
-  stage: review
-  extends: .bun_install
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      when: on_success
-    - when: never
-  variables:
-    CLOUDFLARE_PAGES_PROJECT: "conduit-market"
-  environment:
-    name: review/market/$CI_MERGE_REQUEST_IID
-  script:
-    - bun scripts/gitlab/cf_pages_set_env_url.ts
-  allow_failure: true
-
-pages_preview_merchant:
-  stage: review
-  extends: .bun_install
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      when: on_success
-    - when: never
-  variables:
-    # Workaround: Cloudflare Pages preview TLS provisioning was broken on the original merchant project.
-    # The TLS-fixed project is now named `conduit-merchant` (subdomain `conduit-merchant-arq.pages.dev`).
-    CLOUDFLARE_PAGES_PROJECT: "conduit-merchant"
-  environment:
-    name: review/merchant/$CI_MERGE_REQUEST_IID
-  script:
-    - bun scripts/gitlab/cf_pages_set_env_url.ts
   allow_failure: true
 
 preview_links:
