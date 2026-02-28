@@ -1,11 +1,11 @@
 image: oven/bun:1.3.5
 
 stages:
-  - review
   - lint
   - typecheck
   - test
   - build
+  - review
 
 cache:
   key: ${CI_COMMIT_REF_SLUG}
