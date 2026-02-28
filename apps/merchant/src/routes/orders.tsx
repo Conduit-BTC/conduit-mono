@@ -512,25 +512,64 @@ function OrdersPage() {
       {showNwcSetup && (
         <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
           <div className="text-sm font-medium text-[var(--text-primary)]">Nostr Wallet Connect (NIP-47)</div>
-          <p className="mt-1 text-xs text-[var(--text-secondary)]">
-            Paste your NWC connection URI to enable one-click invoice generation. Get this from your Lightning wallet (e.g. Alby, Mutiny, LNbits).
-          </p>
-          <div className="mt-3 grid gap-2">
-            <Input
-              value={nwc.rawUri}
-              onChange={(e) => nwc.setUri(e.target.value)}
-              placeholder="nostr+walletconnect://..."
-              type="password"
-            />
-            {nwc.error && (
-              <div className="text-xs text-error">{nwc.error}</div>
-            )}
-            {nwc.connection && (
-              <div className="text-xs text-[var(--text-secondary)]">
+
+          {nwc.connection ? (
+            <div className="mt-3 space-y-3">
+              <div className="flex items-center gap-2 text-xs text-green-400">
+                <span className="inline-block h-2 w-2 rounded-full bg-green-400" />
                 Connected to wallet <span className="font-mono">{formatPubkey(nwc.connection.walletPubkey, 8)}</span> via {nwc.connection.relays[0]}
               </div>
-            )}
-          </div>
+              <div className="grid gap-2">
+                <Input
+                  value={nwc.rawUri}
+                  onChange={(e) => nwc.setUri(e.target.value)}
+                  placeholder="nostr+walletconnect://..."
+                  type="password"
+                />
+                <Button variant="muted" size="sm" onClick={() => nwc.setUri("")}>
+                  Disconnect wallet
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-3 space-y-3">
+              <p className="text-xs text-[var(--text-secondary)]">
+                Connect a Lightning wallet to generate invoices with one click. Without NWC, you can still paste BOLT11 invoices manually.
+              </p>
+
+              <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+                <div className="text-xs font-medium text-[var(--text-primary)]">How to get a connection URI:</div>
+                <ol className="mt-2 space-y-1.5 text-xs text-[var(--text-secondary)]">
+                  <li>1. Set up a Lightning wallet that supports NWC (NIP-47)</li>
+                  <li>2. Create a new NWC connection with <span className="font-medium text-[var(--text-primary)]">make_invoice</span> permission</li>
+                  <li>3. Copy the <span className="font-mono">nostr+walletconnect://</span> URI and paste below</li>
+                </ol>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <a href="https://albyhub.com" target="_blank" rel="noreferrer" className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]">
+                    Alby Hub
+                  </a>
+                  <a href="https://lnbits.com" target="_blank" rel="noreferrer" className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]">
+                    LNbits
+                  </a>
+                  <a href="https://nwc.dev" target="_blank" rel="noreferrer" className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]">
+                    nwc.dev
+                  </a>
+                </div>
+              </div>
+
+              <div className="grid gap-2">
+                <Input
+                  value={nwc.rawUri}
+                  onChange={(e) => nwc.setUri(e.target.value)}
+                  placeholder="nostr+walletconnect://..."
+                  type="password"
+                />
+                {nwc.error && (
+                  <div className="text-xs text-error">{nwc.error}</div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
