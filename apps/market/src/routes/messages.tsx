@@ -33,8 +33,8 @@ type Conversation = {
 }
 
 async function tryUnwrap(event: NDKEvent, signer: NDKSigner) {
-  try { return await giftUnwrap(event, undefined, signer, "nip44") } catch {}
-  try { return await giftUnwrap(event, undefined, signer, "nip04") } catch {}
+  try { return await giftUnwrap(event, undefined, signer, "nip44") } catch { /* nip44 failed, try nip04 */ }
+  try { return await giftUnwrap(event, undefined, signer, "nip04") } catch { /* both schemes failed */ }
   return null
 }
 
