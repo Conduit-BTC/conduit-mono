@@ -56,7 +56,7 @@ async function main() {
 
   const slug = slugifyBranch(branch)
 
-  const marketUrl = `https://${slug}.conduit-market.pages.dev`
+  const marketUrl = `https://${slug}.conduit-market-arq.pages.dev`
   const merchantUrl = `https://${slug}.conduit-merchant-arq.pages.dev`
 
   // Check if we already posted
