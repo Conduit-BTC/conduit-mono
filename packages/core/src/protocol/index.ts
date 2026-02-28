@@ -1,6 +1,7 @@
 export * from "./kinds"
 export * from "./products"
 export * from "./orders"
+export * from "./nwc"
 export {
   getNdk,
   connectNdk,

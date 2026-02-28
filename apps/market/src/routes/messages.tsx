@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   EVENT_KINDS,
   formatPubkey,
@@ -11,6 +11,7 @@ import {
 } from "@conduit/core"
 import { Badge, Button } from "@conduit/ui"
 import { giftUnwrap, NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
+import { QRCodeSVG } from "qrcode.react"
 import { requireAuth } from "../lib/auth"
 
 export const Route = createFileRoute("/messages")({
@@ -106,6 +107,68 @@ function buildBuyerConversations(messages: ParsedOrderMessage[], buyerPubkey: st
   return conversations
 }
 
+function InvoiceCard({
+  invoice,
+  amount,
+  currency,
+  note,
+}: {
+  invoice: string
+  amount?: number
+  currency?: string
+  note?: string
+}) {
+  const [copied, setCopied] = useState(false)
+
+  const copyInvoice = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(invoice)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // fallback: select the text
+    }
+  }, [invoice])
+
+  // Lightning invoices should use the lightning: URI scheme for wallet links
+  const walletUri = invoice.toLowerCase().startsWith("lnbc") || invoice.toLowerCase().startsWith("lntb")
+    ? `lightning:${invoice}`
+    : null
+
+  return (
+    <div className="space-y-3">
+      <div className="text-[var(--text-primary)] font-medium">Lightning Invoice</div>
+
+      {amount != null && (
+        <div className="text-sm text-[var(--text-secondary)]">
+          Amount: {amount}{currency ? ` ${currency}` : " sats"}
+        </div>
+      )}
+
+      <div className="flex justify-center rounded-md border border-[var(--border)] bg-white p-4">
+        <QRCodeSVG value={invoice.toUpperCase()} size={200} level="M" />
+      </div>
+
+      <div className="break-all rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-xs text-[var(--text-secondary)]">
+        {invoice}
+      </div>
+
+      <div className="flex gap-2">
+        <Button variant="outline" size="sm" className="flex-1" onClick={copyInvoice}>
+          {copied ? "Copied" : "Copy invoice"}
+        </Button>
+        {walletUri && (
+          <Button asChild variant="primary" size="sm" className="flex-1">
+            <a href={walletUri}>Open in wallet</a>
+          </Button>
+        )}
+      </div>
+
+      {note && <div className="text-xs text-[var(--text-secondary)]">{note}</div>}
+    </div>
+  )
+}
+
 function MessageCard({
   message,
   mine,
@@ -141,6 +204,19 @@ function MessageCard({
                 {item.productId} · {item.quantity} x {item.priceAtPurchase} {item.currency}
               </div>
             ))}
+            {message.payload.shippingAddress && (
+              <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
+                <div className="font-medium text-[var(--text-primary)]">Ship to:</div>
+                <div>{message.payload.shippingAddress.name}</div>
+                <div>{message.payload.shippingAddress.street}</div>
+                <div>
+                  {message.payload.shippingAddress.city}
+                  {message.payload.shippingAddress.state ? `, ${message.payload.shippingAddress.state}` : ""}{" "}
+                  {message.payload.shippingAddress.postalCode}
+                </div>
+                <div>{message.payload.shippingAddress.country}</div>
+              </div>
+            )}
             {message.payload.note && (
               <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
                 {message.payload.note}
@@ -150,13 +226,7 @@ function MessageCard({
         )}
 
         {message.type === "payment_request" && (
-          <div className="space-y-2">
-            <div className="text-[var(--text-primary)]">Invoice received.</div>
-            <div className="break-all rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-xs text-[var(--text-secondary)]">
-              {message.payload.invoice}
-            </div>
-            {message.payload.note && <div className="text-xs text-[var(--text-secondary)]">{message.payload.note}</div>}
-          </div>
+          <InvoiceCard invoice={message.payload.invoice} amount={message.payload.amount} currency={message.payload.currency} note={message.payload.note} />
         )}
 
         {message.type === "status_update" && (

@@ -74,9 +74,21 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/cart' | '/checkout' | '/messages' | '/products/$productId' | '/products/'
+  fullPaths:
+    | '/'
+    | '/cart'
+    | '/checkout'
+    | '/messages'
+    | '/products/$productId'
+    | '/products/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/cart' | '/checkout' | '/messages' | '/products/$productId' | '/products'
+  to:
+    | '/'
+    | '/cart'
+    | '/checkout'
+    | '/messages'
+    | '/products/$productId'
+    | '/products'
   id:
     | '__root__'
     | '/'

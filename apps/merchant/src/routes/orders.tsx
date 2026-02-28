@@ -1,11 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   EVENT_KINDS,
   formatPubkey,
   getNdk,
+  nwcMakeInvoice,
+  parseNwcUri,
   parseOrderMessageRumorEvent,
+  type NwcConnection,
   type ParsedOrderMessage,
   type StatusUpdateMessageSchema,
   useAuth,
@@ -188,6 +191,19 @@ function MessageCard({
                 {item.productId} · {item.quantity} x {item.priceAtPurchase} {item.currency}
               </div>
             ))}
+            {message.payload.shippingAddress && (
+              <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
+                <div className="font-medium text-[var(--text-primary)]">Ship to:</div>
+                <div>{message.payload.shippingAddress.name}</div>
+                <div>{message.payload.shippingAddress.street}</div>
+                <div>
+                  {message.payload.shippingAddress.city}
+                  {message.payload.shippingAddress.state ? `, ${message.payload.shippingAddress.state}` : ""}{" "}
+                  {message.payload.shippingAddress.postalCode}
+                </div>
+                <div>{message.payload.shippingAddress.country}</div>
+              </div>
+            )}
             {message.payload.note && (
               <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
                 {message.payload.note}
@@ -251,6 +267,48 @@ function MessageCard({
   )
 }
 
+const NWC_URI_KEY = "conduit:merchant:nwc_uri"
+
+function useNwcConnection(): {
+  connection: NwcConnection | null
+  rawUri: string
+  setUri: (uri: string) => void
+  error: string | null
+} {
+  const [rawUri, setRawUri] = useState(() => localStorage.getItem(NWC_URI_KEY) ?? "")
+  const [error, setError] = useState<string | null>(null)
+  const [connection, setConnection] = useState<NwcConnection | null>(() => {
+    const stored = localStorage.getItem(NWC_URI_KEY)
+    if (!stored) return null
+    try {
+      return parseNwcUri(stored)
+    } catch {
+      return null
+    }
+  })
+
+  function setUri(uri: string) {
+    setRawUri(uri)
+    if (!uri.trim()) {
+      localStorage.removeItem(NWC_URI_KEY)
+      setConnection(null)
+      setError(null)
+      return
+    }
+    try {
+      const conn = parseNwcUri(uri.trim())
+      localStorage.setItem(NWC_URI_KEY, uri.trim())
+      setConnection(conn)
+      setError(null)
+    } catch (err) {
+      setConnection(null)
+      setError(err instanceof Error ? err.message : "Invalid NWC URI")
+    }
+  }
+
+  return { connection, rawUri, setUri, error }
+}
+
 function OrdersPage() {
   const { pubkey } = useAuth()
   const queryClient = useQueryClient()
@@ -265,6 +323,15 @@ function OrdersPage() {
   const [trackingNumber, setTrackingNumber] = useState("")
   const [trackingUrl, setTrackingUrl] = useState("")
   const [shippingNote, setShippingNote] = useState("")
+  const [showNwcSetup, setShowNwcSetup] = useState(false)
+  const [successFlash, setSuccessFlash] = useState<string | null>(null)
+
+  const flash = useCallback((message: string) => {
+    setSuccessFlash(message)
+    setTimeout(() => setSuccessFlash(null), 3000)
+  }, [])
+
+  const nwc = useNwcConnection()
 
   const ordersQuery = useQuery({
     queryKey: ["merchant-order-messages", pubkey ?? "none"],
@@ -297,6 +364,50 @@ function OrdersPage() {
     setInvoiceCurrency(firstOrder.payload.currency)
   }, [selected?.id])
 
+  // NWC: generate invoice via wallet then auto-send as payment_request DM
+  const generateInvoiceMutation = useMutation({
+    mutationFn: async () => {
+      if (!nwc.connection) throw new Error("NWC wallet not connected")
+      if (!pubkey || !selected) throw new Error("No conversation selected")
+
+      const amountSats = Number(invoiceAmount) || 0
+      if (amountSats <= 0) throw new Error("Amount must be greater than 0")
+
+      // NWC uses millisats
+      const result = await nwcMakeInvoice(nwc.connection, {
+        amountMsats: amountSats * 1000,
+        description: `Conduit order ${selected.orderId}`,
+      })
+
+      // Auto-send the invoice DM to the buyer
+      await publishOrderConversationMessage({
+        merchantPubkey: pubkey,
+        buyerPubkey: selected.buyerPubkey,
+        orderId: selected.orderId,
+        type: "payment_request",
+        tags: [
+          ["amount", String(amountSats)],
+          ["currency", invoiceCurrency.trim().toUpperCase() || "USD"],
+          ["payment_method", "lightning"],
+        ],
+        payload: {
+          invoice: result.invoice,
+          amount: amountSats,
+          currency: invoiceCurrency.trim().toUpperCase() || "USD",
+          note: invoiceNote.trim() || undefined,
+        },
+      })
+
+      return result
+    },
+    onSuccess: async () => {
+      setInvoice("")
+      setInvoiceNote("")
+      flash("Invoice generated and sent to buyer")
+      await queryClient.invalidateQueries({ queryKey: ["merchant-order-messages", pubkey ?? "none"] })
+    },
+  })
+
   const invoiceMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
@@ -322,6 +433,7 @@ function OrdersPage() {
     onSuccess: async () => {
       setInvoice("")
       setInvoiceNote("")
+      flash("Invoice sent to buyer")
       await queryClient.invalidateQueries({ queryKey: ["merchant-order-messages", pubkey ?? "none"] })
     },
   })
@@ -343,6 +455,7 @@ function OrdersPage() {
     },
     onSuccess: async () => {
       setStatusNote("")
+      flash("Status update sent to buyer")
       await queryClient.invalidateQueries({ queryKey: ["merchant-order-messages", pubkey ?? "none"] })
     },
   })
@@ -372,6 +485,7 @@ function OrdersPage() {
       setTrackingNumber("")
       setTrackingUrl("")
       setShippingNote("")
+      flash("Shipping update sent to buyer")
       await queryClient.invalidateQueries({ queryKey: ["merchant-order-messages", pubkey ?? "none"] })
     },
   })
@@ -385,10 +499,40 @@ function OrdersPage() {
             Two-column merchant inbox for MVP order conversations and invoice/status/shipping actions.
           </p>
         </div>
-        <Button asChild variant="muted">
-          <Link to="/">Home</Link>
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant={nwc.connection ? "outline" : "muted"} size="sm" onClick={() => setShowNwcSetup(!showNwcSetup)}>
+            {nwc.connection ? "NWC connected" : "Connect wallet"}
+          </Button>
+          <Button asChild variant="muted">
+            <Link to="/">Home</Link>
+          </Button>
+        </div>
       </div>
+
+      {showNwcSetup && (
+        <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
+          <div className="text-sm font-medium text-[var(--text-primary)]">Nostr Wallet Connect (NIP-47)</div>
+          <p className="mt-1 text-xs text-[var(--text-secondary)]">
+            Paste your NWC connection URI to enable one-click invoice generation. Get this from your Lightning wallet (e.g. Alby, Mutiny, LNbits).
+          </p>
+          <div className="mt-3 grid gap-2">
+            <Input
+              value={nwc.rawUri}
+              onChange={(e) => nwc.setUri(e.target.value)}
+              placeholder="nostr+walletconnect://..."
+              type="password"
+            />
+            {nwc.error && (
+              <div className="text-xs text-error">{nwc.error}</div>
+            )}
+            {nwc.connection && (
+              <div className="text-xs text-[var(--text-secondary)]">
+                Connected to wallet <span className="font-mono">{formatPubkey(nwc.connection.walletPubkey, 8)}</span> via {nwc.connection.relays[0]}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {!pubkey && (
         <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
@@ -472,32 +616,24 @@ function OrdersPage() {
                   ))}
                 </div>
 
+                {successFlash && (
+                  <div className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-400">
+                    {successFlash}
+                  </div>
+                )}
+
                 <div className="grid gap-3 border-t border-[var(--border)] pt-4 md:grid-cols-3">
-                  <form
-                    className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
-                    onSubmit={(event) => {
-                      event.preventDefault()
-                      invoiceMutation.mutate()
-                    }}
-                  >
+                  <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
                     <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">Send invoice</div>
-                    <div className="grid gap-1">
-                      <Label htmlFor="invoice-bolt11">BOLT11</Label>
-                      <Input
-                        id="invoice-bolt11"
-                        value={invoice}
-                        onChange={(event) => setInvoice(event.target.value)}
-                        placeholder="lnbc..."
-                      />
-                    </div>
+
                     <div className="grid grid-cols-2 gap-2">
                       <div className="grid gap-1">
-                        <Label htmlFor="invoice-amount">Amount</Label>
+                        <Label htmlFor="invoice-amount">Amount (sats)</Label>
                         <Input
                           id="invoice-amount"
                           type="number"
                           min="0"
-                          step="0.01"
+                          step="1"
                           value={invoiceAmount}
                           onChange={(event) => setInvoiceAmount(event.target.value)}
                         />
@@ -516,10 +652,50 @@ function OrdersPage() {
                       onChange={(event) => setInvoiceNote(event.target.value)}
                       placeholder="Optional note"
                     />
-                    <Button type="submit" size="sm" className="w-full" disabled={invoiceMutation.isPending}>
-                      {invoiceMutation.isPending ? "Sending…" : "Send invoice DM"}
-                    </Button>
-                  </form>
+
+                    {nwc.connection ? (
+                      <div className="space-y-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="w-full"
+                          disabled={generateInvoiceMutation.isPending || !(Number(invoiceAmount) > 0)}
+                          onClick={() => generateInvoiceMutation.mutate()}
+                        >
+                          {generateInvoiceMutation.isPending ? "Generating…" : "Generate & send invoice"}
+                        </Button>
+                        {generateInvoiceMutation.error && (
+                          <div className="text-xs text-error">
+                            {generateInvoiceMutation.error instanceof Error ? generateInvoiceMutation.error.message : "Failed"}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <form
+                        onSubmit={(event) => {
+                          event.preventDefault()
+                          invoiceMutation.mutate()
+                        }}
+                      >
+                        <div className="mb-2 grid gap-1">
+                          <Label htmlFor="invoice-bolt11">BOLT11 (paste manually)</Label>
+                          <Input
+                            id="invoice-bolt11"
+                            value={invoice}
+                            onChange={(event) => setInvoice(event.target.value)}
+                            placeholder="lnbc..."
+                          />
+                        </div>
+                        <Button type="submit" size="sm" className="w-full" disabled={invoiceMutation.isPending}>
+                          {invoiceMutation.isPending ? "Sending…" : "Send invoice DM"}
+                        </Button>
+                      </form>
+                    )}
+
+                    <p className="text-xs text-[var(--text-secondary)]">
+                      {nwc.connection ? "Invoice generated via NWC and sent as DM." : "Connect NWC wallet above for one-click invoicing."}
+                    </p>
+                  </div>
 
                   <form
                     className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3"

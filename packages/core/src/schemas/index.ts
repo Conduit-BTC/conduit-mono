@@ -82,6 +82,7 @@ export const orderSchema = z.object({
   items: z.array(orderItemSchema).min(1),
   subtotal: z.number().min(0),
   currency: z.string(),
+  shippingAddress: shippingAddressSchema.optional(),
   note: z.string().max(2000).optional(),
   createdAt: z.number(),
 })
