@@ -43,7 +43,7 @@ export function getNdk(): NDK {
   return ndkInstance
 }
 
-export async function connectNdk(timeoutMs = 5000): Promise<void> {
+export async function connectNdk(timeoutMs = 10_000): Promise<void> {
   const ndk = getNdk()
 
   if (state.status === "connected") {
@@ -83,7 +83,7 @@ export async function connectNdk(timeoutMs = 5000): Promise<void> {
   await connectPromise
 }
 
-export async function requireNdkConnected(timeoutMs = 5000): Promise<NDK> {
+export async function requireNdkConnected(timeoutMs = 10_000): Promise<NDK> {
   await connectNdk(timeoutMs)
   const ndk = getNdk()
   const connectedRelays = Array.from(ndk.pool?.relays?.entries() ?? [])
@@ -91,7 +91,18 @@ export async function requireNdkConnected(timeoutMs = 5000): Promise<NDK> {
     .map(([url]) => url)
 
   if (connectedRelays.length === 0) {
-    throw new Error(state.error ?? "Failed to connect to relays")
+    // Retry once with a longer timeout — public relays can be slow on cold starts
+    await connectNdk(timeoutMs * 2)
+    const retryRelays = Array.from(ndk.pool?.relays?.entries() ?? [])
+      .filter(([, relay]) => relay.status === 1)
+      .map(([url]) => url)
+
+    if (retryRelays.length === 0) {
+      throw new Error(state.error ?? "Failed to connect to relays")
+    }
+
+    setState({ status: "connected", connectedRelays: retryRelays, error: null })
+    return ndk
   }
 
   if (state.connectedRelays.length !== connectedRelays.length) {

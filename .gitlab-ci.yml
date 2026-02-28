@@ -134,3 +134,14 @@ pages_preview_merchant:
   script:
     - bun scripts/gitlab/cf_pages_set_env_url.ts
   allow_failure: true
+
+preview_links:
+  stage: review
+  extends: .bun_install
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: on_success
+    - when: never
+  script:
+    - bun scripts/gitlab/post_preview_links.ts
+  allow_failure: true
