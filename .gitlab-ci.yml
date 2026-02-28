@@ -92,12 +92,11 @@ deploy_market:
       artifacts: true
   environment:
     name: review/market/$CI_MERGE_REQUEST_IID
-    url: https://${CI_COMMIT_REF_SLUG}.conduit-market.pages.dev
   script:
-    - bunx wrangler pages deploy apps/market/dist
-        --project-name conduit-market
-        --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
-        --commit-hash "$CI_COMMIT_SHA"
+    - echo "Deploying market from apps/market/dist..."
+    - ls -la apps/market/dist/ || echo "ERROR - dist directory missing"
+    - ls apps/market/dist/ | head -10
+    - bunx wrangler pages deploy apps/market/dist --project-name conduit-market --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" --commit-hash "$CI_COMMIT_SHA" 2>&1
   allow_failure: true
 
 deploy_merchant:
@@ -112,12 +111,11 @@ deploy_merchant:
       artifacts: true
   environment:
     name: review/merchant/$CI_MERGE_REQUEST_IID
-    url: https://${CI_COMMIT_REF_SLUG}.conduit-merchant-arq.pages.dev
   script:
-    - bunx wrangler pages deploy apps/merchant/dist
-        --project-name conduit-merchant
-        --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
-        --commit-hash "$CI_COMMIT_SHA"
+    - echo "Deploying merchant from apps/merchant/dist..."
+    - ls -la apps/merchant/dist/ || echo "ERROR - dist directory missing"
+    - ls apps/merchant/dist/ | head -10
+    - bunx wrangler pages deploy apps/merchant/dist --project-name conduit-merchant --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" --commit-hash "$CI_COMMIT_SHA" 2>&1
   allow_failure: true
 
 codex_review:

@@ -5,7 +5,8 @@
  * Cloudflare Pages preview URLs follow the pattern:
  *   https://<branch-slug>.<project>.pages.dev
  *
- * Branch slugification: lowercase, replace non-alphanumeric with "-", collapse runs, trim dashes.
+ * Branch slugification: lowercase, replace non-alphanumeric with "-", collapse runs, trim dashes,
+ * truncate to 28 chars (Cloudflare's limit).
  */
 
 type GitLabMrNote = {
@@ -29,11 +30,14 @@ async function gitlabRequest<T>(method: string, url: string, token: string, body
 }
 
 function slugifyBranch(branch: string): string {
+  // Cloudflare Pages truncates branch slugs to 28 characters
   return branch
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "")
+    .slice(0, 28)
+    .replace(/-$/, "")
 }
 
 const MARKER = "<!-- conduit:preview_links -->"
