@@ -1293,19 +1293,35 @@ From context doc analysis, these were missing:
 
 ### Market (Goal: 2/26)
 - [x] Products display from relays
+- [x] Product search, sort, and tag filtering
 - [x] Cart works (localStorage)
 - [x] Checkout creates order (NIP-17 order DM)
-- [ ] Payment flow completes
-- [ ] Messages send/receive
+- [x] Shipping address form with optional toggle
+- [x] Messages page — two-column inbox with order conversations
+- [x] Invoice display with QR code, copy-to-clipboard, "Open in wallet" link
+- [x] NIP-04 fallback for gift unwrap (nip44 → nip04)
+- [x] MarketHeader with logo, nav, mobile Sheet menu
+- [ ] Payment flow completes (buyer pays invoice end-to-end)
+- [ ] Profile management (Kind 0)
 
 ### Merchant (Goal: 3/12)
 - [x] Product CRUD works
-- [x] Orders inbox displays NIP-17 orders
-- [ ] Order actions work (send invoice, status updates, shipping/tracking)
-- [x] Shipping info captured
-- [ ] Wallet connected
+- [x] Orders inbox — two-column DM workspace with conversation threading
+- [x] Invoice generation — WebLN (Alby) primary, NWC fallback, manual BOLT11 paste
+- [x] Status updates via DM (invoiced, paid, processing, shipped, complete, cancelled)
+- [x] Shipping updates via DM (carrier, tracking number, tracking URL)
+- [x] NWC wallet connection with onboarding guide
+- [x] MerchantHeader with logo, nav, mobile Sheet menu
+- [x] Shipping info captured and displayed on order cards
+- [x] NIP-04 fallback for gift unwrap
+- [x] Success flash notifications on all merchant actions
+- [ ] Profile management (Kind 0)
 
 ### MVP (Goal: 3/12)
+- [x] CI pipeline: lint → typecheck → test → build → deploy → review
+- [x] Cloudflare Pages preview deploys per branch via wrangler
+- [x] Codex MR reviews with inline diff comments
+- [x] NDK relay connection resilience (10s timeout, auto-retry with fresh instance)
 - [ ] Market deployed to shop.conduit.market
 - [ ] Portal deployed to sell.conduit.market
 - [ ] End-to-end purchase works
@@ -1326,7 +1342,8 @@ These items should come after the end-to-end loop is working, so we can iterate 
 - [ ] Extract tokens (color/typography/spacing) from Figma into `packages/ui`
 - [ ] Bring Market pages in line with Figma (layout, typography, components)
 - [ ] Bring Merchant pages in line with Figma (layout, typography, components)
-- [ ] Market header + nav parity (`apps/market/src/routes/__root.tsx`)
+- [x] Market header + nav parity (MarketHeader component with logo, nav, mobile menu)
+- [x] Merchant header + nav parity (MerchantHeader component matching market layout)
 - [ ] Market products grid/detail parity (`apps/market/src/routes/products/index.tsx`, `apps/market/src/routes/products/$productId.tsx`)
 - [ ] Market cart/checkout parity (`apps/market/src/routes/cart.tsx`, `apps/market/src/routes/checkout.tsx`)
-- [ ] Merchant shell/orders/products parity (`apps/merchant/src/routes/__root.tsx`, `apps/merchant/src/routes/orders.tsx`, `apps/merchant/src/routes/products.tsx`)
+- [ ] Merchant orders/products visual polish
