@@ -18,6 +18,7 @@ let state: NdkState = {
   error: null,
 }
 let connectPromise: Promise<void> | null = null
+let requirePromise: Promise<NDK> | null = null
 const listeners = new Set<Listener>()
 
 function setState(partial: Partial<NdkState>): void {
@@ -94,30 +95,43 @@ export async function connectNdk(timeoutMs = 10_000): Promise<void> {
 }
 
 export async function requireNdkConnected(timeoutMs = 10_000): Promise<NDK> {
-  await connectNdk(timeoutMs)
-
-  let ndk = getNdk()
-  if (getConnectedRelayUrls(ndk).length > 0) {
-    setState({ status: "connected", connectedRelays: getConnectedRelayUrls(ndk), error: null })
-    return ndk
+  // Deduplicate concurrent callers — only one retry path runs at a time
+  if (requirePromise) {
+    return requirePromise
   }
 
-  // First attempt failed — reset the NDK instance for fresh websocket connections and retry
-  const savedSigner = ndk.signer
-  ndkInstance = null
-  connectPromise = null
-  ndk = getNdk()
-  if (savedSigner) ndk.signer = savedSigner
+  requirePromise = (async () => {
+    try {
+      await connectNdk(timeoutMs)
 
-  await connectNdk(timeoutMs * 2)
+      let ndk = getNdk()
+      if (getConnectedRelayUrls(ndk).length > 0) {
+        setState({ status: "connected", connectedRelays: getConnectedRelayUrls(ndk), error: null })
+        return ndk
+      }
 
-  const retryRelays = getConnectedRelayUrls(ndk)
-  if (retryRelays.length === 0) {
-    throw new Error(state.error ?? "Failed to connect to relays")
-  }
+      // First attempt failed — reset the NDK instance for fresh websocket connections and retry
+      const savedSigner = ndk.signer
+      ndkInstance = null
+      connectPromise = null
+      ndk = getNdk()
+      if (savedSigner) ndk.signer = savedSigner
 
-  setState({ status: "connected", connectedRelays: retryRelays, error: null })
-  return ndk
+      await connectNdk(timeoutMs * 2)
+
+      const retryRelays = getConnectedRelayUrls(ndk)
+      if (retryRelays.length === 0) {
+        throw new Error(state.error ?? "Failed to connect to relays")
+      }
+
+      setState({ status: "connected", connectedRelays: retryRelays, error: null })
+      return ndk
+    } finally {
+      requirePromise = null
+    }
+  })()
+
+  return requirePromise
 }
 
 export function setSigner(signer: NDKSigner): void {
@@ -135,6 +149,8 @@ export function disconnectNdk(): void {
     ndkInstance.signer = undefined
     ndkInstance = null
   }
+  connectPromise = null
+  requirePromise = null
   setState({
     status: "idle",
     connectedRelays: [],
