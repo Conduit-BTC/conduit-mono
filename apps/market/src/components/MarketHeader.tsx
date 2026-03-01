@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router"
-import { Button, Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger, cn } from "@conduit/ui"
+import { useAuth, useProfile } from "@conduit/core"
+import { Avatar, AvatarFallback, AvatarImage, Button, Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger, cn } from "@conduit/ui"
 
 import { SignerSwitch } from "./SignerSwitch"
 import { useCart } from "../hooks/useCart"
@@ -29,7 +30,11 @@ function Logo({
 }
 
 export function MarketHeader() {
+  const { pubkey } = useAuth()
+  const profileQuery = useProfile(pubkey)
   const cart = useCart()
+  const displayName = profileQuery.data?.displayName || profileQuery.data?.name
+  const fallbackLetter = (displayName?.[0] ?? pubkey?.[0] ?? "?").toUpperCase()
 
   return (
     <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur">
@@ -61,6 +66,11 @@ export function MarketHeader() {
               Messages
             </Link>
           </Button>
+          <Button asChild variant="ghost" className="h-10 px-3">
+            <Link to="/profile" activeProps={{ className: "text-[var(--text-primary)]" }}>
+              Profile
+            </Link>
+          </Button>
         </nav>
 
         <div className="ml-auto flex items-center gap-2 lg:ml-0">
@@ -75,6 +85,14 @@ export function MarketHeader() {
           <div className="hidden lg:block">
             <SignerSwitch />
           </div>
+          {pubkey && (
+            <Link to="/profile" className="hidden lg:block">
+              <Avatar className="h-8 w-8">
+                <AvatarImage src={profileQuery.data?.picture} alt={displayName ?? "Profile"} />
+                <AvatarFallback className="text-xs">{fallbackLetter}</AvatarFallback>
+              </Avatar>
+            </Link>
+          )}
 
           <div className="lg:hidden">
             <Sheet>
@@ -104,6 +122,9 @@ export function MarketHeader() {
                   </Button>
                   <Button asChild variant="ghost" className="justify-start">
                     <Link to="/messages">Messages</Link>
+                  </Button>
+                  <Button asChild variant="ghost" className="justify-start">
+                    <Link to="/profile">Profile</Link>
                   </Button>
                 </div>
 

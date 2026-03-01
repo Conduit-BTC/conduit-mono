@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router"
-import { Button, Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger, cn } from "@conduit/ui"
+import { useAuth, useProfile } from "@conduit/core"
+import { Avatar, AvatarFallback, AvatarImage, Button, Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger, cn } from "@conduit/ui"
 import { SignerSwitch } from "./SignerSwitch"
 
 function Logo({
@@ -27,6 +28,11 @@ function Logo({
 }
 
 export function MerchantHeader() {
+  const { pubkey } = useAuth()
+  const profileQuery = useProfile(pubkey)
+  const displayName = profileQuery.data?.displayName || profileQuery.data?.name
+  const fallbackLetter = (displayName?.[0] ?? pubkey?.[0] ?? "?").toUpperCase()
+
   return (
     <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur">
       <div className="mx-auto flex h-16 max-w-7xl items-center gap-4 px-4">
@@ -43,12 +49,25 @@ export function MerchantHeader() {
               Orders
             </Link>
           </Button>
+          <Button asChild variant="ghost" className="h-10 px-3">
+            <Link to="/profile" activeProps={{ className: "text-[var(--text-primary)]" }}>
+              Profile
+            </Link>
+          </Button>
         </nav>
 
         <div className="ml-auto flex items-center gap-2 lg:ml-0">
           <div className="hidden lg:block">
             <SignerSwitch />
           </div>
+          {pubkey && (
+            <Link to="/profile" className="hidden lg:block">
+              <Avatar className="h-8 w-8">
+                <AvatarImage src={profileQuery.data?.picture} alt={displayName ?? "Profile"} />
+                <AvatarFallback className="text-xs">{fallbackLetter}</AvatarFallback>
+              </Avatar>
+            </Link>
+          )}
 
           <div className="lg:hidden">
             <Sheet>
@@ -70,6 +89,9 @@ export function MerchantHeader() {
                   </Button>
                   <Button asChild variant="ghost" className="justify-start">
                     <Link to="/orders">Orders</Link>
+                  </Button>
+                  <Button asChild variant="ghost" className="justify-start">
+                    <Link to="/profile">Profile</Link>
                   </Button>
                 </div>
 

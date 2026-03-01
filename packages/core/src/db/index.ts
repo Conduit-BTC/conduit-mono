@@ -54,8 +54,10 @@ export interface CachedProfile {
   displayName?: string
   about?: string
   picture?: string
+  banner?: string
   nip05?: string
   lud16?: string
+  website?: string
   cachedAt: number
 }
 

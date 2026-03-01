@@ -45,6 +45,22 @@ export const profileSchema = z.object({
 export type ProfileSchema = z.infer<typeof profileSchema>
 
 /**
+ * Profile form schema — allows empty strings so users can clear fields.
+ */
+export const profileFormSchema = z.object({
+  name: z.string().max(50).optional().or(z.literal("")),
+  displayName: z.string().max(100).optional().or(z.literal("")),
+  about: z.string().max(500).optional().or(z.literal("")),
+  picture: z.string().url().optional().or(z.literal("")),
+  banner: z.string().url().optional().or(z.literal("")),
+  nip05: z.string().max(100).optional().or(z.literal("")),
+  lud16: z.string().max(100).optional().or(z.literal("")),
+  website: z.string().url().optional().or(z.literal("")),
+})
+
+export type ProfileFormValues = z.infer<typeof profileFormSchema>
+
+/**
  * Shipping address schema
  */
 export const shippingAddressSchema = z.object({

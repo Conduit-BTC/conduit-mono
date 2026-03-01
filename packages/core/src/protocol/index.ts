@@ -1,5 +1,6 @@
 export * from "./kinds"
 export * from "./products"
+export * from "./profiles"
 export * from "./orders"
 export * from "./nwc"
 export * from "./webln"
