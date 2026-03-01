@@ -238,7 +238,7 @@ function ProfilePage() {
                   id="profile-nip05"
                   value={form.nip05}
                   onChange={(e) => setForm((prev) => ({ ...prev, nip05: e.target.value }))}
-                  placeholder="you@example.com"
+                  placeholder="_@your-domain.com"
                   maxLength={100}
                 />
               </div>
@@ -249,7 +249,7 @@ function ProfilePage() {
                   id="profile-lud16"
                   value={form.lud16}
                   onChange={(e) => setForm((prev) => ({ ...prev, lud16: e.target.value }))}
-                  placeholder="you@getalby.com"
+                  placeholder="name@wallet-provider.com"
                   maxLength={100}
                 />
               </div>
