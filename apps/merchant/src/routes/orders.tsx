@@ -39,10 +39,27 @@ type Conversation = {
   totalSummary: string | null
 }
 
+function raceTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ])
+}
+
 async function tryUnwrap(event: NDKEvent, signer: NDKSigner) {
-  try { return await giftUnwrap(event, undefined, signer, "nip44") } catch { /* nip44 failed, try nip04 */ }
-  try { return await giftUnwrap(event, undefined, signer, "nip04") } catch { /* both schemes failed */ }
-  return null
+  try {
+    return await raceTimeout(
+      (async () => {
+        try { return await giftUnwrap(event, undefined, signer, "nip44") } catch { /* nip44 failed */ }
+        try { return await giftUnwrap(event, undefined, signer, "nip04") } catch { /* nip04 failed */ }
+        return null
+      })(),
+      8_000,
+      null,
+    )
+  } catch {
+    return null
+  }
 }
 
 async function fetchMerchantMessages(merchantPubkey: string): Promise<ParsedOrderMessage[]> {
@@ -54,7 +71,9 @@ async function fetchMerchantMessages(merchantPubkey: string): Promise<ParsedOrde
     limit: 50,
   }
 
-  const wrapped = Array.from(await ndk.fetchEvents(filter)) as NDKEvent[]
+  const wrapped = Array.from(
+    await raceTimeout(ndk.fetchEvents(filter), 15_000, new Set<NDKEvent>())
+  ) as NDKEvent[]
 
   const signer = ndk.signer
   if (!signer) {
