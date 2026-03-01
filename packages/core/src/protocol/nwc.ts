@@ -5,7 +5,7 @@
  *   const conn = parseNwcUri("nostr+walletconnect://...")
  *   const bolt11 = await nwcMakeInvoice(conn, { amountMsats: 100_000, description: "Order #123" })
  */
-import NDK, { NDKEvent, NDKPrivateKeySigner, NDKSubscription, NDKUser, type NDKFilter } from "@nostr-dev-kit/ndk"
+import NDK, { NDKEvent, NDKPrivateKeySigner, NDKRelayStatus, NDKSubscription, NDKUser, type NDKFilter } from "@nostr-dev-kit/ndk"
 
 // NIP-47 event kinds
 const NWC_REQUEST_KIND = 23194
@@ -88,7 +88,7 @@ export async function nwcMakeInvoice(
 
   // Verify at least one relay connected
   const connectedRelays = Array.from(ndk.pool?.relays?.entries() ?? [])
-    .filter(([, r]) => r.status === 1)
+    .filter(([, relay]) => relay.status >= NDKRelayStatus.CONNECTED)
   if (connectedRelays.length === 0) {
     throw new Error("Failed to connect to NWC relay(s)")
   }

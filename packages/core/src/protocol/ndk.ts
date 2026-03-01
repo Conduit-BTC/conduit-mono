@@ -1,4 +1,4 @@
-import NDK, { type NDKSigner } from "@nostr-dev-kit/ndk"
+import NDK, { NDKRelayStatus, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { config } from "../config"
 
 export type NdkConnectionState = "idle" | "connecting" | "connected" | "error"
@@ -28,7 +28,7 @@ function setState(partial: Partial<NdkState>): void {
 
 function getConnectedRelayUrls(ndk: NDK): string[] {
   return Array.from(ndk.pool?.relays?.entries() ?? [])
-    .filter(([, r]) => r.status === 1)
+    .filter(([, relay]) => relay.status >= NDKRelayStatus.CONNECTED)
     .map(([url]) => url)
 }
 
