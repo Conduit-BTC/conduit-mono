@@ -1,6 +1,22 @@
-import { Link } from "@tanstack/react-router"
+import { Link, useNavigate } from "@tanstack/react-router"
 import { useAuth, useProfile } from "@conduit/core"
-import { Avatar, AvatarFallback, AvatarImage, Button, Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger, cn } from "@conduit/ui"
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+  Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+  cn,
+} from "@conduit/ui"
 import { SignerSwitch } from "./SignerSwitch"
 
 function Logo({
@@ -27,11 +43,40 @@ function Logo({
   )
 }
 
-export function MerchantHeader() {
-  const { pubkey } = useAuth()
+function UserMenu() {
+  const { pubkey, status, disconnect } = useAuth()
   const profileQuery = useProfile(pubkey)
+  const navigate = useNavigate()
   const displayName = profileQuery.data?.displayName || profileQuery.data?.name
   const fallbackLetter = (displayName?.[0] ?? pubkey?.[0] ?? "?").toUpperCase()
+
+  if (!pubkey || status === "disconnected" || status === "error") return null
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button className="rounded-full outline-none ring-primary/20 transition focus-visible:ring-2">
+          <Avatar className="h-8 w-8">
+            <AvatarImage src={profileQuery.data?.picture} alt={displayName ?? "Profile"} />
+            <AvatarFallback className="text-xs">{fallbackLetter}</AvatarFallback>
+          </Avatar>
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-40">
+        <DropdownMenuItem onSelect={() => navigate({ to: "/profile" })}>
+          Profile
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={disconnect}>
+          Disconnect
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+export function MerchantHeader() {
+  const { pubkey } = useAuth()
 
   return (
     <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur">
@@ -49,25 +94,12 @@ export function MerchantHeader() {
               Orders
             </Link>
           </Button>
-          <Button asChild variant="ghost" className="h-10 px-3">
-            <Link to="/profile" activeProps={{ className: "text-[var(--text-primary)]" }}>
-              Profile
-            </Link>
-          </Button>
         </nav>
 
         <div className="ml-auto flex items-center gap-2 lg:ml-0">
           <div className="hidden lg:block">
-            <SignerSwitch />
+            {pubkey ? <UserMenu /> : <SignerSwitch />}
           </div>
-          {pubkey && (
-            <Link to="/profile" className="hidden lg:block">
-              <Avatar className="h-8 w-8">
-                <AvatarImage src={profileQuery.data?.picture} alt={displayName ?? "Profile"} />
-                <AvatarFallback className="text-xs">{fallbackLetter}</AvatarFallback>
-              </Avatar>
-            </Link>
-          )}
 
           <div className="lg:hidden">
             <Sheet>

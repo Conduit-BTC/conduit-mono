@@ -363,7 +363,6 @@ function OrdersPage() {
 
   const flash = useCallback((message: string) => {
     setSuccessFlash(message)
-    setTimeout(() => setSuccessFlash(null), 3000)
   }, [])
 
   const nwc = useNwcConnection()
@@ -394,6 +393,7 @@ function OrdersPage() {
   const selected = conversations.find((conversation) => conversation.id === selectedConversationId) ?? null
 
   useEffect(() => {
+    setSuccessFlash(null)
     const firstOrder = selected?.messages.find((message) => message.type === "order")
     if (firstOrder?.type !== "order") return
     setInvoiceAmount(String(firstOrder.payload.subtotal))

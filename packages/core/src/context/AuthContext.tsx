@@ -45,7 +45,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [pubkey, setPubkey] = useState<string | null>(
     () => localStorage.getItem(AUTH_STORAGE_KEY)
   )
-  const [status, setStatus] = useState<AuthStatus>("disconnected")
+  const [status, setStatus] = useState<AuthStatus>(
+    () => localStorage.getItem(AUTH_STORAGE_KEY) ? "connecting" : "disconnected"
+  )
   const [error, setError] = useState<string | null>(null)
   const connecting = useRef(false)
 

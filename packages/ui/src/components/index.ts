@@ -10,6 +10,14 @@ export {
   CardFooter,
 } from "./Card"
 export {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+} from "./DropdownMenu"
+export {
   Dialog,
   DialogPortal,
   DialogOverlay,

@@ -161,32 +161,35 @@ function InvoiceCard({
   const walletUri = isBolt11 ? `lightning:${bolt11}` : null
 
   return (
-    <div className="space-y-3">
-      <div className="text-[var(--text-primary)] font-medium">Lightning Invoice</div>
-
-      {amount != null && (
-        <div className="text-sm text-[var(--text-secondary)]">
-          Amount: {amount}{currency ? ` ${currency}` : " sats"}
-        </div>
-      )}
-
-      <div className="flex justify-center rounded-md border border-[var(--border)] bg-white p-4">
-        <QRCodeSVG value={bolt11.toUpperCase()} size={200} level="M" />
-      </div>
-
-      <div className="break-all rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-xs text-[var(--text-secondary)]">
-        {invoice}
-      </div>
-
-      <div className="flex gap-2">
-        <Button variant="outline" size="sm" className="flex-1" onClick={copyInvoice}>
-          {copied ? "Copied" : "Copy invoice"}
-        </Button>
-        {walletUri && (
-          <Button asChild variant="primary" size="sm" className="flex-1">
-            <a href={walletUri}>Open in wallet</a>
-          </Button>
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="text-[var(--text-primary)] text-sm font-medium">Lightning Invoice</div>
+        {amount != null && (
+          <div className="text-sm font-medium text-[var(--text-primary)]">
+            {amount}{currency ? ` ${currency}` : " sats"}
+          </div>
         )}
+      </div>
+
+      <div className="flex items-start gap-3">
+        <div className="shrink-0 rounded-md border border-[var(--border)] bg-white p-2">
+          <QRCodeSVG value={bolt11.toUpperCase()} size={120} level="M" />
+        </div>
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="max-h-20 overflow-auto break-all rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-xs text-[var(--text-secondary)]">
+            {invoice}
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" className="flex-1" onClick={copyInvoice}>
+              {copied ? "Copied" : "Copy"}
+            </Button>
+            {walletUri && (
+              <Button asChild variant="primary" size="sm" className="flex-1">
+                <a href={walletUri}>Pay</a>
+              </Button>
+            )}
+          </div>
+        </div>
       </div>
 
       {note && <div className="text-xs text-[var(--text-secondary)]">{note}</div>}
