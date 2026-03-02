@@ -1289,7 +1289,7 @@ From context doc analysis, these were missing:
 - [x] NDK connects to relays
 - [x] NIP-07 auth works
 - [x] Query hooks fetch real products
-- [ ] Dexie database works
+- [x] Dexie database works
 
 ### Market (Goal: 2/26)
 - [x] Products display from relays
@@ -1301,8 +1301,8 @@ From context doc analysis, these were missing:
 - [x] Invoice display with QR code, copy-to-clipboard, "Open in wallet" link
 - [x] NIP-04 fallback for gift unwrap (nip44 → nip04)
 - [x] MarketHeader with logo, nav, mobile Sheet menu
-- [ ] Payment flow completes (buyer pays invoice end-to-end)
-- [ ] Profile management (Kind 0)
+- [x] Payment flow completes (buyer pays invoice end-to-end)
+- [x] Profile management (Kind 0)
 
 ### Merchant (Goal: 3/12)
 - [x] Product CRUD works
@@ -1315,7 +1315,7 @@ From context doc analysis, these were missing:
 - [x] Shipping info captured and displayed on order cards
 - [x] NIP-04 fallback for gift unwrap
 - [x] Success flash notifications on all merchant actions
-- [ ] Profile management (Kind 0)
+- [x] Profile management (Kind 0)
 
 ### MVP (Goal: 3/12)
 - [x] CI pipeline: lint → typecheck → test → build → deploy → review
@@ -1324,7 +1324,7 @@ From context doc analysis, these were missing:
 - [x] NDK relay connection resilience (10s timeout, auto-retry with fresh instance)
 - [ ] Market deployed to shop.conduit.market
 - [ ] Portal deployed to sell.conduit.market
-- [ ] End-to-end purchase works
+- [x] End-to-end purchase works
 
 ### Automated Testing (Hardening Track)
 
