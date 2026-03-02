@@ -1,9 +1,10 @@
 import { Link, useNavigate } from "@tanstack/react-router"
-import { useAuth, useProfile } from "@conduit/core"
+import { config, useAuth, useProfile } from "@conduit/core"
 import {
   Avatar,
   AvatarFallback,
   AvatarImage,
+  Badge,
   Button,
   DropdownMenu,
   DropdownMenuContent,
@@ -85,6 +86,16 @@ export function MarketHeader() {
     <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur">
       <div className="mx-auto flex h-16 max-w-7xl items-center gap-4 px-4">
         <Logo />
+        {config.lightningNetwork !== "mainnet" && (
+          <Badge variant="secondary" className={cn(
+            "text-[10px] uppercase tracking-wider border",
+            config.lightningNetwork === "mock"
+              ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
+              : "border-blue-500/30 bg-blue-500/10 text-blue-400"
+          )}>
+            {config.lightningNetwork}
+          </Badge>
+        )}
 
         <nav className="hidden flex-1 items-center justify-end gap-2 text-sm text-[var(--text-secondary)] lg:flex">
           <Button asChild variant="ghost" className="h-10 px-3">

@@ -11,7 +11,7 @@ export * from "./schemas"
 export * from "./utils"
 
 // Config
-export { config, isMockPayments, isTestnet, isMainnet, type ConduitConfig } from "./config"
+export { config, isMockPayments, isSignet, isTestnet, isMainnet, type ConduitConfig } from "./config"
 
 // Database
 export { db, type StoredOrder, type StoredMessage, type CachedProduct, type CachedProfile, type CachedOrderMessage } from "./db"

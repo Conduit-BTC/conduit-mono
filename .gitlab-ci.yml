@@ -16,10 +16,8 @@ cache:
     - packages/*/node_modules/
 
 variables:
-  # Defaults for build-time env. Override in GitLab CI/CD variables as needed.
   VITE_RELAY_URL: "wss://relay.conduit.market"
   VITE_DEFAULT_RELAYS: ""
-  VITE_LIGHTNING_NETWORK: "mainnet"
 
 .bun_install:
   before_script:
@@ -72,15 +70,23 @@ build:
       when: on_success
     - when: never
   script:
-    - bun run build
+    # Build signet variant
+    - VITE_LIGHTNING_NETWORK=signet bun run build
+    - mkdir -p build-output/signet/market build-output/signet/merchant
+    - cp -r apps/market/dist/* build-output/signet/market/
+    - cp -r apps/merchant/dist/* build-output/signet/merchant/
+    # Build mainnet variant
+    - VITE_LIGHTNING_NETWORK=mainnet bun run build
+    - mkdir -p build-output/mainnet/market build-output/mainnet/merchant
+    - cp -r apps/market/dist/* build-output/mainnet/market/
+    - cp -r apps/merchant/dist/* build-output/mainnet/merchant/
   artifacts:
     expire_in: 7 days
     paths:
-      - apps/market/dist/
-      - apps/merchant/dist/
+      - build-output/
       - apps/store-builder/dist/
 
-deploy_market:
+deploy:
   stage: deploy
   extends: .bun_install
   rules:
@@ -90,32 +96,22 @@ deploy_market:
   needs:
     - job: build
       artifacts: true
+  parallel:
+    matrix:
+      - APP: [market, merchant]
+        NETWORK: [signet, mainnet]
   environment:
-    name: review/market/$CI_MERGE_REQUEST_IID
+    name: review/${APP}-${NETWORK}/${CI_MERGE_REQUEST_IID}
   script:
-    - echo "Deploying market from apps/market/dist..."
-    - ls -la apps/market/dist/ || echo "ERROR - dist directory missing"
-    - ls apps/market/dist/ | head -10
-    - bunx wrangler pages deploy apps/market/dist --project-name conduit-market --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" --commit-hash "$CI_COMMIT_SHA" 2>&1
-  allow_failure: true
-
-deploy_merchant:
-  stage: deploy
-  extends: .bun_install
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      when: on_success
-    - when: never
-  needs:
-    - job: build
-      artifacts: true
-  environment:
-    name: review/merchant/$CI_MERGE_REQUEST_IID
-  script:
-    - echo "Deploying merchant from apps/merchant/dist..."
-    - ls -la apps/merchant/dist/ || echo "ERROR - dist directory missing"
-    - ls apps/merchant/dist/ | head -10
-    - bunx wrangler pages deploy apps/merchant/dist --project-name conduit-merchant --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" --commit-hash "$CI_COMMIT_SHA" 2>&1
+    - |
+      if [ "$NETWORK" = "mainnet" ]; then
+        PROJECT="conduit-${APP}"
+      else
+        PROJECT="conduit-${APP}-${NETWORK}"
+      fi
+    - echo "Deploying ${APP} (${NETWORK}) to ${PROJECT}..."
+    - ls -la build-output/${NETWORK}/${APP}/ || echo "ERROR - dist directory missing"
+    - bunx wrangler pages deploy build-output/${NETWORK}/${APP} --project-name "${PROJECT}" --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" --commit-hash "$CI_COMMIT_SHA" 2>&1
   allow_failure: true
 
 codex_review:
@@ -149,6 +145,9 @@ preview_links:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: on_success
     - when: never
+  needs:
+    - job: deploy
+      artifacts: false
   script:
     - bun scripts/gitlab/post_preview_links.ts
   allow_failure: true

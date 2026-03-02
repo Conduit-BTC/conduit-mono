@@ -7,7 +7,7 @@ const DEFAULT_RELAYS = [
 export interface ConduitConfig {
   relayUrl: string
   defaultRelays: string[]
-  lightningNetwork: "mainnet" | "testnet" | "mock"
+  lightningNetwork: "mainnet" | "signet" | "testnet" | "mock"
 }
 
 // Vite only statically replaces direct property access (import.meta.env.VITE_FOO).
@@ -56,8 +56,12 @@ export function isMockPayments(): boolean {
   return config.lightningNetwork === "mock"
 }
 
+export function isSignet(): boolean {
+  return config.lightningNetwork === "signet"
+}
+
 export function isTestnet(): boolean {
-  return config.lightningNetwork === "testnet"
+  return config.lightningNetwork === "testnet" || config.lightningNetwork === "signet"
 }
 
 export function isMainnet(): boolean {

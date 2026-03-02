@@ -2,6 +2,8 @@
  * Posts a single MR comment with stable branch-level Cloudflare Pages preview URLs.
  * Only posts once per MR (deduplicates by marker comment).
  *
+ * Deploys per MR: market (signet + mainnet) and merchant (signet + mainnet).
+ *
  * Cloudflare Pages preview URLs follow the pattern:
  *   https://<branch-slug>.<project>.pages.dev
  *
@@ -42,6 +44,9 @@ function slugifyBranch(branch: string): string {
 
 const MARKER = "<!-- conduit:preview_links -->"
 
+const APPS = ["market", "merchant"] as const
+const NETWORKS = ["signet", "mainnet"] as const
+
 async function main() {
   const apiUrl = getEnv("GITLAB_API_URL", "https://gitlab.com/api/v4")
   const projectId = process.env["CI_PROJECT_ID"]
@@ -56,9 +61,6 @@ async function main() {
 
   const slug = slugifyBranch(branch)
 
-  const marketUrl = `https://${slug}.conduit-market.pages.dev`
-  const merchantUrl = `https://${slug}.conduit-merchant.pages.dev`
-
   // Check if we already posted
   const notesUrl = `${apiUrl}/projects/${encodeURIComponent(projectId)}/merge_requests/${encodeURIComponent(mrIid)}/notes?per_page=100&sort=desc`
   const notes = await gitlabRequest<GitLabMrNote[]>("GET", notesUrl, gitlabToken)
@@ -67,14 +69,23 @@ async function main() {
     return
   }
 
+  const rows = APPS.flatMap((app) =>
+    NETWORKS.map((network) => {
+      // Mainnet reuses existing projects; signet uses dedicated projects
+      const project = network === "mainnet" ? `conduit-${app}` : `conduit-${app}-${network}`
+      const url = `https://${slug}.${project}.pages.dev`
+      const label = `${app.charAt(0).toUpperCase() + app.slice(1)} (${network})`
+      return `| ${label} | ${url} |`
+    }),
+  )
+
   const body = [
     MARKER,
     "## Preview Links",
     "",
-    `| App | URL |`,
-    `|-----|-----|`,
-    `| Market | ${marketUrl} |`,
-    `| Merchant | ${merchantUrl} |`,
+    "| App | URL |",
+    "|-----|-----|",
+    ...rows,
     "",
     `Branch: \`${branch}\` · Slug: \`${slug}\``,
     "",
@@ -83,7 +94,7 @@ async function main() {
 
   const postUrl = `${apiUrl}/projects/${encodeURIComponent(projectId)}/merge_requests/${encodeURIComponent(mrIid)}/notes`
   await gitlabRequest("POST", postUrl, gitlabToken, { body })
-  console.log(`Posted preview links for branch "${branch}": ${marketUrl} / ${merchantUrl}`)
+  console.log(`Posted preview links for branch "${branch}" (${APPS.length * NETWORKS.length} URLs)`)
 }
 
 main().catch((err) => {
