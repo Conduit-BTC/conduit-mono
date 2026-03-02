@@ -372,6 +372,7 @@ function OrdersPage() {
     queryKey: ["merchant-order-messages", pubkey ?? "none"],
     enabled: !!pubkey,
     queryFn: () => fetchMerchantMessages(pubkey!),
+    staleTime: 30_000,
     refetchInterval: 10_000,
   })
 
