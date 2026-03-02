@@ -9,6 +9,7 @@ export default defineConfig({
     react(),
   ],
   resolve: {
+    dedupe: ["react", "react-dom"],
     alias: {
       "@": resolve(__dirname, "./src"),
     },
