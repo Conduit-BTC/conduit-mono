@@ -5,6 +5,7 @@ import {
   canMockInvoice,
   db,
   EVENT_KINDS,
+  extractOrderSummary,
   formatPubkey,
   getNdk,
   hasWebLN,
@@ -19,7 +20,7 @@ import {
   type StatusUpdateMessageSchema,
   useAuth,
 } from "@conduit/core"
-import { Badge, Button, Input, Label } from "@conduit/ui"
+import { Badge, Button, Input, Label, OrderDetailCard, Tabs, TabsContent, TabsList, TabsTrigger } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import { giftUnwrap, giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import type { NDKFilter, NDKSigner } from "@nostr-dev-kit/ndk"
@@ -389,6 +390,7 @@ function OrdersPage() {
   const { pubkey } = useAuth()
   const queryClient = useQueryClient()
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState("details")
   const [invoice, setInvoice] = useState("")
   const [invoiceAmount, setInvoiceAmount] = useState("")
   const [invoiceCurrency, setInvoiceCurrency] = useState("USD")
@@ -445,11 +447,17 @@ function OrdersPage() {
 
   useEffect(() => {
     setSuccessFlash(null)
+    setActiveTab("details")
     const firstOrder = selected?.messages.find((message) => message.type === "order")
     if (firstOrder?.type !== "order") return
     setInvoiceAmount(String(firstOrder.payload.subtotal))
     setInvoiceCurrency(firstOrder.payload.currency)
   }, [selected?.id])
+
+  const orderSummary = useMemo(
+    () => selected ? extractOrderSummary(selected.messages) : null,
+    [selected]
+  )
 
   // Auto-invoice: when a new order arrives and a wallet is connected (or mock mode),
   // generate and send the invoice automatically without merchant intervention.
@@ -822,180 +830,200 @@ function OrdersPage() {
           </aside>
 
           <section className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
-            {selected ? (
-              <div className="space-y-4">
-                <div className="border-b border-[var(--border)] pb-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="font-mono text-sm text-[var(--text-primary)]">{selected.orderId}</h2>
-                    <Badge variant="secondary" className="border-[var(--border)]">
-                      {selected.status ?? "pending"}
-                    </Badge>
-                  </div>
-                  <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                    Buyer: <span className="font-mono">{selected.buyerPubkey}</span>
-                  </p>
-                </div>
+            {selected && orderSummary ? (
+              <Tabs value={activeTab} onValueChange={setActiveTab}>
+                <TabsList>
+                  <TabsTrigger value="details">Details</TabsTrigger>
+                  <TabsTrigger value="actions">Actions</TabsTrigger>
+                  <TabsTrigger value="messages">Messages</TabsTrigger>
+                </TabsList>
 
-                <div className="max-h-[52vh] space-y-3 overflow-auto pr-1">
-                  {selected.messages.map((message) => (
-                    <MessageCard key={message.id} message={message} mine={message.senderPubkey === pubkey} />
-                  ))}
-                </div>
+                <TabsContent value="details">
+                  <OrderDetailCard
+                    orderId={selected.orderId}
+                    status={selected.status}
+                    counterpartyLabel="Buyer"
+                    counterpartyPubkey={selected.buyerPubkey}
+                    items={orderSummary.items}
+                    subtotal={orderSummary.subtotal}
+                    currency={orderSummary.currency}
+                    shippingAddress={orderSummary.shippingAddress}
+                    orderNote={orderSummary.orderNote}
+                    invoiceSent={orderSummary.invoiceSent}
+                    invoiceAmount={orderSummary.invoiceAmount}
+                    invoiceCurrency={orderSummary.invoiceCurrency}
+                    trackingCarrier={orderSummary.trackingCarrier}
+                    trackingNumber={orderSummary.trackingNumber}
+                    trackingUrl={orderSummary.trackingUrl}
+                  />
+                </TabsContent>
 
-                {successFlash && (
-                  <div className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-400">
-                    {successFlash}
-                  </div>
-                )}
-
-                <div className="grid gap-3 border-t border-[var(--border)] pt-4 md:grid-cols-3">
-                  <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
-                    <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">Send invoice</div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="grid gap-1">
-                        <Label htmlFor="invoice-amount">Amount (sats)</Label>
-                        <Input
-                          id="invoice-amount"
-                          type="number"
-                          min="0"
-                          step="1"
-                          value={invoiceAmount}
-                          onChange={(event) => setInvoiceAmount(event.target.value)}
-                        />
+                <TabsContent value="actions">
+                  <div className="space-y-4">
+                    {successFlash && (
+                      <div className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-400">
+                        {successFlash}
                       </div>
-                      <div className="grid gap-1">
-                        <Label htmlFor="invoice-currency">Currency</Label>
-                        <Input
-                          id="invoice-currency"
-                          value={invoiceCurrency}
-                          onChange={(event) => setInvoiceCurrency(event.target.value.toUpperCase())}
-                        />
-                      </div>
-                    </div>
-                    <Input
-                      value={invoiceNote}
-                      onChange={(event) => setInvoiceNote(event.target.value)}
-                      placeholder="Optional note"
-                    />
-
-                    {weblnAvailable || nwc.connection ? (
-                      <div className="space-y-2">
-                        <Button
-                          type="button"
-                          size="sm"
-                          className="w-full"
-                          disabled={generateInvoiceMutation.isPending || !(Number(invoiceAmount) > 0)}
-                          onClick={() => generateInvoiceMutation.mutate()}
-                        >
-                          {generateInvoiceMutation.isPending ? "Generating…" : "Generate & send invoice"}
-                        </Button>
-                        {generateInvoiceMutation.error && (
-                          <div className="text-xs text-error">
-                            {generateInvoiceMutation.error instanceof Error ? generateInvoiceMutation.error.message : "Failed"}
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <form
-                        onSubmit={(event) => {
-                          event.preventDefault()
-                          invoiceMutation.mutate()
-                        }}
-                      >
-                        <div className="mb-2 grid gap-1">
-                          <Label htmlFor="invoice-bolt11">BOLT11 (paste manually)</Label>
-                          <Input
-                            id="invoice-bolt11"
-                            value={invoice}
-                            onChange={(event) => setInvoice(event.target.value)}
-                            placeholder="lnbc..."
-                          />
-                        </div>
-                        <Button type="submit" size="sm" className="w-full" disabled={invoiceMutation.isPending}>
-                          {invoiceMutation.isPending ? "Sending…" : "Send invoice DM"}
-                        </Button>
-                      </form>
                     )}
 
-                    <p className="text-xs text-[var(--text-secondary)]">
-                      {weblnAvailable ? "Invoice via Alby extension." : nwc.connection ? "Invoice via NWC wallet." : "Install Alby or connect NWC for one-click invoicing."}
-                    </p>
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+                        <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">Send invoice</div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="grid gap-1">
+                            <Label htmlFor="invoice-amount">Amount (sats)</Label>
+                            <Input
+                              id="invoice-amount"
+                              type="number"
+                              min="0"
+                              step="1"
+                              value={invoiceAmount}
+                              onChange={(event) => setInvoiceAmount(event.target.value)}
+                            />
+                          </div>
+                          <div className="grid gap-1">
+                            <Label htmlFor="invoice-currency">Currency</Label>
+                            <Input
+                              id="invoice-currency"
+                              value={invoiceCurrency}
+                              onChange={(event) => setInvoiceCurrency(event.target.value.toUpperCase())}
+                            />
+                          </div>
+                        </div>
+                        <Input
+                          value={invoiceNote}
+                          onChange={(event) => setInvoiceNote(event.target.value)}
+                          placeholder="Optional note"
+                        />
+
+                        {weblnAvailable || nwc.connection ? (
+                          <div className="space-y-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="w-full"
+                              disabled={generateInvoiceMutation.isPending || !(Number(invoiceAmount) > 0)}
+                              onClick={() => generateInvoiceMutation.mutate()}
+                            >
+                              {generateInvoiceMutation.isPending ? "Generating…" : "Generate & send invoice"}
+                            </Button>
+                            {generateInvoiceMutation.error && (
+                              <div className="text-xs text-error">
+                                {generateInvoiceMutation.error instanceof Error ? generateInvoiceMutation.error.message : "Failed"}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <form
+                            onSubmit={(event) => {
+                              event.preventDefault()
+                              invoiceMutation.mutate()
+                            }}
+                          >
+                            <div className="mb-2 grid gap-1">
+                              <Label htmlFor="invoice-bolt11">BOLT11 (paste manually)</Label>
+                              <Input
+                                id="invoice-bolt11"
+                                value={invoice}
+                                onChange={(event) => setInvoice(event.target.value)}
+                                placeholder="lnbc..."
+                              />
+                            </div>
+                            <Button type="submit" size="sm" className="w-full" disabled={invoiceMutation.isPending}>
+                              {invoiceMutation.isPending ? "Sending…" : "Send invoice DM"}
+                            </Button>
+                          </form>
+                        )}
+
+                        <p className="text-xs text-[var(--text-secondary)]">
+                          {weblnAvailable ? "Invoice via Alby extension." : nwc.connection ? "Invoice via NWC wallet." : "Install Alby or connect NWC for one-click invoicing."}
+                        </p>
+                      </div>
+
+                      <form
+                        className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
+                        onSubmit={(event) => {
+                          event.preventDefault()
+                          statusMutation.mutate()
+                        }}
+                      >
+                        <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">Status update</div>
+                        <select
+                          className="h-10 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--text-primary)]"
+                          value={status}
+                          onChange={(event) => setStatus(event.target.value as StatusUpdateMessageSchema["status"])}
+                        >
+                          <option value="invoiced">invoiced</option>
+                          <option value="paid">paid</option>
+                          <option value="processing">processing</option>
+                          <option value="shipped">shipped</option>
+                          <option value="complete">complete</option>
+                          <option value="cancelled">cancelled</option>
+                        </select>
+                        <Input
+                          value={statusNote}
+                          onChange={(event) => setStatusNote(event.target.value)}
+                          placeholder="Optional note"
+                        />
+                        <Button type="submit" size="sm" className="w-full" disabled={statusMutation.isPending}>
+                          {statusMutation.isPending ? "Sending…" : "Send status DM"}
+                        </Button>
+                      </form>
+
+                      <form
+                        className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
+                        onSubmit={(event) => {
+                          event.preventDefault()
+                          shippingMutation.mutate()
+                        }}
+                      >
+                        <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">Shipping update</div>
+                        <Input
+                          value={carrier}
+                          onChange={(event) => setCarrier(event.target.value)}
+                          placeholder="Carrier (optional)"
+                        />
+                        <Input
+                          value={trackingNumber}
+                          onChange={(event) => setTrackingNumber(event.target.value)}
+                          placeholder="Tracking number"
+                        />
+                        <Input
+                          value={trackingUrl}
+                          onChange={(event) => setTrackingUrl(event.target.value)}
+                          placeholder="Tracking URL (optional)"
+                        />
+                        <Input
+                          value={shippingNote}
+                          onChange={(event) => setShippingNote(event.target.value)}
+                          placeholder="Optional note"
+                        />
+                        <Button type="submit" size="sm" className="w-full" disabled={shippingMutation.isPending}>
+                          {shippingMutation.isPending ? "Sending…" : "Send shipping DM"}
+                        </Button>
+                      </form>
+                    </div>
+
+                    {(invoiceMutation.error || statusMutation.error || shippingMutation.error) && (
+                      <div className="rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
+                        {[invoiceMutation.error, statusMutation.error, shippingMutation.error]
+                          .filter(Boolean)
+                          .map((error) => (error instanceof Error ? error.message : "Failed to send message"))
+                          .join(" • ")}
+                      </div>
+                    )}
                   </div>
+                </TabsContent>
 
-                  <form
-                    className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
-                    onSubmit={(event) => {
-                      event.preventDefault()
-                      statusMutation.mutate()
-                    }}
-                  >
-                    <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">Status update</div>
-                    <select
-                      className="h-10 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--text-primary)]"
-                      value={status}
-                      onChange={(event) => setStatus(event.target.value as StatusUpdateMessageSchema["status"])}
-                    >
-                      <option value="invoiced">invoiced</option>
-                      <option value="paid">paid</option>
-                      <option value="processing">processing</option>
-                      <option value="shipped">shipped</option>
-                      <option value="complete">complete</option>
-                      <option value="cancelled">cancelled</option>
-                    </select>
-                    <Input
-                      value={statusNote}
-                      onChange={(event) => setStatusNote(event.target.value)}
-                      placeholder="Optional note"
-                    />
-                    <Button type="submit" size="sm" className="w-full" disabled={statusMutation.isPending}>
-                      {statusMutation.isPending ? "Sending…" : "Send status DM"}
-                    </Button>
-                  </form>
-
-                  <form
-                    className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
-                    onSubmit={(event) => {
-                      event.preventDefault()
-                      shippingMutation.mutate()
-                    }}
-                  >
-                    <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">Shipping update</div>
-                    <Input
-                      value={carrier}
-                      onChange={(event) => setCarrier(event.target.value)}
-                      placeholder="Carrier (optional)"
-                    />
-                    <Input
-                      value={trackingNumber}
-                      onChange={(event) => setTrackingNumber(event.target.value)}
-                      placeholder="Tracking number"
-                    />
-                    <Input
-                      value={trackingUrl}
-                      onChange={(event) => setTrackingUrl(event.target.value)}
-                      placeholder="Tracking URL (optional)"
-                    />
-                    <Input
-                      value={shippingNote}
-                      onChange={(event) => setShippingNote(event.target.value)}
-                      placeholder="Optional note"
-                    />
-                    <Button type="submit" size="sm" className="w-full" disabled={shippingMutation.isPending}>
-                      {shippingMutation.isPending ? "Sending…" : "Send shipping DM"}
-                    </Button>
-                  </form>
-                </div>
-
-                {(invoiceMutation.error || statusMutation.error || shippingMutation.error) && (
-                  <div className="rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
-                    {[invoiceMutation.error, statusMutation.error, shippingMutation.error]
-                      .filter(Boolean)
-                      .map((error) => (error instanceof Error ? error.message : "Failed to send message"))
-                      .join(" • ")}
+                <TabsContent value="messages">
+                  <div className="max-h-[52vh] space-y-3 overflow-auto pr-1">
+                    {selected.messages.map((message) => (
+                      <MessageCard key={message.id} message={message} mine={message.senderPubkey === pubkey} />
+                    ))}
                   </div>
-                )}
-              </div>
+                </TabsContent>
+              </Tabs>
             ) : (
               <div className="text-sm text-[var(--text-secondary)]">Select a conversation.</div>
             )}

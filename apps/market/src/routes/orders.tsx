@@ -4,13 +4,14 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   db,
   EVENT_KINDS,
+  extractOrderSummary,
   formatPubkey,
   parseOrderMessageRumorEvent,
   requireNdkConnected,
   type ParsedOrderMessage,
   useAuth,
 } from "@conduit/core"
-import { Badge, Button } from "@conduit/ui"
+import { Badge, Button, OrderDetailCard, Tabs, TabsContent, TabsList, TabsTrigger } from "@conduit/ui"
 import { giftUnwrap, NDKEvent, type NDKFilter, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { QRCodeSVG } from "qrcode.react"
 import { requireAuth } from "../lib/auth"
@@ -354,6 +355,7 @@ function MessageCard({
 function OrdersPage() {
   const { pubkey } = useAuth()
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState("details")
 
   const messagesQuery = useQuery({
     queryKey: ["buyer-messages", pubkey ?? "none"],
@@ -378,6 +380,15 @@ function OrdersPage() {
   }, [conversations, selectedConversationId])
 
   const selected = conversations.find((conversation) => conversation.id === selectedConversationId) ?? null
+
+  useEffect(() => {
+    setActiveTab("details")
+  }, [selectedConversationId])
+
+  const orderSummary = useMemo(
+    () => selected ? extractOrderSummary(selected.messages) : null,
+    [selected]
+  )
 
   return (
     <div className="space-y-4">
@@ -449,26 +460,41 @@ function OrdersPage() {
           </aside>
 
           <section className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
-            {selected ? (
-              <div className="space-y-4">
-                <div className="border-b border-[var(--border)] pb-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="font-mono text-sm text-[var(--text-primary)]">{selected.orderId}</h2>
-                    <Badge variant="secondary" className="border-[var(--border)]">
-                      {selected.status ?? "pending"}
-                    </Badge>
-                  </div>
-                  <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                    Merchant: <span className="font-mono">{selected.merchantPubkey}</span>
-                  </p>
-                </div>
+            {selected && orderSummary ? (
+              <Tabs value={activeTab} onValueChange={setActiveTab}>
+                <TabsList>
+                  <TabsTrigger value="details">Details</TabsTrigger>
+                  <TabsTrigger value="messages">Messages</TabsTrigger>
+                </TabsList>
 
-                <div className="max-h-[65vh] space-y-3 overflow-auto pr-1">
-                  {selected.messages.map((message) => (
-                    <MessageCard key={message.id} message={message} mine={message.senderPubkey === pubkey} />
-                  ))}
-                </div>
-              </div>
+                <TabsContent value="details">
+                  <OrderDetailCard
+                    orderId={selected.orderId}
+                    status={selected.status}
+                    counterpartyLabel="Merchant"
+                    counterpartyPubkey={selected.merchantPubkey}
+                    items={orderSummary.items}
+                    subtotal={orderSummary.subtotal}
+                    currency={orderSummary.currency}
+                    shippingAddress={orderSummary.shippingAddress}
+                    orderNote={orderSummary.orderNote}
+                    invoiceSent={orderSummary.invoiceSent}
+                    invoiceAmount={orderSummary.invoiceAmount}
+                    invoiceCurrency={orderSummary.invoiceCurrency}
+                    trackingCarrier={orderSummary.trackingCarrier}
+                    trackingNumber={orderSummary.trackingNumber}
+                    trackingUrl={orderSummary.trackingUrl}
+                  />
+                </TabsContent>
+
+                <TabsContent value="messages">
+                  <div className="max-h-[65vh] space-y-3 overflow-auto pr-1">
+                    {selected.messages.map((message) => (
+                      <MessageCard key={message.id} message={message} mine={message.senderPubkey === pubkey} />
+                    ))}
+                  </div>
+                </TabsContent>
+              </Tabs>
             ) : (
               <div className="text-sm text-[var(--text-secondary)]">Select a conversation.</div>
             )}

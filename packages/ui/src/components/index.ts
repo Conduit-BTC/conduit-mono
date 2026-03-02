@@ -44,3 +44,5 @@ export {
   SheetDescription,
 } from "./Sheet"
 export { Skeleton } from "./Skeleton"
+export { Tabs, TabsList, TabsTrigger, TabsContent } from "./Tabs"
+export { OrderDetailCard, type OrderDetailCardProps } from "./OrderDetailCard"
