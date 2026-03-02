@@ -111,7 +111,7 @@ deploy:
       fi
     - echo "Deploying ${APP} (${NETWORK}) to ${PROJECT}..."
     - ls -la build-output/${NETWORK}/${APP}/ || echo "ERROR - dist directory missing"
-    - bunx wrangler pages deploy build-output/${NETWORK}/${APP} --project-name "${PROJECT}" --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" --commit-hash "$CI_COMMIT_SHA" 2>&1
+    - bunx wrangler pages deploy build-output/${NETWORK}/${APP} --project-name "${PROJECT}" --branch "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" --commit-hash "$CI_COMMIT_SHA" --commit-dirty=true
   allow_failure: true
 
 codex_review:
