@@ -118,8 +118,8 @@ export function MarketHeader() {
             </Link>
           </Button>
           <Button asChild variant="ghost" className="h-10 px-3">
-            <Link to="/messages" activeProps={{ className: "text-[var(--text-primary)]" }}>
-              Messages
+            <Link to="/orders" activeProps={{ className: "text-[var(--text-primary)]" }}>
+              Orders
             </Link>
           </Button>
         </nav>
@@ -164,7 +164,7 @@ export function MarketHeader() {
                     </Link>
                   </Button>
                   <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/messages">Messages</Link>
+                    <Link to="/orders">Orders</Link>
                   </Button>
                   <Button asChild variant="ghost" className="justify-start">
                     <Link to="/profile">Profile</Link>

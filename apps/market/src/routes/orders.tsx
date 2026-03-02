@@ -15,11 +15,11 @@ import { giftUnwrap, NDKEvent, type NDKFilter, type NDKSigner } from "@nostr-dev
 import { QRCodeSVG } from "qrcode.react"
 import { requireAuth } from "../lib/auth"
 
-export const Route = createFileRoute("/messages")({
+export const Route = createFileRoute("/orders")({
   beforeLoad: () => {
     requireAuth()
   },
-  component: MessagesPage,
+  component: OrdersPage,
 })
 
 type Conversation = {
@@ -351,7 +351,7 @@ function MessageCard({
   )
 }
 
-function MessagesPage() {
+function OrdersPage() {
   const { pubkey } = useAuth()
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
 
@@ -383,9 +383,9 @@ function MessagesPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-medium text-[var(--text-primary)]">Messages</h1>
+          <h1 className="text-3xl font-medium text-[var(--text-primary)]">Orders</h1>
           <p className="mt-1 text-sm text-[var(--text-secondary)]">
-            Buyer-side NIP-17 order conversation inbox (kind {EVENT_KINDS.ORDER} rumors in gift wraps).
+            Track your orders and communicate with merchants.
           </p>
         </div>
         <Button asChild variant="muted">

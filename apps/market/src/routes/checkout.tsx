@@ -175,7 +175,7 @@ function CheckoutPage() {
                 Awaiting invoice
               </Badge>
               <Button asChild size="sm">
-                <Link to="/messages">View messages</Link>
+                <Link to="/orders">View orders</Link>
               </Button>
             </div>
           </div>
