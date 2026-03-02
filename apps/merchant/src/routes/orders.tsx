@@ -2,11 +2,13 @@ import { createFileRoute, Link } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  canMockInvoice,
   db,
   EVENT_KINDS,
   formatPubkey,
   getNdk,
   hasWebLN,
+  mockMakeInvoice,
   nwcMakeInvoice,
   parseNwcUri,
   parseOrderMessageRumorEvent,
@@ -449,11 +451,12 @@ function OrdersPage() {
     setInvoiceCurrency(firstOrder.payload.currency)
   }, [selected?.id])
 
-  // Auto-invoice: when a new order arrives and a wallet is connected, generate
-  // and send the invoice automatically without merchant intervention.
+  // Auto-invoice: when a new order arrives and a wallet is connected (or mock mode),
+  // generate and send the invoice automatically without merchant intervention.
   useEffect(() => {
     if (!pubkey) return
-    const wallet = weblnAvailable ? "webln" : nwc.connection ? "nwc" : null
+    const mock = canMockInvoice()
+    const wallet = mock ? "mock" : weblnAvailable ? "webln" : nwc.connection ? "nwc" : null
     if (!wallet) return
 
     const pending = conversations.filter((c) => {
@@ -476,7 +479,9 @@ function OrdersPage() {
 
       try {
         let bolt11: string
-        if (wallet === "webln") {
+        if (wallet === "mock") {
+          bolt11 = mockMakeInvoice({ amountSats, memo: `Conduit order ${conv.orderId}` }).invoice
+        } else if (wallet === "webln") {
           const result = await weblnMakeInvoice({
             amountSats,
             memo: `Conduit order ${conv.orderId}`,
@@ -534,7 +539,9 @@ function OrdersPage() {
 
       let bolt11: string
 
-      if (weblnAvailable) {
+      if (canMockInvoice()) {
+        bolt11 = mockMakeInvoice({ amountSats, memo: `Conduit order ${selected.orderId}` }).invoice
+      } else if (weblnAvailable) {
         // Primary path: WebLN (Alby browser extension) — zero config
         const result = await weblnMakeInvoice({
           amountSats,
@@ -673,8 +680,8 @@ function OrdersPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant={weblnAvailable || nwc.connection ? "outline" : "muted"} size="sm" onClick={() => setShowNwcSetup(!showNwcSetup)}>
-            {weblnAvailable ? "Alby detected" : nwc.connection ? "NWC connected" : "Connect wallet"}
+          <Button variant={canMockInvoice() || weblnAvailable || nwc.connection ? "outline" : "muted"} size="sm" onClick={() => setShowNwcSetup(!showNwcSetup)}>
+            {canMockInvoice() ? "Mock mode" : weblnAvailable ? "Alby detected" : nwc.connection ? "NWC connected" : "Connect wallet"}
           </Button>
           <Button asChild variant="muted">
             <Link to="/">Home</Link>

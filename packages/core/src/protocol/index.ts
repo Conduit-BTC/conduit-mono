@@ -4,6 +4,7 @@ export * from "./profiles"
 export * from "./orders"
 export * from "./nwc"
 export * from "./webln"
+export * from "./mock-invoice"
 export {
   getNdk,
   connectNdk,
