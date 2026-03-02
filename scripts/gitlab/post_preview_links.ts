@@ -1,19 +1,16 @@
 /**
- * Posts a single MR comment with stable branch-level Cloudflare Pages preview URLs.
- * Only posts once per MR (deduplicates by marker comment).
- *
- * Deploys per MR: market (signet + mainnet) and merchant (signet + mainnet).
+ * Prepends stable preview links to the MR description.
+ * Idempotent: replaces existing preview block on subsequent runs.
  *
  * Cloudflare Pages preview URLs follow the pattern:
- *   https://<branch-slug>.<project>.pages.dev
+ *   https://<branch-slug>.<project-domain>.pages.dev
  *
  * Branch slugification: lowercase, replace non-alphanumeric with "-", collapse runs, trim dashes,
  * truncate to 28 chars (Cloudflare's limit).
  */
 
-type GitLabMrNote = {
-  id: number
-  body?: string
+type GitLabMr = {
+  description: string | null
 }
 
 function getEnv(name: string, fallback: string): string {
@@ -32,7 +29,6 @@ async function gitlabRequest<T>(method: string, url: string, token: string, body
 }
 
 function slugifyBranch(branch: string): string {
-  // Cloudflare Pages truncates branch slugs to 28 characters
   return branch
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "-")
@@ -42,10 +38,51 @@ function slugifyBranch(branch: string): string {
     .replace(/-$/, "")
 }
 
-const MARKER = "<!-- conduit:preview_links -->"
+const MARKER_START = "<!-- conduit:preview_links -->"
+const MARKER_END = "<!-- /conduit:preview_links -->"
+
+/**
+ * Map from [app, network] to the Cloudflare Pages domain root.
+ * Git-connected projects have a different domain suffix than the project name.
+ */
+const DOMAIN_MAP: Record<string, string> = {
+  "market-signet": "conduit-market-signet",
+  "market-mainnet": "conduit-market-arq",
+  "merchant-signet": "conduit-merchant-signet",
+  "merchant-mainnet": "conduit-merchant-arq",
+}
 
 const APPS = ["market", "merchant"] as const
 const NETWORKS = ["signet", "mainnet"] as const
+
+function buildPreviewBlock(slug: string): string {
+  const rows = APPS.flatMap((app) =>
+    NETWORKS.map((network) => {
+      const domain = DOMAIN_MAP[`${app}-${network}`]
+      const url = `https://${slug}.${domain}.pages.dev`
+      const label = `${app.charAt(0).toUpperCase() + app.slice(1)} (${network})`
+      return `| ${label} | ${url} |`
+    }),
+  )
+
+  return [
+    MARKER_START,
+    "## Preview Links",
+    "",
+    "| App | URL |",
+    "|-----|-----|",
+    ...rows,
+    "",
+    MARKER_END,
+  ].join("\n")
+}
+
+function stripExistingBlock(description: string): string {
+  const re = new RegExp(
+    `${MARKER_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${MARKER_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n*`,
+  )
+  return description.replace(re, "").trimStart()
+}
 
 async function main() {
   const apiUrl = getEnv("GITLAB_API_URL", "https://gitlab.com/api/v4")
@@ -55,46 +92,25 @@ async function main() {
   const branch = process.env["CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"] ?? process.env["CI_COMMIT_REF_NAME"]
 
   if (!projectId || !mrIid || !gitlabToken || !branch) {
-    console.log("Missing CI vars; skipping preview link comment.")
+    console.log("Missing CI vars; skipping preview links.")
     return
   }
 
   const slug = slugifyBranch(branch)
+  const mrUrl = `${apiUrl}/projects/${encodeURIComponent(projectId)}/merge_requests/${encodeURIComponent(mrIid)}`
 
-  // Check if we already posted
-  const notesUrl = `${apiUrl}/projects/${encodeURIComponent(projectId)}/merge_requests/${encodeURIComponent(mrIid)}/notes?per_page=100&sort=desc`
-  const notes = await gitlabRequest<GitLabMrNote[]>("GET", notesUrl, gitlabToken)
-  if (notes.some((n) => (n.body ?? "").includes(MARKER))) {
-    console.log("Preview links already posted; skipping.")
-    return
-  }
+  // Fetch current MR description
+  const mr = await gitlabRequest<GitLabMr>("GET", mrUrl, gitlabToken)
+  const existing = mr.description ?? ""
 
-  const rows = APPS.flatMap((app) =>
-    NETWORKS.map((network) => {
-      // Mainnet reuses existing projects; signet uses dedicated projects
-      const project = network === "mainnet" ? `conduit-${app}` : `conduit-${app}-${network}`
-      const url = `https://${slug}.${project}.pages.dev`
-      const label = `${app.charAt(0).toUpperCase() + app.slice(1)} (${network})`
-      return `| ${label} | ${url} |`
-    }),
-  )
+  // Strip old preview block (if any), prepend new one
+  const cleaned = stripExistingBlock(existing)
+  const previewBlock = buildPreviewBlock(slug)
+  const newDescription = `${previewBlock}\n\n${cleaned}`
 
-  const body = [
-    MARKER,
-    "## Preview Links",
-    "",
-    "| App | URL |",
-    "|-----|-----|",
-    ...rows,
-    "",
-    `Branch: \`${branch}\` · Slug: \`${slug}\``,
-    "",
-    "*These URLs are stable for the lifetime of this branch. Each push updates the deployment automatically.*",
-  ].join("\n")
-
-  const postUrl = `${apiUrl}/projects/${encodeURIComponent(projectId)}/merge_requests/${encodeURIComponent(mrIid)}/notes`
-  await gitlabRequest("POST", postUrl, gitlabToken, { body })
-  console.log(`Posted preview links for branch "${branch}" (${APPS.length * NETWORKS.length} URLs)`)
+  // Update MR description
+  await gitlabRequest("PUT", mrUrl, gitlabToken, { description: newDescription })
+  console.log(`Updated MR !${mrIid} description with preview links (slug: ${slug})`)
 }
 
 main().catch((err) => {
