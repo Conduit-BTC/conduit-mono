@@ -61,11 +61,23 @@ export interface CachedProfile {
   cachedAt: number
 }
 
+export interface CachedOrderMessage {
+  id: string
+  orderId: string
+  type: string
+  senderPubkey: string
+  recipientPubkey: string
+  createdAt: number
+  rawContent: string
+  cachedAt: number
+}
+
 class ConduitDB extends Dexie {
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
   products!: EntityTable<CachedProduct, "id">
   profiles!: EntityTable<CachedProfile, "pubkey">
+  orderMessages!: EntityTable<CachedOrderMessage, "id">
 
   constructor() {
     super("conduit")
@@ -75,6 +87,14 @@ class ConduitDB extends Dexie {
       messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
       products: "id, pubkey, *tags, cachedAt",
       profiles: "pubkey, cachedAt",
+    })
+
+    this.version(2).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages: "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
     })
   }
 }

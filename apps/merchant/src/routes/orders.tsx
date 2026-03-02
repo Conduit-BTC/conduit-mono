@@ -1,7 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  db,
   EVENT_KINDS,
   formatPubkey,
   getNdk,
@@ -63,38 +64,85 @@ async function tryUnwrap(event: NDKEvent, signer: NDKSigner) {
 }
 
 async function fetchMerchantMessages(merchantPubkey: string): Promise<ParsedOrderMessage[]> {
-  const ndk = await requireNdkConnected()
+  // Load cached messages from Dexie first
+  const cached = await db.orderMessages
+    .where("recipientPubkey").equals(merchantPubkey)
+    .or("senderPubkey").equals(merchantPubkey)
+    .toArray()
 
-  const filter: NDKFilter = {
-    kinds: [EVENT_KINDS.GIFT_WRAP],
-    "#p": [merchantPubkey],
-    limit: 50,
-  }
-
-  const wrapped = Array.from(
-    await raceTimeout(ndk.fetchEvents(filter), 15_000, new Set<NDKEvent>())
-  ) as NDKEvent[]
-
-  const signer = ndk.signer
-  if (!signer) {
-    throw new Error("Connect your Nostr signer to view orders.")
-  }
-
-  const unwrapped = await Promise.all(wrapped.map((w) => tryUnwrap(w, signer)))
-
-  const parsed: ParsedOrderMessage[] = []
-  for (const rumor of unwrapped) {
-    if (!rumor) continue
-    if (rumor.kind !== EVENT_KINDS.ORDER) continue
+  const cachedById = new Map<string, ParsedOrderMessage>()
+  for (const row of cached) {
     try {
-      parsed.push(parseOrderMessageRumorEvent(rumor))
-    } catch {
-      // ignore malformed
-    }
+      cachedById.set(row.id, JSON.parse(row.rawContent) as ParsedOrderMessage)
+    } catch { /* skip corrupt */ }
   }
 
-  parsed.sort((a, b) => a.createdAt - b.createdAt)
-  return parsed
+  // Fetch fresh from relays
+  try {
+    const ndk = await requireNdkConnected()
+    const signer = ndk.signer
+    if (!signer) {
+      if (cachedById.size > 0) {
+        const result = Array.from(cachedById.values())
+        result.sort((a, b) => a.createdAt - b.createdAt)
+        return result
+      }
+      throw new Error("Connect your Nostr signer to view orders.")
+    }
+
+    const filter: NDKFilter = {
+      kinds: [EVENT_KINDS.GIFT_WRAP],
+      "#p": [merchantPubkey],
+      limit: 50,
+    }
+
+    const wrapped = Array.from(
+      await raceTimeout(ndk.fetchEvents(filter), 15_000, new Set<NDKEvent>())
+    ) as NDKEvent[]
+
+    const unwrapped = await Promise.all(wrapped.map((w) => tryUnwrap(w, signer)))
+
+    const newRows: Array<{ id: string; orderId: string; type: string; senderPubkey: string; recipientPubkey: string; createdAt: number; rawContent: string; cachedAt: number }> = []
+    for (const rumor of unwrapped) {
+      if (!rumor) continue
+      if (rumor.kind !== EVENT_KINDS.ORDER) continue
+      try {
+        const parsed = parseOrderMessageRumorEvent(rumor)
+        if (!cachedById.has(parsed.id)) {
+          newRows.push({
+            id: parsed.id,
+            orderId: parsed.orderId,
+            type: parsed.type,
+            senderPubkey: parsed.senderPubkey,
+            recipientPubkey: parsed.recipientPubkey,
+            createdAt: parsed.createdAt,
+            rawContent: JSON.stringify(parsed),
+            cachedAt: Date.now(),
+          })
+        }
+        cachedById.set(parsed.id, parsed)
+      } catch {
+        // ignore malformed
+      }
+    }
+
+    // Persist new messages to Dexie
+    if (newRows.length > 0) {
+      await db.orderMessages.bulkPut(newRows)
+    }
+  } catch (err) {
+    // If relay fetch fails but we have cache, return cached data
+    if (cachedById.size > 0) {
+      const result = Array.from(cachedById.values())
+      result.sort((a, b) => a.createdAt - b.createdAt)
+      return result
+    }
+    throw err
+  }
+
+  const result = Array.from(cachedById.values())
+  result.sort((a, b) => a.createdAt - b.createdAt)
+  return result
 }
 
 function buildMerchantConversations(messages: ParsedOrderMessage[], merchantPubkey: string): Conversation[] {
@@ -352,6 +400,7 @@ function OrdersPage() {
   const [showNwcSetup, setShowNwcSetup] = useState(false)
   const [successFlash, setSuccessFlash] = useState<string | null>(null)
   const [weblnAvailable, setWeblnAvailable] = useState(false)
+  const autoInvoicedRef = useRef(new Set<string>())
 
   useEffect(() => {
     // Detect WebLN (Alby extension) — may load after page render
@@ -399,6 +448,81 @@ function OrdersPage() {
     setInvoiceAmount(String(firstOrder.payload.subtotal))
     setInvoiceCurrency(firstOrder.payload.currency)
   }, [selected?.id])
+
+  // Auto-invoice: when a new order arrives and a wallet is connected, generate
+  // and send the invoice automatically without merchant intervention.
+  useEffect(() => {
+    if (!pubkey) return
+    const wallet = weblnAvailable ? "webln" : nwc.connection ? "nwc" : null
+    if (!wallet) return
+
+    const pending = conversations.filter((c) => {
+      if (autoInvoicedRef.current.has(c.orderId)) return false
+      const hasOrder = c.messages.some((m) => m.type === "order")
+      const hasInvoice = c.messages.some((m) => m.type === "payment_request")
+      return hasOrder && !hasInvoice
+    })
+
+    if (pending.length === 0) return
+
+    async function autoInvoice(conv: Conversation) {
+      const orderMsg = conv.messages.find((m) => m.type === "order")
+      if (orderMsg?.type !== "order") return
+
+      const amountSats = orderMsg.payload.subtotal
+      if (!amountSats || amountSats <= 0) return
+
+      autoInvoicedRef.current.add(conv.orderId)
+
+      try {
+        let bolt11: string
+        if (wallet === "webln") {
+          const result = await weblnMakeInvoice({
+            amountSats,
+            memo: `Conduit order ${conv.orderId}`,
+          })
+          bolt11 = result.invoice
+        } else {
+          const result = await nwcMakeInvoice(nwc.connection!, {
+            amountMsats: amountSats * 1000,
+            description: `Conduit order ${conv.orderId}`,
+          })
+          bolt11 = result.invoice
+        }
+
+        await publishOrderConversationMessage({
+          merchantPubkey: pubkey!,
+          buyerPubkey: conv.buyerPubkey,
+          orderId: conv.orderId,
+          type: "payment_request",
+          tags: [
+            ["amount", String(amountSats)],
+            ["currency", orderMsg.payload.currency?.toUpperCase() || "USD"],
+            ["payment_method", "lightning"],
+          ],
+          payload: {
+            invoice: bolt11,
+            amount: amountSats,
+            currency: orderMsg.payload.currency?.toUpperCase() || "USD",
+          },
+        })
+
+        flash(`Auto-invoiced order ${conv.orderId.slice(0, 8)}...`)
+        queryClient.invalidateQueries({ queryKey: ["merchant-order-messages", pubkey ?? "none"] })
+      } catch (err) {
+        // Remove from set so it can be retried on next poll
+        autoInvoicedRef.current.delete(conv.orderId)
+        console.error(`Auto-invoice failed for ${conv.orderId}:`, err)
+      }
+    }
+
+    // Process one at a time to avoid wallet rate limits
+    ;(async () => {
+      for (const conv of pending) {
+        await autoInvoice(conv)
+      }
+    })()
+  }, [conversations, pubkey, weblnAvailable, nwc.connection, flash, queryClient])
 
   // Generate invoice via WebLN (Alby) or NWC, then auto-send as payment_request DM
   const generateInvoiceMutation = useMutation({

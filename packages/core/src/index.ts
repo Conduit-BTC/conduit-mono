@@ -14,7 +14,7 @@ export * from "./utils"
 export { config, isMockPayments, isTestnet, isMainnet, type ConduitConfig } from "./config"
 
 // Database
-export { db, type StoredOrder, type StoredMessage, type CachedProduct, type CachedProfile } from "./db"
+export { db, type StoredOrder, type StoredMessage, type CachedProduct, type CachedProfile, type CachedOrderMessage } from "./db"
 
 // Billing
 export { getEntitlements, type Entitlements, type BillingTier } from "./billing/entitlements"

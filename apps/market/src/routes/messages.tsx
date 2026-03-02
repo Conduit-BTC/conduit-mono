@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
+  db,
   EVENT_KINDS,
   formatPubkey,
   parseOrderMessageRumorEvent,
@@ -56,36 +57,84 @@ async function tryUnwrap(event: NDKEvent, signer: NDKSigner) {
 }
 
 async function fetchBuyerMessages(buyerPubkey: string): Promise<ParsedOrderMessage[]> {
-  const ndk = await requireNdkConnected()
-  const signer = ndk.signer
-  if (!signer) {
-    throw new Error("Connect your Nostr signer to view messages.")
-  }
+  // Load cached messages from Dexie first
+  const cached = await db.orderMessages
+    .where("recipientPubkey").equals(buyerPubkey)
+    .or("senderPubkey").equals(buyerPubkey)
+    .toArray()
 
-  const filter: NDKFilter = {
-    kinds: [EVENT_KINDS.GIFT_WRAP],
-    "#p": [buyerPubkey],
-    limit: 200,
-  }
-
-  const wrapped = Array.from(
-    await raceTimeout(ndk.fetchEvents(filter), 15_000, new Set<NDKEvent>())
-  ) as NDKEvent[]
-  const unwrapped = await Promise.all(wrapped.map((event) => tryUnwrap(event, signer)))
-
-  const parsed: ParsedOrderMessage[] = []
-  for (const rumor of unwrapped) {
-    if (!rumor) continue
-    if (rumor.kind !== EVENT_KINDS.ORDER) continue
+  const cachedById = new Map<string, ParsedOrderMessage>()
+  for (const row of cached) {
     try {
-      parsed.push(parseOrderMessageRumorEvent(rumor))
-    } catch {
-      // ignore malformed order conversation rumors
-    }
+      cachedById.set(row.id, JSON.parse(row.rawContent) as ParsedOrderMessage)
+    } catch { /* skip corrupt */ }
   }
 
-  parsed.sort((a, b) => a.createdAt - b.createdAt)
-  return parsed
+  // Fetch fresh from relays
+  try {
+    const ndk = await requireNdkConnected()
+    const signer = ndk.signer
+    if (!signer) {
+      if (cachedById.size > 0) {
+        const result = Array.from(cachedById.values())
+        result.sort((a, b) => a.createdAt - b.createdAt)
+        return result
+      }
+      throw new Error("Connect your Nostr signer to view messages.")
+    }
+
+    const filter: NDKFilter = {
+      kinds: [EVENT_KINDS.GIFT_WRAP],
+      "#p": [buyerPubkey],
+      limit: 200,
+    }
+
+    const wrapped = Array.from(
+      await raceTimeout(ndk.fetchEvents(filter), 15_000, new Set<NDKEvent>())
+    ) as NDKEvent[]
+    const unwrapped = await Promise.all(wrapped.map((event) => tryUnwrap(event, signer)))
+
+    const newRows: Array<{ id: string; orderId: string; type: string; senderPubkey: string; recipientPubkey: string; createdAt: number; rawContent: string; cachedAt: number }> = []
+    for (const rumor of unwrapped) {
+      if (!rumor) continue
+      if (rumor.kind !== EVENT_KINDS.ORDER) continue
+      try {
+        const parsed = parseOrderMessageRumorEvent(rumor)
+        if (!cachedById.has(parsed.id)) {
+          newRows.push({
+            id: parsed.id,
+            orderId: parsed.orderId,
+            type: parsed.type,
+            senderPubkey: parsed.senderPubkey,
+            recipientPubkey: parsed.recipientPubkey,
+            createdAt: parsed.createdAt,
+            rawContent: JSON.stringify(parsed),
+            cachedAt: Date.now(),
+          })
+        }
+        cachedById.set(parsed.id, parsed)
+      } catch {
+        // ignore malformed order conversation rumors
+      }
+    }
+
+    // Persist new messages to Dexie
+    if (newRows.length > 0) {
+      await db.orderMessages.bulkPut(newRows)
+    }
+  } catch (err) {
+    // If relay fetch fails but we have cache, return cached data
+    if (cachedById.size > 0) {
+      const result = Array.from(cachedById.values())
+      result.sort((a, b) => a.createdAt - b.createdAt)
+      return result
+    }
+    throw err
+  }
+
+  const result = Array.from(cachedById.values())
+  result.sort((a, b) => a.createdAt - b.createdAt)
+  return result
 }
 
 function buildBuyerConversations(messages: ParsedOrderMessage[], buyerPubkey: string): Conversation[] {
