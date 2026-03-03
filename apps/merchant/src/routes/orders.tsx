@@ -459,6 +459,7 @@ function OrdersPage() {
     queryFn: () => fetchMerchantMessages(pubkey!),
     staleTime: 30_000,
     refetchInterval: 10_000,
+    refetchIntervalInBackground: true,
   })
 
   const conversations = useMemo(
@@ -721,6 +722,16 @@ function OrdersPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={ordersQuery.isFetching}
+            onClick={() => {
+              void ordersQuery.refetch()
+            }}
+          >
+            {ordersQuery.isFetching ? "Refreshing…" : "Refresh"}
+          </Button>
           <Button variant={canMockInvoice() || weblnAvailable || nwc.connection ? "outline" : "muted"} size="sm" onClick={() => setShowNwcSetup(!showNwcSetup)}>
             {canMockInvoice() ? "Mock mode" : weblnAvailable ? "Alby detected" : nwc.connection ? "NWC connected" : "Connect wallet"}
           </Button>

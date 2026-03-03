@@ -397,6 +397,7 @@ function OrdersPage() {
     enabled: !!pubkey,
     queryFn: () => fetchBuyerMessages(pubkey!),
     refetchInterval: 10_000,
+    refetchIntervalInBackground: true,
   })
 
   const conversations = useMemo(
@@ -434,11 +435,23 @@ function OrdersPage() {
             Track your orders and communicate with merchants.
           </p>
         </div>
-        <Button asChild variant="muted">
-          <Link to="/checkout" search={{ merchant: undefined }}>
-            Go to checkout
-          </Link>
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={messagesQuery.isFetching}
+            onClick={() => {
+              void messagesQuery.refetch()
+            }}
+          >
+            {messagesQuery.isFetching ? "Refreshing…" : "Refresh"}
+          </Button>
+          <Button asChild variant="muted">
+            <Link to="/checkout" search={{ merchant: undefined }}>
+              Go to checkout
+            </Link>
+          </Button>
+        </div>
       </div>
 
       {messagesQuery.isLoading && <div className="text-sm text-[var(--text-secondary)]">Loading messages…</div>}
