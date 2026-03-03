@@ -25,6 +25,7 @@ import { Badge, Button, Input, Label, OrderDetailCard, Tabs, TabsContent, TabsLi
 import { requireAuth } from "../lib/auth"
 import { giftUnwrap, giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import type { NDKFilter, NDKSigner } from "@nostr-dev-kit/ndk"
+import { RefreshCw } from "lucide-react"
 
 export const Route = createFileRoute("/orders")({
   beforeLoad: () => {
@@ -420,7 +421,7 @@ function useNwcConnection(): {
 }
 
 function OrdersPage() {
-  const { pubkey } = useAuth()
+  const { pubkey, status } = useAuth()
   const queryClient = useQueryClient()
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState("details")
@@ -428,7 +429,7 @@ function OrdersPage() {
   const [invoiceAmount, setInvoiceAmount] = useState("")
   const [invoiceCurrency, setInvoiceCurrency] = useState("USD")
   const [invoiceNote, setInvoiceNote] = useState("")
-  const [status, setStatus] = useState<StatusUpdateMessageSchema["status"]>("invoiced")
+  const [orderStatus, setOrderStatus] = useState<StatusUpdateMessageSchema["status"]>("invoiced")
   const [statusNote, setStatusNote] = useState("")
   const [carrier, setCarrier] = useState("")
   const [trackingNumber, setTrackingNumber] = useState("")
@@ -440,6 +441,7 @@ function OrdersPage() {
   const autoInvoicedRef = useRef(new Set<string>())
   const [refreshButtonState, setRefreshButtonState] = useState<"idle" | "refreshing" | "done">("idle")
   const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const signerConnected = status === "connected" && !!pubkey
 
   useEffect(() => {
     // Detect WebLN (Alby extension) — may load after page render
@@ -457,10 +459,10 @@ function OrdersPage() {
 
   const ordersQuery = useQuery({
     queryKey: ["merchant-order-messages", pubkey ?? "none"],
-    enabled: !!pubkey,
+    enabled: signerConnected,
     queryFn: () => fetchMerchantMessages(pubkey!),
     staleTime: 30_000,
-    refetchInterval: 20_000,
+    refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   })
   const isOrdersFetching = ordersQuery.isFetching
@@ -492,17 +494,18 @@ function OrdersPage() {
   }, [])
 
   const handleRefresh = useCallback(() => {
+    if (!signerConnected) return
     if (refreshResetTimerRef.current) {
       clearTimeout(refreshResetTimerRef.current)
       refreshResetTimerRef.current = null
     }
     setRefreshButtonState("refreshing")
     void refetchOrders()
-  }, [refetchOrders])
+  }, [refetchOrders, signerConnected])
 
   const conversations = useMemo(
-    () => buildMerchantConversations(ordersQuery.data ?? [], pubkey ?? ""),
-    [ordersQuery.data, pubkey]
+    () => signerConnected && pubkey ? buildMerchantConversations(ordersQuery.data ?? [], pubkey) : [],
+    [ordersQuery.data, pubkey, signerConnected]
   )
 
   useEffect(() => {
@@ -534,7 +537,7 @@ function OrdersPage() {
   // Auto-invoice: when a new order arrives and a wallet is connected (or mock mode),
   // generate and send the invoice automatically without merchant intervention.
   useEffect(() => {
-    if (!pubkey) return
+    if (!signerConnected || !pubkey) return
     const mock = canMockInvoice()
     const wallet = mock ? "mock" : weblnAvailable ? "webln" : nwc.connection ? "nwc" : null
     if (!wallet) return
@@ -607,7 +610,7 @@ function OrdersPage() {
         await autoInvoice(conv)
       }
     })()
-  }, [conversations, pubkey, weblnAvailable, nwc.connection, flash, queryClient])
+  }, [conversations, pubkey, signerConnected, weblnAvailable, nwc.connection, flash, queryClient])
 
   // Generate invoice via WebLN (Alby) or NWC, then auto-send as payment_request DM
   const generateInvoiceMutation = useMutation({
@@ -706,9 +709,9 @@ function OrdersPage() {
         buyerPubkey: selected.buyerPubkey,
         orderId: selected.orderId,
         type: "status_update",
-        tags: [["status", status]],
+        tags: [["status", orderStatus]],
         payload: {
-          status,
+          status: orderStatus,
           note: statusNote.trim() || undefined,
         },
       })
@@ -759,22 +762,18 @@ function OrdersPage() {
             Two-column merchant inbox for MVP order conversations and invoice/status/shipping actions.
           </p>
           <div className="mt-3">
-            <Button variant="outline" size="sm" disabled={isOrdersFetching} onClick={handleRefresh}>
+            <Button variant="outline" size="sm" disabled={!signerConnected || isOrdersFetching} onClick={handleRefresh}>
               <span className="inline-flex items-center gap-2">
-                <span className="relative inline-flex h-4 w-4 items-center justify-center">
-                  <span
-                    className={`absolute h-3.5 w-3.5 rounded-full border-2 border-[var(--text-secondary)] border-t-transparent transition-opacity duration-200 ${
-                      refreshButtonState === "refreshing" ? "animate-spin opacity-100" : "opacity-0"
-                    }`}
-                  />
-                  <span
-                    className={`absolute h-2 w-2 rounded-full bg-[var(--text-secondary)] transition-opacity duration-200 ${
-                      refreshButtonState === "idle" ? "opacity-70" : "opacity-0"
-                    }`}
-                  />
-                  <span
-                    className={`absolute h-2.5 w-2.5 rounded-full bg-green-400 transition-opacity duration-200 ${
-                      refreshButtonState === "done" ? "opacity-100" : "opacity-0"
+                <span className={`inline-flex h-4 w-4 items-center justify-center ${
+                  refreshButtonState === "refreshing" ? "animate-pulse" : ""
+                }`}>
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 transition-colors duration-200 ${
+                      refreshButtonState === "refreshing"
+                        ? "animate-spin text-[var(--accent)]"
+                        : refreshButtonState === "done"
+                          ? "text-green-400"
+                          : "text-[var(--text-secondary)]"
                     }`}
                   />
                 </span>
@@ -886,30 +885,30 @@ function OrdersPage() {
         </div>
       )}
 
-      {!pubkey && (
+      {!signerConnected && (
         <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
           Connect your signer to view incoming orders.
         </div>
       )}
 
-      {ordersQuery.isLoading && (
+      {signerConnected && ordersQuery.isLoading && (
         <div className="text-sm text-[var(--text-secondary)]">Loading…</div>
       )}
 
-      {ordersQuery.error && (
+      {signerConnected && ordersQuery.error && (
         <div className="rounded-md border border-error/30 bg-error/10 p-4 text-sm text-error">
           Failed to load orders:{" "}
           {ordersQuery.error instanceof Error ? ordersQuery.error.message : "Unknown error"}
         </div>
       )}
 
-      {!ordersQuery.isLoading && conversations.length === 0 && (
+      {signerConnected && !ordersQuery.isLoading && conversations.length === 0 && (
         <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
           No orders yet. Place an order from the Market app targeting this merchant pubkey.
         </div>
       )}
 
-      {conversations.length > 0 && (
+      {signerConnected && conversations.length > 0 && (
         <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
           <aside className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2">
             <div className="mb-2 px-2 text-xs uppercase tracking-wide text-[var(--text-secondary)]">Conversations</div>
@@ -1069,8 +1068,8 @@ function OrdersPage() {
                         <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">Status update</div>
                         <select
                           className="h-10 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--text-primary)]"
-                          value={status}
-                          onChange={(event) => setStatus(event.target.value as StatusUpdateMessageSchema["status"])}
+                          value={orderStatus}
+                          onChange={(event) => setOrderStatus(event.target.value as StatusUpdateMessageSchema["status"])}
                         >
                           <option value="invoiced">invoiced</option>
                           <option value="paid">paid</option>

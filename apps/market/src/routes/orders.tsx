@@ -14,6 +14,7 @@ import {
 } from "@conduit/core"
 import { Badge, Button, OrderDetailCard, Tabs, TabsContent, TabsList, TabsTrigger } from "@conduit/ui"
 import { giftUnwrap, NDKEvent, type NDKFilter, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { RefreshCw } from "lucide-react"
 import { QRCodeSVG } from "qrcode.react"
 import { requireAuth } from "../lib/auth"
 
@@ -398,7 +399,7 @@ function OrdersPage() {
     queryKey: ["buyer-messages", pubkey ?? "none"],
     enabled: !!pubkey,
     queryFn: () => fetchBuyerMessages(pubkey!),
-    refetchInterval: 20_000,
+    refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   })
   const isMessagesFetching = messagesQuery.isFetching
@@ -475,20 +476,16 @@ function OrdersPage() {
           <div className="mt-3">
             <Button variant="outline" size="sm" disabled={isMessagesFetching} onClick={handleRefresh}>
               <span className="inline-flex items-center gap-2">
-                <span className="relative inline-flex h-4 w-4 items-center justify-center">
-                  <span
-                    className={`absolute h-3.5 w-3.5 rounded-full border-2 border-[var(--text-secondary)] border-t-transparent transition-opacity duration-200 ${
-                      refreshButtonState === "refreshing" ? "animate-spin opacity-100" : "opacity-0"
-                    }`}
-                  />
-                  <span
-                    className={`absolute h-2 w-2 rounded-full bg-[var(--text-secondary)] transition-opacity duration-200 ${
-                      refreshButtonState === "idle" ? "opacity-70" : "opacity-0"
-                    }`}
-                  />
-                  <span
-                    className={`absolute h-2.5 w-2.5 rounded-full bg-green-400 transition-opacity duration-200 ${
-                      refreshButtonState === "done" ? "opacity-100" : "opacity-0"
+                <span className={`inline-flex h-4 w-4 items-center justify-center ${
+                  refreshButtonState === "refreshing" ? "animate-pulse" : ""
+                }`}>
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 transition-colors duration-200 ${
+                      refreshButtonState === "refreshing"
+                        ? "animate-spin text-[var(--accent)]"
+                        : refreshButtonState === "done"
+                          ? "text-green-400"
+                          : "text-[var(--text-secondary)]"
                     }`}
                   />
                 </span>
