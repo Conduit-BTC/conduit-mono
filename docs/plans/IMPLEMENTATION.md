@@ -947,7 +947,7 @@ Migrate from GitLab to GitHub before onboarding contributors. Do this after MVP 
 - [x] Update CLAUDE.md git remote references
 - [x] Archive GitLab repo (read-only)
 - [x] Switch origin remote to GitHub
-- [ ] Remove `.gitlab-ci.yml` and `scripts/gitlab/` once GitHub Actions verified
+- [x] Remove `.gitlab-ci.yml` and `scripts/gitlab/`
 
 ### New Repo Scaffolding (as needed)
 - [ ] `conduit-relay` — when Phase 5 starts

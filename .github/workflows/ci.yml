@@ -103,9 +103,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [deploy]
     permissions:
+      contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
       - name: Post preview links
         uses: actions/github-script@v7
         with:
@@ -134,32 +134,57 @@ jobs:
               return `| ${label} | ${url} |`;
             });
 
-            const body = [
-              "## Preview Links",
-              "",
+            const table = [
               "| App | URL |",
               "|-----|-----|",
               ...links,
             ].join("\n");
 
-            const MARKER = "<!-- conduit:preview_links -->";
+            const MARKER_START = "<!-- conduit:preview_links -->";
+            const MARKER_END = "<!-- /conduit:preview_links -->";
+            const previewBlock = `${MARKER_START}\n## Preview Deploys\n\n${table}\n${MARKER_END}`;
 
-            // Find existing comment
+            // --- 1. Prepend to PR description (idempotent) ---
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+
+            const existing = pr.body || "";
+            const markerRegex = new RegExp(
+              `${MARKER_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${MARKER_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n*`
+            );
+
+            let newBody;
+            if (markerRegex.test(existing)) {
+              newBody = existing.replace(markerRegex, previewBlock + "\n\n");
+            } else {
+              newBody = previewBlock + "\n\n" + existing;
+            }
+
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              body: newBody,
+            });
+
+            // --- 2. Sticky comment (always visible in conversation) ---
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
             });
 
-            const existing = comments.find(c => c.body?.includes(MARKER));
+            const existingComment = comments.find(c => c.body?.includes(MARKER_START));
+            const commentBody = `${previewBlock}\n\n_Updated for commit ${context.sha.slice(0, 7)}_`;
 
-            const commentBody = `${MARKER}\n${body}`;
-
-            if (existing) {
+            if (existingComment) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                comment_id: existing.id,
+                comment_id: existingComment.id,
                 body: commentBody,
               });
             } else {
