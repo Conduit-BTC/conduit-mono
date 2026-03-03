@@ -925,9 +925,9 @@ Migrate from GitLab to GitHub before onboarding contributors. Do this after MVP 
 - [x] Create `Conduit-BTC` org on GitHub
 - [x] Push mirror of `conduit-mono` to GitHub
 - [x] Set repo secrets (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID)
-- [ ] Upgrade to GitHub Team plan ($4/user/mo) for branch protection on private repo
-- [ ] Set `main` branch protection: require PR reviews, no direct push (requires Team plan or public repo)
-- [ ] Configure contributor access (Write role, no admin)
+- [x] GitHub Team plan active
+- [x] `main` branch protection: require PR reviews (1 approver), required status checks (lint, typecheck, test), no force push, no deletions, stale review dismissal
+- [ ] Configure contributor access (Write role, no admin) — when adding team members
 
 ### CI/CD Migration
 - [x] Port `.gitlab-ci.yml` to GitHub Actions workflow
