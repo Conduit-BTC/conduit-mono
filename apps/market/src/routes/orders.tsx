@@ -83,7 +83,6 @@ async function fetchBuyerMessages(buyerPubkey: string): Promise<ParsedOrderMessa
   for (const row of cached) {
     try {
       cachedById.set(row.id, JSON.parse(row.rawContent) as ParsedOrderMessage)
-      knownWrapIds.add(row.id)
     } catch { /* skip corrupt */ }
   }
 
