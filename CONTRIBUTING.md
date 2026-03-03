@@ -60,6 +60,38 @@ bun test            # Must pass
 - Include a test plan (how to verify the changes work)
 - PRs require review before merging to `main`
 
+## CI and Preview Deploy Notes
+
+### Cloudflare Pages projects
+
+- Mainnet:
+  - `conduit-market`
+  - `conduit-merchant`
+- Signet:
+  - `conduit-market-signet`
+  - `conduit-merchant-signet`
+
+### Important setup constraints
+
+- Signet projects must be Git-connected Pages projects. Direct Upload projects cannot be switched to Git source later.
+- Configure build runtime vars on both preview + production configs:
+  - `BUN_VERSION=1.3.5`
+  - `NODE_VERSION=20`
+- Without those vars, Cloudflare can fall back to `npm install`, which breaks Bun workspace installs.
+
+### Required checks before merge
+
+Branch protection on `main` expects:
+- `lint`
+- `typecheck`
+- `test`
+- `build-signet`
+- `preview-links`
+- `Cloudflare Pages: conduit-market`
+- `Cloudflare Pages: conduit-merchant`
+- `Cloudflare Pages: conduit-market-signet`
+- `Cloudflare Pages: conduit-merchant-signet`
+
 ## Code Conventions
 
 ### General

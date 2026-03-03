@@ -91,6 +91,43 @@ import { getNdk, connectNdk } from "@conduit/core/protocol"
 
 **No state management library.** TanStack Query handles all relay data. Dexie handles local persistence.
 
+## Current Operational Notes (March 2026)
+
+### Cloudflare Pages projects
+- Mainnet projects:
+  - `conduit-market` (branch domain suffix: `conduit-market-coo.pages.dev`)
+  - `conduit-merchant` (branch domain suffix: `conduit-merchant-33n.pages.dev`)
+- Signet projects:
+  - `conduit-market-signet`
+  - `conduit-merchant-signet`
+
+### Cloudflare preview/deploy gotchas
+- Signet projects must be Git-connected Pages projects (`source.type = "github"`), not Direct Upload projects.
+- Direct Upload projects cannot be converted to Git source (`8000069` API error). Recreate if needed.
+- Keep `BUN_VERSION=1.3.5` and `NODE_VERSION=20` in both preview + production deployment configs.
+- If those env vars are missing, Cloudflare may run `npm install` and fail on Bun workspaces (`workspace:*`).
+- Cloudflare PR comments are authored by `cloudflare-workers-and-pages[bot]` (note `[bot]` suffix).
+
+### GitHub CI / merge checks
+- Required checks on `main` currently include:
+  - `lint`, `typecheck`, `test`, `build-signet`, `preview-links`
+  - `Cloudflare Pages: conduit-market`
+  - `Cloudflare Pages: conduit-merchant`
+  - `Cloudflare Pages: conduit-market-signet`
+  - `Cloudflare Pages: conduit-merchant-signet`
+- `preview-links` is expected to proceed once Cloudflare checks are complete, even if some URL comments arrive late.
+
+### Orders auth gate behavior
+- Market and Merchant orders pages should only fetch/show conversations when:
+  - `status === "connected"` and `pubkey` is present.
+- Do not rely on persisted pubkey alone for gated views.
+- Orders polling interval is tuned to `30_000` ms with manual refresh available.
+
+### Refresh button behavior
+- Orders refresh uses Lucide `RefreshCw` on the left.
+- During refresh: icon spins and pulses.
+- State text transitions: `Refresh` -> `Refreshing...` -> `Updated`.
+
 ## Code Patterns
 
 ### Query Hook Pattern
