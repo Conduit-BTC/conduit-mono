@@ -1,4 +1,4 @@
-import NDK, { NDKRelayStatus, type NDKSigner } from "@nostr-dev-kit/ndk"
+import NDK, { NDKRelayStatus, type NDKEvent, type NDKFilter, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { config } from "../config"
 
 export type NdkConnectionState = "idle" | "connecting" | "connected" | "error"
@@ -7,6 +7,12 @@ export interface NdkState {
   status: NdkConnectionState
   connectedRelays: string[]
   error: string | null
+}
+
+export interface FetchEventsFanoutOptions {
+  relayUrls?: string[]
+  connectTimeoutMs?: number
+  fetchTimeoutMs?: number
 }
 
 type Listener = () => void
@@ -48,6 +54,77 @@ export function getNdk(): NDK {
     })
   }
   return ndkInstance
+}
+
+function sleep<T>(ms: number, value: T): Promise<T> {
+  return new Promise((resolve) => setTimeout(() => resolve(value), ms))
+}
+
+async function fetchEventsFromRelay(
+  relayUrl: string,
+  filter: NDKFilter,
+  connectTimeoutMs: number,
+  fetchTimeoutMs: number
+): Promise<NDKEvent[]> {
+  const ndk = new NDK({
+    explicitRelayUrls: [relayUrl],
+  })
+
+  try {
+    const connected = await Promise.race([
+      ndk.connect(connectTimeoutMs).then(() => true).catch(() => false),
+      sleep(connectTimeoutMs + 250, false),
+    ])
+
+    if (!connected) return []
+
+    const events = await Promise.race([
+      ndk.fetchEvents(filter),
+      sleep(fetchTimeoutMs, new Set<NDKEvent>()),
+    ])
+
+    return Array.from(events) as NDKEvent[]
+  } catch {
+    return []
+  } finally {
+    for (const [, relay] of ndk.pool?.relays?.entries() ?? []) {
+      relay.disconnect()
+    }
+  }
+}
+
+export async function fetchEventsFanout(
+  filter: NDKFilter,
+  options: FetchEventsFanoutOptions = {}
+): Promise<NDKEvent[]> {
+  const relayUrls = (options.relayUrls && options.relayUrls.length > 0
+    ? options.relayUrls
+    : config.defaultRelays
+  )
+    .map((url) => url.trim())
+    .filter(Boolean)
+    .filter((url, index, all) => all.indexOf(url) === index)
+
+  if (relayUrls.length === 0) return []
+
+  const connectTimeoutMs = options.connectTimeoutMs ?? 4_000
+  const fetchTimeoutMs = options.fetchTimeoutMs ?? 8_000
+
+  const perRelayResults = await Promise.all(
+    relayUrls.map((relayUrl) =>
+      fetchEventsFromRelay(relayUrl, filter, connectTimeoutMs, fetchTimeoutMs)
+    )
+  )
+
+  const merged = new Map<string, NDKEvent>()
+  for (const events of perRelayResults) {
+    for (const event of events) {
+      const fallbackId = `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
+      merged.set(event.id || fallbackId, event)
+    }
+  }
+
+  return Array.from(merged.values())
 }
 
 export async function connectNdk(timeoutMs = 10_000): Promise<void> {

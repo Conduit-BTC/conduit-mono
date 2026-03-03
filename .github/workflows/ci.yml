@@ -106,6 +106,7 @@ jobs:
         with:
           script: |
             const branch = context.payload.pull_request.head.ref;
+            const headSha = context.payload.pull_request.head.sha;
 
             // Cloudflare branch slug: lowercase, non-alnum to dash, collapse, trim, max 28 chars
             const slug = branch
@@ -166,27 +167,11 @@ jobs:
             });
 
             // --- 2. Sticky comment (always visible in conversation) ---
-            const { data: comments } = await github.rest.issues.listComments({
+            const commentBody = `${previewBlock}\n\n_Preview links for commit ${headSha.slice(0, 7)}_`;
+
+            await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
+              body: commentBody,
             });
-
-            const existingComment = comments.find(c => c.body?.includes(MARKER_START));
-            const commentBody = `${previewBlock}\n\n_Updated for commit ${context.sha.slice(0, 7)}_`;
-
-            if (existingComment) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existingComment.id,
-                body: commentBody,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: commentBody,
-              });
-            }

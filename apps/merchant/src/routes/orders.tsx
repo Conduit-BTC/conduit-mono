@@ -6,6 +6,7 @@ import {
   db,
   EVENT_KINDS,
   extractOrderSummary,
+  fetchEventsFanout,
   formatPubkey,
   getNdk,
   hasWebLN,
@@ -113,9 +114,10 @@ async function fetchMerchantMessages(merchantPubkey: string): Promise<ParsedOrde
       limit: 50,
     }
 
-    const wrapped = Array.from(
-      await raceTimeout(ndk.fetchEvents(filter), 15_000, new Set<NDKEvent>())
-    ) as NDKEvent[]
+    const wrapped = await fetchEventsFanout(filter, {
+      connectTimeoutMs: 4_000,
+      fetchTimeoutMs: 12_000,
+    }) as NDKEvent[]
 
     // Only unwrap events we haven't seen before
     const newWrapped = wrapped.filter((e) => !knownWrapIds.has(e.id))

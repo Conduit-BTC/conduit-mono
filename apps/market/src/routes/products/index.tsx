@@ -1,6 +1,6 @@
 import { useMemo } from "react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import { EVENT_KINDS, getNdk, parseProductEvent, type Product } from "@conduit/core"
+import { EVENT_KINDS, fetchEventsFanout, parseProductEvent, type Product } from "@conduit/core"
 import { useQuery } from "@tanstack/react-query"
 import { Badge, Button, Input } from "@conduit/ui"
 import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
@@ -31,15 +31,16 @@ export const Route = createFileRoute("/products/")({
 })
 
 async function fetchProducts(merchant?: string): Promise<Product[]> {
-  const ndk = getNdk()
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.PRODUCT],
     limit: 50,
   }
   if (merchant) filter.authors = [merchant]
 
-  const events = await ndk.fetchEvents(filter)
-  const list = Array.from(events) as NDKEvent[]
+  const list = await fetchEventsFanout(filter, {
+    connectTimeoutMs: 4_000,
+    fetchTimeoutMs: 8_000,
+  }) as NDKEvent[]
   return list
     .map((e) => {
       try {
