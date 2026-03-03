@@ -92,12 +92,14 @@ jobs:
             echo "name=conduit-${{ matrix.app }}-${{ matrix.network }}" >> "$GITHUB_OUTPUT"
           fi
       - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          packageManager: npm
-          command: pages deploy build-output/${{ matrix.network }}/${{ matrix.app }} --project-name "${{ steps.project.outputs.name }}" --branch "${{ github.head_ref }}" --commit-hash "${{ github.sha }}"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx --yes wrangler pages deploy build-output/${{ matrix.network }}/${{ matrix.app }} \
+            --project-name "${{ steps.project.outputs.name }}" \
+            --branch "${{ github.head_ref }}" \
+            --commit-hash "${{ github.sha }}"
 
   preview-links:
     if: github.event_name == 'pull_request'
