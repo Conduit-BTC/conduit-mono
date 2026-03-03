@@ -46,9 +46,14 @@ function getDefaultRelays(env: ReturnType<typeof getViteEnv>): string[] {
 
 const env = getViteEnv()
 
+const relayUrl = env.relayUrl || "wss://relay.conduit.market"
+const baseRelays = getDefaultRelays(env)
+
 export const config: ConduitConfig = {
-  relayUrl: env.relayUrl || "wss://relay.conduit.market",
-  defaultRelays: getDefaultRelays(env),
+  relayUrl,
+  defaultRelays: baseRelays.includes(relayUrl)
+    ? baseRelays
+    : [relayUrl, ...baseRelays],
   lightningNetwork: (env.lightningNetwork || "mainnet") as ConduitConfig["lightningNetwork"],
 }
 
