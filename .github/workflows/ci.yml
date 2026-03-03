@@ -7,8 +7,8 @@ on:
     branches: [main]
 
 env:
-  VITE_RELAY_URL: "wss://relay.conduit.market"
-  VITE_DEFAULT_RELAYS: "wss://relay.damus.io,wss://relay.primal.net"
+  VITE_RELAY_URL: "wss://relay.primal.net"
+  VITE_DEFAULT_RELAYS: "wss://relay.primal.net,wss://relay.damus.io"
 
 jobs:
   lint:

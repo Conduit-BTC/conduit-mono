@@ -1,6 +1,6 @@
 const DEFAULT_RELAYS = [
-  "wss://relay.damus.io",
   "wss://relay.primal.net",
+  "wss://relay.damus.io",
   "wss://nos.lol",
   "wss://relay.nostr.band",
   "wss://purplepag.es",
@@ -48,7 +48,7 @@ function getDefaultRelays(env: ReturnType<typeof getViteEnv>): string[] {
 
 const env = getViteEnv()
 
-const relayUrl = env.relayUrl || "wss://relay.conduit.market"
+const relayUrl = env.relayUrl || "wss://relay.primal.net"
 const baseRelays = getDefaultRelays(env)
 
 export const config: ConduitConfig = {
