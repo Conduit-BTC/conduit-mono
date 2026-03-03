@@ -108,7 +108,7 @@ export function MerchantHeader() {
         </nav>
 
         <div className="ml-auto flex items-center gap-2 lg:ml-0">
-          <div className="hidden lg:block">
+          <div className="hidden min-w-[8rem] items-center justify-end lg:flex">
             {pubkey ? <UserMenu /> : <SignerSwitch />}
           </div>
 

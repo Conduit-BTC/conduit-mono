@@ -133,7 +133,7 @@ export function MarketHeader() {
             <span>({cart.totals.count})</span>
           </Link>
 
-          <div className="hidden lg:block">
+          <div className="hidden min-w-[8rem] items-center justify-end lg:flex">
             {pubkey ? <UserMenu /> : <SignerSwitch />}
           </div>
 
