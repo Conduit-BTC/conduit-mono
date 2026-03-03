@@ -4,7 +4,7 @@
 
 1. Clone the repo and install dependencies:
    ```bash
-   git clone https://github.com/conduit-btc/conduit-mono.git
+   git clone https://github.com/Conduit-BTC/conduit-mono.git
    cd conduit-mono
    bun install
    ```

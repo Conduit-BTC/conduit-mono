@@ -1,0 +1,172 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  VITE_RELAY_URL: "wss://relay.conduit.market"
+  VITE_DEFAULT_RELAYS: ""
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+      - run: bun install --frozen-lockfile
+      - run: bun test
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck, test]
+    strategy:
+      matrix:
+        network: [signet, mainnet]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+      - run: bun install --frozen-lockfile
+      - name: Build (${{ matrix.network }})
+        run: VITE_LIGHTNING_NETWORK=${{ matrix.network }} bun run build
+      - name: Stage build output
+        run: |
+          mkdir -p build-output/${{ matrix.network }}/market build-output/${{ matrix.network }}/merchant
+          cp -r apps/market/dist/* build-output/${{ matrix.network }}/market/
+          cp -r apps/merchant/dist/* build-output/${{ matrix.network }}/merchant/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.network }}
+          path: build-output/${{ matrix.network }}/
+          retention-days: 7
+
+  deploy:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [build]
+    strategy:
+      matrix:
+        app: [market, merchant]
+        network: [signet, mainnet]
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-${{ matrix.network }}
+          path: build-output/${{ matrix.network }}/
+      - name: Determine project name
+        id: project
+        run: |
+          if [ "${{ matrix.network }}" = "mainnet" ]; then
+            echo "name=conduit-${{ matrix.app }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=conduit-${{ matrix.app }}-${{ matrix.network }}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy build-output/${{ matrix.network }}/${{ matrix.app }} --project-name "${{ steps.project.outputs.name }}" --branch "${{ github.head_ref }}" --commit-hash "${{ github.sha }}"
+
+  preview-links:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Post preview links
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = context.payload.pull_request.head.ref;
+
+            // Cloudflare branch slug: lowercase, non-alnum to dash, collapse, trim, max 28 chars
+            const slug = branch
+              .toLowerCase()
+              .replace(/[^a-z0-9]/g, "-")
+              .replace(/-+/g, "-")
+              .replace(/^-|-$/g, "")
+              .slice(0, 28);
+
+            const DOMAIN_MAP = {
+              "market-signet": "conduit-market-signet",
+              "market-mainnet": "conduit-market-arq",
+              "merchant-signet": "conduit-merchant-signet",
+              "merchant-mainnet": "conduit-merchant-arq",
+            };
+
+            const links = Object.entries(DOMAIN_MAP).map(([key, domain]) => {
+              const [app, network] = key.split("-");
+              const label = `${app.charAt(0).toUpperCase() + app.slice(1)} (${network})`;
+              const url = `https://${slug}.${domain}.pages.dev`;
+              return `| ${label} | ${url} |`;
+            });
+
+            const body = [
+              "## Preview Links",
+              "",
+              "| App | URL |",
+              "|-----|-----|",
+              ...links,
+            ].join("\n");
+
+            const MARKER = "<!-- conduit:preview_links -->";
+
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(c => c.body?.includes(MARKER));
+
+            const commentBody = `${MARKER}\n${body}`;
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: commentBody,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: commentBody,
+              });
+            }

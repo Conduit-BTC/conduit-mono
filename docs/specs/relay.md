@@ -6,7 +6,7 @@ A custom Nostr relay optimized for commerce events. Provides reliable storage an
 
 ## Reference
 
-**Archived GitLab repo**: `https://gitlab.com/conduit-btc/conduit-market-relay` (archived)
+**GitHub repo**: `https://github.com/Conduit-BTC/conduit-market-relay`
 - Check for existing relay implementation patterns
 - May contain useful configuration and policy decisions
 

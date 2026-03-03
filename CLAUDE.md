@@ -166,4 +166,4 @@ export function ProductCard({ product, className }: ProductCardProps) {
 - Existing repos (for patterns only, not merging):
   - `/Users/dylangolow/workspace/CONDUIT/conduit-market-client`
   - `/Users/dylangolow/workspace/CONDUIT/merchant-portal`
-- GitLab: https://gitlab.com/conduit-btc
+- GitHub: https://github.com/Conduit-BTC

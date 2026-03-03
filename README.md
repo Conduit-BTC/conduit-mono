@@ -33,7 +33,7 @@ Decentralized commerce platform built on [Nostr](https://nostr.com). Merchants a
 
 ```bash
 # Clone and install
-git clone https://github.com/conduit-btc/conduit-mono.git
+git clone https://github.com/Conduit-BTC/conduit-mono.git
 cd conduit-mono
 bun install
 

@@ -5,7 +5,7 @@
 A server-side Nostr bot that automates merchant operations. Monitors commerce events and handles checkout, inventory, payments, and fulfillment without requiring merchants to be constantly online.
 
 **Status**: Post-MVP (Phase 5+)
-**Repo**: https://gitlab.com/conduit-btc/a-nostr-commerce-coordinator
+**Repo**: https://github.com/Conduit-BTC/a-nostr-commerce-coordinator
 
 ## Purpose
 
@@ -220,6 +220,6 @@ services:
 
 ## References
 
-- Existing repo: https://gitlab.com/conduit-btc/a-nostr-commerce-coordinator
+- Existing repo: https://github.com/Conduit-BTC/a-nostr-commerce-coordinator
 - NIP-46 (Nostr Connect): https://github.com/nostr-protocol/nips/blob/master/46.md
 - NIP-17 (Private DMs): https://github.com/nostr-protocol/nips/blob/master/17.md

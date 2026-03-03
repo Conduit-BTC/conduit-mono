@@ -53,4 +53,4 @@ Behavior:
 ## Tracking
 
 Open tracking issue:
-- https://gitlab.com/conduit-btc/conduit-mono/-/issues/1
+- https://github.com/Conduit-BTC/conduit-mono/issues/1
