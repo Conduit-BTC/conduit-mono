@@ -46,9 +46,9 @@ jobs:
     needs: [lint, typecheck, test]
     strategy:
       matrix:
-        # PRs only need signet artifact for wrangler preview deploys.
-        # Mainnet preview checks come from Cloudflare's Git integration app.
-        # Pushes to main validate mainnet build only.
+        # PRs validate signet builds.
+        # Pushes to main validate mainnet builds.
+        # Preview/prod deploys are handled by Cloudflare Git integration.
         network: ${{ fromJSON(github.event_name == 'pull_request' && '["signet"]' || '["mainnet"]') }}
     steps:
       - uses: actions/checkout@v4
@@ -58,95 +58,20 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Build (${{ matrix.network }})
         run: VITE_LIGHTNING_NETWORK=${{ matrix.network }} bun run build
-      - name: Stage build output
-        run: |
-          mkdir -p build-output/${{ matrix.network }}/market build-output/${{ matrix.network }}/merchant
-          cp -r apps/market/dist/* build-output/${{ matrix.network }}/market/
-          cp -r apps/merchant/dist/* build-output/${{ matrix.network }}/merchant/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: build-${{ matrix.network }}
-          path: build-output/${{ matrix.network }}/
-          retention-days: 7
-
-  # Signet previews via wrangler (direct-upload projects).
-  # Mainnet previews + production deploys are handled by CF git integration.
-  deploy-signet:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    needs: [build]
-    strategy:
-      matrix:
-        app: [market, merchant]
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: build-signet
-          path: build-output/signet/
-      - name: Deploy to Cloudflare Pages
-        id: deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          set -euo pipefail
-
-          deploy_log="$(mktemp)"
-          npx --yes wrangler pages deploy build-output/signet/${{ matrix.app }} \
-            --project-name "conduit-${{ matrix.app }}-signet" \
-            --branch "${{ github.head_ref }}" \
-            --commit-hash "${{ github.sha }}" 2>&1 | tee "$deploy_log"
-
-          branch_slug="$(printf '%s' '${{ github.head_ref }}' \
-            | tr '[:upper:]' '[:lower:]' \
-            | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g' \
-            | cut -c1-28)"
-          fallback_branch_url="https://${branch_slug}.conduit-${{ matrix.app }}-signet.pages.dev"
-
-          commit_url="$(sed -n 's#.*Take a peek over at \(https://[^[:space:]]\+\).*#\1#p' "$deploy_log" | tail -n1)"
-          branch_url="$(sed -n 's#.*Deployment alias URL: \(https://[^[:space:]]\+\).*#\1#p' "$deploy_log" | tail -n1)"
-
-          if [ -z "${branch_url}" ]; then
-            branch_url="$fallback_branch_url"
-          fi
-
-          {
-            echo "commit_url=$commit_url"
-            echo "branch_url=$branch_url"
-          } >> "$GITHUB_OUTPUT"
-
-          cat > "preview-${{ matrix.app }}.json" <<EOF
-          {"app":"${{ matrix.app }}","network":"signet","branch_url":"${branch_url}","commit_url":"${commit_url}"}
-          EOF
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: preview-signet-${{ matrix.app }}
-          path: preview-${{ matrix.app }}.json
-          retention-days: 1
 
   preview-links:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    needs: [deploy-signet]
+    needs: [build]
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: preview-artifacts
-          pattern: preview-signet-*
-          merge-multiple: true
       - name: Post preview links
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require("node:fs");
-            const path = require("node:path");
             const branch = context.payload.pull_request.head.ref;
             const headSha = context.payload.pull_request.head.sha;
             const shortSha = headSha.slice(0, 7);
@@ -163,68 +88,139 @@ jobs:
               market: {
                 signetDomain: "conduit-market-signet",
                 mainnetDomain: "conduit-market-coo",
+                signetProject: "conduit-market-signet",
                 mainnetProject: "conduit-market",
               },
               merchant: {
                 signetDomain: "conduit-merchant-signet",
                 mainnetDomain: "conduit-merchant-33n",
+                signetProject: "conduit-merchant-signet",
                 mainnetProject: "conduit-merchant",
               },
             };
 
-            const signetByApp = {};
-            const previewDir = "preview-artifacts";
-            if (fs.existsSync(previewDir)) {
-              for (const fileName of fs.readdirSync(previewDir)) {
-                if (!fileName.endsWith(".json")) continue;
-                try {
-                  const parsed = JSON.parse(fs.readFileSync(path.join(previewDir, fileName), "utf8"));
-                  if (parsed?.app) signetByApp[parsed.app] = parsed;
-                } catch {}
+            const CF_USERS = new Set([
+              "cloudflare-workers-and-pages",
+              "cloudflare-pages[bot]",
+            ]);
+
+            function extractUrlsFromCommentBody(body) {
+              let commitUrl = null;
+              let branchUrl = null;
+
+              for (const line of body.split("\n")) {
+                const href = line.match(/href=['"]([^'"]+)['"]/i)?.[1] || null;
+                const lower = line.toLowerCase();
+                if (!href) continue;
+                if (!branchUrl && lower.includes("branch preview url")) {
+                  branchUrl = href;
+                  continue;
+                }
+                if (!commitUrl && lower.includes("preview url") && !lower.includes("branch preview url")) {
+                  commitUrl = href;
+                }
               }
+
+              return { commitUrl, branchUrl };
             }
 
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              per_page: 100,
-            });
+            async function listIssueComments() {
+              return github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                per_page: 100,
+              });
+            }
 
-            function readMainnetUrls(projectName) {
+            function resolveProjectUrls(comments, projectName) {
               const candidates = comments
-                .filter((comment) =>
-                  comment.user?.login === "cloudflare-workers-and-pages"
-                  && comment.body?.includes(`Deploying ${projectName}`)
-                  && comment.body?.includes(`<code>${shortSha}</code>`)
-                )
+                .filter((comment) => {
+                  const body = comment.body || "";
+                  return (
+                    CF_USERS.has(comment.user?.login || "")
+                    && body.includes(`Deploying ${projectName}`)
+                    && (
+                      body.includes(`<code>${headSha}</code>`)
+                      || body.includes(`<code>${shortSha}</code>`)
+                      || body.includes(shortSha)
+                    )
+                  );
+                })
                 .reverse();
 
               for (const comment of candidates) {
-                const body = comment.body || "";
-                const commitMatch = body.match(/Preview URL:[\s\S]*?<a href='([^']+)'/i);
-                const branchMatch = body.match(/Branch Preview URL:[\s\S]*?<a href='([^']+)'/i);
-                if (commitMatch?.[1] || branchMatch?.[1]) {
-                  return {
-                    commitUrl: commitMatch?.[1] || null,
-                    branchUrl: branchMatch?.[1] || null,
-                  };
+                const parsed = extractUrlsFromCommentBody(comment.body || "");
+                if (parsed.commitUrl || parsed.branchUrl) {
+                  return parsed;
                 }
               }
 
               return { commitUrl: null, branchUrl: null };
             }
 
+            const byApp = {
+              market: {
+                signet: { commitUrl: null, branchUrl: null },
+                mainnet: { commitUrl: null, branchUrl: null },
+              },
+              merchant: {
+                signet: { commitUrl: null, branchUrl: null },
+                mainnet: { commitUrl: null, branchUrl: null },
+              },
+            };
+
+            let comments = [];
+            const waitUntil = Date.now() + 10 * 60 * 1000;
+            const pollIntervalMs = 20 * 1000;
+
+            while (true) {
+              comments = await listIssueComments();
+
+              for (const app of ["market", "merchant"]) {
+                const project = PROJECTS[app];
+                byApp[app].signet = resolveProjectUrls(comments, project.signetProject);
+                byApp[app].mainnet = resolveProjectUrls(comments, project.mainnetProject);
+              }
+
+              const hasAllCommitUrls = ["market", "merchant"].every((app) =>
+                Boolean(byApp[app].signet.commitUrl && byApp[app].mainnet.commitUrl)
+              );
+              const hasAllBranchUrls = ["market", "merchant"].every((app) =>
+                Boolean(byApp[app].signet.branchUrl && byApp[app].mainnet.branchUrl)
+              );
+
+              if (hasAllCommitUrls && hasAllBranchUrls) {
+                core.info("Found all Cloudflare commit and branch preview URLs.");
+                break;
+              }
+
+              if (Date.now() >= waitUntil) {
+                core.warning("Timed out waiting for complete Cloudflare preview links; using available URLs with fallbacks.");
+                break;
+              }
+
+              const pending = [];
+              for (const app of ["market", "merchant"]) {
+                for (const network of ["signet", "mainnet"]) {
+                  if (!byApp[app][network].commitUrl) pending.push(`${app}/${network}:commit`);
+                  if (!byApp[app][network].branchUrl) pending.push(`${app}/${network}:branch`);
+                }
+              }
+              core.info(`Waiting for Cloudflare preview links: ${pending.join(", ")}`);
+              await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+            }
+
             const rows = [];
             for (const app of ["market", "merchant"]) {
               const project = PROJECTS[app];
-              const signet = signetByApp[app] || {};
-              const mainnet = readMainnetUrls(project.mainnetProject);
+              const signet = byApp[app].signet;
+              const mainnet = byApp[app].mainnet;
 
               rows.push({
                 label: `${app.charAt(0).toUpperCase() + app.slice(1)} (signet)`,
-                branchUrl: signet.branch_url || `https://${slug}.${project.signetDomain}.pages.dev`,
-                commitUrl: signet.commit_url || null,
+                branchUrl: signet.branchUrl || `https://${slug}.${project.signetDomain}.pages.dev`,
+                commitUrl: signet.commitUrl || null,
               });
 
               rows.push({
@@ -301,6 +297,12 @@ jobs:
             );
 
             if (alreadyPosted) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: alreadyPosted.id,
+                body: commentBody,
+              });
               return;
             }
 
