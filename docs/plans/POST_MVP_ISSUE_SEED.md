@@ -24,6 +24,8 @@ Use this file to create GitHub issues for Sprint 1 and Sprint 2 with consistent 
 2. `[B1] Define credits ledger event schema + idempotency key rules`
 3. `[B1] Implement feature-flagged gating hooks (no paywall activation)`
 4. `[B1] Draft sponsored placement labeling and fairness guardrails`
+5. `[B1] Add privacy-safe telemetry contract (PostHog optional, default-off)`
+6. `[B1] Define and document telemetry allowlist + disallowed fields`
 
 ## Epic C1: Social Sidepath Experiment #1
 
@@ -38,6 +40,7 @@ Use this file to create GitHub issues for Sprint 1 and Sprint 2 with consistent 
 3. `[D1] Implement founder-only admin auth (Supabase magic link + allowlist)`
 4. `[D1] Implement publish flow to static artifacts for reliability`
 5. `[D1] Add base SEO metadata and canonical handling for update pages`
+6. `[D1] Add aggregate-only tracking plan for /updates consumption`
 
 ## Sprint 2 (Mar 30 - Apr 12, 2026)
 
@@ -65,4 +68,10 @@ Use this file to create GitHub issues for Sprint 1 and Sprint 2 with consistent 
 2. `[D2] Publish monetization explainer update series`
 3. `[D2] Publish onboarding updates for merchants and contributors`
 4. `[D2] Add lightweight editorial checklist for weekly update cadence`
+5. `[D2] Add GTM weekly aggregate metrics dashboard definition (PostHog or equivalent)`
 
+## Cross-Cutting Setup Tasks
+
+1. `[X] Founder TODO: create PostHog org/project (or self-hosted instance)`
+2. `[X] Add \`ENABLE_TELEMETRY\` env gate defaults to off in all clients`
+3. `[X] Add CI check for telemetry allowlist and banned fields`

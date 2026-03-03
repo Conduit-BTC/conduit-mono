@@ -9,6 +9,7 @@ Priorities:
 - Parallel: monetization foundations
 - Lightweight sidepath: social growth loops
 - GTM website track: landing clarity + founder-driven `/updates` publishing
+- Privacy-safe observability baseline: PostHog (optional, default-off)
 
 Success metrics (ethos-aligned):
 - Primary KPI: successful order completion rate (aggregate-only)
@@ -18,6 +19,7 @@ Privacy constraints:
 - aggregate telemetry default
 - opt-in identified feedback only
 - no message/order content export without explicit user consent
+- no persistent product-analytics identifiers by default
 
 ---
 
@@ -132,6 +134,8 @@ Apps:
 - 15% GTM Website Clarity + Updates Ops
 - 10% Social Sidepath Experiments
 
+Observability implementation load is included inside Monetization + GTM capacity.
+
 ---
 
 ## 4) Ownership Model
@@ -172,6 +176,7 @@ Outcomes:
 - entitlement model fixed and documented
 - credits ledger interface and idempotency contract defined
 - gating hooks in place behind flags
+- telemetry contract defined (allowlist + default-off switch + aggregate schema)
 
 ### Epic C1: Social Sidepath Experiment #1
 
@@ -186,6 +191,7 @@ Outcomes:
 - `/updates` page and per-update detail route are indexable and SEO-safe
 - founder can publish updates from a lightweight admin flow
 - published updates are materialized to static content artifacts for reliability
+- `/updates` performance and engagement tracking defined with privacy-safe metrics
 
 ## Sprint 2 (Mar 30 - Apr 12, 2026)
 
@@ -216,6 +222,7 @@ Outcomes:
 - monetization and product positioning updates ship without code redeploy friction
 - update pages include social/SEO metadata (`title`, `description`, `og`, canonical)
 - weekly content cadence established for launch/demo/raise narrative
+- GTM dashboard includes aggregate-only weekly update consumption metrics
 
 Detailed issue seed list is in:
 - `docs/plans/POST_MVP_ISSUE_SEED.md`
@@ -281,6 +288,7 @@ bash scripts/github/bootstrap_post_mvp.sh --repo Conduit-BTC/conduit-mono
 - social opt-in feedback flows exist with explicit consent and privacy-safe defaults
 - landing site has a functioning `/updates` publishing path for founders
 - monetization and roadmap updates can be posted to landing within the same day
+- PostHog integration (if enabled) is aggregate-only and default-off via env gate
 - GitHub planning structure is active and used for all in-sprint issues
 
 ---
@@ -305,3 +313,23 @@ Primary PMF metrics (aggregate-first):
 Exit rules:
 - continue if target metrics improve for 3 consecutive weeks
 - pivot if two loops fail to improve completion + activation metrics
+
+---
+
+## 10) PostHog Track (Tasked, Ethos-Aligned)
+
+Use PostHog only as an optional operational + aggregate product metrics backend.
+
+Human TODO:
+- Founder creates PostHog org/project (or self-hosted instance) and records project settings.
+
+Engineering tasks:
+1. Add telemetry adapter in app layer with hard env gate (`ENABLE_TELEMETRY=false` by default).
+2. Define strict event allowlist (documented in repo) with aggregate-safe payloads only.
+3. Add redaction guard to block disallowed fields (`npub`, order content, DM/payment payloads, addresses, invoice strings).
+4. Track core aggregate counters:
+   - order flow started/completed counts
+   - merchant onboarding completion count
+   - `/updates` page consumption metrics
+5. Add opt-in feedback pathway (optional npub attribution) separate from default telemetry.
+6. Add CI guard to prevent unapproved telemetry SDKs/fields from being introduced.
