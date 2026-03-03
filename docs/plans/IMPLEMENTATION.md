@@ -46,6 +46,7 @@ These are nice-to-have milestones that should not block the Phase 4 Merchant Por
 | NIP-46 auth (Remote signer) | 6 (Coordinator) | Extra connection UX + reliability surface; bundle with automation/hardening |
 | Store Builder | 7 | Nice-to-have, not core loop |
 | Shipping integrations | Added Value | ShipStation/EasyPost |
+| GitHub migration | 4.5 | Do before onboarding team members |
 | Monetization | 8 (Monetization) | Membership, credits, ads, hosting |
 
 ### MVP Payment Flow (Baseline)
@@ -907,6 +908,49 @@ class ConduitDB extends Dexie {
 - Stablecoin address + accepted token(s) + memo convention (public, optional)
 - Hosted checkout URL (public, optional)
 - Accepted methods + default currency (public)
+
+---
+
+## Phase 4.5: GitHub Migration (Pre-Team Onboarding)
+
+Migrate from GitLab to GitHub before onboarding contributors. Do this after MVP merge and before hi-fi UI work.
+
+**Why now:**
+- Don't onboard people to a platform you're leaving
+- CI pipeline is simple — easier to port now than after more complexity
+- Nostr ecosystem lives on GitHub (NDK, nostr-tools, market-spec)
+- GitHub Projects/Issues better for delegation and scoped access
+
+### Org & Repo Setup
+- [ ] Create `conduit-btc` org on GitHub
+- [ ] Push mirror of `conduit-mono` to GitHub
+- [ ] Set `main` branch protection: require PR reviews, no direct push
+- [ ] Configure contributor access (Write role, no admin)
+
+### CI/CD Migration
+- [ ] Port `.gitlab-ci.yml` to GitHub Actions workflow
+  - Typecheck, lint, build (same matrix)
+  - Cloudflare Pages deploy (signet + mainnet previews per PR)
+  - Preview links posted as PR comment
+- [ ] Port Codex MR review to GitHub PR review (webhook or Action)
+- [ ] Verify preview deploys work from GitHub Actions
+
+### Project Management
+- [ ] Set up GitHub Projects board (Kanban: Backlog, In Progress, Review, Done)
+- [ ] Migrate open GitLab issues to GitHub Issues (if any)
+- [ ] Create issue templates: bug report, feature request, task
+- [ ] Create PR template with test plan checklist
+
+### Cleanup
+- [ ] Update all docs referencing GitLab URLs
+- [ ] Update CLAUDE.md git remote references
+- [ ] Archive GitLab repo (read-only) with pointer to GitHub
+- [ ] Update Cloudflare Pages deploy hooks if needed
+
+### New Repo Scaffolding (as needed)
+- [ ] `conduit-relay` — when Phase 5 starts
+- [ ] `conduit-coordinator` — when Phase 6 starts
+- [ ] Same branch protection and access patterns as conduit-mono
 
 ---
 
