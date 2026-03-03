@@ -66,6 +66,20 @@ async function tryUnwrap(event: NDKEvent, signer: NDKSigner) {
   }
 }
 
+// Unwrap events in sequential batches to avoid overwhelming the signer extension.
+async function unwrapBatch(events: NDKEvent[], signer: NDKSigner, batchSize = 5): Promise<Array<Awaited<ReturnType<typeof tryUnwrap>>>> {
+  const results: Array<Awaited<ReturnType<typeof tryUnwrap>>> = []
+  for (let i = 0; i < events.length; i += batchSize) {
+    const batch = events.slice(i, i + batchSize)
+    const batchResults = await Promise.all(batch.map((e) => tryUnwrap(e, signer)))
+    results.push(...batchResults)
+  }
+  return results
+}
+
+// Set of gift-wrap event IDs already unwrapped and cached this session.
+const knownWrapIds = new Set<string>()
+
 async function fetchMerchantMessages(merchantPubkey: string): Promise<ParsedOrderMessage[]> {
   // Load cached messages from Dexie first
   const cached = await db.orderMessages
@@ -77,6 +91,7 @@ async function fetchMerchantMessages(merchantPubkey: string): Promise<ParsedOrde
   for (const row of cached) {
     try {
       cachedById.set(row.id, JSON.parse(row.rawContent) as ParsedOrderMessage)
+      knownWrapIds.add(row.id)
     } catch { /* skip corrupt */ }
   }
 
@@ -103,7 +118,11 @@ async function fetchMerchantMessages(merchantPubkey: string): Promise<ParsedOrde
       await raceTimeout(ndk.fetchEvents(filter), 15_000, new Set<NDKEvent>())
     ) as NDKEvent[]
 
-    const unwrapped = await Promise.all(wrapped.map((w) => tryUnwrap(w, signer)))
+    // Only unwrap events we haven't seen before
+    const newWrapped = wrapped.filter((e) => !knownWrapIds.has(e.id))
+
+    // Unwrap in small batches so the signer extension isn't flooded
+    const unwrapped = await unwrapBatch(newWrapped, signer)
 
     const newRows: Array<{ id: string; orderId: string; type: string; senderPubkey: string; recipientPubkey: string; createdAt: number; rawContent: string; cachedAt: number }> = []
     for (const rumor of unwrapped) {
@@ -128,6 +147,9 @@ async function fetchMerchantMessages(merchantPubkey: string): Promise<ParsedOrde
         // ignore malformed
       }
     }
+
+    // Mark all fetched wrap IDs as known (even ones that failed to unwrap)
+    for (const e of wrapped) knownWrapIds.add(e.id)
 
     // Persist new messages to Dexie
     if (newRows.length > 0) {
