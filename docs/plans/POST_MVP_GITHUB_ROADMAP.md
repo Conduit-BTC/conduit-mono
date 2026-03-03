@@ -8,6 +8,7 @@ Priorities:
 - Primary: merchant ops reliability
 - Parallel: monetization foundations
 - Lightweight sidepath: social growth loops
+- GTM website track: landing clarity + founder-driven `/updates` publishing
 
 Success metrics (ethos-aligned):
 - Primary KPI: successful order completion rate (aggregate-only)
@@ -109,13 +110,27 @@ Layers:
 Apps:
 - Market + Merchant
 
+## Phase D: GTM Website Clarity + Updates Ops
+
+Goal: keep `conduit-landing` mostly static, but enable founder-driven product updates and SEO iteration without engineering bottlenecks.
+
+Layers:
+- UX/content layer: clear value narrative for merchants and buyers
+- CMS/publish layer: lightweight admin for founder updates with publish controls
+- SEO layer: structured metadata and indexable update pages
+
+Apps:
+- `conduit-landing` (primary)
+- optional Supabase project for content/admin
+
 ---
 
 ## 3) Capacity Allocation
 
-- 60% Merchant Ops Reliability
+- 50% Merchant Ops Reliability
 - 25% Monetization Foundations
-- 15% Social Sidepath Experiments
+- 15% GTM Website Clarity + Updates Ops
+- 10% Social Sidepath Experiments
 
 ---
 
@@ -165,6 +180,13 @@ Outcomes:
 - optional npub-attribution path
 - opt-in error diagnostic submission path
 
+### Epic D1: Website Updates Foundation (Landing)
+
+Outcomes:
+- `/updates` page and per-update detail route are indexable and SEO-safe
+- founder can publish updates from a lightweight admin flow
+- published updates are materialized to static content artifacts for reliability
+
 ## Sprint 2 (Mar 30 - Apr 12, 2026)
 
 ### Epic A3: Merchant Workflow Depth
@@ -187,6 +209,13 @@ Outcomes:
 - post-fulfillment thank-you + feedback flow
 - optional Nostr DM support escalation route
 - social sharing template for community visibility
+
+### Epic D2: GTM Messaging + SEO Iteration Loop
+
+Outcomes:
+- monetization and product positioning updates ship without code redeploy friction
+- update pages include social/SEO metadata (`title`, `description`, `og`, canonical)
+- weekly content cadence established for launch/demo/raise narrative
 
 Detailed issue seed list is in:
 - `docs/plans/POST_MVP_ISSUE_SEED.md`
@@ -250,4 +279,29 @@ bash scripts/github/bootstrap_post_mvp.sh --repo Conduit-BTC/conduit-mono
 - signer-connection gating is consistent across both apps for orders/messages actions
 - monetization primitives are implemented behind flags with tests
 - social opt-in feedback flows exist with explicit consent and privacy-safe defaults
+- landing site has a functioning `/updates` publishing path for founders
+- monetization and roadmap updates can be posted to landing within the same day
 - GitHub planning structure is active and used for all in-sprint issues
+
+---
+
+## 9) PMF Motion Guardrails (Finite, Not Infinite)
+
+PMF search is time-boxed to avoid open-ended roadmap drift.
+
+Window:
+- 6-8 weeks after Sprint 2
+- three 2-week experiment loops
+
+Target wedge:
+- merchant lists product -> receives order -> confirms payment -> fulfills reliably
+
+Primary PMF metrics (aggregate-first):
+- successful order completion rate
+- new merchant activation rate (listing + first order)
+- time to first merchant value
+- repeat purchase signal (aggregate only)
+
+Exit rules:
+- continue if target metrics improve for 3 consecutive weeks
+- pivot if two loops fail to improve completion + activation metrics
