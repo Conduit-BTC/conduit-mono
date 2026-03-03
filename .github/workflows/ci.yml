@@ -96,6 +96,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: npm
           command: pages deploy build-output/${{ matrix.network }}/${{ matrix.app }} --project-name "${{ steps.project.outputs.name }}" --branch "${{ github.head_ref }}" --commit-hash "${{ github.sha }}"
 
   preview-links:
