@@ -913,7 +913,7 @@ class ConduitDB extends Dexie {
 
 ## Phase 4.5: GitHub Migration (Pre-Team Onboarding)
 
-Migrate from GitLab to GitHub before onboarding contributors. Do this after MVP merge and before hi-fi UI work.
+Complete repository platform migration before onboarding contributors. This was done after MVP merge and before hi-fi UI work.
 
 **Why now:**
 - Don't onboard people to a platform you're leaving
@@ -930,7 +930,7 @@ Migrate from GitLab to GitHub before onboarding contributors. Do this after MVP 
 - [ ] Configure contributor access (Write role, no admin) — when adding team members
 
 ### CI/CD Migration
-- [x] Port `.gitlab-ci.yml` to GitHub Actions workflow
+- [x] Port legacy CI config to GitHub Actions workflow
   - Typecheck, lint, build (same matrix)
   - Cloudflare Pages deploy (signet + mainnet previews per PR)
   - Preview links posted as PR comment
@@ -943,11 +943,11 @@ Migrate from GitLab to GitHub before onboarding contributors. Do this after MVP 
 - [ ] Create issue templates: bug report, feature request, task
 
 ### Cleanup
-- [x] Update all docs referencing GitLab URLs
+- [x] Update all docs referencing legacy platform URLs
 - [x] Update CLAUDE.md git remote references
-- [x] Archive GitLab repo (read-only)
+- [x] Archive legacy repository (read-only)
 - [x] Switch origin remote to GitHub
-- [x] Remove `.gitlab-ci.yml` and `scripts/gitlab/`
+- [x] Remove legacy CI config file and platform-specific migration scripts
 
 ### New Repo Scaffolding (as needed)
 - [ ] `conduit-relay` — when Phase 5 starts
@@ -1307,8 +1307,8 @@ From context doc analysis, these were missing:
 
 ### Hardening Notes
 
-- GitLab Duo followups from MR `!5`: see `docs/knowledge/followups-duo-mr5.md`
-- GitLab Duo followups from MR `!10` (merchant product CRUD):
+- Historical AI review followups: see `docs/knowledge/followups-duo-mr5.md`
+- Additional historical review followups (merchant product CRUD):
   - Add explicit d-tag format validation for product creation
   - Add conflict handling for concurrent edits (last-write-wins warning or optimistic lock)
   - Add CRUD edge-case tests (dedupe freshness, malformed events, delete semantics)

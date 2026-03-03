@@ -6,7 +6,7 @@ This document is a curated set of external references we rely on for protocol de
 
 - Nostrbook (AI-friendly NIPs mirror)
   - https://nostrbook.dev/
-  - Source repo: https://gitlab.com/soapbox-pub/nostrbook
+  - Source link: hosted site only (upstream repo location may change)
 - Official NIPs repo (canonical, less AI-friendly)
   - https://github.com/nostr-protocol/nips
 
@@ -17,7 +17,7 @@ Guidance:
 ## Libraries and Tools
 
 - Nostrify (common tools/utilities)
-  - https://gitlab.com/soapbox-pub/nostrify
+  - https://github.com/soapbox-pub/nostrify
 - Nostr UX patterns (product + UX conventions)
   - https://github.com/shawnyeager/nostr-ux-patterns
 - Nostr WS Inspector (Chrome extension, debugging relays)
