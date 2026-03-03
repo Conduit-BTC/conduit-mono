@@ -50,7 +50,7 @@ function UserMenu() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="default" size="sm" className="bg-primary font-mono text-xs">
+        <Button variant="primary" size="sm" className="font-mono text-xs">
           {formatPubkey(pubkey, 4)}
         </Button>
       </DropdownMenuTrigger>
