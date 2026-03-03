@@ -46,7 +46,10 @@ jobs:
     needs: [lint, typecheck, test]
     strategy:
       matrix:
-        network: [signet, mainnet]
+        # PRs only need signet artifact for wrangler preview deploys.
+        # Mainnet preview checks come from Cloudflare's Git integration app.
+        # Pushes to main validate mainnet build only.
+        network: ${{ fromJSON(github.event_name == 'pull_request' && '["signet"]' || '["mainnet"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
