@@ -1,10 +1,11 @@
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   db,
   EVENT_KINDS,
   extractOrderSummary,
+  fetchEventsFanout,
   formatPubkey,
   parseOrderMessageRumorEvent,
   requireNdkConnected,
@@ -13,6 +14,7 @@ import {
 } from "@conduit/core"
 import { Badge, Button, OrderDetailCard, Tabs, TabsContent, TabsList, TabsTrigger } from "@conduit/ui"
 import { giftUnwrap, NDKEvent, type NDKFilter, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { CheckCircle2, RotateCw } from "lucide-react"
 import { QRCodeSVG } from "qrcode.react"
 import { requireAuth } from "../lib/auth"
 
@@ -57,6 +59,21 @@ async function tryUnwrap(event: NDKEvent, signer: NDKSigner) {
   }
 }
 
+// Unwrap events in sequential batches to avoid overwhelming the signer extension.
+async function unwrapBatch(events: NDKEvent[], signer: NDKSigner, batchSize = 5): Promise<Array<Awaited<ReturnType<typeof tryUnwrap>>>> {
+  const results: Array<Awaited<ReturnType<typeof tryUnwrap>>> = []
+  for (let i = 0; i < events.length; i += batchSize) {
+    const batch = events.slice(i, i + batchSize)
+    const batchResults = await Promise.all(batch.map((e) => tryUnwrap(e, signer)))
+    results.push(...batchResults)
+  }
+  return results
+}
+
+// Set of gift-wrap event IDs we have already unwrapped and cached.
+// Persisted in memory so re-fetches within the same session skip known events.
+const knownWrapIds = new Set<string>()
+
 async function fetchBuyerMessages(buyerPubkey: string): Promise<ParsedOrderMessage[]> {
   // Load cached messages from Dexie first
   const cached = await db.orderMessages
@@ -90,10 +107,16 @@ async function fetchBuyerMessages(buyerPubkey: string): Promise<ParsedOrderMessa
       limit: 200,
     }
 
-    const wrapped = Array.from(
-      await raceTimeout(ndk.fetchEvents(filter), 15_000, new Set<NDKEvent>())
-    ) as NDKEvent[]
-    const unwrapped = await Promise.all(wrapped.map((event) => tryUnwrap(event, signer)))
+    const wrapped = await fetchEventsFanout(filter, {
+      connectTimeoutMs: 4_000,
+      fetchTimeoutMs: 12_000,
+    }) as NDKEvent[]
+
+    // Only unwrap events we haven't seen before
+    const newWrapped = wrapped.filter((e) => !knownWrapIds.has(e.id))
+
+    // Unwrap in small batches so the signer extension isn't flooded
+    const unwrapped = await unwrapBatch(newWrapped, signer)
 
     const newRows: Array<{ id: string; orderId: string; type: string; senderPubkey: string; recipientPubkey: string; createdAt: number; rawContent: string; cachedAt: number }> = []
     for (const rumor of unwrapped) {
@@ -118,6 +141,9 @@ async function fetchBuyerMessages(buyerPubkey: string): Promise<ParsedOrderMessa
         // ignore malformed order conversation rumors
       }
     }
+
+    // Mark all fetched wrap IDs as known (even ones that failed to unwrap)
+    for (const e of wrapped) knownWrapIds.add(e.id)
 
     // Persist new messages to Dexie
     if (newRows.length > 0) {
@@ -363,20 +389,61 @@ function MessageCard({
 }
 
 function OrdersPage() {
-  const { pubkey } = useAuth()
+  const { pubkey, status } = useAuth()
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState("details")
+  const [refreshButtonState, setRefreshButtonState] = useState<"idle" | "refreshing" | "done">("idle")
+  const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const signerConnected = status === "connected" && !!pubkey
 
   const messagesQuery = useQuery({
     queryKey: ["buyer-messages", pubkey ?? "none"],
-    enabled: !!pubkey,
+    enabled: signerConnected,
     queryFn: () => fetchBuyerMessages(pubkey!),
-    refetchInterval: 10_000,
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: true,
   })
+  const isMessagesFetching = messagesQuery.isFetching
+  const refetchMessages = messagesQuery.refetch
+
+  useEffect(() => {
+    if (isMessagesFetching) {
+      if (refreshResetTimerRef.current) {
+        clearTimeout(refreshResetTimerRef.current)
+        refreshResetTimerRef.current = null
+      }
+      setRefreshButtonState("refreshing")
+      return
+    }
+
+    if (refreshButtonState === "refreshing") {
+      setRefreshButtonState("done")
+      refreshResetTimerRef.current = setTimeout(() => {
+        setRefreshButtonState("idle")
+        refreshResetTimerRef.current = null
+      }, 900)
+    }
+  }, [isMessagesFetching, refreshButtonState])
+
+  useEffect(() => {
+    return () => {
+      if (refreshResetTimerRef.current) clearTimeout(refreshResetTimerRef.current)
+    }
+  }, [])
+
+  const handleRefresh = useCallback(() => {
+    if (!signerConnected) return
+    if (refreshResetTimerRef.current) {
+      clearTimeout(refreshResetTimerRef.current)
+      refreshResetTimerRef.current = null
+    }
+    setRefreshButtonState("refreshing")
+    void refetchMessages()
+  }, [refetchMessages, signerConnected])
 
   const conversations = useMemo(
-    () => buildBuyerConversations(messagesQuery.data ?? [], pubkey ?? ""),
-    [messagesQuery.data, pubkey]
+    () => signerConnected && pubkey ? buildBuyerConversations(messagesQuery.data ?? [], pubkey) : [],
+    [messagesQuery.data, pubkey, signerConnected]
   )
 
   useEffect(() => {
@@ -408,30 +475,82 @@ function OrdersPage() {
           <p className="mt-1 text-sm text-[var(--text-secondary)]">
             Track your orders and communicate with merchants.
           </p>
+          <div className="mt-3">
+            <Button variant="outline" size="sm" disabled={!signerConnected || isMessagesFetching} onClick={handleRefresh}>
+              <span className="inline-flex items-center gap-1">
+                <span
+                  className={`inline-flex h-4 w-4 items-center justify-center transition-colors duration-200 ${
+                    refreshButtonState === "refreshing"
+                      ? "animate-pulse text-amber-300"
+                      : refreshButtonState === "done"
+                        ? "text-emerald-400"
+                        : "text-[var(--text-secondary)]"
+                  }`}
+                >
+                  {refreshButtonState === "done" ? (
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                  ) : (
+                    <RotateCw className={`h-3.5 w-3.5 ${refreshButtonState === "refreshing" ? "animate-spin" : ""}`} />
+                  )}
+                </span>
+                <span className="relative inline-flex h-4 min-w-[7rem] items-center justify-center">
+                  <span
+                    className={`absolute transition-opacity duration-200 ${
+                      refreshButtonState === "idle" ? "opacity-100 text-[var(--text-primary)]" : "opacity-0"
+                    }`}
+                  >
+                    Refresh
+                  </span>
+                  <span
+                    className={`absolute transition-opacity duration-200 ${
+                      refreshButtonState === "refreshing" ? "animate-pulse opacity-100 text-amber-300" : "opacity-0"
+                    }`}
+                  >
+                    Refreshing...
+                  </span>
+                  <span
+                    className={`absolute transition-opacity duration-200 ${
+                      refreshButtonState === "done" ? "opacity-100 text-emerald-400" : "opacity-0"
+                    }`}
+                  >
+                    Updated
+                  </span>
+                </span>
+              </span>
+            </Button>
+          </div>
         </div>
-        <Button asChild variant="muted">
-          <Link to="/checkout" search={{ merchant: undefined }}>
-            Go to checkout
-          </Link>
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button asChild variant="muted">
+            <Link to="/checkout" search={{ merchant: undefined }}>
+              Go to checkout
+            </Link>
+          </Button>
+        </div>
       </div>
 
-      {messagesQuery.isLoading && <div className="text-sm text-[var(--text-secondary)]">Loading messages…</div>}
+      {!signerConnected && (
+        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+          Connect your signer to view order messages.
+        </div>
+      )}
 
-      {messagesQuery.error && (
+      {signerConnected && messagesQuery.isLoading && <div className="text-sm text-[var(--text-secondary)]">Loading messages…</div>}
+
+      {signerConnected && messagesQuery.error && (
         <div className="rounded-md border border-error/30 bg-error/10 p-4 text-sm text-error">
           Failed to load messages:{" "}
           {messagesQuery.error instanceof Error ? messagesQuery.error.message : "Unknown error"}
         </div>
       )}
 
-      {!messagesQuery.isLoading && conversations.length === 0 && (
+      {signerConnected && !messagesQuery.isLoading && conversations.length === 0 && (
         <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
           No order messages yet. Place an order to start a conversation with a merchant.
         </div>
       )}
 
-      {conversations.length > 0 && (
+      {signerConnected && conversations.length > 0 && (
         <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
           <aside className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2">
             <div className="mb-2 px-2 text-xs uppercase tracking-wide text-[var(--text-secondary)]">Conversations</div>

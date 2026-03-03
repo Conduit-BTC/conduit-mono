@@ -7,8 +7,8 @@ on:
     branches: [main]
 
 env:
-  VITE_RELAY_URL: "wss://relay.conduit.market"
-  VITE_DEFAULT_RELAYS: ""
+  VITE_RELAY_URL: "wss://relay.primal.net"
+  VITE_DEFAULT_RELAYS: "wss://relay.primal.net,wss://relay.damus.io"
 
 jobs:
   lint:
@@ -41,76 +41,49 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun test
 
-  build:
+  build-signet:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     needs: [lint, typecheck, test]
-    strategy:
-      matrix:
-        network: [signet, mainnet]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.5"
       - run: bun install --frozen-lockfile
-      - name: Build (${{ matrix.network }})
-        run: VITE_LIGHTNING_NETWORK=${{ matrix.network }} bun run build
-      - name: Stage build output
-        run: |
-          mkdir -p build-output/${{ matrix.network }}/market build-output/${{ matrix.network }}/merchant
-          cp -r apps/market/dist/* build-output/${{ matrix.network }}/market/
-          cp -r apps/merchant/dist/* build-output/${{ matrix.network }}/merchant/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: build-${{ matrix.network }}
-          path: build-output/${{ matrix.network }}/
-          retention-days: 7
+      - name: Build (signet)
+        run: VITE_LIGHTNING_NETWORK=signet bun run build
 
-  deploy:
-    if: github.event_name == 'pull_request'
+  build-mainnet:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    needs: [build]
-    strategy:
-      matrix:
-        app: [market, merchant]
-        network: [signet, mainnet]
-    permissions:
-      contents: read
-      pull-requests: write
+    needs: [lint, typecheck, test]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          name: build-${{ matrix.network }}
-          path: build-output/${{ matrix.network }}/
-      - name: Determine project name
-        id: project
-        run: |
-          if [ "${{ matrix.network }}" = "mainnet" ]; then
-            echo "name=conduit-${{ matrix.app }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=conduit-${{ matrix.app }}-${{ matrix.network }}" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy build-output/${{ matrix.network }}/${{ matrix.app }} --project-name "${{ steps.project.outputs.name }}" --branch "${{ github.head_ref }}" --commit-hash "${{ github.sha }}"
+          bun-version: "1.3.5"
+      - run: bun install --frozen-lockfile
+      - name: Build (mainnet)
+        run: VITE_LIGHTNING_NETWORK=mainnet bun run build
 
   preview-links:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    needs: [deploy]
+    needs: [build-signet]
+    timeout-minutes: 15
     permissions:
+      checks: read
+      contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
       - name: Post preview links
         uses: actions/github-script@v7
         with:
           script: |
             const branch = context.payload.pull_request.head.ref;
+            const headSha = context.payload.pull_request.head.sha;
+            const shortSha = headSha.slice(0, 7);
 
             // Cloudflare branch slug: lowercase, non-alnum to dash, collapse, trim, max 28 chars
             const slug = branch
@@ -120,53 +93,258 @@ jobs:
               .replace(/^-|-$/g, "")
               .slice(0, 28);
 
-            const DOMAIN_MAP = {
-              "market-signet": "conduit-market-signet",
-              "market-mainnet": "conduit-market-arq",
-              "merchant-signet": "conduit-merchant-signet",
-              "merchant-mainnet": "conduit-merchant-arq",
+            const PROJECTS = {
+              market: {
+                signetDomain: "conduit-market-signet",
+                mainnetDomain: "conduit-market-coo",
+                signetProject: "conduit-market-signet",
+                mainnetProject: "conduit-market",
+              },
+              merchant: {
+                signetDomain: "conduit-merchant-signet",
+                mainnetDomain: "conduit-merchant-33n",
+                signetProject: "conduit-merchant-signet",
+                mainnetProject: "conduit-merchant",
+              },
             };
 
-            const links = Object.entries(DOMAIN_MAP).map(([key, domain]) => {
-              const [app, network] = key.split("-");
-              const label = `${app.charAt(0).toUpperCase() + app.slice(1)} (${network})`;
-              const url = `https://${slug}.${domain}.pages.dev`;
-              return `| ${label} | ${url} |`;
-            });
+            const CF_USERS = new Set([
+              "cloudflare-workers-and-pages",
+              "cloudflare-workers-and-pages[bot]",
+              "cloudflare-pages[bot]",
+            ]);
 
-            const body = [
-              "## Preview Links",
-              "",
-              "| App | URL |",
-              "|-----|-----|",
-              ...links,
-            ].join("\n");
+            function extractUrlsFromCommentBody(body) {
+              let commitUrl = null;
+              let branchUrl = null;
 
-            const MARKER = "<!-- conduit:preview_links -->";
+              for (const line of body.split("\n")) {
+                const href = line.match(/href=['"]([^'"]+)['"]/i)?.[1] || null;
+                const lower = line.toLowerCase();
+                if (!href) continue;
+                if (!branchUrl && lower.includes("branch preview url")) {
+                  branchUrl = href;
+                  continue;
+                }
+                if (!commitUrl && lower.includes("preview url") && !lower.includes("branch preview url")) {
+                  commitUrl = href;
+                }
+              }
 
-            // Find existing comment
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
+              return { commitUrl, branchUrl };
+            }
 
-            const existing = comments.find(c => c.body?.includes(MARKER));
-
-            const commentBody = `${MARKER}\n${body}`;
-
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body: commentBody,
-              });
-            } else {
-              await github.rest.issues.createComment({
+            async function listIssueComments() {
+              return github.paginate(github.rest.issues.listComments, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: commentBody,
+                per_page: 100,
               });
             }
+
+            async function listCheckRuns() {
+              const { data } = await github.rest.checks.listForRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: headSha,
+                per_page: 100,
+              });
+              return data.check_runs || [];
+            }
+
+            function resolveProjectUrls(comments, projectName) {
+              const candidates = comments
+                .filter((comment) => {
+                  const body = comment.body || "";
+                  return (
+                    CF_USERS.has(comment.user?.login || "")
+                    && body.includes(`Deploying ${projectName}`)
+                    && (
+                      body.includes(`<code>${headSha}</code>`)
+                      || body.includes(`<code>${shortSha}</code>`)
+                      || body.includes(shortSha)
+                    )
+                  );
+                })
+                .reverse();
+
+              for (const comment of candidates) {
+                const parsed = extractUrlsFromCommentBody(comment.body || "");
+                if (parsed.commitUrl || parsed.branchUrl) {
+                  return parsed;
+                }
+              }
+
+              return { commitUrl: null, branchUrl: null };
+            }
+
+            const byApp = {
+              market: {
+                signet: { commitUrl: null, branchUrl: null },
+                mainnet: { commitUrl: null, branchUrl: null },
+              },
+              merchant: {
+                signet: { commitUrl: null, branchUrl: null },
+                mainnet: { commitUrl: null, branchUrl: null },
+              },
+            };
+
+            let comments = [];
+            const waitUntil = Date.now() + 10 * 60 * 1000;
+            const pollIntervalMs = 20 * 1000;
+            const expectedCfChecks = new Set([
+              "Cloudflare Pages: conduit-market",
+              "Cloudflare Pages: conduit-merchant",
+              "Cloudflare Pages: conduit-market-signet",
+              "Cloudflare Pages: conduit-merchant-signet",
+            ]);
+
+            while (true) {
+              comments = await listIssueComments();
+
+              for (const app of ["market", "merchant"]) {
+                const project = PROJECTS[app];
+                byApp[app].signet = resolveProjectUrls(comments, project.signetProject);
+                byApp[app].mainnet = resolveProjectUrls(comments, project.mainnetProject);
+              }
+
+              const hasAllCommitUrls = ["market", "merchant"].every((app) =>
+                Boolean(byApp[app].signet.commitUrl && byApp[app].mainnet.commitUrl)
+              );
+              const hasAllBranchUrls = ["market", "merchant"].every((app) =>
+                Boolean(byApp[app].signet.branchUrl && byApp[app].mainnet.branchUrl)
+              );
+
+              const checkRuns = await listCheckRuns();
+              const cloudflareRuns = checkRuns.filter((item) => expectedCfChecks.has(item.name));
+              const cloudflareChecksCompleted = cloudflareRuns.length > 0
+                && cloudflareRuns.every((item) => item.status === "completed");
+
+              if (hasAllCommitUrls && hasAllBranchUrls) {
+                core.info("Found all Cloudflare commit and branch preview URLs.");
+                break;
+              }
+
+              if (cloudflareChecksCompleted) {
+                core.info("All Cloudflare checks are completed; proceeding with available preview URLs.");
+                break;
+              }
+
+              if (Date.now() >= waitUntil) {
+                core.warning("Timed out waiting for complete Cloudflare preview links; using available URLs with fallbacks.");
+                break;
+              }
+
+              const pending = [];
+              for (const app of ["market", "merchant"]) {
+                for (const network of ["signet", "mainnet"]) {
+                  if (!byApp[app][network].commitUrl) pending.push(`${app}/${network}:commit`);
+                  if (!byApp[app][network].branchUrl) pending.push(`${app}/${network}:branch`);
+                }
+              }
+              core.info(`Waiting for Cloudflare preview links/checks: ${pending.join(", ")}`);
+              await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+            }
+
+            const rows = [];
+            for (const app of ["market", "merchant"]) {
+              const project = PROJECTS[app];
+              const signet = byApp[app].signet;
+              const mainnet = byApp[app].mainnet;
+
+              rows.push({
+                label: `${app.charAt(0).toUpperCase() + app.slice(1)} (signet)`,
+                branchUrl: signet.branchUrl || `https://${slug}.${project.signetDomain}.pages.dev`,
+                commitUrl: signet.commitUrl || null,
+              });
+
+              rows.push({
+                label: `${app.charAt(0).toUpperCase() + app.slice(1)} (mainnet)`,
+                branchUrl: mainnet.branchUrl || `https://${slug}.${project.mainnetDomain}.pages.dev`,
+                commitUrl: mainnet.commitUrl,
+              });
+            }
+
+            const branchTable = [
+              "| App | URL |",
+              "|-----|-----|",
+              ...rows.map((row) => `| ${row.label} | ${row.branchUrl} |`),
+            ].join("\n");
+
+            const commitTable = [
+              "| App | URL |",
+              "|-----|-----|",
+              ...rows.map((row) => `| ${row.label} | ${row.commitUrl || "_pending_"} |`),
+            ].join("\n");
+
+            const MARKER_START = "<!-- conduit:preview_links -->";
+            const MARKER_END = "<!-- /conduit:preview_links -->";
+            const previewBodyBlock = `${MARKER_START}\n## Preview Deploys (Branch URLs)\n\n${branchTable}\n${MARKER_END}`;
+            const previewCommentBlock = [
+              MARKER_START,
+              "## Preview Deploys",
+              "",
+              "### Branch URLs",
+              "",
+              branchTable,
+              "",
+              "<details>",
+              "<summary>Commit-Level URLs</summary>",
+              "",
+              commitTable,
+              "",
+              "</details>",
+              MARKER_END,
+            ].join("\n");
+
+            // --- 1. Prepend to PR description (idempotent) ---
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+
+            const existing = pr.body || "";
+            const markerRegex = new RegExp(
+              `${MARKER_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${MARKER_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n*`
+            );
+
+            let newBody;
+            if (markerRegex.test(existing)) {
+              newBody = existing.replace(markerRegex, previewBodyBlock + "\n\n");
+            } else {
+              newBody = previewBodyBlock + "\n\n" + existing;
+            }
+
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              body: newBody,
+            });
+
+            // --- 2. Per-commit comment (idempotent by commit SHA) ---
+            const commentBody = `${previewCommentBlock}\n\n_Preview links for commit ${shortSha}_`;
+
+            const alreadyPosted = comments.find((comment) =>
+              comment.body?.includes(MARKER_START)
+              && comment.body?.includes(`commit ${shortSha}`)
+            );
+
+            if (alreadyPosted) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: alreadyPosted.id,
+                body: commentBody,
+              });
+              return;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody,
+            });

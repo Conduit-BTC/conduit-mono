@@ -2,7 +2,7 @@ import { useMemo, useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
-import { EVENT_KINDS, parseProductEvent, requireNdkConnected, type ProductSchema, useAuth } from "@conduit/core"
+import { EVENT_KINDS, fetchEventsFanout, parseProductEvent, requireNdkConnected, type ProductSchema, useAuth } from "@conduit/core"
 import { Badge, Button, Input, Label } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 
@@ -105,7 +105,6 @@ async function fetchDeletionTimestamps(
   productEventIds: string[],
   productAddresses: string[]
 ): Promise<DeletionTimestamps> {
-  const ndk = await requireNdkConnected()
   const byEventId = new Map<string, number>()
   const byAddressId = new Map<string, number>()
 
@@ -129,19 +128,23 @@ async function fetchDeletionTimestamps(
 
   const deletionEvents: NDKEvent[] = []
   for (const filter of filters) {
-    const fetched = Array.from(await ndk.fetchEvents(filter)) as NDKEvent[]
+    const fetched = await fetchEventsFanout(filter, {
+      connectTimeoutMs: 4_000,
+      fetchTimeoutMs: 10_000,
+    }) as NDKEvent[]
     deletionEvents.push(...fetched)
   }
 
   // Fallback for relays that ignore tag-scoped deletion queries.
   if (deletionEvents.length === 0) {
-    const fallback = Array.from(
-      await ndk.fetchEvents({
-        kinds: [EVENT_KINDS.DELETION],
-        authors: [merchantPubkey],
-        limit: 300,
-      })
-    ) as NDKEvent[]
+    const fallback = await fetchEventsFanout({
+      kinds: [EVENT_KINDS.DELETION],
+      authors: [merchantPubkey],
+      limit: 300,
+    }, {
+      connectTimeoutMs: 4_000,
+      fetchTimeoutMs: 10_000,
+    }) as NDKEvent[]
     deletionEvents.push(...fallback)
   }
 
@@ -174,14 +177,14 @@ function isDeletedByNip09(
 }
 
 async function fetchMerchantProducts(merchantPubkey: string): Promise<MerchantProduct[]> {
-  const ndk = await requireNdkConnected()
-  const events = Array.from(
-    await ndk.fetchEvents({
-      kinds: [EVENT_KINDS.PRODUCT],
-      authors: [merchantPubkey],
-      limit: 200,
-    })
-  ) as NDKEvent[]
+  const events = await fetchEventsFanout({
+    kinds: [EVENT_KINDS.PRODUCT],
+    authors: [merchantPubkey],
+    limit: 200,
+  }, {
+    connectTimeoutMs: 4_000,
+    fetchTimeoutMs: 10_000,
+  }) as NDKEvent[]
 
   events.sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
   const productEventIds = events.map((event) => event.id).filter(Boolean) as string[]

@@ -1,7 +1,9 @@
 const DEFAULT_RELAYS = [
+  "wss://relay.primal.net",
   "wss://relay.damus.io",
-  "wss://relay.nostr.band",
   "wss://nos.lol",
+  "wss://relay.nostr.band",
+  "wss://purplepag.es",
 ]
 
 export interface ConduitConfig {
@@ -46,9 +48,14 @@ function getDefaultRelays(env: ReturnType<typeof getViteEnv>): string[] {
 
 const env = getViteEnv()
 
+const relayUrl = env.relayUrl || "wss://relay.primal.net"
+const baseRelays = getDefaultRelays(env)
+
 export const config: ConduitConfig = {
-  relayUrl: env.relayUrl || "wss://relay.conduit.market",
-  defaultRelays: getDefaultRelays(env),
+  relayUrl,
+  defaultRelays: baseRelays.includes(relayUrl)
+    ? baseRelays
+    : [...baseRelays, relayUrl],
   lightningNetwork: (env.lightningNetwork || "mainnet") as ConduitConfig["lightningNetwork"],
 }
 

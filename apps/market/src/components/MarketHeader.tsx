@@ -1,9 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router"
-import { config, useAuth, useProfile } from "@conduit/core"
+import { config, formatPubkey, useAuth } from "@conduit/core"
 import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
   Badge,
   Button,
   DropdownMenu,
@@ -48,22 +45,16 @@ function Logo({
 
 function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
-  const profileQuery = useProfile(pubkey)
   const navigate = useNavigate()
-  const displayName = profileQuery.data?.displayName || profileQuery.data?.name
-  const fallbackLetter = (displayName?.[0] ?? pubkey?.[0] ?? "?").toUpperCase()
 
   if (!pubkey || status === "disconnected" || status === "error") return null
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button className="rounded-full outline-none ring-primary/20 transition focus-visible:ring-2">
-          <Avatar className="h-8 w-8">
-            <AvatarImage src={profileQuery.data?.picture} alt={displayName ?? "Profile"} />
-            <AvatarFallback className="text-xs">{fallbackLetter}</AvatarFallback>
-          </Avatar>
-        </button>
+        <Button variant="primary" size="sm" className="font-mono text-xs">
+          {formatPubkey(pubkey, 4)}
+        </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-40">
         <DropdownMenuItem onSelect={() => navigate({ to: "/profile" })}>

@@ -1,6 +1,6 @@
-# Followups From GitLab Duo Review (MR !5)
+# Historical AI Review Followups (MVP Era)
 
-Source: GitLab Duo review comment `note_3074129049` on MR `!5` (merged on 2026-02-11).
+Source: AI review notes captured on 2026-02-11.
 
 These are "nice-to-have" followups that were explicitly called out as acceptable to defer for MVP, but worth tracking so we do not forget.
 
@@ -33,4 +33,3 @@ These are "nice-to-have" followups that were explicitly called out as acceptable
   - `withTimeout` helper behavior (success, timeout, cleanup).
   - NIP-17 order flow (rumor schema, gift wrap/unwrapping, parse errors).
   - Relay connection failure scenarios and UI error surfacing.
-

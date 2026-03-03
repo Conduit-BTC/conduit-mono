@@ -10,6 +10,7 @@ export {
   getNdk,
   connectNdk,
   requireNdkConnected,
+  fetchEventsFanout,
   disconnectNdk,
   setSigner,
   removeSigner,
