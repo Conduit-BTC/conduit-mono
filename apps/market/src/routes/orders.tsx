@@ -398,7 +398,7 @@ function OrdersPage() {
     queryKey: ["buyer-messages", pubkey ?? "none"],
     enabled: !!pubkey,
     queryFn: () => fetchBuyerMessages(pubkey!),
-    refetchInterval: 10_000,
+    refetchInterval: 20_000,
     refetchIntervalInBackground: true,
   })
   const isMessagesFetching = messagesQuery.isFetching
@@ -474,27 +474,46 @@ function OrdersPage() {
           </p>
           <div className="mt-3">
             <Button variant="outline" size="sm" disabled={isMessagesFetching} onClick={handleRefresh}>
-              <span className="relative inline-flex h-4 min-w-[7rem] items-center justify-center">
-                <span
-                  className={`absolute transition-opacity duration-200 ${
-                    refreshButtonState === "idle" ? "opacity-100" : "opacity-0"
-                  }`}
-                >
-                  Refresh
+              <span className="inline-flex items-center gap-2">
+                <span className="relative inline-flex h-4 w-4 items-center justify-center">
+                  <span
+                    className={`absolute h-3.5 w-3.5 rounded-full border-2 border-[var(--text-secondary)] border-t-transparent transition-opacity duration-200 ${
+                      refreshButtonState === "refreshing" ? "animate-spin opacity-100" : "opacity-0"
+                    }`}
+                  />
+                  <span
+                    className={`absolute h-2 w-2 rounded-full bg-[var(--text-secondary)] transition-opacity duration-200 ${
+                      refreshButtonState === "idle" ? "opacity-70" : "opacity-0"
+                    }`}
+                  />
+                  <span
+                    className={`absolute h-2.5 w-2.5 rounded-full bg-green-400 transition-opacity duration-200 ${
+                      refreshButtonState === "done" ? "opacity-100" : "opacity-0"
+                    }`}
+                  />
                 </span>
-                <span
-                  className={`absolute transition-opacity duration-200 ${
-                    refreshButtonState === "refreshing" ? "opacity-100" : "opacity-0"
-                  }`}
-                >
-                  Refreshing…
-                </span>
-                <span
-                  className={`absolute transition-opacity duration-200 ${
-                    refreshButtonState === "done" ? "opacity-100" : "opacity-0"
-                  }`}
-                >
-                  Updated
+                <span className="relative inline-flex h-4 min-w-[7rem] items-center justify-center">
+                  <span
+                    className={`absolute transition-opacity duration-200 ${
+                      refreshButtonState === "idle" ? "opacity-100" : "opacity-0"
+                    }`}
+                  >
+                    Refresh
+                  </span>
+                  <span
+                    className={`absolute transition-opacity duration-200 ${
+                      refreshButtonState === "refreshing" ? "opacity-100" : "opacity-0"
+                    }`}
+                  >
+                    Refreshing...
+                  </span>
+                  <span
+                    className={`absolute transition-opacity duration-200 ${
+                      refreshButtonState === "done" ? "opacity-100" : "opacity-0"
+                    }`}
+                  >
+                    Updated
+                  </span>
                 </span>
               </span>
             </Button>
