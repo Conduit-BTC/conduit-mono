@@ -193,12 +193,12 @@ jobs:
             let comments = [];
             const waitUntil = Date.now() + 10 * 60 * 1000;
             const pollIntervalMs = 20 * 1000;
-            const expectedCfChecks = [
+            const expectedCfChecks = new Set([
               "Cloudflare Pages: conduit-market",
               "Cloudflare Pages: conduit-merchant",
               "Cloudflare Pages: conduit-market-signet",
               "Cloudflare Pages: conduit-merchant-signet",
-            ];
+            ]);
 
             while (true) {
               comments = await listIssueComments();
@@ -217,10 +217,9 @@ jobs:
               );
 
               const checkRuns = await listCheckRuns();
-              const cloudflareChecksCompleted = expectedCfChecks.every((checkName) => {
-                const run = checkRuns.find((item) => item.name === checkName);
-                return Boolean(run && run.status === "completed");
-              });
+              const cloudflareRuns = checkRuns.filter((item) => expectedCfChecks.has(item.name));
+              const cloudflareChecksCompleted = cloudflareRuns.length > 0
+                && cloudflareRuns.every((item) => item.status === "completed");
 
               if (hasAllCommitUrls && hasAllBranchUrls) {
                 core.info("Found all Cloudflare commit and branch preview URLs.");
