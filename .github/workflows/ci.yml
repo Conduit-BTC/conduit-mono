@@ -109,6 +109,7 @@ jobs:
 
             const CF_USERS = new Set([
               "cloudflare-workers-and-pages",
+              "cloudflare-workers-and-pages[bot]",
               "cloudflare-pages[bot]",
             ]);
 
