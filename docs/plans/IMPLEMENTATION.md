@@ -922,30 +922,32 @@ Migrate from GitLab to GitHub before onboarding contributors. Do this after MVP 
 - GitHub Projects/Issues better for delegation and scoped access
 
 ### Org & Repo Setup
-- [ ] Create `conduit-btc` org on GitHub
-- [ ] Push mirror of `conduit-mono` to GitHub
-- [ ] Set `main` branch protection: require PR reviews, no direct push
+- [x] Create `Conduit-BTC` org on GitHub
+- [x] Push mirror of `conduit-mono` to GitHub
+- [x] Set repo secrets (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID)
+- [ ] Upgrade to GitHub Team plan ($4/user/mo) for branch protection on private repo
+- [ ] Set `main` branch protection: require PR reviews, no direct push (requires Team plan or public repo)
 - [ ] Configure contributor access (Write role, no admin)
 
 ### CI/CD Migration
-- [ ] Port `.gitlab-ci.yml` to GitHub Actions workflow
+- [x] Port `.gitlab-ci.yml` to GitHub Actions workflow
   - Typecheck, lint, build (same matrix)
   - Cloudflare Pages deploy (signet + mainnet previews per PR)
   - Preview links posted as PR comment
-- [ ] Port Codex MR review to GitHub PR review (webhook or Action)
-- [ ] Verify preview deploys work from GitHub Actions
+- [x] Create PR template with test plan checklist
+- [ ] Verify preview deploys work from GitHub Actions (test with first PR)
+- [ ] Set up AI PR reviews (Claude Code or custom Action) — follow-up task
 
 ### Project Management
 - [ ] Set up GitHub Projects board (Kanban: Backlog, In Progress, Review, Done)
-- [ ] Migrate open GitLab issues to GitHub Issues (if any)
 - [ ] Create issue templates: bug report, feature request, task
-- [ ] Create PR template with test plan checklist
 
 ### Cleanup
-- [ ] Update all docs referencing GitLab URLs
-- [ ] Update CLAUDE.md git remote references
-- [ ] Archive GitLab repo (read-only) with pointer to GitHub
-- [ ] Update Cloudflare Pages deploy hooks if needed
+- [x] Update all docs referencing GitLab URLs
+- [x] Update CLAUDE.md git remote references
+- [x] Archive GitLab repo (read-only)
+- [x] Switch origin remote to GitHub
+- [ ] Remove `.gitlab-ci.yml` and `scripts/gitlab/` once GitHub Actions verified
 
 ### New Repo Scaffolding (as needed)
 - [ ] `conduit-relay` — when Phase 5 starts
