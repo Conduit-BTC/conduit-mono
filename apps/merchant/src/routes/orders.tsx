@@ -25,7 +25,7 @@ import { Badge, Button, Input, Label, OrderDetailCard, Tabs, TabsContent, TabsLi
 import { requireAuth } from "../lib/auth"
 import { giftUnwrap, giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import type { NDKFilter, NDKSigner } from "@nostr-dev-kit/ndk"
-import { RefreshCw } from "lucide-react"
+import { CheckCircle2, RotateCw } from "lucide-react"
 
 export const Route = createFileRoute("/orders")({
   beforeLoad: () => {
@@ -763,38 +763,40 @@ function OrdersPage() {
           </p>
           <div className="mt-3">
             <Button variant="outline" size="sm" disabled={!signerConnected || isOrdersFetching} onClick={handleRefresh}>
-              <span className="inline-flex items-center gap-2">
-                <span className={`inline-flex h-4 w-4 items-center justify-center ${
-                  refreshButtonState === "refreshing" ? "animate-pulse" : ""
-                }`}>
-                  <RefreshCw
-                    className={`h-3.5 w-3.5 transition-colors duration-200 ${
-                      refreshButtonState === "refreshing"
-                        ? "animate-spin text-[var(--accent)]"
-                        : refreshButtonState === "done"
-                          ? "text-green-400"
-                          : "text-[var(--text-secondary)]"
-                    }`}
-                  />
+              <span className="inline-flex items-center gap-1">
+                <span
+                  className={`inline-flex h-4 w-4 items-center justify-center transition-colors duration-200 ${
+                    refreshButtonState === "refreshing"
+                      ? "animate-pulse text-amber-300"
+                      : refreshButtonState === "done"
+                        ? "text-emerald-400"
+                        : "text-[var(--text-secondary)]"
+                  }`}
+                >
+                  {refreshButtonState === "done" ? (
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                  ) : (
+                    <RotateCw className={`h-3.5 w-3.5 ${refreshButtonState === "refreshing" ? "animate-spin" : ""}`} />
+                  )}
                 </span>
                 <span className="relative inline-flex h-4 min-w-[7rem] items-center justify-center">
                   <span
                     className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "idle" ? "opacity-100" : "opacity-0"
+                      refreshButtonState === "idle" ? "opacity-100 text-[var(--text-primary)]" : "opacity-0"
                     }`}
                   >
                     Refresh
                   </span>
                   <span
                     className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "refreshing" ? "opacity-100" : "opacity-0"
+                      refreshButtonState === "refreshing" ? "animate-pulse opacity-100 text-amber-300" : "opacity-0"
                     }`}
                   >
                     Refreshing...
                   </span>
                   <span
                     className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "done" ? "opacity-100" : "opacity-0"
+                      refreshButtonState === "done" ? "opacity-100 text-emerald-400" : "opacity-0"
                     }`}
                   >
                     Updated
