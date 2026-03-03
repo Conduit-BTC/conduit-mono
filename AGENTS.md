@@ -161,9 +161,9 @@ VITE_DEFAULT_RELAY_URL=wss://relay.conduit.market
 VITE_BLOSSOM_SERVER_URL=https://blossom.conduit.market
 ```
 
-## GitLab CI/CD
+## GitHub CI/CD
 
 Pipeline stages: lint → typecheck → test → build → deploy
 
 Protected branches: `main`
-Merge request required for all changes.
+Pull request required for all changes.
