@@ -74,7 +74,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const signer = new NDKNip07Signer()
       const user = await withTimeout(
         signer.user(),
-        8000,
+        30_000,
         "Signer connection timed out. Unlock/approve your NIP-07 extension (e.g., Alby) and retry."
       )
       const pk = user.pubkey
