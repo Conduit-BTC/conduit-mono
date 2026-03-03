@@ -150,9 +150,9 @@ jobs:
 
             const DOMAIN_MAP = {
               "market-signet": "conduit-market-signet",
-              "market-mainnet": "conduit-market-arq",
+              "market-mainnet": "conduit-market-coo",
               "merchant-signet": "conduit-merchant-signet",
-              "merchant-mainnet": "conduit-merchant-arq",
+              "merchant-mainnet": "conduit-merchant-33n",
             };
 
             const links = Object.entries(DOMAIN_MAP).map(([key, domain]) => {
