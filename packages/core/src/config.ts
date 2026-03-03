@@ -1,7 +1,8 @@
 const DEFAULT_RELAYS = [
   "wss://relay.damus.io",
-  "wss://relay.nostr.band",
   "wss://nos.lol",
+  "wss://relay.nostr.band",
+  "wss://purplepag.es",
 ]
 
 export interface ConduitConfig {
@@ -53,7 +54,7 @@ export const config: ConduitConfig = {
   relayUrl,
   defaultRelays: baseRelays.includes(relayUrl)
     ? baseRelays
-    : [relayUrl, ...baseRelays],
+    : [...baseRelays, relayUrl],
   lightningNetwork: (env.lightningNetwork || "mainnet") as ConduitConfig["lightningNetwork"],
 }
 
