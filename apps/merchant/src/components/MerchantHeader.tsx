@@ -77,7 +77,7 @@ function UserMenu() {
 }
 
 export function MerchantHeader() {
-  const { pubkey } = useAuth()
+  const { pubkey, status } = useAuth()
 
   return (
     <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur">
@@ -109,7 +109,7 @@ export function MerchantHeader() {
 
         <div className="ml-auto flex items-center gap-2 lg:ml-0">
           <div className="hidden min-w-[8rem] items-center justify-end lg:flex">
-            {pubkey ? <UserMenu /> : <SignerSwitch />}
+            {status === "connected" && pubkey ? <UserMenu /> : <SignerSwitch />}
           </div>
 
           <div className="lg:hidden">
@@ -139,7 +139,7 @@ export function MerchantHeader() {
                 </div>
 
                 <div className="mt-6 border-t border-[var(--border)] pt-4">
-                  <SignerSwitch />
+                  {status === "connected" && pubkey ? <UserMenu /> : <SignerSwitch />}
                 </div>
               </SheetContent>
             </Sheet>

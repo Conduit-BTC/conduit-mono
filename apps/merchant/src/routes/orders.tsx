@@ -316,16 +316,26 @@ function MessageCard({
                 Tracking: {message.payload.trackingNumber}
               </div>
             )}
-            {message.payload.trackingUrl && (
-              <a
-                className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
-                href={message.payload.trackingUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Open tracking link
-              </a>
-            )}
+            {(() => {
+              const raw = message.payload.trackingUrl
+              if (!raw) return null
+              try {
+                const u = new URL(raw)
+                if (u.protocol !== "http:" && u.protocol !== "https:") return null
+                return (
+                  <a
+                    className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
+                    href={u.toString()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open tracking link
+                  </a>
+                )
+              } catch {
+                return null
+              }
+            })()}
             {message.payload.note && <div className="text-xs text-[var(--text-secondary)]">{message.payload.note}</div>}
           </div>
         )}

@@ -151,16 +151,25 @@ export function OrderDetailCard({
                 {trackingNumber}
               </div>
             )}
-            {trackingUrl && (
-              <a
-                className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
-                href={trackingUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Open tracking link
-              </a>
-            )}
+            {(() => {
+              if (!trackingUrl) return null
+              try {
+                const u = new URL(trackingUrl)
+                if (u.protocol !== "http:" && u.protocol !== "https:") return null
+                return (
+                  <a
+                    className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
+                    href={u.toString()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open tracking link
+                  </a>
+                )
+              } catch {
+                return null
+              }
+            })()}
           </div>
         )}
       </CardContent>

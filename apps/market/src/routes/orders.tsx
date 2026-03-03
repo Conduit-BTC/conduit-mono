@@ -223,7 +223,7 @@ function InvoiceCard({
 
       <div className="flex items-start gap-3">
         <div className="shrink-0 rounded-md border border-[var(--border)] bg-white p-2">
-          <QRCodeSVG value={bolt11.toUpperCase()} size={120} level="M" />
+          <QRCodeSVG value={bolt11} size={120} level="M" />
         </div>
         <div className="min-w-0 flex-1 space-y-2">
           <div className="max-h-20 overflow-auto break-all rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-xs text-[var(--text-secondary)]">
@@ -324,16 +324,26 @@ function MessageCard({
                 Tracking: {message.payload.trackingNumber}
               </div>
             )}
-            {message.payload.trackingUrl && (
-              <a
-                className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
-                href={message.payload.trackingUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Open tracking link
-              </a>
-            )}
+            {(() => {
+              const raw = message.payload.trackingUrl
+              if (!raw) return null
+              try {
+                const u = new URL(raw)
+                if (u.protocol !== "http:" && u.protocol !== "https:") return null
+                return (
+                  <a
+                    className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
+                    href={u.toString()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open tracking link
+                  </a>
+                )
+              } catch {
+                return null
+              }
+            })()}
             {message.payload.note && <div className="text-xs text-[var(--text-secondary)]">{message.payload.note}</div>}
           </div>
         )}

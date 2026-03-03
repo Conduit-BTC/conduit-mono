@@ -79,7 +79,7 @@ function UserMenu() {
 }
 
 export function MarketHeader() {
-  const { pubkey } = useAuth()
+  const { pubkey, status } = useAuth()
   const cart = useCart()
 
   return (
@@ -134,7 +134,7 @@ export function MarketHeader() {
           </Link>
 
           <div className="hidden min-w-[8rem] items-center justify-end lg:flex">
-            {pubkey ? <UserMenu /> : <SignerSwitch />}
+            {status === "connected" && pubkey ? <UserMenu /> : <SignerSwitch />}
           </div>
 
           <div className="lg:hidden">
@@ -172,7 +172,7 @@ export function MarketHeader() {
                 </div>
 
                 <div className="mt-6 border-t border-[var(--border)] pt-4">
-                  <SignerSwitch />
+                  {status === "connected" && pubkey ? <UserMenu /> : <SignerSwitch />}
                 </div>
               </SheetContent>
             </Sheet>
