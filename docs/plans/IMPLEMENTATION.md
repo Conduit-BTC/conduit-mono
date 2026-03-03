@@ -46,6 +46,7 @@ These are nice-to-have milestones that should not block the Phase 4 Merchant Por
 | NIP-46 auth (Remote signer) | 6 (Coordinator) | Extra connection UX + reliability surface; bundle with automation/hardening |
 | Store Builder | 7 | Nice-to-have, not core loop |
 | Shipping integrations | Added Value | ShipStation/EasyPost |
+| GitHub migration | 4.5 | Do before onboarding team members |
 | Monetization | 8 (Monetization) | Membership, credits, ads, hosting |
 
 ### MVP Payment Flow (Baseline)
@@ -910,6 +911,49 @@ class ConduitDB extends Dexie {
 
 ---
 
+## Phase 4.5: GitHub Migration (Pre-Team Onboarding)
+
+Migrate from GitLab to GitHub before onboarding contributors. Do this after MVP merge and before hi-fi UI work.
+
+**Why now:**
+- Don't onboard people to a platform you're leaving
+- CI pipeline is simple — easier to port now than after more complexity
+- Nostr ecosystem lives on GitHub (NDK, nostr-tools, market-spec)
+- GitHub Projects/Issues better for delegation and scoped access
+
+### Org & Repo Setup
+- [ ] Create `conduit-btc` org on GitHub
+- [ ] Push mirror of `conduit-mono` to GitHub
+- [ ] Set `main` branch protection: require PR reviews, no direct push
+- [ ] Configure contributor access (Write role, no admin)
+
+### CI/CD Migration
+- [ ] Port `.gitlab-ci.yml` to GitHub Actions workflow
+  - Typecheck, lint, build (same matrix)
+  - Cloudflare Pages deploy (signet + mainnet previews per PR)
+  - Preview links posted as PR comment
+- [ ] Port Codex MR review to GitHub PR review (webhook or Action)
+- [ ] Verify preview deploys work from GitHub Actions
+
+### Project Management
+- [ ] Set up GitHub Projects board (Kanban: Backlog, In Progress, Review, Done)
+- [ ] Migrate open GitLab issues to GitHub Issues (if any)
+- [ ] Create issue templates: bug report, feature request, task
+- [ ] Create PR template with test plan checklist
+
+### Cleanup
+- [ ] Update all docs referencing GitLab URLs
+- [ ] Update CLAUDE.md git remote references
+- [ ] Archive GitLab repo (read-only) with pointer to GitHub
+- [ ] Update Cloudflare Pages deploy hooks if needed
+
+### New Repo Scaffolding (as needed)
+- [ ] `conduit-relay` — when Phase 5 starts
+- [ ] `conduit-coordinator` — when Phase 6 starts
+- [ ] Same branch protection and access patterns as conduit-mono
+
+---
+
 ## Phase 5: Relay (Post-MVP)
 
 ### F26: Commerce Relay
@@ -1289,26 +1333,42 @@ From context doc analysis, these were missing:
 - [x] NDK connects to relays
 - [x] NIP-07 auth works
 - [x] Query hooks fetch real products
-- [ ] Dexie database works
+- [x] Dexie database works
 
 ### Market (Goal: 2/26)
 - [x] Products display from relays
+- [x] Product search, sort, and tag filtering
 - [x] Cart works (localStorage)
 - [x] Checkout creates order (NIP-17 order DM)
-- [ ] Payment flow completes
-- [ ] Messages send/receive
+- [x] Shipping address form with optional toggle
+- [x] Messages page — two-column inbox with order conversations
+- [x] Invoice display with QR code, copy-to-clipboard, "Open in wallet" link
+- [x] NIP-04 fallback for gift unwrap (nip44 → nip04)
+- [x] MarketHeader with logo, nav, mobile Sheet menu
+- [x] Payment flow completes (buyer pays invoice end-to-end)
+- [x] Profile management (Kind 0)
 
 ### Merchant (Goal: 3/12)
 - [x] Product CRUD works
-- [x] Orders inbox displays NIP-17 orders
-- [ ] Order actions work (send invoice, status updates, shipping/tracking)
-- [x] Shipping info captured
-- [ ] Wallet connected
+- [x] Orders inbox — two-column DM workspace with conversation threading
+- [x] Invoice generation — WebLN (Alby) primary, NWC fallback, manual BOLT11 paste
+- [x] Status updates via DM (invoiced, paid, processing, shipped, complete, cancelled)
+- [x] Shipping updates via DM (carrier, tracking number, tracking URL)
+- [x] NWC wallet connection with onboarding guide
+- [x] MerchantHeader with logo, nav, mobile Sheet menu
+- [x] Shipping info captured and displayed on order cards
+- [x] NIP-04 fallback for gift unwrap
+- [x] Success flash notifications on all merchant actions
+- [x] Profile management (Kind 0)
 
 ### MVP (Goal: 3/12)
+- [x] CI pipeline: lint → typecheck → test → build → deploy → review
+- [x] Cloudflare Pages preview deploys per branch via wrangler
+- [x] Codex MR reviews with inline diff comments
+- [x] NDK relay connection resilience (10s timeout, auto-retry with fresh instance)
 - [ ] Market deployed to shop.conduit.market
 - [ ] Portal deployed to sell.conduit.market
-- [ ] End-to-end purchase works
+- [x] End-to-end purchase works
 
 ### Automated Testing (Hardening Track)
 
@@ -1326,7 +1386,8 @@ These items should come after the end-to-end loop is working, so we can iterate 
 - [ ] Extract tokens (color/typography/spacing) from Figma into `packages/ui`
 - [ ] Bring Market pages in line with Figma (layout, typography, components)
 - [ ] Bring Merchant pages in line with Figma (layout, typography, components)
-- [ ] Market header + nav parity (`apps/market/src/routes/__root.tsx`)
+- [x] Market header + nav parity (MarketHeader component with logo, nav, mobile menu)
+- [x] Merchant header + nav parity (MerchantHeader component matching market layout)
 - [ ] Market products grid/detail parity (`apps/market/src/routes/products/index.tsx`, `apps/market/src/routes/products/$productId.tsx`)
 - [ ] Market cart/checkout parity (`apps/market/src/routes/cart.tsx`, `apps/market/src/routes/checkout.tsx`)
-- [ ] Merchant shell/orders/products parity (`apps/merchant/src/routes/__root.tsx`, `apps/merchant/src/routes/orders.tsx`, `apps/merchant/src/routes/products.tsx`)
+- [ ] Merchant orders/products visual polish

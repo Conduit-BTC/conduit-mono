@@ -18,9 +18,7 @@ import {
   SheetTrigger,
   cn,
 } from "@conduit/ui"
-
 import { SignerSwitch } from "./SignerSwitch"
-import { useCart } from "../hooks/useCart"
 
 function Logo({
   variant = "full",
@@ -40,7 +38,7 @@ function Logo({
     <Link to="/" className={cn("flex items-center gap-3 select-none", className)}>
       <img src={src} alt="Conduit" className="h-8 w-auto" />
       <span className="hidden border-l border-[var(--border)] pl-3 font-display text-2xl font-medium tracking-tight text-[var(--text-primary)] md:block">
-        market
+        merchant
       </span>
     </Link>
   )
@@ -78,9 +76,8 @@ function UserMenu() {
   )
 }
 
-export function MarketHeader() {
+export function MerchantHeader() {
   const { pubkey, status } = useAuth()
-  const cart = useCart()
 
   return (
     <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur">
@@ -104,20 +101,6 @@ export function MarketHeader() {
             </Link>
           </Button>
           <Button asChild variant="ghost" className="h-10 px-3">
-            <Link to="/cart" activeProps={{ className: "text-[var(--text-primary)]" }}>
-              Cart ({cart.totals.count})
-            </Link>
-          </Button>
-          <Button asChild variant="ghost" className="h-10 px-3">
-            <Link
-              to="/checkout"
-              search={{ merchant: undefined }}
-              activeProps={{ className: "text-[var(--text-primary)]" }}
-            >
-              Checkout
-            </Link>
-          </Button>
-          <Button asChild variant="ghost" className="h-10 px-3">
             <Link to="/orders" activeProps={{ className: "text-[var(--text-primary)]" }}>
               Orders
             </Link>
@@ -125,14 +108,6 @@ export function MarketHeader() {
         </nav>
 
         <div className="ml-auto flex items-center gap-2 lg:ml-0">
-          <Link
-            to="/cart"
-            className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-elevated)] lg:hidden"
-          >
-            <span className="font-medium">Cart</span>
-            <span>({cart.totals.count})</span>
-          </Link>
-
           <div className="hidden min-w-[8rem] items-center justify-end lg:flex">
             {status === "connected" && pubkey ? <UserMenu /> : <SignerSwitch />}
           </div>
@@ -154,14 +129,6 @@ export function MarketHeader() {
                 <div className="mt-6 grid gap-2">
                   <Button asChild variant="ghost" className="justify-start">
                     <Link to="/products">Products</Link>
-                  </Button>
-                  <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/cart">Cart ({cart.totals.count})</Link>
-                  </Button>
-                  <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/checkout" search={{ merchant: undefined }}>
-                      Checkout
-                    </Link>
                   </Button>
                   <Button asChild variant="ghost" className="justify-start">
                     <Link to="/orders">Orders</Link>

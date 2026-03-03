@@ -1,4 +1,4 @@
-import NDK, { type NDKSigner } from "@nostr-dev-kit/ndk"
+import NDK, { NDKRelayStatus, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { config } from "../config"
 
 export type NdkConnectionState = "idle" | "connecting" | "connected" | "error"
@@ -17,11 +17,19 @@ let state: NdkState = {
   connectedRelays: [],
   error: null,
 }
+let connectPromise: Promise<void> | null = null
+let requirePromise: Promise<NDK> | null = null
 const listeners = new Set<Listener>()
 
 function setState(partial: Partial<NdkState>): void {
   state = { ...state, ...partial }
   listeners.forEach((fn) => fn())
+}
+
+function getConnectedRelayUrls(ndk: NDK): string[] {
+  return Array.from(ndk.pool?.relays?.entries() ?? [])
+    .filter(([, relay]) => relay.status >= NDKRelayStatus.CONNECTED)
+    .map(([url]) => url)
 }
 
 export function subscribeNdkState(listener: Listener): () => void {
@@ -42,33 +50,88 @@ export function getNdk(): NDK {
   return ndkInstance
 }
 
-export async function connectNdk(timeoutMs = 5000): Promise<void> {
+export async function connectNdk(timeoutMs = 10_000): Promise<void> {
   const ndk = getNdk()
 
-  if (state.status === "connecting" || state.status === "connected") {
+  // If already connected with live relays, skip
+  if (state.status === "connected" && getConnectedRelayUrls(ndk).length > 0) {
+    return
+  }
+
+  if (connectPromise) {
+    await connectPromise
     return
   }
 
   setState({ status: "connecting", error: null })
 
-  try {
-    await ndk.connect(timeoutMs)
+  connectPromise = (async () => {
+    try {
+      await ndk.connect(timeoutMs)
 
-    const connected = Array.from(ndk.pool?.relays?.entries() ?? [])
-      .filter(([, r]) => r.status === 1)
-      .map(([url]) => url)
+      const connected = getConnectedRelayUrls(ndk)
 
-    setState({
-      status: "connected",
-      connectedRelays: connected,
-    })
-  } catch (err) {
-    setState({
-      status: "error",
-      error: err instanceof Error ? err.message : "Failed to connect to relays",
-      connectedRelays: [],
-    })
+      if (connected.length > 0) {
+        setState({ status: "connected", connectedRelays: connected, error: null })
+      } else {
+        setState({
+          status: "error",
+          error: "No relays responded within timeout",
+          connectedRelays: [],
+        })
+      }
+    } catch (err) {
+      setState({
+        status: "error",
+        error: err instanceof Error ? err.message : "Failed to connect to relays",
+        connectedRelays: [],
+      })
+    } finally {
+      connectPromise = null
+    }
+  })()
+
+  await connectPromise
+}
+
+export async function requireNdkConnected(timeoutMs = 10_000): Promise<NDK> {
+  // Deduplicate concurrent callers — only one retry path runs at a time
+  if (requirePromise) {
+    return requirePromise
   }
+
+  requirePromise = (async () => {
+    try {
+      await connectNdk(timeoutMs)
+
+      let ndk = getNdk()
+      if (getConnectedRelayUrls(ndk).length > 0) {
+        setState({ status: "connected", connectedRelays: getConnectedRelayUrls(ndk), error: null })
+        return ndk
+      }
+
+      // First attempt failed — reset the NDK instance for fresh websocket connections and retry
+      const savedSigner = ndk.signer
+      ndkInstance = null
+      connectPromise = null
+      ndk = getNdk()
+      if (savedSigner) ndk.signer = savedSigner
+
+      await connectNdk(timeoutMs * 2)
+
+      const retryRelays = getConnectedRelayUrls(ndk)
+      if (retryRelays.length === 0) {
+        throw new Error(state.error ?? "Failed to connect to relays")
+      }
+
+      setState({ status: "connected", connectedRelays: retryRelays, error: null })
+      return ndk
+    } finally {
+      requirePromise = null
+    }
+  })()
+
+  return requirePromise
 }
 
 export function setSigner(signer: NDKSigner): void {
@@ -86,6 +149,8 @@ export function disconnectNdk(): void {
     ndkInstance.signer = undefined
     ndkInstance = null
   }
+  connectPromise = null
+  requirePromise = null
   setState({
     status: "idle",
     connectedRelays: [],

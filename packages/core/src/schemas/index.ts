@@ -45,6 +45,22 @@ export const profileSchema = z.object({
 export type ProfileSchema = z.infer<typeof profileSchema>
 
 /**
+ * Profile form schema — allows empty strings so users can clear fields.
+ */
+export const profileFormSchema = z.object({
+  name: z.string().max(50).optional().or(z.literal("")),
+  displayName: z.string().max(100).optional().or(z.literal("")),
+  about: z.string().max(500).optional().or(z.literal("")),
+  picture: z.string().url().optional().or(z.literal("")),
+  banner: z.string().url().optional().or(z.literal("")),
+  nip05: z.string().max(100).optional().or(z.literal("")),
+  lud16: z.string().max(100).optional().or(z.literal("")),
+  website: z.string().url().optional().or(z.literal("")),
+})
+
+export type ProfileFormValues = z.infer<typeof profileFormSchema>
+
+/**
  * Shipping address schema
  */
 export const shippingAddressSchema = z.object({
@@ -82,8 +98,73 @@ export const orderSchema = z.object({
   items: z.array(orderItemSchema).min(1),
   subtotal: z.number().min(0),
   currency: z.string(),
+  shippingAddress: shippingAddressSchema.optional(),
   note: z.string().max(2000).optional(),
   createdAt: z.number(),
 })
 
 export type OrderSchema = z.infer<typeof orderSchema>
+
+/**
+ * Kind-16 message types used in MVP order conversations.
+ */
+export const orderMessageTypeSchema = z.enum([
+  "order",
+  "payment_request",
+  "status_update",
+  "shipping_update",
+  "receipt",
+  "payment_proof",
+])
+
+export type OrderMessageTypeSchema = z.infer<typeof orderMessageTypeSchema>
+
+/**
+ * MVP order status updates sent over NIP-17.
+ */
+/** Known status values for our emitters. */
+export const orderStatusEnum = z.enum([
+  "pending",
+  "invoiced",
+  "paid",
+  "processing",
+  "shipped",
+  "complete",
+  "cancelled",
+])
+
+/** Accepts known statuses and any unknown string for forward-compatibility. */
+export const orderStatusSchema = z.union([orderStatusEnum, z.string().min(1)])
+
+export type OrderStatusSchema = z.infer<typeof orderStatusSchema>
+
+export const paymentRequestMessageSchema = z.object({
+  invoice: z.string().min(1),
+  amount: z.number().min(0).optional(),
+  currency: z.string().min(1).optional(),
+  note: z.string().max(2000).optional(),
+})
+
+export type PaymentRequestMessageSchema = z.infer<typeof paymentRequestMessageSchema>
+
+export const statusUpdateMessageSchema = z.object({
+  status: orderStatusSchema,
+  note: z.string().max(2000).optional(),
+})
+
+export type StatusUpdateMessageSchema = z.infer<typeof statusUpdateMessageSchema>
+
+export const shippingUpdateMessageSchema = z.object({
+  carrier: z.string().min(1).optional(),
+  trackingNumber: z.string().min(1).optional(),
+  trackingUrl: z.string().url().optional(),
+  note: z.string().max(2000).optional(),
+})
+
+export type ShippingUpdateMessageSchema = z.infer<typeof shippingUpdateMessageSchema>
+
+export const receiptMessageSchema = z.object({
+  note: z.string().max(2000).optional(),
+})
+
+export type ReceiptMessageSchema = z.infer<typeof receiptMessageSchema>

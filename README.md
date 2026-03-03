@@ -1,118 +1,200 @@
-![Conduit Logo](https://user-content.gitlab-static.net/c61862c47d1f4ea3b9eaffaa7691290a910c1a83/68747470733a2f2f63646e2e70726f642e776562736974652d66696c65732e636f6d2f3637613038633466376231633566393961613665393230312f3637613166353164363165646235306333656130633138325f636f6e647569742532304c4f474f2e706e67)
+# Conduit
 
-![Build](https://img.shields.io/badge/build-passing-brightgreen) ![Bitcoin](https://img.shields.io/badge/bitcoin-⚡-orange) ![Nostr](https://img.shields.io/badge/nostr-connected-purple)
+Decentralized commerce platform built on [Nostr](https://nostr.com). Merchants and buyers transact directly over the protocol — no platform custody of funds or user data.
 
-# ⚡ Conduit ⚡
-**The open commerce conduit for Nostr De-Commerce**
-
-> Sell anything, anywhere — no gatekeepers, no middlemen, just direct connection between Buyer and Seller on the Nostr network.
+**[conduit.market](https://conduit.market)**
 
 ---
 
-## 🚀 What's Here?
+## Apps
 
-| Project | Description | Status |
-|---------|-------------|--------|
-| 🛒 **Market** | Buyer-facing marketplace | Active |
-| 🧑‍💻 **Merchant Portal** | Manage products, orders, messaging | Active |
-| 🏗️ **Store Builder** | AI-generated storefronts | Planned |
-| 📡 **Relay** | Custom commerce relay | Planned |
+| App | Port | Description |
+|-----|------|-------------|
+| **Market** (`apps/market`) | 3000 | Buyer marketplace: browse products, cart, checkout, order tracking |
+| **Merchant Portal** (`apps/merchant`) | 3001 | Seller dashboard: product CRUD, order management, invoicing, DM workspace |
+| **Store Builder** (`apps/store-builder`) | 3002 | Standalone merchant storefronts (WIP) |
 
-## 📦 Packages
+## Shared Packages
 
 | Package | Description |
 |---------|-------------|
-| `@conduit/core` | Types, protocol utilities, Query hooks |
-| `@conduit/ui` | Shared components, design tokens |
+| `@conduit/core` | Types, protocol (NDK), schemas (Zod), React Query hooks, Dexie DB, utilities |
+| `@conduit/ui` | shadcn/ui components, design tokens, theme styles |
 
 ---
 
-## 🛠️ Tech Stack
+## Prerequisites
 
-- **Runtime**: Bun
-- **Build**: Vite 6 + SWC
-- **Framework**: React 19
-- **Routing**: TanStack Router
-- **Data**: TanStack Query + NDK
-- **UI**: shadcn/ui + Tailwind CSS
+- [Bun](https://bun.sh) v1.1+
+- A Nostr signer browser extension ([Alby](https://getalby.com), [nos2x](https://github.com/nicely/nos2x), or similar NIP-07 extension)
+- (Optional) [NWC](https://nwc.dev) wallet connection for Lightning invoicing
 
----
-
-## 🏃 Getting Started
+## Quick Start
 
 ```bash
+# Clone and install
+git clone https://github.com/conduit-btc/conduit-mono.git
+cd conduit-mono
 bun install
-bun run dev:market      # localhost:3000
-bun run dev:merchant    # localhost:3001
+
+# Start all apps
+bun run dev
 ```
 
-## Local Development (Recommended)
+This starts Market on http://localhost:3000, Merchant Portal on http://localhost:3001, and Store Builder on http://localhost:3002.
 
-For reliable, deterministic testing (no relay noise/rate limits), run a local relay and seed sample products into it.
-
-### 1) Start a Local Relay (Docker)
-
-We recommend `nostr-rs-relay` for local development.
+By default, dev mode uses **mock Lightning** (fake invoices) and points to a **local relay** on port 7777.
 
 ```bash
+# Or start individually
+bun run dev:market
+bun run dev:merchant
+bun run dev:store-builder
+```
+
+## Local Development Setup
+
+### 1. Local Relay
+
+A local relay keeps your dev environment isolated from public relays. Both modes expose `ws://127.0.0.1:7777`.
+
+```bash
+# Auto-selects Docker if available, otherwise uses a Bun WebSocket relay
 bun run relay:local:start
+
+# View logs
 bun run relay:local:logs
-```
 
-This exposes a relay at `ws://127.0.0.1:7777`.
-
-If you get a “Cannot connect to the Docker daemon” error, start Docker Desktop or OrbStack first.
-
-Stop it with:
-```bash
+# Stop
 bun run relay:local:stop
 ```
 
-### 2) Point the Apps at the Local Relay
-
-Market:
-```bash
-echo 'VITE_DEFAULT_RELAY_URL=ws://127.0.0.1:7777' > apps/market/.env.local
-```
-
-Merchant:
-```bash
-echo 'VITE_DEFAULT_RELAY_URL=ws://127.0.0.1:7777' > apps/merchant/.env.local
-```
-
-### 3) Seed Sample Listings
+Or use Docker/Bun explicitly:
 
 ```bash
-SEED_NSEC=... SEED_RELAY_URLS=ws://127.0.0.1:7777 bun run seed:products
+# Docker (nostr-rs-relay)
+bun run relay:local:start:docker
+
+# Bun (lightweight, no Docker needed)
+bun run relay:local:start:bun
 ```
 
-Then run:
+### 2. Environment Variables
+
+Each app reads `VITE_`-prefixed env vars via Vite. A root `.env.example` shows available options. For local dev, apps ship with `.env.local` files that point to the local relay in mock mode.
+
+| Variable | Default (dev) | Description |
+|----------|---------------|-------------|
+| `VITE_RELAY_URL` | `ws://127.0.0.1:7777` | Primary relay WebSocket URL |
+| `VITE_DEFAULT_RELAYS` | `ws://127.0.0.1:7777` | Comma-separated fallback relays |
+| `VITE_LIGHTNING_NETWORK` | `mock` | `mock`, `signet`, or `mainnet` |
+| `VITE_BLOSSOM_SERVER_URL` | — | Blossom media server for product images |
+
+**Modes:**
+- **mock** — Fake `lnbcrt` invoices, yellow badge in header. Use for local dev.
+- **signet** — Real Lightning testnet, blue badge. Use for integration testing.
+- **mainnet** — Production Lightning, no badge.
+
+### 3. Seed Test Products
+
 ```bash
-bun run dev:market
-bun run dev:merchant
+SEED_NSEC=<your-test-nsec> SEED_RELAY_URLS=ws://127.0.0.1:7777 bun run seed:products
 ```
 
-Notes:
-- Cloudflare Pages previews are served over `https://` and must use `wss://` relays (no `ws://` mixed-content).
-- The seeding script is dev-only; keep the `nsec` out of apps and repos.
+Generate a throwaway nsec for seeding:
+
+```bash
+bun run seed:nsec
+```
+
+### 4. Test a Purchase Flow
+
+1. Open **Market** (http://localhost:3000) — connect signer as buyer
+2. Open **Merchant Portal** (http://localhost:3001) in a different browser profile — connect a different signer as merchant
+3. **Merchant**: Products > New Product > publish
+4. **Buyer**: Products > Add to Cart > Checkout > Place Order
+5. **Merchant**: Orders > select order > Send Invoice (mock mode auto-generates)
+6. **Buyer**: Orders > see invoice QR, status updates, shipping info
 
 ---
 
-## 📋 Roadmap
+## Common Commands
 
-See [ROADMAP.md](./docs/plans/ROADMAP.md) for full details.
+```bash
+bun run dev            # Start all apps
+bun run build          # Build all (core -> ui -> apps)
+bun run typecheck      # TypeScript check all packages
+bun run lint           # Lint all packages
+bun test               # Run tests
+bun run clean          # Remove all node_modules
+```
 
-| Phase | Goal |
-|-------|------|
-| Infrastructure | Feb 12 |
-| Market | Feb 26 |
-| Merchant | Mar 12 |
-| MVP Launch | Mar 12 |
+## Project Structure
+
+```
+conduit-mono/
+├── apps/
+│   ├── market/              # Buyer marketplace
+│   ├── merchant/            # Seller portal
+│   └── store-builder/       # Merchant storefronts (WIP)
+├── packages/
+│   ├── core/                # Types, protocol, schemas, hooks, DB, utils
+│   └── ui/                  # Components, theme, styles
+├── docs/
+│   ├── ARCHITECTURE.md      # System diagrams and data flow
+│   ├── plans/
+│   │   ├── ROADMAP.md       # Strategic epochs
+│   │   └── IMPLEMENTATION.md # Build phases with checklists
+│   └── specs/               # Feature specifications
+└── scripts/                 # Dev tooling, CI helpers, seed data
+```
+
+## Tech Stack
+
+| Layer | Choice |
+|-------|--------|
+| Runtime | Bun |
+| Build | Vite 6 + SWC |
+| Framework | React 19 |
+| Routing | TanStack Router (file-based, type-safe) |
+| Server State | TanStack Query + NDK |
+| Client State | React Context (auth only) |
+| Local Storage | Dexie (IndexedDB) for orders, messages, cache |
+| Forms | react-hook-form + Zod |
+| UI | shadcn/ui + Tailwind CSS |
+| Protocol | Nostr via NDK |
+| Payments | Lightning via NWC (NIP-47) |
+| Messaging | NIP-17 gift-wrapped encrypted DMs |
+
+## Protocol
+
+- **Authentication**: External signers only (NIP-07, NIP-46). No key generation or custody.
+- **Products**: Kind 30402 replaceable events (NIP-99)
+- **Orders**: NIP-17 gift-wrapped encrypted DMs between buyer and merchant
+- **Payments**: NWC-based Lightning invoicing (NIP-47). No fund custody.
+- **Profiles**: Kind 0 metadata events (NIP-01)
+
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for system diagrams and protocol details.
+
+## Roadmap
+
+See [ROADMAP.md](docs/plans/ROADMAP.md) for strategic epochs and [IMPLEMENTATION.md](docs/plans/IMPLEMENTATION.md) for build phases.
+
+| Epoch | Focus | Target |
+|-------|-------|--------|
+| Genesis | Architecture, infrastructure, wireframes | Feb 12, 2026 |
+| Core Function | Market + Merchant Portal MVP | Mar 12, 2026 |
+| Added Value | Social features, enhanced UX | TBD |
+| Monetization | Premium tiers, ads | TBD |
+| Scale | Multi-language, enterprise | TBD |
 
 ---
 
-## 🔗 Links
+## Links
 
-- **🌐 [conduit.market](https://conduit.market)**
-- **📂 [GitLab](https://gitlab.com/conduit-btc)**
-- **💬 [Nostr](https://njump.me/nprofile1qqsfmys8030rttmk77cumprnsqqt0whmg0fqkz3xcx8798ag8rf8z3sad6jak)**
+- [conduit.market](https://conduit.market)
+- [Nostr profile](https://njump.me/nprofile1qqsfmys8030rttmk77cumprnsqqt0whmg0fqkz3xcx8798ag8rf8z3sad6jak)
+
+## License
+
+TBD
