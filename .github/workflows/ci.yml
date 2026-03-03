@@ -73,6 +73,7 @@ jobs:
     needs: [build-signet]
     timeout-minutes: 15
     permissions:
+      checks: read
       contents: read
       pull-requests: write
     steps:
@@ -142,6 +143,16 @@ jobs:
               });
             }
 
+            async function listCheckRuns() {
+              const { data } = await github.rest.checks.listForRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: headSha,
+                per_page: 100,
+              });
+              return data.check_runs || [];
+            }
+
             function resolveProjectUrls(comments, projectName) {
               const candidates = comments
                 .filter((comment) => {
@@ -182,6 +193,12 @@ jobs:
             let comments = [];
             const waitUntil = Date.now() + 10 * 60 * 1000;
             const pollIntervalMs = 20 * 1000;
+            const expectedCfChecks = [
+              "Cloudflare Pages: conduit-market",
+              "Cloudflare Pages: conduit-merchant",
+              "Cloudflare Pages: conduit-market-signet",
+              "Cloudflare Pages: conduit-merchant-signet",
+            ];
 
             while (true) {
               comments = await listIssueComments();
@@ -199,8 +216,19 @@ jobs:
                 Boolean(byApp[app].signet.branchUrl && byApp[app].mainnet.branchUrl)
               );
 
+              const checkRuns = await listCheckRuns();
+              const cloudflareChecksCompleted = expectedCfChecks.every((checkName) => {
+                const run = checkRuns.find((item) => item.name === checkName);
+                return Boolean(run && run.status === "completed");
+              });
+
               if (hasAllCommitUrls && hasAllBranchUrls) {
                 core.info("Found all Cloudflare commit and branch preview URLs.");
+                break;
+              }
+
+              if (cloudflareChecksCompleted) {
+                core.info("All Cloudflare checks are completed; proceeding with available preview URLs.");
                 break;
               }
 
@@ -216,7 +244,7 @@ jobs:
                   if (!byApp[app][network].branchUrl) pending.push(`${app}/${network}:branch`);
                 }
               }
-              core.info(`Waiting for Cloudflare preview links: ${pending.join(", ")}`);
+              core.info(`Waiting for Cloudflare preview links/checks: ${pending.join(", ")}`);
               await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
             }
 
