@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   db,
   EVENT_KINDS,
@@ -391,6 +391,8 @@ function OrdersPage() {
   const { pubkey } = useAuth()
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState("details")
+  const [refreshButtonState, setRefreshButtonState] = useState<"idle" | "refreshing" | "done">("idle")
+  const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const messagesQuery = useQuery({
     queryKey: ["buyer-messages", pubkey ?? "none"],
@@ -399,6 +401,42 @@ function OrdersPage() {
     refetchInterval: 10_000,
     refetchIntervalInBackground: true,
   })
+  const isMessagesFetching = messagesQuery.isFetching
+  const refetchMessages = messagesQuery.refetch
+
+  useEffect(() => {
+    if (isMessagesFetching) {
+      if (refreshResetTimerRef.current) {
+        clearTimeout(refreshResetTimerRef.current)
+        refreshResetTimerRef.current = null
+      }
+      setRefreshButtonState("refreshing")
+      return
+    }
+
+    if (refreshButtonState === "refreshing") {
+      setRefreshButtonState("done")
+      refreshResetTimerRef.current = setTimeout(() => {
+        setRefreshButtonState("idle")
+        refreshResetTimerRef.current = null
+      }, 900)
+    }
+  }, [isMessagesFetching, refreshButtonState])
+
+  useEffect(() => {
+    return () => {
+      if (refreshResetTimerRef.current) clearTimeout(refreshResetTimerRef.current)
+    }
+  }, [])
+
+  const handleRefresh = useCallback(() => {
+    if (refreshResetTimerRef.current) {
+      clearTimeout(refreshResetTimerRef.current)
+      refreshResetTimerRef.current = null
+    }
+    setRefreshButtonState("refreshing")
+    void refetchMessages()
+  }, [refetchMessages])
 
   const conversations = useMemo(
     () => buildBuyerConversations(messagesQuery.data ?? [], pubkey ?? ""),
@@ -434,18 +472,35 @@ function OrdersPage() {
           <p className="mt-1 text-sm text-[var(--text-secondary)]">
             Track your orders and communicate with merchants.
           </p>
+          <div className="mt-3">
+            <Button variant="outline" size="sm" disabled={isMessagesFetching} onClick={handleRefresh}>
+              <span className="relative inline-flex h-4 min-w-[7rem] items-center justify-center">
+                <span
+                  className={`absolute transition-opacity duration-200 ${
+                    refreshButtonState === "idle" ? "opacity-100" : "opacity-0"
+                  }`}
+                >
+                  Refresh
+                </span>
+                <span
+                  className={`absolute transition-opacity duration-200 ${
+                    refreshButtonState === "refreshing" ? "opacity-100" : "opacity-0"
+                  }`}
+                >
+                  Refreshing…
+                </span>
+                <span
+                  className={`absolute transition-opacity duration-200 ${
+                    refreshButtonState === "done" ? "opacity-100" : "opacity-0"
+                  }`}
+                >
+                  Updated
+                </span>
+              </span>
+            </Button>
+          </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={messagesQuery.isFetching}
-            onClick={() => {
-              void messagesQuery.refetch()
-            }}
-          >
-            {messagesQuery.isFetching ? "Refreshing…" : "Refresh"}
-          </Button>
           <Button asChild variant="muted">
             <Link to="/checkout" search={{ merchant: undefined }}>
               Go to checkout

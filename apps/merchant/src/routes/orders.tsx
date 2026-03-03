@@ -438,6 +438,8 @@ function OrdersPage() {
   const [successFlash, setSuccessFlash] = useState<string | null>(null)
   const [weblnAvailable, setWeblnAvailable] = useState(false)
   const autoInvoicedRef = useRef(new Set<string>())
+  const [refreshButtonState, setRefreshButtonState] = useState<"idle" | "refreshing" | "done">("idle")
+  const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     // Detect WebLN (Alby extension) — may load after page render
@@ -461,6 +463,42 @@ function OrdersPage() {
     refetchInterval: 10_000,
     refetchIntervalInBackground: true,
   })
+  const isOrdersFetching = ordersQuery.isFetching
+  const refetchOrders = ordersQuery.refetch
+
+  useEffect(() => {
+    if (isOrdersFetching) {
+      if (refreshResetTimerRef.current) {
+        clearTimeout(refreshResetTimerRef.current)
+        refreshResetTimerRef.current = null
+      }
+      setRefreshButtonState("refreshing")
+      return
+    }
+
+    if (refreshButtonState === "refreshing") {
+      setRefreshButtonState("done")
+      refreshResetTimerRef.current = setTimeout(() => {
+        setRefreshButtonState("idle")
+        refreshResetTimerRef.current = null
+      }, 900)
+    }
+  }, [isOrdersFetching, refreshButtonState])
+
+  useEffect(() => {
+    return () => {
+      if (refreshResetTimerRef.current) clearTimeout(refreshResetTimerRef.current)
+    }
+  }, [])
+
+  const handleRefresh = useCallback(() => {
+    if (refreshResetTimerRef.current) {
+      clearTimeout(refreshResetTimerRef.current)
+      refreshResetTimerRef.current = null
+    }
+    setRefreshButtonState("refreshing")
+    void refetchOrders()
+  }, [refetchOrders])
 
   const conversations = useMemo(
     () => buildMerchantConversations(ordersQuery.data ?? [], pubkey ?? ""),
@@ -720,18 +758,35 @@ function OrdersPage() {
           <p className="mt-1 text-sm text-[var(--text-secondary)]">
             Two-column merchant inbox for MVP order conversations and invoice/status/shipping actions.
           </p>
+          <div className="mt-3">
+            <Button variant="outline" size="sm" disabled={isOrdersFetching} onClick={handleRefresh}>
+              <span className="relative inline-flex h-4 min-w-[7rem] items-center justify-center">
+                <span
+                  className={`absolute transition-opacity duration-200 ${
+                    refreshButtonState === "idle" ? "opacity-100" : "opacity-0"
+                  }`}
+                >
+                  Refresh
+                </span>
+                <span
+                  className={`absolute transition-opacity duration-200 ${
+                    refreshButtonState === "refreshing" ? "opacity-100" : "opacity-0"
+                  }`}
+                >
+                  Refreshing…
+                </span>
+                <span
+                  className={`absolute transition-opacity duration-200 ${
+                    refreshButtonState === "done" ? "opacity-100" : "opacity-0"
+                  }`}
+                >
+                  Updated
+                </span>
+              </span>
+            </Button>
+          </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={ordersQuery.isFetching}
-            onClick={() => {
-              void ordersQuery.refetch()
-            }}
-          >
-            {ordersQuery.isFetching ? "Refreshing…" : "Refresh"}
-          </Button>
           <Button variant={canMockInvoice() || weblnAvailable || nwc.connection ? "outline" : "muted"} size="sm" onClick={() => setShowNwcSetup(!showNwcSetup)}>
             {canMockInvoice() ? "Mock mode" : weblnAvailable ? "Alby detected" : nwc.connection ? "NWC connected" : "Connect wallet"}
           </Button>
