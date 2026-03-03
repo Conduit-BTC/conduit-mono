@@ -389,15 +389,16 @@ function MessageCard({
 }
 
 function OrdersPage() {
-  const { pubkey } = useAuth()
+  const { pubkey, status } = useAuth()
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState("details")
   const [refreshButtonState, setRefreshButtonState] = useState<"idle" | "refreshing" | "done">("idle")
   const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const signerConnected = status === "connected" && !!pubkey
 
   const messagesQuery = useQuery({
     queryKey: ["buyer-messages", pubkey ?? "none"],
-    enabled: !!pubkey,
+    enabled: signerConnected,
     queryFn: () => fetchBuyerMessages(pubkey!),
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
@@ -431,17 +432,18 @@ function OrdersPage() {
   }, [])
 
   const handleRefresh = useCallback(() => {
+    if (!signerConnected) return
     if (refreshResetTimerRef.current) {
       clearTimeout(refreshResetTimerRef.current)
       refreshResetTimerRef.current = null
     }
     setRefreshButtonState("refreshing")
     void refetchMessages()
-  }, [refetchMessages])
+  }, [refetchMessages, signerConnected])
 
   const conversations = useMemo(
-    () => buildBuyerConversations(messagesQuery.data ?? [], pubkey ?? ""),
-    [messagesQuery.data, pubkey]
+    () => signerConnected && pubkey ? buildBuyerConversations(messagesQuery.data ?? [], pubkey) : [],
+    [messagesQuery.data, pubkey, signerConnected]
   )
 
   useEffect(() => {
@@ -474,7 +476,7 @@ function OrdersPage() {
             Track your orders and communicate with merchants.
           </p>
           <div className="mt-3">
-            <Button variant="outline" size="sm" disabled={isMessagesFetching} onClick={handleRefresh}>
+            <Button variant="outline" size="sm" disabled={!signerConnected || isMessagesFetching} onClick={handleRefresh}>
               <span className="inline-flex items-center gap-2">
                 <span className={`inline-flex h-4 w-4 items-center justify-center ${
                   refreshButtonState === "refreshing" ? "animate-pulse" : ""
@@ -525,22 +527,28 @@ function OrdersPage() {
         </div>
       </div>
 
-      {messagesQuery.isLoading && <div className="text-sm text-[var(--text-secondary)]">Loading messages…</div>}
+      {!signerConnected && (
+        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+          Connect your signer to view order messages.
+        </div>
+      )}
 
-      {messagesQuery.error && (
+      {signerConnected && messagesQuery.isLoading && <div className="text-sm text-[var(--text-secondary)]">Loading messages…</div>}
+
+      {signerConnected && messagesQuery.error && (
         <div className="rounded-md border border-error/30 bg-error/10 p-4 text-sm text-error">
           Failed to load messages:{" "}
           {messagesQuery.error instanceof Error ? messagesQuery.error.message : "Unknown error"}
         </div>
       )}
 
-      {!messagesQuery.isLoading && conversations.length === 0 && (
+      {signerConnected && !messagesQuery.isLoading && conversations.length === 0 && (
         <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
           No order messages yet. Place an order to start a conversation with a merchant.
         </div>
       )}
 
-      {conversations.length > 0 && (
+      {signerConnected && conversations.length > 0 && (
         <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
           <aside className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2">
             <div className="mb-2 px-2 text-xs uppercase tracking-wide text-[var(--text-secondary)]">Conversations</div>
