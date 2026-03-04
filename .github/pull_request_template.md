@@ -1,3 +1,7 @@
+## Preview Settings
+
+- [ ] Deploy per-commit Cloudflare preview
+
 ## Summary
 
 <!-- What changed and why? Include user/business impact. -->

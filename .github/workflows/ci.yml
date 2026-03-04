@@ -84,6 +84,9 @@ jobs:
             const branch = context.payload.pull_request.head.ref;
             const headSha = context.payload.pull_request.head.sha;
             const shortSha = headSha.slice(0, 7);
+            const prBody = context.payload.pull_request.body || "";
+            const commitPreviewPattern = /-\s*\[(x|X)\]\s*Deploy per-commit Cloudflare preview\b/;
+            const commitPreviewEnabled = commitPreviewPattern.test(prBody);
 
             // Cloudflare branch slug: lowercase, non-alnum to dash, collapse, trim, max 28 chars
             const slug = branch
@@ -221,8 +224,12 @@ jobs:
               const cloudflareChecksCompleted = cloudflareRuns.length > 0
                 && cloudflareRuns.every((item) => item.status === "completed");
 
-              if (hasAllCommitUrls && hasAllBranchUrls) {
-                core.info("Found all Cloudflare commit and branch preview URLs.");
+              if ((commitPreviewEnabled && hasAllCommitUrls && hasAllBranchUrls) || (!commitPreviewEnabled && hasAllBranchUrls)) {
+                core.info(
+                  commitPreviewEnabled
+                    ? "Found all Cloudflare commit and branch preview URLs."
+                    : "Found all Cloudflare branch preview URLs (commit previews disabled by PR setting)."
+                );
                 break;
               }
 
@@ -239,7 +246,9 @@ jobs:
               const pending = [];
               for (const app of ["market", "merchant"]) {
                 for (const network of ["signet", "mainnet"]) {
-                  if (!byApp[app][network].commitUrl) pending.push(`${app}/${network}:commit`);
+                  if (commitPreviewEnabled && !byApp[app][network].commitUrl) {
+                    pending.push(`${app}/${network}:commit`);
+                  }
                   if (!byApp[app][network].branchUrl) pending.push(`${app}/${network}:branch`);
                 }
               }
@@ -277,6 +286,16 @@ jobs:
               "|-----|-----|",
               ...rows.map((row) => `| ${row.label} | ${row.commitUrl || "_pending_"} |`),
             ].join("\n");
+            const commitDetailsBlock = commitPreviewEnabled
+              ? [
+                  "<details>",
+                  "<summary>Commit-Level URLs</summary>",
+                  "",
+                  commitTable,
+                  "",
+                  "</details>",
+                ].join("\n")
+              : "_Commit-level preview links are disabled by PR setting (`- [ ] Deploy per-commit Cloudflare preview`)._";
 
             const MARKER_START = "<!-- conduit:preview_links -->";
             const MARKER_END = "<!-- /conduit:preview_links -->";
@@ -289,12 +308,7 @@ jobs:
               "",
               branchTable,
               "",
-              "<details>",
-              "<summary>Commit-Level URLs</summary>",
-              "",
-              commitTable,
-              "",
-              "</details>",
+              commitDetailsBlock,
               MARKER_END,
             ].join("\n");
 
