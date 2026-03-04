@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
     branches: [main]
   push:
     branches: [main]
@@ -12,6 +13,7 @@ env:
 
 jobs:
   lint:
+    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,6 +24,7 @@ jobs:
       - run: bun run lint
 
   typecheck:
+    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +35,7 @@ jobs:
       - run: bun run typecheck
 
   test:
+    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,7 +46,7 @@ jobs:
       - run: bun test
 
   build-signet:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     needs: [lint, typecheck, test]
     steps:
@@ -68,7 +72,7 @@ jobs:
         run: VITE_LIGHTNING_NETWORK=mainnet bun run build
 
   preview-links:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     needs: [build-signet]
     timeout-minutes: 15
@@ -84,6 +88,14 @@ jobs:
             const branch = context.payload.pull_request.head.ref;
             const headSha = context.payload.pull_request.head.sha;
             const shortSha = headSha.slice(0, 7);
+            const prBody = context.payload.pull_request.body || "";
+            const markerPattern = /<!--\s*preview:show-commit-links-cloudflare\s*-->\s*-\s*\[(x|X)\]/i;
+            const preferredPattern = /-\s*\[(x|X)\]\s*Show commit preview links \(Cloudflare creates deployments automatically\)\b/i;
+            const legacyPattern = /-\s*\[(x|X)\]\s*Deploy per-commit Cloudflare preview\b/;
+            const commitPreviewEnabled = markerPattern.test(prBody) || preferredPattern.test(prBody) || legacyPattern.test(prBody);
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const updatedAt = new Date().toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
+            const stateLabel = commitPreviewEnabled ? "enabled" : "disabled";
 
             // Cloudflare branch slug: lowercase, non-alnum to dash, collapse, trim, max 28 chars
             const slug = branch
@@ -221,8 +233,12 @@ jobs:
               const cloudflareChecksCompleted = cloudflareRuns.length > 0
                 && cloudflareRuns.every((item) => item.status === "completed");
 
-              if (hasAllCommitUrls && hasAllBranchUrls) {
-                core.info("Found all Cloudflare commit and branch preview URLs.");
+              if ((commitPreviewEnabled && hasAllCommitUrls && hasAllBranchUrls) || (!commitPreviewEnabled && hasAllBranchUrls)) {
+                core.info(
+                  commitPreviewEnabled
+                    ? "Found all Cloudflare commit and branch preview URLs."
+                    : "Found all Cloudflare branch preview URLs (commit preview links hidden by PR setting)."
+                );
                 break;
               }
 
@@ -239,7 +255,9 @@ jobs:
               const pending = [];
               for (const app of ["market", "merchant"]) {
                 for (const network of ["signet", "mainnet"]) {
-                  if (!byApp[app][network].commitUrl) pending.push(`${app}/${network}:commit`);
+                  if (commitPreviewEnabled && !byApp[app][network].commitUrl) {
+                    pending.push(`${app}/${network}:commit`);
+                  }
                   if (!byApp[app][network].branchUrl) pending.push(`${app}/${network}:branch`);
                 }
               }
@@ -277,10 +295,30 @@ jobs:
               "|-----|-----|",
               ...rows.map((row) => `| ${row.label} | ${row.commitUrl || "_pending_"} |`),
             ].join("\n");
+            const commitDetailsBlock = commitPreviewEnabled
+              ? [
+                  "<details>",
+                  "<summary>Commit-Level URLs</summary>",
+                  "",
+                  commitTable,
+                  "",
+                  "</details>",
+                ].join("\n")
+              : "_Commit-level preview links are hidden by PR setting (`- [ ] Show commit preview links (Cloudflare creates deployments automatically)`)._";
 
             const MARKER_START = "<!-- conduit:preview_links -->";
             const MARKER_END = "<!-- /conduit:preview_links -->";
-            const previewBodyBlock = `${MARKER_START}\n## Preview Deploys (Branch URLs)\n\n${branchTable}\n${MARKER_END}`;
+            const previewBodyBlock = [
+              MARKER_START,
+              "## Preview Deploys (Branch URLs)",
+              "",
+              `- Show commit preview links setting applied: **${stateLabel}**`,
+              `- Last applied: ${updatedAt}`,
+              `- Workflow run: ${runUrl}`,
+              "",
+              branchTable,
+              MARKER_END,
+            ].join("\n");
             const previewCommentBlock = [
               MARKER_START,
               "## Preview Deploys",
@@ -289,12 +327,7 @@ jobs:
               "",
               branchTable,
               "",
-              "<details>",
-              "<summary>Commit-Level URLs</summary>",
-              "",
-              commitTable,
-              "",
-              "</details>",
+              commitDetailsBlock,
               MARKER_END,
             ].join("\n");
 
