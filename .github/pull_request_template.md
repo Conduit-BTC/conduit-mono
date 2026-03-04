@@ -1,6 +1,7 @@
 ## Preview Settings
 
-- [ ] Deploy per-commit Cloudflare preview
+<!-- preview:show-commit-links-cloudflare -->
+- [ ] Show commit preview links (Cloudflare creates deployments automatically)
 
 ## Summary
 
