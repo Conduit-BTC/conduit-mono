@@ -13,6 +13,7 @@ env:
 
 jobs:
   lint:
+    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +24,7 @@ jobs:
       - run: bun run lint
 
   typecheck:
+    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +35,7 @@ jobs:
       - run: bun run typecheck
 
   test:
+    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +46,7 @@ jobs:
       - run: bun test
 
   build-signet:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     needs: [lint, typecheck, test]
     steps:
