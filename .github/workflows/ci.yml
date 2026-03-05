@@ -80,7 +80,106 @@ jobs:
       checks: read
       contents: read
       pull-requests: write
+      issues: write
     steps:
+      - name: Upsert sticky preview comment as building
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prBody = context.payload.pull_request.body || "";
+            const markerPattern = /<!--\s*preview:show-commit-links-cloudflare\s*-->\s*-\s*\[(x|X)\]/i;
+            const preferredPattern = /-\s*\[(x|X)\]\s*Show commit preview links \(Cloudflare creates deployments automatically\)\b/i;
+            const legacyPattern = /-\s*\[(x|X)\]\s*Deploy per-commit Cloudflare preview\b/;
+            const commitPreviewEnabled = markerPattern.test(prBody) || preferredPattern.test(prBody) || legacyPattern.test(prBody);
+
+            const marker = "<!-- conduit:preview_links -->";
+            const historyStart = "<!-- conduit-commit-preview-history:start -->";
+            const historyEnd = "<!-- conduit-commit-preview-history:end -->";
+            const updatedAt = new Intl.DateTimeFormat("en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+              hour: "numeric",
+              minute: "2-digit",
+              hour12: true,
+              timeZone: "UTC",
+            })
+              .format(new Date())
+              .replace(" AM", "am")
+              .replace(" PM", "pm");
+            const updatedAtCell = updatedAt.replace(/ /g, "&nbsp;");
+
+            const actionText = commitPreviewEnabled ? "Preview pending, Commit pending" : "Preview pending, Comment (disabled)";
+            const marketProject = "[market](https://dash.cloudflare.com/?to=/:account/pages/view/conduit-market)";
+            const merchantProject = "[merchant](https://dash.cloudflare.com/?to=/:account/pages/view/conduit-merchant)";
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100
+            });
+
+            const existing = comments.find((comment) =>
+              comment.user?.type === "Bot" && comment.body?.includes(marker)
+            );
+
+            const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const historyRegex = new RegExp(
+              `${escapeRegex(historyStart)}\\n([\\s\\S]*?)\\n${escapeRegex(historyEnd)}`
+            );
+
+            let historyItems = [];
+            if (existing?.body) {
+              const historyMatch = existing.body.match(historyRegex);
+              if (historyMatch?.[1]) {
+                historyItems = historyMatch[1]
+                  .split("\n")
+                  .map((line) => line.trim())
+                  .filter((line) => line.startsWith("- "));
+              }
+            }
+
+            const historyAccordion = historyItems.length
+              ? [
+                  "<details>",
+                  `<summary>Commit previews (${historyItems.length})</summary>`,
+                  "",
+                  historyStart,
+                  ...historyItems,
+                  historyEnd,
+                  "</details>",
+                ].join("\n")
+              : null;
+
+            const body = [
+              marker,
+              "## Preview Deploys",
+              "",
+              "| Project | Deployment | Actions | Updated (UTC) |",
+              "| :--- | :----- | :------ | :------ |",
+              `| ${marketProject} | ![Building](https://vercel.com/static/status/building.svg) Building | ${actionText} | ${updatedAtCell} |`,
+              `| ${merchantProject} | ![Building](https://vercel.com/static/status/building.svg) Building | ${actionText} | ${updatedAtCell} |`,
+              historyAccordion ? "" : null,
+              historyAccordion,
+            ].filter(Boolean).join("\n");
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
       - name: Post preview links
         uses: actions/github-script@v7
         with:
@@ -290,22 +389,6 @@ jobs:
               ...rows.map((row) => `| ${row.label} | ${row.branchUrl} |`),
             ].join("\n");
 
-            const commitTable = [
-              "| App | URL |",
-              "|-----|-----|",
-              ...rows.map((row) => `| ${row.label} | ${row.commitUrl || "_pending_"} |`),
-            ].join("\n");
-            const commitDetailsBlock = commitPreviewEnabled
-              ? [
-                  "<details>",
-                  "<summary>Commit-Level URLs</summary>",
-                  "",
-                  commitTable,
-                  "",
-                  "</details>",
-                ].join("\n")
-              : "_Commit-level preview links are hidden by PR setting (`- [ ] Show commit preview links (Cloudflare creates deployments automatically)`)._";
-
             const MARKER_START = "<!-- conduit:preview_links -->";
             const MARKER_END = "<!-- /conduit:preview_links -->";
             const previewBodyBlock = [
@@ -317,17 +400,6 @@ jobs:
               `- Workflow run: ${runUrl}`,
               "",
               branchTable,
-              MARKER_END,
-            ].join("\n");
-            const previewCommentBlock = [
-              MARKER_START,
-              "## Preview Deploys",
-              "",
-              "### Branch URLs",
-              "",
-              branchTable,
-              "",
-              commitDetailsBlock,
               MARKER_END,
             ].join("\n");
 
@@ -357,27 +429,145 @@ jobs:
               body: newBody,
             });
 
-            // --- 2. Per-commit comment (idempotent by commit SHA) ---
-            const commentBody = `${previewCommentBlock}\n\n_Preview links for commit ${shortSha}_`;
+            // --- 2. Sticky PR comment ---
+            const commentMarker = MARKER_START;
+            const historyStart = "<!-- conduit-commit-preview-history:start -->";
+            const historyEnd = "<!-- conduit-commit-preview-history:end -->";
+            const updatedAtCell = new Intl.DateTimeFormat("en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+              hour: "numeric",
+              minute: "2-digit",
+              hour12: true,
+              timeZone: "UTC",
+            })
+              .format(new Date())
+              .replace(" AM", "am")
+              .replace(" PM", "pm")
+              .replace(/ /g, "&nbsp;");
 
-            const alreadyPosted = comments.find((comment) =>
-              comment.body?.includes(MARKER_START)
-              && comment.body?.includes(`commit ${shortSha}`)
+            const byAppRows = {
+              market: {
+                signet: byApp.market.signet,
+                mainnet: byApp.market.mainnet,
+                project: "[market](https://dash.cloudflare.com/?to=/:account/pages/view/conduit-market)",
+              },
+              merchant: {
+                signet: byApp.merchant.signet,
+                mainnet: byApp.merchant.mainnet,
+                project: "[merchant](https://dash.cloudflare.com/?to=/:account/pages/view/conduit-merchant)",
+              },
+            };
+
+            const allBranchReady = ["market", "merchant"].every((app) =>
+              Boolean(byAppRows[app].signet.branchUrl && byAppRows[app].mainnet.branchUrl)
+            );
+            const allCommitReady = ["market", "merchant"].every((app) =>
+              Boolean(byAppRows[app].signet.commitUrl && byAppRows[app].mainnet.commitUrl)
+            );
+            const deployReady = commitPreviewEnabled ? allBranchReady && allCommitReady : allBranchReady;
+
+            const commentsForUpdate = comments;
+            const existingSticky = commentsForUpdate.find((comment) =>
+              comment.user?.type === "Bot" && comment.body?.includes(commentMarker)
             );
 
-            if (alreadyPosted) {
+            const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const historyRegex = new RegExp(
+              `${escapeRegex(historyStart)}\\n([\\s\\S]*?)\\n${escapeRegex(historyEnd)}`
+            );
+
+            let historyItems = [];
+            if (existingSticky?.body) {
+              const historyMatch = existingSticky.body.match(historyRegex);
+              if (historyMatch?.[1]) {
+                historyItems = historyMatch[1]
+                  .split("\n")
+                  .map((line) => line.trim())
+                  .filter((line) => line.startsWith("- "));
+              }
+            }
+
+            if (commitPreviewEnabled) {
+              const commitLinks = [
+                byAppRows.market.signet.commitUrl ? `[Market signet](${byAppRows.market.signet.commitUrl})` : null,
+                byAppRows.market.mainnet.commitUrl ? `[Market mainnet](${byAppRows.market.mainnet.commitUrl})` : null,
+                byAppRows.merchant.signet.commitUrl ? `[Merchant signet](${byAppRows.merchant.signet.commitUrl})` : null,
+                byAppRows.merchant.mainnet.commitUrl ? `[Merchant mainnet](${byAppRows.merchant.mainnet.commitUrl})` : null,
+              ].filter(Boolean);
+
+              if (commitLinks.length) {
+                const historyItem = `- \`${shortSha}\` · ${commitLinks.join(" · ")} · ${updatedAt}`;
+                if (!historyItems.some((line) => line.includes(`\`${shortSha}\``))) {
+                  historyItems.unshift(historyItem);
+                }
+              }
+            }
+            historyItems = historyItems.slice(0, 20);
+
+            const historyAccordion = historyItems.length
+              ? [
+                  "<details>",
+                  `<summary>Commit previews (${historyItems.length})</summary>`,
+                  "",
+                  historyStart,
+                  ...historyItems,
+                  historyEnd,
+                  "</details>",
+                ].join("\n")
+              : null;
+
+            const toDeploymentCell = (isReady, targetUrl) => {
+              const label = isReady ? "Ready" : "Failed";
+              const icon = isReady ? "ready.svg" : "failed.svg";
+              return `![${label}](https://vercel.com/static/status/${icon}) [${label}](${targetUrl || runUrl})`;
+            };
+
+            const marketReady = commitPreviewEnabled
+              ? Boolean(byAppRows.market.signet.branchUrl && byAppRows.market.mainnet.branchUrl && byAppRows.market.signet.commitUrl && byAppRows.market.mainnet.commitUrl)
+              : Boolean(byAppRows.market.signet.branchUrl && byAppRows.market.mainnet.branchUrl);
+            const merchantReady = commitPreviewEnabled
+              ? Boolean(byAppRows.merchant.signet.branchUrl && byAppRows.merchant.mainnet.branchUrl && byAppRows.merchant.signet.commitUrl && byAppRows.merchant.mainnet.commitUrl)
+              : Boolean(byAppRows.merchant.signet.branchUrl && byAppRows.merchant.mainnet.branchUrl);
+
+            const marketActions = [
+              byAppRows.market.signet.branchUrl ? `[Signet](${byAppRows.market.signet.branchUrl})` : "Signet unavailable",
+              byAppRows.market.mainnet.branchUrl ? `[Mainnet](${byAppRows.market.mainnet.branchUrl})` : "Mainnet unavailable",
+              commitPreviewEnabled ? null : "Comment (disabled)",
+            ].filter(Boolean).join(", ");
+            const merchantActions = [
+              byAppRows.merchant.signet.branchUrl ? `[Signet](${byAppRows.merchant.signet.branchUrl})` : "Signet unavailable",
+              byAppRows.merchant.mainnet.branchUrl ? `[Mainnet](${byAppRows.merchant.mainnet.branchUrl})` : "Mainnet unavailable",
+              commitPreviewEnabled ? null : "Comment (disabled)",
+            ].filter(Boolean).join(", ");
+
+            const stickyCommentBody = [
+              commentMarker,
+              "## Preview Deploys",
+              "",
+              "| Project | Deployment | Actions | Updated (UTC) |",
+              "| :--- | :----- | :------ | :------ |",
+              `| ${byAppRows.market.project} | ${toDeploymentCell(marketReady, byAppRows.market.mainnet.branchUrl || byAppRows.market.signet.branchUrl)} | ${marketActions} | ${updatedAtCell} |`,
+              `| ${byAppRows.merchant.project} | ${toDeploymentCell(merchantReady, byAppRows.merchant.mainnet.branchUrl || byAppRows.merchant.signet.branchUrl)} | ${merchantActions} | ${updatedAtCell} |`,
+              historyAccordion ? "" : null,
+              historyAccordion,
+              deployReady ? null : "",
+              deployReady ? null : `- Warning: Cloudflare preview URLs are incomplete for commit \`${shortSha}\`.`,
+            ].filter(Boolean).join("\n");
+
+            if (existingSticky) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                comment_id: alreadyPosted.id,
-                body: commentBody,
+                comment_id: existingSticky.id,
+                body: stickyCommentBody,
               });
-              return;
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: stickyCommentBody,
+              });
             }
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: commentBody,
-            });
