@@ -3,6 +3,7 @@
 Feature-based hi-fi worklist for aligning Conduit's MVP and post-MVP UI with the Figma file `"Conduit High Fi - Website"` (`High Fi - WIP` page).
 
 This is intentionally scoped to look-and-feel work. It is not a full QA, routing, or product-scope checklist.
+Store Builder is out of scope for the March 12, 2026 MVP and is not tracked here.
 
 References:
 - `docs/specs/market.md`
@@ -61,5 +62,4 @@ References:
 - [ ] Advanced dashboard reporting surfaces
 
 ### Platform Extensions
-- [ ] Store Builder hi-fi surfaces and generated storefront templates
 - [ ] Additional onboarding, motion, and non-blocking visual refinements
