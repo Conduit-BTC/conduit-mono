@@ -1385,11 +1385,14 @@ Non-blocking for MVP merge velocity, but should be added immediately after core 
 
 These items should come after the end-to-end loop is working, so we can iterate on visuals without destabilizing the core flows.
 
+- [ ] Work through the MVP hi-fi worklist in `docs/plans/HI_FI_CHECKLIST.md`
 - [ ] Extract tokens (color/typography/spacing) from Figma into `packages/ui`
-- [ ] Bring Market pages in line with Figma (layout, typography, components)
-- [ ] Bring Merchant pages in line with Figma (layout, typography, components)
+- [ ] Align shared shells, auth flows, and core components with Figma
+- [ ] Bring MVP Market flows in line with Figma (see `docs/plans/HI_FI_CHECKLIST.md`)
+- [ ] Bring MVP Merchant flows in line with Figma (see `docs/plans/HI_FI_CHECKLIST.md`)
 - [x] Market header + nav parity (MarketHeader component with logo, nav, mobile menu)
 - [x] Merchant header + nav parity (MerchantHeader component matching market layout)
 - [ ] Market products grid/detail parity (`apps/market/src/routes/products/index.tsx`, `apps/market/src/routes/products/$productId.tsx`)
 - [ ] Market cart/checkout parity (`apps/market/src/routes/cart.tsx`, `apps/market/src/routes/checkout.tsx`)
 - [ ] Merchant orders/products visual polish
+- [ ] Triage post-MVP hi-fi backlog after MVP using `docs/plans/HI_FI_CHECKLIST.md`

@@ -1,0 +1,65 @@
+# Hi-Fi Checklist
+
+Feature-based hi-fi worklist for aligning Conduit's MVP and post-MVP UI with the Figma file `"Conduit High Fi - Website"` (`High Fi - WIP` page).
+
+This is intentionally scoped to look-and-feel work. It is not a full QA, routing, or product-scope checklist.
+
+References:
+- `docs/specs/market.md`
+- `docs/specs/merchant.md`
+- `docs/plans/IMPLEMENTATION.md`
+
+## MVP Hi-Fi Worklist (Target: 3/12/2026)
+
+### Shared Foundations
+- [ ] Extract Figma design tokens into `packages/ui` (color, typography, spacing, radii, shadows)
+- [ ] Align shared shell patterns across Market and Merchant (header, nav, page chrome, section spacing, mobile nav)
+- [ ] Align core components used in MVP flows (buttons, inputs, selects, tabs, cards, badges, dialogs, sheets)
+- [ ] Align visible feedback states used in MVP flows (loading, empty, error, success)
+
+### Auth and Signer Flows
+- [ ] Sign-in / signer-connect modal
+- [ ] Connecting / loading state
+- [ ] Failure / retry state
+- [ ] Authenticated account menu / profile dropdown
+- [ ] Signer-required gating UI in checkout, publishing, or settings
+
+### Market Buyer Flow
+- [ ] Product discovery surfaces: home, products listing, search, filters, sorting, category/tag treatment, product cards
+- [ ] Product detail surfaces: gallery, price block, merchant summary, add-to-cart controls
+- [ ] Cart surfaces: grouped-by-merchant cart layout, quantity controls, totals, removal / empty-cart state
+- [ ] Checkout surfaces: shipping form, progress layout, validation, invoice state, QR/copy/timer UI, retry state, success state
+- [ ] Orders surfaces: order history, order cards/rows, and status treatment used in MVP
+- [ ] Buyer profile surfaces: profile display and edit flows needed for MVP
+
+### Merchant Seller Flow
+- [ ] Dashboard surfaces: overview layout, summary cards, recent orders/activity modules, quick actions
+- [ ] Product list surfaces: list/table/cards, filters/search if present, empty state, action affordances
+- [ ] Product create/edit surfaces: Basic, Details, Images, and Shipping tabs plus validation and save/publish feedback
+- [ ] Orders surfaces: order list, order detail, item grouping, buyer summary, shipping info, payment state presentation
+- [ ] Invoice/payment surfaces: invoice generation UI, paid/unpaid indicators, payment confirmation actions, failure/retry states
+- [ ] Fulfillment surfaces: processing/shipped/completed/cancelled states, shipping/tracking UI used in MVP
+- [ ] Merchant profile/settings surfaces needed for MVP: profile, wallet/NWC, relays, and any settings entry points already in use
+
+### Cross-Cutting MVP Polish
+- [ ] Toasts, confirmations, tabs, dropdowns, sheets, and popovers used in MVP flows match Figma intent
+- [ ] Spacing rhythm, typography hierarchy, and responsive behavior are consistent across Market and Merchant
+
+## Post-MVP Hi-Fi Backlog
+
+### Market Extensions
+- [ ] Standalone messages inbox/thread experience beyond MVP order tracking
+- [ ] Merchant storefront page (`/store/$pubkey`) and related store identity surfaces
+- [ ] Richer post-purchase status views and expanded order detail treatment
+- [ ] Additional discovery/trust/social surfaces not required for MVP
+
+### Merchant Extensions
+- [ ] Dedicated messages inbox/thread UX if separated from orders
+- [ ] Expanded settings information architecture
+- [ ] Relay management page polish
+- [ ] Shipping options management page polish
+- [ ] Advanced dashboard reporting surfaces
+
+### Platform Extensions
+- [ ] Store Builder hi-fi surfaces and generated storefront templates
+- [ ] Additional onboarding, motion, and non-blocking visual refinements
