@@ -389,9 +389,7 @@ function ProductsPage() {
               <ProductGridCard
                 product={p}
                 btcUsdRate={btcUsdRate}
-                cartQuantity={
-                  cart.items.find((item) => item.productId === p.id)?.quantity ?? 0
-                }
+                cartQuantity={cart.items.find((item) => item.productId === p.id)?.quantity ?? 0}
                 onAddToCart={() =>
                   cart.addItem(
                     {
@@ -404,6 +402,27 @@ function ProductsPage() {
                     1
                   )
                 }
+                onIncrement={() =>
+                  cart.addItem(
+                    {
+                      productId: p.id,
+                      merchantPubkey: p.pubkey,
+                      title: p.title,
+                      price: p.price,
+                      currency: p.currency,
+                    },
+                    1
+                  )
+                }
+                onDecrement={() => {
+                  const existing = cart.items.find((item) => item.productId === p.id)
+                  if (!existing) return
+                  if (existing.quantity <= 1) {
+                    cart.removeItem(p.id)
+                    return
+                  }
+                  cart.setQuantity(p.id, existing.quantity - 1)
+                }}
               />
             </li>
           ))}

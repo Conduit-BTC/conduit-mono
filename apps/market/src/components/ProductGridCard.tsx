@@ -9,6 +9,8 @@ type ProductGridCardProps = {
   onAddToCart?: () => void
   btcUsdRate?: number | null
   cartQuantity?: number
+  onIncrement?: () => void
+  onDecrement?: () => void
 }
 
 export function ProductGridCard({
@@ -16,6 +18,8 @@ export function ProductGridCard({
   onAddToCart,
   btcUsdRate,
   cartQuantity = 0,
+  onIncrement,
+  onDecrement,
 }: ProductGridCardProps) {
   const navigate = useNavigate()
   const { data: profile } = useProfile(product.pubkey)
@@ -99,53 +103,90 @@ export function ProductGridCard({
             </div>
           </div>
           {onAddToCart && (
-            <Button
-              variant={cartQuantity > 0 ? "muted" : "primary"}
-              size="sm"
-              className={cn(
-                "h-7 shrink-0 gap-1 rounded-md px-2.5 text-xs font-medium transition-all duration-200",
-                cartQuantity > 0
-                  ? "border border-secondary-400/40 bg-secondary-500/10 text-secondary-300 hover:bg-secondary-500/16"
-                  : "",
-                didJustAdd ? "scale-[1.06]" : "scale-100"
-              )}
-              onClick={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
-                onAddToCart()
-              }}
+            <div className="relative shrink-0">
+              <Button
+                variant={cartQuantity > 0 ? "muted" : "primary"}
+                size="sm"
+                className={cn(
+                  "h-7 shrink-0 gap-1 rounded-md px-2.5 text-xs font-medium transition-all duration-200",
+                  cartQuantity > 0
+                    ? "border border-secondary-400/40 bg-secondary-500/10 text-secondary-300 hover:bg-secondary-500/16 md:group-hover:opacity-0"
+                    : "",
+                  cartQuantity > 0 ? "md:group-hover:pointer-events-none" : "",
+                  didJustAdd ? "scale-[1.06]" : "scale-100"
+                )}
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  onAddToCart()
+                }}
               >
-              {cartQuantity > 0 ? (
-                <svg
-                  className="h-3.5 w-3.5 shrink-0"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M5 13l4 4L19 7"
-                  />
-                </svg>
-              ) : (
-                <svg
-                  className="h-3.5 w-3.5 shrink-0"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M3 3h2l.4 2m0 0L7 13h10l2-8H5.4M5.4 5H19M7 13l-1 5h12M9 18a1 1 0 100 2 1 1 0 000-2zm8 0a1 1 0 100 2 1 1 0 000-2z"
-                  />
-                </svg>
+                {cartQuantity > 0 ? (
+                  <svg
+                    className="h-3.5 w-3.5 shrink-0"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M5 13l4 4L19 7"
+                    />
+                  </svg>
+                ) : (
+                  <svg
+                    className="h-3.5 w-3.5 shrink-0"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M3 3h2l.4 2m0 0L7 13h10l2-8H5.4M5.4 5H19M7 13l-1 5h12M9 18a1 1 0 100 2 1 1 0 000-2zm8 0a1 1 0 100 2 1 1 0 000-2z"
+                    />
+                  </svg>
+                )}
+                {cartQuantity > 0 ? `In cart (${cartQuantity})` : "Add"}
+              </Button>
+
+              {cartQuantity > 0 && onIncrement && onDecrement && (
+                <div className="pointer-events-none absolute inset-0 hidden items-center justify-center opacity-0 transition-all duration-200 md:flex md:group-hover:pointer-events-auto md:group-hover:opacity-100">
+                  <div className="flex h-7 items-center overflow-hidden rounded-md border border-secondary-400/40 bg-[var(--surface)] shadow-[0_6px_16px_rgba(0,0,0,0.28)]">
+                    <button
+                      type="button"
+                      className="flex h-full w-7 items-center justify-center text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)]"
+                      aria-label={`Remove one ${product.title} from cart`}
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        onDecrement()
+                      }}
+                    >
+                      -
+                    </button>
+                    <div className="flex h-full min-w-8 items-center justify-center border-x border-white/10 px-1 text-xs font-medium text-[var(--text-primary)]">
+                      {cartQuantity}
+                    </div>
+                    <button
+                      type="button"
+                      className="flex h-full w-7 items-center justify-center text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)]"
+                      aria-label={`Add one more ${product.title} to cart`}
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        onIncrement()
+                      }}
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
               )}
-              {cartQuantity > 0 ? `In cart (${cartQuantity})` : "Add"}
-            </Button>
+            </div>
           )}
         </div>
       </div>
