@@ -22,12 +22,12 @@ References:
 - [ ] Sign-in / signer-connect modal
 - [ ] Connecting / loading state
 - [ ] Failure / retry state
-- [ ] Authenticated account menu / profile dropdown
+- [x] Authenticated account menu / profile dropdown
 - [ ] Signer-required gating UI in checkout, publishing, or settings
 
 ### Market Buyer Flow
-- [ ] Product discovery surfaces: home, products listing, search, filters, sorting, category/tag treatment, product cards
-- [ ] Product detail surfaces: gallery, price block, merchant summary, add-to-cart controls
+- [x] Product discovery surfaces: home, products listing, search, filters, sorting, category/tag treatment, product cards
+- [x] Product detail surfaces: gallery, price block, merchant summary, add-to-cart controls
 - [ ] Cart surfaces: grouped-by-merchant cart layout, quantity controls, totals, removal / empty-cart state
 - [ ] Checkout surfaces: shipping form, progress layout, validation, invoice state, QR/copy/timer UI, retry state, success state
 - [ ] Orders surfaces: order history, order cards/rows, and status treatment used in MVP
@@ -63,3 +63,9 @@ References:
 
 ### Platform Extensions
 - [ ] Additional onboarding, motion, and non-blocking visual refinements
+
+## Current Market Snapshot (March 15, 2026)
+
+- Product browse is now the effective Market home and includes the hi-fi header/search shell, improved filter controls, responsive product grid, safer USD conversion display, and stronger cart CTA feedback.
+- Product detail is in MVP demo shape: responsive gallery, merchant identity block with copy UX, price block, quantity/add-to-cart controls, details/tags, and related products.
+- Cart is the next highest-priority hi-fi screen to complete the demo flow from browse -> product detail -> cart -> checkout.
