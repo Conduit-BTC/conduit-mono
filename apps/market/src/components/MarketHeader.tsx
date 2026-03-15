@@ -20,6 +20,8 @@ import { type FormEvent, useEffect, useState } from "react"
 import { SignerSwitch } from "./SignerSwitch"
 import { useCart } from "../hooks/useCart"
 
+type NavState = "top" | "scrolled" | "hidden"
+
 function Logo({
   variant = "full",
   className,
@@ -70,6 +72,42 @@ function UserMenu() {
   )
 }
 
+function CartIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M3 3h2l.4 2m0 0L7 13h10l2-8H5.4M5.4 5H19M7 13l-1 5h12M9 18a1 1 0 100 2 1 1 0 000-2zm8 0a1 1 0 100 2 1 1 0 000-2z"
+      />
+    </svg>
+  )
+}
+
+function StoreIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M3 9.5l1.6-4.8A1 1 0 015.55 4h12.9a1 1 0 01.95.7L21 9.5M4 10h16v8a2 2 0 01-2 2H6a2 2 0 01-2-2v-8zm4 4h3m2 0h3"
+      />
+    </svg>
+  )
+}
+
 export function MarketHeader() {
   const { pubkey, status } = useAuth()
   const cart = useCart()
@@ -82,10 +120,55 @@ export function MarketHeader() {
   })
   const [searchValue, setSearchValue] = useState("")
   const [menuOpen, setMenuOpen] = useState(false)
+  const [navState, setNavState] = useState<NavState>("top")
 
   useEffect(() => {
     setSearchValue(typeof search.q === "string" ? search.q : "")
   }, [search.q])
+
+  useEffect(() => {
+    if (menuOpen) {
+      setNavState("top")
+      return
+    }
+
+    let lastScrollY = window.scrollY
+    let ticking = false
+    let currentState: NavState = window.scrollY <= 12 ? "top" : "scrolled"
+
+    const updateNavState = (): void => {
+      const currentY = window.scrollY
+      let nextState = currentState
+
+      if (currentY <= 12) {
+        nextState = "top"
+      } else if (currentY > lastScrollY + 5) {
+        nextState = "hidden"
+      } else if (currentY < lastScrollY - 5) {
+        nextState = "scrolled"
+      }
+
+      lastScrollY = currentY
+      ticking = false
+
+      if (nextState !== currentState) {
+        currentState = nextState
+        setNavState(nextState)
+      }
+    }
+
+    setNavState(currentState)
+
+    const onScroll = (): void => {
+      if (!ticking) {
+        window.requestAnimationFrame(updateNavState)
+        ticking = true
+      }
+    }
+
+    window.addEventListener("scroll", onScroll, { passive: true })
+    return () => window.removeEventListener("scroll", onScroll)
+  }, [menuOpen])
 
   function submitSearch(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -98,7 +181,13 @@ export function MarketHeader() {
   }
 
   return (
-    <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur">
+    <header
+      className={cn(
+        "sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur transition-transform duration-300 ease-out",
+        navState === "hidden" && !menuOpen ? "-translate-y-full" : "translate-y-0",
+        navState === "scrolled" ? "shadow-[0_8px_24px_rgba(0,0,0,0.22)]" : ""
+      )}
+    >
       <div className="mx-auto flex min-h-16 max-w-7xl flex-wrap items-center gap-3 px-4 py-3 lg:flex-nowrap">
         <Logo />
         {config.lightningNetwork !== "mainnet" && (
@@ -115,6 +204,7 @@ export function MarketHeader() {
         <nav className="hidden items-center gap-1 text-sm text-[var(--text-secondary)] lg:flex">
           <Button asChild variant="ghost" className="h-10 px-3">
             <Link to="/products" activeProps={{ className: "text-[var(--text-primary)]" }}>
+              <StoreIcon className="h-4 w-4" />
               Shop
             </Link>
           </Button>
@@ -161,6 +251,7 @@ export function MarketHeader() {
             className="h-10 px-2.5 text-xs sm:px-3 sm:text-sm"
           >
             <Link to="/cart">
+              <CartIcon className="h-3.5 w-3.5" />
               Cart
               <span className="text-[var(--text-muted)]">({cart.totals.count})</span>
             </Link>
@@ -208,10 +299,16 @@ export function MarketHeader() {
 
                 <div className="mt-6 grid gap-2">
                   <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/products" onClick={() => setMenuOpen(false)}>Shop</Link>
+                    <Link to="/products" onClick={() => setMenuOpen(false)}>
+                      <StoreIcon className="h-4 w-4" />
+                      Shop
+                    </Link>
                   </Button>
                   <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/cart" onClick={() => setMenuOpen(false)}>Cart ({cart.totals.count})</Link>
+                    <Link to="/cart" onClick={() => setMenuOpen(false)}>
+                      <CartIcon className="h-4 w-4" />
+                      Cart ({cart.totals.count})
+                    </Link>
                   </Button>
                   {status === "connected" && (
                     <Button asChild variant="ghost" className="justify-start">
