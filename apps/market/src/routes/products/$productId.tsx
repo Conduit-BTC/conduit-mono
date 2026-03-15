@@ -414,6 +414,8 @@ function ProductPage() {
                           title: product.title,
                           price: product.price,
                           currency: product.currency,
+                          image: product.images[0]?.url,
+                          tags: product.tags,
                         },
                         quantity
                       )
@@ -557,6 +559,8 @@ function ProductPage() {
                               title: relatedProduct.title,
                               price: relatedProduct.price,
                               currency: relatedProduct.currency,
+                              image: relatedProduct.images[0]?.url,
+                              tags: relatedProduct.tags,
                             },
                             1
                           )
@@ -569,6 +573,8 @@ function ProductPage() {
                               title: relatedProduct.title,
                               price: relatedProduct.price,
                               currency: relatedProduct.currency,
+                              image: relatedProduct.images[0]?.url,
+                              tags: relatedProduct.tags,
                             },
                             1
                           )

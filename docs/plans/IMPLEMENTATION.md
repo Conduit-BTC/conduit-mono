@@ -1392,7 +1392,7 @@ These items should come after the end-to-end loop is working, so we can iterate 
 - [ ] Bring MVP Merchant flows in line with Figma (see `docs/plans/HI_FI_CHECKLIST.md`)
 - [x] Market header + nav parity (MarketHeader component with logo, nav, mobile menu)
 - [x] Merchant header + nav parity (MerchantHeader component matching market layout)
-- [ ] Market products grid/detail parity (`apps/market/src/routes/products/index.tsx`, `apps/market/src/routes/products/$productId.tsx`)
+- [x] Market products grid/detail parity (`apps/market/src/routes/products/index.tsx`, `apps/market/src/routes/products/$productId.tsx`)
 - [ ] Market cart/checkout parity (`apps/market/src/routes/cart.tsx`, `apps/market/src/routes/checkout.tsx`)
 - [ ] Merchant orders/products visual polish
 - [ ] Triage post-MVP hi-fi backlog after MVP using `docs/plans/HI_FI_CHECKLIST.md`

@@ -28,7 +28,7 @@ References:
 ### Market Buyer Flow
 - [x] Product discovery surfaces: home, products listing, search, filters, sorting, category/tag treatment, product cards
 - [x] Product detail surfaces: gallery, price block, merchant summary, add-to-cart controls
-- [ ] Cart surfaces: grouped-by-merchant cart layout, quantity controls, totals, removal / empty-cart state
+- [x] Cart surfaces: grouped-by-merchant cart layout, quantity controls, totals, removal / empty-cart state
 - [ ] Checkout surfaces: shipping form, progress layout, validation, invoice state, QR/copy/timer UI, retry state, success state
 - [ ] Orders surfaces: order history, order cards/rows, and status treatment used in MVP
 - [ ] Buyer profile surfaces: profile display and edit flows needed for MVP
@@ -68,4 +68,5 @@ References:
 
 - Product browse is now the effective Market home and includes the hi-fi header/search shell, improved filter controls, responsive product grid, safer USD conversion display, and stronger cart CTA feedback.
 - Product detail is in MVP demo shape: responsive gallery, merchant identity block with copy UX, price block, quantity/add-to-cart controls, details/tags, and related products.
-- Cart is the next highest-priority hi-fi screen to complete the demo flow from browse -> product detail -> cart -> checkout.
+- Cart now supports both multicart overview and single-store review, with merchant grouping, quantity controls, confirmations, related products, and a cleaner checkout handoff.
+- Checkout is now the next highest-priority hi-fi screen to complete the demo flow from browse -> product detail -> cart -> checkout.

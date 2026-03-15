@@ -45,8 +45,9 @@ export async function fetchProfile(
   pubkey: string,
   opts?: { skipCache?: boolean }
 ): Promise<Profile> {
+  const cached = opts?.skipCache ? undefined : await db.profiles.get(pubkey)
+
   if (!opts?.skipCache) {
-    const cached = await db.profiles.get(pubkey)
     if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
       return {
         pubkey: cached.pubkey,
@@ -66,15 +67,29 @@ export async function fetchProfile(
   const events = await ndk.fetchEvents({
     kinds: [EVENT_KINDS.PROFILE],
     authors: [pubkey],
-    limit: 1,
+    limit: 10,
   })
 
-  const event = Array.from(events)[0] as NDKEvent | undefined
+  const event = Array.from(events)
+    .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))[0] as NDKEvent | undefined
+
   if (!event) {
-    // No profile on relays — return bare profile
-    const bare: Profile = { pubkey }
-    await db.profiles.put({ pubkey, cachedAt: Date.now() })
-    return bare
+    if (cached && (cached.name || cached.displayName || cached.picture || cached.nip05)) {
+      return {
+        pubkey: cached.pubkey,
+        name: cached.name,
+        displayName: cached.displayName,
+        about: cached.about,
+        picture: cached.picture,
+        banner: cached.banner,
+        nip05: cached.nip05,
+        lud16: cached.lud16,
+        website: cached.website,
+      }
+    }
+
+    // No profile on relays — return bare profile without caching the empty result.
+    return { pubkey }
   }
 
   const profile = parseProfileEvent(event)
