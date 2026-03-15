@@ -43,6 +43,15 @@ export {
   SheetTitle,
   SheetDescription,
 } from "./Sheet"
+export {
+  Select,
+  SelectGroup,
+  SelectValue,
+  SelectTrigger,
+  SelectContent,
+  SelectItem,
+  SelectSeparator,
+} from "./Select"
 export { Skeleton } from "./Skeleton"
 export { Tabs, TabsList, TabsTrigger, TabsContent } from "./Tabs"
 export { OrderDetailCard, type OrderDetailCardProps } from "./OrderDetailCard"

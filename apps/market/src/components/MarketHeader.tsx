@@ -1,4 +1,4 @@
-import { Link, useNavigate } from "@tanstack/react-router"
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 import { config, formatPubkey, useAuth } from "@conduit/core"
 import {
   Badge,
@@ -15,6 +15,7 @@ import {
   SheetTrigger,
   cn,
 } from "@conduit/ui"
+import { type FormEvent, useEffect, useState } from "react"
 
 import { SignerSwitch } from "./SignerSwitch"
 import { useCart } from "../hooks/useCart"
@@ -72,10 +73,33 @@ function UserMenu() {
 export function MarketHeader() {
   const { pubkey, status } = useAuth()
   const cart = useCart()
+  const navigate = useNavigate()
+  const { pathname, search } = useRouterState({
+    select: (state) => ({
+      pathname: state.location.pathname,
+      search: state.location.search as Record<string, unknown>,
+    }),
+  })
+  const [searchValue, setSearchValue] = useState("")
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  useEffect(() => {
+    setSearchValue(typeof search.q === "string" ? search.q : "")
+  }, [search.q])
+
+  function submitSearch(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    navigate({
+      to: "/products",
+      search: {
+        q: searchValue.trim() || undefined,
+      },
+    })
+  }
 
   return (
     <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur">
-      <div className="mx-auto flex h-16 max-w-7xl items-center gap-4 px-4">
+      <div className="mx-auto flex min-h-16 max-w-7xl flex-wrap items-center gap-3 px-4 py-3 lg:flex-nowrap">
         <Logo />
         {config.lightningNetwork !== "mainnet" && (
           <Badge variant="secondary" className={cn(
@@ -88,52 +112,92 @@ export function MarketHeader() {
           </Badge>
         )}
 
-        <nav className="hidden flex-1 items-center justify-end gap-2 text-sm text-[var(--text-secondary)] lg:flex">
+        <nav className="hidden items-center gap-1 text-sm text-[var(--text-secondary)] lg:flex">
           <Button asChild variant="ghost" className="h-10 px-3">
             <Link to="/products" activeProps={{ className: "text-[var(--text-primary)]" }}>
-              Products
-            </Link>
-          </Button>
-          <Button asChild variant="ghost" className="h-10 px-3">
-            <Link to="/cart" activeProps={{ className: "text-[var(--text-primary)]" }}>
-              Cart ({cart.totals.count})
-            </Link>
-          </Button>
-          <Button asChild variant="ghost" className="h-10 px-3">
-            <Link
-              to="/checkout"
-              search={{ merchant: undefined }}
-              activeProps={{ className: "text-[var(--text-primary)]" }}
-            >
-              Checkout
-            </Link>
-          </Button>
-          <Button asChild variant="ghost" className="h-10 px-3">
-            <Link to="/orders" activeProps={{ className: "text-[var(--text-primary)]" }}>
-              Orders
+              Shop
             </Link>
           </Button>
         </nav>
 
-        <div className="ml-auto flex items-center gap-2 lg:ml-0">
-          <Link
-            to="/cart"
-            className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-elevated)] lg:hidden"
-          >
-            <span className="font-medium">Cart</span>
-            <span>({cart.totals.count})</span>
-          </Link>
+        <form onSubmit={submitSearch} className="order-last w-full lg:order-none lg:ml-2 lg:flex-1">
+          <div className="relative">
+            <svg
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+              />
+            </svg>
+            <input
+              value={searchValue}
+              onChange={(e) => setSearchValue(e.target.value)}
+              placeholder="Search"
+              aria-label="Search products"
+              className="h-10 w-full rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
+            />
+          </div>
+        </form>
 
-          <div className="hidden min-w-[8rem] items-center justify-end lg:flex">
+        <div className="ml-auto flex items-center gap-1.5 lg:ml-0">
+          {status === "connected" && (
+            <Button asChild variant="ghost" className="hidden h-10 px-3 lg:inline-flex">
+              <Link to="/orders" activeProps={{ className: "text-[var(--text-primary)]" }}>
+                Orders
+              </Link>
+            </Button>
+          )}
+
+          <Button
+            asChild
+            variant={pathname === "/cart" ? "muted" : "ghost"}
+            size="sm"
+            className="h-10 px-2.5 text-xs sm:px-3 sm:text-sm"
+          >
+            <Link to="/cart">
+              Cart
+              <span className="text-[var(--text-muted)]">({cart.totals.count})</span>
+            </Link>
+          </Button>
+
+          <div className="hidden min-w-[7rem] items-center justify-end lg:flex">
             {status === "connected" && pubkey ? <UserMenu /> : <SignerSwitch />}
           </div>
 
           <div className="lg:hidden">
-            <Sheet>
+            <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
               <SheetTrigger asChild>
-                <Button variant="ghost" size="sm" aria-label="Open menu">
-                  Menu
-                </Button>
+                <button
+                  type="button"
+                  aria-label={menuOpen ? "Close menu" : "Open menu"}
+                  aria-expanded={menuOpen}
+                  className="relative inline-flex h-10 w-10 items-center justify-center rounded-md border border-[var(--border)] bg-transparent text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40"
+                >
+                  <span
+                    className={cn(
+                      "absolute block h-0.5 w-[18px] rounded-full bg-current transition-transform duration-300 ease-out",
+                      menuOpen ? "translate-y-0 rotate-45" : "-translate-y-[6px]"
+                    )}
+                  />
+                  <span
+                    className={cn(
+                      "absolute block h-0.5 w-[18px] rounded-full bg-current transition-all duration-300 ease-out",
+                      menuOpen ? "opacity-0" : "opacity-100"
+                    )}
+                  />
+                  <span
+                    className={cn(
+                      "absolute block h-0.5 w-[18px] rounded-full bg-current transition-transform duration-300 ease-out",
+                      menuOpen ? "translate-y-0 -rotate-45" : "translate-y-[6px]"
+                    )}
+                  />
+                </button>
               </SheetTrigger>
               <SheetContent side="right" className="w-[340px]">
                 <SheetHeader>
@@ -144,22 +208,21 @@ export function MarketHeader() {
 
                 <div className="mt-6 grid gap-2">
                   <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/products">Products</Link>
+                    <Link to="/products" onClick={() => setMenuOpen(false)}>Shop</Link>
                   </Button>
                   <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/cart">Cart ({cart.totals.count})</Link>
+                    <Link to="/cart" onClick={() => setMenuOpen(false)}>Cart ({cart.totals.count})</Link>
                   </Button>
-                  <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/checkout" search={{ merchant: undefined }}>
-                      Checkout
-                    </Link>
-                  </Button>
-                  <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/orders">Orders</Link>
-                  </Button>
-                  <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/profile">Profile</Link>
-                  </Button>
+                  {status === "connected" && (
+                    <Button asChild variant="ghost" className="justify-start">
+                      <Link to="/orders" onClick={() => setMenuOpen(false)}>Orders</Link>
+                    </Button>
+                  )}
+                  {status === "connected" && (
+                    <Button asChild variant="ghost" className="justify-start">
+                      <Link to="/profile" onClick={() => setMenuOpen(false)}>Profile</Link>
+                    </Button>
+                  )}
                 </div>
 
                 <div className="mt-6 border-t border-[var(--border)] pt-4">

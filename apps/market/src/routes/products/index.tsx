@@ -1,11 +1,23 @@
-import { useMemo } from "react"
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import { EVENT_KINDS, fetchEventsFanout, parseProductEvent, type Product } from "@conduit/core"
+import { useEffect, useMemo, useState } from "react"
+import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { EVENT_KINDS, fetchEventsFanout, formatPubkey, parseProductEvent, useProfile, type Product } from "@conduit/core"
 import { useQuery } from "@tanstack/react-query"
-import { Badge, Button, Input } from "@conduit/ui"
+import {
+  Badge,
+  Button,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@conduit/ui"
 import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
 import { ProductGridCard, ProductGridCardSkeleton } from "../../components/ProductGridCard"
+import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
+import { getComparablePriceValue } from "../../lib/pricing"
+
+const PAGE_SIZE = 12
 
 type SortOption = "newest" | "price_asc" | "price_desc"
 
@@ -52,13 +64,9 @@ async function fetchProducts(merchant?: string): Promise<Product[]> {
     .filter(Boolean) as Product[]
 }
 
-function filterAndSort(
-  products: Product[],
-  search: ProductSearch
-): Product[] {
+function filterProducts(products: Product[], search: ProductSearch): Product[] {
   let result = products
 
-  // Text search on title + summary
   if (search.q) {
     const q = search.q.toLowerCase()
     result = result.filter(
@@ -68,7 +76,6 @@ function filterAndSort(
     )
   }
 
-  // Tag filter
   if (search.tag) {
     const tag = search.tag.toLowerCase()
     result = result.filter((p) =>
@@ -76,27 +83,50 @@ function filterAndSort(
     )
   }
 
-  // Sort
-  switch (search.sort) {
+  return result
+}
+
+function sortProducts(
+  products: Product[],
+  sort: SortOption | undefined,
+  canSortByPrice: boolean,
+  hasSingleCurrency: boolean,
+  btcUsdRate: number | null
+): Product[] {
+  switch (sort) {
     case "price_asc":
-      result = [...result].sort((a, b) => a.price - b.price)
-      break
+      if (!canSortByPrice) return [...products]
+      return [...products].sort(
+        (a, b) =>
+          (getComparablePriceValue(a, btcUsdRate) ?? (hasSingleCurrency ? a.price : 0)) -
+          (getComparablePriceValue(b, btcUsdRate) ?? (hasSingleCurrency ? b.price : 0))
+      )
     case "price_desc":
-      result = [...result].sort((a, b) => b.price - a.price)
-      break
+      if (!canSortByPrice) return [...products]
+      return [...products].sort(
+        (a, b) =>
+          (getComparablePriceValue(b, btcUsdRate) ?? (hasSingleCurrency ? b.price : 0)) -
+          (getComparablePriceValue(a, btcUsdRate) ?? (hasSingleCurrency ? a.price : 0))
+      )
     case "newest":
     default:
-      result = [...result].sort((a, b) => b.createdAt - a.createdAt)
-      break
+      return [...products].sort((a, b) => b.createdAt - a.createdAt)
   }
+}
 
-  return result
+/** Resolves a merchant pubkey to a display name */
+function MerchantName({ pubkey }: { pubkey: string }) {
+  const { data: profile } = useProfile(pubkey)
+  return <>{profile?.displayName || profile?.name || formatPubkey(pubkey, 6)}</>
 }
 
 function ProductsPage() {
   const cart = useCart()
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  const btcUsdRateQuery = useBtcUsdRate()
+  const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
 
   const productsQuery = useQuery({
     queryKey: ["products", search.merchant ?? "all"],
@@ -113,17 +143,17 @@ function ProductsPage() {
     return Array.from(tagSet).sort()
   }, [productsQuery.data])
 
-  // Apply client-side filtering + sorting
-  const filtered = useMemo(() => {
+  const allMerchants = useMemo(() => {
     if (!productsQuery.data) return []
-    return filterAndSort(productsQuery.data, search)
-  }, [productsQuery.data, search])
+    const set = new Set<string>()
+    for (const p of productsQuery.data) set.add(p.pubkey)
+    return Array.from(set).sort()
+  }, [productsQuery.data])
 
   const updateSearch = (updates: Partial<ProductSearch>) => {
     navigate({
       search: (prev: ProductSearch) => {
         const next = { ...prev, ...updates }
-        // Remove undefined/empty keys so URL stays clean
         for (const key of Object.keys(next) as (keyof ProductSearch)[]) {
           if (!next[key]) delete next[key]
         }
@@ -133,103 +163,188 @@ function ProductsPage() {
     })
   }
 
-  const hasActiveFilters = !!(search.q || search.tag || search.sort)
+  const filteredProducts = useMemo(() => {
+    if (!productsQuery.data) return []
+    return filterProducts(productsQuery.data, search)
+  }, [productsQuery.data, search])
+
+  const hasSingleCurrency = useMemo(() => {
+    const currencies = new Set(
+      filteredProducts.map((product) => product.currency.trim().toUpperCase())
+    )
+    return currencies.size <= 1
+  }, [filteredProducts])
+
+  const canSortByPrice = useMemo(() => {
+    if (filteredProducts.length <= 1) return true
+    if (hasSingleCurrency) return true
+
+    const comparableValues = filteredProducts.map((product) => getComparablePriceValue(product, btcUsdRate))
+    return comparableValues.every((value) => value !== null)
+  }, [btcUsdRate, filteredProducts, hasSingleCurrency])
+
+  const effectiveSort = canSortByPrice ? search.sort : undefined
+
+  const filtered = useMemo(
+    () => sortProducts(filteredProducts, effectiveSort, canSortByPrice, hasSingleCurrency, btcUsdRate),
+    [btcUsdRate, canSortByPrice, effectiveSort, filteredProducts, hasSingleCurrency]
+  )
+
+  const searchKey = `${search.q}-${search.tag}-${search.sort}-${search.merchant}`
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE)
+  }, [searchKey])
+
+  useEffect(() => {
+    if (!canSortByPrice && (search.sort === "price_asc" || search.sort === "price_desc")) {
+      updateSearch({ sort: undefined })
+    }
+  }, [canSortByPrice, search.sort])
+
+  const visible = filtered.slice(0, visibleCount)
+  const hasMore = visibleCount < filtered.length
+
+  const hasActiveFilters = !!(search.q || search.tag || search.sort || search.merchant)
 
   return (
-    <div className="space-y-4">
-      {/* Header */}
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-3xl font-medium text-[var(--text-primary)]">Products</h1>
-          <p className="mt-1 text-sm text-[var(--text-secondary)]">
-            Pulling kind {EVENT_KINDS.PRODUCT} listings from connected relays.
-          </p>
-        </div>
-        <Button asChild variant="muted">
-          <Link to="/cart">View cart</Link>
-        </Button>
-      </div>
+    <div className="space-y-5">
+      {/* Filter bar */}
+      <div className="flex flex-wrap items-center gap-2">
+        {/* Category tags */}
+        {allTags.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="mr-1 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
+              Categories
+            </span>
+            {allTags.map((tag) => (
+              <button
+                key={tag}
+                onClick={() => updateSearch({ tag: search.tag === tag ? undefined : tag })}
+                className="rounded-full transition-transform duration-150 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+              >
+                <Badge
+                  variant={search.tag === tag ? "default" : "outline"}
+                  className="cursor-pointer capitalize transition-colors hover:border-secondary-400 hover:text-[var(--text-primary)]"
+                >
+                  {tag}
+                </Badge>
+              </button>
+            ))}
+          </div>
+        )}
 
-      {/* Search + Sort bar */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="relative min-w-0 flex-1">
-          <svg
-            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
+        {/* Merchant filter */}
+        {allMerchants.length > 1 && (
+          <Select
+            value={search.merchant ?? "__all"}
+            onValueChange={(v) => updateSearch({ merchant: v === "__all" ? undefined : v })}
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-            />
-          </svg>
-          <Input
-            placeholder="Search products..."
-            value={search.q ?? ""}
-            onChange={(e) => updateSearch({ q: e.target.value || undefined })}
-            className="pl-9"
-          />
-        </div>
+            <SelectTrigger className="h-8 w-auto min-w-[140px] text-xs">
+              <SelectValue placeholder="All stores" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all">All stores</SelectItem>
+              {allMerchants.map((pk) => (
+                <SelectItem key={pk} value={pk}>
+                  <MerchantName pubkey={pk} />
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
 
-        <select
-          value={search.sort ?? "newest"}
-          onChange={(e) =>
-            updateSearch({
-              sort: e.target.value === "newest" ? undefined : (e.target.value as SortOption),
-            })
+        {/* Spacer */}
+        <div className="flex-1" />
+
+        {/* Sort */}
+        <Select
+          value={effectiveSort ?? "newest"}
+          onValueChange={(v) =>
+            updateSearch({ sort: v === "newest" ? undefined : (v as SortOption) })
           }
-          className="h-10 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
         >
-          <option value="newest">Newest</option>
-          <option value="price_asc">Price: Low to High</option>
-          <option value="price_desc">Price: High to Low</option>
-        </select>
+          <SelectTrigger className="h-8 w-auto min-w-[160px] text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="newest">Newest</SelectItem>
+            <SelectItem value="price_asc" disabled={!canSortByPrice}>
+              Price: Low to High
+            </SelectItem>
+            <SelectItem value="price_desc" disabled={!canSortByPrice}>
+              Price: High to Low
+            </SelectItem>
+          </SelectContent>
+        </Select>
 
         {hasActiveFilters && (
           <Button
-            variant="muted"
+            variant="ghost"
             size="sm"
-            onClick={() => updateSearch({ q: undefined, tag: undefined, sort: undefined })}
+            className="text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+            onClick={() => updateSearch({ q: undefined, tag: undefined, sort: undefined, merchant: undefined })}
           >
-            Clear filters
+            Clear
           </Button>
         )}
       </div>
 
-      {/* Tag chips */}
-      {allTags.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {allTags.map((tag) => (
-            <button
-              key={tag}
-              onClick={() => updateSearch({ tag: search.tag === tag ? undefined : tag })}
-              className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 rounded-full"
-            >
-              <Badge variant={search.tag === tag ? "default" : "outline"}>
-                {tag}
-              </Badge>
-            </button>
-          ))}
-        </div>
+      {!canSortByPrice && filteredProducts.length > 1 && (
+        <p className="text-xs text-[var(--text-muted)]">
+          Price sorting is available when listings share a currency or when a BTC/USD display rate is configured.
+        </p>
       )}
 
-      {/* Results count when filtered */}
-      {productsQuery.data && hasActiveFilters && (
-        <p className="text-sm text-[var(--text-secondary)]">
-          {filtered.length} {filtered.length === 1 ? "result" : "results"}
-          {search.q && <> for &ldquo;{search.q}&rdquo;</>}
-          {search.tag && <> in <Badge variant="secondary" className="mx-1">{search.tag}</Badge></>}
-        </p>
+      {/* Active filter pills */}
+      {hasActiveFilters && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-[var(--text-muted)]">
+            {filtered.length} {filtered.length === 1 ? "result" : "results"}
+          </span>
+          {search.q && (
+            <Badge variant="secondary" className="gap-1">
+              &ldquo;{search.q}&rdquo;
+              <button
+                onClick={() => updateSearch({ q: undefined })}
+                className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
+                aria-label="Remove search filter"
+              >
+                &times;
+              </button>
+            </Badge>
+          )}
+          {search.tag && (
+            <Badge variant="secondary" className="gap-1 capitalize">
+              {search.tag}
+              <button
+                onClick={() => updateSearch({ tag: undefined })}
+                className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
+                aria-label="Remove tag filter"
+              >
+                &times;
+              </button>
+            </Badge>
+          )}
+          {search.merchant && (
+            <Badge variant="secondary" className="gap-1">
+              <MerchantName pubkey={search.merchant} />
+              <button
+                onClick={() => updateSearch({ merchant: undefined })}
+                className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
+                aria-label="Remove store filter"
+              >
+                &times;
+              </button>
+            </Badge>
+          )}
+        </div>
       )}
 
       {/* Loading */}
       {productsQuery.isLoading && (
-        <ul className="grid list-none grid-cols-1 gap-4 p-0 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {Array.from({ length: 8 }).map((_, idx) => (
-            <li key={idx}>
+        <ul className="grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
+          {Array.from({ length: PAGE_SIZE }).map((_, idx) => (
+            <li key={idx} className="h-full">
               <ProductGridCardSkeleton />
             </li>
           ))}
@@ -258,7 +373,7 @@ function ProductsPage() {
           No products match your filters. Try adjusting your search or{" "}
           <button
             className="underline hover:text-[var(--text-primary)]"
-            onClick={() => updateSearch({ q: undefined, tag: undefined, sort: undefined })}
+            onClick={() => updateSearch({ q: undefined, tag: undefined, sort: undefined, merchant: undefined })}
           >
             clear all filters
           </button>
@@ -267,12 +382,16 @@ function ProductsPage() {
       )}
 
       {/* Product grid */}
-      {filtered.length > 0 && (
-        <ul className="grid list-none grid-cols-1 gap-4 p-0 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {filtered.map((p) => (
-            <li key={p.id}>
+      {visible.length > 0 && (
+        <ul className="grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
+          {visible.map((p) => (
+            <li key={p.id} className="h-full">
               <ProductGridCard
                 product={p}
+                btcUsdRate={btcUsdRate}
+                cartQuantity={
+                  cart.items.find((item) => item.productId === p.id)?.quantity ?? 0
+                }
                 onAddToCart={() =>
                   cart.addItem(
                     {
@@ -289,6 +408,18 @@ function ProductsPage() {
             </li>
           ))}
         </ul>
+      )}
+
+      {/* Show more */}
+      {hasMore && (
+        <div className="flex justify-center pt-2">
+          <Button
+            variant="outline"
+            onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+          >
+            Show more
+          </Button>
+        </div>
       )}
     </div>
   )

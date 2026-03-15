@@ -21,7 +21,7 @@ export function SignerSwitch() {
   const triggerLabel = useMemo(() => {
     if (status === "connecting") return "Connecting..."
     if (status === "connected" && pubkey) return `Signer: ${formatPubkey(pubkey)}`
-    return "Connect signer"
+    return "Login"
   }, [pubkey, status])
 
   const canSwitch = status === "connected" && !isWorking
