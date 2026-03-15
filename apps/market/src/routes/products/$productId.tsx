@@ -501,19 +501,6 @@ function ProductPage() {
               <div className="mt-4 space-y-4 text-sm text-[var(--text-secondary)]">
                 <p>Add products to your cart, continue to checkout, and send your order through Nostr.</p>
                 <p>Payment requests and order updates appear in your order conversation after checkout.</p>
-                <div className="rounded-xl border border-white/10 bg-[var(--surface-elevated)] p-4">
-                  <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                    In cart
-                  </div>
-                  <div className="mt-2 text-2xl font-semibold text-[var(--text-primary)]">
-                    {cartQuantity}
-                  </div>
-                  <div className="mt-1 text-xs text-[var(--text-muted)]">
-                    {cartQuantity > 0
-                      ? "This product is already in your cart."
-                      : "This product has not been added to your cart yet."}
-                  </div>
-                </div>
               </div>
             </div>
           </section>
