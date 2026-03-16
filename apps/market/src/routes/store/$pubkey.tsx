@@ -1,4 +1,4 @@
-import { Check, Link as LinkIcon, LoaderCircle, MessageCircle, Search, UserPlus } from "lucide-react"
+import { Check, Link as LinkIcon, LoaderCircle, MessageCircle, Search, UserCheck, UserPlus } from "lucide-react"
 import { useEffect, useMemo, useState, type FormEvent } from "react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
@@ -341,11 +341,21 @@ function StorefrontPage() {
                     Send message
                   </Button>
                   <Button
-                    className="h-11 px-4 text-sm"
+                    variant={followQuery.data || followState === "done" ? "outline" : "primary"}
+                    className={[
+                      "h-11 px-4 text-sm",
+                      followQuery.data || followState === "done"
+                        ? "cursor-default border-white/14 bg-white/[0.06] text-white/92 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] hover:border-white/14 hover:bg-white/[0.06]"
+                        : "",
+                    ].join(" ")}
                     onClick={() => void handleFollow()}
                     disabled={followState === "saving" || followQuery.data === true}
                   >
-                    <UserPlus className="h-4 w-4" />
+                    {followQuery.data || followState === "done" ? (
+                      <UserCheck className="h-4 w-4" />
+                    ) : (
+                      <UserPlus className="h-4 w-4" />
+                    )}
                     {followState === "saving"
                       ? "Following…"
                       : followQuery.data || followState === "done"
