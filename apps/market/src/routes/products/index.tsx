@@ -33,7 +33,6 @@ import { useCart } from "../../hooks/useCart"
 import { getComparablePriceValue } from "../../lib/pricing"
 
 const PAGE_SIZE = 12
-const INITIAL_VISIBLE_TAGS = 8
 
 type SortOption = "newest" | "price_asc" | "price_desc"
 
@@ -160,9 +159,11 @@ function ProductsPage() {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [connectOpen, setConnectOpen] = useState(false)
   const [showAllTags, setShowAllTags] = useState(false)
+  const [tagCloudOverflows, setTagCloudOverflows] = useState(false)
   const [pendingMerchant, setPendingMerchant] = useState<string | null>(null)
   const [merchantTagConflicts, setMerchantTagConflicts] = useState<string[]>([])
   const hasAutoPromptedConnect = useRef(false)
+  const tagCloudRef = useRef<HTMLDivElement | null>(null)
   const btcUsdRateQuery = useBtcUsdRate()
   const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
 
@@ -338,6 +339,26 @@ function ProductsPage() {
     return [...selectedFirst, ...allTags.filter((tag) => !selectedTagSet.has(tag))]
   }, [allTags, selectedTagSet, selectedTags])
 
+  useEffect(() => {
+    const element = tagCloudRef.current
+    if (!element) return
+
+    const measure = () => {
+      setTagCloudOverflows(element.scrollHeight > 76)
+    }
+
+    measure()
+
+    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null
+    resizeObserver?.observe(element)
+    window.addEventListener("resize", measure)
+
+    return () => {
+      resizeObserver?.disconnect()
+      window.removeEventListener("resize", measure)
+    }
+  }, [orderedTags, selectedTagSet, showAllTags])
+
   return (
     <div className="space-y-5">
       {search.authRequired && (
@@ -394,7 +415,7 @@ function ProductsPage() {
             <div className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
               Categories
             </div>
-            {allTags.length > INITIAL_VISIBLE_TAGS && (
+            {tagCloudOverflows && (
               <button
                 type="button"
                 className={[
@@ -410,9 +431,10 @@ function ProductsPage() {
 
           <div className="relative">
             <div
+              ref={tagCloudRef}
               className={[
                 "overflow-hidden transition-[max-height] duration-300 ease-out",
-                showAllTags || allTags.length <= INITIAL_VISIBLE_TAGS
+                showAllTags || !tagCloudOverflows
                   ? "max-h-64"
                   : "max-h-[4.75rem]",
               ].join(" ")}
@@ -435,7 +457,7 @@ function ProductsPage() {
               </div>
             </div>
 
-            {!showAllTags && allTags.length > INITIAL_VISIBLE_TAGS && (
+            {!showAllTags && tagCloudOverflows && (
               <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-12 items-center justify-center bg-gradient-to-b from-transparent via-[var(--background)]/90 to-[var(--background)] transition-opacity duration-200">
                 <button
                   type="button"
@@ -450,13 +472,13 @@ function ProductsPage() {
         </section>
       )}
 
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+        <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
+          <span className="min-w-12 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] sm:min-w-0">
             Store
           </span>
           {search.merchant ? (
-            <Badge variant="secondary" className="h-8 gap-1.5 px-3">
+            <Badge variant="secondary" className="h-8 max-w-full gap-1.5 px-3">
               <MerchantName pubkey={search.merchant} />
               <button
                 onClick={() => updateSearch({ merchant: undefined })}
@@ -471,7 +493,7 @@ function ProductsPage() {
               value="__all"
               onValueChange={(v) => handleMerchantSelection(v === "__all" ? undefined : v)}
             >
-              <SelectTrigger className="h-8 w-auto min-w-[140px] text-xs">
+              <SelectTrigger className="h-8 min-w-0 flex-1 text-xs sm:w-auto sm:min-w-[140px] sm:flex-none">
                 <SelectValue placeholder="All stores" />
               </SelectTrigger>
               <SelectContent>
@@ -486,8 +508,8 @@ function ProductsPage() {
           )}
         </div>
 
-        <div className="ml-auto flex items-center gap-2">
-          <span className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
+        <div className="flex w-full items-center gap-2 sm:ml-auto sm:w-auto">
+          <span className="min-w-12 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] sm:min-w-0">
             Sort
           </span>
           <Select
@@ -496,7 +518,7 @@ function ProductsPage() {
               updateSearch({ sort: v === "newest" ? undefined : (v as SortOption) })
             }
           >
-            <SelectTrigger className="h-8 w-auto min-w-[160px] text-xs">
+            <SelectTrigger className="h-8 min-w-0 flex-1 text-xs sm:w-auto sm:min-w-[160px] sm:flex-none">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -514,7 +536,7 @@ function ProductsPage() {
             <Button
               variant="ghost"
               size="sm"
-              className="text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+              className="ml-auto text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
               onClick={() =>
                 updateSearch({ q: undefined, tag: undefined, sort: undefined, merchant: undefined })
               }

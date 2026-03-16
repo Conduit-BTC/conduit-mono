@@ -1,4 +1,4 @@
-import { Check, KeyRound, LoaderCircle, ShoppingCart, Zap } from "lucide-react"
+import { Check, KeyRound, LoaderCircle, ShoppingCart, Store, Zap } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useEffect, useMemo, useState } from "react"
 import { NDKEvent, NDKUser, giftWrap } from "@nostr-dev-kit/ndk"
@@ -545,7 +545,7 @@ function CheckoutPage() {
             </Button>
             <Button asChild className="h-11 px-5 text-sm">
               <Link to="/products">
-                <ShoppingCart className="h-4 w-4" />
+                <Store className="h-4 w-4" />
                 Browse more products
               </Link>
             </Button>

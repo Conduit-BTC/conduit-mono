@@ -1,4 +1,4 @@
-import { LoaderCircle, Search, ShoppingCart, Store } from "lucide-react"
+import { LoaderCircle, MessagesSquare, ReceiptText, Search, ShoppingCart, Store } from "lucide-react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 import { config, formatPubkey, useAuth } from "@conduit/core"
 import {
@@ -285,7 +285,17 @@ export function MarketHeader() {
         <div className="ml-auto flex items-center gap-1.5 lg:ml-0">
           {status === "connected" && (
             <Button asChild variant="ghost" className="hidden h-10 px-3 lg:inline-flex">
+              <Link to="/messages" activeProps={{ className: "text-[var(--text-primary)]" }}>
+                <MessagesSquare className="h-4 w-4" />
+                Messages
+              </Link>
+            </Button>
+          )}
+
+          {status === "connected" && (
+            <Button asChild variant="ghost" className="hidden h-10 px-3 lg:inline-flex">
               <Link to="/orders" activeProps={{ className: "text-[var(--text-primary)]" }}>
+                <ReceiptText className="h-4 w-4" />
                 Orders
               </Link>
             </Button>
@@ -359,7 +369,18 @@ export function MarketHeader() {
                   </Button>
                   {status === "connected" && (
                     <Button asChild variant="ghost" className="justify-start">
-                      <Link to="/orders" onClick={() => setMenuOpen(false)}>Orders</Link>
+                      <Link to="/messages" onClick={() => setMenuOpen(false)}>
+                        <MessagesSquare className="h-4 w-4" />
+                        Messages
+                      </Link>
+                    </Button>
+                  )}
+                  {status === "connected" && (
+                    <Button asChild variant="ghost" className="justify-start">
+                      <Link to="/orders" onClick={() => setMenuOpen(false)}>
+                        <ReceiptText className="h-4 w-4" />
+                        Orders
+                      </Link>
                     </Button>
                   )}
                   {status === "connected" && (

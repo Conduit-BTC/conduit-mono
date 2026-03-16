@@ -56,6 +56,9 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/orders") {
     return "Orders"
   }
+  if (pathname === "/messages") {
+    return "Messages"
+  }
   if (pathname === "/profile") {
     return "Profile"
   }

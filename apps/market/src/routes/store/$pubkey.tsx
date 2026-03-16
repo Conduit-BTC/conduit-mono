@@ -14,21 +14,18 @@ import {
   SelectValue,
 } from "@conduit/ui"
 import {
-  EVENT_KINDS,
-  fetchEventsFanout,
   formatPubkey,
-  parseProductEvent,
   useAuth,
   useProfile,
   type Product,
 } from "@conduit/core"
-import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
 import { SignerSwitch } from "../../components/SignerSwitch"
 import { ProductGridCard, ProductGridCardSkeleton } from "../../components/ProductGridCard"
 import { MerchantAvatarFallback, getMerchantDisplayName } from "../../components/MerchantIdentity"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
 import { getComparablePriceValue } from "../../lib/pricing"
+import { fetchStoreProducts } from "../../lib/storeProducts"
 
 type SortOption = "newest" | "price_asc" | "price_desc"
 
@@ -51,31 +48,8 @@ export const Route = createFileRoute("/store/$pubkey")({
   }),
 })
 
-async function fetchStoreProducts(pubkey: string): Promise<Product[]> {
-  const filter: NDKFilter = {
-    kinds: [EVENT_KINDS.PRODUCT],
-    authors: [pubkey],
-    limit: 50,
-  }
-
-  const events = await fetchEventsFanout(filter, {
-    connectTimeoutMs: 4_000,
-    fetchTimeoutMs: 8_000,
-  }) as NDKEvent[]
-
-  return events
-    .map((event) => {
-      try {
-        return parseProductEvent(event)
-      } catch {
-        return null
-      }
-    })
-    .filter(Boolean) as Product[]
-}
-
 function sortProducts(
-  products: Product[],
+  products: Awaited<ReturnType<typeof fetchStoreProducts>>,
   sort: SortOption | undefined,
   btcUsdRate: number | null
 ): Product[] {
@@ -344,7 +318,7 @@ function StorefrontPage() {
                   className={[
                     "rounded-full border px-3 py-2 text-left text-sm transition-colors xl:rounded-xl",
                     !search.tag
-                      ? "border-fuchsia-500/70 bg-fuchsia-500 text-white shadow-[0_12px_28px_rgba(217,70,239,0.24)]"
+                      ? "border-fuchsia-500/70 bg-fuchsia-500 font-semibold text-white shadow-[0_12px_28px_rgba(217,70,239,0.24)]"
                       : "border-white/10 bg-white/[0.03] text-[var(--text-secondary)] hover:border-white/20 hover:text-[var(--text-primary)]",
                   ].join(" ")}
                 >
@@ -358,7 +332,7 @@ function StorefrontPage() {
                     className={[
                       "rounded-full border px-3 py-2 text-left text-sm capitalize transition-colors xl:rounded-xl",
                       search.tag === tag
-                        ? "border-fuchsia-500/70 bg-fuchsia-500 text-white shadow-[0_12px_28px_rgba(217,70,239,0.24)]"
+                        ? "border-fuchsia-500/70 bg-fuchsia-500 font-semibold text-white shadow-[0_12px_28px_rgba(217,70,239,0.24)]"
                         : "border-white/10 bg-white/[0.03] text-[var(--text-secondary)] hover:border-white/20 hover:text-[var(--text-primary)]",
                     ].join(" ")}
                   >
