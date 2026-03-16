@@ -1,4 +1,4 @@
-import { Check, Link as LinkIcon, LoaderCircle, MessageCircle, Search, UserCheck, UserPlus } from "lucide-react"
+import { Check, Link as LinkIcon, LoaderCircle, MessageCircle, Search, UserCheck, UserMinus, UserPlus } from "lucide-react"
 import { useEffect, useMemo, useState, type FormEvent } from "react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
@@ -102,7 +102,8 @@ function StorefrontPage() {
       return Array.from(event?.tags ?? []).some((tag) => tag[0] === "p" && tag[1] === pubkey)
     },
   })
-  const [followState, setFollowState] = useState<"idle" | "saving" | "done">("idle")
+  const [followState, setFollowState] = useState<"idle" | "saving_follow" | "saving_unfollow">("idle")
+  const [followOverride, setFollowOverride] = useState<boolean | null>(null)
 
   const merchantName = getMerchantDisplayName(profile, pubkey)
   const merchantAbout = profile?.about?.trim()
@@ -131,6 +132,8 @@ function StorefrontPage() {
   }
 
   const productCount = productsQuery.data?.length ?? 0
+  const isFollowing = followOverride ?? followQuery.data === true
+  const isFollowBusy = followState !== "idle"
   const canShowPriceSort = useMemo(() => {
     const products = productsQuery.data ?? []
     if (products.length <= 1) return true
@@ -212,9 +215,10 @@ function StorefrontPage() {
       setConnectOpen(true)
       return
     }
-    if (followQuery.data || followState === "saving") return
+    if (isFollowBusy) return
 
-    setFollowState("saving")
+    const nextShouldFollow = !isFollowing
+    setFollowState(nextShouldFollow ? "saving_follow" : "saving_unfollow")
     try {
       const ndk = await requireNdkConnected()
       if (!ndk.signer) throw new Error("Signer not connected")
@@ -229,8 +233,16 @@ function StorefrontPage() {
 
       const nextTags = Array.from(latest?.tags ?? [])
       const alreadyFollowing = nextTags.some((tag) => tag[0] === "p" && tag[1] === pubkey)
-      if (!alreadyFollowing) {
+      if (nextShouldFollow && !alreadyFollowing) {
         nextTags.push(["p", pubkey])
+      }
+      if (!nextShouldFollow && alreadyFollowing) {
+        for (let index = nextTags.length - 1; index >= 0; index -= 1) {
+          const tag = nextTags[index]
+          if (tag[0] === "p" && tag[1] === pubkey) {
+            nextTags.splice(index, 1)
+          }
+        }
       }
 
       const event = new NDKEvent(ndk)
@@ -242,12 +254,13 @@ function StorefrontPage() {
       await event.sign(ndk.signer)
       await event.publish()
 
+      setFollowOverride(nextShouldFollow)
       await queryClient.invalidateQueries({
         queryKey: ["following-store", viewerPubkey, pubkey],
       })
-      setFollowState("done")
-      window.setTimeout(() => setFollowState("idle"), 1600)
+      setFollowState("idle")
     } catch {
+      setFollowOverride(null)
       setFollowState("idle")
     }
   }
@@ -341,26 +354,36 @@ function StorefrontPage() {
                     Send message
                   </Button>
                   <Button
-                    variant={followQuery.data || followState === "done" ? "outline" : "primary"}
+                    variant={isFollowing ? "outline" : "primary"}
                     className={[
-                      "h-11 px-4 text-sm",
-                      followQuery.data || followState === "done"
-                        ? "cursor-default border-white/14 bg-white/[0.06] text-white/92 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] hover:border-white/14 hover:bg-white/[0.06]"
+                      "group h-11 px-4 text-sm",
+                      isFollowing
+                        ? "border-white/14 bg-white/[0.06] text-white/92 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] hover:border-white/18 hover:bg-white/[0.08]"
                         : "",
                     ].join(" ")}
                     onClick={() => void handleFollow()}
-                    disabled={followState === "saving" || followQuery.data === true}
+                    disabled={isFollowBusy}
                   >
-                    {followQuery.data || followState === "done" ? (
-                      <UserCheck className="h-4 w-4" />
+                    {isFollowBusy ? (
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                    ) : isFollowing ? (
+                      <span className="relative grid h-4 w-4 place-items-center">
+                        <UserCheck className="col-start-1 row-start-1 h-4 w-4 transition-opacity duration-150 group-hover:opacity-0" />
+                        <UserMinus className="col-start-1 row-start-1 h-4 w-4 opacity-0 transition-opacity duration-150 group-hover:opacity-100" />
+                      </span>
                     ) : (
                       <UserPlus className="h-4 w-4" />
                     )}
-                    {followState === "saving"
-                      ? "Following…"
-                      : followQuery.data || followState === "done"
-                        ? "Following"
-                        : "Follow"}
+                    {isFollowBusy ? (
+                      followState === "saving_unfollow" ? "Unfollowing…" : "Following…"
+                    ) : isFollowing ? (
+                      <span className="grid">
+                        <span className="col-start-1 row-start-1 transition-opacity duration-150 group-hover:opacity-0">Following</span>
+                        <span className="col-start-1 row-start-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100">Unfollow</span>
+                      </span>
+                    ) : (
+                      "Follow"
+                    )}
                   </Button>
                   <button
                     type="button"
