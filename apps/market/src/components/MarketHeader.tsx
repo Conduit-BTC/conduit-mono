@@ -4,11 +4,12 @@ import { config, formatPubkey, useAuth } from "@conduit/core"
 import {
   Badge,
   Button,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -49,27 +50,40 @@ function Logo({
 
 function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
-  const navigate = useNavigate()
+  const [open, setOpen] = useState(false)
 
   if (!pubkey || status === "disconnected" || status === "error") return null
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="primary" size="sm" className="font-mono text-xs">
-          {formatPubkey(pubkey, 4)}
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-40">
-        <DropdownMenuItem onSelect={() => navigate({ to: "/profile" })}>
-          Profile
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={disconnect}>
-          Disconnect
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <Button variant="primary" size="sm" className="font-mono text-xs" onClick={() => setOpen(true)}>
+        {formatPubkey(pubkey, 4)}
+      </Button>
+      <DialogContent className="max-w-sm border-white/14 bg-[#090314] text-[var(--text-primary)] shadow-[0_24px_70px_rgba(0,0,0,0.55)]">
+        <DialogHeader>
+          <DialogTitle>Disconnect signer?</DialogTitle>
+          <DialogDescription className="text-sm leading-7 text-[var(--text-secondary)]">
+            You can reconnect later, but checkout, orders, and merchant follow-up will require signing in again.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-mono text-[var(--text-secondary)]">
+          {formatPubkey(pubkey, 12)}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => {
+              disconnect()
+              setOpen(false)
+            }}
+          >
+            Disconnect
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

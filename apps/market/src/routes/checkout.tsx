@@ -1,4 +1,4 @@
-import { Bolt, Check, LoaderCircle, ShoppingCart } from "lucide-react"
+import { Check, KeyRound, LoaderCircle, ShoppingCart, Zap } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useEffect, useMemo, useState } from "react"
 import { NDKEvent, NDKUser, giftWrap } from "@nostr-dev-kit/ndk"
@@ -16,7 +16,7 @@ import { type CartItem, useCart } from "../hooks/useCart"
 import { requireAuth } from "../lib/auth"
 import { getProductPriceDisplay } from "../lib/pricing"
 
-type CheckoutStep = "shipping" | "payment" | "sending" | "sent"
+type CheckoutStep = "shipping" | "payment" | "signing" | "sending" | "sent"
 type PaymentMethod = "lightning"
 
 type CheckoutSearch = {
@@ -47,6 +47,44 @@ const DEFAULT_SHIPPING_FORM: ShippingFormState = {
   email: "",
 }
 
+type ShippingFieldKey =
+  | "country"
+  | "firstName"
+  | "lastName"
+  | "street"
+  | "postalCode"
+  | "city"
+
+function getMissingShippingFields(shipping: ShippingFormState): ShippingFieldKey[] {
+  const missing: ShippingFieldKey[] = []
+
+  if (shipping.country.trim().length < 2) missing.push("country")
+  if (shipping.firstName.trim() === "") missing.push("firstName")
+  if (shipping.lastName.trim() === "") missing.push("lastName")
+  if (shipping.street.trim() === "") missing.push("street")
+  if (shipping.postalCode.trim() === "") missing.push("postalCode")
+  if (shipping.city.trim() === "") missing.push("city")
+
+  return missing
+}
+
+function shippingFieldLabel(field: ShippingFieldKey): string {
+  switch (field) {
+    case "country":
+      return "Country"
+    case "firstName":
+      return "First name"
+    case "lastName":
+      return "Last name"
+    case "street":
+      return "Street address"
+    case "postalCode":
+      return "Postal code"
+    case "city":
+      return "City"
+  }
+}
+
 export const Route = createFileRoute("/checkout")({
   beforeLoad: () => {
     requireAuth()
@@ -62,7 +100,7 @@ function CartIcon({ className = "h-4 w-4" }: { className?: string }) {
 }
 
 function LightningIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return <Bolt className={className} />
+  return <Zap className={className} />
 }
 
 function CheckIcon({ className = "h-4 w-4" }: { className?: string }) {
@@ -145,7 +183,7 @@ function OrderSummary({
 }: {
   items: CartItem[]
   merchantPubkey: string
-  step: Exclude<CheckoutStep, "sending" | "sent">
+  step: Exclude<CheckoutStep, "signing" | "sending" | "sent">
   btcUsdRate: number | null
 }) {
   const { data: merchantProfile } = useProfile(merchantPubkey)
@@ -256,6 +294,7 @@ function CheckoutPage() {
   const [shipping, setShipping] = useState<ShippingFormState>(() => readStoredShipping())
   const [note, setNote] = useState("")
   const [error, setError] = useState<string | null>(null)
+  const [shippingAttempted, setShippingAttempted] = useState(false)
   const [sentOrderId, setSentOrderId] = useState<string | null>(null)
   const [showSentGlow, setShowSentGlow] = useState(false)
 
@@ -275,16 +314,13 @@ function CheckoutPage() {
     [checkoutItems]
   )
 
-  const shippingValid =
-    !needsShipping ||
-    (
-      shipping.firstName.trim() !== "" &&
-      shipping.lastName.trim() !== "" &&
-      shipping.street.trim() !== "" &&
-      shipping.city.trim() !== "" &&
-      shipping.postalCode.trim() !== "" &&
-      shipping.country.trim().length >= 2
-    )
+  const missingShippingFields = useMemo(
+    () => (needsShipping ? getMissingShippingFields(shipping) : []),
+    [needsShipping, shipping]
+  )
+  const shippingValid = !needsShipping || missingShippingFields.length === 0
+  const summaryStep: Exclude<CheckoutStep, "signing" | "sending" | "sent"> =
+    step === "payment" ? "payment" : "shipping"
 
   function updateShipping<K extends keyof ShippingFormState>(field: K, value: ShippingFormState[K]): void {
     setShipping((current) => {
@@ -295,6 +331,7 @@ function CheckoutPage() {
   }
 
   function continueToPayment(): void {
+    setShippingAttempted(true)
     if (!shippingValid) {
       setError("Fill in the required shipping fields to continue.")
       return
@@ -310,11 +347,18 @@ function CheckoutPage() {
     return () => window.clearTimeout(timeoutId)
   }, [showSentGlow])
 
+  useEffect(() => {
+    if (!shippingAttempted || !needsShipping) return
+    if (missingShippingFields.length === 0 && error === "Fill in the required shipping fields to continue.") {
+      setError(null)
+    }
+  }, [error, missingShippingFields.length, needsShipping, shippingAttempted])
+
   async function placeOrder(): Promise<void> {
     if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
 
     setError(null)
-    setStep("sending")
+    setStep("signing")
 
     try {
       const orderId = crypto.randomUUID()
@@ -375,6 +419,8 @@ function CheckoutPage() {
       const wrappedToSelf = await giftWrap(rumor, buyerUser, ndk.signer, {
         rumorKind: EVENT_KINDS.ORDER,
       })
+
+      setStep("sending")
 
       await Promise.all([
         wrappedToMerchant.publish(),
@@ -442,6 +488,27 @@ function CheckoutPage() {
     )
   }
 
+  if (step === "signing") {
+    return (
+      <div className="flex min-h-[70vh] items-center justify-center">
+        <section className="w-full max-w-3xl rounded-[2rem] border border-[var(--border)] bg-[var(--surface)] px-8 py-14 text-center shadow-[0_24px_60px_rgba(0,0,0,0.28)] sm:px-12">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-secondary-500/30 bg-secondary-500/10 text-secondary-300">
+            <KeyRound className="h-8 w-8" />
+          </div>
+          <h1 className="mt-8 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+            Awaiting signature…
+          </h1>
+          <div className="mx-auto mt-8 h-1.5 w-full max-w-sm overflow-hidden rounded-full bg-[var(--surface-elevated)]">
+            <div className="h-full w-1/3 animate-pulse rounded-full bg-secondary-400" />
+          </div>
+          <p className="mx-auto mt-8 max-w-md text-sm leading-7 text-[var(--text-secondary)]">
+            Confirm this order in your signer to continue. Once the signature is approved, Conduit will send the order request to the merchant.
+          </p>
+        </section>
+      </div>
+    )
+  }
+
   if (step === "sent") {
     return (
       <div className="flex min-h-[70vh] items-center justify-center">
@@ -478,7 +545,7 @@ function CheckoutPage() {
             </Button>
             <Button asChild className="h-11 px-5 text-sm">
               <Link to="/products">
-                <CartIcon className="h-4 w-4" />
+                <ShoppingCart className="h-4 w-4" />
                 Browse more products
               </Link>
             </Button>
@@ -558,45 +625,87 @@ function CheckoutPage() {
 
                 {needsShipping ? (
                   <div className="mt-5 grid gap-4">
+                    <div className="rounded-xl border border-white/10 bg-[var(--surface-elevated)] px-4 py-3 text-sm text-[var(--text-secondary)]">
+                      Required fields: Country, First name, Last name, Street address, Postal code, and City.
+                    </div>
+
+                    {shippingAttempted && missingShippingFields.length > 0 && (
+                      <div className="rounded-xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">
+                        Missing: {missingShippingFields.map(shippingFieldLabel).join(", ")}
+                      </div>
+                    )}
+
                     <div className="grid gap-1.5">
-                      <Label htmlFor="ship-country">Country</Label>
+                      <Label htmlFor="ship-country">
+                        Country <span className="text-error">*</span>
+                      </Label>
                       <Input
                         id="ship-country"
                         value={shipping.country}
                         onChange={(e) => updateShipping("country", e.target.value.toUpperCase())}
                         placeholder="US"
                         maxLength={2}
+                        aria-invalid={shippingAttempted && missingShippingFields.includes("country")}
+                        className={
+                          shippingAttempted && missingShippingFields.includes("country")
+                            ? "border-error/50 focus:border-error focus:ring-error/30"
+                            : undefined
+                        }
                       />
                     </div>
 
                     <div className="grid gap-4 sm:grid-cols-2">
                       <div className="grid gap-1.5">
-                        <Label htmlFor="ship-first-name">First name</Label>
+                        <Label htmlFor="ship-first-name">
+                          First name <span className="text-error">*</span>
+                        </Label>
                         <Input
                           id="ship-first-name"
                           value={shipping.firstName}
                           onChange={(e) => updateShipping("firstName", e.target.value)}
                           placeholder="Jane"
+                          aria-invalid={shippingAttempted && missingShippingFields.includes("firstName")}
+                          className={
+                            shippingAttempted && missingShippingFields.includes("firstName")
+                              ? "border-error/50 focus:border-error focus:ring-error/30"
+                              : undefined
+                          }
                         />
                       </div>
                       <div className="grid gap-1.5">
-                        <Label htmlFor="ship-last-name">Last name</Label>
+                        <Label htmlFor="ship-last-name">
+                          Last name <span className="text-error">*</span>
+                        </Label>
                         <Input
                           id="ship-last-name"
                           value={shipping.lastName}
                           onChange={(e) => updateShipping("lastName", e.target.value)}
                           placeholder="Doe"
+                          aria-invalid={shippingAttempted && missingShippingFields.includes("lastName")}
+                          className={
+                            shippingAttempted && missingShippingFields.includes("lastName")
+                              ? "border-error/50 focus:border-error focus:ring-error/30"
+                              : undefined
+                          }
                         />
                       </div>
                     </div>
 
                     <div className="grid gap-1.5">
-                      <Label htmlFor="ship-street">Street address</Label>
+                      <Label htmlFor="ship-street">
+                        Street address <span className="text-error">*</span>
+                      </Label>
                       <Input
                         id="ship-street"
                         value={shipping.street}
                         onChange={(e) => updateShipping("street", e.target.value)}
                         placeholder="123 Main St"
+                        aria-invalid={shippingAttempted && missingShippingFields.includes("street")}
+                        className={
+                          shippingAttempted && missingShippingFields.includes("street")
+                            ? "border-error/50 focus:border-error focus:ring-error/30"
+                            : undefined
+                        }
                       />
                     </div>
 
@@ -612,21 +721,37 @@ function CheckoutPage() {
 
                     <div className="grid gap-4 sm:grid-cols-3">
                       <div className="grid gap-1.5">
-                        <Label htmlFor="ship-postal">Postal code</Label>
+                        <Label htmlFor="ship-postal">
+                          Postal code <span className="text-error">*</span>
+                        </Label>
                         <Input
                           id="ship-postal"
                           value={shipping.postalCode}
                           onChange={(e) => updateShipping("postalCode", e.target.value)}
                           placeholder="78701"
+                          aria-invalid={shippingAttempted && missingShippingFields.includes("postalCode")}
+                          className={
+                            shippingAttempted && missingShippingFields.includes("postalCode")
+                              ? "border-error/50 focus:border-error focus:ring-error/30"
+                              : undefined
+                          }
                         />
                       </div>
                       <div className="grid gap-1.5">
-                        <Label htmlFor="ship-city">City</Label>
+                        <Label htmlFor="ship-city">
+                          City <span className="text-error">*</span>
+                        </Label>
                         <Input
                           id="ship-city"
                           value={shipping.city}
                           onChange={(e) => updateShipping("city", e.target.value)}
                           placeholder="Austin"
+                          aria-invalid={shippingAttempted && missingShippingFields.includes("city")}
+                          className={
+                            shippingAttempted && missingShippingFields.includes("city")
+                              ? "border-error/50 focus:border-error focus:ring-error/30"
+                              : undefined
+                          }
                         />
                       </div>
                       <div className="grid gap-1.5">
@@ -758,7 +883,7 @@ function CheckoutPage() {
         <OrderSummary
           items={checkoutItems}
           merchantPubkey={selectedMerchant!}
-          step={step as Exclude<CheckoutStep, "sending" | "sent">}
+          step={summaryStep}
           btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
         />
       </div>

@@ -455,36 +455,35 @@ function ProductsPage() {
           <span className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
             Store
           </span>
-          {(allMerchants.length > 1 || !!search.merchant) &&
-            (search.merchant ? (
-              <Badge variant="secondary" className="h-8 gap-1.5 px-3">
-                <MerchantName pubkey={search.merchant} />
-                <button
-                  onClick={() => updateSearch({ merchant: undefined })}
-                  className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
-                  aria-label="Remove store filter"
-                >
-                  &times;
-                </button>
-              </Badge>
-            ) : (
-              <Select
-                value="__all"
-                onValueChange={(v) => handleMerchantSelection(v === "__all" ? undefined : v)}
+          {search.merchant ? (
+            <Badge variant="secondary" className="h-8 gap-1.5 px-3">
+              <MerchantName pubkey={search.merchant} />
+              <button
+                onClick={() => updateSearch({ merchant: undefined })}
+                className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
+                aria-label="Remove store filter"
               >
-                <SelectTrigger className="h-8 w-auto min-w-[140px] text-xs">
-                  <SelectValue placeholder="All stores" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__all">All stores</SelectItem>
-                  {allMerchants.map((pk) => (
-                    <SelectItem key={pk} value={pk}>
-                      <MerchantName pubkey={pk} />
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ))}
+                &times;
+              </button>
+            </Badge>
+          ) : (
+            <Select
+              value="__all"
+              onValueChange={(v) => handleMerchantSelection(v === "__all" ? undefined : v)}
+            >
+              <SelectTrigger className="h-8 w-auto min-w-[140px] text-xs">
+                <SelectValue placeholder="All stores" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all">All stores</SelectItem>
+                {allMerchants.map((pk) => (
+                  <SelectItem key={pk} value={pk}>
+                    <MerchantName pubkey={pk} />
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
         </div>
 
         <div className="ml-auto flex items-center gap-2">

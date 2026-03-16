@@ -31,11 +31,41 @@ function RootLayout() {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" })
   }, [pathname])
 
+  useEffect(() => {
+    const title = getPageTitle(pathname)
+    document.title = `${title} | Conduit Market`
+  }, [pathname])
+
   return (
     <RootShell>
       <Outlet />
     </RootShell>
   )
+}
+
+function getPageTitle(pathname: string): string {
+  if (pathname === "/" || pathname === "/products" || pathname === "/products/") {
+    return "Shop"
+  }
+  if (pathname === "/cart") {
+    return "Cart"
+  }
+  if (pathname === "/checkout") {
+    return "Checkout"
+  }
+  if (pathname === "/orders") {
+    return "Orders"
+  }
+  if (pathname === "/profile") {
+    return "Profile"
+  }
+  if (pathname.startsWith("/products/")) {
+    return "Product"
+  }
+  if (pathname.startsWith("/store/")) {
+    return "Storefront"
+  }
+  return "Market"
 }
 
 function RootErrorComponent({ error }: ErrorComponentProps) {

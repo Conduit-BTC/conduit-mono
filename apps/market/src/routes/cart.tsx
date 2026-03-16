@@ -1,4 +1,4 @@
-import { Bolt, RefreshCw, ShoppingCart, Store, Trash2 } from "lucide-react"
+import { RefreshCw, ShoppingCart, Store, Trash2, Zap } from "lucide-react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
@@ -49,7 +49,7 @@ function CartIcon({ className = "h-4 w-4" }: { className?: string }) {
 }
 
 function LightningIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return <Bolt className={className} />
+  return <Zap className={className} />
 }
 
 function TrashIcon({ className = "h-4 w-4" }: { className?: string }) {

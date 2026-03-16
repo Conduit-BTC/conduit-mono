@@ -1,4 +1,4 @@
-import { ArrowDownToLine, Check, Shield } from "lucide-react"
+import { Check, KeyRound, ShieldCheck } from "lucide-react"
 import { useMemo, useState } from "react"
 import { formatPubkey, hasNip07, useAuth } from "@conduit/core"
 import {
@@ -20,11 +20,11 @@ type SignerSwitchProps = {
 }
 
 function SignerGlyph({ className = "h-5 w-5" }: { className?: string }) {
-  return <ArrowDownToLine className={className} />
+  return <KeyRound className={className} />
 }
 
 function ShieldIcon() {
-  return <Shield className="h-4 w-4" />
+  return <ShieldCheck className="h-4 w-4" />
 }
 
 function CheckIcon() {

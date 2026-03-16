@@ -15,6 +15,7 @@ import { Route as CheckoutRouteImport } from './routes/checkout'
 import { Route as CartRouteImport } from './routes/cart'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProductsIndexRouteImport } from './routes/products/index'
+import { Route as StorePubkeyRouteImport } from './routes/store/$pubkey'
 import { Route as ProductsProductIdRouteImport } from './routes/products/$productId'
 
 const ProfileRoute = ProfileRouteImport.update({
@@ -47,6 +48,11 @@ const ProductsIndexRoute = ProductsIndexRouteImport.update({
   path: '/products/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const StorePubkeyRoute = StorePubkeyRouteImport.update({
+  id: '/store/$pubkey',
+  path: '/store/$pubkey',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProductsProductIdRoute = ProductsProductIdRouteImport.update({
   id: '/products/$productId',
   path: '/products/$productId',
@@ -60,6 +66,7 @@ export interface FileRoutesByFullPath {
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
   '/products/$productId': typeof ProductsProductIdRoute
+  '/store/$pubkey': typeof StorePubkeyRoute
   '/products/': typeof ProductsIndexRoute
 }
 export interface FileRoutesByTo {
@@ -69,6 +76,7 @@ export interface FileRoutesByTo {
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
   '/products/$productId': typeof ProductsProductIdRoute
+  '/store/$pubkey': typeof StorePubkeyRoute
   '/products': typeof ProductsIndexRoute
 }
 export interface FileRoutesById {
@@ -79,6 +87,7 @@ export interface FileRoutesById {
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
   '/products/$productId': typeof ProductsProductIdRoute
+  '/store/$pubkey': typeof StorePubkeyRoute
   '/products/': typeof ProductsIndexRoute
 }
 export interface FileRouteTypes {
@@ -90,6 +99,7 @@ export interface FileRouteTypes {
     | '/orders'
     | '/profile'
     | '/products/$productId'
+    | '/store/$pubkey'
     | '/products/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -99,6 +109,7 @@ export interface FileRouteTypes {
     | '/orders'
     | '/profile'
     | '/products/$productId'
+    | '/store/$pubkey'
     | '/products'
   id:
     | '__root__'
@@ -108,6 +119,7 @@ export interface FileRouteTypes {
     | '/orders'
     | '/profile'
     | '/products/$productId'
+    | '/store/$pubkey'
     | '/products/'
   fileRoutesById: FileRoutesById
 }
@@ -118,6 +130,7 @@ export interface RootRouteChildren {
   OrdersRoute: typeof OrdersRoute
   ProfileRoute: typeof ProfileRoute
   ProductsProductIdRoute: typeof ProductsProductIdRoute
+  StorePubkeyRoute: typeof StorePubkeyRoute
   ProductsIndexRoute: typeof ProductsIndexRoute
 }
 
@@ -165,6 +178,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProductsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/store/$pubkey': {
+      id: '/store/$pubkey'
+      path: '/store/$pubkey'
+      fullPath: '/store/$pubkey'
+      preLoaderRoute: typeof StorePubkeyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/products/$productId': {
       id: '/products/$productId'
       path: '/products/$productId'
@@ -182,6 +202,7 @@ const rootRouteChildren: RootRouteChildren = {
   OrdersRoute: OrdersRoute,
   ProfileRoute: ProfileRoute,
   ProductsProductIdRoute: ProductsProductIdRoute,
+  StorePubkeyRoute: StorePubkeyRoute,
   ProductsIndexRoute: ProductsIndexRoute,
 }
 export const routeTree = rootRouteImport
