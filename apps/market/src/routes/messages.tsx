@@ -16,6 +16,7 @@ import { buildBuyerConversations, fetchBuyerMessages, type BuyerConversation } f
 type MessagesSearch = {
   tab?: "dms" | "merchants"
   thread?: string
+  merchant?: string
 }
 
 export const Route = createFileRoute("/messages")({
@@ -25,6 +26,7 @@ export const Route = createFileRoute("/messages")({
   validateSearch: (raw: Record<string, unknown>): MessagesSearch => ({
     tab: raw.tab === "dms" || raw.tab === "merchants" ? raw.tab : undefined,
     thread: typeof raw.thread === "string" ? raw.thread : undefined,
+    merchant: typeof raw.merchant === "string" ? raw.merchant : undefined,
   }),
   component: MessagesPage,
 })
@@ -119,19 +121,26 @@ function MessagesPage() {
 
   const filteredConversations = useMemo(() => {
     const normalized = query.trim().toLowerCase()
-    if (!normalized) return conversations
-    return conversations.filter((conversation) =>
-      (merchantProfilesQuery.data?.[conversation.merchantPubkey]?.displayName?.toLowerCase().includes(normalized) ?? false) ||
-      (merchantProfilesQuery.data?.[conversation.merchantPubkey]?.name?.toLowerCase().includes(normalized) ?? false) ||
-      conversation.orderId.toLowerCase().includes(normalized) ||
-      conversation.merchantPubkey.toLowerCase().includes(normalized) ||
-      extractOrderSummary(conversation.messages).items.some((item) =>
-        item.productId.toLowerCase().includes(normalized) ||
-        formatProductReference(item.productId).title.toLowerCase().includes(normalized)
-      ) ||
-      conversation.messages.some((message) => getConversationPreview(message).toLowerCase().includes(normalized))
-    )
-  }, [conversations, merchantProfilesQuery.data, query])
+    return conversations.filter((conversation) => {
+      if (search.merchant && conversation.merchantPubkey !== search.merchant) {
+        return false
+      }
+
+      if (!normalized) return true
+
+      return (
+        (merchantProfilesQuery.data?.[conversation.merchantPubkey]?.displayName?.toLowerCase().includes(normalized) ?? false) ||
+        (merchantProfilesQuery.data?.[conversation.merchantPubkey]?.name?.toLowerCase().includes(normalized) ?? false) ||
+        conversation.orderId.toLowerCase().includes(normalized) ||
+        conversation.merchantPubkey.toLowerCase().includes(normalized) ||
+        extractOrderSummary(conversation.messages).items.some((item) =>
+          item.productId.toLowerCase().includes(normalized) ||
+          formatProductReference(item.productId).title.toLowerCase().includes(normalized)
+        ) ||
+        conversation.messages.some((message) => getConversationPreview(message).toLowerCase().includes(normalized))
+      )
+    })
+  }, [conversations, merchantProfilesQuery.data, query, search.merchant])
 
   useEffect(() => {
     if (activeTab !== "merchants") return
@@ -297,7 +306,9 @@ function MessagesPage() {
                     ))
                   ) : (
                     <div className="rounded-[1.1rem] border border-white/10 bg-white/[0.03] px-4 py-5 text-sm text-[var(--text-secondary)]">
-                      No merchant threads match this search.
+                      {search.merchant
+                        ? "No conversation with this merchant yet."
+                        : "No merchant threads match this search."}
                     </div>
                   )}
                 </div>
@@ -355,7 +366,9 @@ function MessagesPage() {
                   </>
                 ) : (
                   <div className="flex h-full min-h-[280px] items-center justify-center px-6 text-center text-sm text-[var(--text-secondary)]">
-                    Adjust your search to reopen a merchant thread.
+                    {search.merchant
+                      ? "Place an order with this merchant to start a conversation here."
+                      : "Adjust your search to reopen a merchant thread."}
                   </div>
                 )}
               </section>

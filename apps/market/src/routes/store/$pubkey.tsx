@@ -1,7 +1,7 @@
 import { Check, Link as LinkIcon, LoaderCircle, MessageCircle, Search, UserPlus } from "lucide-react"
 import { useEffect, useMemo, useState, type FormEvent } from "react"
 import { createFileRoute, Link } from "@tanstack/react-router"
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Avatar,
   AvatarFallback,
@@ -15,10 +15,12 @@ import {
 } from "@conduit/ui"
 import {
   formatPubkey,
+  requireNdkConnected,
   useAuth,
   useProfile,
   type Product,
 } from "@conduit/core"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { SignerSwitch } from "../../components/SignerSwitch"
 import { ProductGridCard, ProductGridCardSkeleton } from "../../components/ProductGridCard"
 import { MerchantAvatarFallback, getMerchantDisplayName } from "../../components/MerchantIdentity"
@@ -70,8 +72,9 @@ function StorefrontPage() {
   const { pubkey } = Route.useParams()
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
+  const queryClient = useQueryClient()
   const cart = useCart()
-  const { status } = useAuth()
+  const { pubkey: viewerPubkey, status } = useAuth()
   const { data: profile } = useProfile(pubkey)
   const btcUsdRateQuery = useBtcUsdRate()
   const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
@@ -83,6 +86,23 @@ function StorefrontPage() {
     queryKey: ["store-products", pubkey],
     queryFn: () => fetchStoreProducts(pubkey),
   })
+  const followQuery = useQuery({
+    queryKey: ["following-store", viewerPubkey ?? "none", pubkey],
+    enabled: status === "connected" && !!viewerPubkey && viewerPubkey !== pubkey,
+    queryFn: async () => {
+      const ndk = await requireNdkConnected()
+      const events = await ndk.fetchEvents({
+        kinds: [3],
+        authors: [viewerPubkey!],
+        limit: 10,
+      })
+      const event = Array.from(events)
+        .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))[0]
+
+      return Array.from(event?.tags ?? []).some((tag) => tag[0] === "p" && tag[1] === pubkey)
+    },
+  })
+  const [followState, setFollowState] = useState<"idle" | "saving" | "done">("idle")
 
   const merchantName = getMerchantDisplayName(profile, pubkey)
   const merchantAbout = profile?.about?.trim()
@@ -172,10 +192,63 @@ function StorefrontPage() {
     setSearchDirty(false)
   }
 
-  function requireConnectedAction(): void {
+  function handleSendMessage(): void {
     if (status !== "connected") {
       setConnectOpen(true)
       return
+    }
+
+    navigate({
+      to: "/messages",
+      search: {
+        tab: "merchants",
+        merchant: pubkey,
+      },
+    })
+  }
+
+  async function handleFollow(): Promise<void> {
+    if (status !== "connected" || !viewerPubkey || viewerPubkey === pubkey) {
+      setConnectOpen(true)
+      return
+    }
+    if (followQuery.data || followState === "saving") return
+
+    setFollowState("saving")
+    try {
+      const ndk = await requireNdkConnected()
+      if (!ndk.signer) throw new Error("Signer not connected")
+
+      const existingEvents = await ndk.fetchEvents({
+        kinds: [3],
+        authors: [viewerPubkey],
+        limit: 10,
+      })
+      const latest = Array.from(existingEvents)
+        .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))[0]
+
+      const nextTags = Array.from(latest?.tags ?? [])
+      const alreadyFollowing = nextTags.some((tag) => tag[0] === "p" && tag[1] === pubkey)
+      if (!alreadyFollowing) {
+        nextTags.push(["p", pubkey])
+      }
+
+      const event = new NDKEvent(ndk)
+      event.kind = 3
+      event.created_at = Math.floor(Date.now() / 1000)
+      event.content = latest?.content ?? ""
+      event.tags = nextTags
+
+      await event.sign(ndk.signer)
+      await event.publish()
+
+      await queryClient.invalidateQueries({
+        queryKey: ["following-store", viewerPubkey, pubkey],
+      })
+      setFollowState("done")
+      window.setTimeout(() => setFollowState("idle"), 1600)
+    } catch {
+      setFollowState("idle")
     }
   }
 
@@ -262,19 +335,22 @@ function StorefrontPage() {
                   <Button
                     variant="outline"
                     className="h-11 border-white/16 bg-white/[0.05] px-4 text-sm hover:border-white/24 hover:bg-white/[0.08]"
-                    onClick={requireConnectedAction}
-                    title={status === "connected" ? "Coming soon" : undefined}
+                    onClick={handleSendMessage}
                   >
                     <MessageCircle className="h-4 w-4" />
                     Send message
                   </Button>
                   <Button
                     className="h-11 px-4 text-sm"
-                    onClick={requireConnectedAction}
-                    title={status === "connected" ? "Coming soon" : undefined}
+                    onClick={() => void handleFollow()}
+                    disabled={followState === "saving" || followQuery.data === true}
                   >
                     <UserPlus className="h-4 w-4" />
-                    Follow
+                    {followState === "saving"
+                      ? "Following…"
+                      : followQuery.data || followState === "done"
+                        ? "Following"
+                        : "Follow"}
                   </Button>
                   <button
                     type="button"
