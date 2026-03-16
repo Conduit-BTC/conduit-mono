@@ -82,19 +82,6 @@ function LightningIcon({ className = "h-4 w-4" }: { className?: string }) {
   )
 }
 
-function MessageIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-4l-4 4v-4z"
-      />
-    </svg>
-  )
-}
-
 function CheckIcon({ className = "h-4 w-4" }: { className?: string }) {
   return (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -478,35 +465,6 @@ function CheckoutPage() {
     )
   }
 
-  if (checkoutItems.length === 0) {
-    return (
-      <div className="space-y-6">
-        <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
-          <Link to="/cart" className="transition-colors hover:text-[var(--text-primary)]">
-            Cart
-          </Link>
-          <span>/</span>
-          <span className="text-[var(--text-primary)]">Checkout</span>
-        </div>
-
-        <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
-          <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">Nothing to check out</h1>
-          <p className="mt-3 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
-            This cart is empty now. Head back to the marketplace and add products before starting checkout again.
-          </p>
-          <div className="mt-6 flex flex-wrap gap-3">
-            <Button asChild className="h-11 px-4 text-sm">
-              <Link to="/products">Continue shopping</Link>
-            </Button>
-            <Button asChild variant="outline" className="h-11 px-4 text-sm">
-              <Link to="/cart">Back to cart</Link>
-            </Button>
-          </div>
-        </section>
-      </div>
-    )
-  }
-
   if (step === "sending") {
     return (
       <div className="flex min-h-[70vh] items-center justify-center">
@@ -541,30 +499,59 @@ function CheckoutPage() {
             <CheckIcon className="h-8 w-8" />
           </div>
           <h1 className="relative mt-8 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Waiting for merchant confirmation
+            Order request submitted
           </h1>
           <div className="relative mx-auto mt-8 h-1 w-full max-w-sm rounded-full bg-secondary-500/50" />
           <p className="relative mx-auto mt-8 max-w-xl text-lg leading-9 text-[var(--text-primary)]">
-            Your order has been sent. The merchant still needs to confirm it before payment details are finalized.
+            Your order request has been sent to the merchant. They will review it and follow up with confirmation and payment details.
           </p>
           <p className="relative mx-auto mt-4 max-w-lg text-sm leading-7 text-[var(--text-secondary)]">
-            Watch your order status for the merchant response, then continue the conversation in DMs when they reply.
+            You can return to your cart, keep browsing products, or check back later for the merchant response.
           </p>
           {sentOrderId && (
             <div className="relative mt-6 text-xs font-mono text-[var(--text-muted)]">{sentOrderId}</div>
           )}
           <div className="relative mt-8 flex flex-wrap justify-center gap-3">
-            <Button asChild className="h-11 px-5 text-sm">
-              <Link to="/orders">
-                <MessageIcon className="h-4 w-4" />
-                View orders
+            <Button asChild variant="outline" className="h-11 px-5 text-sm">
+              <Link to="/cart">
+                <CartIcon className="h-4 w-4" />
+                Back to cart
               </Link>
             </Button>
-            <Button asChild variant="outline" className="h-11 px-5 text-sm">
+            <Button asChild className="h-11 px-5 text-sm">
               <Link to="/products">
                 <CartIcon className="h-4 w-4" />
-                Keep shopping
+                Browse more products
               </Link>
+            </Button>
+          </div>
+        </section>
+      </div>
+    )
+  }
+
+  if (checkoutItems.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
+          <Link to="/cart" className="transition-colors hover:text-[var(--text-primary)]">
+            Cart
+          </Link>
+          <span>/</span>
+          <span className="text-[var(--text-primary)]">Checkout</span>
+        </div>
+
+        <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
+          <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">Nothing to check out</h1>
+          <p className="mt-3 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
+            This cart is empty now. Head back to the marketplace and add products before starting checkout again.
+          </p>
+          <div className="mt-6 flex flex-wrap gap-3">
+            <Button asChild className="h-11 px-4 text-sm">
+              <Link to="/products">Continue shopping</Link>
+            </Button>
+            <Button asChild variant="outline" className="h-11 px-4 text-sm">
+              <Link to="/cart">Back to cart</Link>
             </Button>
           </div>
         </section>

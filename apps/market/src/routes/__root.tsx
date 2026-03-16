@@ -1,5 +1,6 @@
-import { createRootRoute, Outlet, type ErrorComponentProps } from "@tanstack/react-router"
+import { createRootRoute, Outlet, useRouterState, type ErrorComponentProps } from "@tanstack/react-router"
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
+import { useEffect } from "react"
 import { MarketHeader } from "../components/MarketHeader"
 import { ErrorPage, NotFoundPage } from "@conduit/ui"
 
@@ -22,6 +23,14 @@ function RootShell({ children }: { children: React.ReactNode }) {
 }
 
 function RootLayout() {
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" })
+  }, [pathname])
+
   return (
     <RootShell>
       <Outlet />
