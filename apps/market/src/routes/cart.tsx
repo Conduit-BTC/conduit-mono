@@ -81,10 +81,6 @@ function sumCartItems(items: CartItem[]): number {
   return items.reduce((sum, item) => sum + item.price * item.quantity, 0)
 }
 
-function toProductRouteParam(productId: string): string {
-  return encodeURIComponent(productId)
-}
-
 function getCartSummaryPrice(items: CartItem[], btcUsdRate: number | null) {
   const currencies = Array.from(new Set(items.map((item) => item.currency).filter(Boolean)))
   const totalItems = items.reduce((sum, item) => sum + item.quantity, 0)
@@ -277,7 +273,7 @@ function RelatedProductRow({
     <div className="grid min-h-[9.5rem] grid-cols-[80px_minmax(0,1fr)] items-start gap-3 rounded-xl border border-white/10 bg-[var(--surface)] p-3">
       <Link
         to="/products/$productId"
-        params={{ productId: toProductRouteParam(product.id) }}
+        params={{ productId: product.id }}
         className="shrink-0 overflow-hidden rounded-lg border border-white/10 bg-[var(--background)]"
       >
         <img
@@ -296,7 +292,7 @@ function RelatedProductRow({
       <div className="min-w-0 flex-1">
         <Link
           to="/products/$productId"
-          params={{ productId: toProductRouteParam(product.id) }}
+          params={{ productId: product.id }}
           className="line-clamp-2 text-sm font-medium leading-6 text-[var(--text-primary)] transition-colors hover:text-secondary-300"
         >
           {product.title}
@@ -361,7 +357,7 @@ function CartLineItem({
       <div className="min-w-0">
         <Link
           to="/products/$productId"
-          params={{ productId: toProductRouteParam(item.productId) }}
+          params={{ productId: item.productId }}
           className="line-clamp-2 text-xl font-medium leading-tight text-[var(--text-primary)] transition-colors hover:text-secondary-300"
         >
           {item.title}

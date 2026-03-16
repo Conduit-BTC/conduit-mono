@@ -35,8 +35,6 @@ type StoreSearch = {
   tag?: string
 }
 
-const PAGE_SIZE = 12
-
 export const Route = createFileRoute("/store/$pubkey")({
   component: StorefrontPage,
   validateSearch: (raw: Record<string, unknown>): StoreSearch => ({
@@ -96,6 +94,31 @@ function StorefrontPage() {
     return Array.from(tagSet).sort()
   }, [productsQuery.data])
 
+  const updateSearch = (updates: Partial<StoreSearch>) => {
+    navigate({
+      search: (prev) => {
+        const next = { ...prev, ...updates }
+        for (const key of Object.keys(next) as (keyof StoreSearch)[]) {
+          const value = next[key]
+          if (value === undefined || value === "") {
+            delete next[key]
+          }
+        }
+        return next
+      },
+      replace: true,
+    })
+  }
+
+  const productCount = productsQuery.data?.length ?? 0
+  const canShowPriceSort = useMemo(() => {
+    const products = productsQuery.data ?? []
+    if (products.length <= 1) return true
+    const currencies = new Set(products.map((product) => product.currency.trim().toUpperCase()))
+    if (currencies.size <= 1) return true
+    return products.every((product) => getComparablePriceValue(product, btcUsdRate) !== null)
+  }, [btcUsdRate, productsQuery.data])
+
   const filteredProducts = useMemo(() => {
     let result = productsQuery.data ?? []
 
@@ -113,34 +136,15 @@ function StorefrontPage() {
       )
     }
 
-    return sortProducts(result, search.sort, btcUsdRate)
-  }, [btcUsdRate, productsQuery.data, search.q, search.sort, search.tag])
+    const effectiveSort = canShowPriceSort ? search.sort : undefined
+    return sortProducts(result, effectiveSort, btcUsdRate)
+  }, [btcUsdRate, canShowPriceSort, productsQuery.data, search.q, search.sort, search.tag])
 
-  const productCount = productsQuery.data?.length ?? 0
-  const visibleProducts = filteredProducts.slice(0, PAGE_SIZE)
-  const canShowPriceSort = useMemo(() => {
-    const products = productsQuery.data ?? []
-    if (products.length <= 1) return true
-    const currencies = new Set(products.map((product) => product.currency.trim().toUpperCase()))
-    if (currencies.size <= 1) return true
-    return products.every((product) => getComparablePriceValue(product, btcUsdRate) !== null)
-  }, [btcUsdRate, productsQuery.data])
-
-  const updateSearch = (updates: Partial<StoreSearch>) => {
-    navigate({
-      search: (prev) => {
-        const next = { ...prev, ...updates }
-        for (const key of Object.keys(next) as (keyof StoreSearch)[]) {
-          const value = next[key]
-          if (value === undefined || value === "") {
-            delete next[key]
-          }
-        }
-        return next
-      },
-      replace: true,
-    })
-  }
+  useEffect(() => {
+    if (!canShowPriceSort && (search.sort === "price_asc" || search.sort === "price_desc")) {
+      updateSearch({ sort: undefined })
+    }
+  }, [canShowPriceSort, search.sort, updateSearch])
 
   useEffect(() => {
     setLocalSearch(search.q ?? "")
@@ -440,9 +444,9 @@ function StorefrontPage() {
             </div>
           )}
 
-          {visibleProducts.length > 0 && (
+          {filteredProducts.length > 0 && (
             <ul className="grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-3">
-              {visibleProducts.map((product) => (
+              {filteredProducts.map((product) => (
                 <li key={product.id} className="h-full">
                   <ProductGridCard
                     product={product}
