@@ -5,6 +5,7 @@ import {
   fetchEventsFanout,
   formatPubkey,
   parseProductEvent,
+  useAuth,
   useProfile,
   type Product,
 } from "@conduit/core"
@@ -19,6 +20,7 @@ import {
   DialogTitle,
 } from "@conduit/ui"
 import { useEffect, useMemo, useState } from "react"
+import { SignerSwitch } from "../components/SignerSwitch"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
 import { getProductPriceDisplay } from "../lib/pricing"
@@ -247,9 +249,11 @@ function MerchantIdentity({
 function MerchantOverviewCard({
   group,
   btcUsdRate,
+  onCheckout,
 }: {
   group: MerchantCartGroup
   btcUsdRate: number | null
+  onCheckout: (merchantPubkey: string) => void
 }) {
   const summary = getCartSummaryPrice(group.items, btcUsdRate)
 
@@ -268,11 +272,11 @@ function MerchantOverviewCard({
             )}
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button asChild className="min-w-[10rem]">
-              <Link to="/checkout" search={{ merchant: group.merchantPubkey }}>
+            <Button className="min-w-[10rem]" onClick={() => onCheckout(group.merchantPubkey)}>
+              <span className="inline-flex items-center gap-2">
                 <LightningIcon className="h-4 w-4" />
                 Zap out
-              </Link>
+              </span>
             </Button>
             <Button asChild variant="outline" className="min-w-[10rem]">
               <Link to="/cart" search={{ merchant: group.merchantPubkey }}>
@@ -446,11 +450,14 @@ function CartLineItem({
 
 function CartPage() {
   const cart = useCart()
+  const { pubkey, status } = useAuth()
   const search = Route.useSearch()
   const navigate = useNavigate()
   const btcUsdRateQuery = useBtcUsdRate()
   const [confirmClearTarget, setConfirmClearTarget] = useState<"all" | string | null>(null)
   const [forceOverview, setForceOverview] = useState(false)
+  const [connectOpen, setConnectOpen] = useState(false)
+  const [pendingCheckoutMerchant, setPendingCheckoutMerchant] = useState<string | null>(null)
 
   const merchantGroups = useMemo(() => groupCartItems(cart.items), [cart.items])
 
@@ -489,6 +496,34 @@ function CartPage() {
     const sourceItems = selectedGroup ? selectedGroup.items : cart.items
     return sourceItems.flatMap((item) => item.tags ?? [])
   }, [cart.items, selectedGroup])
+
+  const signerConnected = status === "connected" && !!pubkey
+
+  function continueToCheckout(merchant: string): void {
+    navigate({
+      to: "/checkout",
+      search: { merchant },
+    })
+  }
+
+  function handleCheckout(merchant: string): void {
+    if (signerConnected) {
+      continueToCheckout(merchant)
+      return
+    }
+
+    setPendingCheckoutMerchant(merchant)
+    setConnectOpen(true)
+  }
+
+  useEffect(() => {
+    if (signerConnected && pendingCheckoutMerchant) {
+      const merchant = pendingCheckoutMerchant
+      setPendingCheckoutMerchant(null)
+      setConnectOpen(false)
+      continueToCheckout(merchant)
+    }
+  }, [pendingCheckoutMerchant, signerConnected])
 
   function handleConfirmClear(): void {
     if (!confirmClearTarget) return
@@ -601,6 +636,7 @@ function CartPage() {
                 key={group.merchantPubkey}
                 group={group}
                 btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+                onCheckout={handleCheckout}
               />
             ))}
           </section>
@@ -681,6 +717,17 @@ function CartPage() {
             </div>
           </aside>
         </div>
+
+        <SignerSwitch
+          open={connectOpen}
+          onOpenChange={(open) => {
+            setConnectOpen(open)
+            if (!open) {
+              setPendingCheckoutMerchant(null)
+            }
+          }}
+          hideTrigger
+        />
       </div>
     )
   }
@@ -716,7 +763,7 @@ function CartPage() {
                 </p>
               </div>
               {merchantGroups.length > 1 && (
-                <Button asChild variant="ghost" className="h-10 px-0 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
+                <Button asChild variant="ghost" className="h-10 px-3 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
                   <Link to="/cart">Back to all carts</Link>
                 </Button>
               )}
@@ -785,11 +832,11 @@ function CartPage() {
               >
                 Clear cart
               </Button>
-              <Button asChild className="h-11 px-5 text-sm">
-                <Link to="/checkout" search={{ merchant: selectedGroup.merchantPubkey }}>
+              <Button className="h-11 px-5 text-sm" onClick={() => handleCheckout(selectedGroup.merchantPubkey)}>
+                <span className="inline-flex items-center gap-2">
                   <LightningIcon className="h-4 w-4" />
                   Zap out
-                </Link>
+                </span>
               </Button>
             </div>
           </div>
@@ -804,11 +851,11 @@ function CartPage() {
             {selectedSummary?.secondary && (
               <div className="mt-1 text-sm text-[var(--text-muted)]">{selectedSummary.secondary}</div>
             )}
-            <Button asChild className="mt-5 w-full">
-              <Link to="/checkout" search={{ merchant: selectedGroup.merchantPubkey }}>
+            <Button className="mt-5 w-full" onClick={() => handleCheckout(selectedGroup.merchantPubkey)}>
+              <span className="inline-flex items-center gap-2">
                 <LightningIcon className="h-4 w-4" />
                 Zap out
-              </Link>
+              </span>
             </Button>
           </div>
 
@@ -874,7 +921,7 @@ function CartPage() {
       </div>
 
       <Dialog open={confirmClearTarget !== null} onOpenChange={(open) => !open && setConfirmClearTarget(null)}>
-        <DialogContent className="border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]">
+        <DialogContent className="border-white/20 bg-[#0d0424] text-[var(--text-primary)] shadow-[0_30px_80px_rgba(0,0,0,0.6)] ring-1 ring-white/10">
           <DialogHeader>
             <DialogTitle>
               {confirmClearTarget === "all" ? "Clear all carts?" : "Clear this cart?"}
@@ -895,6 +942,17 @@ function CartPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <SignerSwitch
+        open={connectOpen}
+        onOpenChange={(open) => {
+          setConnectOpen(open)
+          if (!open) {
+            setPendingCheckoutMerchant(null)
+          }
+        }}
+        hideTrigger
+      />
     </div>
   )
 }

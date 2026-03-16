@@ -1,10 +1,24 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { EVENT_KINDS, fetchEventsFanout, formatPubkey, parseProductEvent, useProfile, type Product } from "@conduit/core"
+import {
+  EVENT_KINDS,
+  fetchEventsFanout,
+  formatPubkey,
+  parseProductEvent,
+  useAuth,
+  useProfile,
+  type Product,
+} from "@conduit/core"
 import { useQuery } from "@tanstack/react-query"
 import {
   Badge,
   Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   Select,
   SelectContent,
   SelectItem,
@@ -12,12 +26,14 @@ import {
   SelectValue,
 } from "@conduit/ui"
 import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
+import { SignerSwitch } from "../../components/SignerSwitch"
 import { ProductGridCard, ProductGridCardSkeleton } from "../../components/ProductGridCard"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
 import { getComparablePriceValue } from "../../lib/pricing"
 
 const PAGE_SIZE = 12
+const INITIAL_VISIBLE_TAGS = 8
 
 type SortOption = "newest" | "price_asc" | "price_desc"
 
@@ -25,21 +41,37 @@ export interface ProductSearch {
   merchant?: string
   q?: string
   sort?: SortOption
-  tag?: string
+  tag?: string[]
+  authRequired?: boolean
 }
 
 export const Route = createFileRoute("/products/")({
   component: ProductsPage,
-  validateSearch: (raw: Record<string, unknown>): ProductSearch => ({
-    merchant: typeof raw.merchant === "string" ? raw.merchant : undefined,
-    q: typeof raw.q === "string" ? raw.q : undefined,
-    sort: (["newest", "price_asc", "price_desc"] as const).includes(
-      raw.sort as SortOption
-    )
-      ? (raw.sort as SortOption)
-      : undefined,
-    tag: typeof raw.tag === "string" ? raw.tag : undefined,
-  }),
+  validateSearch: (raw: Record<string, unknown>): ProductSearch => {
+    const rawTag = raw.tag
+    const tags =
+      Array.isArray(rawTag)
+        ? rawTag.filter((value): value is string => typeof value === "string" && value.trim() !== "")
+        : typeof rawTag === "string" && rawTag.trim() !== ""
+          ? rawTag.split(",").map((value) => value.trim()).filter(Boolean)
+          : undefined
+
+    return {
+      merchant: typeof raw.merchant === "string" ? raw.merchant : undefined,
+      q: typeof raw.q === "string" ? raw.q : undefined,
+      sort: (["newest", "price_asc", "price_desc"] as const).includes(
+        raw.sort as SortOption
+      )
+        ? (raw.sort as SortOption)
+        : undefined,
+      tag: tags && tags.length > 0 ? Array.from(new Set(tags)) : undefined,
+      authRequired:
+        raw.authRequired === true ||
+        raw.authRequired === "true" ||
+        raw.authRequired === 1 ||
+        raw.authRequired === "1",
+    }
+  },
 })
 
 async function fetchProducts(merchant?: string): Promise<Product[]> {
@@ -76,10 +108,10 @@ function filterProducts(products: Product[], search: ProductSearch): Product[] {
     )
   }
 
-  if (search.tag) {
-    const tag = search.tag.toLowerCase()
+  if (search.tag && search.tag.length > 0) {
+    const tagSet = new Set(search.tag.map((tag) => tag.toLowerCase()))
     result = result.filter((p) =>
-      p.tags.some((t) => t.toLowerCase() === tag)
+      p.tags.some((t) => tagSet.has(t.toLowerCase()))
     )
   }
 
@@ -123,8 +155,14 @@ function MerchantName({ pubkey }: { pubkey: string }) {
 function ProductsPage() {
   const cart = useCart()
   const search = Route.useSearch()
+  const { status } = useAuth()
   const navigate = useNavigate({ from: Route.fullPath })
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  const [connectOpen, setConnectOpen] = useState(false)
+  const [showAllTags, setShowAllTags] = useState(false)
+  const [pendingMerchant, setPendingMerchant] = useState<string | null>(null)
+  const [merchantTagConflicts, setMerchantTagConflicts] = useState<string[]>([])
+  const hasAutoPromptedConnect = useRef(false)
   const btcUsdRateQuery = useBtcUsdRate()
   const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
 
@@ -150,17 +188,85 @@ function ProductsPage() {
     return Array.from(set).sort()
   }, [productsQuery.data])
 
-  const updateSearch = (updates: Partial<ProductSearch>) => {
+  const merchantTagMap = useMemo(() => {
+    const byMerchant = new Map<string, Set<string>>()
+    for (const product of productsQuery.data ?? []) {
+      const current = byMerchant.get(product.pubkey) ?? new Set<string>()
+      for (const tag of product.tags) current.add(tag.toLowerCase())
+      byMerchant.set(product.pubkey, current)
+    }
+    return byMerchant
+  }, [productsQuery.data])
+
+  const updateSearch = useCallback((updates: Partial<ProductSearch>) => {
     navigate({
       search: (prev: ProductSearch) => {
         const next = { ...prev, ...updates }
         for (const key of Object.keys(next) as (keyof ProductSearch)[]) {
-          if (!next[key]) delete next[key]
+          const value = next[key]
+          if (
+            value === undefined ||
+            value === null ||
+            value === "" ||
+            (Array.isArray(value) && value.length === 0)
+          ) {
+            delete next[key]
+          }
         }
         return next
       },
       replace: true,
     })
+  }, [navigate])
+
+  const selectedTags = search.tag ?? []
+  const selectedTagSet = useMemo(() => new Set(selectedTags), [selectedTags])
+
+  const toggleTag = (tag: string) => {
+    if (selectedTagSet.has(tag)) {
+      updateSearch({ tag: selectedTags.filter((selectedTag) => selectedTag !== tag) })
+      return
+    }
+
+    updateSearch({ tag: [...selectedTags, tag] })
+  }
+
+  const applyMerchantSelection = (merchant: string | undefined) => {
+    updateSearch({ merchant, tag: selectedTags })
+  }
+
+  const handleMerchantSelection = (merchant: string | undefined) => {
+    if (!merchant) {
+      applyMerchantSelection(undefined)
+      return
+    }
+
+    if (selectedTags.length === 0) {
+      applyMerchantSelection(merchant)
+      return
+    }
+
+    const supportedTags = merchantTagMap.get(merchant) ?? new Set<string>()
+    const incompatibleTags = selectedTags.filter((tag) => !supportedTags.has(tag))
+
+    if (incompatibleTags.length === 0) {
+      applyMerchantSelection(merchant)
+      return
+    }
+
+    setPendingMerchant(merchant)
+    setMerchantTagConflicts(incompatibleTags)
+  }
+
+  const confirmMerchantSelection = () => {
+    if (!pendingMerchant) return
+    const conflictSet = new Set(merchantTagConflicts)
+    updateSearch({
+      merchant: pendingMerchant,
+      tag: selectedTags.filter((tag) => !conflictSet.has(tag)),
+    })
+    setPendingMerchant(null)
+    setMerchantTagConflicts([])
   }
 
   const filteredProducts = useMemo(() => {
@@ -190,7 +296,7 @@ function ProductsPage() {
     [btcUsdRate, canSortByPrice, effectiveSort, filteredProducts, hasSingleCurrency]
   )
 
-  const searchKey = `${search.q}-${search.tag}-${search.sort}-${search.merchant}`
+  const searchKey = `${search.q}-${selectedTags.slice().sort().join(",")}-${search.sort}-${search.merchant}`
   useEffect(() => {
     setVisibleCount(PAGE_SIZE)
   }, [searchKey])
@@ -199,94 +305,225 @@ function ProductsPage() {
     if (!canSortByPrice && (search.sort === "price_asc" || search.sort === "price_desc")) {
       updateSearch({ sort: undefined })
     }
-  }, [canSortByPrice, search.sort])
+  }, [canSortByPrice, search.sort, updateSearch])
+
+  useEffect(() => {
+    if (search.authRequired && status !== "connected" && !hasAutoPromptedConnect.current) {
+      setConnectOpen(true)
+      hasAutoPromptedConnect.current = true
+    }
+
+    if (!search.authRequired) {
+      hasAutoPromptedConnect.current = false
+    }
+  }, [search.authRequired, status])
+
+  useEffect(() => {
+    if (search.authRequired && status === "connected") {
+      updateSearch({ authRequired: undefined })
+      hasAutoPromptedConnect.current = false
+    }
+  }, [search.authRequired, status, updateSearch])
 
   const visible = filtered.slice(0, visibleCount)
   const hasMore = visibleCount < filtered.length
 
-  const hasActiveFilters = !!(search.q || search.tag || search.sort || search.merchant)
+  const hasActiveFilters = !!(search.q || selectedTags.length > 0 || search.sort || search.merchant)
+  const orderedTags = useMemo(() => {
+    if (selectedTags.length === 0) {
+      return allTags
+    }
+
+    const selectedFirst = selectedTags.filter((tag) => allTags.includes(tag))
+    return [...selectedFirst, ...allTags.filter((tag) => !selectedTagSet.has(tag))]
+  }, [allTags, selectedTagSet, selectedTags])
 
   return (
     <div className="space-y-5">
-      {/* Filter bar */}
-      <div className="flex flex-wrap items-center gap-2">
-        {/* Category tags */}
-        {allTags.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="mr-1 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
-              Categories
-            </span>
-            {allTags.map((tag) => (
-              <button
-                key={tag}
-                onClick={() => updateSearch({ tag: search.tag === tag ? undefined : tag })}
-                className="rounded-full transition-transform duration-150 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-              >
-                <Badge
-                  variant={search.tag === tag ? "default" : "outline"}
-                  className="cursor-pointer capitalize transition-colors hover:border-secondary-400 hover:text-[var(--text-primary)]"
-                >
-                  {tag}
-                </Badge>
-              </button>
-            ))}
-          </div>
-        )}
+      {search.authRequired && (
+        <section className="rounded-2xl border border-secondary-500/30 bg-secondary-500/10 p-4 sm:p-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="max-w-2xl">
+              <div className="text-xs font-medium uppercase tracking-[0.18em] text-secondary-300">
+                Signer required
+              </div>
+              <h2 className="mt-2 text-lg font-semibold text-[var(--text-primary)] sm:text-xl">
+                Connect a signer to continue.
+              </h2>
+              <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
+                Checkout, orders, and merchant follow-up require a connected Nostr signer.
+              </p>
+            </div>
 
-        {/* Merchant filter */}
-        {allMerchants.length > 1 && (
+            <div className="flex flex-wrap gap-3">
+              {status === "connected" ? (
+                <Button
+                  className="h-11 px-4 text-sm"
+                  onClick={() =>
+                    updateSearch({
+                      authRequired: undefined,
+                    })
+                  }
+                >
+                  Connected
+                </Button>
+              ) : (
+                <Button className="h-11 px-4 text-sm" onClick={() => setConnectOpen(true)}>
+                  Connect
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                className="h-11 px-4 text-sm"
+                onClick={() => updateSearch({ authRequired: undefined })}
+              >
+                Dismiss
+              </Button>
+            </div>
+          </div>
+          <div className="mt-4 text-xs text-[var(--text-secondary)]">
+            You were redirected here because the next step requires a signer.
+          </div>
+          <SignerSwitch open={connectOpen} onOpenChange={setConnectOpen} hideTrigger />
+        </section>
+      )}
+
+      {allTags.length > 0 && (
+        <section className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
+              Categories
+            </div>
+            {allTags.length > INITIAL_VISIBLE_TAGS && (
+              <button
+                type="button"
+                className={[
+                  "text-xs font-medium text-secondary-400 transition-[opacity,color] duration-200 hover:text-secondary-300",
+                  showAllTags ? "opacity-100" : "pointer-events-none opacity-0",
+                ].join(" ")}
+                onClick={() => setShowAllTags((current) => !current)}
+              >
+                Collapse
+              </button>
+            )}
+          </div>
+
+          <div className="relative">
+            <div
+              className={[
+                "overflow-hidden transition-[max-height] duration-300 ease-out",
+                showAllTags || allTags.length <= INITIAL_VISIBLE_TAGS
+                  ? "max-h-64"
+                  : "max-h-[4.75rem]",
+              ].join(" ")}
+            >
+              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                {orderedTags.map((tag) => (
+                  <button
+                    key={tag}
+                    onClick={() => toggleTag(tag)}
+                    className="rounded-full transition-transform duration-150 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                  >
+                    <Badge
+                      variant={selectedTagSet.has(tag) ? "default" : "outline"}
+                      className="cursor-pointer capitalize transition-colors hover:border-secondary-400 hover:text-[var(--text-primary)]"
+                    >
+                      {tag}
+                    </Badge>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {!showAllTags && allTags.length > INITIAL_VISIBLE_TAGS && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-12 items-center justify-center bg-gradient-to-b from-transparent via-[var(--background)]/90 to-[var(--background)] transition-opacity duration-200">
+                <button
+                  type="button"
+                  className="pointer-events-auto rounded-full bg-white px-3 py-1 text-xs font-medium text-[var(--background)] shadow-[0_6px_18px_rgba(255,255,255,0.18)] transition-[opacity,transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-[0_10px_24px_rgba(255,255,255,0.22)]"
+                  onClick={() => setShowAllTags(true)}
+                >
+                  Expand categories
+                </button>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
+            Store
+          </span>
+          {(allMerchants.length > 1 || !!search.merchant) &&
+            (search.merchant ? (
+              <Badge variant="secondary" className="h-8 gap-1.5 px-3">
+                <MerchantName pubkey={search.merchant} />
+                <button
+                  onClick={() => updateSearch({ merchant: undefined })}
+                  className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
+                  aria-label="Remove store filter"
+                >
+                  &times;
+                </button>
+              </Badge>
+            ) : (
+              <Select
+                value="__all"
+                onValueChange={(v) => handleMerchantSelection(v === "__all" ? undefined : v)}
+              >
+                <SelectTrigger className="h-8 w-auto min-w-[140px] text-xs">
+                  <SelectValue placeholder="All stores" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all">All stores</SelectItem>
+                  {allMerchants.map((pk) => (
+                    <SelectItem key={pk} value={pk}>
+                      <MerchantName pubkey={pk} />
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ))}
+        </div>
+
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
+            Sort
+          </span>
           <Select
-            value={search.merchant ?? "__all"}
-            onValueChange={(v) => updateSearch({ merchant: v === "__all" ? undefined : v })}
+            value={effectiveSort ?? "newest"}
+            onValueChange={(v) =>
+              updateSearch({ sort: v === "newest" ? undefined : (v as SortOption) })
+            }
           >
-            <SelectTrigger className="h-8 w-auto min-w-[140px] text-xs">
-              <SelectValue placeholder="All stores" />
+            <SelectTrigger className="h-8 w-auto min-w-[160px] text-xs">
+              <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="__all">All stores</SelectItem>
-              {allMerchants.map((pk) => (
-                <SelectItem key={pk} value={pk}>
-                  <MerchantName pubkey={pk} />
-                </SelectItem>
-              ))}
+              <SelectItem value="newest">Newest</SelectItem>
+              <SelectItem value="price_asc" disabled={!canSortByPrice}>
+                Price: Low to High
+              </SelectItem>
+              <SelectItem value="price_desc" disabled={!canSortByPrice}>
+                Price: High to Low
+              </SelectItem>
             </SelectContent>
           </Select>
-        )}
 
-        {/* Spacer */}
-        <div className="flex-1" />
-
-        {/* Sort */}
-        <Select
-          value={effectiveSort ?? "newest"}
-          onValueChange={(v) =>
-            updateSearch({ sort: v === "newest" ? undefined : (v as SortOption) })
-          }
-        >
-          <SelectTrigger className="h-8 w-auto min-w-[160px] text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="newest">Newest</SelectItem>
-            <SelectItem value="price_asc" disabled={!canSortByPrice}>
-              Price: Low to High
-            </SelectItem>
-            <SelectItem value="price_desc" disabled={!canSortByPrice}>
-              Price: High to Low
-            </SelectItem>
-          </SelectContent>
-        </Select>
-
-        {hasActiveFilters && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
-            onClick={() => updateSearch({ q: undefined, tag: undefined, sort: undefined, merchant: undefined })}
-          >
-            Clear
-          </Button>
-        )}
+          {hasActiveFilters && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+              onClick={() =>
+                updateSearch({ q: undefined, tag: undefined, sort: undefined, merchant: undefined })
+              }
+            >
+              Clear
+            </Button>
+          )}
+        </div>
       </div>
 
       {!canSortByPrice && filteredProducts.length > 1 && (
@@ -295,12 +532,8 @@ function ProductsPage() {
         </p>
       )}
 
-      {/* Active filter pills */}
-      {hasActiveFilters && (
+      {(search.q || (search.merchant && !allMerchants.includes(search.merchant))) && (
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-[var(--text-muted)]">
-            {filtered.length} {filtered.length === 1 ? "result" : "results"}
-          </span>
           {search.q && (
             <Badge variant="secondary" className="gap-1">
               &ldquo;{search.q}&rdquo;
@@ -325,7 +558,7 @@ function ProductsPage() {
               </button>
             </Badge>
           )}
-          {search.merchant && (
+          {search.merchant && !allMerchants.includes(search.merchant) && (
             <Badge variant="secondary" className="gap-1">
               <MerchantName pubkey={search.merchant} />
               <button
@@ -339,6 +572,27 @@ function ProductsPage() {
           )}
         </div>
       )}
+
+      {selectedTags.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          {selectedTags.map((tag) => (
+            <Badge key={tag} variant="secondary" className="gap-1 capitalize">
+              {tag}
+              <button
+                onClick={() => toggleTag(tag)}
+                className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
+                aria-label={`Remove ${tag} filter`}
+              >
+                &times;
+              </button>
+            </Badge>
+          ))}
+        </div>
+      )}
+
+      <div className="text-xs text-[var(--text-muted)]">
+        {filtered.length} {filtered.length === 1 ? "result" : "results"}
+      </div>
 
       {/* Loading */}
       {productsQuery.isLoading && (
@@ -444,6 +698,46 @@ function ProductsPage() {
           </Button>
         </div>
       )}
+
+      <Dialog
+        open={pendingMerchant !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingMerchant(null)
+            setMerchantTagConflicts([])
+          }
+        }}
+      >
+        <DialogContent className="border-white/20 bg-[#0d0424] text-[var(--text-primary)] shadow-[0_30px_80px_rgba(0,0,0,0.6)] ring-1 ring-white/10">
+          <DialogHeader>
+            <DialogTitle>Update store filter?</DialogTitle>
+            <DialogDescription className="text-[var(--text-secondary)]">
+              The selected store does not include some of your current category filters. Those filters will be removed if you continue.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex flex-wrap gap-2">
+            {merchantTagConflicts.map((tag) => (
+              <Badge key={tag} variant="secondary" className="capitalize">
+                {tag}
+              </Badge>
+            ))}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setPendingMerchant(null)
+                setMerchantTagConflicts([])
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onClick={confirmMerchantSelection}>Continue</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

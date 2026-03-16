@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
 import { formatPubkey, useProfile, type Product } from "@conduit/core"
-import { Button, Card, cn } from "@conduit/ui"
+import { Button, cn } from "@conduit/ui"
 import { getProductPriceDisplay } from "../lib/pricing"
 
 type ProductGridCardProps = {
@@ -45,11 +45,11 @@ export function ProductGridCard({
   }, [cartQuantity])
 
   return (
-    <Card
+    <div
       role="link"
       tabIndex={0}
       className={cn(
-        "group flex h-full cursor-pointer flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)] transition-colors duration-200 hover:border-secondary-500"
+        "group flex h-full cursor-pointer flex-col overflow-hidden rounded-xl border border-white/16 bg-[color-mix(in_oklab,var(--surface)_92%,white)] text-[var(--text-primary)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03),0_10px_24px_rgba(0,0,0,0.12)] transition-[border-color,box-shadow,transform,background-color] duration-200 hover:border-white/26 hover:bg-[color-mix(in_oklab,var(--surface)_89%,white)] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_16px_32px_rgba(0,0,0,0.16)]"
       )}
       onClick={() =>
         navigate({
@@ -66,7 +66,7 @@ export function ProductGridCard({
         })
       }}
     >
-      <div className="aspect-[4/3] overflow-hidden bg-[var(--background)]">
+      <div className="aspect-[4/3] overflow-hidden border-b border-white/10 bg-[color-mix(in_oklab,var(--background)_96%,white)]">
         {imageUrl ? (
           <img
             src={imageUrl}
@@ -190,7 +190,7 @@ export function ProductGridCard({
           )}
         </div>
       </div>
-    </Card>
+    </div>
   )
 }
 

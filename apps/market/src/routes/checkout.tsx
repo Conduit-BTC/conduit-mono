@@ -1,104 +1,412 @@
 import { createFileRoute, Link } from "@tanstack/react-router"
+import { useEffect, useMemo, useState } from "react"
 import { NDKEvent, NDKUser, giftWrap } from "@nostr-dev-kit/ndk"
-import { useMemo, useState } from "react"
-import { EVENT_KINDS, formatPubkey, getNdk, useAuth, type ShippingAddressSchema } from "@conduit/core"
-import { Badge, Button, Input, Label } from "@conduit/ui"
-import { useCart } from "../hooks/useCart"
+import {
+  EVENT_KINDS,
+  formatPubkey,
+  getNdk,
+  useAuth,
+  useProfile,
+  type ShippingAddressSchema,
+} from "@conduit/core"
+import { Button, Input, Label } from "@conduit/ui"
+import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
+import { type CartItem, useCart } from "../hooks/useCart"
 import { requireAuth } from "../lib/auth"
+import { getProductPriceDisplay } from "../lib/pricing"
+
+type CheckoutStep = "shipping" | "payment" | "sending" | "sent"
+type PaymentMethod = "lightning"
+
+type CheckoutSearch = {
+  merchant?: string
+}
+
+type ShippingFormState = ShippingAddressSchema & {
+  firstName: string
+  lastName: string
+  line2: string
+  phone: string
+  email: string
+}
+
+const CHECKOUT_STORAGE_KEY = "conduit:checkout-shipping"
+
+const DEFAULT_SHIPPING_FORM: ShippingFormState = {
+  firstName: "",
+  lastName: "",
+  street: "",
+  line2: "",
+  city: "",
+  state: "",
+  postalCode: "",
+  country: "US",
+  name: "",
+  phone: "",
+  email: "",
+}
 
 export const Route = createFileRoute("/checkout")({
   beforeLoad: () => {
     requireAuth()
   },
-  validateSearch: (search: Record<string, unknown>) => ({
+  validateSearch: (search: Record<string, unknown>): CheckoutSearch => ({
     merchant: typeof search.merchant === "string" ? search.merchant : undefined,
   }),
   component: CheckoutPage,
 })
 
+function CartIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M3 3h2l.4 2m0 0L7 13h10l2-8H5.4M5.4 5H19M7 13l-1 5h12M9 18a1 1 0 100 2 1 1 0 000-2zm8 0a1 1 0 100 2 1 1 0 000-2z"
+      />
+    </svg>
+  )
+}
+
+function LightningIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"
+      />
+    </svg>
+  )
+}
+
+function MessageIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-4l-4 4v-4z"
+      />
+    </svg>
+  )
+}
+
+function CheckIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M5 13l4 4L19 7"
+      />
+    </svg>
+  )
+}
+
+function SpinnerIcon({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24">
+      <circle
+        className="opacity-20"
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="4"
+      />
+      <path
+        className="opacity-90"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+      />
+    </svg>
+  )
+}
+
+function readStoredShipping(): ShippingFormState {
+  if (typeof window === "undefined") return DEFAULT_SHIPPING_FORM
+
+  try {
+    const raw = localStorage.getItem(CHECKOUT_STORAGE_KEY)
+    if (!raw) return DEFAULT_SHIPPING_FORM
+    const parsed = JSON.parse(raw) as Partial<ShippingFormState>
+    return {
+      ...DEFAULT_SHIPPING_FORM,
+      ...parsed,
+    }
+  } catch {
+    return DEFAULT_SHIPPING_FORM
+  }
+}
+
+function writeStoredShipping(value: ShippingFormState): void {
+  if (typeof window === "undefined") return
+  try {
+    localStorage.setItem(CHECKOUT_STORAGE_KEY, JSON.stringify(value))
+  } catch {
+    // ignore
+  }
+}
+
+function PaymentMethodButton({
+  label,
+  icon,
+  active = false,
+  disabled = false,
+  subtitle,
+  onClick,
+}: {
+  label: string
+  icon: React.ReactNode
+  active?: boolean
+  disabled?: boolean
+  subtitle?: string
+  onClick?: () => void
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={[
+        "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition-colors",
+        active
+          ? "border-secondary-400 bg-white text-[var(--background)]"
+          : "border-white/10 bg-[var(--surface-elevated)] text-[var(--text-primary)] hover:border-white/20",
+        disabled ? "cursor-not-allowed opacity-70" : "",
+      ].join(" ")}
+    >
+      {icon}
+      {label}
+      {subtitle && (
+        <span className={active ? "text-[var(--background)]/70" : "text-[var(--text-muted)]"}>
+          {subtitle}
+        </span>
+      )}
+    </button>
+  )
+}
+
+function OrderSummary({
+  items,
+  merchantPubkey,
+  step,
+  btcUsdRate,
+}: {
+  items: CartItem[]
+  merchantPubkey: string
+  step: Exclude<CheckoutStep, "sending" | "sent">
+  btcUsdRate: number | null
+}) {
+  const { data: merchantProfile } = useProfile(merchantPubkey)
+  const merchantName =
+    merchantProfile?.displayName || merchantProfile?.name || formatPubkey(merchantPubkey, 8)
+  const totalPrice = getProductPriceDisplay(
+    {
+      price: items.reduce((sum, item) => sum + item.price * item.quantity, 0),
+      currency: items[0]?.currency ?? "USD",
+    },
+    btcUsdRate
+  )
+
+  return (
+    <aside className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--border)] pb-4">
+        <div>
+          <h2 className="text-2xl font-semibold text-[var(--text-primary)]">Order summary</h2>
+          <div className="mt-1 text-sm text-[var(--text-secondary)]">
+            {step === "shipping" ? "Shipping" : "Payment method"}
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-sm text-[var(--text-secondary)]">Merchant</div>
+          <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">{merchantName}</div>
+        </div>
+      </div>
+
+      <div className="mt-4 space-y-4">
+        {items.map((item) => {
+          const linePrice = getProductPriceDisplay(
+            { price: item.price * item.quantity, currency: item.currency },
+            btcUsdRate
+          )
+
+          return (
+            <div
+              key={item.productId}
+              className="grid grid-cols-[72px_minmax(0,1fr)_auto] gap-3 border-b border-[var(--border)] pb-4 last:border-b-0 last:pb-0"
+            >
+              <div className="overflow-hidden rounded-xl border border-white/10 bg-[var(--background)]">
+                <img
+                  src={item.image ?? "/images/placeholders/product.png"}
+                  alt={item.title}
+                  className="aspect-square h-full w-full object-cover"
+                  loading="lazy"
+                  onError={(e) => {
+                    ;(e.currentTarget as HTMLImageElement).src = "/images/placeholders/product.png"
+                  }}
+                />
+              </div>
+
+              <div className="min-w-0">
+                <div className="line-clamp-2 text-base font-medium leading-7 text-[var(--text-primary)]">
+                  {item.title}
+                </div>
+                {item.tags && item.tags.length > 0 && (
+                  <div className="mt-1 line-clamp-1 text-xs text-[var(--text-muted)]">
+                    {item.tags.slice(0, 4).join(", ")}
+                  </div>
+                )}
+              </div>
+
+              <div className="text-right">
+                <div className="text-lg font-semibold text-[var(--text-primary)]">{linePrice.primary}</div>
+                <div className="mt-2 text-sm text-[var(--text-secondary)]">Qty {item.quantity}</div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="mt-5 rounded-2xl border border-white/10 bg-[var(--surface-elevated)] p-4">
+        <div className="flex items-center justify-between gap-3 text-sm text-[var(--text-secondary)]">
+          <span>
+            Subtotal ({items.reduce((sum, item) => sum + item.quantity, 0)} item
+            {items.reduce((sum, item) => sum + item.quantity, 0) === 1 ? "" : "s"})
+          </span>
+          <span>{totalPrice.primary}</span>
+        </div>
+        <div className="mt-3 flex items-center justify-between gap-3 text-sm text-[var(--text-secondary)]">
+          <span>Shipping</span>
+          <span>Coordinated with merchant</span>
+        </div>
+        <div className="mt-5 flex items-end justify-between gap-3">
+          <div className="text-lg font-semibold text-[var(--text-primary)]">Paid to merchant</div>
+          <div className="text-right">
+            <div className="text-3xl font-semibold text-secondary-400">{totalPrice.primary}</div>
+            {totalPrice.secondary && (
+              <div className="mt-1 text-sm text-[var(--text-muted)]">{totalPrice.secondary}</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </aside>
+  )
+}
+
 function CheckoutPage() {
   const { pubkey } = useAuth()
   const cart = useCart()
   const search = Route.useSearch()
-  const selectedMerchant = search.merchant
-  const [note, setNote] = useState("")
+  const btcUsdRateQuery = useBtcUsdRate()
+
+  const [step, setStep] = useState<CheckoutStep>("shipping")
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("lightning")
   const [needsShipping, setNeedsShipping] = useState(true)
-  const [shipping, setShipping] = useState<ShippingAddressSchema>({
-    name: "",
-    street: "",
-    city: "",
-    state: "",
-    postalCode: "",
-    country: "US",
-  })
-  const [sending, setSending] = useState(false)
-  const [sentOrderId, setSentOrderId] = useState<string | null>(null)
+  const [shipping, setShipping] = useState<ShippingFormState>(() => readStoredShipping())
+  const [note, setNote] = useState("")
   const [error, setError] = useState<string | null>(null)
+  const [sentOrderId, setSentOrderId] = useState<string | null>(null)
+  const [showSentGlow, setShowSentGlow] = useState(false)
 
-  const shippingValid = !needsShipping || (shipping.name.trim() !== "" && shipping.street.trim() !== "" && shipping.city.trim() !== "" && shipping.postalCode.trim() !== "" && shipping.country.trim().length >= 2)
-
-  function updateShipping(field: keyof ShippingAddressSchema, value: string) {
-    setShipping((prev) => ({ ...prev, [field]: value }))
-  }
+  const selectedMerchant =
+    search.merchant ??
+    (Array.from(new Set(cart.items.map((item) => item.merchantPubkey))).length === 1
+      ? cart.items[0]?.merchantPubkey
+      : undefined)
 
   const checkoutItems = useMemo(() => {
-    if (!selectedMerchant) return cart.items
-    return cart.items.filter((i) => i.merchantPubkey === selectedMerchant)
+    if (!selectedMerchant) return []
+    return cart.items.filter((item) => item.merchantPubkey === selectedMerchant)
   }, [cart.items, selectedMerchant])
 
-  const merchants = useMemo(() => {
-    const set = new Set(checkoutItems.map((i) => i.merchantPubkey).filter(Boolean))
-    return Array.from(set)
-  }, [checkoutItems])
   const total = useMemo(
     () => checkoutItems.reduce((sum, item) => sum + item.price * item.quantity, 0),
     [checkoutItems]
   )
-  const currencies = useMemo(
-    () => Array.from(new Set(checkoutItems.map((item) => item.currency).filter(Boolean))),
-    [checkoutItems]
-  )
-  const totalCurrency = currencies.length === 1 ? currencies[0] : null
 
-  const merchantPubkey = merchants.length === 1 ? merchants[0] : null
-  const isMultiMerchant = merchants.length > 1
+  const shippingValid =
+    !needsShipping ||
+    (
+      shipping.firstName.trim() !== "" &&
+      shipping.lastName.trim() !== "" &&
+      shipping.street.trim() !== "" &&
+      shipping.city.trim() !== "" &&
+      shipping.postalCode.trim() !== "" &&
+      shipping.country.trim().length >= 2
+    )
+
+  function updateShipping<K extends keyof ShippingFormState>(field: K, value: ShippingFormState[K]): void {
+    setShipping((current) => {
+      const next = { ...current, [field]: value }
+      writeStoredShipping(next)
+      return next
+    })
+  }
+
+  function continueToPayment(): void {
+    if (!shippingValid) {
+      setError("Fill in the required shipping fields to continue.")
+      return
+    }
+    setError(null)
+    setStep("payment")
+  }
+
+  useEffect(() => {
+    if (!showSentGlow) return
+
+    const timeoutId = window.setTimeout(() => setShowSentGlow(false), 650)
+    return () => window.clearTimeout(timeoutId)
+  }, [showSentGlow])
 
   async function placeOrder(): Promise<void> {
-    if (!pubkey) return
-    if (!merchantPubkey) return
-    if (checkoutItems.length === 0) return
+    if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
 
-    setSending(true)
     setError(null)
+    setStep("sending")
 
     try {
       const orderId = crypto.randomUUID()
-
-      // MVP constraint: single merchant per order.
       const currency = checkoutItems[0]?.currency ?? "USD"
-      const items = checkoutItems.map((i) => ({
-        productId: i.productId,
-        quantity: i.quantity,
-        priceAtPurchase: i.price,
-        currency: i.currency,
+      const items = checkoutItems.map((item) => ({
+        productId: item.productId,
+        quantity: item.quantity,
+        priceAtPurchase: item.price,
+        currency: item.currency,
       }))
+
+      const contactLines = [
+        note.trim() || undefined,
+        shipping.phone.trim() ? `Phone: ${shipping.phone.trim()}` : undefined,
+        shipping.email.trim() ? `Email: ${shipping.email.trim()}` : undefined,
+      ].filter(Boolean)
+
+      const shippingAddress = needsShipping
+        ? {
+            name: `${shipping.firstName.trim()} ${shipping.lastName.trim()}`.trim(),
+            street: [shipping.street.trim(), shipping.line2.trim()].filter(Boolean).join(", "),
+            city: shipping.city.trim(),
+            state: (shipping.state ?? "").trim() || undefined,
+            postalCode: shipping.postalCode.trim(),
+            country: shipping.country.trim().toUpperCase(),
+          }
+        : undefined
 
       const payload = {
         id: orderId,
-        merchantPubkey,
+        merchantPubkey: selectedMerchant,
         buyerPubkey: pubkey,
         items,
         subtotal: total,
         currency,
-        shippingAddress: needsShipping && shippingValid ? {
-          name: shipping.name.trim(),
-          street: shipping.street.trim(),
-          city: shipping.city.trim(),
-          state: shipping.state?.trim() || undefined,
-          postalCode: shipping.postalCode.trim(),
-          country: shipping.country.trim().toUpperCase(),
-        } : undefined,
-        note: note.trim() ? note.trim() : undefined,
+        shippingAddress,
+        note: contactLines.length > 0 ? contactLines.join("\n") : undefined,
         createdAt: Date.now(),
       }
 
@@ -107,201 +415,408 @@ function CheckoutPage() {
       rumor.kind = EVENT_KINDS.ORDER
       rumor.created_at = Math.floor(Date.now() / 1000)
       rumor.tags = [
-        ["p", merchantPubkey],
+        ["p", selectedMerchant],
         ["type", "order"],
         ["order", orderId],
       ]
       rumor.content = JSON.stringify(payload)
 
-      const merchantUser = new NDKUser({ pubkey: merchantPubkey })
+      const merchantUser = new NDKUser({ pubkey: selectedMerchant })
       const wrappedToMerchant = await giftWrap(rumor, merchantUser, ndk.signer, {
         rumorKind: EVENT_KINDS.ORDER,
       })
 
-      // Also publish a copy to self so buyers can recover their own order history
-      // even if they change clients later (assuming same relays).
       const buyerUser = new NDKUser({ pubkey })
       const wrappedToSelf = await giftWrap(rumor, buyerUser, ndk.signer, {
         rumorKind: EVENT_KINDS.ORDER,
       })
 
-      await Promise.all([wrappedToMerchant.publish(), wrappedToSelf.publish()])
+      await Promise.all([
+        wrappedToMerchant.publish(),
+        wrappedToSelf.publish(),
+        new Promise((resolve) => window.setTimeout(resolve, 900)),
+      ])
 
+      cart.clearMerchant(selectedMerchant)
       setSentOrderId(orderId)
-      if (selectedMerchant) {
-        cart.clearMerchant(selectedMerchant)
-      } else {
-        cart.clear()
-      }
+      setShowSentGlow(true)
+      setStep("sent")
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to send order")
-    } finally {
-      setSending(false)
+      setStep("payment")
     }
   }
 
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-3xl font-medium text-[var(--text-primary)]">Checkout</h1>
-          <p className="mt-1 text-sm text-[var(--text-secondary)]">
-            Send the order to the merchant via NIP-17 (kind {EVENT_KINDS.GIFT_WRAP}) wrapping a kind{" "}
-            {EVENT_KINDS.ORDER} rumor.
+  if (!selectedMerchant && cart.items.length > 0) {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
+          <Link to="/cart" className="transition-colors hover:text-[var(--text-primary)]">
+            Cart
+          </Link>
+          <span>/</span>
+          <span className="text-[var(--text-primary)]">Checkout</span>
+        </div>
+
+        <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
+          <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+            Choose a cart before checkout
+          </h1>
+          <p className="mt-3 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
+            Checkout continues one store at a time. Head back to your cart and pick the store you want to review first.
           </p>
+          <div className="mt-6">
+            <Button asChild className="h-11 px-4 text-sm">
+              <Link to="/cart">
+                <CartIcon className="h-4 w-4" />
+                Back to cart
+              </Link>
+            </Button>
+          </div>
+        </section>
+      </div>
+    )
+  }
+
+  if (checkoutItems.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
+          <Link to="/cart" className="transition-colors hover:text-[var(--text-primary)]">
+            Cart
+          </Link>
+          <span>/</span>
+          <span className="text-[var(--text-primary)]">Checkout</span>
         </div>
-        <Button asChild variant="muted">
-          <Link to="/cart">Back to cart</Link>
-        </Button>
+
+        <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
+          <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">Nothing to check out</h1>
+          <p className="mt-3 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
+            This cart is empty now. Head back to the marketplace and add products before starting checkout again.
+          </p>
+          <div className="mt-6 flex flex-wrap gap-3">
+            <Button asChild className="h-11 px-4 text-sm">
+              <Link to="/products">Continue shopping</Link>
+            </Button>
+            <Button asChild variant="outline" className="h-11 px-4 text-sm">
+              <Link to="/cart">Back to cart</Link>
+            </Button>
+          </div>
+        </section>
+      </div>
+    )
+  }
+
+  if (step === "sending") {
+    return (
+      <div className="flex min-h-[70vh] items-center justify-center">
+        <section className="w-full max-w-3xl rounded-[2rem] bg-[radial-gradient(circle_at_top,_rgba(222,80,255,0.35),_transparent_55%),linear-gradient(180deg,rgba(184,24,255,0.95),rgba(123,0,194,0.92))] px-8 py-14 text-center text-white shadow-[0_24px_60px_rgba(126,0,173,0.4)] sm:px-12">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-white/20 bg-white/10">
+            <SpinnerIcon className="h-8 w-8 animate-spin" />
+          </div>
+          <h1 className="mt-8 text-4xl font-semibold tracking-tight">Sending your order…</h1>
+          <div className="mx-auto mt-8 h-1.5 w-full max-w-sm overflow-hidden rounded-full bg-black/15">
+            <div className="h-full w-1/2 animate-pulse rounded-full bg-white" />
+          </div>
+          <p className="mx-auto mt-8 max-w-md text-sm leading-7 text-white/85">
+            Your order is being delivered to the merchant through Nostr. This may take a few seconds depending on your signer and relay connection.
+          </p>
+        </section>
+      </div>
+    )
+  }
+
+  if (step === "sent") {
+    return (
+      <div className="flex min-h-[70vh] items-center justify-center">
+        <section className="relative w-full max-w-3xl overflow-hidden rounded-[2rem] border border-[var(--border)] bg-[var(--surface)] px-8 py-14 text-center sm:px-12">
+          <div
+            aria-hidden="true"
+            className={[
+              "pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(222,80,255,0.35),_transparent_55%),linear-gradient(180deg,rgba(184,24,255,0.22),rgba(123,0,194,0.18))] transition-opacity duration-700",
+              showSentGlow ? "opacity-100" : "opacity-0",
+            ].join(" ")}
+          />
+          <div className="relative mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-secondary-500/30 bg-secondary-500/10 text-secondary-300">
+            <CheckIcon className="h-8 w-8" />
+          </div>
+          <h1 className="relative mt-8 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+            Waiting for merchant confirmation
+          </h1>
+          <div className="relative mx-auto mt-8 h-1 w-full max-w-sm rounded-full bg-secondary-500/50" />
+          <p className="relative mx-auto mt-8 max-w-xl text-lg leading-9 text-[var(--text-primary)]">
+            Your order has been sent. The merchant still needs to confirm it before payment details are finalized.
+          </p>
+          <p className="relative mx-auto mt-4 max-w-lg text-sm leading-7 text-[var(--text-secondary)]">
+            Watch your order status for the merchant response, then continue the conversation in DMs when they reply.
+          </p>
+          {sentOrderId && (
+            <div className="relative mt-6 text-xs font-mono text-[var(--text-muted)]">{sentOrderId}</div>
+          )}
+          <div className="relative mt-8 flex flex-wrap justify-center gap-3">
+            <Button asChild className="h-11 px-5 text-sm">
+              <Link to="/orders">
+                <MessageIcon className="h-4 w-4" />
+                View orders
+              </Link>
+            </Button>
+            <Button asChild variant="outline" className="h-11 px-5 text-sm">
+              <Link to="/products">
+                <CartIcon className="h-4 w-4" />
+                Keep shopping
+              </Link>
+            </Button>
+          </div>
+        </section>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
+        <Link to="/cart" className="transition-colors hover:text-[var(--text-primary)]">
+          Cart
+        </Link>
+        <span>/</span>
+        <span className={step === "shipping" ? "text-[var(--text-primary)]" : ""}>Shipping</span>
+        <span>/</span>
+        <span className={step === "payment" ? "text-[var(--text-primary)]" : "text-[var(--text-muted)]"}>
+          Payment method
+        </span>
       </div>
 
-      <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
-        <div className="text-sm text-[var(--text-secondary)]">Buyer</div>
-        <div className="mt-1 font-mono text-sm text-[var(--text-primary)]">{pubkey}</div>
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,520px)]">
+        <section className="space-y-5">
+          {step === "shipping" && (
+            <>
+              <div>
+                <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">Shipping</h1>
+                <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
+                  Add delivery details for this order. Merchant follow-up and payment requests are sent through your Nostr account after checkout.
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-medium text-[var(--text-primary)]">Delivery details</div>
+                  <label className="flex cursor-pointer items-center gap-2 text-xs text-[var(--text-secondary)]">
+                    <input
+                      type="checkbox"
+                      checked={needsShipping}
+                      onChange={(e) => setNeedsShipping(e.target.checked)}
+                      className="rounded border-[var(--border)]"
+                    />
+                    Requires shipping
+                  </label>
+                </div>
+
+                {needsShipping ? (
+                  <div className="mt-5 grid gap-4">
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="ship-country">Country</Label>
+                      <Input
+                        id="ship-country"
+                        value={shipping.country}
+                        onChange={(e) => updateShipping("country", e.target.value.toUpperCase())}
+                        placeholder="US"
+                        maxLength={2}
+                      />
+                    </div>
+
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="ship-first-name">First name</Label>
+                        <Input
+                          id="ship-first-name"
+                          value={shipping.firstName}
+                          onChange={(e) => updateShipping("firstName", e.target.value)}
+                          placeholder="Jane"
+                        />
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="ship-last-name">Last name</Label>
+                        <Input
+                          id="ship-last-name"
+                          value={shipping.lastName}
+                          onChange={(e) => updateShipping("lastName", e.target.value)}
+                          placeholder="Doe"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="ship-street">Street address</Label>
+                      <Input
+                        id="ship-street"
+                        value={shipping.street}
+                        onChange={(e) => updateShipping("street", e.target.value)}
+                        placeholder="123 Main St"
+                      />
+                    </div>
+
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="ship-line2">Apt, suite, etc. (optional)</Label>
+                      <Input
+                        id="ship-line2"
+                        value={shipping.line2}
+                        onChange={(e) => updateShipping("line2", e.target.value)}
+                        placeholder="Unit 4B"
+                      />
+                    </div>
+
+                    <div className="grid gap-4 sm:grid-cols-3">
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="ship-postal">Postal code</Label>
+                        <Input
+                          id="ship-postal"
+                          value={shipping.postalCode}
+                          onChange={(e) => updateShipping("postalCode", e.target.value)}
+                          placeholder="78701"
+                        />
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="ship-city">City</Label>
+                        <Input
+                          id="ship-city"
+                          value={shipping.city}
+                          onChange={(e) => updateShipping("city", e.target.value)}
+                          placeholder="Austin"
+                        />
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="ship-state">Region</Label>
+                        <Input
+                          id="ship-state"
+                          value={shipping.state}
+                          onChange={(e) => updateShipping("state", e.target.value)}
+                          placeholder="TX"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="border-t border-[var(--border)] pt-5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-sm font-medium text-[var(--text-primary)]">Contact</div>
+                        <div className="text-xs text-[var(--text-muted)]">(optional)</div>
+                      </div>
+                      <div className="mt-4 grid gap-4">
+                        <div className="grid gap-1.5">
+                          <Label htmlFor="ship-phone">Phone</Label>
+                          <Input
+                            id="ship-phone"
+                            value={shipping.phone}
+                            onChange={(e) => updateShipping("phone", e.target.value)}
+                            placeholder="+1 555 123 4567"
+                          />
+                        </div>
+                        <div className="grid gap-1.5">
+                          <Label htmlFor="ship-email">Email</Label>
+                          <Input
+                            id="ship-email"
+                            value={shipping.email}
+                            onChange={(e) => updateShipping("email", e.target.value)}
+                            placeholder="jane@example.com"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <Button className="mt-2 h-11 w-full text-sm" onClick={continueToPayment}>
+                      Continue to payment method
+                    </Button>
+
+                    <p className="text-xs leading-6 text-[var(--text-muted)]">
+                      Your order details will be sent to the merchant through your signed Nostr account so they can follow up with payment and fulfillment.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mt-5 space-y-4">
+                    <p className="text-sm leading-7 text-[var(--text-secondary)]">
+                      No shipping details are needed for this order. You can continue directly to payment method selection.
+                    </p>
+                    <Button className="h-11 w-full text-sm" onClick={continueToPayment}>
+                      Continue to payment method
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {step === "payment" && (
+            <>
+              <div>
+                <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">Payment method</h1>
+                <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
+                  Orders are sent to the merchant first. Lightning is available now, and the merchant will reply with payment details after reviewing your order.
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
+                <div className="flex flex-wrap gap-3">
+                  <PaymentMethodButton
+                    label="Lightning"
+                    icon={<LightningIcon className="h-4 w-4" />}
+                    active={paymentMethod === "lightning"}
+                    onClick={() => setPaymentMethod("lightning")}
+                  />
+                  <PaymentMethodButton label="USDT" icon={<span className="text-base">₮</span>} disabled subtitle="Coming soon" />
+                  {/*
+                  <PaymentMethodButton label="On-Chain" icon={<span className="text-base">⛓</span>} disabled subtitle="Coming soon" />
+                  <PaymentMethodButton label="Minipay" icon={<span className="text-base">◔</span>} disabled subtitle="Coming soon" />
+                  <PaymentMethodButton label="Fiat" icon={<span className="text-base">$</span>} disabled subtitle="Coming soon" />
+                  */}
+                </div>
+
+                <div className="mt-6 rounded-2xl border border-white/10 bg-[var(--surface-elevated)] p-5">
+                  <div className="text-sm font-medium text-[var(--text-primary)]">What happens next</div>
+                  <ul className="mt-4 space-y-3 text-sm leading-7 text-[var(--text-secondary)]">
+                    <li>1. Your order is sent to the merchant through Nostr.</li>
+                    <li>2. The merchant reviews the order and replies with payment details.</li>
+                    <li>3. You track order updates from the merchant in your order history.</li>
+                  </ul>
+                </div>
+
+                <div className="mt-6 grid gap-1.5">
+                  <Label htmlFor="order-note">Order note (optional)</Label>
+                  <textarea
+                    id="order-note"
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                    placeholder="Anything the merchant should know before they confirm the order?"
+                    rows={4}
+                    className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
+                  />
+                </div>
+
+                {error && (
+                  <div className="mt-5 rounded-xl border border-error/30 bg-error/10 p-3 text-sm text-error">
+                    {error}
+                  </div>
+                )}
+
+                <div className="mt-6 flex flex-wrap gap-3">
+                  <Button variant="outline" className="h-11 px-4 text-sm" onClick={() => setStep("shipping")}>
+                    Back to shipping
+                  </Button>
+                  <Button className="h-11 px-5 text-sm" onClick={placeOrder}>
+                    <LightningIcon className="h-4 w-4" />
+                    Send order
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
+        </section>
+
+        <OrderSummary
+          items={checkoutItems}
+          merchantPubkey={selectedMerchant!}
+          step={step as Exclude<CheckoutStep, "sending" | "sent">}
+          btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+        />
       </div>
-
-      {sentOrderId && (
-        <div className="rounded-md border border-green-500/30 bg-green-500/10 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium text-green-400">Order sent successfully</div>
-              <div className="mt-1 font-mono text-sm text-[var(--text-primary)]">{sentOrderId}</div>
-              <p className="mt-2 text-xs text-[var(--text-secondary)]">
-                The merchant will review your order and send a Lightning invoice. Check your messages for updates.
-              </p>
-            </div>
-            <div className="flex flex-col items-end gap-2">
-              <Badge variant="secondary" className="border-[var(--border)]">
-                Awaiting invoice
-              </Badge>
-              <Button asChild size="sm">
-                <Link to="/orders">View orders</Link>
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {isMultiMerchant && (
-        <div className="rounded-md border border-error/30 bg-error/10 p-4 text-sm text-error">
-          Your cart contains items from multiple merchants. MVP supports one merchant per order.
-        </div>
-      )}
-
-      {checkoutItems.length === 0 ? (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-          {selectedMerchant ? "No items for this merchant." : "Your cart is empty."}
-        </div>
-      ) : (
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_360px]">
-          <div className="space-y-4">
-          <section className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
-            <div className="flex items-center justify-between">
-              <div className="text-sm font-medium text-[var(--text-primary)]">Shipping address</div>
-              <label className="flex cursor-pointer items-center gap-2 text-xs text-[var(--text-secondary)]">
-                <input
-                  type="checkbox"
-                  checked={needsShipping}
-                  onChange={(e) => setNeedsShipping(e.target.checked)}
-                  className="rounded border-[var(--border)]"
-                />
-                Requires shipping
-              </label>
-            </div>
-            {needsShipping ? (
-              <div className="mt-3 grid gap-3">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="ship-name">Full name</Label>
-                  <Input id="ship-name" value={shipping.name} onChange={(e) => updateShipping("name", e.target.value)} placeholder="Jane Doe" />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="ship-street">Street address</Label>
-                  <Input id="ship-street" value={shipping.street} onChange={(e) => updateShipping("street", e.target.value)} placeholder="123 Main St" />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="ship-city">City</Label>
-                    <Input id="ship-city" value={shipping.city} onChange={(e) => updateShipping("city", e.target.value)} placeholder="Austin" />
-                  </div>
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="ship-state">State / Province</Label>
-                    <Input id="ship-state" value={shipping.state ?? ""} onChange={(e) => updateShipping("state", e.target.value)} placeholder="TX" />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="ship-postal">Postal code</Label>
-                    <Input id="ship-postal" value={shipping.postalCode} onChange={(e) => updateShipping("postalCode", e.target.value)} placeholder="78701" />
-                  </div>
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="ship-country">Country (ISO)</Label>
-                    <Input id="ship-country" value={shipping.country} onChange={(e) => updateShipping("country", e.target.value)} placeholder="US" maxLength={2} />
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <p className="mt-3 text-xs text-[var(--text-secondary)]">No shipping required for this order (digital product or local pickup).</p>
-            )}
-          </section>
-
-          <section className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
-            <div className="text-sm text-[var(--text-secondary)]">Order items</div>
-            <div className="mt-3 space-y-2">
-              {checkoutItems.map((i) => (
-                <div key={i.productId} className="flex items-center justify-between gap-3 text-sm">
-                  <div className="text-[var(--text-primary)]">
-                    {i.title} <span className="text-[var(--text-secondary)]">x{i.quantity}</span>
-                  </div>
-                  <div className="text-[var(--text-secondary)]">
-                    {i.price * i.quantity} {i.currency}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-4 flex items-center justify-between border-t border-[var(--border)] pt-4">
-              <div className="text-sm text-[var(--text-secondary)]">Total</div>
-              <div className="text-base font-medium text-[var(--text-primary)]">
-                {total}
-                {totalCurrency ? ` ${totalCurrency}` : ""}
-              </div>
-            </div>
-          </section>
-          </div>
-
-          <aside className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 self-start">
-            <div className="text-sm text-[var(--text-secondary)]">Merchant</div>
-            <div className="mt-1 font-mono text-sm text-[var(--text-primary)]">
-              {merchantPubkey ? formatPubkey(merchantPubkey, 12) : "Multiple merchants"}
-            </div>
-
-            <div className="mt-4 grid gap-2">
-              <Label htmlFor="note">Order note (optional)</Label>
-              <Input
-                id="note"
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-                placeholder="Anything the merchant should know…"
-              />
-            </div>
-
-            {error && (
-              <div className="mt-4 rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
-                {error}
-              </div>
-            )}
-
-            <div className="mt-4 flex items-center justify-end">
-              <Button className="w-full" disabled={sending || !merchantPubkey || !shippingValid} onClick={placeOrder}>
-                {sending ? "Sending…" : "Place order"}
-              </Button>
-              {needsShipping && !shippingValid && (
-                <p className="mt-1 text-xs text-[var(--text-secondary)]">Fill in shipping address to continue.</p>
-              )}
-            </div>
-          </aside>
-        </div>
-      )}
     </div>
   )
 }
