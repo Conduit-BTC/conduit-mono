@@ -8,9 +8,9 @@ const badgeVariants = cva(
     variants: {
       variant: {
         default:
-          "border-transparent bg-primary-500 text-white",
+          "border-white/20 bg-primary-500 text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)]",
         secondary:
-          "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]",
+          "border-white/24 bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)] transition-colors hover:bg-[var(--surface-elevated)]/80 hover:border-white/35",
         success:
           "border-transparent bg-green-100 text-green-800",
         warning:
@@ -18,7 +18,7 @@ const badgeVariants = cva(
         destructive:
           "border-transparent bg-red-100 text-red-800",
         outline:
-          "border-[var(--border)] text-[var(--text-secondary)]",
+          "border-white/24 bg-white/[0.02] text-[var(--text-secondary)] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.02)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-primary)] hover:border-white/35",
       },
     },
     defaultVariants: {

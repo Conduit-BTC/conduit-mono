@@ -11,10 +11,12 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as OrdersRouteImport } from './routes/orders'
+import { Route as MessagesRouteImport } from './routes/messages'
 import { Route as CheckoutRouteImport } from './routes/checkout'
 import { Route as CartRouteImport } from './routes/cart'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProductsIndexRouteImport } from './routes/products/index'
+import { Route as StorePubkeyRouteImport } from './routes/store/$pubkey'
 import { Route as ProductsProductIdRouteImport } from './routes/products/$productId'
 
 const ProfileRoute = ProfileRouteImport.update({
@@ -25,6 +27,11 @@ const ProfileRoute = ProfileRouteImport.update({
 const OrdersRoute = OrdersRouteImport.update({
   id: '/orders',
   path: '/orders',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MessagesRoute = MessagesRouteImport.update({
+  id: '/messages',
+  path: '/messages',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CheckoutRoute = CheckoutRouteImport.update({
@@ -47,6 +54,11 @@ const ProductsIndexRoute = ProductsIndexRouteImport.update({
   path: '/products/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const StorePubkeyRoute = StorePubkeyRouteImport.update({
+  id: '/store/$pubkey',
+  path: '/store/$pubkey',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProductsProductIdRoute = ProductsProductIdRouteImport.update({
   id: '/products/$productId',
   path: '/products/$productId',
@@ -57,18 +69,22 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/cart': typeof CartRoute
   '/checkout': typeof CheckoutRoute
+  '/messages': typeof MessagesRoute
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
   '/products/$productId': typeof ProductsProductIdRoute
+  '/store/$pubkey': typeof StorePubkeyRoute
   '/products/': typeof ProductsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/cart': typeof CartRoute
   '/checkout': typeof CheckoutRoute
+  '/messages': typeof MessagesRoute
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
   '/products/$productId': typeof ProductsProductIdRoute
+  '/store/$pubkey': typeof StorePubkeyRoute
   '/products': typeof ProductsIndexRoute
 }
 export interface FileRoutesById {
@@ -76,9 +92,11 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/cart': typeof CartRoute
   '/checkout': typeof CheckoutRoute
+  '/messages': typeof MessagesRoute
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
   '/products/$productId': typeof ProductsProductIdRoute
+  '/store/$pubkey': typeof StorePubkeyRoute
   '/products/': typeof ProductsIndexRoute
 }
 export interface FileRouteTypes {
@@ -87,27 +105,33 @@ export interface FileRouteTypes {
     | '/'
     | '/cart'
     | '/checkout'
+    | '/messages'
     | '/orders'
     | '/profile'
     | '/products/$productId'
+    | '/store/$pubkey'
     | '/products/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/cart'
     | '/checkout'
+    | '/messages'
     | '/orders'
     | '/profile'
     | '/products/$productId'
+    | '/store/$pubkey'
     | '/products'
   id:
     | '__root__'
     | '/'
     | '/cart'
     | '/checkout'
+    | '/messages'
     | '/orders'
     | '/profile'
     | '/products/$productId'
+    | '/store/$pubkey'
     | '/products/'
   fileRoutesById: FileRoutesById
 }
@@ -115,9 +139,11 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CartRoute: typeof CartRoute
   CheckoutRoute: typeof CheckoutRoute
+  MessagesRoute: typeof MessagesRoute
   OrdersRoute: typeof OrdersRoute
   ProfileRoute: typeof ProfileRoute
   ProductsProductIdRoute: typeof ProductsProductIdRoute
+  StorePubkeyRoute: typeof StorePubkeyRoute
   ProductsIndexRoute: typeof ProductsIndexRoute
 }
 
@@ -135,6 +161,13 @@ declare module '@tanstack/react-router' {
       path: '/orders'
       fullPath: '/orders'
       preLoaderRoute: typeof OrdersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/messages': {
+      id: '/messages'
+      path: '/messages'
+      fullPath: '/messages'
+      preLoaderRoute: typeof MessagesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/checkout': {
@@ -165,6 +198,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProductsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/store/$pubkey': {
+      id: '/store/$pubkey'
+      path: '/store/$pubkey'
+      fullPath: '/store/$pubkey'
+      preLoaderRoute: typeof StorePubkeyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/products/$productId': {
       id: '/products/$productId'
       path: '/products/$productId'
@@ -179,9 +219,11 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CartRoute: CartRoute,
   CheckoutRoute: CheckoutRoute,
+  MessagesRoute: MessagesRoute,
   OrdersRoute: OrdersRoute,
   ProfileRoute: ProfileRoute,
   ProductsProductIdRoute: ProductsProductIdRoute,
+  StorePubkeyRoute: StorePubkeyRoute,
   ProductsIndexRoute: ProductsIndexRoute,
 }
 export const routeTree = rootRouteImport

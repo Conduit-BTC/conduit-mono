@@ -1,5 +1,6 @@
-import { createRootRoute, Outlet, type ErrorComponentProps } from "@tanstack/react-router"
+import { createRootRoute, Outlet, useRouterState, type ErrorComponentProps } from "@tanstack/react-router"
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
+import { useEffect } from "react"
 import { MarketHeader } from "../components/MarketHeader"
 import { ErrorPage, NotFoundPage } from "@conduit/ui"
 
@@ -22,11 +23,52 @@ function RootShell({ children }: { children: React.ReactNode }) {
 }
 
 function RootLayout() {
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" })
+  }, [pathname])
+
+  useEffect(() => {
+    const title = getPageTitle(pathname)
+    document.title = `${title} | Conduit Market`
+  }, [pathname])
+
   return (
     <RootShell>
       <Outlet />
     </RootShell>
   )
+}
+
+function getPageTitle(pathname: string): string {
+  if (pathname === "/" || pathname === "/products" || pathname === "/products/") {
+    return "Shop"
+  }
+  if (pathname === "/cart") {
+    return "Cart"
+  }
+  if (pathname === "/checkout") {
+    return "Checkout"
+  }
+  if (pathname === "/orders") {
+    return "Orders"
+  }
+  if (pathname === "/messages") {
+    return "Messages"
+  }
+  if (pathname === "/profile") {
+    return "Profile"
+  }
+  if (pathname.startsWith("/products/")) {
+    return "Product"
+  }
+  if (pathname.startsWith("/store/")) {
+    return "Storefront"
+  }
+  return "Market"
 }
 
 function RootErrorComponent({ error }: ErrorComponentProps) {

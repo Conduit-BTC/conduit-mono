@@ -1,22 +1,18 @@
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import {
-  db,
-  EVENT_KINDS,
-  extractOrderSummary,
-  fetchEventsFanout,
-  formatPubkey,
-  parseOrderMessageRumorEvent,
-  requireNdkConnected,
-  type ParsedOrderMessage,
-  useAuth,
-} from "@conduit/core"
-import { Badge, Button, OrderDetailCard, Tabs, TabsContent, TabsList, TabsTrigger } from "@conduit/ui"
-import { giftUnwrap, NDKEvent, type NDKFilter, type NDKSigner } from "@nostr-dev-kit/ndk"
-import { CheckCircle2, RotateCw } from "lucide-react"
-import { QRCodeSVG } from "qrcode.react"
+import { extractOrderSummary, fetchProfile, formatPubkey, useAuth, useProfile } from "@conduit/core"
+import { Badge, Button } from "@conduit/ui"
+import { CheckCircle2, ChevronDown, ReceiptText, RotateCw, Search } from "lucide-react"
 import { requireAuth } from "../lib/auth"
+import { MerchantAvatarFallback, getMerchantDisplayName } from "../components/MerchantIdentity"
+import {
+  OrderConversationMessage,
+  formatProductReference,
+  getConversationPreview,
+} from "../components/OrderConversationMessage"
+import { buildBuyerConversations, fetchBuyerMessages, type BuyerConversation } from "../lib/orderConversations"
+import { fetchStoreProducts } from "../lib/storeProducts"
 
 export const Route = createFileRoute("/orders")({
   beforeLoad: () => {
@@ -25,376 +21,164 @@ export const Route = createFileRoute("/orders")({
   component: OrdersPage,
 })
 
-type Conversation = {
-  id: string
-  orderId: string
-  merchantPubkey: string
-  messages: ParsedOrderMessage[]
-  latestAt: number
-  latestType: ParsedOrderMessage["type"]
-  status: string | null
-  totalSummary: string | null
-}
-
-function raceTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
-  ])
-}
-
-async function tryUnwrap(event: NDKEvent, signer: NDKSigner) {
-  try {
-    return await raceTimeout(
-      (async () => {
-        try { return await giftUnwrap(event, undefined, signer, "nip44") } catch { /* nip44 failed */ }
-        try { return await giftUnwrap(event, undefined, signer, "nip04") } catch { /* nip04 failed */ }
-        return null
-      })(),
-      8_000,
-      null,
-    )
-  } catch {
-    return null
-  }
-}
-
-// Unwrap events in sequential batches to avoid overwhelming the signer extension.
-async function unwrapBatch(events: NDKEvent[], signer: NDKSigner, batchSize = 5): Promise<Array<Awaited<ReturnType<typeof tryUnwrap>>>> {
-  const results: Array<Awaited<ReturnType<typeof tryUnwrap>>> = []
-  for (let i = 0; i < events.length; i += batchSize) {
-    const batch = events.slice(i, i + batchSize)
-    const batchResults = await Promise.all(batch.map((e) => tryUnwrap(e, signer)))
-    results.push(...batchResults)
-  }
-  return results
-}
-
-// Set of gift-wrap event IDs we have already unwrapped and cached.
-// Persisted in memory so re-fetches within the same session skip known events.
-const knownWrapIds = new Set<string>()
-
-async function fetchBuyerMessages(buyerPubkey: string): Promise<ParsedOrderMessage[]> {
-  // Load cached messages from Dexie first
-  const cached = await db.orderMessages
-    .where("recipientPubkey").equals(buyerPubkey)
-    .or("senderPubkey").equals(buyerPubkey)
-    .toArray()
-
-  const cachedById = new Map<string, ParsedOrderMessage>()
-  for (const row of cached) {
-    try {
-      cachedById.set(row.id, JSON.parse(row.rawContent) as ParsedOrderMessage)
-    } catch { /* skip corrupt */ }
-  }
-
-  // Fetch fresh from relays
-  try {
-    const ndk = await requireNdkConnected()
-    const signer = ndk.signer
-    if (!signer) {
-      if (cachedById.size > 0) {
-        const result = Array.from(cachedById.values())
-        result.sort((a, b) => a.createdAt - b.createdAt)
-        return result
-      }
-      throw new Error("Connect your Nostr signer to view messages.")
-    }
-
-    const filter: NDKFilter = {
-      kinds: [EVENT_KINDS.GIFT_WRAP],
-      "#p": [buyerPubkey],
-      limit: 200,
-    }
-
-    const wrapped = await fetchEventsFanout(filter, {
-      connectTimeoutMs: 4_000,
-      fetchTimeoutMs: 12_000,
-    }) as NDKEvent[]
-
-    // Only unwrap events we haven't seen before
-    const newWrapped = wrapped.filter((e) => !knownWrapIds.has(e.id))
-
-    // Unwrap in small batches so the signer extension isn't flooded
-    const unwrapped = await unwrapBatch(newWrapped, signer)
-
-    const newRows: Array<{ id: string; orderId: string; type: string; senderPubkey: string; recipientPubkey: string; createdAt: number; rawContent: string; cachedAt: number }> = []
-    for (const rumor of unwrapped) {
-      if (!rumor) continue
-      if (rumor.kind !== EVENT_KINDS.ORDER) continue
-      try {
-        const parsed = parseOrderMessageRumorEvent(rumor)
-        if (!cachedById.has(parsed.id)) {
-          newRows.push({
-            id: parsed.id,
-            orderId: parsed.orderId,
-            type: parsed.type,
-            senderPubkey: parsed.senderPubkey,
-            recipientPubkey: parsed.recipientPubkey,
-            createdAt: parsed.createdAt,
-            rawContent: JSON.stringify(parsed),
-            cachedAt: Date.now(),
-          })
-        }
-        cachedById.set(parsed.id, parsed)
-      } catch {
-        // ignore malformed order conversation rumors
-      }
-    }
-
-    // Mark all fetched wrap IDs as known (even ones that failed to unwrap)
-    for (const e of wrapped) knownWrapIds.add(e.id)
-
-    // Persist new messages to Dexie
-    if (newRows.length > 0) {
-      await db.orderMessages.bulkPut(newRows)
-    }
-  } catch (err) {
-    // If relay fetch fails but we have cache, return cached data
-    if (cachedById.size > 0) {
-      const result = Array.from(cachedById.values())
-      result.sort((a, b) => a.createdAt - b.createdAt)
-      return result
-    }
-    throw err
-  }
-
-  const result = Array.from(cachedById.values())
-  result.sort((a, b) => a.createdAt - b.createdAt)
-  return result
-}
-
-function buildBuyerConversations(messages: ParsedOrderMessage[], buyerPubkey: string): Conversation[] {
-  // Group by orderId only to avoid thread splitting when "p" tag is absent on inner rumor
-  const grouped = new Map<string, ParsedOrderMessage[]>()
-
-  for (const message of messages) {
-    const bucket = grouped.get(message.orderId) ?? []
-    bucket.push(message)
-    grouped.set(message.orderId, bucket)
-  }
-
-  const conversations: Conversation[] = []
-  for (const [orderId, bucket] of grouped.entries()) {
-    bucket.sort((a, b) => a.createdAt - b.createdAt)
-    const latest = bucket[bucket.length - 1]
-    if (!latest) continue
-
-    const firstOrder = bucket.find((message) => message.type === "order")
-    const latestStatus = [...bucket]
-      .reverse()
-      .find((message) => message.type === "status_update")
-
-    // Derive merchant pubkey from the first non-buyer participant
-    const otherParticipants = Array.from(new Set(
-      bucket.map((m) => m.senderPubkey === buyerPubkey ? m.recipientPubkey : m.senderPubkey).filter(Boolean)
-    ))
-    const merchantPubkey = otherParticipants[0] ?? ""
-
-    conversations.push({
-      id: orderId,
-      orderId,
-      merchantPubkey,
-      messages: bucket,
-      latestAt: latest.createdAt,
-      latestType: latest.type,
-      status: latestStatus?.type === "status_update" ? latestStatus.payload.status : null,
-      totalSummary:
-        firstOrder?.type === "order" ? `${firstOrder.payload.subtotal} ${firstOrder.payload.currency}` : null,
-    })
-  }
-
-  conversations.sort((a, b) => b.latestAt - a.latestAt)
-  return conversations
-}
-
-function InvoiceCard({
-  invoice,
-  amount,
-  currency,
-  note,
+function OrderListItem({
+  conversation,
+  active,
+  onClick,
 }: {
-  invoice: string
-  amount?: number
-  currency?: string
-  note?: string
+  conversation: BuyerConversation
+  active: boolean
+  onClick: () => void
 }) {
-  const [copied, setCopied] = useState(false)
-
-  const copyInvoice = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(invoice)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch {
-      // fallback: select the text
-    }
-  }, [invoice])
-
-  // Strip lightning: prefix if present, detect any bolt11 variant (lnbc, lntb, lnbcrt)
-  const bolt11 = invoice.replace(/^lightning:/i, "")
-  const isBolt11 = /^ln(bc|tb|bcrt)/i.test(bolt11)
-  const walletUri = isBolt11 ? `lightning:${bolt11}` : null
+  const { data: profile } = useProfile(conversation.merchantPubkey)
+  const merchantName = getMerchantDisplayName(profile, conversation.merchantPubkey)
+  const latestMessage = conversation.messages[conversation.messages.length - 1]
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="text-[var(--text-primary)] text-sm font-medium">Lightning Invoice</div>
-        {amount != null && (
-          <div className="text-sm font-medium text-[var(--text-primary)]">
-            {amount}{currency ? ` ${currency}` : " sats"}
-          </div>
-        )}
-      </div>
-
+    <button
+      type="button"
+      onClick={onClick}
+      data-thread-id={conversation.id}
+      className={[
+        "w-full rounded-[1.1rem] border p-3 text-left transition-[border-color,background-color,box-shadow]",
+        active
+          ? "border-white/14 bg-white/[0.08]"
+          : "border-white/8 bg-white/[0.02] hover:border-white/14 hover:bg-white/[0.05]",
+      ].join(" ")}
+    >
       <div className="flex items-start gap-3">
-        <div className="shrink-0 rounded-md border border-[var(--border)] bg-white p-2">
-          <QRCodeSVG value={bolt11} size={120} level="M" />
+        <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-white/10 bg-[var(--surface-elevated)]">
+          {profile?.picture ? (
+            <img src={profile.picture} alt={merchantName} className="h-full w-full object-cover" />
+          ) : (
+            <MerchantAvatarFallback />
+          )}
         </div>
-        <div className="min-w-0 flex-1 space-y-2">
-          <div className="max-h-20 overflow-auto break-all rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-xs text-[var(--text-secondary)]">
-            {invoice}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2">
+            <div className="truncate text-sm font-medium text-[var(--text-primary)]">{merchantName}</div>
+            <div className="text-[11px] text-[var(--text-muted)]">
+              {new Date(conversation.latestAt).toLocaleDateString()}
+            </div>
           </div>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" className="flex-1" onClick={copyInvoice}>
-              {copied ? "Copied" : "Copy"}
-            </Button>
-            {walletUri && (
-              <Button asChild variant="primary" size="sm" className="flex-1">
-                <a href={walletUri}>Pay</a>
-              </Button>
-            )}
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <Badge variant="outline" className="border-white/10 bg-white/[0.04]">
+              {conversation.status ?? "pending"}
+            </Badge>
+            <span className="font-mono text-[11px] text-[var(--text-muted)]">
+              {formatPubkey(conversation.orderId, 6)}
+            </span>
           </div>
+          <div className="mt-2 line-clamp-2 text-sm text-[var(--text-secondary)]">
+            {latestMessage ? getConversationPreview(latestMessage) : "No messages yet"}
+          </div>
+          {conversation.totalSummary && (
+            <div className="mt-2 text-xs font-medium text-secondary-300">{conversation.totalSummary}</div>
+          )}
         </div>
       </div>
-
-      {note && <div className="text-xs text-[var(--text-secondary)]">{note}</div>}
-    </div>
+    </button>
   )
 }
 
-function MessageCard({
-  message,
-  mine,
+function OrderHero({
+  conversation,
 }: {
-  message: ParsedOrderMessage
-  mine: boolean
+  conversation: BuyerConversation
 }) {
+  const { data: profile } = useProfile(conversation.merchantPubkey)
+  const merchantName = getMerchantDisplayName(profile, conversation.merchantPubkey)
+  const summary = extractOrderSummary(conversation.messages)
+
   return (
-    <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`max-w-[92%] rounded-md border p-3 text-sm ${
-          mine
-            ? "border-[var(--border)] bg-[var(--surface)]"
-            : "border-[var(--border)] bg-[var(--surface-elevated)]"
-        }`}
-      >
-        <div className="mb-2 flex items-center gap-2">
-          <Badge variant="outline" className="border-[var(--border)]">
-            {message.type}
-          </Badge>
-          <span className="text-xs text-[var(--text-secondary)]">
-            {new Date(message.createdAt).toLocaleString()}
-          </span>
+    <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-white/10 bg-[var(--surface-elevated)]">
+            {profile?.picture ? (
+              <img src={profile.picture} alt={merchantName} className="h-full w-full object-cover" />
+            ) : (
+              <MerchantAvatarFallback />
+            )}
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="truncate text-lg font-semibold text-[var(--text-primary)]">{merchantName}</div>
+              <Badge variant="outline" className="border-white/10 bg-white/[0.04] capitalize">
+                {conversation.status ?? "pending"}
+              </Badge>
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
+              <span className="font-mono">{conversation.orderId}</span>
+              <span className="text-[var(--text-muted)]">/</span>
+              <span>{new Date(conversation.latestAt).toLocaleString()}</span>
+            </div>
+          </div>
         </div>
 
-        {message.type === "order" && (
-          <div className="space-y-1.5">
-            <div className="text-[var(--text-primary)]">
-              Total: {message.payload.subtotal} {message.payload.currency}
-            </div>
-            {message.payload.items.map((item) => (
-              <div key={`${message.id}-${item.productId}`} className="text-xs text-[var(--text-secondary)]">
-                {item.productId} · {item.quantity} x {item.priceAtPurchase} {item.currency}
-              </div>
-            ))}
-            {message.payload.shippingAddress && (
-              <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
-                <div className="font-medium text-[var(--text-primary)]">Ship to:</div>
-                <div>{message.payload.shippingAddress.name}</div>
-                <div>{message.payload.shippingAddress.street}</div>
-                <div>
-                  {message.payload.shippingAddress.city}
-                  {message.payload.shippingAddress.state ? `, ${message.payload.shippingAddress.state}` : ""}{" "}
-                  {message.payload.shippingAddress.postalCode}
-                </div>
-                <div>{message.payload.shippingAddress.country}</div>
-              </div>
-            )}
-            {message.payload.note && (
-              <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
-                {message.payload.note}
-              </div>
-            )}
+        <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm">
+            <span className="text-[var(--text-secondary)]">Subtotal</span>
+            <span className="ml-2 font-semibold text-secondary-300">
+              {summary.subtotal} {summary.currency}
+            </span>
           </div>
-        )}
-
-        {message.type === "payment_request" && (
-          <InvoiceCard invoice={message.payload.invoice} amount={message.payload.amount} currency={message.payload.currency} note={message.payload.note} />
-        )}
-
-        {message.type === "status_update" && (
-          <div className="space-y-1">
-            <div className="text-[var(--text-primary)]">Status: {message.payload.status}</div>
-            {message.payload.note && <div className="text-xs text-[var(--text-secondary)]">{message.payload.note}</div>}
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm">
+            <span className="text-[var(--text-secondary)]">Messages</span>
+            <span className="ml-2 font-semibold text-[var(--text-primary)]">{conversation.messages.length}</span>
           </div>
-        )}
-
-        {message.type === "shipping_update" && (
-          <div className="space-y-1">
-            {message.payload.carrier && (
-              <div className="text-[var(--text-primary)]">Carrier: {message.payload.carrier}</div>
-            )}
-            {message.payload.trackingNumber && (
-              <div className="font-mono text-xs text-[var(--text-secondary)]">
-                Tracking: {message.payload.trackingNumber}
-              </div>
-            )}
-            {(() => {
-              const raw = message.payload.trackingUrl
-              if (!raw) return null
-              try {
-                const u = new URL(raw)
-                if (u.protocol !== "http:" && u.protocol !== "https:") return null
-                return (
-                  <a
-                    className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
-                    href={u.toString()}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Open tracking link
-                  </a>
-                )
-              } catch {
-                return null
-              }
-            })()}
-            {message.payload.note && <div className="text-xs text-[var(--text-secondary)]">{message.payload.note}</div>}
-          </div>
-        )}
-
-        {message.type === "receipt" && message.payload.note && (
-          <div className="text-[var(--text-secondary)]">{message.payload.note}</div>
-        )}
-
-        {message.type === "payment_proof" && (
-          <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
-            {JSON.stringify(message.payload, null, 2)}
-          </pre>
-        )}
+        </div>
       </div>
-    </div>
+
+      <div className="mt-4 flex flex-wrap gap-3">
+        <Button asChild variant="outline" className="h-11 px-4 text-sm">
+          <Link to="/messages" search={{ tab: "merchants", thread: conversation.id }}>
+            Open in messages
+          </Link>
+        </Button>
+        <Button asChild className="h-11 px-4 text-sm">
+          <Link to="/products">Keep shopping</Link>
+        </Button>
+      </div>
+    </section>
+  )
+}
+
+function CollapsibleInfo({
+  title,
+  summary,
+  defaultOpen = false,
+  children,
+}: {
+  title: string
+  summary: string
+  defaultOpen?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <details
+      className="group rounded-2xl border border-white/10 bg-[var(--surface-elevated)]"
+      open={defaultOpen}
+    >
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
+        <div className="min-w-0">
+          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">{title}</div>
+          <div className="mt-1 truncate text-sm text-[var(--text-secondary)]">{summary}</div>
+        </div>
+        <ChevronDown className="h-4 w-4 shrink-0 text-[var(--text-muted)] transition-transform group-open:rotate-180" />
+      </summary>
+      <div className="border-t border-white/8 px-4 py-4">{children}</div>
+    </details>
   )
 }
 
 function OrdersPage() {
   const { pubkey, status } = useAuth()
+  const signerConnected = status === "connected" && !!pubkey
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState("details")
+  const [searchValue, setSearchValue] = useState("")
   const [refreshButtonState, setRefreshButtonState] = useState<"idle" | "refreshing" | "done">("idle")
   const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const signerConnected = status === "connected" && !!pubkey
 
   const messagesQuery = useQuery({
     queryKey: ["buyer-messages", pubkey ?? "none"],
@@ -403,6 +187,7 @@ function OrdersPage() {
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   })
+
   const isMessagesFetching = messagesQuery.isFetching
   const refetchMessages = messagesQuery.refetch
 
@@ -442,191 +227,290 @@ function OrdersPage() {
   }, [refetchMessages, signerConnected])
 
   const conversations = useMemo(
-    () => signerConnected && pubkey ? buildBuyerConversations(messagesQuery.data ?? [], pubkey) : [],
-    [messagesQuery.data, pubkey, signerConnected]
+    () => (signerConnected && pubkey ? buildBuyerConversations(messagesQuery.data ?? [], pubkey) : []),
+    [messagesQuery.data, pubkey, signerConnected],
   )
+  const merchantPubkeys = useMemo(
+    () => Array.from(new Set(conversations.map((conversation) => conversation.merchantPubkey).filter(Boolean))),
+    [conversations],
+  )
+  const merchantProfilesQuery = useQuery({
+    queryKey: ["buyer-order-profiles", merchantPubkeys],
+    enabled: signerConnected && merchantPubkeys.length > 0,
+    queryFn: async () => {
+      const profiles = await Promise.all(merchantPubkeys.map((merchantPubkey) => fetchProfile(merchantPubkey)))
+      return Object.fromEntries(
+        profiles.map((profile) => [profile.pubkey, profile])
+      )
+    },
+  })
+
+  const filteredConversations = useMemo(() => {
+    const query = searchValue.trim().toLowerCase()
+    if (!query) return conversations
+    return conversations.filter((conversation) =>
+      (merchantProfilesQuery.data?.[conversation.merchantPubkey]?.displayName?.toLowerCase().includes(query) ?? false) ||
+      (merchantProfilesQuery.data?.[conversation.merchantPubkey]?.name?.toLowerCase().includes(query) ?? false) ||
+      conversation.orderId.toLowerCase().includes(query) ||
+      conversation.merchantPubkey.toLowerCase().includes(query) ||
+      conversation.status?.toLowerCase().includes(query) ||
+      extractOrderSummary(conversation.messages).items.some((item) =>
+        item.productId.toLowerCase().includes(query) ||
+        formatProductReference(item.productId).title.toLowerCase().includes(query)
+      ) ||
+      conversation.messages.some((message) => getConversationPreview(message).toLowerCase().includes(query))
+    )
+  }, [conversations, merchantProfilesQuery.data, searchValue])
 
   useEffect(() => {
-    if (conversations.length === 0) {
+    if (filteredConversations.length === 0) {
       setSelectedConversationId(null)
       return
     }
-    if (!selectedConversationId || !conversations.some((conversation) => conversation.id === selectedConversationId)) {
-      setSelectedConversationId(conversations[0]?.id ?? null)
+    if (!selectedConversationId || !filteredConversations.some((conversation) => conversation.id === selectedConversationId)) {
+      setSelectedConversationId(filteredConversations[0]?.id ?? null)
     }
-  }, [conversations, selectedConversationId])
-
-  const selected = conversations.find((conversation) => conversation.id === selectedConversationId) ?? null
+  }, [filteredConversations, selectedConversationId])
 
   useEffect(() => {
-    setActiveTab("details")
+    if (!selectedConversationId) return
+    const element = document.querySelector<HTMLElement>(`[data-thread-id="${selectedConversationId}"]`)
+    element?.scrollIntoView({ block: "nearest", inline: "nearest" })
   }, [selectedConversationId])
 
-  const orderSummary = useMemo(
-    () => selected ? extractOrderSummary(selected.messages) : null,
-    [selected]
-  )
+  const selected = filteredConversations.find((conversation) => conversation.id === selectedConversationId) ?? null
+  const orderSummary = useMemo(() => (selected ? extractOrderSummary(selected.messages) : null), [selected])
+  const selectedProductsQuery = useQuery({
+    queryKey: ["selected-order-products", selected?.merchantPubkey ?? "none"],
+    enabled: !!selected?.merchantPubkey,
+    queryFn: () => fetchStoreProducts(selected!.merchantPubkey),
+  })
+  const selectedProductsById = useMemo(() => {
+    const map = new Map<string, Awaited<ReturnType<typeof fetchStoreProducts>>[number]>()
+    for (const product of selectedProductsQuery.data ?? []) {
+      map.set(product.id, product)
+    }
+    return map
+  }, [selectedProductsQuery.data])
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6 xl:flex xl:h-[calc(100vh-8.5rem)] xl:flex-col xl:overflow-hidden">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-medium text-[var(--text-primary)]">Orders</h1>
-          <p className="mt-1 text-sm text-[var(--text-secondary)]">
-            Track your orders and communicate with merchants.
+          <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">Orders</h1>
+          <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
+            Track merchant updates, invoices, and shipping progress across your recent checkouts.
           </p>
-          <div className="mt-3">
-            <Button variant="outline" size="sm" disabled={!signerConnected || isMessagesFetching} onClick={handleRefresh}>
-              <span className="inline-flex items-center gap-1">
-                <span
-                  className={`inline-flex h-4 w-4 items-center justify-center transition-colors duration-200 ${
-                    refreshButtonState === "refreshing"
-                      ? "animate-pulse text-amber-300"
-                      : refreshButtonState === "done"
-                        ? "text-emerald-400"
-                        : "text-[var(--text-secondary)]"
-                  }`}
-                >
-                  {refreshButtonState === "done" ? (
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                  ) : (
-                    <RotateCw className={`h-3.5 w-3.5 ${refreshButtonState === "refreshing" ? "animate-spin" : ""}`} />
-                  )}
-                </span>
-                <span className="relative inline-flex h-4 min-w-[7rem] items-center justify-center">
-                  <span
-                    className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "idle" ? "opacity-100 text-[var(--text-primary)]" : "opacity-0"
-                    }`}
-                  >
-                    Refresh
-                  </span>
-                  <span
-                    className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "refreshing" ? "animate-pulse opacity-100 text-amber-300" : "opacity-0"
-                    }`}
-                  >
-                    Refreshing...
-                  </span>
-                  <span
-                    className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "done" ? "opacity-100 text-emerald-400" : "opacity-0"
-                    }`}
-                  >
-                    Updated
-                  </span>
-                </span>
-              </span>
-            </Button>
-          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button asChild variant="muted">
-            <Link to="/checkout" search={{ merchant: undefined }}>
-              Go to checkout
-            </Link>
-          </Button>
-        </div>
+        <Button variant="outline" className="h-11 px-4 text-sm" disabled={!signerConnected || isMessagesFetching} onClick={handleRefresh}>
+          <span className="inline-flex items-center gap-2">
+            {refreshButtonState === "done" ? (
+              <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+            ) : (
+              <RotateCw className={`h-4 w-4 ${refreshButtonState === "refreshing" ? "animate-spin text-amber-300" : ""}`} />
+            )}
+            {refreshButtonState === "refreshing" ? "Refreshing…" : refreshButtonState === "done" ? "Updated" : "Refresh"}
+          </span>
+        </Button>
       </div>
 
       {!signerConnected && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-          Connect your signer to view order messages.
-        </div>
+        <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-[var(--surface-elevated)] text-secondary-300">
+            <ReceiptText className="h-7 w-7" />
+          </div>
+          <h2 className="mt-5 text-2xl font-semibold text-[var(--text-primary)]">Connect to view your orders</h2>
+          <p className="mx-auto mt-3 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
+            Order updates, invoices, and merchant replies are tied to your signer identity.
+          </p>
+        </section>
       )}
 
-      {signerConnected && messagesQuery.isLoading && <div className="text-sm text-[var(--text-secondary)]">Loading messages…</div>}
+      {signerConnected && messagesQuery.isLoading && (
+        <div className="text-sm text-[var(--text-secondary)]">Loading your order conversations…</div>
+      )}
 
       {signerConnected && messagesQuery.error && (
-        <div className="rounded-md border border-error/30 bg-error/10 p-4 text-sm text-error">
-          Failed to load messages:{" "}
-          {messagesQuery.error instanceof Error ? messagesQuery.error.message : "Unknown error"}
+        <div className="rounded-xl border border-error/30 bg-error/10 p-4 text-sm text-error">
+          Failed to load orders: {messagesQuery.error instanceof Error ? messagesQuery.error.message : "Unknown error"}
         </div>
       )}
 
       {signerConnected && !messagesQuery.isLoading && conversations.length === 0 && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-          No order messages yet. Place an order to start a conversation with a merchant.
-        </div>
+        <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-[var(--surface-elevated)] text-secondary-300">
+            <ReceiptText className="h-7 w-7" />
+          </div>
+          <h2 className="mt-5 text-2xl font-semibold text-[var(--text-primary)]">No order conversations yet</h2>
+          <p className="mx-auto mt-3 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
+            Place your first order and merchant updates will start appearing here.
+          </p>
+          <div className="mt-6">
+            <Button asChild className="h-11 px-4 text-sm">
+              <Link to="/products">Browse products</Link>
+            </Button>
+          </div>
+        </section>
       )}
 
       {signerConnected && conversations.length > 0 && (
-        <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
-          <aside className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2">
-            <div className="mb-2 px-2 text-xs uppercase tracking-wide text-[var(--text-secondary)]">Conversations</div>
-            <div className="space-y-1">
-              {conversations.map((conversation) => {
-                const active = conversation.id === selectedConversationId
-                return (
-                  <button
-                    key={conversation.id}
-                    className={`w-full rounded-md border px-3 py-2 text-left transition ${
-                      active
-                        ? "border-[var(--accent)] bg-[var(--surface-elevated)]"
-                        : "border-transparent hover:border-[var(--border)] hover:bg-[var(--surface-elevated)]"
-                    }`}
-                    onClick={() => setSelectedConversationId(conversation.id)}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-mono text-xs text-[var(--text-primary)]">{conversation.orderId}</span>
-                      <Badge variant="secondary" className="border-[var(--border)]">
-                        {conversation.latestType}
-                      </Badge>
-                    </div>
-                    <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                      Merchant: {formatPubkey(conversation.merchantPubkey, 8)}
-                    </div>
-                    <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                      {conversation.status ? `Status: ${conversation.status}` : "Status: pending"}
-                    </div>
-                    {conversation.totalSummary && (
-                      <div className="mt-1 text-xs text-[var(--text-secondary)]">{conversation.totalSummary}</div>
-                    )}
-                  </button>
-                )
-              })}
-            </div>
+        <div className="grid gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[320px_minmax(0,1fr)]">
+          <aside className="xl:sticky xl:top-24 xl:self-start">
+            <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 xl:max-h-[calc(100vh-8rem)] xl:overflow-hidden">
+              <div className="text-sm font-medium text-[var(--text-primary)]">Order threads</div>
+              <div className="relative mt-3">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
+                <input
+                  value={searchValue}
+                  onChange={(event) => setSearchValue(event.target.value)}
+                  placeholder="Search orders"
+                  className="h-11 w-full rounded-xl border border-white/10 bg-[var(--surface-elevated)] pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
+                />
+              </div>
+              <div className="mt-4 space-y-2 xl:max-h-[calc(100vh-14rem)] xl:overflow-y-auto xl:pr-1">
+                {filteredConversations.length > 0 ? (
+                  filteredConversations.map((conversation) => (
+                    <OrderListItem
+                      key={conversation.id}
+                      conversation={conversation}
+                      active={conversation.id === selectedConversationId}
+                      onClick={() => setSelectedConversationId(conversation.id)}
+                    />
+                  ))
+                ) : (
+                  <div className="rounded-[1.1rem] border border-white/10 bg-white/[0.03] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                    No orders match this search.
+                  </div>
+                )}
+              </div>
+            </section>
           </aside>
 
-          <section className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
+          <section className="space-y-4 xl:min-h-0 xl:overflow-hidden">
+            <div className="space-y-4 xl:flex xl:h-full xl:min-h-0 xl:flex-col">
             {selected && orderSummary ? (
-              <Tabs value={activeTab} onValueChange={setActiveTab}>
-                <TabsList>
-                  <TabsTrigger value="details">Details</TabsTrigger>
-                  <TabsTrigger value="messages">Messages</TabsTrigger>
-                </TabsList>
+              <>
+                <OrderHero conversation={selected} />
 
-                <TabsContent value="details">
-                  <OrderDetailCard
-                    orderId={selected.orderId}
-                    status={selected.status}
-                    counterpartyLabel="Merchant"
-                    counterpartyPubkey={selected.merchantPubkey}
-                    items={orderSummary.items}
-                    subtotal={orderSummary.subtotal}
-                    currency={orderSummary.currency}
-                    shippingAddress={orderSummary.shippingAddress}
-                    orderNote={orderSummary.orderNote}
-                    invoiceSent={orderSummary.invoiceSent}
-                    invoiceAmount={orderSummary.invoiceAmount}
-                    invoiceCurrency={orderSummary.invoiceCurrency}
-                    trackingCarrier={orderSummary.trackingCarrier}
-                    trackingNumber={orderSummary.trackingNumber}
-                    trackingUrl={orderSummary.trackingUrl}
-                  />
-                </TabsContent>
+                <section className="space-y-3 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+                  <CollapsibleInfo
+                    title="Items"
+                    summary={`${orderSummary.items.length} item${orderSummary.items.length === 1 ? "" : "s"} in this order`}
+                    defaultOpen={false}
+                  >
+                    <div className="space-y-3">
+                        {orderSummary.items.map((item, index) => {
+                          const resolvedProduct = selectedProductsById.get(item.productId)
+                          const product = formatProductReference(item.productId)
+                          const image = resolvedProduct?.images[0]
+                          return (
+                            <div
+                              key={`${item.productId}-${index}`}
+                              className="flex items-start justify-between gap-3 rounded-xl border border-white/8 bg-white/[0.03] p-3 text-sm"
+                            >
+                              <div className="flex min-w-0 flex-1 items-start gap-3">
+                                <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl border border-white/10 bg-white/[0.04]">
+                                  {image ? (
+                                    <img
+                                      src={image.url}
+                                      alt={image.alt ?? resolvedProduct?.title ?? product.title}
+                                      loading="lazy"
+                                      className="h-full w-full object-cover"
+                                    />
+                                  ) : null}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-[var(--text-primary)]">
+                                    {resolvedProduct?.title ?? product.title}
+                                  </div>
+                                <div className="mt-1 text-xs text-[var(--text-secondary)]">Qty {item.quantity}</div>
+                                <div className="mt-1 break-all font-mono text-[11px] leading-5 text-[var(--text-muted)]">
+                                  {product.detail}
+                                </div>
+                                </div>
+                              </div>
+                              <div className="shrink-0 text-right text-[var(--text-secondary)]">
+                                {item.priceAtPurchase} {item.currency}
+                              </div>
+                            </div>
+                          )
+                        })}
+                    </div>
+                  </CollapsibleInfo>
 
-                <TabsContent value="messages">
-                  <div className="max-h-[65vh] space-y-3 overflow-auto pr-1">
+                  <CollapsibleInfo
+                    title="Order details"
+                    summary={`${orderSummary.invoiceSent ? "Invoice sent" : "Awaiting merchant"}${orderSummary.trackingNumber ? ` · Tracking ${orderSummary.trackingNumber}` : ""}`}
+                    defaultOpen={false}
+                  >
+                    <div className="space-y-3 text-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-[var(--text-secondary)]">Subtotal</span>
+                          <span className="font-medium text-secondary-300">
+                            {orderSummary.subtotal} {orderSummary.currency}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-[var(--text-secondary)]">Invoice</span>
+                          <span className="text-[var(--text-primary)]">
+                            {orderSummary.invoiceSent ? "Sent" : "Awaiting merchant"}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-[var(--text-secondary)]">Tracking</span>
+                          <span className="text-[var(--text-primary)]">
+                            {orderSummary.trackingNumber ?? "Not shared yet"}
+                          </span>
+                        </div>
+                        {orderSummary.shippingAddress && (
+                          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-[var(--text-secondary)]">
+                            <div className="font-medium text-[var(--text-primary)]">{orderSummary.shippingAddress.name}</div>
+                            <div>{orderSummary.shippingAddress.street}</div>
+                            <div>
+                              {orderSummary.shippingAddress.city}
+                              {orderSummary.shippingAddress.state ? `, ${orderSummary.shippingAddress.state}` : ""}{" "}
+                              {orderSummary.shippingAddress.postalCode}
+                            </div>
+                            <div>{orderSummary.shippingAddress.country}</div>
+                          </div>
+                        )}
+                        {orderSummary.orderNote && (
+                          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-[var(--text-secondary)]">
+                            {orderSummary.orderNote}
+                          </div>
+                        )}
+                    </div>
+                  </CollapsibleInfo>
+                </section>
+
+                <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6 xl:flex xl:min-h-0 xl:flex-1 xl:flex-col">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h2 className="text-2xl font-semibold text-[var(--text-primary)]">Conversation</h2>
+                      <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                        Merchant replies, invoices, and shipping changes appear in sequence here.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-5 space-y-3 overflow-auto pr-1 xl:min-h-0 xl:flex-1">
                     {selected.messages.map((message) => (
-                      <MessageCard key={message.id} message={message} mine={message.senderPubkey === pubkey} />
+                      <OrderConversationMessage
+                        key={message.id}
+                        message={message}
+                        mine={message.senderPubkey === pubkey}
+                      />
                     ))}
                   </div>
-                </TabsContent>
-              </Tabs>
+                </section>
+              </>
             ) : (
-              <div className="text-sm text-[var(--text-secondary)]">Select a conversation.</div>
+              <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6 xl:flex xl:min-h-0 xl:flex-1 xl:items-center xl:justify-center">
+                <div className="text-center text-sm text-[var(--text-secondary)]">
+                  Adjust your search to reopen an order thread.
+                </div>
+              </section>
             )}
+            </div>
           </section>
         </div>
       )}

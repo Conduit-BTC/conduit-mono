@@ -1,24 +1,56 @@
+import { Check, ShoppingCart } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
-import { formatPubkey, type Product } from "@conduit/core"
-import { Button, Card, cn } from "@conduit/ui"
+import { formatPubkey, useProfile, type Product } from "@conduit/core"
+import { Button, cn } from "@conduit/ui"
+import { getProductPriceDisplay } from "../lib/pricing"
 
 type ProductGridCardProps = {
   product: Product
-  onAddToCart: () => void
+  onAddToCart?: () => void
+  btcUsdRate?: number | null
+  cartQuantity?: number
+  onIncrement?: () => void
+  onDecrement?: () => void
 }
 
-export function ProductGridCard({ product, onAddToCart }: ProductGridCardProps) {
+export function ProductGridCard({
+  product,
+  onAddToCart,
+  btcUsdRate,
+  cartQuantity = 0,
+  onIncrement,
+  onDecrement,
+}: ProductGridCardProps) {
   const navigate = useNavigate()
+  const { data: profile } = useProfile(product.pubkey)
+  const [didJustAdd, setDidJustAdd] = useState(false)
+  const previousQuantityRef = useRef(cartQuantity)
 
   const imageUrl = product.images[0]?.url
   const fallbackUrl = "/images/placeholders/product.png"
 
+  const merchantName = profile?.displayName || profile?.name || formatPubkey(product.pubkey, 6)
+  const { primary, secondary } = getProductPriceDisplay(product, btcUsdRate ?? null)
+
+  useEffect(() => {
+    if (cartQuantity > previousQuantityRef.current) {
+      setDidJustAdd(true)
+      const timeoutId = window.setTimeout(() => setDidJustAdd(false), 220)
+      previousQuantityRef.current = cartQuantity
+      return () => window.clearTimeout(timeoutId)
+    }
+
+    previousQuantityRef.current = cartQuantity
+    return undefined
+  }, [cartQuantity])
+
   return (
-    <Card
+    <div
       role="link"
       tabIndex={0}
       className={cn(
-        "group cursor-pointer overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)] shadow-md transition-colors duration-300 hover:border-[var(--accent)]"
+        "group flex h-full cursor-pointer flex-col overflow-hidden rounded-xl border border-white/16 bg-[color-mix(in_oklab,var(--surface)_92%,white)] text-[var(--text-primary)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03),0_10px_24px_rgba(0,0,0,0.12)] transition-[border-color,box-shadow,transform,background-color] duration-200 hover:border-white/26 hover:bg-[color-mix(in_oklab,var(--surface)_89%,white)] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_16px_32px_rgba(0,0,0,0.16)]"
       )}
       onClick={() =>
         navigate({
@@ -35,83 +67,139 @@ export function ProductGridCard({ product, onAddToCart }: ProductGridCardProps) 
         })
       }}
     >
-      <div className="relative">
-        <div className="aspect-video bg-[var(--background)]">
-          {imageUrl ? (
-            <img
-              src={imageUrl}
-              alt={product.images[0]?.alt ?? product.title}
-              className="h-full w-full object-cover"
-              loading="lazy"
-              onError={(e) => {
-                ;(e.currentTarget as HTMLImageElement).src = fallbackUrl
-              }}
-            />
-          ) : (
-            <img
-              src={fallbackUrl}
-              alt=""
-              className="h-full w-full object-cover opacity-90"
-              loading="lazy"
-            />
-          )}
-        </div>
+      <div className="aspect-[4/3] overflow-hidden border-b border-white/10 bg-[color-mix(in_oklab,var(--background)_96%,white)]">
+        {imageUrl ? (
+          <img
+            src={imageUrl}
+            alt={product.images[0]?.alt ?? product.title}
+            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+            loading="lazy"
+            onError={(e) => {
+              ;(e.currentTarget as HTMLImageElement).src = fallbackUrl
+            }}
+          />
+        ) : (
+          <img
+            src={fallbackUrl}
+            alt=""
+            className="h-full w-full object-cover opacity-90"
+            loading="lazy"
+          />
+        )}
       </div>
 
-      <div className="grid gap-2 p-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="line-clamp-1 text-base font-semibold text-[var(--text-primary)]">
-              {product.title}
-            </div>
-            <div className="mt-1 text-xs text-[var(--text-secondary)]">
-              {formatPubkey(product.pubkey, 8)}
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-end justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-lg font-bold text-[var(--text-primary)]">
-              {product.price} {product.currency}
-            </div>
-            {product.summary && (
-              <div className="mt-1 line-clamp-2 text-sm text-[var(--text-secondary)]">
-                {product.summary}
-              </div>
-            )}
-          </div>
-
-          <Button
-            size="sm"
+      <div className="flex flex-1 flex-col p-3">
+        <div className="min-h-[3.25rem] space-y-1">
+          <h3 className="line-clamp-2 min-h-[2.5rem] text-sm font-semibold leading-snug text-[var(--text-primary)]">
+            {product.title}
+          </h3>
+          <button
+            type="button"
+            className="truncate text-left text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
             onClick={(e) => {
               e.preventDefault()
               e.stopPropagation()
-              onAddToCart()
+              navigate({
+                to: "/store/$pubkey",
+                params: { pubkey: product.pubkey },
+              })
             }}
           >
-            Add
-          </Button>
+            {merchantName}
+          </button>
+        </div>
+
+        <div className="mt-auto flex items-end justify-between gap-2 pt-3">
+          <div className="min-w-0">
+            <div className="text-sm font-bold text-secondary-400">{primary}</div>
+            <div className="min-h-[1rem] truncate text-xs text-[var(--text-muted)]">
+              {secondary ?? "\u00a0"}
+            </div>
+          </div>
+          {onAddToCart && (
+            <div className="relative shrink-0">
+              <Button
+                variant={cartQuantity > 0 ? "muted" : "primary"}
+                size="sm"
+                className={cn(
+                  "h-7 shrink-0 gap-1 rounded-md px-2.5 text-xs font-medium transition-all duration-200",
+                  cartQuantity > 0
+                    ? "border border-secondary-400/40 bg-secondary-500/10 text-secondary-300 hover:bg-secondary-500/16 md:group-hover:opacity-0"
+                    : "",
+                  cartQuantity > 0 ? "md:group-hover:pointer-events-none" : "",
+                  didJustAdd ? "scale-[1.06]" : "scale-100"
+                )}
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  onAddToCart()
+                }}
+              >
+                {cartQuantity > 0 ? (
+                  <Check className="h-3.5 w-3.5 shrink-0" />
+                ) : (
+                  <ShoppingCart className="h-3.5 w-3.5 shrink-0" />
+                )}
+                {cartQuantity > 0 ? `In cart (${cartQuantity})` : "Add"}
+              </Button>
+
+              {cartQuantity > 0 && onIncrement && onDecrement && (
+                <div className="pointer-events-none absolute inset-0 hidden items-center justify-center opacity-0 transition-all duration-200 md:flex md:group-hover:pointer-events-auto md:group-hover:opacity-100">
+                  <div className="flex h-7 items-center overflow-hidden rounded-md border border-secondary-400/40 bg-[var(--surface)] shadow-[0_6px_16px_rgba(0,0,0,0.28)]">
+                    <button
+                      type="button"
+                      className="flex h-full w-7 items-center justify-center text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)]"
+                      aria-label={`Remove one ${product.title} from cart`}
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        onDecrement()
+                      }}
+                    >
+                      -
+                    </button>
+                    <div className="flex h-full min-w-8 items-center justify-center border-x border-white/10 px-1 text-xs font-medium text-[var(--text-primary)]">
+                      {cartQuantity}
+                    </div>
+                    <button
+                      type="button"
+                      className="flex h-full w-7 items-center justify-center text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)]"
+                      aria-label={`Add one more ${product.title} to cart`}
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        onIncrement()
+                      }}
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
-    </Card>
+    </div>
   )
 }
 
 export function ProductGridCardSkeleton() {
   return (
-    <div className="animate-pulse overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)] shadow-md">
-      <div className="aspect-video bg-[var(--surface-elevated)]" />
-      <div className="grid gap-2 p-3">
-        <div className="h-4 w-2/3 rounded bg-[var(--surface-elevated)]" />
-        <div className="h-3 w-1/3 rounded bg-[var(--surface-elevated)]" />
-        <div className="flex items-end justify-between gap-3 pt-2">
-          <div className="grid w-full gap-2">
-            <div className="h-5 w-1/2 rounded bg-[var(--surface-elevated)]" />
-            <div className="h-3 w-full rounded bg-[var(--surface-elevated)]" />
-            <div className="h-3 w-5/6 rounded bg-[var(--surface-elevated)]" />
+    <div className="flex h-full animate-pulse flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)]">
+      <div className="aspect-[4/3] bg-[var(--surface-elevated)]" />
+      <div className="flex flex-1 flex-col p-3">
+        <div className="space-y-1.5">
+          <div className="h-4 w-4/5 rounded bg-[var(--surface-elevated)]" />
+          <div className="h-4 w-3/5 rounded bg-[var(--surface-elevated)]" />
+          <div className="h-3 w-1/2 rounded bg-[var(--surface-elevated)]" />
+        </div>
+        <div className="mt-auto flex items-end justify-between pt-3">
+          <div className="space-y-1">
+            <div className="h-4 w-20 rounded bg-[var(--surface-elevated)]" />
+            <div className="h-3 w-16 rounded bg-[var(--surface-elevated)]" />
           </div>
-          <div className="h-8 w-16 shrink-0 rounded bg-[var(--surface-elevated)]" />
+          <div className="h-7 w-14 rounded bg-[var(--surface-elevated)]" />
         </div>
       </div>
     </div>

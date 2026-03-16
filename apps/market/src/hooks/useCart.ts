@@ -6,6 +6,8 @@ export type CartItem = {
   title: string
   price: number
   currency: string
+  image?: string
+  tags?: string[]
   quantity: number
 }
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { Link2 } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import {
   useAuth,
@@ -134,7 +135,10 @@ function ProfilePage() {
             )}
             {profileQuery.data.website && (
               <div>
-                <div className="text-xs font-medium text-[var(--text-secondary)]">Website</div>
+                <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--text-secondary)]">
+                  <Link2 className="h-3.5 w-3.5" />
+                  Website
+                </div>
                 <p className="mt-1 text-sm text-[var(--text-primary)]">{profileQuery.data.website}</p>
               </div>
             )}
