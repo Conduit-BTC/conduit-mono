@@ -1,3 +1,4 @@
+import { ArrowDownToLine, Check, Shield } from "lucide-react"
 import { useMemo, useState } from "react"
 import { formatPubkey, hasNip07, useAuth } from "@conduit/core"
 import {
@@ -19,42 +20,15 @@ type SignerSwitchProps = {
 }
 
 function SignerGlyph({ className = "h-5 w-5" }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M12 3v12m0 0l-3-3m3 3l3-3M5 21h14"
-      />
-    </svg>
-  )
+  return <ArrowDownToLine className={className} />
 }
 
 function ShieldIcon() {
-  return (
-    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M12 3l7 4v5c0 5-3.5 8-7 9-3.5-1-7-4-7-9V7l7-4z"
-      />
-    </svg>
-  )
+  return <Shield className="h-4 w-4" />
 }
 
 function CheckIcon() {
-  return (
-    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M5 13l4 4L19 7"
-      />
-    </svg>
-  )
+  return <Check className="h-4 w-4" />
 }
 
 export function SignerSwitch({

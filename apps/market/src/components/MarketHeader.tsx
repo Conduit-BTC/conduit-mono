@@ -1,3 +1,4 @@
+import { LoaderCircle, Search, ShoppingCart, Store } from "lucide-react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 import { config, formatPubkey, useAuth } from "@conduit/core"
 import {
@@ -15,7 +16,7 @@ import {
   SheetTrigger,
   cn,
 } from "@conduit/ui"
-import { type FormEvent, useEffect, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import { SignerSwitch } from "./SignerSwitch"
 import { useCart } from "../hooks/useCart"
@@ -72,42 +73,6 @@ function UserMenu() {
   )
 }
 
-function CartIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      fill="none"
-      stroke="currentColor"
-      viewBox="0 0 24 24"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M3 3h2l.4 2m0 0L7 13h10l2-8H5.4M5.4 5H19M7 13l-1 5h12M9 18a1 1 0 100 2 1 1 0 000-2zm8 0a1 1 0 100 2 1 1 0 000-2z"
-      />
-    </svg>
-  )
-}
-
-function StoreIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      fill="none"
-      stroke="currentColor"
-      viewBox="0 0 24 24"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M3 9.5l1.6-4.8A1 1 0 015.55 4h12.9a1 1 0 01.95.7L21 9.5M4 10h16v8a2 2 0 01-2 2H6a2 2 0 01-2-2v-8zm4 4h3m2 0h3"
-      />
-    </svg>
-  )
-}
-
 export function MarketHeader() {
   const { pubkey, status } = useAuth()
   const cart = useCart()
@@ -119,12 +84,22 @@ export function MarketHeader() {
     }),
   })
   const [searchValue, setSearchValue] = useState("")
+  const [searchDirty, setSearchDirty] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [navState, setNavState] = useState<NavState>("top")
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
+  const currentQuery = typeof search.q === "string" ? search.q : ""
+  const isBrowseRoute = pathname === "/products"
+  const normalizedSearchValue = searchValue.trim()
+  const pendingSearch = useMemo(
+    () => isBrowseRoute && searchDirty && normalizedSearchValue !== currentQuery,
+    [currentQuery, isBrowseRoute, normalizedSearchValue, searchDirty]
+  )
 
   useEffect(() => {
-    setSearchValue(typeof search.q === "string" ? search.q : "")
-  }, [search.q])
+    setSearchValue(currentQuery)
+    setSearchDirty(false)
+  }, [currentQuery, pathname])
 
   useEffect(() => {
     if (menuOpen) {
@@ -170,14 +145,61 @@ export function MarketHeader() {
     return () => window.removeEventListener("scroll", onScroll)
   }, [menuOpen])
 
-  function submitSearch(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault()
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "/") return
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+
+      const target = event.target
+      if (
+        target instanceof HTMLElement &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return
+      }
+
+      event.preventDefault()
+      searchInputRef.current?.focus()
+      searchInputRef.current?.select()
+    }
+
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [])
+
+  useEffect(() => {
+    if (!searchDirty) return
+    if (!isBrowseRoute) return
+
+    const timeoutId = window.setTimeout(() => {
+      if (normalizedSearchValue === currentQuery) {
+        return
+      }
+
+      navigate({
+        to: "/products",
+        search: {
+          q: normalizedSearchValue || undefined,
+        },
+        replace: true,
+      })
+    }, 260)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [currentQuery, isBrowseRoute, navigate, normalizedSearchValue, searchDirty])
+
+  function submitSearch(): void {
     navigate({
       to: "/products",
       search: {
-        q: searchValue.trim() || undefined,
+        q: normalizedSearchValue || undefined,
       },
+      replace: pathname === "/products",
     })
+    setSearchDirty(false)
   }
 
   return (
@@ -204,36 +226,47 @@ export function MarketHeader() {
         <nav className="hidden items-center gap-1 text-sm text-[var(--text-secondary)] lg:flex">
           <Button asChild variant="ghost" className="h-10 px-3">
             <Link to="/products" activeProps={{ className: "text-[var(--text-primary)]" }}>
-              <StoreIcon className="h-4 w-4" />
+              <Store className="h-4 w-4" />
               Shop
             </Link>
           </Button>
         </nav>
 
-        <form onSubmit={submitSearch} className="order-last w-full lg:order-none lg:ml-2 lg:flex-1">
-          <div className="relative">
-            <svg
-              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-              />
-            </svg>
+        <div className="order-last w-full pb-5 lg:order-none lg:ml-2 lg:flex-1 lg:pb-0">
+          <form
+            className="relative"
+            onSubmit={(event) => {
+              event.preventDefault()
+              submitSearch()
+            }}
+          >
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
             <input
+              ref={searchInputRef}
               value={searchValue}
-              onChange={(e) => setSearchValue(e.target.value)}
+              onChange={(e) => {
+                setSearchValue(e.target.value)
+                setSearchDirty(true)
+              }}
               placeholder="Search"
               aria-label="Search products"
-              className="h-10 w-full rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-0"
+              className="h-10 w-full rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] pl-9 pr-9 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-0"
             />
-          </div>
-        </form>
+            <div className="pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-2 text-[var(--text-muted)]">
+              {pendingSearch ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
+              {!pendingSearch && (
+                <span className="inline-flex h-5 min-w-5 items-center justify-center rounded border border-white/12 bg-white/[0.04] px-1.5 text-[10px] font-medium text-[var(--text-muted)]">
+                  /
+                </span>
+              )}
+            </div>
+            {!isBrowseRoute && searchDirty && normalizedSearchValue.length > 0 && (
+              <div className="pointer-events-none absolute left-1 top-full mt-1 text-[11px] text-[var(--text-muted)]">
+                Press Enter to search
+              </div>
+            )}
+          </form>
+        </div>
 
         <div className="ml-auto flex items-center gap-1.5 lg:ml-0">
           {status === "connected" && (
@@ -251,7 +284,7 @@ export function MarketHeader() {
             className="h-10 px-2.5 text-xs sm:px-3 sm:text-sm"
           >
             <Link to="/cart">
-              <CartIcon className="h-3.5 w-3.5" />
+              <ShoppingCart className="h-3.5 w-3.5" />
               Cart
               <span className="text-[var(--text-muted)]">({cart.totals.count})</span>
             </Link>
@@ -300,13 +333,13 @@ export function MarketHeader() {
                 <div className="mt-6 grid gap-2">
                   <Button asChild variant="ghost" className="justify-start">
                     <Link to="/products" onClick={() => setMenuOpen(false)}>
-                      <StoreIcon className="h-4 w-4" />
+                      <Store className="h-4 w-4" />
                       Shop
                     </Link>
                   </Button>
                   <Button asChild variant="ghost" className="justify-start">
                     <Link to="/cart" onClick={() => setMenuOpen(false)}>
-                      <CartIcon className="h-4 w-4" />
+                      <ShoppingCart className="h-4 w-4" />
                       Cart ({cart.totals.count})
                     </Link>
                   </Button>

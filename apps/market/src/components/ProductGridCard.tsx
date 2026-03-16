@@ -1,3 +1,4 @@
+import { Check, ShoppingCart } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
 import { formatPubkey, useProfile, type Product } from "@conduit/core"
@@ -92,7 +93,20 @@ export function ProductGridCard({
           <h3 className="line-clamp-2 min-h-[2.5rem] text-sm font-semibold leading-snug text-[var(--text-primary)]">
             {product.title}
           </h3>
-          <p className="truncate text-xs text-[var(--text-muted)]">{merchantName}</p>
+          <button
+            type="button"
+            className="truncate text-left text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              navigate({
+                to: "/store/$pubkey",
+                params: { pubkey: product.pubkey },
+              })
+            }}
+          >
+            {merchantName}
+          </button>
         </div>
 
         <div className="mt-auto flex items-end justify-between gap-2 pt-3">
@@ -122,33 +136,9 @@ export function ProductGridCard({
                 }}
               >
                 {cartQuantity > 0 ? (
-                  <svg
-                    className="h-3.5 w-3.5 shrink-0"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M5 13l4 4L19 7"
-                    />
-                  </svg>
+                  <Check className="h-3.5 w-3.5 shrink-0" />
                 ) : (
-                  <svg
-                    className="h-3.5 w-3.5 shrink-0"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M3 3h2l.4 2m0 0L7 13h10l2-8H5.4M5.4 5H19M7 13l-1 5h12M9 18a1 1 0 100 2 1 1 0 000-2zm8 0a1 1 0 100 2 1 1 0 000-2z"
-                    />
-                  </svg>
+                  <ShoppingCart className="h-3.5 w-3.5 shrink-0" />
                 )}
                 {cartQuantity > 0 ? `In cart (${cartQuantity})` : "Add"}
               </Button>

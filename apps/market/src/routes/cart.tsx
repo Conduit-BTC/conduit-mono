@@ -1,3 +1,4 @@
+import { Bolt, RefreshCw, ShoppingCart, Store, Trash2 } from "lucide-react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
@@ -20,6 +21,7 @@ import {
   DialogTitle,
 } from "@conduit/ui"
 import { useEffect, useMemo, useState } from "react"
+import { MerchantAvatarFallback, getMerchantDisplayName } from "../components/MerchantIdentity"
 import { SignerSwitch } from "../components/SignerSwitch"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
@@ -43,68 +45,19 @@ export const Route = createFileRoute("/cart")({
 })
 
 function CartIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M3 3h2l.4 2m0 0L7 13h10l2-8H5.4M5.4 5H19M7 13l-1 5h12M9 18a1 1 0 100 2 1 1 0 000-2zm8 0a1 1 0 100 2 1 1 0 000-2z"
-      />
-    </svg>
-  )
-}
-
-function StoreIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M3 9.5l1.6-4.8A1 1 0 015.55 4h12.9a1 1 0 01.95.7L21 9.5M4 10h16v8a2 2 0 01-2 2H6a2 2 0 01-2-2v-8zm4 4h3m2 0h3"
-      />
-    </svg>
-  )
+  return <ShoppingCart className={className} />
 }
 
 function LightningIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"
-      />
-    </svg>
-  )
+  return <Bolt className={className} />
 }
 
 function TrashIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3M4 7h16"
-      />
-    </svg>
-  )
+  return <Trash2 className={className} />
 }
 
 function RefreshIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M4 4v5h.582m14.836 2A8.001 8.001 0 005.582 9m0 0H9m11 11v-5h-.581m0 0A8.003 8.003 0 016.165 15m13.254 0H15"
-      />
-    </svg>
-  )
+  return <RefreshCw className={className} />
 }
 
 function groupCartItems(items: CartItem[]): MerchantCartGroup[] {
@@ -126,6 +79,10 @@ function groupCartItems(items: CartItem[]): MerchantCartGroup[] {
 
 function sumCartItems(items: CartItem[]): number {
   return items.reduce((sum, item) => sum + item.price * item.quantity, 0)
+}
+
+function toProductRouteParam(productId: string): string {
+  return encodeURIComponent(productId)
 }
 
 function getCartSummaryPrice(items: CartItem[], btcUsdRate: number | null) {
@@ -220,27 +177,36 @@ function MerchantIdentity({
   className?: string
 }) {
   const { data: profile } = useProfile(merchantPubkey)
-  const merchantName = profile?.displayName || profile?.name || fallbackLabel
-  const avatarFallback = (merchantName[0] ?? "C").toUpperCase()
+  const merchantName = getMerchantDisplayName(profile, merchantPubkey) || fallbackLabel
 
   return (
     <div className={`flex min-w-0 items-center gap-3 ${className}`}>
-      <Avatar className="h-12 w-12 shrink-0 border border-white/10">
-        <AvatarImage src={profile?.picture} alt={merchantName} />
-        <AvatarFallback>{avatarFallback}</AvatarFallback>
-      </Avatar>
+        <Avatar className="h-12 w-12 shrink-0 border border-white/10">
+          <AvatarImage src={profile?.picture} alt={merchantName} />
+          <AvatarFallback>
+            <MerchantAvatarFallback />
+          </AvatarFallback>
+        </Avatar>
       <div className="min-w-0">
         {eyebrow && (
           <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
             {eyebrow}
           </div>
         )}
-        <div className="truncate text-xl font-semibold leading-tight text-[var(--text-primary)]">
+        <Link
+          to="/store/$pubkey"
+          params={{ pubkey: merchantPubkey }}
+          className="block truncate text-xl font-semibold leading-tight text-[var(--text-primary)] transition-colors hover:text-secondary-300"
+        >
           {merchantName}
-        </div>
-        <div className="mt-1 truncate font-mono text-xs text-[var(--text-muted)]">
+        </Link>
+        <Link
+          to="/store/$pubkey"
+          params={{ pubkey: merchantPubkey }}
+          className="mt-1 block truncate font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+        >
           {formatPubkey(merchantPubkey, 10)}
-        </div>
+        </Link>
       </div>
     </div>
   )
@@ -305,13 +271,13 @@ function RelatedProductRow({
   const imageUrl = product.images[0]?.url ?? "/images/placeholders/product.png"
   const price = getProductPriceDisplay(product, btcUsdRate)
   const { data: profile } = useProfile(product.pubkey)
-  const merchantLabel = profile?.displayName || profile?.name || "Store"
+  const merchantLabel = getMerchantDisplayName(profile, product.pubkey)
 
   return (
     <div className="grid min-h-[9.5rem] grid-cols-[80px_minmax(0,1fr)] items-start gap-3 rounded-xl border border-white/10 bg-[var(--surface)] p-3">
       <Link
         to="/products/$productId"
-        params={{ productId: product.id }}
+        params={{ productId: toProductRouteParam(product.id) }}
         className="shrink-0 overflow-hidden rounded-lg border border-white/10 bg-[var(--background)]"
       >
         <img
@@ -330,7 +296,7 @@ function RelatedProductRow({
       <div className="min-w-0 flex-1">
         <Link
           to="/products/$productId"
-          params={{ productId: product.id }}
+          params={{ productId: toProductRouteParam(product.id) }}
           className="line-clamp-2 text-sm font-medium leading-6 text-[var(--text-primary)] transition-colors hover:text-secondary-300"
         >
           {product.title}
@@ -395,7 +361,7 @@ function CartLineItem({
       <div className="min-w-0">
         <Link
           to="/products/$productId"
-          params={{ productId: item.productId }}
+          params={{ productId: toProductRouteParam(item.productId) }}
           className="line-clamp-2 text-xl font-medium leading-tight text-[var(--text-primary)] transition-colors hover:text-secondary-300"
         >
           {item.title}
@@ -593,7 +559,7 @@ function CartPage() {
             <div className="flex flex-wrap gap-3 pt-2">
               <Button asChild className="h-11 px-4 text-sm">
                 <Link to="/products">
-                  <StoreIcon className="h-4 w-4" />
+                  <Store className="h-4 w-4" />
                   Continue shopping
                 </Link>
               </Button>
@@ -772,8 +738,8 @@ function CartPage() {
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <MerchantIdentity merchantPubkey={selectedGroup.merchantPubkey} eyebrow="Shop at" />
               <Button asChild variant="outline" className="h-11 self-start px-4 text-sm lg:self-center">
-                <Link to="/products" search={{ merchant: selectedGroup.merchantPubkey }}>
-                  <StoreIcon className="h-4 w-4" />
+                <Link to="/store/$pubkey" params={{ pubkey: selectedGroup.merchantPubkey }}>
+                  <Store className="h-4 w-4" />
                   Visit store
                 </Link>
               </Button>

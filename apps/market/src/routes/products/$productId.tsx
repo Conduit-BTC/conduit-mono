@@ -1,3 +1,4 @@
+import { Check, Copy, SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import {
   EVENT_KINDS,
@@ -12,6 +13,7 @@ import { useQuery } from "@tanstack/react-query"
 import { useEffect, useMemo, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
 import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
+import { MerchantAvatarFallback, getMerchantDisplayName } from "../../components/MerchantIdentity"
 import { ProductGridCard, ProductGridCardSkeleton } from "../../components/ProductGridCard"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
@@ -20,42 +22,6 @@ import { getProductPriceDisplay } from "../../lib/pricing"
 export const Route = createFileRoute("/products/$productId")({
   component: ProductPage,
 })
-
-function CartIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      fill="none"
-      stroke="currentColor"
-      viewBox="0 0 24 24"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M3 3h2l.4 2m0 0L7 13h10l2-8H5.4M5.4 5H19M7 13l-1 5h12M9 18a1 1 0 100 2 1 1 0 000-2zm8 0a1 1 0 100 2 1 1 0 000-2z"
-      />
-    </svg>
-  )
-}
-
-function StoreIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      fill="none"
-      stroke="currentColor"
-      viewBox="0 0 24 24"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M3 9.5l1.6-4.8A1 1 0 015.55 4h12.9a1 1 0 01.95.7L21 9.5M4 10h16v8a2 2 0 01-2 2H6a2 2 0 01-2-2v-8zm4 4h3m2 0h3"
-      />
-    </svg>
-  )
-}
 
 function CopyPubkeyButton({ pubkey }: { pubkey: string }) {
   const [copied, setCopied] = useState(false)
@@ -82,23 +48,9 @@ function CopyPubkeyButton({ pubkey }: { pubkey: string }) {
       onClick={handleCopy}
     >
       {copied ? (
-        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M5 13l4 4L19 7"
-          />
-        </svg>
+        <Check className="h-3.5 w-3.5" />
       ) : (
-        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-          />
-        </svg>
+        <Copy className="h-3.5 w-3.5" />
       )}
     </button>
   )
@@ -106,7 +58,8 @@ function CopyPubkeyButton({ pubkey }: { pubkey: string }) {
 
 function parseAddress(productId: string): { kind: number; pubkey: string; d: string } | null {
   const decoded = decodeURIComponent(productId)
-  const [kindStr, pubkey, d] = decoded.split(":")
+  const [kindStr, pubkey, ...dParts] = decoded.split(":")
+  const d = dParts.join(":")
   const kind = Number(kindStr)
   if (!Number.isFinite(kind) || !pubkey || !d) return null
   return { kind, pubkey, d }
@@ -142,6 +95,10 @@ async function fetchProduct(productId: string): Promise<Product | null> {
       return addressId === decodedId
     })
     if (matched) return parseProductEvent(matched)
+  }
+
+  if (!/^[0-9a-f]{64}$/i.test(decodedId)) {
+    return null
   }
 
   const filter: NDKFilter = { ids: [decodedId] }
@@ -204,10 +161,7 @@ function ProductPage() {
   const hasMultipleImages = images.length > 1
   const selectedImage = images[selectedImageIndex] ?? images[0]
   const merchantName =
-    merchantProfile.data?.displayName ||
-    merchantProfile.data?.name ||
-    (product ? formatPubkey(product.pubkey, 6) : "")
-  const merchantAvatarFallback = (merchantName[0] ?? "C").toUpperCase()
+    product ? getMerchantDisplayName(merchantProfile.data, product.pubkey) : ""
   const cartItem = product ? cart.items.find((item) => item.productId === product.id) : null
   const cartQuantity = cartItem?.quantity ?? 0
   const priceDisplay = product
@@ -236,8 +190,8 @@ function ProductPage() {
           {product && (
             <>
               <Link
-                to="/products"
-                search={{ merchant: product.pubkey }}
+                to="/store/$pubkey"
+                params={{ pubkey: product.pubkey }}
                 className="transition-colors hover:text-[var(--text-primary)]"
               >
                 {merchantName}
@@ -279,9 +233,22 @@ function ProductPage() {
       )}
 
       {productQuery.data === null && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-          Product not found.
-        </div>
+        <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 text-center sm:p-10">
+          <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-[var(--surface-elevated)] text-secondary-400">
+            <SearchX className="h-6 w-6" />
+          </div>
+          <h2 className="mt-5 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
+            Product not found
+          </h2>
+          <p className="mx-auto mt-3 max-w-xl text-sm leading-7 text-[var(--text-secondary)]">
+            This listing may have been removed, changed, or is no longer available from the current relay view.
+          </p>
+          <div className="mt-6 flex justify-center">
+            <Button asChild className="h-11 px-5 text-sm">
+              <Link to="/products">Browse products</Link>
+            </Button>
+          </div>
+        </section>
       )}
 
       {product && (
@@ -327,32 +294,40 @@ function ProductPage() {
 
             <aside className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
               <div className="flex flex-col gap-4">
-                <Link
-                  to="/products"
-                  search={{ merchant: product.pubkey }}
-                  className="block w-full min-w-0 rounded-xl border border-white/10 bg-[var(--surface-elevated)] px-4 py-3 transition-colors hover:border-white/20 hover:bg-white/[0.05]"
-                >
+                <div className="w-full min-w-0 rounded-xl border border-white/10 bg-[var(--surface-elevated)] px-4 py-3">
                   <div className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
                     Shop at
                   </div>
                   <div className="mt-3 flex items-start gap-3">
                     <Avatar className="h-11 w-11 shrink-0 border border-white/10">
                       <AvatarImage src={merchantProfile.data?.picture} alt={merchantName} />
-                      <AvatarFallback>{merchantAvatarFallback}</AvatarFallback>
+                      <AvatarFallback>
+                        <MerchantAvatarFallback />
+                      </AvatarFallback>
                     </Avatar>
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-base font-semibold leading-tight text-[var(--text-primary)]">
-                        {merchantName}
-                      </div>
+                      <Link
+                        to="/store/$pubkey"
+                        params={{ pubkey: product.pubkey }}
+                        className="block min-w-0 rounded-md transition-colors hover:text-secondary-300"
+                      >
+                        <div className="truncate text-base font-semibold leading-tight text-[var(--text-primary)]">
+                          {merchantName}
+                        </div>
+                      </Link>
                       <div className="mt-1 flex min-w-0 items-center gap-2">
-                        <span className="truncate font-mono text-xs text-[var(--text-muted)]">
+                        <Link
+                          to="/store/$pubkey"
+                          params={{ pubkey: product.pubkey }}
+                          className="truncate font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+                        >
                           {formatPubkey(product.pubkey, 10)}
-                        </span>
+                        </Link>
                         <CopyPubkeyButton pubkey={product.pubkey} />
                       </div>
                     </div>
                   </div>
-                </Link>
+                </div>
               </div>
 
               <div className="mt-5 space-y-5 border-t border-[var(--border)] pt-5">
@@ -427,7 +402,7 @@ function ProductPage() {
 
                 <Button asChild variant="outline" className="w-full">
                   <Link to="/cart">
-                    <CartIcon className="h-4 w-4" />
+                    <ShoppingCart className="h-4 w-4" />
                     View cart
                   </Link>
                 </Button>
@@ -516,8 +491,8 @@ function ProductPage() {
                 </p>
               </div>
               <Button asChild variant="outline" className="h-11 px-4 text-sm">
-                <Link to="/products" search={{ merchant: product.pubkey }}>
-                  <StoreIcon className="h-[18px] w-[18px]" />
+                <Link to="/store/$pubkey" params={{ pubkey: product.pubkey }}>
+                  <Store className="h-[18px] w-[18px]" />
                   Browse store
                 </Link>
               </Button>

@@ -1,3 +1,4 @@
+import { Bolt, Check, LoaderCircle, ShoppingCart } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useEffect, useMemo, useState } from "react"
 import { NDKEvent, NDKUser, giftWrap } from "@nostr-dev-kit/ndk"
@@ -57,62 +58,19 @@ export const Route = createFileRoute("/checkout")({
 })
 
 function CartIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M3 3h2l.4 2m0 0L7 13h10l2-8H5.4M5.4 5H19M7 13l-1 5h12M9 18a1 1 0 100 2 1 1 0 000-2zm8 0a1 1 0 100 2 1 1 0 000-2z"
-      />
-    </svg>
-  )
+  return <ShoppingCart className={className} />
 }
 
 function LightningIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"
-      />
-    </svg>
-  )
+  return <Bolt className={className} />
 }
 
 function CheckIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M5 13l4 4L19 7"
-      />
-    </svg>
-  )
+  return <Check className={className} />
 }
 
 function SpinnerIcon({ className = "h-5 w-5" }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24">
-      <circle
-        className="opacity-20"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-      <path
-        className="opacity-90"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
-      />
-    </svg>
-  )
+  return <LoaderCircle className={className} />
 }
 
 function readStoredShipping(): ShippingFormState {
