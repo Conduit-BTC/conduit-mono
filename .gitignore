@@ -29,6 +29,7 @@ coverage/
 
 # Ephemeral context files (call transcripts, meeting notes, temp checklists)
 /context/
+/tmp/
 
 # Vite
 *.local
