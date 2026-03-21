@@ -533,6 +533,16 @@ function OrdersPage() {
     () => selected ? extractOrderSummary(selected.messages) : null,
     [selected]
   )
+  const awaitingInvoiceCount = useMemo(
+    () => conversations.filter((conversation) => !conversation.messages.some((message) => message.type === "payment_request")).length,
+    [conversations],
+  )
+  const activeFulfillmentCount = useMemo(
+    () => conversations.filter((conversation) =>
+      conversation.status === "paid" || conversation.status === "processing" || conversation.status === "shipped"
+    ).length,
+    [conversations],
+  )
 
   // Auto-invoice: when a new order arrives and a wallet is connected (or mock mode),
   // generate and send the invoice automatically without merchant intervention.
@@ -754,12 +764,13 @@ function OrdersPage() {
   })
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-medium text-[var(--text-primary)]">Orders</h1>
-          <p className="mt-1 text-sm text-[var(--text-secondary)]">
-            Two-column merchant inbox for MVP order conversations and invoice/status/shipping actions.
+          <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">Orders</div>
+          <h1 className="mt-3 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">Merchant order inbox</h1>
+          <p className="mt-2 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
+            Review incoming buyer orders, send invoices, update status, and share shipping details from one workspace.
           </p>
           <div className="mt-3">
             <Button variant="outline" size="sm" disabled={!signerConnected || isOrdersFetching} onClick={handleRefresh}>
@@ -806,7 +817,7 @@ function OrdersPage() {
             </Button>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant={canMockInvoice() || weblnAvailable || nwc.connection ? "outline" : "muted"} size="sm" onClick={() => setShowNwcSetup(!showNwcSetup)}>
             {canMockInvoice() ? "Mock mode" : weblnAvailable ? "Alby detected" : nwc.connection ? "NWC connected" : "Connect wallet"}
           </Button>
@@ -816,8 +827,23 @@ function OrdersPage() {
         </div>
       </div>
 
+      <div className="grid gap-4 md:grid-cols-3">
+        <div className="rounded-[1.35rem] border border-white/10 bg-white/[0.04] p-4">
+          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Open threads</div>
+          <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">{conversations.length}</div>
+        </div>
+        <div className="rounded-[1.35rem] border border-white/10 bg-white/[0.04] p-4">
+          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Awaiting invoice</div>
+          <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">{awaitingInvoiceCount}</div>
+        </div>
+        <div className="rounded-[1.35rem] border border-white/10 bg-white/[0.04] p-4">
+          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Active fulfillment</div>
+          <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">{activeFulfillmentCount}</div>
+        </div>
+      </div>
+
       {showNwcSetup && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
+        <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4">
           {weblnAvailable && (
             <div className="mb-3 flex items-center gap-2 text-xs text-green-400">
               <span className="inline-block h-2 w-2 rounded-full bg-green-400" />
@@ -888,7 +914,7 @@ function OrdersPage() {
       )}
 
       {!signerConnected && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4 text-sm text-[var(--text-secondary)]">
           Connect your signer to view incoming orders.
         </div>
       )}
@@ -905,14 +931,14 @@ function OrdersPage() {
       )}
 
       {signerConnected && !ordersQuery.isLoading && conversations.length === 0 && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4 text-sm text-[var(--text-secondary)]">
           No orders yet. Place an order from the Market app targeting this merchant pubkey.
         </div>
       )}
 
       {signerConnected && conversations.length > 0 && (
-        <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
-          <aside className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2">
+        <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+          <aside className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-2">
             <div className="mb-2 px-2 text-xs uppercase tracking-wide text-[var(--text-secondary)]">Conversations</div>
             <div className="space-y-1">
               {conversations.map((conversation) => {
@@ -948,7 +974,7 @@ function OrdersPage() {
             </div>
           </aside>
 
-          <section className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
+          <section className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4">
             {selected && orderSummary ? (
               <Tabs value={activeTab} onValueChange={setActiveTab}>
                 <TabsList>

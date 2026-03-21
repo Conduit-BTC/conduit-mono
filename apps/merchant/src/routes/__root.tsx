@@ -1,6 +1,7 @@
 import { createRootRoute, Outlet, type ErrorComponentProps } from "@tanstack/react-router"
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
-import { MerchantHeader } from "../components/MerchantHeader"
+import type { ReactNode } from "react"
+import { MerchantHeader, MerchantSidebar } from "../components/MerchantHeader"
 import { ErrorPage, NotFoundPage } from "@conduit/ui"
 
 export const Route = createRootRoute({
@@ -9,13 +10,20 @@ export const Route = createRootRoute({
   notFoundComponent: RootNotFound,
 })
 
-function RootShell({ children }: { children: React.ReactNode }) {
+function RootShell({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen flex flex-col">
-      <MerchantHeader />
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6">
-        {children}
-      </main>
+    <div className="min-h-screen bg-[#090512]">
+      <div className="lg:grid lg:grid-cols-[260px_minmax(0,1fr)]">
+        <MerchantSidebar />
+        <div className="min-h-screen">
+          <MerchantHeader />
+          <main className="px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+            <div className="mx-auto w-full max-w-[1280px]">
+              {children}
+            </div>
+          </main>
+        </div>
+      </div>
       {import.meta.env.DEV && <TanStackRouterDevtools />}
     </div>
   )

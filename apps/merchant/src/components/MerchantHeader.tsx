@@ -1,6 +1,19 @@
+import {
+  Bell,
+  Grid2x2,
+  Menu,
+  Package,
+  Search,
+  Settings,
+  ShoppingBag,
+} from "lucide-react"
+import type { ComponentType } from "react"
 import { Link, useNavigate } from "@tanstack/react-router"
 import { config, formatPubkey, useAuth } from "@conduit/core"
 import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
   Badge,
   Button,
   DropdownMenu,
@@ -8,6 +21,7 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  Input,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -16,6 +30,33 @@ import {
   cn,
 } from "@conduit/ui"
 import { SignerSwitch } from "./SignerSwitch"
+
+type NavItem = {
+  to: "/" | "/orders" | "/products" | "/profile"
+  label: string
+  icon: ComponentType<{ className?: string }>
+}
+
+const navItems: NavItem[] = [
+  { to: "/", label: "Home", icon: Grid2x2 },
+  { to: "/orders", label: "Orders", icon: ShoppingBag },
+  { to: "/products", label: "Products", icon: Package },
+  { to: "/profile", label: "Profile", icon: Settings },
+]
+
+function MerchantAvatarFallback({ iconClassName = "h-4 w-4" }: { iconClassName?: string }) {
+  return (
+    <div className="flex h-full w-full items-center justify-center rounded-full bg-[radial-gradient(circle_at_top,rgba(255,86,164,0.24),transparent_55%),linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02))] text-[var(--text-primary)]">
+      <img
+        src="/images/logo/logo-icon.svg"
+        alt=""
+        aria-hidden="true"
+        className={`${iconClassName} rotate-180 select-none object-contain brightness-0 invert`}
+        draggable="false"
+      />
+    </div>
+  )
+}
 
 function Logo({
   variant = "full",
@@ -34,10 +75,44 @@ function Logo({
   return (
     <Link to="/" className={cn("flex items-center gap-3 select-none", className)}>
       <img src={src} alt="Conduit" className="h-8 w-auto" />
-      <span className="hidden border-l border-[var(--border)] pl-3 font-display text-2xl font-medium tracking-tight text-[var(--text-primary)] md:block">
+      <span className="hidden border-l border-white/10 pl-3 font-display text-2xl font-medium tracking-tight text-[var(--text-primary)] md:block">
         merchant
       </span>
     </Link>
+  )
+}
+
+function MerchantNavLinks({
+  onNavigate,
+  compact = false,
+}: {
+  onNavigate?: () => void
+  compact?: boolean
+}) {
+  return (
+    <nav className={cn("grid gap-1.5", compact ? "gap-1" : "gap-1.5")}>
+      {navItems.map((item) => {
+        const Icon = item.icon
+        return (
+          <Link
+            key={item.to}
+            to={item.to}
+            onClick={onNavigate}
+            className={cn(
+              "group flex items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:border-white/8 hover:bg-white/[0.04] hover:text-[var(--text-primary)]",
+              compact ? "px-3 py-2" : "",
+            )}
+            activeProps={{
+              className:
+                "border-white/10 bg-white/[0.07] text-[var(--text-primary)] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]",
+            }}
+          >
+            <Icon className="h-4 w-4 shrink-0" />
+            <span>{item.label}</span>
+          </Link>
+        )
+      })}
+    </nav>
   )
 }
 
@@ -50,11 +125,25 @@ function UserMenu() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="primary" size="sm" className="font-mono text-xs">
-          {formatPubkey(pubkey, 4)}
-        </Button>
+        <button
+          type="button"
+          className="inline-flex items-center gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-2.5 py-2 text-left transition-colors hover:bg-white/[0.06]"
+        >
+          <Avatar className="h-8 w-8 border border-white/10">
+            <AvatarImage src={undefined} alt="Merchant profile" />
+            <AvatarFallback className="bg-transparent p-0">
+              <MerchantAvatarFallback iconClassName="h-4 w-4" />
+            </AvatarFallback>
+          </Avatar>
+          <div className="hidden min-w-0 sm:block">
+            <div className="truncate text-sm font-medium text-[var(--text-primary)]">
+              {formatPubkey(pubkey, 6)}
+            </div>
+            <div className="text-xs text-[var(--text-muted)]">Connected signer</div>
+          </div>
+        </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-40">
+      <DropdownMenuContent align="end" className="w-44">
         <DropdownMenuItem onSelect={() => navigate({ to: "/profile" })}>
           Profile
         </DropdownMenuItem>
@@ -67,74 +156,107 @@ function UserMenu() {
   )
 }
 
-export function MerchantHeader() {
+function MobileNav() {
   const { pubkey, status } = useAuth()
 
   return (
-    <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur">
-      <div className="mx-auto flex h-16 max-w-7xl items-center gap-4 px-4">
+    <Sheet>
+      <SheetTrigger asChild>
+        <Button variant="ghost" size="sm" className="h-11 w-11 rounded-xl lg:hidden" aria-label="Open menu">
+          <Menu className="h-5 w-5" />
+        </Button>
+      </SheetTrigger>
+      <SheetContent side="left" className="w-[320px] border-r border-white/10 bg-[#0b0717]">
+        <SheetHeader>
+          <SheetTitle>
+            <Logo variant="full" className="justify-start" />
+          </SheetTitle>
+        </SheetHeader>
+
+        <div className="mt-6 space-y-6">
+          <MerchantNavLinks compact />
+
+          <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+            {config.lightningNetwork !== "mainnet" && (
+              <Badge
+                variant="secondary"
+                className={cn(
+                  "mb-3 border",
+                  config.lightningNetwork === "mock"
+                    ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
+                    : "border-blue-500/30 bg-blue-500/10 text-blue-400",
+                )}
+              >
+                {config.lightningNetwork}
+              </Badge>
+            )}
+            {status === "connected" && pubkey ? <UserMenu /> : <SignerSwitch />}
+          </div>
+        </div>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
+export function MerchantSidebar() {
+  const { pubkey, status } = useAuth()
+
+  return (
+    <aside className="hidden h-screen flex-col border-r border-white/10 bg-[#0b0717] lg:flex">
+      <div className="border-b border-white/8 px-5 py-5">
         <Logo />
         {config.lightningNetwork !== "mainnet" && (
-          <Badge variant="secondary" className={cn(
-            "text-[10px] uppercase tracking-wider border",
-            config.lightningNetwork === "mock"
-              ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
-              : "border-blue-500/30 bg-blue-500/10 text-blue-400"
-          )}>
+          <Badge
+            variant="secondary"
+            className={cn(
+              "mt-4 border",
+              config.lightningNetwork === "mock"
+                ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
+                : "border-blue-500/30 bg-blue-500/10 text-blue-400",
+            )}
+          >
             {config.lightningNetwork}
           </Badge>
         )}
+      </div>
 
-        <nav className="hidden flex-1 items-center justify-end gap-2 text-sm text-[var(--text-secondary)] lg:flex">
-          <Button asChild variant="ghost" className="h-10 px-3">
-            <Link to="/products" activeProps={{ className: "text-[var(--text-primary)]" }}>
-              Products
-            </Link>
-          </Button>
-          <Button asChild variant="ghost" className="h-10 px-3">
-            <Link to="/orders" activeProps={{ className: "text-[var(--text-primary)]" }}>
-              Orders
-            </Link>
-          </Button>
-        </nav>
+      <div className="flex min-h-0 flex-1 flex-col px-4 py-5">
+        <MerchantNavLinks />
 
-        <div className="ml-auto flex items-center gap-2 lg:ml-0">
-          <div className="hidden min-w-[8rem] items-center justify-end lg:flex">
-            {status === "connected" && pubkey ? <UserMenu /> : <SignerSwitch />}
+        <div className="mt-auto rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+          <div className="mb-2 text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+            Merchant
           </div>
+          {status === "connected" && pubkey ? <UserMenu /> : <SignerSwitch />}
+        </div>
+      </div>
+    </aside>
+  )
+}
 
-          <div className="lg:hidden">
-            <Sheet>
-              <SheetTrigger asChild>
-                <Button variant="ghost" size="sm" aria-label="Open menu">
-                  Menu
-                </Button>
-              </SheetTrigger>
-              <SheetContent side="right" className="w-[340px]">
-                <SheetHeader>
-                  <SheetTitle>
-                    <Logo variant="icon" className="justify-start" />
-                  </SheetTitle>
-                </SheetHeader>
+export function MerchantHeader() {
+  const { pubkey, status } = useAuth()
+  const signerConnected = status === "connected" && !!pubkey
 
-                <div className="mt-6 grid gap-2">
-                  <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/products">Products</Link>
-                  </Button>
-                  <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/orders">Orders</Link>
-                  </Button>
-                  <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/profile">Profile</Link>
-                  </Button>
-                </div>
+  return (
+    <header className="sticky top-0 z-30 border-b border-white/10 bg-[#0b0717]/90 backdrop-blur">
+      <div className="flex h-20 items-center gap-3 px-4 sm:px-6">
+        <MobileNav />
 
-                <div className="mt-6 border-t border-[var(--border)] pt-4">
-                  {status === "connected" && pubkey ? <UserMenu /> : <SignerSwitch />}
-                </div>
-              </SheetContent>
-            </Sheet>
-          </div>
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
+          <Input
+            className="h-12 rounded-2xl border-white/12 bg-white/[0.05] pl-11 pr-4 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+            placeholder="Search products, orders, or buyers"
+            aria-label="Search merchant portal"
+          />
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="sm" className="hidden h-11 w-11 rounded-xl sm:inline-flex" aria-label="Notifications">
+            <Bell className="h-4 w-4" />
+          </Button>
+          <div className="hidden lg:block">{signerConnected ? <UserMenu /> : <SignerSwitch />}</div>
         </div>
       </div>
     </header>
