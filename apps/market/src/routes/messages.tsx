@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query"
 import { useEffect, useMemo, useState } from "react"
 import { Badge, Button } from "@conduit/ui"
 import { MessageCircleMore, Search, Store } from "lucide-react"
-import { extractOrderSummary, fetchProfile, formatPubkey, useAuth, useProfile } from "@conduit/core"
+import { getProfiles, formatPubkey, useAuth, useProfile } from "@conduit/core"
 import { requireAuth } from "../lib/auth"
 import { MerchantAvatarFallback, getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
@@ -11,7 +11,7 @@ import {
   formatProductReference,
   getConversationPreview,
 } from "../components/OrderConversationMessage"
-import { buildBuyerConversations, fetchBuyerMessages, type BuyerConversation } from "../lib/orderConversations"
+import { fetchBuyerConversations, type BuyerConversation } from "../lib/orderConversations"
 
 type MessagesSearch = {
   tab?: "dms" | "merchants"
@@ -42,7 +42,8 @@ function MerchantThreadRow({
 }) {
   const { data: profile } = useProfile(conversation.merchantPubkey)
   const merchantName = getMerchantDisplayName(profile, conversation.merchantPubkey)
-  const latestMessage = conversation.messages[conversation.messages.length - 1]
+  const messages = conversation.messages ?? []
+  const latestMessage = messages[messages.length - 1]
 
   return (
     <button
@@ -95,15 +96,13 @@ function MessagesPage() {
   const messagesQuery = useQuery({
     queryKey: ["buyer-messages", pubkey ?? "none"],
     enabled: signerConnected,
-    queryFn: () => fetchBuyerMessages(pubkey!),
+    queryFn: () => fetchBuyerConversations(pubkey!),
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   })
 
-  const conversations = useMemo(
-    () => (signerConnected && pubkey ? buildBuyerConversations(messagesQuery.data ?? [], pubkey) : []),
-    [messagesQuery.data, pubkey, signerConnected],
-  )
+  const conversations = useMemo(() => messagesQuery.data?.data ?? [], [messagesQuery.data])
+  const conversationMeta = messagesQuery.data?.meta ?? null
   const merchantPubkeys = useMemo(
     () => Array.from(new Set(conversations.map((conversation) => conversation.merchantPubkey).filter(Boolean))),
     [conversations],
@@ -112,10 +111,8 @@ function MessagesPage() {
     queryKey: ["buyer-message-profiles", merchantPubkeys],
     enabled: signerConnected && merchantPubkeys.length > 0,
     queryFn: async () => {
-      const profiles = await Promise.all(merchantPubkeys.map((merchantPubkey) => fetchProfile(merchantPubkey)))
-      return Object.fromEntries(
-        profiles.map((profile) => [profile.pubkey, profile])
-      )
+      const result = await getProfiles({ pubkeys: merchantPubkeys })
+      return result.data
     },
   })
 
@@ -133,11 +130,11 @@ function MessagesPage() {
         (merchantProfilesQuery.data?.[conversation.merchantPubkey]?.name?.toLowerCase().includes(normalized) ?? false) ||
         conversation.orderId.toLowerCase().includes(normalized) ||
         conversation.merchantPubkey.toLowerCase().includes(normalized) ||
-        extractOrderSummary(conversation.messages).items.some((item) =>
+        (conversation.messages ?? []).some((message) => getConversationPreview(message).toLowerCase().includes(normalized)) ||
+        (conversation.messages ?? []).flatMap((message) => message.type === "order" ? message.payload.items : []).some((item) =>
           item.productId.toLowerCase().includes(normalized) ||
           formatProductReference(item.productId).title.toLowerCase().includes(normalized)
-        ) ||
-        conversation.messages.some((message) => getConversationPreview(message).toLowerCase().includes(normalized))
+        )
       )
     })
   }, [conversations, merchantProfilesQuery.data, query, search.merchant])
@@ -259,6 +256,13 @@ function MessagesPage() {
             <div className="text-sm text-[var(--text-secondary)]">Loading merchant conversations…</div>
           )}
 
+          {signerConnected && conversationMeta && (
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-xs text-[var(--text-secondary)]">
+              Source: {conversationMeta.source.replace("_", " ")}
+              {conversationMeta.stale ? " / stale view" : ""}
+            </div>
+          )}
+
           {signerConnected && messagesQuery.error && (
             <div className="rounded-xl border border-error/30 bg-error/10 p-4 text-sm text-error">
               Failed to load messages: {messagesQuery.error instanceof Error ? messagesQuery.error.message : "Unknown error"}
@@ -341,7 +345,7 @@ function MessagesPage() {
                     </div>
 
                     <div className="space-y-3 overflow-auto px-6 py-5 xl:min-h-0 xl:flex-1">
-                      {selectedConversation.messages.map((message) => (
+                      {(selectedConversation.messages ?? []).map((message) => (
                         <OrderConversationMessage
                           key={message.id}
                           message={message}

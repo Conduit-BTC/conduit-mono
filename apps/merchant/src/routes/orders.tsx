@@ -2,24 +2,22 @@ import { createFileRoute, Link } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  canMockInvoice,
   convertCommerceAmountToSats,
   decodeLightningInvoiceAmount,
-  canMockInvoice,
-  db,
   EVENT_KINDS,
   extractOrderSummary,
-  fetchEventsFanout,
   formatPubkey,
   getNdk,
   getLightningNetworkMismatchMessage,
+  getMerchantConversationList,
   hasWebLN,
   isInvoiceCompatibleWithCurrentNetwork,
   mockMakeInvoice,
   nwcMakeInvoice,
   parseNwcUri,
-  parseOrderMessageRumorEvent,
-  requireNdkConnected,
   weblnMakeInvoice,
+  type MerchantConversationSummary,
   type NwcConnection,
   type ParsedOrderMessage,
   type StatusUpdateMessageSchema,
@@ -42,8 +40,7 @@ import {
   TabsTrigger,
 } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
-import { giftUnwrap, giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
-import type { NDKFilter, NDKSigner } from "@nostr-dev-kit/ndk"
+import { giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import { CheckCircle2, RotateCw } from "lucide-react"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 
@@ -54,16 +51,7 @@ export const Route = createFileRoute("/orders")({
   component: OrdersPage,
 })
 
-type Conversation = {
-  id: string
-  orderId: string
-  buyerPubkey: string
-  messages: ParsedOrderMessage[]
-  latestAt: number
-  latestType: ParsedOrderMessage["type"]
-  status: string | null
-  totalSummary: string | null
-}
+type Conversation = MerchantConversationSummary
 
 const INVOICE_CURRENCY_OPTIONS = ["USD", "SATS"] as const
 
@@ -72,175 +60,6 @@ function normalizeInvoiceCurrencyChoice(currency: string | undefined): (typeof I
   if (normalized === "SAT" || normalized === "SATS") return "SATS"
   if (normalized === "USD") return "USD"
   return ""
-}
-
-function raceTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
-  ])
-}
-
-async function tryUnwrap(event: NDKEvent, signer: NDKSigner) {
-  try {
-    return await raceTimeout(
-      (async () => {
-        try { return await giftUnwrap(event, undefined, signer, "nip44") } catch { /* nip44 failed */ }
-        try { return await giftUnwrap(event, undefined, signer, "nip04") } catch { /* nip04 failed */ }
-        return null
-      })(),
-      8_000,
-      null,
-    )
-  } catch {
-    return null
-  }
-}
-
-// Unwrap events in sequential batches to avoid overwhelming the signer extension.
-async function unwrapBatch(events: NDKEvent[], signer: NDKSigner, batchSize = 5): Promise<Array<Awaited<ReturnType<typeof tryUnwrap>>>> {
-  const results: Array<Awaited<ReturnType<typeof tryUnwrap>>> = []
-  for (let i = 0; i < events.length; i += batchSize) {
-    const batch = events.slice(i, i + batchSize)
-    const batchResults = await Promise.all(batch.map((e) => tryUnwrap(e, signer)))
-    results.push(...batchResults)
-  }
-  return results
-}
-
-// Set of gift-wrap event IDs already unwrapped and cached this session.
-const knownWrapIds = new Set<string>()
-
-async function fetchMerchantMessages(merchantPubkey: string): Promise<ParsedOrderMessage[]> {
-  // Load cached messages from Dexie first
-  const cached = await db.orderMessages
-    .where("recipientPubkey").equals(merchantPubkey)
-    .or("senderPubkey").equals(merchantPubkey)
-    .toArray()
-
-  const cachedById = new Map<string, ParsedOrderMessage>()
-  for (const row of cached) {
-    try {
-      cachedById.set(row.id, JSON.parse(row.rawContent) as ParsedOrderMessage)
-    } catch { /* skip corrupt */ }
-  }
-
-  // Fetch fresh from relays
-  try {
-    const ndk = await requireNdkConnected()
-    const signer = ndk.signer
-    if (!signer) {
-      if (cachedById.size > 0) {
-        const result = Array.from(cachedById.values())
-        result.sort((a, b) => a.createdAt - b.createdAt)
-        return result
-      }
-      throw new Error("Connect your Nostr signer to view orders.")
-    }
-
-    const filter: NDKFilter = {
-      kinds: [EVENT_KINDS.GIFT_WRAP],
-      "#p": [merchantPubkey],
-      limit: 50,
-    }
-
-    const wrapped = await fetchEventsFanout(filter, {
-      connectTimeoutMs: 4_000,
-      fetchTimeoutMs: 12_000,
-    }) as NDKEvent[]
-
-    // Only unwrap events we haven't seen before
-    const newWrapped = wrapped.filter((e) => !knownWrapIds.has(e.id))
-
-    // Unwrap in small batches so the signer extension isn't flooded
-    const unwrapped = await unwrapBatch(newWrapped, signer)
-
-    const newRows: Array<{ id: string; orderId: string; type: string; senderPubkey: string; recipientPubkey: string; createdAt: number; rawContent: string; cachedAt: number }> = []
-    for (const rumor of unwrapped) {
-      if (!rumor) continue
-      if (rumor.kind !== EVENT_KINDS.ORDER) continue
-      try {
-        const parsed = parseOrderMessageRumorEvent(rumor)
-        if (!cachedById.has(parsed.id)) {
-          newRows.push({
-            id: parsed.id,
-            orderId: parsed.orderId,
-            type: parsed.type,
-            senderPubkey: parsed.senderPubkey,
-            recipientPubkey: parsed.recipientPubkey,
-            createdAt: parsed.createdAt,
-            rawContent: JSON.stringify(parsed),
-            cachedAt: Date.now(),
-          })
-        }
-        cachedById.set(parsed.id, parsed)
-      } catch {
-        // ignore malformed
-      }
-    }
-
-    // Mark all fetched wrap IDs as known (even ones that failed to unwrap)
-    for (const e of wrapped) knownWrapIds.add(e.id)
-
-    // Persist new messages to Dexie
-    if (newRows.length > 0) {
-      await db.orderMessages.bulkPut(newRows)
-    }
-  } catch (err) {
-    // If relay fetch fails but we have cache, return cached data
-    if (cachedById.size > 0) {
-      const result = Array.from(cachedById.values())
-      result.sort((a, b) => a.createdAt - b.createdAt)
-      return result
-    }
-    throw err
-  }
-
-  const result = Array.from(cachedById.values())
-  result.sort((a, b) => a.createdAt - b.createdAt)
-  return result
-}
-
-function buildMerchantConversations(messages: ParsedOrderMessage[], merchantPubkey: string): Conversation[] {
-  const grouped = new Map<string, ParsedOrderMessage[]>()
-
-  for (const message of messages) {
-    const bucket = grouped.get(message.orderId) ?? []
-    bucket.push(message)
-    grouped.set(message.orderId, bucket)
-  }
-
-  const conversations: Conversation[] = []
-  for (const [orderId, bucket] of grouped.entries()) {
-    bucket.sort((a, b) => a.createdAt - b.createdAt)
-    const latest = bucket[bucket.length - 1]
-    if (!latest) continue
-
-    const firstOrder = bucket.find((message) => message.type === "order")
-    const latestStatus = [...bucket]
-      .reverse()
-      .find((message) => message.type === "status_update")
-
-    const otherParticipants = Array.from(new Set(
-      bucket.map((m) => m.senderPubkey === merchantPubkey ? m.recipientPubkey : m.senderPubkey).filter(Boolean)
-    ))
-    const buyerPubkey = otherParticipants[0] ?? ""
-
-    conversations.push({
-      id: orderId,
-      orderId,
-      buyerPubkey,
-      messages: bucket,
-      latestAt: latest.createdAt,
-      latestType: latest.type,
-      status: latestStatus?.type === "status_update" ? latestStatus.payload.status : null,
-      totalSummary:
-        firstOrder?.type === "order" ? `${firstOrder.payload.subtotal} ${firstOrder.payload.currency}` : null,
-    })
-  }
-
-  conversations.sort((a, b) => b.latestAt - a.latestAt)
-  return conversations
 }
 
 async function publishOrderConversationMessage(params: {
@@ -520,7 +339,7 @@ function OrdersPage() {
   const ordersQuery = useQuery({
     queryKey: ["merchant-order-messages", pubkey ?? "none"],
     enabled: signerConnected,
-    queryFn: () => fetchMerchantMessages(pubkey!),
+    queryFn: () => getMerchantConversationList({ principalPubkey: pubkey!, limit: 200 }),
     staleTime: 30_000,
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
@@ -563,10 +382,8 @@ function OrdersPage() {
     void refetchOrders()
   }, [refetchOrders, signerConnected])
 
-  const conversations = useMemo(
-    () => signerConnected && pubkey ? buildMerchantConversations(ordersQuery.data ?? [], pubkey) : [],
-    [ordersQuery.data, pubkey, signerConnected]
-  )
+  const conversations = useMemo(() => ordersQuery.data?.data ?? [], [ordersQuery.data])
+  const conversationMeta = ordersQuery.data?.meta ?? null
 
   useEffect(() => {
     if (conversations.length === 0) {
@@ -579,7 +396,7 @@ function OrdersPage() {
   }, [conversations, selectedConversationId])
 
   const selected = conversations.find((conversation) => conversation.id === selectedConversationId) ?? null
-  const selectedOrderMessage = selected?.messages.find((message) => message.type === "order")
+  const selectedOrderMessage = selected?.messages?.find((message) => message.type === "order")
   const selectedOrderCurrency = selectedOrderMessage?.type === "order" ? selectedOrderMessage.payload.currency : null
   const invoiceCurrencyUnsupported =
     !!selectedOrderCurrency && normalizeInvoiceCurrencyChoice(selectedOrderCurrency) === ""
@@ -588,18 +405,18 @@ function OrdersPage() {
     setSuccessFlash(null)
     setActiveTab("details")
     setOrderStatus("")
-    const firstOrder = selected?.messages.find((message) => message.type === "order")
+    const firstOrder = selected?.messages?.find((message) => message.type === "order")
     if (firstOrder?.type !== "order") return
     setInvoiceAmount(String(firstOrder.payload.subtotal))
     setInvoiceCurrency(normalizeInvoiceCurrencyChoice(firstOrder.payload.currency))
   }, [selected?.id])
 
   const orderSummary = useMemo(
-    () => selected ? extractOrderSummary(selected.messages) : null,
+    () => selected ? extractOrderSummary(selected.messages ?? []) : null,
     [selected]
   )
   const awaitingInvoiceCount = useMemo(
-    () => conversations.filter((conversation) => !conversation.messages.some((message) => message.type === "payment_request")).length,
+    () => conversations.filter((conversation) => !(conversation.messages ?? []).some((message) => message.type === "payment_request")).length,
     [conversations],
   )
   const activeFulfillmentCount = useMemo(
@@ -619,15 +436,15 @@ function OrdersPage() {
 
     const pending = conversations.filter((c) => {
       if (autoInvoicedRef.current.has(c.orderId)) return false
-      const hasOrder = c.messages.some((m) => m.type === "order")
-      const hasInvoice = c.messages.some((m) => m.type === "payment_request")
+      const hasOrder = (c.messages ?? []).some((m) => m.type === "order")
+      const hasInvoice = (c.messages ?? []).some((m) => m.type === "payment_request")
       return hasOrder && !hasInvoice
     })
 
     if (pending.length === 0) return
 
     async function autoInvoice(conv: Conversation) {
-      const orderMsg = conv.messages.find((m) => m.type === "order")
+      const orderMsg = (conv.messages ?? []).find((m) => m.type === "order")
       if (orderMsg?.type !== "order") return
 
       const amountSats = convertCommerceAmountToSats(
@@ -1018,6 +835,13 @@ function OrdersPage() {
         <div className="text-sm text-[var(--text-secondary)]">Loading…</div>
       )}
 
+      {signerConnected && conversationMeta && (
+        <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4 text-xs text-[var(--text-secondary)]">
+          Source: {conversationMeta.source.replace("_", " ")}
+          {conversationMeta.stale ? " / stale view" : ""}
+        </div>
+      )}
+
       {signerConnected && ordersQuery.error && (
         <div className="rounded-md border border-error/30 bg-error/10 p-4 text-sm text-error">
           Failed to load orders:{" "}
@@ -1126,7 +950,7 @@ function OrdersPage() {
                           <div className="grid gap-1">
                             <Label htmlFor="invoice-currency">Currency</Label>
                             <Select
-                              value={invoiceCurrency || undefined}
+                              value={invoiceCurrency}
                               onValueChange={(value) => setInvoiceCurrency(value)}
                             >
                               <SelectTrigger id="invoice-currency">
@@ -1206,12 +1030,7 @@ function OrdersPage() {
                                 </div>
                               )}
                             </div>
-                            <Button
-                              type="submit"
-                              size="sm"
-                              className="w-full"
-                              disabled={invoiceMutation.isPending}
-                            >
+                            <Button type="submit" size="sm" className="w-full" disabled={invoiceMutation.isPending}>
                               {invoiceMutation.isPending ? "Sending…" : "Send invoice DM"}
                             </Button>
                           </form>
@@ -1299,7 +1118,7 @@ function OrdersPage() {
 
                 <TabsContent value="messages">
                   <div className="max-h-[52vh] space-y-3 overflow-auto pr-1">
-                    {selected.messages.map((message) => (
+                    {(selected.messages ?? []).map((message) => (
                       <MessageCard key={message.id} message={message} mine={message.senderPubkey === pubkey} />
                     ))}
                   </div>

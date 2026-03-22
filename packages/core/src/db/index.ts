@@ -43,8 +43,14 @@ export interface CachedProduct {
   summary?: string
   price: number
   currency: string
+  type?: "simple" | "variable"
+  visibility?: "public" | "private"
+  stock?: number
   images: Array<{ url: string; alt?: string }>
   tags: string[]
+  location?: string
+  createdAt?: number
+  updatedAt?: number
   cachedAt: number
 }
 

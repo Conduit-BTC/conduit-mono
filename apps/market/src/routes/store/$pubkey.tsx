@@ -50,7 +50,7 @@ export const Route = createFileRoute("/store/$pubkey")({
 })
 
 function sortProducts(
-  products: Awaited<ReturnType<typeof fetchStoreProducts>>,
+  products: Product[],
   sort: SortOption | undefined,
   btcUsdRate: number | null
 ): Product[] {
@@ -90,6 +90,8 @@ function StorefrontPage() {
     queryKey: ["store-products", pubkey],
     queryFn: () => fetchStoreProducts(pubkey),
   })
+  const storeProducts = productsQuery.data?.data ?? []
+  const storeMeta = productsQuery.data?.meta ?? null
   const followQuery = useQuery({
     queryKey: ["following-store", viewerPubkey ?? "none", pubkey],
     enabled: status === "connected" && !!viewerPubkey && viewerPubkey !== pubkey,
@@ -113,11 +115,11 @@ function StorefrontPage() {
   const merchantAbout = profile?.about?.trim()
   const allTags = useMemo(() => {
     const tagSet = new Set<string>()
-    for (const product of productsQuery.data ?? []) {
+    for (const product of storeProducts) {
       for (const tag of product.tags) tagSet.add(tag.toLowerCase())
     }
     return Array.from(tagSet).sort()
-  }, [productsQuery.data])
+  }, [storeProducts])
 
   const updateSearch = (updates: Partial<StoreSearch>) => {
     navigate({
@@ -135,19 +137,19 @@ function StorefrontPage() {
     })
   }
 
-  const productCount = productsQuery.data?.length ?? 0
+  const productCount = storeProducts.length
   const isFollowing = followOverride ?? followQuery.data === true
   const isFollowBusy = followState !== "idle"
   const canShowPriceSort = useMemo(() => {
-    const products = productsQuery.data ?? []
+    const products = storeProducts
     if (products.length <= 1) return true
     const currencies = new Set(products.map((product) => product.currency.trim().toUpperCase()))
     if (currencies.size <= 1) return true
     return products.every((product) => getComparablePriceValue(product, btcUsdRate) !== null)
-  }, [btcUsdRate, productsQuery.data])
+  }, [btcUsdRate, storeProducts])
 
   const filteredProducts = useMemo(() => {
-    let result = productsQuery.data ?? []
+    let result = storeProducts
 
     if (search.q) {
       const query = search.q.toLowerCase()
@@ -165,7 +167,7 @@ function StorefrontPage() {
 
     const effectiveSort = canShowPriceSort ? search.sort : undefined
     return sortProducts(result, effectiveSort, btcUsdRate)
-  }, [btcUsdRate, canShowPriceSort, productsQuery.data, search.q, search.sort, search.tag])
+  }, [btcUsdRate, canShowPriceSort, search.q, search.sort, search.tag, storeProducts])
 
   useEffect(() => {
     if (!canShowPriceSort && (search.sort === "price_asc" || search.sort === "price_desc")) {
@@ -584,6 +586,13 @@ function StorefrontPage() {
             )}
           </div>
 
+          {storeMeta && (
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-xs text-[var(--text-secondary)]">
+              Source: {storeMeta.source.replace("_", " ")}
+              {storeMeta.stale ? " / stale view" : ""}
+            </div>
+          )}
+
           {productsQuery.isLoading && (
             <ul className="grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-3">
               {Array.from({ length: 6 }).map((_, index) => (
@@ -600,7 +609,7 @@ function StorefrontPage() {
             </div>
           )}
 
-          {productsQuery.data && filteredProducts.length === 0 && (
+          {!productsQuery.isLoading && storeProducts.length > 0 && filteredProducts.length === 0 && (
             <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6">
               <div className="text-lg font-semibold text-[var(--text-primary)]">No products match this store view</div>
               <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">

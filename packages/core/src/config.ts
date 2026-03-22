@@ -9,6 +9,10 @@ const DEFAULT_RELAYS = [
 export interface ConduitConfig {
   relayUrl: string
   defaultRelays: string[]
+  l2RelayUrls: string[]
+  merchantRelayUrls: string[]
+  publicRelayUrls: string[]
+  cacheApiUrl: string | null
   lightningNetwork: "mainnet" | "signet" | "testnet" | "mock"
 }
 
@@ -19,6 +23,10 @@ function getViteEnv(): {
   relayUrl: string
   defaultRelays: string
   defaultRelayUrl: string
+  l2RelayUrls: string
+  merchantRelayUrls: string
+  publicRelayUrls: string
+  cacheApiUrl: string
   lightningNetwork: string
 } {
   if (typeof import.meta !== "undefined" && import.meta.env) {
@@ -26,10 +34,23 @@ function getViteEnv(): {
       relayUrl: import.meta.env.VITE_RELAY_URL ?? "",
       defaultRelays: import.meta.env.VITE_DEFAULT_RELAYS ?? "",
       defaultRelayUrl: import.meta.env.VITE_DEFAULT_RELAY_URL ?? "",
+      l2RelayUrls: import.meta.env.VITE_L2_RELAY_URLS ?? "",
+      merchantRelayUrls: import.meta.env.VITE_MERCHANT_RELAY_URLS ?? "",
+      publicRelayUrls: import.meta.env.VITE_PUBLIC_RELAY_URLS ?? "",
+      cacheApiUrl: import.meta.env.VITE_CACHE_API_URL ?? "",
       lightningNetwork: import.meta.env.VITE_LIGHTNING_NETWORK ?? "",
     }
   }
-  return { relayUrl: "", defaultRelays: "", defaultRelayUrl: "", lightningNetwork: "" }
+  return {
+    relayUrl: "",
+    defaultRelays: "",
+    defaultRelayUrl: "",
+    l2RelayUrls: "",
+    merchantRelayUrls: "",
+    publicRelayUrls: "",
+    cacheApiUrl: "",
+    lightningNetwork: "",
+  }
 }
 
 function parseRelayList(raw: string): string[] {
@@ -49,13 +70,25 @@ function getDefaultRelays(env: ReturnType<typeof getViteEnv>): string[] {
 const env = getViteEnv()
 
 const relayUrl = env.relayUrl || "wss://relay.primal.net"
-const baseRelays = getDefaultRelays(env)
+const legacyRelays = getDefaultRelays(env)
+const l2RelayUrls = parseRelayList(env.l2RelayUrls)
+const merchantRelayUrls = parseRelayList(env.merchantRelayUrls)
+const configuredPublicRelayUrls = parseRelayList(env.publicRelayUrls)
+const publicRelayUrls = configuredPublicRelayUrls.length > 0 ? configuredPublicRelayUrls : legacyRelays
+const defaultRelays = [
+  ...l2RelayUrls,
+  ...merchantRelayUrls,
+  ...publicRelayUrls,
+  relayUrl,
+].filter((url, index, all) => url && all.indexOf(url) === index)
 
 export const config: ConduitConfig = {
   relayUrl,
-  defaultRelays: baseRelays.includes(relayUrl)
-    ? baseRelays
-    : [...baseRelays, relayUrl],
+  defaultRelays,
+  l2RelayUrls,
+  merchantRelayUrls,
+  publicRelayUrls,
+  cacheApiUrl: env.cacheApiUrl.trim() || null,
   lightningNetwork: (env.lightningNetwork || "mainnet") as ConduitConfig["lightningNetwork"],
 }
 

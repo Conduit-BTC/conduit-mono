@@ -1,18 +1,16 @@
 import { Check, Copy, SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import {
-  EVENT_KINDS,
-  fetchEventsFanout,
+  type CommerceResult,
   formatPubkey,
-  getNdk,
-  parseProductEvent,
+  getMerchantStorefront,
+  getProductDetail,
   useProfile,
   type Product,
 } from "@conduit/core"
 import { useQuery } from "@tanstack/react-query"
 import { useEffect, useMemo, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
-import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
 import { MerchantAvatarFallback, getMerchantDisplayName } from "../../components/MerchantIdentity"
 import { ProductGridCard, ProductGridCardSkeleton } from "../../components/ProductGridCard"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
@@ -56,76 +54,17 @@ function CopyPubkeyButton({ pubkey }: { pubkey: string }) {
   )
 }
 
-function parseAddress(productId: string): { kind: number; pubkey: string; d: string } | null {
-  const decoded = decodeURIComponent(productId)
-  const [kindStr, pubkey, ...dParts] = decoded.split(":")
-  const d = dParts.join(":")
-  const kind = Number(kindStr)
-  if (!Number.isFinite(kind) || !pubkey || !d) return null
-  return { kind, pubkey, d }
-}
-
-async function fetchProduct(productId: string): Promise<Product | null> {
-  const addr = parseAddress(productId)
-  const ndk = getNdk()
-  const decodedId = decodeURIComponent(productId)
-
-  if (addr && addr.kind === EVENT_KINDS.PRODUCT) {
-    const filter: NDKFilter = {
-      kinds: [EVENT_KINDS.PRODUCT],
-      authors: [addr.pubkey],
-      "#d": [addr.d],
-      limit: 1,
-    }
-    const ev = (await ndk.fetchEvent(filter)) as NDKEvent | null
-    if (ev) return parseProductEvent(ev)
-
-    const byAuthor = Array.from(
-      (await ndk.fetchEvents({
-        kinds: [EVENT_KINDS.PRODUCT],
-        authors: [addr.pubkey],
-        limit: 100,
-      })) as Set<NDKEvent>
-    ) as NDKEvent[]
-
-    const matched = byAuthor.find((event) => {
-      const dTag = event.tags.find((t) => t[0] === "d")?.[1]
-      if (!dTag) return false
-      const addressId = `30402:${event.pubkey}:${dTag}`
-      return addressId === decodedId
-    })
-    if (matched) return parseProductEvent(matched)
+async function fetchProduct(productId: string): Promise<CommerceResult<Product | null>> {
+  const result = await getProductDetail({ productId })
+  return {
+    data: result.data?.product ?? null,
+    meta: result.meta,
   }
-
-  if (!/^[0-9a-f]{64}$/i.test(decodedId)) {
-    return null
-  }
-
-  const filter: NDKFilter = { ids: [decodedId] }
-  const ev = (await ndk.fetchEvent(filter)) as NDKEvent | null
-  if (!ev) return null
-  return parseProductEvent(ev)
 }
 
 async function fetchRelatedProducts(product: Product): Promise<Product[]> {
-  const merchantProducts = await fetchEventsFanout({
-    kinds: [EVENT_KINDS.PRODUCT],
-    authors: [product.pubkey],
-    limit: 12,
-  }, {
-    connectTimeoutMs: 4_000,
-    fetchTimeoutMs: 8_000,
-  }) as NDKEvent[]
-
-  const parsed = merchantProducts
-    .map((event) => {
-      try {
-        return parseProductEvent(event)
-      } catch {
-        return null
-      }
-    })
-    .filter(Boolean) as Product[]
+  const result = await getMerchantStorefront({ merchantPubkey: product.pubkey, limit: 12 })
+  const parsed = result.data.map((record) => record.product)
 
   return parsed
     .filter((candidate) => candidate.id !== product.id)
@@ -145,16 +84,17 @@ function ProductPage() {
     queryKey: ["product", productId],
     queryFn: () => fetchProduct(productId),
   })
+  const product = productQuery.data?.data ?? null
+  const productMeta = productQuery.data?.meta ?? null
 
-  const merchantProfile = useProfile(productQuery.data?.pubkey)
+  const merchantProfile = useProfile(product?.pubkey)
 
   const relatedProductsQuery = useQuery({
-    queryKey: ["related-products", productQuery.data?.id],
-    enabled: !!productQuery.data,
-    queryFn: () => fetchRelatedProducts(productQuery.data!),
+    queryKey: ["related-products", product?.id],
+    enabled: !!product,
+    queryFn: () => fetchRelatedProducts(product!),
   })
 
-  const product = productQuery.data
   const images = product?.images.length
     ? product.images
     : [{ url: "/images/placeholders/landscape.jpg", alt: product?.title }]
@@ -202,6 +142,13 @@ function ProductPage() {
           <span className="text-[var(--text-primary)]">{product?.title ?? "Product"}</span>
         </div>
       </div>
+
+      {productMeta && (
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-xs text-[var(--text-secondary)]">
+          Source: {productMeta.source.replace("_", " ")}
+          {productMeta.stale ? " / stale view" : ""}
+        </div>
+      )}
 
       {productQuery.isLoading && (
         <div className={`grid gap-6 ${hasMultipleImages ? "lg:grid-cols-[88px_minmax(0,1fr)_minmax(320px,420px)]" : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]"}`}>
