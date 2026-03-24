@@ -157,7 +157,6 @@ function ProductsPage() {
     queryFn: () => fetchProducts(search.merchant),
   })
   const productData = productsQuery.data?.data ?? []
-  const productMeta = productsQuery.data?.meta ?? null
 
   // Derive all unique tags from the full (unfiltered) product set
   const allTags = useMemo(() => {
@@ -601,16 +600,9 @@ function ProductsPage() {
         {filtered.length} {filtered.length === 1 ? "result" : "results"}
       </div>
 
-      {productMeta && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-xs text-[var(--text-secondary)]">
-          Source: {productMeta.source.replace("_", " ")}
-          {productMeta.stale ? " / stale view" : ""}
-        </div>
-      )}
-
       {/* Loading */}
       {productsQuery.isLoading && (
-        <ul className="grid max-w-[1040px] list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-3">
+        <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
           {Array.from({ length: PAGE_SIZE }).map((_, idx) => (
             <li key={idx} className="h-full">
               <ProductGridCardSkeleton />
@@ -651,7 +643,7 @@ function ProductsPage() {
 
       {/* Product grid */}
       {visible.length > 0 && (
-        <ul className="grid max-w-[1040px] list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-3">
+        <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
           {visible.map((p) => (
             <li key={p.id} className="h-full">
               <ProductGridCard

@@ -91,7 +91,6 @@ function StorefrontPage() {
     queryFn: () => fetchStoreProducts(pubkey),
   })
   const storeProducts = productsQuery.data?.data ?? []
-  const storeMeta = productsQuery.data?.meta ?? null
   const followQuery = useQuery({
     queryKey: ["following-store", viewerPubkey ?? "none", pubkey],
     enabled: status === "connected" && !!viewerPubkey && viewerPubkey !== pubkey,
@@ -527,7 +526,7 @@ function StorefrontPage() {
           </div>
         </aside>
 
-        <section className="space-y-4 xl:max-w-[1040px]">
+        <section className="space-y-4">
           <div className="grid gap-3 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
             <form
               className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-white/12 bg-[var(--surface-elevated)] px-3"
@@ -586,15 +585,8 @@ function StorefrontPage() {
             )}
           </div>
 
-          {storeMeta && (
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-xs text-[var(--text-secondary)]">
-              Source: {storeMeta.source.replace("_", " ")}
-              {storeMeta.stale ? " / stale view" : ""}
-            </div>
-          )}
-
           {productsQuery.isLoading && (
-            <ul className="grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-3">
+            <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
               {Array.from({ length: 6 }).map((_, index) => (
                 <li key={index} className="h-full">
                   <ProductGridCardSkeleton />
@@ -630,7 +622,7 @@ function StorefrontPage() {
           )}
 
           {filteredProducts.length > 0 && (
-            <ul className="grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-3">
+            <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
               {filteredProducts.map((product) => (
                 <li key={product.id} className="h-full">
                   <ProductGridCard

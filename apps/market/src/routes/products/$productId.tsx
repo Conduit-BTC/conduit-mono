@@ -85,7 +85,6 @@ function ProductPage() {
     queryFn: () => fetchProduct(productId),
   })
   const product = productQuery.data?.data ?? null
-  const productMeta = productQuery.data?.meta ?? null
 
   const merchantProfile = useProfile(product?.pubkey)
 
@@ -142,13 +141,6 @@ function ProductPage() {
           <span className="text-[var(--text-primary)]">{product?.title ?? "Product"}</span>
         </div>
       </div>
-
-      {productMeta && (
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-xs text-[var(--text-secondary)]">
-          Source: {productMeta.source.replace("_", " ")}
-          {productMeta.stale ? " / stale view" : ""}
-        </div>
-      )}
 
       {productQuery.isLoading && (
         <div className={`grid gap-6 ${hasMultipleImages ? "lg:grid-cols-[88px_minmax(0,1fr)_minmax(320px,420px)]" : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]"}`}>
