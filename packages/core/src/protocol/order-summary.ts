@@ -1,3 +1,4 @@
+import { decodeLightningInvoiceAmount } from "./lightning"
 import type { ParsedOrderMessage } from "./orders"
 
 export type OrderSummary = {
@@ -19,6 +20,7 @@ export type OrderSummary = {
   } | null
   orderNote: string | null
   invoiceSent: boolean
+  invoiceCount: number
   invoiceAmount: number | null
   invoiceCurrency: string | null
   trackingCarrier: string | null
@@ -36,6 +38,7 @@ export type OrderSummary = {
 export function extractOrderSummary(messages: ParsedOrderMessage[]): OrderSummary {
   const firstOrder = messages.find((m) => m.type === "order")
   const latestInvoice = [...messages].reverse().find((m) => m.type === "payment_request")
+  const invoiceCount = messages.filter((message) => message.type === "payment_request").length
   const latestShipping = [...messages].reverse().find((m) => m.type === "shipping_update")
 
   const items =
@@ -69,10 +72,18 @@ export function extractOrderSummary(messages: ParsedOrderMessage[]): OrderSummar
       : null
 
   const invoiceSent = latestInvoice?.type === "payment_request"
+  const decodedInvoice =
+    latestInvoice?.type === "payment_request"
+      ? decodeLightningInvoiceAmount(latestInvoice.payload.invoice)
+      : null
   const invoiceAmount =
-    latestInvoice?.type === "payment_request" ? (latestInvoice.payload.amount ?? null) : null
+    latestInvoice?.type === "payment_request"
+      ? (decodedInvoice?.sats ?? decodedInvoice?.msats ?? latestInvoice.payload.amount ?? null)
+      : null
   const invoiceCurrency =
-    latestInvoice?.type === "payment_request" ? (latestInvoice.payload.currency ?? null) : null
+    latestInvoice?.type === "payment_request"
+      ? (decodedInvoice?.currency ?? latestInvoice.payload.currency ?? null)
+      : null
 
   const trackingCarrier =
     latestShipping?.type === "shipping_update" ? (latestShipping.payload.carrier ?? null) : null
@@ -90,6 +101,7 @@ export function extractOrderSummary(messages: ParsedOrderMessage[]): OrderSummar
     shippingAddress,
     orderNote,
     invoiceSent,
+    invoiceCount,
     invoiceAmount,
     invoiceCurrency,
     trackingCarrier,

@@ -2,6 +2,8 @@ import { createFileRoute, Link } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  convertCommerceAmountToSats,
+  decodeLightningInvoiceAmount,
   canMockInvoice,
   db,
   EVENT_KINDS,
@@ -9,7 +11,9 @@ import {
   fetchEventsFanout,
   formatPubkey,
   getNdk,
+  getLightningNetworkMismatchMessage,
   hasWebLN,
+  isInvoiceCompatibleWithCurrentNetwork,
   mockMakeInvoice,
   nwcMakeInvoice,
   parseNwcUri,
@@ -21,11 +25,27 @@ import {
   type StatusUpdateMessageSchema,
   useAuth,
 } from "@conduit/core"
-import { Badge, Button, Input, Label, OrderDetailCard, Tabs, TabsContent, TabsList, TabsTrigger } from "@conduit/ui"
+import {
+  Badge,
+  Button,
+  Input,
+  Label,
+  OrderDetailCard,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import { giftUnwrap, giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import type { NDKFilter, NDKSigner } from "@nostr-dev-kit/ndk"
 import { CheckCircle2, RotateCw } from "lucide-react"
+import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 
 export const Route = createFileRoute("/orders")({
   beforeLoad: () => {
@@ -43,6 +63,15 @@ type Conversation = {
   latestType: ParsedOrderMessage["type"]
   status: string | null
   totalSummary: string | null
+}
+
+const INVOICE_CURRENCY_OPTIONS = ["USD", "SATS"] as const
+
+function normalizeInvoiceCurrencyChoice(currency: string | undefined): (typeof INVOICE_CURRENCY_OPTIONS)[number] | "" {
+  const normalized = currency?.trim().toUpperCase()
+  if (normalized === "SAT" || normalized === "SATS") return "SATS"
+  if (normalized === "USD") return "USD"
+  return ""
 }
 
 function raceTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
@@ -315,7 +344,24 @@ function MessageCard({
 
         {message.type === "payment_request" && (
           <div className="space-y-2">
-            <div className="text-[var(--text-primary)]">Invoice sent.</div>
+            {(() => {
+              const decoded = decodeLightningInvoiceAmount(message.payload.invoice)
+              const displayAmount = decoded.sats ?? decoded.msats ?? message.payload.amount ?? null
+              const displayCurrency = decoded.currency ?? message.payload.currency ?? null
+
+              return (
+                <>
+                  <div className="text-[var(--text-primary)]">
+                    Invoice sent
+                    {displayAmount != null ? ` · ${displayAmount}` : ""}
+                    {displayCurrency ? ` ${displayCurrency}` : ""}
+                  </div>
+                  <div className="text-xs text-[var(--text-secondary)]">
+                    Awaiting payment confirmation.
+                  </div>
+                </>
+              )
+            })()}
             <div className="break-all rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-xs text-[var(--text-secondary)]">
               {message.payload.invoice}
             </div>
@@ -422,6 +468,8 @@ function useNwcConnection(): {
 
 function OrdersPage() {
   const { pubkey, status } = useAuth()
+  const btcUsdRateQuery = useBtcUsdRate()
+  const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
   const queryClient = useQueryClient()
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState("details")
@@ -429,7 +477,7 @@ function OrdersPage() {
   const [invoiceAmount, setInvoiceAmount] = useState("")
   const [invoiceCurrency, setInvoiceCurrency] = useState("USD")
   const [invoiceNote, setInvoiceNote] = useState("")
-  const [orderStatus, setOrderStatus] = useState<StatusUpdateMessageSchema["status"]>("invoiced")
+  const [orderStatus, setOrderStatus] = useState<StatusUpdateMessageSchema["status"] | "">("")
   const [statusNote, setStatusNote] = useState("")
   const [carrier, setCarrier] = useState("")
   const [trackingNumber, setTrackingNumber] = useState("")
@@ -442,6 +490,18 @@ function OrdersPage() {
   const [refreshButtonState, setRefreshButtonState] = useState<"idle" | "refreshing" | "done">("idle")
   const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const signerConnected = status === "connected" && !!pubkey
+  const invoiceAmountNumber = Number(invoiceAmount) || 0
+  const invoiceAmountSats = useMemo(
+    () =>
+      invoiceCurrency
+        ? convertCommerceAmountToSats(invoiceAmountNumber, invoiceCurrency, btcUsdRate)
+        : null,
+    [btcUsdRate, invoiceAmountNumber, invoiceCurrency]
+  )
+  const manualInvoiceDecoded = useMemo(
+    () => (invoice.trim() ? decodeLightningInvoiceAmount(invoice.trim()) : null),
+    [invoice]
+  )
 
   useEffect(() => {
     // Detect WebLN (Alby extension) — may load after page render
@@ -519,14 +579,19 @@ function OrdersPage() {
   }, [conversations, selectedConversationId])
 
   const selected = conversations.find((conversation) => conversation.id === selectedConversationId) ?? null
+  const selectedOrderMessage = selected?.messages.find((message) => message.type === "order")
+  const selectedOrderCurrency = selectedOrderMessage?.type === "order" ? selectedOrderMessage.payload.currency : null
+  const invoiceCurrencyUnsupported =
+    !!selectedOrderCurrency && normalizeInvoiceCurrencyChoice(selectedOrderCurrency) === ""
 
   useEffect(() => {
     setSuccessFlash(null)
     setActiveTab("details")
+    setOrderStatus("")
     const firstOrder = selected?.messages.find((message) => message.type === "order")
     if (firstOrder?.type !== "order") return
     setInvoiceAmount(String(firstOrder.payload.subtotal))
-    setInvoiceCurrency(firstOrder.payload.currency)
+    setInvoiceCurrency(normalizeInvoiceCurrencyChoice(firstOrder.payload.currency))
   }, [selected?.id])
 
   const orderSummary = useMemo(
@@ -565,7 +630,11 @@ function OrdersPage() {
       const orderMsg = conv.messages.find((m) => m.type === "order")
       if (orderMsg?.type !== "order") return
 
-      const amountSats = orderMsg.payload.subtotal
+      const amountSats = convertCommerceAmountToSats(
+        orderMsg.payload.subtotal,
+        orderMsg.payload.currency,
+        btcUsdRate
+      )
       if (!amountSats || amountSats <= 0) return
 
       autoInvoicedRef.current.add(conv.orderId)
@@ -588,20 +657,29 @@ function OrdersPage() {
           bolt11 = result.invoice
         }
 
+        const mismatch = getLightningNetworkMismatchMessage(bolt11)
+        if (mismatch) {
+          throw new Error(mismatch)
+        }
+
+        const decoded = decodeLightningInvoiceAmount(bolt11)
+        const actualAmount = decoded.sats ?? decoded.msats ?? amountSats
+        const actualCurrency = decoded.currency ?? "SATS"
+
         await publishOrderConversationMessage({
           merchantPubkey: pubkey!,
           buyerPubkey: conv.buyerPubkey,
           orderId: conv.orderId,
           type: "payment_request",
           tags: [
-            ["amount", String(amountSats)],
-            ["currency", orderMsg.payload.currency?.toUpperCase() || "USD"],
+            ["amount", String(actualAmount)],
+            ["currency", actualCurrency],
             ["payment_method", "lightning"],
           ],
           payload: {
             invoice: bolt11,
-            amount: amountSats,
-            currency: orderMsg.payload.currency?.toUpperCase() || "USD",
+            amount: actualAmount,
+            currency: actualCurrency,
           },
         })
 
@@ -620,14 +698,14 @@ function OrdersPage() {
         await autoInvoice(conv)
       }
     })()
-  }, [conversations, pubkey, signerConnected, weblnAvailable, nwc.connection, flash, queryClient])
+  }, [btcUsdRate, conversations, pubkey, signerConnected, weblnAvailable, nwc.connection, flash, queryClient])
 
   // Generate invoice via WebLN (Alby) or NWC, then auto-send as payment_request DM
   const generateInvoiceMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
 
-      const amountSats = Number(invoiceAmount) || 0
+      const amountSats = invoiceAmountSats ?? 0
       if (amountSats <= 0) throw new Error("Amount must be greater than 0")
 
       let bolt11: string
@@ -652,6 +730,15 @@ function OrdersPage() {
         throw new Error("No wallet available. Install Alby extension or connect NWC.")
       }
 
+      const mismatch = getLightningNetworkMismatchMessage(bolt11)
+      if (mismatch) {
+        throw new Error(mismatch)
+      }
+
+      const decoded = decodeLightningInvoiceAmount(bolt11)
+      const actualAmount = decoded.sats ?? decoded.msats ?? amountSats
+      const actualCurrency = decoded.currency ?? "SATS"
+
       // Auto-send the invoice DM to the buyer
       await publishOrderConversationMessage({
         merchantPubkey: pubkey,
@@ -659,14 +746,14 @@ function OrdersPage() {
         orderId: selected.orderId,
         type: "payment_request",
         tags: [
-          ["amount", String(amountSats)],
-          ["currency", invoiceCurrency.trim().toUpperCase() || "USD"],
+          ["amount", String(actualAmount)],
+          ["currency", actualCurrency],
           ["payment_method", "lightning"],
         ],
         payload: {
           invoice: bolt11,
-          amount: amountSats,
-          currency: invoiceCurrency.trim().toUpperCase() || "USD",
+          amount: actualAmount,
+          currency: actualCurrency,
           note: invoiceNote.trim() || undefined,
         },
       })
@@ -685,20 +772,28 @@ function OrdersPage() {
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
       if (!invoice.trim()) throw new Error("Invoice is required")
+      const manualInvoice = invoice.trim()
+      const mismatch = getLightningNetworkMismatchMessage(manualInvoice)
+      if (mismatch) throw new Error(mismatch)
+      const decoded = decodeLightningInvoiceAmount(manualInvoice)
+      const actualAmount = decoded.sats ?? decoded.msats
+      if (!actualAmount || !decoded.currency) {
+        throw new Error("Invoice must include a decodable amount before it can be sent.")
+      }
       await publishOrderConversationMessage({
         merchantPubkey: pubkey,
         buyerPubkey: selected.buyerPubkey,
         orderId: selected.orderId,
         type: "payment_request",
         tags: [
-          ["amount", invoiceAmount.trim() || "0"],
-          ["currency", invoiceCurrency.trim().toUpperCase() || "USD"],
+          ["amount", String(actualAmount)],
+          ["currency", decoded.currency],
           ["payment_method", "lightning"],
         ],
         payload: {
-          invoice: invoice.trim(),
-          amount: Number(invoiceAmount) || undefined,
-          currency: invoiceCurrency.trim().toUpperCase() || "USD",
+          invoice: manualInvoice,
+          amount: actualAmount,
+          currency: decoded.currency,
           note: invoiceNote.trim() || undefined,
         },
       })
@@ -995,6 +1090,7 @@ function OrdersPage() {
                     shippingAddress={orderSummary.shippingAddress}
                     orderNote={orderSummary.orderNote}
                     invoiceSent={orderSummary.invoiceSent}
+                    invoiceCount={orderSummary.invoiceCount}
                     invoiceAmount={orderSummary.invoiceAmount}
                     invoiceCurrency={orderSummary.invoiceCurrency}
                     trackingCarrier={orderSummary.trackingCarrier}
@@ -1017,23 +1113,33 @@ function OrdersPage() {
 
                         <div className="grid grid-cols-2 gap-2">
                           <div className="grid gap-1">
-                            <Label htmlFor="invoice-amount">Amount (sats)</Label>
+                            <Label htmlFor="invoice-amount">Amount</Label>
                             <Input
                               id="invoice-amount"
                               type="number"
                               min="0"
-                              step="1"
+                              step={invoiceCurrency === "USD" ? "0.01" : "1"}
                               value={invoiceAmount}
                               onChange={(event) => setInvoiceAmount(event.target.value)}
                             />
                           </div>
                           <div className="grid gap-1">
                             <Label htmlFor="invoice-currency">Currency</Label>
-                            <Input
-                              id="invoice-currency"
-                              value={invoiceCurrency}
-                              onChange={(event) => setInvoiceCurrency(event.target.value.toUpperCase())}
-                            />
+                            <Select
+                              value={invoiceCurrency || undefined}
+                              onValueChange={(value) => setInvoiceCurrency(value)}
+                            >
+                              <SelectTrigger id="invoice-currency">
+                                <SelectValue placeholder="Choose currency" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {INVOICE_CURRENCY_OPTIONS.map((currency) => (
+                                  <SelectItem key={currency} value={currency}>
+                                    {currency}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
                           </div>
                         </div>
                         <Input
@@ -1041,6 +1147,21 @@ function OrdersPage() {
                           onChange={(event) => setInvoiceNote(event.target.value)}
                           placeholder="Optional note"
                         />
+                        <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+                          {invoiceCurrencyUnsupported ? (
+                            <>
+                              This order was placed in {selectedOrderCurrency}. Choose USD or SATS before generating a Lightning invoice.
+                            </>
+                          ) : invoiceAmountNumber > 0 ? (
+                            invoiceAmountSats ? (
+                              <>This will generate an invoice for {invoiceAmountSats.toLocaleString()} sats.</>
+                            ) : (
+                              <>BTC/USD conversion is unavailable right now, so this amount cannot be converted yet.</>
+                            )
+                          ) : (
+                            <>Enter the order amount to generate a Lightning invoice.</>
+                          )}
+                        </div>
 
                         {weblnAvailable || nwc.connection ? (
                           <div className="space-y-2">
@@ -1048,7 +1169,7 @@ function OrdersPage() {
                               type="button"
                               size="sm"
                               className="w-full"
-                              disabled={generateInvoiceMutation.isPending || !(Number(invoiceAmount) > 0)}
+                              disabled={generateInvoiceMutation.isPending || !(invoiceAmountNumber > 0) || !invoiceAmountSats}
                               onClick={() => generateInvoiceMutation.mutate()}
                             >
                               {generateInvoiceMutation.isPending ? "Generating…" : "Generate & send invoice"}
@@ -1074,15 +1195,30 @@ function OrdersPage() {
                                 onChange={(event) => setInvoice(event.target.value)}
                                 placeholder="lnbc..."
                               />
+                              {invoice.trim() && !isInvoiceCompatibleWithCurrentNetwork(invoice.trim()) && (
+                                <div className="text-xs text-error">
+                                  {getLightningNetworkMismatchMessage(invoice.trim())}
+                                </div>
+                              )}
+                              {invoice.trim() && isInvoiceCompatibleWithCurrentNetwork(invoice.trim()) && manualInvoiceDecoded?.currency && (
+                                <div className="text-xs text-[var(--text-secondary)]">
+                                  Parsed invoice amount: {manualInvoiceDecoded.sats ?? manualInvoiceDecoded.msats} {manualInvoiceDecoded.currency}
+                                </div>
+                              )}
                             </div>
-                            <Button type="submit" size="sm" className="w-full" disabled={invoiceMutation.isPending}>
+                            <Button
+                              type="submit"
+                              size="sm"
+                              className="w-full"
+                              disabled={invoiceMutation.isPending}
+                            >
                               {invoiceMutation.isPending ? "Sending…" : "Send invoice DM"}
                             </Button>
                           </form>
                         )}
 
                         <p className="text-xs text-[var(--text-secondary)]">
-                          {weblnAvailable ? "Invoice via Alby extension." : nwc.connection ? "Invoice via NWC wallet." : "Install Alby or connect NWC for one-click invoicing."}
+                          {weblnAvailable ? "Invoice via Alby extension." : nwc.connection ? "Invoice via NWC wallet." : "Install Alby or connect NWC for one-click invoicing."} Conduit shows the parsed amount when the invoice format can be verified.
                         </p>
                       </div>
 
@@ -1099,7 +1235,7 @@ function OrdersPage() {
                           value={orderStatus}
                           onChange={(event) => setOrderStatus(event.target.value as StatusUpdateMessageSchema["status"])}
                         >
-                          <option value="invoiced">invoiced</option>
+                          <option value="">Choose status</option>
                           <option value="paid">paid</option>
                           <option value="processing">processing</option>
                           <option value="shipped">shipped</option>
@@ -1111,7 +1247,7 @@ function OrdersPage() {
                           onChange={(event) => setStatusNote(event.target.value)}
                           placeholder="Optional note"
                         />
-                        <Button type="submit" size="sm" className="w-full" disabled={statusMutation.isPending}>
+                        <Button type="submit" size="sm" className="w-full" disabled={statusMutation.isPending || !orderStatus}>
                           {statusMutation.isPending ? "Sending…" : "Send status DM"}
                         </Button>
                       </form>

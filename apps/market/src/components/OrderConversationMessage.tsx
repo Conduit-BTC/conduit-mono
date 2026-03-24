@@ -1,6 +1,13 @@
 import { useCallback, useState } from "react"
 import { Badge, Button } from "@conduit/ui"
-import { type ParsedOrderMessage } from "@conduit/core"
+import {
+  decodeLightningInvoiceAmount,
+  getLightningInvoiceNetwork,
+  getLightningNetworkMismatchMessage,
+  isInvoiceCompatibleWithCurrentNetwork,
+  normalizeLightningInvoice,
+  type ParsedOrderMessage,
+} from "@conduit/core"
 import { QRCodeSVG } from "qrcode.react"
 
 export function formatProductReference(productId: string): { title: string; detail: string } {
@@ -44,24 +51,39 @@ function InvoiceCard({
     }
   }, [invoice])
 
-  const bolt11 = invoice.replace(/^lightning:/i, "")
-  const isBolt11 = /^ln(bc|tb|bcrt)/i.test(bolt11)
-  const walletUri = isBolt11 ? `lightning:${bolt11}` : null
+  const bolt11 = normalizeLightningInvoice(invoice)
+  const decodedAmount = decodeLightningInvoiceAmount(invoice)
+  const invoiceNetwork = getLightningInvoiceNetwork(invoice)
+  const invoiceMismatch = getLightningNetworkMismatchMessage(invoice)
+  const isCompatible = isInvoiceCompatibleWithCurrentNetwork(invoice)
+  const walletUri = invoiceNetwork !== "unknown" && isCompatible ? `lightning:${bolt11}` : null
+  const displayAmount = decodedAmount.sats ?? decodedAmount.msats ?? amount ?? null
+  const displayCurrency = decodedAmount.currency ?? currency ?? null
 
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <div className="text-sm font-medium text-[var(--text-primary)]">Lightning invoice</div>
-        {amount != null && (
+        {displayAmount != null && (
           <div className="text-sm font-medium text-[var(--text-primary)]">
-            {amount}{currency ? ` ${currency}` : " sats"}
+            {displayAmount}{displayCurrency ? ` ${displayCurrency}` : " sats"}
           </div>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="outline" className="border-[var(--border)]">
+          {invoiceNetwork}
+        </Badge>
+        {invoiceMismatch ? (
+          <span className="text-xs text-error">{invoiceMismatch}</span>
+        ) : (
+          <span className="text-xs text-[var(--text-secondary)]">Matches current checkout environment.</span>
         )}
       </div>
 
       <div className="flex items-start gap-3">
-        <div className="shrink-0 rounded-md border border-[var(--border)] bg-white p-2">
-          <QRCodeSVG value={bolt11} size={108} level="M" />
+        <div className="shrink-0 rounded-md border border-[var(--border)] bg-white p-3">
+          <QRCodeSVG value={bolt11} size={156} level="M" />
         </div>
         <div className="min-w-0 flex-1 space-y-2">
           <div className="max-h-24 overflow-auto break-all rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-xs text-[var(--text-secondary)]">
@@ -74,6 +96,11 @@ function InvoiceCard({
             {walletUri && (
               <Button asChild size="sm" className="flex-1">
                 <a href={walletUri}>Pay</a>
+              </Button>
+            )}
+            {!walletUri && invoiceMismatch && (
+              <Button size="sm" className="flex-1" disabled>
+                Pay unavailable
               </Button>
             )}
           </div>

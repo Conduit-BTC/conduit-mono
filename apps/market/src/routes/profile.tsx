@@ -18,6 +18,7 @@ import {
 } from "@conduit/ui"
 import { Check, Copy, Globe, PencilLine, UserRound, Zap } from "lucide-react"
 import { requireAuth } from "../lib/auth"
+import { RichProfileText } from "../components/RichProfileText"
 
 export const Route = createFileRoute("/profile")({
   beforeLoad: () => {
@@ -49,9 +50,10 @@ function Field({
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
       <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">{label}</div>
-      <div className={`mt-2 text-sm text-[var(--text-primary)] ${mono ? "font-mono break-all" : ""}`}>
-        {value}
-      </div>
+      <RichProfileText
+        text={value}
+        className={`mt-2 text-sm text-[var(--text-primary)] ${mono ? "font-mono text-xs" : ""}`}
+      />
     </div>
   )
 }
@@ -215,9 +217,13 @@ function ProfilePage() {
                 <div className="space-y-6">
                   <div>
                     <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">About</div>
-                    <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
-                      {profileQuery.data?.about?.trim() || "Add a short note about yourself so merchants know who they are dealing with."}
-                    </p>
+                    <RichProfileText
+                      text={
+                        profileQuery.data?.about?.trim() ||
+                        "Add a short note about yourself so merchants know who they are dealing with."
+                      }
+                      className="mt-3 text-sm leading-7 text-[var(--text-secondary)]"
+                    />
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-2">
@@ -351,9 +357,13 @@ function ProfilePage() {
                     <Zap className="mt-0.5 h-4 w-4 text-secondary-300" />
                     <div>
                       <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Lightning</div>
-                      <div className="mt-2 text-sm text-[var(--text-secondary)]">
-                        {profileQuery.data?.lud16?.trim() || "Add a lightning address to make payments and identity easier to verify."}
-                      </div>
+                      <RichProfileText
+                        text={
+                          profileQuery.data?.lud16?.trim() ||
+                          "Add a lightning address to make payments and identity easier to verify."
+                        }
+                        className="mt-2 text-sm text-[var(--text-secondary)]"
+                      />
                     </div>
                   </div>
 
@@ -361,9 +371,13 @@ function ProfilePage() {
                     <Globe className="mt-0.5 h-4 w-4 text-secondary-300" />
                     <div>
                       <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Website</div>
-                      <div className="mt-2 text-sm text-[var(--text-secondary)] break-all">
-                        {profileQuery.data?.website?.trim() || "Add a website if you want merchants to recognize your broader presence."}
-                      </div>
+                      <RichProfileText
+                        text={
+                          profileQuery.data?.website?.trim() ||
+                          "Add a website if you want merchants to recognize your broader presence."
+                        }
+                        className="mt-2 text-sm text-[var(--text-secondary)]"
+                      />
                     </div>
                   </div>
                 </div>

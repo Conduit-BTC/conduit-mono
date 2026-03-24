@@ -62,6 +62,9 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/profile") {
     return "Profile"
   }
+  if (pathname.startsWith("/u/")) {
+    return "User Profile"
+  }
   if (pathname.startsWith("/products/")) {
     return "Product"
   }
