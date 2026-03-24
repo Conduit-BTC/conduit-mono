@@ -157,6 +157,7 @@ function ProductsPage() {
     queryFn: () => fetchProducts(search.merchant),
   })
   const productData = productsQuery.data?.data ?? []
+  const productMeta = productsQuery.data?.meta ?? null
 
   // Derive all unique tags from the full (unfiltered) product set
   const allTags = useMemo(() => {
@@ -599,6 +600,13 @@ function ProductsPage() {
       <div className="text-xs text-[var(--text-muted)]">
         {filtered.length} {filtered.length === 1 ? "result" : "results"}
       </div>
+
+      {productMeta && (
+        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+          Source: {productMeta.source.replace("_", " ")}
+          {productMeta.stale ? " / stale view" : ""}
+        </div>
+      )}
 
       {/* Loading */}
       {productsQuery.isLoading && (

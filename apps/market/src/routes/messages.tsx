@@ -102,6 +102,7 @@ function MessagesPage() {
   })
 
   const conversations = useMemo(() => messagesQuery.data?.data ?? [], [messagesQuery.data])
+  const conversationMeta = messagesQuery.data?.meta ?? null
   const merchantPubkeys = useMemo(
     () => Array.from(new Set(conversations.map((conversation) => conversation.merchantPubkey).filter(Boolean))),
     [conversations],
@@ -253,6 +254,13 @@ function MessagesPage() {
 
           {signerConnected && messagesQuery.isLoading && (
             <div className="text-sm text-[var(--text-secondary)]">Loading merchant conversations…</div>
+          )}
+
+          {signerConnected && conversationMeta && (
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-xs text-[var(--text-secondary)]">
+              Source: {conversationMeta.source.replace("_", " ")}
+              {conversationMeta.stale ? " / stale view" : ""}
+            </div>
           )}
 
           {signerConnected && messagesQuery.error && (

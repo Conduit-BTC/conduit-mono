@@ -91,6 +91,7 @@ function StorefrontPage() {
     queryFn: () => fetchStoreProducts(pubkey),
   })
   const storeProducts = productsQuery.data?.data ?? []
+  const storeMeta = productsQuery.data?.meta ?? null
   const followQuery = useQuery({
     queryKey: ["following-store", viewerPubkey ?? "none", pubkey],
     enabled: status === "connected" && !!viewerPubkey && viewerPubkey !== pubkey,
@@ -584,6 +585,13 @@ function StorefrontPage() {
               </div>
             )}
           </div>
+
+          {storeMeta && (
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-xs text-[var(--text-secondary)]">
+              Source: {storeMeta.source.replace("_", " ")}
+              {storeMeta.stale ? " / stale view" : ""}
+            </div>
+          )}
 
           {productsQuery.isLoading && (
             <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
