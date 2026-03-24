@@ -37,7 +37,7 @@ function PublicProfilePage() {
 
   const profile = profileQuery.data
   const displayName = getMerchantDisplayName(profile, pubkey)
-  const hasStorefront = (productsQuery.data?.length ?? 0) > 0
+  const hasStorefront = (productsQuery.data?.data.length ?? 0) > 0
 
   return (
     <div className="space-y-6">
