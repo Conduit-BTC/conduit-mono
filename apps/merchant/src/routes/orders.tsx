@@ -67,9 +67,11 @@ type Conversation = {
 
 const INVOICE_CURRENCY_OPTIONS = ["USD", "SATS"] as const
 
-function normalizeInvoiceCurrencyChoice(currency: string | undefined): (typeof INVOICE_CURRENCY_OPTIONS)[number] {
+function normalizeInvoiceCurrencyChoice(currency: string | undefined): (typeof INVOICE_CURRENCY_OPTIONS)[number] | "" {
   const normalized = currency?.trim().toUpperCase()
-  return normalized === "SAT" || normalized === "SATS" ? "SATS" : "USD"
+  if (normalized === "SAT" || normalized === "SATS") return "SATS"
+  if (normalized === "USD") return "USD"
+  return ""
 }
 
 function raceTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
@@ -475,7 +477,7 @@ function OrdersPage() {
   const [invoiceAmount, setInvoiceAmount] = useState("")
   const [invoiceCurrency, setInvoiceCurrency] = useState("USD")
   const [invoiceNote, setInvoiceNote] = useState("")
-  const [orderStatus, setOrderStatus] = useState<StatusUpdateMessageSchema["status"]>("paid")
+  const [orderStatus, setOrderStatus] = useState<StatusUpdateMessageSchema["status"] | "">("")
   const [statusNote, setStatusNote] = useState("")
   const [carrier, setCarrier] = useState("")
   const [trackingNumber, setTrackingNumber] = useState("")
@@ -490,7 +492,10 @@ function OrdersPage() {
   const signerConnected = status === "connected" && !!pubkey
   const invoiceAmountNumber = Number(invoiceAmount) || 0
   const invoiceAmountSats = useMemo(
-    () => convertCommerceAmountToSats(invoiceAmountNumber, invoiceCurrency, btcUsdRate),
+    () =>
+      invoiceCurrency
+        ? convertCommerceAmountToSats(invoiceAmountNumber, invoiceCurrency, btcUsdRate)
+        : null,
     [btcUsdRate, invoiceAmountNumber, invoiceCurrency]
   )
   const manualInvoiceDecoded = useMemo(
@@ -574,10 +579,15 @@ function OrdersPage() {
   }, [conversations, selectedConversationId])
 
   const selected = conversations.find((conversation) => conversation.id === selectedConversationId) ?? null
+  const selectedOrderMessage = selected?.messages.find((message) => message.type === "order")
+  const selectedOrderCurrency = selectedOrderMessage?.type === "order" ? selectedOrderMessage.payload.currency : null
+  const invoiceCurrencyUnsupported =
+    !!selectedOrderCurrency && normalizeInvoiceCurrencyChoice(selectedOrderCurrency) === ""
 
   useEffect(() => {
     setSuccessFlash(null)
     setActiveTab("details")
+    setOrderStatus("")
     const firstOrder = selected?.messages.find((message) => message.type === "order")
     if (firstOrder?.type !== "order") return
     setInvoiceAmount(String(firstOrder.payload.subtotal))
@@ -1090,11 +1100,11 @@ function OrdersPage() {
                           <div className="grid gap-1">
                             <Label htmlFor="invoice-currency">Currency</Label>
                             <Select
-                              value={invoiceCurrency}
+                              value={invoiceCurrency || undefined}
                               onValueChange={(value) => setInvoiceCurrency(value)}
                             >
                               <SelectTrigger id="invoice-currency">
-                                <SelectValue />
+                                <SelectValue placeholder="Choose currency" />
                               </SelectTrigger>
                               <SelectContent>
                                 {INVOICE_CURRENCY_OPTIONS.map((currency) => (
@@ -1112,7 +1122,11 @@ function OrdersPage() {
                           placeholder="Optional note"
                         />
                         <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
-                          {invoiceAmountNumber > 0 ? (
+                          {invoiceCurrencyUnsupported ? (
+                            <>
+                              This order was placed in {selectedOrderCurrency}. Choose USD or SATS before generating a Lightning invoice.
+                            </>
+                          ) : invoiceAmountNumber > 0 ? (
                             invoiceAmountSats ? (
                               <>This will generate an invoice for {invoiceAmountSats.toLocaleString()} sats.</>
                             ) : (
@@ -1162,7 +1176,7 @@ function OrdersPage() {
                               )}
                               {invoice.trim() && isInvoiceCompatibleWithCurrentNetwork(invoice.trim()) && manualInvoiceDecoded?.currency && (
                                 <div className="text-xs text-[var(--text-secondary)]">
-                                  Decoded invoice amount: {manualInvoiceDecoded.sats ?? manualInvoiceDecoded.msats} {manualInvoiceDecoded.currency}
+                                  Parsed invoice amount: {manualInvoiceDecoded.sats ?? manualInvoiceDecoded.msats} {manualInvoiceDecoded.currency}
                                 </div>
                               )}
                             </div>
@@ -1170,7 +1184,7 @@ function OrdersPage() {
                               type="submit"
                               size="sm"
                               className="w-full"
-                              disabled={invoiceMutation.isPending || !manualInvoiceDecoded?.currency || (!manualInvoiceDecoded.sats && !manualInvoiceDecoded.msats)}
+                              disabled={invoiceMutation.isPending}
                             >
                               {invoiceMutation.isPending ? "Sending…" : "Send invoice DM"}
                             </Button>
@@ -1178,7 +1192,7 @@ function OrdersPage() {
                         )}
 
                         <p className="text-xs text-[var(--text-secondary)]">
-                          {weblnAvailable ? "Invoice via Alby extension." : nwc.connection ? "Invoice via NWC wallet." : "Install Alby or connect NWC for one-click invoicing."} Buyers will see the decoded BOLT11 amount.
+                          {weblnAvailable ? "Invoice via Alby extension." : nwc.connection ? "Invoice via NWC wallet." : "Install Alby or connect NWC for one-click invoicing."} Conduit shows the parsed amount when the invoice format can be verified.
                         </p>
                       </div>
 
@@ -1195,6 +1209,7 @@ function OrdersPage() {
                           value={orderStatus}
                           onChange={(event) => setOrderStatus(event.target.value as StatusUpdateMessageSchema["status"])}
                         >
+                          <option value="">Choose status</option>
                           <option value="paid">paid</option>
                           <option value="processing">processing</option>
                           <option value="shipped">shipped</option>
@@ -1206,7 +1221,7 @@ function OrdersPage() {
                           onChange={(event) => setStatusNote(event.target.value)}
                           placeholder="Optional note"
                         />
-                        <Button type="submit" size="sm" className="w-full" disabled={statusMutation.isPending}>
+                        <Button type="submit" size="sm" className="w-full" disabled={statusMutation.isPending || !orderStatus}>
                           {statusMutation.isPending ? "Sending…" : "Send status DM"}
                         </Button>
                       </form>

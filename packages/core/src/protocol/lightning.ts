@@ -15,6 +15,8 @@ export type DecodedLightningInvoiceAmount = {
 
 const SATS_PER_BTC = 100_000_000
 const MSATS_PER_BTC = 100_000_000_000
+const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+const BECH32_GENERATORS = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
 
 function normalizeCurrencyCode(currency: string): string {
   return currency.trim().toUpperCase()
@@ -50,6 +52,51 @@ export function convertCommerceAmountToSats(
 
 export function normalizeLightningInvoice(invoice: string): string {
   return invoice.trim().replace(/^lightning:/i, "")
+}
+
+function bech32Polymod(values: number[]): number {
+  let chk = 1
+  for (const value of values) {
+    const top = chk >> 25
+    chk = ((chk & 0x1ffffff) << 5) ^ value
+    for (let index = 0; index < 5; index += 1) {
+      if ((top >> index) & 1) {
+        chk ^= BECH32_GENERATORS[index]!
+      }
+    }
+  }
+  return chk
+}
+
+function bech32HrpExpand(hrp: string): number[] {
+  const values: number[] = []
+  for (let index = 0; index < hrp.length; index += 1) {
+    values.push(hrp.charCodeAt(index) >> 5)
+  }
+  values.push(0)
+  for (let index = 0; index < hrp.length; index += 1) {
+    values.push(hrp.charCodeAt(index) & 31)
+  }
+  return values
+}
+
+function isValidBech32Invoice(invoice: string): boolean {
+  if (!invoice || invoice !== invoice.toLowerCase()) return false
+
+  const separatorIndex = invoice.lastIndexOf("1")
+  if (separatorIndex <= 0 || separatorIndex + 7 > invoice.length) return false
+
+  const hrp = invoice.slice(0, separatorIndex)
+  const dataPart = invoice.slice(separatorIndex + 1)
+  const values: number[] = []
+
+  for (const char of dataPart) {
+    const value = BECH32_CHARSET.indexOf(char)
+    if (value === -1) return false
+    values.push(value)
+  }
+
+  return bech32Polymod([...bech32HrpExpand(hrp), ...values]) === 1
 }
 
 export function getLightningInvoiceNetwork(invoice: string): LightningInvoiceNetwork {
@@ -98,6 +145,9 @@ export function getLightningNetworkMismatchMessage(invoice: string): string | nu
 
 export function decodeLightningInvoiceAmount(invoice: string): DecodedLightningInvoiceAmount {
   const normalized = normalizeLightningInvoice(invoice).toLowerCase()
+  if (!isValidBech32Invoice(normalized)) {
+    return { msats: null, sats: null, currency: null }
+  }
   const match = normalized.match(/^ln(?:bc|tb|sb|bcrt)(\d+)?([munp]?)1/)
 
   if (!match) {
