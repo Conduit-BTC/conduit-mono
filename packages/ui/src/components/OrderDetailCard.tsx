@@ -28,6 +28,7 @@ export type OrderDetailCardProps = {
   shippingAddress: ShippingAddress | null
   orderNote: string | null
   invoiceSent: boolean
+  invoiceCount: number
   invoiceAmount: number | null
   invoiceCurrency: string | null
   trackingCarrier: string | null
@@ -46,6 +47,7 @@ export function OrderDetailCard({
   shippingAddress,
   orderNote,
   invoiceSent,
+  invoiceCount,
   invoiceAmount,
   invoiceCurrency,
   trackingCarrier,
@@ -129,9 +131,15 @@ export function OrderDetailCard({
             Invoice
           </div>
           {invoiceSent ? (
-            <div className="text-sm text-[var(--text-primary)]">
-              Sent{invoiceAmount != null ? ` — ${invoiceAmount}` : ""}
-              {invoiceCurrency ? ` ${invoiceCurrency}` : ""}
+            <div className="space-y-1">
+              <div className="text-sm text-[var(--text-primary)]">
+                Sent{invoiceAmount != null ? ` — ${invoiceAmount}` : ""}
+                {invoiceCurrency ? ` ${invoiceCurrency}` : ""}
+              </div>
+              <div className="text-xs text-[var(--text-secondary)]">
+                {status === "paid" ? "Marked paid." : "Awaiting payment confirmation."}
+                {invoiceCount > 1 ? ` ${invoiceCount} invoices have been sent on this order.` : ""}
+              </div>
             </div>
           ) : (
             <div className="text-sm text-[var(--text-secondary)]">Not yet sent</div>
