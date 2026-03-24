@@ -1,6 +1,12 @@
 import { useCallback, useState } from "react"
 import { Badge, Button } from "@conduit/ui"
-import { type ParsedOrderMessage } from "@conduit/core"
+import {
+  getLightningInvoiceNetwork,
+  getLightningNetworkMismatchMessage,
+  isInvoiceCompatibleWithCurrentNetwork,
+  normalizeLightningInvoice,
+  type ParsedOrderMessage,
+} from "@conduit/core"
 import { QRCodeSVG } from "qrcode.react"
 
 export function formatProductReference(productId: string): { title: string; detail: string } {
@@ -44,9 +50,11 @@ function InvoiceCard({
     }
   }, [invoice])
 
-  const bolt11 = invoice.replace(/^lightning:/i, "")
-  const isBolt11 = /^ln(bc|tb|bcrt)/i.test(bolt11)
-  const walletUri = isBolt11 ? `lightning:${bolt11}` : null
+  const bolt11 = normalizeLightningInvoice(invoice)
+  const invoiceNetwork = getLightningInvoiceNetwork(invoice)
+  const invoiceMismatch = getLightningNetworkMismatchMessage(invoice)
+  const isCompatible = isInvoiceCompatibleWithCurrentNetwork(invoice)
+  const walletUri = invoiceNetwork !== "unknown" && isCompatible ? `lightning:${bolt11}` : null
 
   return (
     <div className="space-y-2">
@@ -56,6 +64,16 @@ function InvoiceCard({
           <div className="text-sm font-medium text-[var(--text-primary)]">
             {amount}{currency ? ` ${currency}` : " sats"}
           </div>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="outline" className="border-[var(--border)]">
+          {invoiceNetwork}
+        </Badge>
+        {invoiceMismatch ? (
+          <span className="text-xs text-error">{invoiceMismatch}</span>
+        ) : (
+          <span className="text-xs text-[var(--text-secondary)]">Matches current checkout environment.</span>
         )}
       </div>
 
@@ -74,6 +92,11 @@ function InvoiceCard({
             {walletUri && (
               <Button asChild size="sm" className="flex-1">
                 <a href={walletUri}>Pay</a>
+              </Button>
+            )}
+            {!walletUri && invoiceMismatch && (
+              <Button size="sm" className="flex-1" disabled>
+                Pay unavailable
               </Button>
             )}
           </div>

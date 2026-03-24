@@ -6,6 +6,7 @@ export * from "./nwc"
 export * from "./webln"
 export * from "./mock-invoice"
 export * from "./order-summary"
+export * from "./lightning"
 export {
   getNdk,
   connectNdk,

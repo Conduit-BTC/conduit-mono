@@ -9,7 +9,9 @@ import {
   fetchEventsFanout,
   formatPubkey,
   getNdk,
+  getLightningNetworkMismatchMessage,
   hasWebLN,
+  isInvoiceCompatibleWithCurrentNetwork,
   mockMakeInvoice,
   nwcMakeInvoice,
   parseNwcUri,
@@ -578,6 +580,11 @@ function OrdersPage() {
           bolt11 = result.invoice
         }
 
+        const mismatch = getLightningNetworkMismatchMessage(bolt11)
+        if (mismatch) {
+          throw new Error(mismatch)
+        }
+
         await publishOrderConversationMessage({
           merchantPubkey: pubkey!,
           buyerPubkey: conv.buyerPubkey,
@@ -642,6 +649,11 @@ function OrdersPage() {
         throw new Error("No wallet available. Install Alby extension or connect NWC.")
       }
 
+      const mismatch = getLightningNetworkMismatchMessage(bolt11)
+      if (mismatch) {
+        throw new Error(mismatch)
+      }
+
       // Auto-send the invoice DM to the buyer
       await publishOrderConversationMessage({
         merchantPubkey: pubkey,
@@ -675,6 +687,9 @@ function OrdersPage() {
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
       if (!invoice.trim()) throw new Error("Invoice is required")
+      const manualInvoice = invoice.trim()
+      const mismatch = getLightningNetworkMismatchMessage(manualInvoice)
+      if (mismatch) throw new Error(mismatch)
       await publishOrderConversationMessage({
         merchantPubkey: pubkey,
         buyerPubkey: selected.buyerPubkey,
@@ -686,7 +701,7 @@ function OrdersPage() {
           ["payment_method", "lightning"],
         ],
         payload: {
-          invoice: invoice.trim(),
+          invoice: manualInvoice,
           amount: Number(invoiceAmount) || undefined,
           currency: invoiceCurrency.trim().toUpperCase() || "USD",
           note: invoiceNote.trim() || undefined,
@@ -1048,6 +1063,11 @@ function OrdersPage() {
                                 onChange={(event) => setInvoice(event.target.value)}
                                 placeholder="lnbc..."
                               />
+                              {invoice.trim() && !isInvoiceCompatibleWithCurrentNetwork(invoice.trim()) && (
+                                <div className="text-xs text-error">
+                                  {getLightningNetworkMismatchMessage(invoice.trim())}
+                                </div>
+                              )}
                             </div>
                             <Button type="submit" size="sm" className="w-full" disabled={invoiceMutation.isPending}>
                               {invoiceMutation.isPending ? "Sending…" : "Send invoice DM"}

@@ -617,7 +617,7 @@ function ProductsPage() {
 
       {/* Loading */}
       {productsQuery.isLoading && (
-        <ul className="grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
+        <ul className="grid max-w-[1040px] list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-3">
           {Array.from({ length: PAGE_SIZE }).map((_, idx) => (
             <li key={idx} className="h-full">
               <ProductGridCardSkeleton />
@@ -658,7 +658,7 @@ function ProductsPage() {
 
       {/* Product grid */}
       {visible.length > 0 && (
-        <ul className="grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
+        <ul className="grid max-w-[1040px] list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-3">
           {visible.map((p) => (
             <li key={p.id} className="h-full">
               <ProductGridCard
