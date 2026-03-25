@@ -83,6 +83,21 @@ bun run relay:local:start:bun
 
 Each app reads `VITE_`-prefixed env vars via Vite. A root `.env.example` shows available options. For local dev, apps ship with `.env.local` files that point to the local relay in mock mode.
 
+For shared network switching, Market and Merchant also support committed mode files:
+- `.env.mock` for local/mock development
+- `.env.mainnet` for public-relay/mainnet-style testing
+
+Use the mode-specific scripts instead of hand-editing `.env.local`:
+
+```bash
+bun run dev:market:mock
+bun run dev:merchant:mock
+bun run dev:market:mainnet
+bun run dev:merchant:mainnet
+```
+
+`.env.local` should remain for personal overrides only. Keep mode files minimal and let the shared core relay defaults handle the broader fallback strategy unless a mode truly needs different values.
+
 | Variable | Default (dev) | Description |
 |----------|---------------|-------------|
 | `VITE_RELAY_URL` | `ws://127.0.0.1:7777` | Primary relay WebSocket URL |
