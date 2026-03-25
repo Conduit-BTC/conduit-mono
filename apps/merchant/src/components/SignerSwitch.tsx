@@ -19,6 +19,19 @@ type SignerSwitchProps = {
   hideTrigger?: boolean
 }
 
+function ConduitLogoLockup({ className = "h-10" }: { className?: string }) {
+  return (
+    <div className="mb-5 flex justify-center">
+      <img
+        src="/images/logo/logo-full.svg"
+        alt="Conduit"
+        className={`${className} w-auto select-none object-contain`}
+        draggable="false"
+      />
+    </div>
+  )
+}
+
 function SignerGlyph({ className = "h-5 w-5" }: { className?: string }) {
   return <KeyRound className={className} />
 }
@@ -29,6 +42,31 @@ function ShieldIcon() {
 
 function CheckIcon() {
   return <Check className="h-4 w-4" />
+}
+
+function SignerHeader({
+  title,
+  description,
+}: {
+  title: string
+  description: string
+}) {
+  return (
+    <DialogHeader className="mx-auto max-w-md items-center text-center">
+      <ConduitLogoLockup className="h-11" />
+      <div className="flex items-center gap-2 rounded-full border border-secondary-500/25 bg-secondary-500/10 px-3 py-1.5 text-secondary-200">
+        <SignerGlyph className="h-4 w-4" />
+        <span className="text-xs font-medium uppercase tracking-[0.16em]">Signer</span>
+      </div>
+      <DialogTitle className="mt-4 flex items-center gap-2 text-2xl font-semibold tracking-[-0.02em] text-[var(--text-primary)] sm:text-[2rem]">
+        <SignerGlyph className="h-5 w-5 shrink-0 text-secondary-300" />
+        <span>{title}</span>
+      </DialogTitle>
+      <DialogDescription className="max-w-md text-[15px] leading-6 text-[var(--text-secondary)]">
+        {description}
+      </DialogDescription>
+    </DialogHeader>
+  )
 }
 
 export function SignerSwitch({
@@ -108,17 +146,10 @@ export function SignerSwitch({
           <div className="relative px-5 py-5 sm:px-6 sm:py-6">
             {status === "connected" && pubkey ? (
               <>
-                <DialogHeader className="mx-auto max-w-md items-center text-center">
-                  <Badge className="border-secondary-500/30 bg-secondary-500/12 text-secondary-200">
-                    Identity connected
-                  </Badge>
-                  <DialogTitle className="mt-2 text-2xl font-semibold tracking-[-0.03em] sm:text-3xl">
-                    Your signer is ready
-                  </DialogTitle>
-                  <DialogDescription className="max-w-md text-sm leading-7 text-[var(--text-secondary)] sm:text-base">
-                    Checkout, order follow-up, and account-linked actions are now available.
-                  </DialogDescription>
-                </DialogHeader>
+                <SignerHeader
+                  title="Signer connected"
+                  description="Your merchant workspace is ready."
+                />
 
                 <div className="mx-auto mt-6 max-w-md space-y-4">
                   <div className="rounded-[1.25rem] border border-secondary-500/25 bg-secondary-500/10 p-4">
@@ -133,19 +164,19 @@ export function SignerSwitch({
                         {formatPubkey(pubkey, 12)}
                       </Badge>
                     </div>
-                    <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
-                      This signer will be used for checkout, orders, and merchant messages.
+                    <p className="mt-3 text-[15px] leading-6 text-[var(--text-secondary)]">
+                      This signer will be used for listings, orders, and merchant messages.
                     </p>
                   </div>
 
                   {pendingSwitch && (
-                    <div className="rounded-[1.25rem] border border-white/10 bg-white/5 p-4 text-sm leading-7 text-[var(--text-secondary)]">
+                    <div className="rounded-[1.25rem] border border-white/10 bg-white/5 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
                       Change the active account in your browser extension, then reconnect here.
                     </div>
                   )}
 
                   {error && (
-                    <div className="rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-sm leading-7 text-error">
+                    <div className="rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error">
                       {error}
                     </div>
                   )}
@@ -166,19 +197,14 @@ export function SignerSwitch({
               </>
             ) : (
               <>
-                <DialogHeader className="mx-auto max-w-md items-center text-center">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-secondary-500/30 bg-secondary-500/10 text-secondary-300">
-                    <SignerGlyph className="h-6 w-6" />
-                  </div>
-                  <DialogTitle className="text-2xl font-semibold tracking-[-0.03em] sm:text-3xl">
-                    {mobileSignerUnavailable ? "Signer unavailable here" : "Signer needed"}
-                  </DialogTitle>
-                  <DialogDescription className="max-w-md text-sm leading-7 text-[var(--text-secondary)] sm:text-base">
-                    {mobileSignerUnavailable
-                      ? "This mobile browser does not expose a Nostr signer for checkout yet."
-                      : "Connect a Nostr signer to continue with checkout, orders, and merchant follow-up."}
-                  </DialogDescription>
-                </DialogHeader>
+                <SignerHeader
+                  title={mobileSignerUnavailable ? "Signer unavailable here" : "Connect a signer"}
+                  description={
+                    mobileSignerUnavailable
+                      ? "This browser does not expose a supported Nostr signer."
+                      : "Use your Nostr signer to open the merchant workspace."
+                  }
+                />
 
                 <div className="mx-auto mt-6 w-full max-w-md space-y-3">
                   {!mobileSignerUnavailable && (
@@ -192,10 +218,10 @@ export function SignerSwitch({
                     </Button>
                   )}
 
-                  <div className="rounded-[1.25rem] border border-white/10 bg-white/5 p-4 text-sm leading-7 text-[var(--text-secondary)]">
+                  <div className="rounded-[1.25rem] border border-white/10 bg-white/5 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
                     {mobileSignerUnavailable
-                      ? "Conduit currently uses external signers only. On most phones, we do not switch into a signer app and back automatically yet. Use a desktop browser with a signer extension, or a mobile browser that already exposes a supported signer."
-                      : "Conduit currently uses external signers only. If you do not have one yet, add a Nostr signer extension to your browser, then return here to connect. Support for more signer flows will expand soon."}
+                      ? "Try a desktop browser with a signer extension, or a mobile browser that already exposes one."
+                      : "Conduit currently supports external signers only."}
                   </div>
                 </div>
 
@@ -203,42 +229,36 @@ export function SignerSwitch({
                   <div className="rounded-[1.25rem] border border-white/10 bg-white/5 p-4">
                     <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
                       <ShieldIcon />
-                      Why connect
+                      What this unlocks
                     </div>
-                    <ul className="mt-4 space-y-3 text-sm leading-7 text-[var(--text-secondary)]">
+                    <ul className="mt-4 space-y-3 text-[15px] leading-6 text-[var(--text-secondary)]">
                       <li className="flex items-center gap-3">
                         <CheckIcon />
-                        <span>Send orders and keep them tied to your pubkey.</span>
+                        <span>Publish listings tied to your pubkey.</span>
                       </li>
                       <li className="flex items-center gap-3">
                         <CheckIcon />
-                        <span>Receive merchant replies and payment details in your inbox.</span>
-                      </li>
-                      <li className="flex items-center gap-3">
-                        <CheckIcon />
-                        <span>Review order status later without creating a separate account.</span>
+                        <span>Manage orders and buyer messages in one place.</span>
                       </li>
                     </ul>
                   </div>
                 </div>
 
                 {pendingSwitch && (
-                  <div className="mx-auto mt-4 max-w-md rounded-[1.25rem] border border-white/10 bg-white/5 p-4 text-sm leading-7 text-[var(--text-secondary)]">
+                  <div className="mx-auto mt-4 max-w-md rounded-[1.25rem] border border-white/10 bg-white/5 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
                     Change the active account in your browser extension, then reconnect here.
                   </div>
                 )}
 
                 {error && (
-                  <div className="mx-auto mt-4 max-w-md rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-sm leading-7 text-error">
+                  <div className="mx-auto mt-4 max-w-md rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error">
                     {error}
                   </div>
                 )}
 
                 {!extensionAvailable && !mobileSignerUnavailable && (
-                  <div className="mx-auto mt-4 max-w-md rounded-[1.25rem] border border-white/10 bg-white/5 p-4 text-sm leading-7 text-[var(--text-secondary)]">
-                    No signer extension detected. Install a NIP-07 compatible extension such as
-                    Alby or nos2x, then refresh and connect. Support for more signer flows will
-                    expand soon.
+                  <div className="mx-auto mt-4 max-w-md rounded-[1.25rem] border border-white/10 bg-white/5 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
+                    No signer extension detected. Install a NIP-07 signer such as Alby or nos2x, then refresh and connect.
                   </div>
                 )}
               </>
