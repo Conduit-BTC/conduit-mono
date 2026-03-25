@@ -39,11 +39,11 @@ These are nice-to-have milestones that should not block the Phase 4 Merchant Por
 
 | Feature | Phase | Why Deferred |
 |---------|-------|--------------|
-| Automated payments | 6 (Coordinator) | Requires server-side bot |
-| Auto invoice generation | 6 (Coordinator) | Requires NIP-46 remote signing |
-| Inventory sync | 6 (Coordinator) | Requires event processing |
+| Automated payments | 6 (Conduit Services) | Requires server-side bot |
+| Auto invoice generation | 6 (Conduit Services) | Requires NIP-46 remote signing |
+| Inventory sync | 6 (Conduit Services) | Requires event processing |
 | Custom relay | 5 (Relay) | Public relays work for MVP |
-| NIP-46 auth (Remote signer) | 6 (Coordinator) | Extra connection UX + reliability surface; bundle with automation/hardening |
+| NIP-46 auth (Remote signer) | 6 (Conduit Services) | Extra connection UX + reliability surface; bundle with automation/hardening |
 | Store Builder | 7 | Nice-to-have, not core loop |
 | Shipping integrations | Added Value | ShipStation/EasyPost |
 | GitHub migration | 4.5 | Do before onboarding team members |
@@ -59,7 +59,7 @@ These are nice-to-have milestones that should not block the Phase 4 Merchant Por
 5. Merchant confirms → manually marks "Paid"
 6. Merchant ships → sends tracking via DM
 
-See `docs/ARCHITECTURE.md` for flow diagrams comparing MVP vs Coordinator.
+See `docs/ARCHITECTURE.md` for flow diagrams comparing MVP vs Conduit Services.
 
 ### Milestone: One-Way Checkout (Optional)
 
@@ -471,7 +471,7 @@ export const config = {
 
 **Deferred (Post-MVP): NIP-46 (Remote Signer)**
 - Do not implement in Phase 2.
-- Implement alongside Coordinator hardening in Phase 6 (see F27).
+- Implement alongside Conduit Services hardening in Phase 6 (see F27).
 - Keep the AuthContext surface area compatible with adding NIP-46 later.
 
 **AuthContext:**
@@ -697,8 +697,8 @@ class ConduitDB extends Dexie {
 - Clear cart
 - Link to order history
 
-> **Note:** See ARCHITECTURE.md "Payment Flow" for MVP vs Coordinator comparison.
-> Automated payments (auto-invoice, auto-confirm) are Phase 6 (Coordinator).
+> **Note:** See ARCHITECTURE.md "Payment Flow" for MVP vs Conduit Services comparison.
+> Automated payments (auto-invoice, auto-confirm) are Phase 6 (Conduit Services).
 
 **Milestone (Optional): One-way checkout**
 - Requires merchant-published payment handles (Phase 4 Settings).
@@ -843,7 +843,7 @@ class ConduitDB extends Dexie {
 - **Send Invoice** - Send invoice to buyer via NIP-17 DM
 - **Mark Paid** - Merchant manually confirms payment received
 - ⚠️ MVP: Merchant must be online to process orders
-- ⚠️ Post-MVP: Coordinator automates all of this (Phase 6)
+- ⚠️ Post-MVP: Conduit Services automates all of this (Phase 6)
 
 **Milestone (Optional): One-way checkout support**
 - Display incoming `PaymentProof` payloads on the order detail view.
@@ -951,7 +951,7 @@ Complete repository platform migration before onboarding contributors. This was 
 
 ### New Repo Scaffolding (as needed)
 - [ ] `conduit-relay` — when Phase 5 starts
-- [ ] `conduit-coordinator` — when Phase 6 starts
+- [ ] `conduit-services` — when Phase 6 starts
 - [ ] Same branch protection and access patterns as conduit-mono
 
 ## Phase 4.6: Public Repo Shaping (Post-MVP)
@@ -1002,10 +1002,10 @@ Prepare the Conduit codebase for public open-source contribution without forcing
 
 ---
 
-## Phase 6: Coordinator (Post-MVP)
+## Phase 6: Conduit Services (Post-MVP)
 
-### F27: Commerce Coordinator
-📍 infrastructure/coordinator
+### F27: Conduit Services
+📍 infrastructure/conduit-services
 🔗 F25
 
 **Event Listener:**

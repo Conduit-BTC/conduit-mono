@@ -203,18 +203,21 @@ export function ProductCard({ product, className }: ProductCardProps) {
 Treat `conduit-mono` as a future public client/shared-code repository.
 
 When writing commit messages, PR descriptions, or tracked public-facing docs:
-- do not emphasize monetization strategy
-- do not describe private merchant services as part of this repo
-- do not present Store Builder/private business plans as if they belong in the public repo
+- treat this repo as a public-facing client/shared-code repo
+- keep repo-scope language aligned with the actual monorepo contents
+- avoid internal company-planning framing
 
 Prefer language centered on:
 - Market
 - Merchant
+- Store Builder
 - shared packages
 - protocol/spec implementation
 - trust/provenance and contributor-safe engineering context
 
-Private business context belongs in private planning or `context/`, not in tracked public history, unless explicitly requested.
+If discussing future repo boundaries, keep `conduit-services` distinct from the current `conduit-mono` scope unless the repo structure has actually changed.
+
+Private company context belongs in private planning or `context/`, not in tracked public history, unless explicitly requested.
 
 ## References
 

@@ -32,10 +32,7 @@ These are still valuable, but they are no longer blockers for MVP scope completi
 ## Next Phase
 
 Phase 2 focuses on:
-- public repo shaping
-- merchant readiness
-- trust and provenance
-- relay roles and merchant services
-- launch safety
+- P0 launch readiness and merchant hardening
+- P1 trust, signer, and open-source follow-through
 
 See [Phase 2 Implementation](./PHASE_2_IMPLEMENTATION.md) for the current deliverables.

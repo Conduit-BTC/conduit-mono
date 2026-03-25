@@ -10,7 +10,7 @@ References:
 Non-goals (MVP):
 - NIP-46 remote signer auth (post-MVP, Phase 6)
 - Custom relay requirements (post-MVP, Phase 5)
-- Coordinator automation (post-MVP, Phase 6)
+- Conduit services automation (post-MVP, Phase 6)
 - Refunds/disputes/escrow
 
 ## Post-MVP: Client App Versioning + Open Source Note
@@ -143,7 +143,7 @@ Content (JSON string):
 
 Verification:
 - Merchant verifies proof independently (manual in MVP).
-- Automation is post-MVP (Coordinator).
+- Automation is post-MVP (Conduit services).
 
 ### `status_update` message schema
 

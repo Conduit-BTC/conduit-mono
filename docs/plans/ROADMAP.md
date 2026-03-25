@@ -207,7 +207,7 @@ See [monetization.md](../specs/monetization.md) for full specification.
 | **Merchant Portal** | 2/12/2026 | 3/12/2026 | TBD | TBD | TBD |
 | **Store Builder** | TBD | TBD | TBD | TBD | TBD |
 | **Relay** | TBD | TBD | TBD | TBD | TBD |
-| **Coordinator** | TBD | TBD | TBD | TBD | TBD |
+| **Conduit Services** | TBD | TBD | TBD | TBD | TBD |
 
 ---
 

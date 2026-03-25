@@ -428,16 +428,16 @@ In MVP, merchants manually handle invoice generation and payment confirmation. N
 
 ---
 
-### Post-MVP: Automated Coordinator Flow
+### Post-MVP: Automated Conduit Services Flow
 
-With Coordinator (Phase 6), payment flow is fully automated server-side.
+With Conduit services (Phase 6), payment flow is fully automated server-side.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                 Automated Payment Flow (Coordinator)                     │
+│               Automated Payment Flow (Conduit Services)                 │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│  Buyer (Market)              Coordinator              Merchant Wallet   │
+│  Buyer (Market)          Conduit Services            Merchant Wallet    │
 │                                                                         │
 │  1. Checkout                                                            │
 │     └─► Order event ──────► 2. Receive order                            │
@@ -460,14 +460,14 @@ With Coordinator (Phase 6), payment flow is fully automated server-side.
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Coordinator Benefits:**
+**Conduit Services Benefits:**
 - Merchant doesn't need to be online
 - Instant invoice generation
 - Automatic payment confirmation
 - Inventory sync
 - Scales to high-volume merchants
 
-See `docs/specs/coordinator.md` for full specification.
+See `docs/specs/conduit-services.md` for full specification.
 
 ---
 
@@ -556,7 +556,7 @@ See `docs/specs/coordinator.md` for full specification.
 
 ## Future Components
 
-### Coordinator (Post-MVP)
+### Conduit Services (Post-MVP)
 
 Server-side bot that automates checkout flow:
 - Automated invoice generation
@@ -564,7 +564,7 @@ Server-side bot that automates checkout flow:
 - Inventory sync
 - Order state management
 
-See `docs/specs/coordinator.md` for full specification.
+See `docs/specs/conduit-services.md` for full specification.
 
 ### Relay (Post-MVP)
 
