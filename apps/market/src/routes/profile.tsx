@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import {
-  formatPubkey,
+  formatNpub,
+  pubkeyToNpub,
   useAuth,
   useProfile,
   useUpdateProfile,
@@ -81,7 +82,7 @@ function ProfilePage() {
   }, [profileQuery.data])
 
   const displayName = profileQuery.data?.displayName?.trim() || profileQuery.data?.name?.trim() || "Your profile"
-  const shortPubkey = useMemo(() => formatPubkey(pubkey ?? "", 8), [pubkey])
+  const shortPubkey = useMemo(() => formatNpub(pubkey ?? "", 8), [pubkey])
   const fallbackLetter = (displayName?.[0] ?? pubkey?.[0] ?? "?").toUpperCase()
 
   function resetForm(): void {
@@ -105,7 +106,7 @@ function ProfilePage() {
   async function copyPubkey(): Promise<void> {
     if (!pubkey) return
     try {
-      await navigator.clipboard.writeText(pubkey)
+      await navigator.clipboard.writeText(pubkeyToNpub(pubkey))
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1800)
     } catch {

@@ -9,6 +9,7 @@ import {
   extractOrderSummary,
   formatPubkey,
   getNdk,
+  getProfiles,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
   hasWebLN,
@@ -17,7 +18,6 @@ import {
   nwcMakeInvoice,
   parseNwcUri,
   weblnMakeInvoice,
-  type MerchantConversationSummary,
   type NwcConnection,
   type ParsedOrderMessage,
   type StatusUpdateMessageSchema,
@@ -51,8 +51,6 @@ export const Route = createFileRoute("/orders")({
   component: OrdersPage,
 })
 
-type Conversation = MerchantConversationSummary
-
 const INVOICE_CURRENCY_OPTIONS = ["USD", "SATS"] as const
 
 function normalizeInvoiceCurrencyChoice(currency: string | undefined): (typeof INVOICE_CURRENCY_OPTIONS)[number] | "" {
@@ -62,11 +60,63 @@ function normalizeInvoiceCurrencyChoice(currency: string | undefined): (typeof I
   return ""
 }
 
+function normalizeTrackingUrl(raw: string): string | undefined {
+  const trimmed = raw.trim()
+  if (!trimmed) return undefined
+
+  let parsed: URL
+  try {
+    parsed = new URL(trimmed)
+  } catch {
+    throw new Error("Tracking URL must be a valid http(s) link.")
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Tracking URL must start with http:// or https://.")
+  }
+
+  return parsed.toString()
+}
+
+function getDisplayName(
+  profile: { displayName?: string; name?: string } | undefined,
+  pubkey: string
+): string {
+  return profile?.displayName || profile?.name || formatPubkey(pubkey, 8)
+}
+
+const MESSAGE_TYPE_LABELS: Record<string, string> = {
+  order: "Order",
+  payment_request: "Invoice",
+  status_update: "Status",
+  shipping_update: "Shipping",
+  receipt: "Receipt",
+  message: "Message",
+  payment_proof: "Payment",
+}
+
+function friendlyTypeLabel(type: string): string {
+  return MESSAGE_TYPE_LABELS[type] ?? type.replace(/_/g, " ")
+}
+
+function formatProductReference(productId: string): { title: string; detail: string } {
+  const normalized = productId.trim()
+  const segments = normalized.split(":").filter(Boolean)
+  const rawLabel = segments.length > 0 ? segments[segments.length - 1] : normalized
+  const displaySource = rawLabel || normalized
+  const title = displaySource
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase()) || "Product"
+  return { title, detail: normalized }
+}
+
 async function publishOrderConversationMessage(params: {
   merchantPubkey: string
   buyerPubkey: string
   orderId: string
-  type: "payment_request" | "status_update" | "shipping_update" | "receipt"
+  type: "payment_request" | "status_update" | "shipping_update" | "receipt" | "message"
   payload: Record<string, unknown>
   tags?: string[][]
 }): Promise<void> {
@@ -123,7 +173,7 @@ function MessageCard({
       >
         <div className="mb-2 flex items-center gap-2">
           <Badge variant="outline" className="border-[var(--border)]">
-            {message.type}
+            {friendlyTypeLabel(message.type)}
           </Badge>
           <span className="text-xs text-[var(--text-secondary)]">
             {new Date(message.createdAt).toLocaleString()}
@@ -135,11 +185,20 @@ function MessageCard({
             <div className="text-[var(--text-primary)]">
               Total: {message.payload.subtotal} {message.payload.currency}
             </div>
-            {message.payload.items.map((item) => (
-              <div key={`${message.id}-${item.productId}`} className="text-xs text-[var(--text-secondary)]">
-                {item.productId} · {item.quantity} x {item.priceAtPurchase} {item.currency}
-              </div>
-            ))}
+            {message.payload.items.map((item) => {
+              const product = formatProductReference(item.productId)
+              return (
+                <div
+                  key={`${message.id}-${item.productId}`}
+                  className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2"
+                >
+                  <div className="text-sm text-[var(--text-primary)]">{product.title}</div>
+                  <div className="mt-1 text-xs text-[var(--text-secondary)]">
+                    Qty {item.quantity} · {item.priceAtPurchase} {item.currency}
+                  </div>
+                </div>
+              )
+            })}
             {message.payload.shippingAddress && (
               <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
                 <div className="font-medium text-[var(--text-primary)]">Ship to:</div>
@@ -233,6 +292,10 @@ function MessageCard({
           <div className="text-[var(--text-secondary)]">{message.payload.note}</div>
         )}
 
+        {message.type === "message" && (
+          <div className="text-[var(--text-primary)]">{message.payload.note}</div>
+        )}
+
         {message.type === "payment_proof" && (
           <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
             {JSON.stringify(message.payload, null, 2)}
@@ -249,6 +312,7 @@ function useNwcConnection(): {
   connection: NwcConnection | null
   rawUri: string
   setUri: (uri: string) => void
+  disconnect: () => void
   error: string | null
 } {
   const [rawUri, setRawUri] = useState(() => localStorage.getItem(NWC_URI_KEY) ?? "")
@@ -263,12 +327,17 @@ function useNwcConnection(): {
     }
   })
 
+  function disconnect() {
+    setRawUri("")
+    localStorage.removeItem(NWC_URI_KEY)
+    setConnection(null)
+    setError(null)
+  }
+
   function setUri(uri: string) {
     setRawUri(uri)
     if (!uri.trim()) {
-      localStorage.removeItem(NWC_URI_KEY)
-      setConnection(null)
-      setError(null)
+      disconnect()
       return
     }
     try {
@@ -282,7 +351,7 @@ function useNwcConnection(): {
     }
   }
 
-  return { connection, rawUri, setUri, error }
+  return { connection, rawUri, setUri, disconnect, error }
 }
 
 function OrdersPage() {
@@ -303,9 +372,10 @@ function OrdersPage() {
   const [trackingUrl, setTrackingUrl] = useState("")
   const [shippingNote, setShippingNote] = useState("")
   const [showNwcSetup, setShowNwcSetup] = useState(false)
+  const [showNwcReplace, setShowNwcReplace] = useState(false)
+  const [replyNote, setReplyNote] = useState("")
   const [successFlash, setSuccessFlash] = useState<string | null>(null)
   const [weblnAvailable, setWeblnAvailable] = useState(false)
-  const autoInvoicedRef = useRef(new Set<string>())
   const [refreshButtonState, setRefreshButtonState] = useState<"idle" | "refreshing" | "done">("idle")
   const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const signerConnected = status === "connected" && !!pubkey
@@ -383,7 +453,18 @@ function OrdersPage() {
   }, [refetchOrders, signerConnected])
 
   const conversations = useMemo(() => ordersQuery.data?.data ?? [], [ordersQuery.data])
-  const conversationMeta = ordersQuery.data?.meta ?? null
+  const buyerPubkeys = useMemo(
+    () => Array.from(new Set(conversations.map((conversation) => conversation.buyerPubkey).filter(Boolean))),
+    [conversations]
+  )
+  const buyerProfilesQuery = useQuery({
+    queryKey: ["merchant-order-buyer-profiles", buyerPubkeys],
+    enabled: signerConnected && buyerPubkeys.length > 0,
+    queryFn: async () => {
+      const result = await getProfiles({ pubkeys: buyerPubkeys })
+      return result.data
+    },
+  })
 
   useEffect(() => {
     if (conversations.length === 0) {
@@ -405,6 +486,7 @@ function OrdersPage() {
     setSuccessFlash(null)
     setActiveTab("details")
     setOrderStatus("")
+    setReplyNote("")
     const firstOrder = selected?.messages?.find((message) => message.type === "order")
     if (firstOrder?.type !== "order") return
     setInvoiceAmount(String(firstOrder.payload.subtotal))
@@ -415,6 +497,10 @@ function OrdersPage() {
     () => selected ? extractOrderSummary(selected.messages ?? []) : null,
     [selected]
   )
+  const selectedBuyerProfile = selected ? buyerProfilesQuery.data?.[selected.buyerPubkey] : undefined
+  const selectedBuyerName = selected
+    ? getDisplayName(selectedBuyerProfile, selected.buyerPubkey)
+    : null
   const awaitingInvoiceCount = useMemo(
     () => conversations.filter((conversation) => !(conversation.messages ?? []).some((message) => message.type === "payment_request")).length,
     [conversations],
@@ -425,97 +511,6 @@ function OrdersPage() {
     ).length,
     [conversations],
   )
-
-  // Auto-invoice: when a new order arrives and a wallet is connected (or mock mode),
-  // generate and send the invoice automatically without merchant intervention.
-  useEffect(() => {
-    if (!signerConnected || !pubkey) return
-    const mock = canMockInvoice()
-    const wallet = mock ? "mock" : weblnAvailable ? "webln" : nwc.connection ? "nwc" : null
-    if (!wallet) return
-
-    const pending = conversations.filter((c) => {
-      if (autoInvoicedRef.current.has(c.orderId)) return false
-      const hasOrder = (c.messages ?? []).some((m) => m.type === "order")
-      const hasInvoice = (c.messages ?? []).some((m) => m.type === "payment_request")
-      return hasOrder && !hasInvoice
-    })
-
-    if (pending.length === 0) return
-
-    async function autoInvoice(conv: Conversation) {
-      const orderMsg = (conv.messages ?? []).find((m) => m.type === "order")
-      if (orderMsg?.type !== "order") return
-
-      const amountSats = convertCommerceAmountToSats(
-        orderMsg.payload.subtotal,
-        orderMsg.payload.currency,
-        btcUsdRate
-      )
-      if (!amountSats || amountSats <= 0) return
-
-      autoInvoicedRef.current.add(conv.orderId)
-
-      try {
-        let bolt11: string
-        if (wallet === "mock") {
-          bolt11 = mockMakeInvoice({ amountSats, memo: `Conduit order ${conv.orderId}` }).invoice
-        } else if (wallet === "webln") {
-          const result = await weblnMakeInvoice({
-            amountSats,
-            memo: `Conduit order ${conv.orderId}`,
-          })
-          bolt11 = result.invoice
-        } else {
-          const result = await nwcMakeInvoice(nwc.connection!, {
-            amountMsats: amountSats * 1000,
-            description: `Conduit order ${conv.orderId}`,
-          })
-          bolt11 = result.invoice
-        }
-
-        const mismatch = getLightningNetworkMismatchMessage(bolt11)
-        if (mismatch) {
-          throw new Error(mismatch)
-        }
-
-        const decoded = decodeLightningInvoiceAmount(bolt11)
-        const actualAmount = decoded.sats ?? decoded.msats ?? amountSats
-        const actualCurrency = decoded.currency ?? "SATS"
-
-        await publishOrderConversationMessage({
-          merchantPubkey: pubkey!,
-          buyerPubkey: conv.buyerPubkey,
-          orderId: conv.orderId,
-          type: "payment_request",
-          tags: [
-            ["amount", String(actualAmount)],
-            ["currency", actualCurrency],
-            ["payment_method", "lightning"],
-          ],
-          payload: {
-            invoice: bolt11,
-            amount: actualAmount,
-            currency: actualCurrency,
-          },
-        })
-
-        flash(`Auto-invoiced order ${conv.orderId.slice(0, 8)}...`)
-        queryClient.invalidateQueries({ queryKey: ["merchant-order-messages", pubkey ?? "none"] })
-      } catch (err) {
-        // Remove from set so it can be retried on next poll
-        autoInvoicedRef.current.delete(conv.orderId)
-        console.error(`Auto-invoice failed for ${conv.orderId}:`, err)
-      }
-    }
-
-    // Process one at a time to avoid wallet rate limits
-    ;(async () => {
-      for (const conv of pending) {
-        await autoInvoice(conv)
-      }
-    })()
-  }, [btcUsdRate, conversations, pubkey, signerConnected, weblnAvailable, nwc.connection, flash, queryClient])
 
   // Generate invoice via WebLN (Alby) or NWC, then auto-send as payment_request DM
   const generateInvoiceMutation = useMutation({
@@ -648,6 +643,7 @@ function OrdersPage() {
   const shippingMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
+      const normalizedTrackingUrl = normalizeTrackingUrl(trackingUrl)
       await publishOrderConversationMessage({
         merchantPubkey: pubkey,
         buyerPubkey: selected.buyerPubkey,
@@ -660,7 +656,7 @@ function OrdersPage() {
         payload: {
           carrier: carrier.trim() || undefined,
           trackingNumber: trackingNumber.trim() || undefined,
-          trackingUrl: trackingUrl.trim() || undefined,
+          trackingUrl: normalizedTrackingUrl,
           note: shippingNote.trim() || undefined,
         },
       })
@@ -671,6 +667,27 @@ function OrdersPage() {
       setTrackingUrl("")
       setShippingNote("")
       flash("Shipping update sent to buyer")
+      await queryClient.invalidateQueries({ queryKey: ["merchant-order-messages", pubkey ?? "none"] })
+    },
+  })
+
+  const noteMutation = useMutation({
+    mutationFn: async () => {
+      if (!pubkey || !selected) throw new Error("No conversation selected")
+      if (!replyNote.trim()) throw new Error("Message is required")
+      await publishOrderConversationMessage({
+        merchantPubkey: pubkey,
+        buyerPubkey: selected.buyerPubkey,
+        orderId: selected.orderId,
+        type: "message",
+        payload: {
+          note: replyNote.trim(),
+        },
+      })
+    },
+    onSuccess: async () => {
+      setReplyNote("")
+      flash("Message sent to buyer")
       await queryClient.invalidateQueries({ queryKey: ["merchant-order-messages", pubkey ?? "none"] })
     },
   })
@@ -730,8 +747,21 @@ function OrdersPage() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant={canMockInvoice() || weblnAvailable || nwc.connection ? "outline" : "muted"} size="sm" onClick={() => setShowNwcSetup(!showNwcSetup)}>
-            {canMockInvoice() ? "Mock mode" : weblnAvailable ? "Alby detected" : nwc.connection ? "NWC connected" : "Connect wallet"}
+          <Button
+            variant={canMockInvoice() || weblnAvailable || nwc.connection ? "outline" : "muted"}
+            size="sm"
+            onClick={() => {
+              setShowNwcSetup(true)
+              if (!nwc.connection) setShowNwcReplace(false)
+            }}
+          >
+            {canMockInvoice()
+              ? "Mock mode"
+              : weblnAvailable
+                ? "Alby detected"
+                : nwc.connection
+                  ? "Wallet settings"
+                  : "Connect wallet"}
           </Button>
           <Button asChild variant="muted">
             <Link to="/">Home</Link>
@@ -771,17 +801,29 @@ function OrdersPage() {
                 <span className="inline-block h-2 w-2 rounded-full bg-green-400" />
                 Connected to wallet <span className="font-mono">{formatPubkey(nwc.connection.walletPubkey, 8)}</span> via {nwc.connection.relays[0]}
               </div>
-              <div className="grid gap-2">
-                <Input
-                  value={nwc.rawUri}
-                  onChange={(e) => nwc.setUri(e.target.value)}
-                  placeholder="nostr+walletconnect://..."
-                  type="password"
-                />
-                <Button variant="muted" size="sm" onClick={() => nwc.setUri("")}>
+              <div className="grid gap-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-xs text-[var(--text-secondary)]">
+                <div>Wallet pubkey: <span className="font-mono text-[var(--text-primary)]">{nwc.connection.walletPubkey}</span></div>
+                <div>Relay: <span className="font-mono text-[var(--text-primary)]">{nwc.connection.relays[0]}</span></div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="muted" size="sm" onClick={() => setShowNwcReplace((current) => !current)}>
+                  {showNwcReplace ? "Cancel replace" : "Replace connection"}
+                </Button>
+                <Button variant="muted" size="sm" onClick={() => nwc.disconnect()}>
                   Disconnect wallet
                 </Button>
               </div>
+              {showNwcReplace && (
+                <div className="grid gap-2">
+                  <Input
+                    value={nwc.rawUri}
+                    onChange={(e) => nwc.setUri(e.target.value)}
+                    placeholder="nostr+walletconnect://..."
+                    type="password"
+                  />
+                  {nwc.error && <div className="text-xs text-error">{nwc.error}</div>}
+                </div>
+              )}
             </div>
           ) : (
             <div className="mt-3 space-y-3">
@@ -835,13 +877,6 @@ function OrdersPage() {
         <div className="text-sm text-[var(--text-secondary)]">Loading…</div>
       )}
 
-      {signerConnected && conversationMeta && (
-        <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4 text-xs text-[var(--text-secondary)]">
-          Source: {conversationMeta.source.replace("_", " ")}
-          {conversationMeta.stale ? " / stale view" : ""}
-        </div>
-      )}
-
       {signerConnected && ordersQuery.error && (
         <div className="rounded-md border border-error/30 bg-error/10 p-4 text-sm text-error">
           Failed to load orders:{" "}
@@ -862,12 +897,14 @@ function OrdersPage() {
             <div className="space-y-1">
               {conversations.map((conversation) => {
                 const active = conversation.id === selectedConversationId
+                const buyerProfile = buyerProfilesQuery.data?.[conversation.buyerPubkey]
+                const buyerName = getDisplayName(buyerProfile, conversation.buyerPubkey)
                 return (
                   <button
                     key={conversation.id}
                     className={`w-full rounded-md border px-3 py-2 text-left transition ${
                       active
-                        ? "border-[var(--accent)] bg-[var(--surface-elevated)]"
+                        ? "border-white/14 bg-white/[0.08]"
                         : "border-transparent hover:border-[var(--border)] hover:bg-[var(--surface-elevated)]"
                     }`}
                     onClick={() => setSelectedConversationId(conversation.id)}
@@ -875,11 +912,14 @@ function OrdersPage() {
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-mono text-xs text-[var(--text-primary)]">{conversation.orderId}</span>
                       <Badge variant="secondary" className="border-[var(--border)]">
-                        {conversation.latestType}
+                        {friendlyTypeLabel(conversation.latestType)}
                       </Badge>
                     </div>
                     <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                      Buyer: {formatPubkey(conversation.buyerPubkey, 8)}
+                      Buyer: {buyerName}
+                    </div>
+                    <div className="mt-1 font-mono text-[11px] text-[var(--text-muted)]">
+                      {formatPubkey(conversation.buyerPubkey, 8)}
                     </div>
                     <div className="mt-1 text-xs text-[var(--text-secondary)]">
                       {conversation.status ? `Status: ${conversation.status}` : "Status: pending"}
@@ -907,6 +947,7 @@ function OrdersPage() {
                     orderId={selected.orderId}
                     status={selected.status}
                     counterpartyLabel="Buyer"
+                    counterpartyName={selectedBuyerName ?? undefined}
                     counterpartyPubkey={selected.buyerPubkey}
                     items={orderSummary.items}
                     subtotal={orderSummary.subtotal}
@@ -1105,9 +1146,9 @@ function OrdersPage() {
                       </form>
                     </div>
 
-                    {(invoiceMutation.error || statusMutation.error || shippingMutation.error) && (
+                    {(invoiceMutation.error || statusMutation.error || shippingMutation.error || noteMutation.error) && (
                       <div className="rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
-                        {[invoiceMutation.error, statusMutation.error, shippingMutation.error]
+                        {[invoiceMutation.error, statusMutation.error, shippingMutation.error, noteMutation.error]
                           .filter(Boolean)
                           .map((error) => (error instanceof Error ? error.message : "Failed to send message"))
                           .join(" • ")}
@@ -1117,10 +1158,29 @@ function OrdersPage() {
                 </TabsContent>
 
                 <TabsContent value="messages">
-                  <div className="max-h-[52vh] space-y-3 overflow-auto pr-1">
-                    {(selected.messages ?? []).map((message) => (
-                      <MessageCard key={message.id} message={message} mine={message.senderPubkey === pubkey} />
-                    ))}
+                  <div className="space-y-4">
+                    <div className="max-h-[44vh] space-y-3 overflow-auto pr-1">
+                      {(selected.messages ?? []).map((message) => (
+                        <MessageCard key={message.id} message={message} mine={message.senderPubkey === pubkey} />
+                      ))}
+                    </div>
+                    <form
+                      className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
+                      onSubmit={(event) => {
+                        event.preventDefault()
+                        noteMutation.mutate()
+                      }}
+                    >
+                      <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">Reply to buyer</div>
+                      <Input
+                        value={replyNote}
+                        onChange={(event) => setReplyNote(event.target.value)}
+                        placeholder="Send a note to the buyer"
+                      />
+                      <Button type="submit" size="sm" className="w-full" disabled={noteMutation.isPending || !replyNote.trim()}>
+                        {noteMutation.isPending ? "Sending…" : "Send message"}
+                      </Button>
+                    </form>
                   </div>
                 </TabsContent>
               </Tabs>

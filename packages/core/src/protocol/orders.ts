@@ -1,11 +1,13 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
+  conversationMessageSchema,
   orderMessageTypeSchema,
   orderSchema,
   paymentRequestMessageSchema,
   receiptMessageSchema,
   shippingUpdateMessageSchema,
   statusUpdateMessageSchema,
+  type ConversationMessageSchema,
   type OrderMessageTypeSchema,
   type OrderSchema,
   type PaymentRequestMessageSchema,
@@ -40,6 +42,7 @@ export type ParsedOrderMessage =
   | (ParsedOrderMessageBase & { type: "status_update"; payload: StatusUpdateMessageSchema })
   | (ParsedOrderMessageBase & { type: "shipping_update"; payload: ShippingUpdateMessageSchema })
   | (ParsedOrderMessageBase & { type: "receipt"; payload: ReceiptMessageSchema })
+  | (ParsedOrderMessageBase & { type: "message"; payload: ConversationMessageSchema })
   | (ParsedOrderMessageBase & { type: "payment_proof"; payload: Record<string, unknown> })
 
 function getTagValue(tags: string[][] | undefined, name: string): string | null {
@@ -146,6 +149,13 @@ export function parseOrderMessageRumorEvent(event: OrderRumorEvent): ParsedOrder
   if (type === "receipt") {
     const payload = receiptMessageSchema.parse({
       note: getString(json?.note) ?? (json ? undefined : event.content.trim() || undefined),
+    })
+    return { ...messageBase(event, type, orderId), payload }
+  }
+
+  if (type === "message") {
+    const payload = conversationMessageSchema.parse({
+      note: getString(json?.note) ?? event.content.trim(),
     })
     return { ...messageBase(event, type, orderId), payload }
   }

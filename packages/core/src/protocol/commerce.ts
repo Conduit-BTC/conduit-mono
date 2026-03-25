@@ -791,6 +791,8 @@ function getConversationPreview(message: ParsedOrderMessage): string {
       return message.payload.note ?? "Shipping updated"
     case "receipt":
       return message.payload.note ?? "Payment received"
+    case "message":
+      return message.payload.note
     case "payment_proof":
       return "Payment proof shared"
     default:

@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from "@conduit/ui"
 import {
-  formatPubkey,
+  formatNpub,
   requireNdkConnected,
   useAuth,
   useProfile,
@@ -24,6 +24,7 @@ import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { SignerSwitch } from "../../components/SignerSwitch"
 import { RichProfileText } from "../../components/RichProfileText"
 import { ProductGridCard, ProductGridCardSkeleton } from "../../components/ProductGridCard"
+import { CopyButton } from "../../components/CopyButton"
 import { MerchantAvatarFallback, getMerchantDisplayName } from "../../components/MerchantIdentity"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
@@ -350,7 +351,10 @@ function StorefrontPage() {
                     {merchantName}
                   </h1>
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-[var(--text-secondary)]">
-                    <span className="font-medium text-[var(--text-primary)]">{profile?.nip05 || formatPubkey(pubkey, 8)}</span>
+                    <span className="inline-flex items-center gap-1 font-medium text-[var(--text-primary)]">
+                      {profile?.nip05 || formatNpub(pubkey, 8)}
+                      <CopyButton value={pubkey} label="Copy pubkey" />
+                    </span>
                     <span className="hidden text-[var(--text-muted)] sm:inline">Created Apr 2024</span>
                   </div>
                   <RichProfileText

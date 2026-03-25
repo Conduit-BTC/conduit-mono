@@ -1,10 +1,11 @@
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { extractOrderSummary, getProfiles, formatPubkey, useAuth, useProfile } from "@conduit/core"
+import { extractOrderSummary, formatNpub, getProfiles, formatPubkey, useAuth, useProfile } from "@conduit/core"
 import { Badge, Button } from "@conduit/ui"
 import { CheckCircle2, ChevronDown, ReceiptText, RotateCw, Search } from "lucide-react"
 import { requireAuth } from "../lib/auth"
+import { CopyButton } from "../components/CopyButton"
 import { MerchantAvatarFallback, getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
   OrderConversationMessage,
@@ -104,12 +105,23 @@ function OrderHero({
           </div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <div className="truncate text-lg font-semibold text-[var(--text-primary)]">{merchantName}</div>
+              <Link
+                to="/store/$pubkey"
+                params={{ pubkey: conversation.merchantPubkey }}
+                className="truncate text-lg font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
+              >
+                {merchantName}
+              </Link>
               <Badge variant="outline" className="border-white/10 bg-white/[0.04] capitalize">
                 {conversation.status ?? "pending"}
               </Badge>
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
+              <span className="inline-flex items-center gap-1">
+                <span className="font-mono">{formatNpub(conversation.merchantPubkey, 8)}</span>
+                <CopyButton value={conversation.merchantPubkey} label="Copy pubkey" />
+              </span>
+              <span className="text-[var(--text-muted)]">/</span>
               <span className="font-mono">{conversation.orderId}</span>
               <span className="text-[var(--text-muted)]">/</span>
               <span>{new Date(conversation.latestAt).toLocaleString()}</span>
@@ -132,6 +144,11 @@ function OrderHero({
       </div>
 
       <div className="mt-4 flex flex-wrap gap-3">
+        <Button asChild variant="outline" className="h-11 px-4 text-sm">
+          <Link to="/store/$pubkey" params={{ pubkey: conversation.merchantPubkey }}>
+            Visit store
+          </Link>
+        </Button>
         <Button asChild variant="outline" className="h-11 px-4 text-sm">
           <Link to="/messages" search={{ tab: "merchants", thread: conversation.id }}>
             Open in messages

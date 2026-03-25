@@ -1,4 +1,4 @@
-import { Check, Copy, SearchX, ShoppingCart, Store } from "lucide-react"
+import { SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import {
   type CommerceResult,
@@ -11,6 +11,7 @@ import {
 import { useQuery } from "@tanstack/react-query"
 import { useEffect, useMemo, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
+import { CopyButton } from "../../components/CopyButton"
 import { MerchantAvatarFallback, getMerchantDisplayName } from "../../components/MerchantIdentity"
 import { ProductGridCard, ProductGridCardSkeleton } from "../../components/ProductGridCard"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
@@ -21,38 +22,6 @@ export const Route = createFileRoute("/products/$productId")({
   component: ProductPage,
 })
 
-function CopyPubkeyButton({ pubkey }: { pubkey: string }) {
-  const [copied, setCopied] = useState(false)
-
-  async function handleCopy() {
-    try {
-      await navigator.clipboard.writeText(pubkey)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1400)
-    } catch {
-      setCopied(false)
-    }
-  }
-
-  return (
-    <button
-      type="button"
-      aria-label={copied ? "Pubkey copied" : "Copy pubkey"}
-      className={`inline-flex h-6 w-6 items-center justify-center rounded-full border transition-colors ${
-        copied
-          ? "border-green-500/40 bg-green-500/12 text-green-400"
-          : "border-white/14 bg-white/[0.03] text-[var(--text-muted)] hover:border-white/24 hover:text-[var(--text-primary)]"
-      }`}
-      onClick={handleCopy}
-    >
-      {copied ? (
-        <Check className="h-3.5 w-3.5" />
-      ) : (
-        <Copy className="h-3.5 w-3.5" />
-      )}
-    </button>
-  )
-}
 
 async function fetchProduct(productId: string): Promise<CommerceResult<Product | null>> {
   const result = await getProductDetail({ productId })
@@ -262,7 +231,7 @@ function ProductPage() {
                         >
                           {formatPubkey(product.pubkey, 10)}
                         </Link>
-                        <CopyPubkeyButton pubkey={product.pubkey} />
+                        <CopyButton value={product.pubkey} label="Copy pubkey" />
                       </div>
                     </div>
                   </div>

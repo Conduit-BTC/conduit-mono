@@ -127,7 +127,7 @@ function ProfilePage() {
             {profileQuery.data.about && (
               <div>
                 <div className="text-xs font-medium text-[var(--text-secondary)]">About</div>
-                <p className="mt-1 text-sm text-[var(--text-primary)]">{profileQuery.data.about}</p>
+                <p className="mt-1 whitespace-pre-wrap break-words text-sm text-[var(--text-primary)]">{profileQuery.data.about}</p>
               </div>
             )}
             {profileQuery.data.lud16 && (
@@ -142,7 +142,14 @@ function ProfilePage() {
                   <Link2 className="h-3.5 w-3.5" />
                   Website
                 </div>
-                <p className="mt-1 text-sm text-[var(--text-primary)]">{profileQuery.data.website}</p>
+                <a
+                  href={profileQuery.data.website}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-1 block text-sm text-[var(--accent)] underline-offset-2 hover:underline"
+                >
+                  {profileQuery.data.website}
+                </a>
               </div>
             )}
             <div>

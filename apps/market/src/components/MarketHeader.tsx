@@ -1,6 +1,6 @@
 import { LoaderCircle, MessagesSquare, ReceiptText, Search, ShoppingCart, Store } from "lucide-react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
-import { config, formatPubkey, useAuth } from "@conduit/core"
+import { config, formatPubkey, useAuth, useProfile } from "@conduit/core"
 import {
   Badge,
   Button,
@@ -50,14 +50,20 @@ function Logo({
 
 function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
+  const { data: profile } = useProfile(pubkey)
   const [open, setOpen] = useState(false)
 
   if (!pubkey || status === "disconnected" || status === "error") return null
 
+  const displayName = profile?.displayName ?? profile?.name ?? null
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <Button variant="primary" size="sm" className="font-mono text-xs" onClick={() => setOpen(true)}>
-        {formatPubkey(pubkey, 4)}
+      <Button variant="primary" size="sm" className="text-xs" onClick={() => setOpen(true)}>
+        {profile?.picture && (
+          <img src={profile.picture} alt="" className="h-5 w-5 rounded-full object-cover" />
+        )}
+        {displayName ?? formatPubkey(pubkey, 4)}
       </Button>
       <DialogContent className="max-w-sm border-white/14 bg-[#090314] text-[var(--text-primary)] shadow-[0_24px_70px_rgba(0,0,0,0.55)]">
         <DialogHeader>
@@ -66,8 +72,9 @@ function UserMenu() {
             You can reconnect later, but checkout, orders, and merchant follow-up will require signing in again.
           </DialogDescription>
         </DialogHeader>
-        <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-mono text-[var(--text-secondary)]">
-          {formatPubkey(pubkey, 12)}
+        <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-[var(--text-secondary)]">
+          {displayName && <div className="font-medium text-[var(--text-primary)]">{displayName}</div>}
+          <div className="font-mono">{formatPubkey(pubkey, 12)}</div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>

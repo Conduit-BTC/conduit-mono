@@ -269,7 +269,7 @@ function OrderSummary({
           <span>Coordinated with merchant</span>
         </div>
         <div className="mt-5 flex items-end justify-between gap-3">
-          <div className="text-lg font-semibold text-[var(--text-primary)]">Paid to merchant</div>
+          <div className="text-lg font-semibold text-[var(--text-primary)]">Due to merchant</div>
           <div className="text-right">
             <div className="text-3xl font-semibold text-secondary-400">{totalPrice.primary}</div>
             {totalPrice.secondary && (

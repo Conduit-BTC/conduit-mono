@@ -21,6 +21,7 @@ export type OrderDetailCardProps = {
   orderId: string
   status: string | null
   counterpartyLabel: string
+  counterpartyName?: string
   counterpartyPubkey: string
   items: OrderItem[]
   subtotal: number
@@ -40,6 +41,7 @@ export function OrderDetailCard({
   orderId,
   status,
   counterpartyLabel,
+  counterpartyName,
   counterpartyPubkey,
   items,
   subtotal,
@@ -64,7 +66,11 @@ export function OrderDetailCard({
           </Badge>
         </div>
         <p className="mt-1 text-xs text-[var(--text-secondary)]">
-          {counterpartyLabel}: <span className="font-mono">{counterpartyPubkey}</span>
+          {counterpartyLabel}:{" "}
+          <span className="text-[var(--text-primary)]">{counterpartyName ?? counterpartyPubkey}</span>
+          {counterpartyName && (
+            <span className="ml-2 font-mono text-[var(--text-muted)]">{counterpartyPubkey}</span>
+          )}
         </p>
       </CardHeader>
 

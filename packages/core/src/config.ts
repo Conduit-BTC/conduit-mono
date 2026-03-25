@@ -4,6 +4,9 @@ const DEFAULT_RELAYS = [
   "wss://nos.lol",
   "wss://relay.nostr.band",
   "wss://purplepag.es",
+  "wss://relay.nostr.net",
+  "wss://sendit.nosflare.com",
+  "wss://relay.plebeian.market",
 ]
 
 export interface ConduitConfig {

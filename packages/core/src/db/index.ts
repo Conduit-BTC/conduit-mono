@@ -1,4 +1,5 @@
 import Dexie, { type EntityTable } from "dexie"
+import { config } from "../config"
 
 export interface StoredOrder {
   id: string
@@ -106,3 +107,33 @@ class ConduitDB extends Dexie {
 }
 
 export const db = new ConduitDB()
+
+const CACHE_SCOPE_KEY = "conduit:commerce-cache-scope:v1"
+
+function getCommerceCacheScope(): string {
+  return JSON.stringify({
+    lightningNetwork: config.lightningNetwork,
+    relayUrl: config.relayUrl,
+    defaultRelays: config.defaultRelays,
+    l2RelayUrls: config.l2RelayUrls,
+    merchantRelayUrls: config.merchantRelayUrls,
+    publicRelayUrls: config.publicRelayUrls,
+  })
+}
+
+export async function ensureCommerceCacheScope(): Promise<void> {
+  if (typeof window === "undefined") return
+
+  const nextScope = getCommerceCacheScope()
+  const currentScope = window.localStorage.getItem(CACHE_SCOPE_KEY)
+
+  if (currentScope === nextScope) return
+
+  await Promise.all([
+    db.products.clear(),
+    db.profiles.clear(),
+    db.orderMessages.clear(),
+  ])
+
+  window.localStorage.setItem(CACHE_SCOPE_KEY, nextScope)
+}

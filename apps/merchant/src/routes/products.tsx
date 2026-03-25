@@ -3,7 +3,7 @@ import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { EVENT_KINDS, getMerchantStorefront, requireNdkConnected, type CommerceResult, type ProductSchema, useAuth } from "@conduit/core"
-import { Badge, Button, Input, Label } from "@conduit/ui"
+import { Badge, Button, Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 
 export const Route = createFileRoute("/products")({
@@ -310,13 +310,18 @@ function ProductsPage() {
 
                 <div className="grid gap-1.5">
                   <Label htmlFor="product-currency">Currency</Label>
-                  <Input
-                    id="product-currency"
+                  <Select
                     value={form.currency}
-                    onChange={(e) => setForm((prev) => ({ ...prev, currency: e.target.value.toUpperCase() }))}
-                    placeholder="USD"
-                    maxLength={12}
-                  />
+                    onValueChange={(value) => setForm((prev) => ({ ...prev, currency: value }))}
+                  >
+                    <SelectTrigger id="product-currency">
+                      <SelectValue placeholder="Choose currency" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="USD">USD</SelectItem>
+                      <SelectItem value="SAT">SAT</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
 

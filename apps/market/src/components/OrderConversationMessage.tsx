@@ -124,11 +124,27 @@ export function getConversationPreview(message: ParsedOrderMessage): string {
       return message.payload.note ?? "Shipping updated"
     case "receipt":
       return message.payload.note ?? "Payment received"
+    case "message":
+      return message.payload.note
     case "payment_proof":
       return "Payment proof shared"
     default:
       return "Order update"
   }
+}
+
+const MESSAGE_TYPE_LABELS: Record<string, string> = {
+  order: "Order",
+  payment_request: "Invoice",
+  status_update: "Status",
+  shipping_update: "Shipping",
+  receipt: "Receipt",
+  message: "Message",
+  payment_proof: "Payment",
+}
+
+function friendlyTypeLabel(type: string): string {
+  return MESSAGE_TYPE_LABELS[type] ?? type.replace(/_/g, " ")
 }
 
 export function OrderConversationMessage({
@@ -149,7 +165,7 @@ export function OrderConversationMessage({
       >
         <div className="mb-2 flex items-center gap-2">
           <Badge variant="outline" className="border-[var(--border)]">
-            {message.type.replace("_", " ")}
+            {friendlyTypeLabel(message.type)}
           </Badge>
           <span className="text-xs text-[var(--text-secondary)]">
             {new Date(message.createdAt).toLocaleString()}
@@ -251,6 +267,10 @@ export function OrderConversationMessage({
 
         {message.type === "receipt" && message.payload.note && (
           <div className="text-[var(--text-secondary)]">{message.payload.note}</div>
+        )}
+
+        {message.type === "message" && (
+          <div className="text-[var(--text-primary)]">{message.payload.note}</div>
         )}
 
         {message.type === "payment_proof" && (

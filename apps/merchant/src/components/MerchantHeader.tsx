@@ -9,7 +9,7 @@ import {
 } from "lucide-react"
 import type { ComponentType } from "react"
 import { Link, useNavigate } from "@tanstack/react-router"
-import { config, formatPubkey, useAuth } from "@conduit/core"
+import { config, formatPubkey, useAuth, useProfile } from "@conduit/core"
 import {
   Avatar,
   AvatarFallback,
@@ -119,8 +119,11 @@ function MerchantNavLinks({
 function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
   const navigate = useNavigate()
+  const { data: profile } = useProfile(pubkey)
 
   if (!pubkey || status === "disconnected" || status === "error") return null
+
+  const displayName = profile?.displayName ?? profile?.name ?? formatPubkey(pubkey, 6)
 
   return (
     <DropdownMenu>
@@ -130,14 +133,14 @@ function UserMenu() {
           className="inline-flex items-center gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-2.5 py-2 text-left transition-colors hover:bg-white/[0.06]"
         >
           <Avatar className="h-8 w-8 border border-white/10">
-            <AvatarImage src={undefined} alt="Merchant profile" />
+            <AvatarImage src={profile?.picture} alt={displayName} />
             <AvatarFallback className="bg-transparent p-0">
               <MerchantAvatarFallback iconClassName="h-4 w-4" />
             </AvatarFallback>
           </Avatar>
           <div className="hidden min-w-0 sm:block">
             <div className="truncate text-sm font-medium text-[var(--text-primary)]">
-              {formatPubkey(pubkey, 6)}
+              {displayName}
             </div>
             <div className="text-xs text-[var(--text-muted)]">Connected signer</div>
           </div>
