@@ -578,7 +578,8 @@ Custom Nostr relay optimized for commerce:
 
 ## References
 
-- [IMPLEMENTATION.md](./plans/IMPLEMENTATION.md) - Build phases and deliverables
+- [PLAN.md](../PLAN.md) - Current planning index
+- [IMPLEMENTATION.md](./plans/IMPLEMENTATION.md) - Current implementation status
 - [ROADMAP.md](./plans/ROADMAP.md) - Strategic epochs
 - [Nostr NIPs](https://github.com/nostr-protocol/nips) - Protocol specifications
 - [NDK](https://github.com/nostr-dev-kit/ndk) - Nostr Development Kit

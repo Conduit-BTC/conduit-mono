@@ -1,6 +1,6 @@
 # Conduit Roadmap
 
-Strategic roadmap for the Conduit commerce platform. For technical implementation details, see [IMPLEMENTATION.md](./IMPLEMENTATION.md). For system architecture, see [ARCHITECTURE.md](../ARCHITECTURE.md).
+Strategic roadmap for the Conduit commerce platform. For the current planning index, see [PLAN.md](../../PLAN.md). For current implementation status, see [IMPLEMENTATION.md](./IMPLEMENTATION.md). For system architecture, see [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ---
 
@@ -213,6 +213,7 @@ See [monetization.md](../specs/monetization.md) for full specification.
 
 ## References
 
-- [IMPLEMENTATION.md](./IMPLEMENTATION.md) - Build phases and deliverables
+- [PLAN.md](../../PLAN.md) - Current planning index
+- [IMPLEMENTATION.md](./IMPLEMENTATION.md) - Current implementation status
 - [ARCHITECTURE.md](../ARCHITECTURE.md) - System architecture and diagrams
 - [Protocol specs](../specs/) - Feature specifications

@@ -159,8 +159,10 @@ conduit-mono/
 │   ├── ARCHITECTURE.md      # System diagrams and data flow
 │   ├── plans/
 │   │   ├── ROADMAP.md       # Strategic epochs
-│   │   └── IMPLEMENTATION.md # Build phases with checklists
+│   │   ├── IMPLEMENTATION.md # Current implementation index
+│   │   └── PHASE_2_IMPLEMENTATION.md # Current post-MVP deliverables
 │   └── specs/               # Feature specifications
+├── PLAN.md                  # Current planning index
 └── scripts/                 # Dev tooling, CI helpers, seed data
 ```
 
@@ -193,7 +195,7 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for system diagrams and protocol det
 
 ## Roadmap
 
-See [ROADMAP.md](docs/plans/ROADMAP.md) for strategic epochs and [IMPLEMENTATION.md](docs/plans/IMPLEMENTATION.md) for build phases.
+See [PLAN.md](PLAN.md) for the current planning index, [ROADMAP.md](docs/plans/ROADMAP.md) for strategic epochs, and [IMPLEMENTATION.md](docs/plans/IMPLEMENTATION.md) for the current implementation index.
 
 | Epoch | Focus | Target |
 |-------|-------|--------|
