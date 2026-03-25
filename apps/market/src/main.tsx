@@ -17,7 +17,7 @@ declare module "@tanstack/react-router" {
   }
 }
 
-await ensureCommerceCacheScope()
+void ensureCommerceCacheScope()
 connectNdk()
 
 createRoot(document.getElementById("root")!).render(
