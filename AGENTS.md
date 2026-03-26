@@ -167,3 +167,9 @@ Pipeline stages: lint → typecheck → test → build → deploy
 
 Protected branches: `main`
 Pull request required for all changes.
+
+## Git and PR Conventions
+
+- Use Conventional Commits by default for commits: `type(scope): description`
+- Use the same convention for PR titles unless the PR is a release or sync promotion with an explicit repo-level naming rule
+- Branch names for new work should use conventional prefixes such as `feat/*`, `fix/*`, `chore/*`, or `docs/*`
