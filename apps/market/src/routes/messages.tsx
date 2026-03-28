@@ -1,17 +1,19 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useQuery } from "@tanstack/react-query"
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useEffect, useMemo, useState } from "react"
 import { Badge, Button } from "@conduit/ui"
 import { MessageCircleMore, Search, Store } from "lucide-react"
-import { extractOrderSummary, fetchProfile, formatPubkey, useAuth, useProfile } from "@conduit/core"
+import { EVENT_KINDS, formatNpub, getNdk, getProfiles, formatPubkey, useAuth, useProfile } from "@conduit/core"
 import { requireAuth } from "../lib/auth"
+import { CopyButton } from "../components/CopyButton"
 import { MerchantAvatarFallback, getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
   OrderConversationMessage,
   formatProductReference,
   getConversationPreview,
 } from "../components/OrderConversationMessage"
-import { buildBuyerConversations, fetchBuyerMessages, type BuyerConversation } from "../lib/orderConversations"
+import { fetchBuyerConversations, type BuyerConversation } from "../lib/orderConversations"
+import { giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 
 type MessagesSearch = {
   tab?: "dms" | "merchants"
@@ -42,7 +44,8 @@ function MerchantThreadRow({
 }) {
   const { data: profile } = useProfile(conversation.merchantPubkey)
   const merchantName = getMerchantDisplayName(profile, conversation.merchantPubkey)
-  const latestMessage = conversation.messages[conversation.messages.length - 1]
+  const messages = conversation.messages ?? []
+  const latestMessage = messages[messages.length - 1]
 
   return (
     <button
@@ -85,25 +88,24 @@ function MerchantThreadRow({
 
 function MessagesPage() {
   const { pubkey, status } = useAuth()
+  const queryClient = useQueryClient()
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
   const signerConnected = status === "connected" && !!pubkey
   const [query, setQuery] = useState("")
+  const [replyText, setReplyText] = useState("")
 
   const activeTab = search.tab ?? "merchants"
 
   const messagesQuery = useQuery({
     queryKey: ["buyer-messages", pubkey ?? "none"],
     enabled: signerConnected,
-    queryFn: () => fetchBuyerMessages(pubkey!),
+    queryFn: () => fetchBuyerConversations(pubkey!),
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   })
 
-  const conversations = useMemo(
-    () => (signerConnected && pubkey ? buildBuyerConversations(messagesQuery.data ?? [], pubkey) : []),
-    [messagesQuery.data, pubkey, signerConnected],
-  )
+  const conversations = useMemo(() => messagesQuery.data?.data ?? [], [messagesQuery.data])
   const merchantPubkeys = useMemo(
     () => Array.from(new Set(conversations.map((conversation) => conversation.merchantPubkey).filter(Boolean))),
     [conversations],
@@ -112,10 +114,8 @@ function MessagesPage() {
     queryKey: ["buyer-message-profiles", merchantPubkeys],
     enabled: signerConnected && merchantPubkeys.length > 0,
     queryFn: async () => {
-      const profiles = await Promise.all(merchantPubkeys.map((merchantPubkey) => fetchProfile(merchantPubkey)))
-      return Object.fromEntries(
-        profiles.map((profile) => [profile.pubkey, profile])
-      )
+      const result = await getProfiles({ pubkeys: merchantPubkeys })
+      return result.data
     },
   })
 
@@ -133,11 +133,11 @@ function MessagesPage() {
         (merchantProfilesQuery.data?.[conversation.merchantPubkey]?.name?.toLowerCase().includes(normalized) ?? false) ||
         conversation.orderId.toLowerCase().includes(normalized) ||
         conversation.merchantPubkey.toLowerCase().includes(normalized) ||
-        extractOrderSummary(conversation.messages).items.some((item) =>
+        (conversation.messages ?? []).some((message) => getConversationPreview(message).toLowerCase().includes(normalized)) ||
+        (conversation.messages ?? []).flatMap((message) => message.type === "order" ? message.payload.items : []).some((item) =>
           item.productId.toLowerCase().includes(normalized) ||
           formatProductReference(item.productId).title.toLowerCase().includes(normalized)
-        ) ||
-        conversation.messages.some((message) => getConversationPreview(message).toLowerCase().includes(normalized))
+        )
       )
     })
   }, [conversations, merchantProfilesQuery.data, query, search.merchant])
@@ -173,6 +173,51 @@ function MessagesPage() {
   const merchantName = selectedConversation
     ? getMerchantDisplayName(selectedProfile.data, selectedConversation.merchantPubkey)
     : null
+
+  useEffect(() => {
+    setReplyText("")
+  }, [selectedConversation?.id])
+
+  const replyMutation = useMutation({
+    mutationFn: async () => {
+      if (!pubkey || !selectedConversation) throw new Error("No merchant thread selected")
+      if (!replyText.trim()) throw new Error("Message is required")
+
+      const ndk = getNdk()
+      if (!ndk.signer) throw new Error("Signer not connected")
+
+      const rumor = new NDKEvent(ndk)
+      rumor.kind = EVENT_KINDS.ORDER
+      rumor.created_at = Math.floor(Date.now() / 1000)
+      rumor.tags = [
+        ["p", selectedConversation.merchantPubkey],
+        ["type", "message"],
+        ["order", selectedConversation.orderId],
+      ]
+      rumor.content = JSON.stringify({
+        note: replyText.trim(),
+        orderId: selectedConversation.orderId,
+        merchantPubkey: selectedConversation.merchantPubkey,
+        buyerPubkey: pubkey,
+        createdAt: Date.now(),
+      })
+
+      const merchantUser = new NDKUser({ pubkey: selectedConversation.merchantPubkey })
+      const buyerUser = new NDKUser({ pubkey })
+      const wrappedToMerchant = await giftWrap(rumor, merchantUser, ndk.signer, {
+        rumorKind: EVENT_KINDS.ORDER,
+      })
+      const wrappedToBuyer = await giftWrap(rumor, buyerUser, ndk.signer, {
+        rumorKind: EVENT_KINDS.ORDER,
+      })
+
+      await Promise.all([wrappedToMerchant.publish(), wrappedToBuyer.publish()])
+    },
+    onSuccess: async () => {
+      setReplyText("")
+      await queryClient.invalidateQueries({ queryKey: ["buyer-messages", pubkey ?? "none"] })
+    },
+  })
 
   return (
     <div className="space-y-6 xl:flex xl:h-[calc(100vh-8.5rem)] xl:flex-col xl:overflow-hidden">
@@ -327,21 +372,28 @@ function MessagesPage() {
                           )}
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-lg font-semibold text-[var(--text-primary)]">
+                          <Link
+                            to="/store/$pubkey"
+                            params={{ pubkey: selectedConversation.merchantPubkey }}
+                            className="truncate text-lg font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
+                          >
                             {merchantName}
-                          </div>
+                          </Link>
                           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
                             <Badge variant="outline" className="border-white/10 bg-white/[0.04]">
                               {selectedConversation.status ?? "pending"}
                             </Badge>
-                            <span className="font-mono">{selectedConversation.orderId}</span>
+                            <span className="inline-flex items-center gap-1">
+                              <span className="font-mono">{formatNpub(selectedConversation.merchantPubkey, 8)}</span>
+                              <CopyButton value={selectedConversation.merchantPubkey} label="Copy pubkey" />
+                            </span>
                           </div>
                         </div>
                       </div>
                     </div>
 
                     <div className="space-y-3 overflow-auto px-6 py-5 xl:min-h-0 xl:flex-1">
-                      {selectedConversation.messages.map((message) => (
+                      {(selectedConversation.messages ?? []).map((message) => (
                         <OrderConversationMessage
                           key={message.id}
                           message={message}
@@ -353,15 +405,25 @@ function MessagesPage() {
                     <div className="border-t border-[var(--border)] px-6 py-4">
                       <div className="flex flex-col gap-3 sm:flex-row">
                         <input
-                          disabled
-                          value="Reply support coming soon"
-                          className="h-11 flex-1 rounded-xl border border-white/10 bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-muted)]"
-                          aria-label="Reply support coming soon"
+                          value={replyText}
+                          onChange={(event) => setReplyText(event.target.value)}
+                          placeholder="Send a message to the merchant"
+                          className="h-11 flex-1 rounded-xl border border-white/10 bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
+                          aria-label="Reply to merchant"
                         />
-                        <Button disabled className="h-11 px-5 text-sm">
-                          Send message
+                        <Button
+                          className="h-11 px-5 text-sm"
+                          disabled={replyMutation.isPending || !replyText.trim()}
+                          onClick={() => replyMutation.mutate()}
+                        >
+                          {replyMutation.isPending ? "Sending…" : "Send message"}
                         </Button>
                       </div>
+                      {replyMutation.error && (
+                        <div className="mt-2 text-xs text-error">
+                          {replyMutation.error instanceof Error ? replyMutation.error.message : "Failed to send message"}
+                        </div>
+                      )}
                     </div>
                   </>
                 ) : (

@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
-import { EVENT_KINDS, fetchEventsFanout, parseProductEvent, requireNdkConnected, type ProductSchema, useAuth } from "@conduit/core"
-import { Badge, Button, Input, Label } from "@conduit/ui"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { EVENT_KINDS, getMerchantStorefront, requireNdkConnected, type CommerceResult, type ProductSchema, useAuth } from "@conduit/core"
+import { Badge, Button, Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 
 export const Route = createFileRoute("/products")({
@@ -39,13 +39,6 @@ const EMPTY_FORM: ProductFormState = {
   tags: "",
 }
 
-function getTagValue(tags: string[][], name: string): string | null {
-  for (const tag of tags) {
-    if (tag[0] === name && typeof tag[1] === "string") return tag[1]
-  }
-  return null
-}
-
 function slugify(input: string): string {
   return input
     .toLowerCase()
@@ -76,147 +69,18 @@ function parseTags(tagsCsv: string): string[] {
     .filter(Boolean)
 }
 
-function toEventCreatedAtSeconds(event: Pick<NDKEvent, "created_at">): number {
-  return event.created_at ?? 0
-}
-
-type DeletionTimestamps = {
-  byEventId: Map<string, number>
-  byAddressId: Map<string, number>
-}
-
-function setLatestTimestamp(map: Map<string, number>, key: string, value: number): void {
-  const existing = map.get(key) ?? -1
-  if (value >= existing) map.set(key, value)
-}
-
-function collectProductAddresses(events: NDKEvent[]): string[] {
-  const addresses = new Set<string>()
-  for (const event of events) {
-    const dTag = getTagValue(event.tags ?? [], "d")
-    if (!dTag) continue
-    addresses.add(`30402:${event.pubkey}:${dTag}`)
+async function fetchMerchantProducts(merchantPubkey: string): Promise<CommerceResult<MerchantProduct[]>> {
+  const result = await getMerchantStorefront({ merchantPubkey, limit: 200, sort: "updated_at_desc" })
+  return {
+    data: result.data.map((record) => ({
+      eventId: record.eventId,
+      addressId: record.addressId,
+      dTag: record.dTag,
+      eventCreatedAt: record.eventCreatedAt,
+      product: record.product,
+    })),
+    meta: result.meta,
   }
-  return Array.from(addresses)
-}
-
-async function fetchDeletionTimestamps(
-  merchantPubkey: string,
-  productEventIds: string[],
-  productAddresses: string[]
-): Promise<DeletionTimestamps> {
-  const byEventId = new Map<string, number>()
-  const byAddressId = new Map<string, number>()
-
-  const filters: NDKFilter[] = []
-  if (productEventIds.length > 0) {
-    filters.push({
-      kinds: [EVENT_KINDS.DELETION],
-      authors: [merchantPubkey],
-      "#e": productEventIds,
-      limit: 300,
-    })
-  }
-  if (productAddresses.length > 0) {
-    filters.push({
-      kinds: [EVENT_KINDS.DELETION],
-      authors: [merchantPubkey],
-      "#a": productAddresses,
-      limit: 300,
-    })
-  }
-
-  const deletionEvents: NDKEvent[] = []
-  for (const filter of filters) {
-    const fetched = await fetchEventsFanout(filter, {
-      connectTimeoutMs: 4_000,
-      fetchTimeoutMs: 10_000,
-    }) as NDKEvent[]
-    deletionEvents.push(...fetched)
-  }
-
-  // Fallback for relays that ignore tag-scoped deletion queries.
-  if (deletionEvents.length === 0) {
-    const fallback = await fetchEventsFanout({
-      kinds: [EVENT_KINDS.DELETION],
-      authors: [merchantPubkey],
-      limit: 300,
-    }, {
-      connectTimeoutMs: 4_000,
-      fetchTimeoutMs: 10_000,
-    }) as NDKEvent[]
-    deletionEvents.push(...fallback)
-  }
-
-  for (const deletion of deletionEvents) {
-    const deletedAt = toEventCreatedAtSeconds(deletion)
-    for (const tag of deletion.tags ?? []) {
-      const tagName = tag[0]
-      const tagValue = tag[1]
-      if (!tagValue) continue
-      if (tagName === "e") setLatestTimestamp(byEventId, tagValue, deletedAt)
-      if (tagName === "a") setLatestTimestamp(byAddressId, tagValue, deletedAt)
-    }
-  }
-
-  return { byEventId, byAddressId }
-}
-
-function isDeletedByNip09(
-  event: Pick<NDKEvent, "id" | "created_at">,
-  addressId: string,
-  deletionTimestamps: DeletionTimestamps
-): boolean {
-  const createdAt = toEventCreatedAtSeconds(event)
-  if (event.id) {
-    const deletedAt = deletionTimestamps.byEventId.get(event.id) ?? -1
-    if (deletedAt >= createdAt) return true
-  }
-  const deletedAtAddress = deletionTimestamps.byAddressId.get(addressId) ?? -1
-  return deletedAtAddress >= createdAt
-}
-
-async function fetchMerchantProducts(merchantPubkey: string): Promise<MerchantProduct[]> {
-  const events = await fetchEventsFanout({
-    kinds: [EVENT_KINDS.PRODUCT],
-    authors: [merchantPubkey],
-    limit: 200,
-  }, {
-    connectTimeoutMs: 4_000,
-    fetchTimeoutMs: 10_000,
-  }) as NDKEvent[]
-
-  events.sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
-  const productEventIds = events.map((event) => event.id).filter(Boolean) as string[]
-  const productAddresses = collectProductAddresses(events)
-  const deletionTimestamps = await fetchDeletionTimestamps(merchantPubkey, productEventIds, productAddresses)
-
-  const byAddress = new Map<string, MerchantProduct>()
-  for (const event of events) {
-    try {
-      const parsed = parseProductEvent(event)
-      const dTag = getTagValue(event.tags ?? [], "d")
-      const addressId = dTag ? `30402:${event.pubkey}:${dTag}` : parsed.id
-      if (isDeletedByNip09(event, addressId, deletionTimestamps)) continue
-      const dedupeKey = dTag ?? parsed.id
-      const candidate: MerchantProduct = {
-        eventId: event.id,
-        addressId,
-        dTag,
-        eventCreatedAt: toEventCreatedAtSeconds(event),
-        product: parsed,
-      }
-
-      const existing = byAddress.get(dedupeKey)
-      if (!existing || candidate.eventCreatedAt >= existing.eventCreatedAt) {
-        byAddress.set(dedupeKey, candidate)
-      }
-    } catch {
-      // ignore malformed product events
-    }
-  }
-
-  return Array.from(byAddress.values()).sort((a, b) => b.product.updatedAt - a.product.updatedAt)
 }
 
 async function publishProduct(
@@ -320,6 +184,8 @@ function ProductsPage() {
     queryFn: () => fetchMerchantProducts(pubkey!),
     refetchInterval: 15_000,
   })
+  const merchantProducts = productsQuery.data?.data ?? []
+  const merchantProductsMeta = productsQuery.data?.meta ?? null
 
   const saveMutation = useMutation({
     mutationFn: async (payload: { form: ProductFormState; existing?: MerchantProduct }) => {
@@ -345,36 +211,27 @@ function ProductsPage() {
   const isDeleting = deleteMutation.isPending
 
   const itemCountLabel = useMemo(() => {
-    if (!productsQuery.data) return "0 listings"
-    const count = productsQuery.data.length
+    const count = merchantProducts.length
     return `${count} listing${count === 1 ? "" : "s"}`
-  }, [productsQuery.data])
+  }, [merchantProducts])
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-medium text-[var(--text-primary)]">Products</h1>
-          <p className="mt-1 text-sm text-[var(--text-secondary)]">
-            Publish and manage kind {EVENT_KINDS.PRODUCT} listings for this merchant pubkey.
+          <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">Products</div>
+          <h1 className="mt-3 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+            Manage your listings
+          </h1>
+          <p className="mt-2 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
+            Publish, update, and remove kind {EVENT_KINDS.PRODUCT} listings for this merchant signer.
           </p>
         </div>
-        <Badge variant="secondary" className="border-[var(--border)]">
-          {itemCountLabel}
-        </Badge>
-      </div>
 
-      {!pubkey && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-          Connect your signer to manage listings.
-        </div>
-      )}
-
-      <section className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
-        <div className="mb-3 flex items-center justify-between gap-2">
-          <div className="text-sm font-medium text-[var(--text-primary)]">
-            {editing ? "Edit listing" : "Create listing"}
-          </div>
+        <div className="flex flex-wrap gap-2">
+          <Badge variant="secondary" className="border-white/10 bg-white/[0.05] text-[var(--text-primary)]">
+            {itemCountLabel}
+          </Badge>
           {editing && (
             <Button
               variant="outline"
@@ -388,144 +245,213 @@ function ProductsPage() {
             </Button>
           )}
         </div>
+      </div>
 
-        <form
-          className="grid gap-3 md:grid-cols-2"
-          onSubmit={(e) => {
-            e.preventDefault()
-            saveMutation.mutate({ form, existing: editing ?? undefined })
-          }}
-        >
-          <div className="grid gap-1.5 md:col-span-2">
-            <Label htmlFor="product-title">Title</Label>
-            <Input
-              id="product-title"
-              value={form.title}
-              onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
-              placeholder="Product title"
-              required
-            />
+      {!pubkey && (
+        <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.04] p-5 text-sm text-[var(--text-secondary)]">
+          Connect your signer to create and manage listings.
+        </div>
+      )}
+
+      <div className="grid items-start gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
+        <section className="xl:sticky xl:top-28">
+          <div className="rounded-[1.6rem] border border-white/10 bg-white/[0.04] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+            <div className="mb-4">
+              <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                {editing ? "Edit listing" : "Create listing"}
+              </div>
+              <div className="mt-2 text-xl font-semibold text-[var(--text-primary)]">
+                {editing ? editing.product.title : "New product"}
+              </div>
+            </div>
+
+            <form
+              className="grid gap-3"
+              onSubmit={(e) => {
+                e.preventDefault()
+                saveMutation.mutate({ form, existing: editing ?? undefined })
+              }}
+            >
+              <div className="grid gap-1.5">
+                <Label htmlFor="product-title">Title</Label>
+                <Input
+                  id="product-title"
+                  value={form.title}
+                  onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
+                  placeholder="Product title"
+                  required
+                />
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="product-summary">Summary</Label>
+                <textarea
+                  id="product-summary"
+                  className="min-h-28 rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-primary/20 transition focus:ring-2"
+                  value={form.summary}
+                  onChange={(e) => setForm((prev) => ({ ...prev, summary: e.target.value }))}
+                  placeholder="Short description shown to buyers"
+                />
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="product-price">Price</Label>
+                  <Input
+                    id="product-price"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.price}
+                    onChange={(e) => setForm((prev) => ({ ...prev, price: e.target.value }))}
+                    required
+                  />
+                </div>
+
+                <div className="grid gap-1.5">
+                  <Label htmlFor="product-currency">Currency</Label>
+                  <Select
+                    value={form.currency}
+                    onValueChange={(value) => setForm((prev) => ({ ...prev, currency: value }))}
+                  >
+                    <SelectTrigger id="product-currency">
+                      <SelectValue placeholder="Choose currency" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="USD">USD</SelectItem>
+                      <SelectItem value="SAT">SAT</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="product-image">Image URL</Label>
+                <Input
+                  id="product-image"
+                  type="url"
+                  value={form.imageUrl}
+                  onChange={(e) => setForm((prev) => ({ ...prev, imageUrl: e.target.value }))}
+                  placeholder="https://..."
+                />
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="product-tags">Tags</Label>
+                <Input
+                  id="product-tags"
+                  value={form.tags}
+                  onChange={(e) => setForm((prev) => ({ ...prev, tags: e.target.value }))}
+                  placeholder="gear, hardware, demo"
+                />
+              </div>
+
+              {saveMutation.error && (
+                <div className="rounded-xl border border-error/30 bg-error/10 p-3 text-sm text-error">
+                  {saveMutation.error instanceof Error ? saveMutation.error.message : "Failed to publish product"}
+                </div>
+              )}
+
+              <div className="pt-2">
+                <Button type="submit" className="w-full" disabled={!pubkey || isSaving}>
+                  {isSaving ? "Saving…" : editing ? "Save changes" : "Publish product"}
+                </Button>
+              </div>
+            </form>
           </div>
+        </section>
 
-          <div className="grid gap-1.5 md:col-span-2">
-            <Label htmlFor="product-summary">Summary</Label>
-            <textarea
-              id="product-summary"
-              className="min-h-24 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-primary/20 transition focus:ring-2"
-              value={form.summary}
-              onChange={(e) => setForm((prev) => ({ ...prev, summary: e.target.value }))}
-              placeholder="Short description shown to buyers"
-            />
-          </div>
-
-          <div className="grid gap-1.5">
-            <Label htmlFor="product-price">Price</Label>
-            <Input
-              id="product-price"
-              type="number"
-              min="0"
-              step="0.01"
-              value={form.price}
-              onChange={(e) => setForm((prev) => ({ ...prev, price: e.target.value }))}
-              required
-            />
-          </div>
-
-          <div className="grid gap-1.5">
-            <Label htmlFor="product-currency">Currency</Label>
-            <Input
-              id="product-currency"
-              value={form.currency}
-              onChange={(e) => setForm((prev) => ({ ...prev, currency: e.target.value.toUpperCase() }))}
-              placeholder="USD"
-              maxLength={12}
-            />
-          </div>
-
-          <div className="grid gap-1.5 md:col-span-2">
-            <Label htmlFor="product-image">Image URL</Label>
-            <Input
-              id="product-image"
-              type="url"
-              value={form.imageUrl}
-              onChange={(e) => setForm((prev) => ({ ...prev, imageUrl: e.target.value }))}
-              placeholder="https://..."
-            />
-          </div>
-
-          <div className="grid gap-1.5 md:col-span-2">
-            <Label htmlFor="product-tags">Tags (comma separated)</Label>
-            <Input
-              id="product-tags"
-              value={form.tags}
-              onChange={(e) => setForm((prev) => ({ ...prev, tags: e.target.value }))}
-              placeholder="gear, hardware, demo"
-            />
-          </div>
-
-          {saveMutation.error && (
-            <div className="md:col-span-2 rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
-              {saveMutation.error instanceof Error ? saveMutation.error.message : "Failed to publish product"}
+        <section className="space-y-4">
+          {productsQuery.isLoading && (
+            <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-5 text-sm text-[var(--text-secondary)]">
+              Loading products…
             </div>
           )}
 
-          <div className="md:col-span-2 flex items-center justify-end gap-2">
-            <Button type="submit" disabled={!pubkey || isSaving}>
-              {isSaving ? "Saving…" : editing ? "Save changes" : "Publish product"}
-            </Button>
-          </div>
-        </form>
-      </section>
+          {merchantProductsMeta && (
+            <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4 text-xs text-[var(--text-secondary)]">
+              Source: {merchantProductsMeta.source.replace("_", " ")}
+              {merchantProductsMeta.stale ? " / stale view" : ""}
+            </div>
+          )}
 
-      {productsQuery.isLoading && (
-        <div className="text-sm text-[var(--text-secondary)]">Loading products…</div>
-      )}
+          {productsQuery.error && (
+            <div className="rounded-[1.4rem] border border-error/30 bg-error/10 p-4 text-sm text-error">
+              Failed to load products:{" "}
+              {productsQuery.error instanceof Error ? productsQuery.error.message : "Unknown error"}
+            </div>
+          )}
 
-      {productsQuery.error && (
-        <div className="rounded-md border border-error/30 bg-error/10 p-4 text-sm text-error">
-          Failed to load products:{" "}
-          {productsQuery.error instanceof Error ? productsQuery.error.message : "Unknown error"}
-        </div>
-      )}
+          {!productsQuery.isLoading && merchantProducts.length === 0 && (
+            <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-5 text-sm text-[var(--text-secondary)]">
+              No listings yet. Publish your first product from the panel on the left.
+            </div>
+          )}
 
-      {productsQuery.data && productsQuery.data.length === 0 && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-          No listings yet. Publish your first product above.
-        </div>
-      )}
-
-      {productsQuery.data && productsQuery.data.length > 0 && (
-        <div className="space-y-3">
-          {productsQuery.data.map((item) => (
-            <article key={item.addressId} className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h2 className="text-base font-medium text-[var(--text-primary)]">{item.product.title}</h2>
-                  <div className="mt-1 text-xs text-[var(--text-secondary)] font-mono">{item.addressId}</div>
+          {merchantProducts.map((item) => (
+            <article
+              key={item.addressId}
+              className="rounded-[1.5rem] border border-white/10 bg-white/[0.04] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <h2 className="text-lg font-semibold text-[var(--text-primary)]">{item.product.title}</h2>
+                    <Badge variant="secondary" className="border-white/10 bg-white/[0.05]">
+                      {item.product.currency}
+                    </Badge>
+                  </div>
+                  <div className="mt-2 break-all text-xs font-mono text-[var(--text-muted)]">{item.addressId}</div>
                 </div>
-                <div className="text-right">
-                  <div className="text-sm text-[var(--text-primary)]">
+
+                <div className="text-left sm:text-right">
+                  <div className="text-lg font-semibold text-[var(--text-primary)]">
                     {item.product.price} {item.product.currency}
                   </div>
-                  <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                    {new Date(item.product.updatedAt).toLocaleString()}
+                  <div className="mt-1 text-xs text-[var(--text-muted)]">
+                    Updated {new Date(item.product.updatedAt).toLocaleString()}
                   </div>
                 </div>
               </div>
 
-              {item.product.summary && (
-                <p className="mt-3 text-sm text-[var(--text-secondary)]">{item.product.summary}</p>
-              )}
+              <div className="mt-4 grid gap-4 lg:grid-cols-[112px_minmax(0,1fr)]">
+                <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.05]">
+                  {item.product.images[0]?.url ? (
+                    <img
+                      src={item.product.images[0].url}
+                      alt={item.product.title}
+                      className="h-28 w-full object-cover"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="flex h-28 items-center justify-center text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                      No image
+                    </div>
+                  )}
+                </div>
 
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                {item.product.tags.map((tag) => (
-                  <Badge key={`${item.addressId}-${tag}`} variant="outline" className="border-[var(--border)]">
-                    {tag}
-                  </Badge>
-                ))}
+                <div>
+                  {item.product.summary && (
+                    <p className="text-sm leading-7 text-[var(--text-secondary)]">{item.product.summary}</p>
+                  )}
+
+                  {item.product.tags.length > 0 && (
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      {item.product.tags.map((tag) => (
+                        <Badge
+                          key={`${item.addressId}-${tag}`}
+                          variant="outline"
+                          className="border-white/10 bg-white/[0.04]"
+                        >
+                          {tag}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
 
-              <div className="mt-4 flex items-center justify-end gap-2">
+              <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
                 <Button
                   variant="outline"
                   size="sm"
@@ -550,8 +476,8 @@ function ProductsPage() {
               </div>
             </article>
           ))}
-        </div>
-      )}
+        </section>
+      </div>
     </div>
   )
 }

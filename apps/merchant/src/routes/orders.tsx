@@ -3,29 +3,46 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   canMockInvoice,
-  db,
+  convertCommerceAmountToSats,
+  decodeLightningInvoiceAmount,
   EVENT_KINDS,
   extractOrderSummary,
-  fetchEventsFanout,
   formatPubkey,
   getNdk,
+  getProfiles,
+  getLightningNetworkMismatchMessage,
+  getMerchantConversationList,
   hasWebLN,
+  isInvoiceCompatibleWithCurrentNetwork,
   mockMakeInvoice,
   nwcMakeInvoice,
   parseNwcUri,
-  parseOrderMessageRumorEvent,
-  requireNdkConnected,
   weblnMakeInvoice,
   type NwcConnection,
   type ParsedOrderMessage,
   type StatusUpdateMessageSchema,
   useAuth,
 } from "@conduit/core"
-import { Badge, Button, Input, Label, OrderDetailCard, Tabs, TabsContent, TabsList, TabsTrigger } from "@conduit/ui"
+import {
+  Badge,
+  Button,
+  Input,
+  Label,
+  OrderDetailCard,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
-import { giftUnwrap, giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
-import type { NDKFilter, NDKSigner } from "@nostr-dev-kit/ndk"
+import { giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import { CheckCircle2, RotateCw } from "lucide-react"
+import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 
 export const Route = createFileRoute("/orders")({
   beforeLoad: () => {
@@ -34,191 +51,72 @@ export const Route = createFileRoute("/orders")({
   component: OrdersPage,
 })
 
-type Conversation = {
-  id: string
-  orderId: string
-  buyerPubkey: string
-  messages: ParsedOrderMessage[]
-  latestAt: number
-  latestType: ParsedOrderMessage["type"]
-  status: string | null
-  totalSummary: string | null
+const INVOICE_CURRENCY_OPTIONS = ["USD", "SATS"] as const
+
+function normalizeInvoiceCurrencyChoice(currency: string | undefined): (typeof INVOICE_CURRENCY_OPTIONS)[number] | "" {
+  const normalized = currency?.trim().toUpperCase()
+  if (normalized === "SAT" || normalized === "SATS") return "SATS"
+  if (normalized === "USD") return "USD"
+  return ""
 }
 
-function raceTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
-  ])
-}
+function normalizeTrackingUrl(raw: string): string | undefined {
+  const trimmed = raw.trim()
+  if (!trimmed) return undefined
 
-async function tryUnwrap(event: NDKEvent, signer: NDKSigner) {
+  let parsed: URL
   try {
-    return await raceTimeout(
-      (async () => {
-        try { return await giftUnwrap(event, undefined, signer, "nip44") } catch { /* nip44 failed */ }
-        try { return await giftUnwrap(event, undefined, signer, "nip04") } catch { /* nip04 failed */ }
-        return null
-      })(),
-      8_000,
-      null,
-    )
+    parsed = new URL(trimmed)
   } catch {
-    return null
+    throw new Error("Tracking URL must be a valid http(s) link.")
   }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Tracking URL must start with http:// or https://.")
+  }
+
+  return parsed.toString()
 }
 
-// Unwrap events in sequential batches to avoid overwhelming the signer extension.
-async function unwrapBatch(events: NDKEvent[], signer: NDKSigner, batchSize = 5): Promise<Array<Awaited<ReturnType<typeof tryUnwrap>>>> {
-  const results: Array<Awaited<ReturnType<typeof tryUnwrap>>> = []
-  for (let i = 0; i < events.length; i += batchSize) {
-    const batch = events.slice(i, i + batchSize)
-    const batchResults = await Promise.all(batch.map((e) => tryUnwrap(e, signer)))
-    results.push(...batchResults)
-  }
-  return results
+function getDisplayName(
+  profile: { displayName?: string; name?: string } | undefined,
+  pubkey: string
+): string {
+  return profile?.displayName || profile?.name || formatPubkey(pubkey, 8)
 }
 
-// Set of gift-wrap event IDs already unwrapped and cached this session.
-const knownWrapIds = new Set<string>()
-
-async function fetchMerchantMessages(merchantPubkey: string): Promise<ParsedOrderMessage[]> {
-  // Load cached messages from Dexie first
-  const cached = await db.orderMessages
-    .where("recipientPubkey").equals(merchantPubkey)
-    .or("senderPubkey").equals(merchantPubkey)
-    .toArray()
-
-  const cachedById = new Map<string, ParsedOrderMessage>()
-  for (const row of cached) {
-    try {
-      cachedById.set(row.id, JSON.parse(row.rawContent) as ParsedOrderMessage)
-    } catch { /* skip corrupt */ }
-  }
-
-  // Fetch fresh from relays
-  try {
-    const ndk = await requireNdkConnected()
-    const signer = ndk.signer
-    if (!signer) {
-      if (cachedById.size > 0) {
-        const result = Array.from(cachedById.values())
-        result.sort((a, b) => a.createdAt - b.createdAt)
-        return result
-      }
-      throw new Error("Connect your Nostr signer to view orders.")
-    }
-
-    const filter: NDKFilter = {
-      kinds: [EVENT_KINDS.GIFT_WRAP],
-      "#p": [merchantPubkey],
-      limit: 50,
-    }
-
-    const wrapped = await fetchEventsFanout(filter, {
-      connectTimeoutMs: 4_000,
-      fetchTimeoutMs: 12_000,
-    }) as NDKEvent[]
-
-    // Only unwrap events we haven't seen before
-    const newWrapped = wrapped.filter((e) => !knownWrapIds.has(e.id))
-
-    // Unwrap in small batches so the signer extension isn't flooded
-    const unwrapped = await unwrapBatch(newWrapped, signer)
-
-    const newRows: Array<{ id: string; orderId: string; type: string; senderPubkey: string; recipientPubkey: string; createdAt: number; rawContent: string; cachedAt: number }> = []
-    for (const rumor of unwrapped) {
-      if (!rumor) continue
-      if (rumor.kind !== EVENT_KINDS.ORDER) continue
-      try {
-        const parsed = parseOrderMessageRumorEvent(rumor)
-        if (!cachedById.has(parsed.id)) {
-          newRows.push({
-            id: parsed.id,
-            orderId: parsed.orderId,
-            type: parsed.type,
-            senderPubkey: parsed.senderPubkey,
-            recipientPubkey: parsed.recipientPubkey,
-            createdAt: parsed.createdAt,
-            rawContent: JSON.stringify(parsed),
-            cachedAt: Date.now(),
-          })
-        }
-        cachedById.set(parsed.id, parsed)
-      } catch {
-        // ignore malformed
-      }
-    }
-
-    // Mark all fetched wrap IDs as known (even ones that failed to unwrap)
-    for (const e of wrapped) knownWrapIds.add(e.id)
-
-    // Persist new messages to Dexie
-    if (newRows.length > 0) {
-      await db.orderMessages.bulkPut(newRows)
-    }
-  } catch (err) {
-    // If relay fetch fails but we have cache, return cached data
-    if (cachedById.size > 0) {
-      const result = Array.from(cachedById.values())
-      result.sort((a, b) => a.createdAt - b.createdAt)
-      return result
-    }
-    throw err
-  }
-
-  const result = Array.from(cachedById.values())
-  result.sort((a, b) => a.createdAt - b.createdAt)
-  return result
+const MESSAGE_TYPE_LABELS: Record<string, string> = {
+  order: "Order",
+  payment_request: "Invoice",
+  status_update: "Status",
+  shipping_update: "Shipping",
+  receipt: "Receipt",
+  message: "Message",
+  payment_proof: "Payment",
 }
 
-function buildMerchantConversations(messages: ParsedOrderMessage[], merchantPubkey: string): Conversation[] {
-  const grouped = new Map<string, ParsedOrderMessage[]>()
+function friendlyTypeLabel(type: string): string {
+  return MESSAGE_TYPE_LABELS[type] ?? type.replace(/_/g, " ")
+}
 
-  for (const message of messages) {
-    const bucket = grouped.get(message.orderId) ?? []
-    bucket.push(message)
-    grouped.set(message.orderId, bucket)
-  }
-
-  const conversations: Conversation[] = []
-  for (const [orderId, bucket] of grouped.entries()) {
-    bucket.sort((a, b) => a.createdAt - b.createdAt)
-    const latest = bucket[bucket.length - 1]
-    if (!latest) continue
-
-    const firstOrder = bucket.find((message) => message.type === "order")
-    const latestStatus = [...bucket]
-      .reverse()
-      .find((message) => message.type === "status_update")
-
-    const otherParticipants = Array.from(new Set(
-      bucket.map((m) => m.senderPubkey === merchantPubkey ? m.recipientPubkey : m.senderPubkey).filter(Boolean)
-    ))
-    const buyerPubkey = otherParticipants[0] ?? ""
-
-    conversations.push({
-      id: orderId,
-      orderId,
-      buyerPubkey,
-      messages: bucket,
-      latestAt: latest.createdAt,
-      latestType: latest.type,
-      status: latestStatus?.type === "status_update" ? latestStatus.payload.status : null,
-      totalSummary:
-        firstOrder?.type === "order" ? `${firstOrder.payload.subtotal} ${firstOrder.payload.currency}` : null,
-    })
-  }
-
-  conversations.sort((a, b) => b.latestAt - a.latestAt)
-  return conversations
+function formatProductReference(productId: string): { title: string; detail: string } {
+  const normalized = productId.trim()
+  const segments = normalized.split(":").filter(Boolean)
+  const rawLabel = segments.length > 0 ? segments[segments.length - 1] : normalized
+  const displaySource = rawLabel || normalized
+  const title = displaySource
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase()) || "Product"
+  return { title, detail: normalized }
 }
 
 async function publishOrderConversationMessage(params: {
   merchantPubkey: string
   buyerPubkey: string
   orderId: string
-  type: "payment_request" | "status_update" | "shipping_update" | "receipt"
+  type: "payment_request" | "status_update" | "shipping_update" | "receipt" | "message"
   payload: Record<string, unknown>
   tags?: string[][]
 }): Promise<void> {
@@ -275,7 +173,7 @@ function MessageCard({
       >
         <div className="mb-2 flex items-center gap-2">
           <Badge variant="outline" className="border-[var(--border)]">
-            {message.type}
+            {friendlyTypeLabel(message.type)}
           </Badge>
           <span className="text-xs text-[var(--text-secondary)]">
             {new Date(message.createdAt).toLocaleString()}
@@ -287,11 +185,20 @@ function MessageCard({
             <div className="text-[var(--text-primary)]">
               Total: {message.payload.subtotal} {message.payload.currency}
             </div>
-            {message.payload.items.map((item) => (
-              <div key={`${message.id}-${item.productId}`} className="text-xs text-[var(--text-secondary)]">
-                {item.productId} · {item.quantity} x {item.priceAtPurchase} {item.currency}
-              </div>
-            ))}
+            {message.payload.items.map((item) => {
+              const product = formatProductReference(item.productId)
+              return (
+                <div
+                  key={`${message.id}-${item.productId}`}
+                  className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2"
+                >
+                  <div className="text-sm text-[var(--text-primary)]">{product.title}</div>
+                  <div className="mt-1 text-xs text-[var(--text-secondary)]">
+                    Qty {item.quantity} · {item.priceAtPurchase} {item.currency}
+                  </div>
+                </div>
+              )
+            })}
             {message.payload.shippingAddress && (
               <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
                 <div className="font-medium text-[var(--text-primary)]">Ship to:</div>
@@ -315,7 +222,24 @@ function MessageCard({
 
         {message.type === "payment_request" && (
           <div className="space-y-2">
-            <div className="text-[var(--text-primary)]">Invoice sent.</div>
+            {(() => {
+              const decoded = decodeLightningInvoiceAmount(message.payload.invoice)
+              const displayAmount = decoded.sats ?? decoded.msats ?? message.payload.amount ?? null
+              const displayCurrency = decoded.currency ?? message.payload.currency ?? null
+
+              return (
+                <>
+                  <div className="text-[var(--text-primary)]">
+                    Invoice sent
+                    {displayAmount != null ? ` · ${displayAmount}` : ""}
+                    {displayCurrency ? ` ${displayCurrency}` : ""}
+                  </div>
+                  <div className="text-xs text-[var(--text-secondary)]">
+                    Awaiting payment confirmation.
+                  </div>
+                </>
+              )
+            })()}
             <div className="break-all rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-xs text-[var(--text-secondary)]">
               {message.payload.invoice}
             </div>
@@ -368,6 +292,10 @@ function MessageCard({
           <div className="text-[var(--text-secondary)]">{message.payload.note}</div>
         )}
 
+        {message.type === "message" && (
+          <div className="text-[var(--text-primary)]">{message.payload.note}</div>
+        )}
+
         {message.type === "payment_proof" && (
           <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
             {JSON.stringify(message.payload, null, 2)}
@@ -384,6 +312,7 @@ function useNwcConnection(): {
   connection: NwcConnection | null
   rawUri: string
   setUri: (uri: string) => void
+  disconnect: () => void
   error: string | null
 } {
   const [rawUri, setRawUri] = useState(() => localStorage.getItem(NWC_URI_KEY) ?? "")
@@ -398,12 +327,17 @@ function useNwcConnection(): {
     }
   })
 
+  function disconnect() {
+    setRawUri("")
+    localStorage.removeItem(NWC_URI_KEY)
+    setConnection(null)
+    setError(null)
+  }
+
   function setUri(uri: string) {
     setRawUri(uri)
     if (!uri.trim()) {
-      localStorage.removeItem(NWC_URI_KEY)
-      setConnection(null)
-      setError(null)
+      disconnect()
       return
     }
     try {
@@ -417,11 +351,13 @@ function useNwcConnection(): {
     }
   }
 
-  return { connection, rawUri, setUri, error }
+  return { connection, rawUri, setUri, disconnect, error }
 }
 
 function OrdersPage() {
   const { pubkey, status } = useAuth()
+  const btcUsdRateQuery = useBtcUsdRate()
+  const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
   const queryClient = useQueryClient()
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState("details")
@@ -429,19 +365,32 @@ function OrdersPage() {
   const [invoiceAmount, setInvoiceAmount] = useState("")
   const [invoiceCurrency, setInvoiceCurrency] = useState("USD")
   const [invoiceNote, setInvoiceNote] = useState("")
-  const [orderStatus, setOrderStatus] = useState<StatusUpdateMessageSchema["status"]>("invoiced")
+  const [orderStatus, setOrderStatus] = useState<StatusUpdateMessageSchema["status"] | "">("")
   const [statusNote, setStatusNote] = useState("")
   const [carrier, setCarrier] = useState("")
   const [trackingNumber, setTrackingNumber] = useState("")
   const [trackingUrl, setTrackingUrl] = useState("")
   const [shippingNote, setShippingNote] = useState("")
   const [showNwcSetup, setShowNwcSetup] = useState(false)
+  const [showNwcReplace, setShowNwcReplace] = useState(false)
+  const [replyNote, setReplyNote] = useState("")
   const [successFlash, setSuccessFlash] = useState<string | null>(null)
   const [weblnAvailable, setWeblnAvailable] = useState(false)
-  const autoInvoicedRef = useRef(new Set<string>())
   const [refreshButtonState, setRefreshButtonState] = useState<"idle" | "refreshing" | "done">("idle")
   const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const signerConnected = status === "connected" && !!pubkey
+  const invoiceAmountNumber = Number(invoiceAmount) || 0
+  const invoiceAmountSats = useMemo(
+    () =>
+      invoiceCurrency
+        ? convertCommerceAmountToSats(invoiceAmountNumber, invoiceCurrency, btcUsdRate)
+        : null,
+    [btcUsdRate, invoiceAmountNumber, invoiceCurrency]
+  )
+  const manualInvoiceDecoded = useMemo(
+    () => (invoice.trim() ? decodeLightningInvoiceAmount(invoice.trim()) : null),
+    [invoice]
+  )
 
   useEffect(() => {
     // Detect WebLN (Alby extension) — may load after page render
@@ -460,7 +409,7 @@ function OrdersPage() {
   const ordersQuery = useQuery({
     queryKey: ["merchant-order-messages", pubkey ?? "none"],
     enabled: signerConnected,
-    queryFn: () => fetchMerchantMessages(pubkey!),
+    queryFn: () => getMerchantConversationList({ principalPubkey: pubkey!, limit: 200 }),
     staleTime: 30_000,
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
@@ -503,10 +452,19 @@ function OrdersPage() {
     void refetchOrders()
   }, [refetchOrders, signerConnected])
 
-  const conversations = useMemo(
-    () => signerConnected && pubkey ? buildMerchantConversations(ordersQuery.data ?? [], pubkey) : [],
-    [ordersQuery.data, pubkey, signerConnected]
+  const conversations = useMemo(() => ordersQuery.data?.data ?? [], [ordersQuery.data])
+  const buyerPubkeys = useMemo(
+    () => Array.from(new Set(conversations.map((conversation) => conversation.buyerPubkey).filter(Boolean))),
+    [conversations]
   )
+  const buyerProfilesQuery = useQuery({
+    queryKey: ["merchant-order-buyer-profiles", buyerPubkeys],
+    enabled: signerConnected && buyerPubkeys.length > 0,
+    queryFn: async () => {
+      const result = await getProfiles({ pubkeys: buyerPubkeys })
+      return result.data
+    },
+  })
 
   useEffect(() => {
     if (conversations.length === 0) {
@@ -519,105 +477,47 @@ function OrdersPage() {
   }, [conversations, selectedConversationId])
 
   const selected = conversations.find((conversation) => conversation.id === selectedConversationId) ?? null
+  const selectedOrderMessage = selected?.messages?.find((message) => message.type === "order")
+  const selectedOrderCurrency = selectedOrderMessage?.type === "order" ? selectedOrderMessage.payload.currency : null
+  const invoiceCurrencyUnsupported =
+    !!selectedOrderCurrency && normalizeInvoiceCurrencyChoice(selectedOrderCurrency) === ""
 
   useEffect(() => {
     setSuccessFlash(null)
     setActiveTab("details")
-    const firstOrder = selected?.messages.find((message) => message.type === "order")
+    setOrderStatus("")
+    setReplyNote("")
+    const firstOrder = selected?.messages?.find((message) => message.type === "order")
     if (firstOrder?.type !== "order") return
     setInvoiceAmount(String(firstOrder.payload.subtotal))
-    setInvoiceCurrency(firstOrder.payload.currency)
+    setInvoiceCurrency(normalizeInvoiceCurrencyChoice(firstOrder.payload.currency))
   }, [selected?.id])
 
   const orderSummary = useMemo(
-    () => selected ? extractOrderSummary(selected.messages) : null,
+    () => selected ? extractOrderSummary(selected.messages ?? []) : null,
     [selected]
   )
-
-  // Auto-invoice: when a new order arrives and a wallet is connected (or mock mode),
-  // generate and send the invoice automatically without merchant intervention.
-  useEffect(() => {
-    if (!signerConnected || !pubkey) return
-    const mock = canMockInvoice()
-    const wallet = mock ? "mock" : weblnAvailable ? "webln" : nwc.connection ? "nwc" : null
-    if (!wallet) return
-
-    const pending = conversations.filter((c) => {
-      if (autoInvoicedRef.current.has(c.orderId)) return false
-      const hasOrder = c.messages.some((m) => m.type === "order")
-      const hasInvoice = c.messages.some((m) => m.type === "payment_request")
-      return hasOrder && !hasInvoice
-    })
-
-    if (pending.length === 0) return
-
-    async function autoInvoice(conv: Conversation) {
-      const orderMsg = conv.messages.find((m) => m.type === "order")
-      if (orderMsg?.type !== "order") return
-
-      const amountSats = orderMsg.payload.subtotal
-      if (!amountSats || amountSats <= 0) return
-
-      autoInvoicedRef.current.add(conv.orderId)
-
-      try {
-        let bolt11: string
-        if (wallet === "mock") {
-          bolt11 = mockMakeInvoice({ amountSats, memo: `Conduit order ${conv.orderId}` }).invoice
-        } else if (wallet === "webln") {
-          const result = await weblnMakeInvoice({
-            amountSats,
-            memo: `Conduit order ${conv.orderId}`,
-          })
-          bolt11 = result.invoice
-        } else {
-          const result = await nwcMakeInvoice(nwc.connection!, {
-            amountMsats: amountSats * 1000,
-            description: `Conduit order ${conv.orderId}`,
-          })
-          bolt11 = result.invoice
-        }
-
-        await publishOrderConversationMessage({
-          merchantPubkey: pubkey!,
-          buyerPubkey: conv.buyerPubkey,
-          orderId: conv.orderId,
-          type: "payment_request",
-          tags: [
-            ["amount", String(amountSats)],
-            ["currency", orderMsg.payload.currency?.toUpperCase() || "USD"],
-            ["payment_method", "lightning"],
-          ],
-          payload: {
-            invoice: bolt11,
-            amount: amountSats,
-            currency: orderMsg.payload.currency?.toUpperCase() || "USD",
-          },
-        })
-
-        flash(`Auto-invoiced order ${conv.orderId.slice(0, 8)}...`)
-        queryClient.invalidateQueries({ queryKey: ["merchant-order-messages", pubkey ?? "none"] })
-      } catch (err) {
-        // Remove from set so it can be retried on next poll
-        autoInvoicedRef.current.delete(conv.orderId)
-        console.error(`Auto-invoice failed for ${conv.orderId}:`, err)
-      }
-    }
-
-    // Process one at a time to avoid wallet rate limits
-    ;(async () => {
-      for (const conv of pending) {
-        await autoInvoice(conv)
-      }
-    })()
-  }, [conversations, pubkey, signerConnected, weblnAvailable, nwc.connection, flash, queryClient])
+  const selectedBuyerProfile = selected ? buyerProfilesQuery.data?.[selected.buyerPubkey] : undefined
+  const selectedBuyerName = selected
+    ? getDisplayName(selectedBuyerProfile, selected.buyerPubkey)
+    : null
+  const awaitingInvoiceCount = useMemo(
+    () => conversations.filter((conversation) => !(conversation.messages ?? []).some((message) => message.type === "payment_request")).length,
+    [conversations],
+  )
+  const activeFulfillmentCount = useMemo(
+    () => conversations.filter((conversation) =>
+      conversation.status === "paid" || conversation.status === "processing" || conversation.status === "shipped"
+    ).length,
+    [conversations],
+  )
 
   // Generate invoice via WebLN (Alby) or NWC, then auto-send as payment_request DM
   const generateInvoiceMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
 
-      const amountSats = Number(invoiceAmount) || 0
+      const amountSats = invoiceAmountSats ?? 0
       if (amountSats <= 0) throw new Error("Amount must be greater than 0")
 
       let bolt11: string
@@ -642,6 +542,15 @@ function OrdersPage() {
         throw new Error("No wallet available. Install Alby extension or connect NWC.")
       }
 
+      const mismatch = getLightningNetworkMismatchMessage(bolt11)
+      if (mismatch) {
+        throw new Error(mismatch)
+      }
+
+      const decoded = decodeLightningInvoiceAmount(bolt11)
+      const actualAmount = decoded.sats ?? decoded.msats ?? amountSats
+      const actualCurrency = decoded.currency ?? "SATS"
+
       // Auto-send the invoice DM to the buyer
       await publishOrderConversationMessage({
         merchantPubkey: pubkey,
@@ -649,14 +558,14 @@ function OrdersPage() {
         orderId: selected.orderId,
         type: "payment_request",
         tags: [
-          ["amount", String(amountSats)],
-          ["currency", invoiceCurrency.trim().toUpperCase() || "USD"],
+          ["amount", String(actualAmount)],
+          ["currency", actualCurrency],
           ["payment_method", "lightning"],
         ],
         payload: {
           invoice: bolt11,
-          amount: amountSats,
-          currency: invoiceCurrency.trim().toUpperCase() || "USD",
+          amount: actualAmount,
+          currency: actualCurrency,
           note: invoiceNote.trim() || undefined,
         },
       })
@@ -675,20 +584,28 @@ function OrdersPage() {
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
       if (!invoice.trim()) throw new Error("Invoice is required")
+      const manualInvoice = invoice.trim()
+      const mismatch = getLightningNetworkMismatchMessage(manualInvoice)
+      if (mismatch) throw new Error(mismatch)
+      const decoded = decodeLightningInvoiceAmount(manualInvoice)
+      const actualAmount = decoded.sats ?? decoded.msats
+      if (!actualAmount || !decoded.currency) {
+        throw new Error("Invoice must include a decodable amount before it can be sent.")
+      }
       await publishOrderConversationMessage({
         merchantPubkey: pubkey,
         buyerPubkey: selected.buyerPubkey,
         orderId: selected.orderId,
         type: "payment_request",
         tags: [
-          ["amount", invoiceAmount.trim() || "0"],
-          ["currency", invoiceCurrency.trim().toUpperCase() || "USD"],
+          ["amount", String(actualAmount)],
+          ["currency", decoded.currency],
           ["payment_method", "lightning"],
         ],
         payload: {
-          invoice: invoice.trim(),
-          amount: Number(invoiceAmount) || undefined,
-          currency: invoiceCurrency.trim().toUpperCase() || "USD",
+          invoice: manualInvoice,
+          amount: actualAmount,
+          currency: decoded.currency,
           note: invoiceNote.trim() || undefined,
         },
       })
@@ -726,6 +643,7 @@ function OrdersPage() {
   const shippingMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
+      const normalizedTrackingUrl = normalizeTrackingUrl(trackingUrl)
       await publishOrderConversationMessage({
         merchantPubkey: pubkey,
         buyerPubkey: selected.buyerPubkey,
@@ -738,7 +656,7 @@ function OrdersPage() {
         payload: {
           carrier: carrier.trim() || undefined,
           trackingNumber: trackingNumber.trim() || undefined,
-          trackingUrl: trackingUrl.trim() || undefined,
+          trackingUrl: normalizedTrackingUrl,
           note: shippingNote.trim() || undefined,
         },
       })
@@ -753,13 +671,35 @@ function OrdersPage() {
     },
   })
 
+  const noteMutation = useMutation({
+    mutationFn: async () => {
+      if (!pubkey || !selected) throw new Error("No conversation selected")
+      if (!replyNote.trim()) throw new Error("Message is required")
+      await publishOrderConversationMessage({
+        merchantPubkey: pubkey,
+        buyerPubkey: selected.buyerPubkey,
+        orderId: selected.orderId,
+        type: "message",
+        payload: {
+          note: replyNote.trim(),
+        },
+      })
+    },
+    onSuccess: async () => {
+      setReplyNote("")
+      flash("Message sent to buyer")
+      await queryClient.invalidateQueries({ queryKey: ["merchant-order-messages", pubkey ?? "none"] })
+    },
+  })
+
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-medium text-[var(--text-primary)]">Orders</h1>
-          <p className="mt-1 text-sm text-[var(--text-secondary)]">
-            Two-column merchant inbox for MVP order conversations and invoice/status/shipping actions.
+          <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">Orders</div>
+          <h1 className="mt-3 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">Merchant order inbox</h1>
+          <p className="mt-2 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
+            Review incoming buyer orders, send invoices, update status, and share shipping details from one workspace.
           </p>
           <div className="mt-3">
             <Button variant="outline" size="sm" disabled={!signerConnected || isOrdersFetching} onClick={handleRefresh}>
@@ -806,9 +746,22 @@ function OrdersPage() {
             </Button>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant={canMockInvoice() || weblnAvailable || nwc.connection ? "outline" : "muted"} size="sm" onClick={() => setShowNwcSetup(!showNwcSetup)}>
-            {canMockInvoice() ? "Mock mode" : weblnAvailable ? "Alby detected" : nwc.connection ? "NWC connected" : "Connect wallet"}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant={canMockInvoice() || weblnAvailable || nwc.connection ? "outline" : "muted"}
+            size="sm"
+            onClick={() => {
+              setShowNwcSetup(true)
+              if (!nwc.connection) setShowNwcReplace(false)
+            }}
+          >
+            {canMockInvoice()
+              ? "Mock mode"
+              : weblnAvailable
+                ? "Alby detected"
+                : nwc.connection
+                  ? "Wallet settings"
+                  : "Connect wallet"}
           </Button>
           <Button asChild variant="muted">
             <Link to="/">Home</Link>
@@ -816,8 +769,23 @@ function OrdersPage() {
         </div>
       </div>
 
+      <div className="grid gap-4 md:grid-cols-3">
+        <div className="rounded-[1.35rem] border border-white/10 bg-white/[0.04] p-4">
+          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Open threads</div>
+          <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">{conversations.length}</div>
+        </div>
+        <div className="rounded-[1.35rem] border border-white/10 bg-white/[0.04] p-4">
+          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Awaiting invoice</div>
+          <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">{awaitingInvoiceCount}</div>
+        </div>
+        <div className="rounded-[1.35rem] border border-white/10 bg-white/[0.04] p-4">
+          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Active fulfillment</div>
+          <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">{activeFulfillmentCount}</div>
+        </div>
+      </div>
+
       {showNwcSetup && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
+        <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4">
           {weblnAvailable && (
             <div className="mb-3 flex items-center gap-2 text-xs text-green-400">
               <span className="inline-block h-2 w-2 rounded-full bg-green-400" />
@@ -833,17 +801,29 @@ function OrdersPage() {
                 <span className="inline-block h-2 w-2 rounded-full bg-green-400" />
                 Connected to wallet <span className="font-mono">{formatPubkey(nwc.connection.walletPubkey, 8)}</span> via {nwc.connection.relays[0]}
               </div>
-              <div className="grid gap-2">
-                <Input
-                  value={nwc.rawUri}
-                  onChange={(e) => nwc.setUri(e.target.value)}
-                  placeholder="nostr+walletconnect://..."
-                  type="password"
-                />
-                <Button variant="muted" size="sm" onClick={() => nwc.setUri("")}>
+              <div className="grid gap-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-xs text-[var(--text-secondary)]">
+                <div>Wallet pubkey: <span className="font-mono text-[var(--text-primary)]">{nwc.connection.walletPubkey}</span></div>
+                <div>Relay: <span className="font-mono text-[var(--text-primary)]">{nwc.connection.relays[0]}</span></div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="muted" size="sm" onClick={() => setShowNwcReplace((current) => !current)}>
+                  {showNwcReplace ? "Cancel replace" : "Replace connection"}
+                </Button>
+                <Button variant="muted" size="sm" onClick={() => nwc.disconnect()}>
                   Disconnect wallet
                 </Button>
               </div>
+              {showNwcReplace && (
+                <div className="grid gap-2">
+                  <Input
+                    value={nwc.rawUri}
+                    onChange={(e) => nwc.setUri(e.target.value)}
+                    placeholder="nostr+walletconnect://..."
+                    type="password"
+                  />
+                  {nwc.error && <div className="text-xs text-error">{nwc.error}</div>}
+                </div>
+              )}
             </div>
           ) : (
             <div className="mt-3 space-y-3">
@@ -888,7 +868,7 @@ function OrdersPage() {
       )}
 
       {!signerConnected && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4 text-sm text-[var(--text-secondary)]">
           Connect your signer to view incoming orders.
         </div>
       )}
@@ -905,24 +885,26 @@ function OrdersPage() {
       )}
 
       {signerConnected && !ordersQuery.isLoading && conversations.length === 0 && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4 text-sm text-[var(--text-secondary)]">
           No orders yet. Place an order from the Market app targeting this merchant pubkey.
         </div>
       )}
 
       {signerConnected && conversations.length > 0 && (
-        <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
-          <aside className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2">
+        <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+          <aside className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-2">
             <div className="mb-2 px-2 text-xs uppercase tracking-wide text-[var(--text-secondary)]">Conversations</div>
             <div className="space-y-1">
               {conversations.map((conversation) => {
                 const active = conversation.id === selectedConversationId
+                const buyerProfile = buyerProfilesQuery.data?.[conversation.buyerPubkey]
+                const buyerName = getDisplayName(buyerProfile, conversation.buyerPubkey)
                 return (
                   <button
                     key={conversation.id}
                     className={`w-full rounded-md border px-3 py-2 text-left transition ${
                       active
-                        ? "border-[var(--accent)] bg-[var(--surface-elevated)]"
+                        ? "border-white/14 bg-white/[0.08]"
                         : "border-transparent hover:border-[var(--border)] hover:bg-[var(--surface-elevated)]"
                     }`}
                     onClick={() => setSelectedConversationId(conversation.id)}
@@ -930,11 +912,14 @@ function OrdersPage() {
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-mono text-xs text-[var(--text-primary)]">{conversation.orderId}</span>
                       <Badge variant="secondary" className="border-[var(--border)]">
-                        {conversation.latestType}
+                        {friendlyTypeLabel(conversation.latestType)}
                       </Badge>
                     </div>
                     <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                      Buyer: {formatPubkey(conversation.buyerPubkey, 8)}
+                      Buyer: {buyerName}
+                    </div>
+                    <div className="mt-1 font-mono text-[11px] text-[var(--text-muted)]">
+                      {formatPubkey(conversation.buyerPubkey, 8)}
                     </div>
                     <div className="mt-1 text-xs text-[var(--text-secondary)]">
                       {conversation.status ? `Status: ${conversation.status}` : "Status: pending"}
@@ -948,7 +933,7 @@ function OrdersPage() {
             </div>
           </aside>
 
-          <section className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-4">
+          <section className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4">
             {selected && orderSummary ? (
               <Tabs value={activeTab} onValueChange={setActiveTab}>
                 <TabsList>
@@ -962,6 +947,7 @@ function OrdersPage() {
                     orderId={selected.orderId}
                     status={selected.status}
                     counterpartyLabel="Buyer"
+                    counterpartyName={selectedBuyerName ?? undefined}
                     counterpartyPubkey={selected.buyerPubkey}
                     items={orderSummary.items}
                     subtotal={orderSummary.subtotal}
@@ -969,6 +955,7 @@ function OrdersPage() {
                     shippingAddress={orderSummary.shippingAddress}
                     orderNote={orderSummary.orderNote}
                     invoiceSent={orderSummary.invoiceSent}
+                    invoiceCount={orderSummary.invoiceCount}
                     invoiceAmount={orderSummary.invoiceAmount}
                     invoiceCurrency={orderSummary.invoiceCurrency}
                     trackingCarrier={orderSummary.trackingCarrier}
@@ -991,23 +978,33 @@ function OrdersPage() {
 
                         <div className="grid grid-cols-2 gap-2">
                           <div className="grid gap-1">
-                            <Label htmlFor="invoice-amount">Amount (sats)</Label>
+                            <Label htmlFor="invoice-amount">Amount</Label>
                             <Input
                               id="invoice-amount"
                               type="number"
                               min="0"
-                              step="1"
+                              step={invoiceCurrency === "USD" ? "0.01" : "1"}
                               value={invoiceAmount}
                               onChange={(event) => setInvoiceAmount(event.target.value)}
                             />
                           </div>
                           <div className="grid gap-1">
                             <Label htmlFor="invoice-currency">Currency</Label>
-                            <Input
-                              id="invoice-currency"
+                            <Select
                               value={invoiceCurrency}
-                              onChange={(event) => setInvoiceCurrency(event.target.value.toUpperCase())}
-                            />
+                              onValueChange={(value) => setInvoiceCurrency(value)}
+                            >
+                              <SelectTrigger id="invoice-currency">
+                                <SelectValue placeholder="Choose currency" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {INVOICE_CURRENCY_OPTIONS.map((currency) => (
+                                  <SelectItem key={currency} value={currency}>
+                                    {currency}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
                           </div>
                         </div>
                         <Input
@@ -1015,6 +1012,21 @@ function OrdersPage() {
                           onChange={(event) => setInvoiceNote(event.target.value)}
                           placeholder="Optional note"
                         />
+                        <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+                          {invoiceCurrencyUnsupported ? (
+                            <>
+                              This order was placed in {selectedOrderCurrency}. Choose USD or SATS before generating a Lightning invoice.
+                            </>
+                          ) : invoiceAmountNumber > 0 ? (
+                            invoiceAmountSats ? (
+                              <>This will generate an invoice for {invoiceAmountSats.toLocaleString()} sats.</>
+                            ) : (
+                              <>BTC/USD conversion is unavailable right now, so this amount cannot be converted yet.</>
+                            )
+                          ) : (
+                            <>Enter the order amount to generate a Lightning invoice.</>
+                          )}
+                        </div>
 
                         {weblnAvailable || nwc.connection ? (
                           <div className="space-y-2">
@@ -1022,7 +1034,7 @@ function OrdersPage() {
                               type="button"
                               size="sm"
                               className="w-full"
-                              disabled={generateInvoiceMutation.isPending || !(Number(invoiceAmount) > 0)}
+                              disabled={generateInvoiceMutation.isPending || !(invoiceAmountNumber > 0) || !invoiceAmountSats}
                               onClick={() => generateInvoiceMutation.mutate()}
                             >
                               {generateInvoiceMutation.isPending ? "Generating…" : "Generate & send invoice"}
@@ -1048,6 +1060,16 @@ function OrdersPage() {
                                 onChange={(event) => setInvoice(event.target.value)}
                                 placeholder="lnbc..."
                               />
+                              {invoice.trim() && !isInvoiceCompatibleWithCurrentNetwork(invoice.trim()) && (
+                                <div className="text-xs text-error">
+                                  {getLightningNetworkMismatchMessage(invoice.trim())}
+                                </div>
+                              )}
+                              {invoice.trim() && isInvoiceCompatibleWithCurrentNetwork(invoice.trim()) && manualInvoiceDecoded?.currency && (
+                                <div className="text-xs text-[var(--text-secondary)]">
+                                  Parsed invoice amount: {manualInvoiceDecoded.sats ?? manualInvoiceDecoded.msats} {manualInvoiceDecoded.currency}
+                                </div>
+                              )}
                             </div>
                             <Button type="submit" size="sm" className="w-full" disabled={invoiceMutation.isPending}>
                               {invoiceMutation.isPending ? "Sending…" : "Send invoice DM"}
@@ -1056,7 +1078,7 @@ function OrdersPage() {
                         )}
 
                         <p className="text-xs text-[var(--text-secondary)]">
-                          {weblnAvailable ? "Invoice via Alby extension." : nwc.connection ? "Invoice via NWC wallet." : "Install Alby or connect NWC for one-click invoicing."}
+                          {weblnAvailable ? "Invoice via Alby extension." : nwc.connection ? "Invoice via NWC wallet." : "Install Alby or connect NWC for one-click invoicing."} Conduit shows the parsed amount when the invoice format can be verified.
                         </p>
                       </div>
 
@@ -1073,7 +1095,7 @@ function OrdersPage() {
                           value={orderStatus}
                           onChange={(event) => setOrderStatus(event.target.value as StatusUpdateMessageSchema["status"])}
                         >
-                          <option value="invoiced">invoiced</option>
+                          <option value="">Choose status</option>
                           <option value="paid">paid</option>
                           <option value="processing">processing</option>
                           <option value="shipped">shipped</option>
@@ -1085,7 +1107,7 @@ function OrdersPage() {
                           onChange={(event) => setStatusNote(event.target.value)}
                           placeholder="Optional note"
                         />
-                        <Button type="submit" size="sm" className="w-full" disabled={statusMutation.isPending}>
+                        <Button type="submit" size="sm" className="w-full" disabled={statusMutation.isPending || !orderStatus}>
                           {statusMutation.isPending ? "Sending…" : "Send status DM"}
                         </Button>
                       </form>
@@ -1124,9 +1146,9 @@ function OrdersPage() {
                       </form>
                     </div>
 
-                    {(invoiceMutation.error || statusMutation.error || shippingMutation.error) && (
+                    {(invoiceMutation.error || statusMutation.error || shippingMutation.error || noteMutation.error) && (
                       <div className="rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
-                        {[invoiceMutation.error, statusMutation.error, shippingMutation.error]
+                        {[invoiceMutation.error, statusMutation.error, shippingMutation.error, noteMutation.error]
                           .filter(Boolean)
                           .map((error) => (error instanceof Error ? error.message : "Failed to send message"))
                           .join(" • ")}
@@ -1136,10 +1158,29 @@ function OrdersPage() {
                 </TabsContent>
 
                 <TabsContent value="messages">
-                  <div className="max-h-[52vh] space-y-3 overflow-auto pr-1">
-                    {selected.messages.map((message) => (
-                      <MessageCard key={message.id} message={message} mine={message.senderPubkey === pubkey} />
-                    ))}
+                  <div className="space-y-4">
+                    <div className="max-h-[44vh] space-y-3 overflow-auto pr-1">
+                      {(selected.messages ?? []).map((message) => (
+                        <MessageCard key={message.id} message={message} mine={message.senderPubkey === pubkey} />
+                      ))}
+                    </div>
+                    <form
+                      className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
+                      onSubmit={(event) => {
+                        event.preventDefault()
+                        noteMutation.mutate()
+                      }}
+                    >
+                      <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">Reply to buyer</div>
+                      <Input
+                        value={replyNote}
+                        onChange={(event) => setReplyNote(event.target.value)}
+                        placeholder="Send a note to the buyer"
+                      />
+                      <Button type="submit" size="sm" className="w-full" disabled={noteMutation.isPending || !replyNote.trim()}>
+                        {noteMutation.isPending ? "Sending…" : "Send message"}
+                      </Button>
+                    </form>
                   </div>
                 </TabsContent>
               </Tabs>

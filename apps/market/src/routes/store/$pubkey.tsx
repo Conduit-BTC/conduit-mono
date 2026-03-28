@@ -1,5 +1,5 @@
 import { Check, Link as LinkIcon, LoaderCircle, MessageCircle, Search, UserCheck, UserMinus, UserPlus } from "lucide-react"
-import { useEffect, useMemo, useState, type FormEvent } from "react"
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from "@conduit/ui"
 import {
-  formatPubkey,
+  formatNpub,
   requireNdkConnected,
   useAuth,
   useProfile,
@@ -22,7 +22,9 @@ import {
 } from "@conduit/core"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { SignerSwitch } from "../../components/SignerSwitch"
+import { RichProfileText } from "../../components/RichProfileText"
 import { ProductGridCard, ProductGridCardSkeleton } from "../../components/ProductGridCard"
+import { CopyButton } from "../../components/CopyButton"
 import { MerchantAvatarFallback, getMerchantDisplayName } from "../../components/MerchantIdentity"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
@@ -49,7 +51,7 @@ export const Route = createFileRoute("/store/$pubkey")({
 })
 
 function sortProducts(
-  products: Awaited<ReturnType<typeof fetchStoreProducts>>,
+  products: Product[],
   sort: SortOption | undefined,
   btcUsdRate: number | null
 ): Product[] {
@@ -80,12 +82,16 @@ function StorefrontPage() {
   const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
   const [searchDirty, setSearchDirty] = useState(false)
+  const [showAllTags, setShowAllTags] = useState(false)
+  const [tagCloudOverflows, setTagCloudOverflows] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
+  const tagCloudRef = useRef<HTMLDivElement | null>(null)
   const productsQuery = useQuery({
     queryKey: ["store-products", pubkey],
     queryFn: () => fetchStoreProducts(pubkey),
   })
+  const storeProducts = productsQuery.data?.data ?? []
   const followQuery = useQuery({
     queryKey: ["following-store", viewerPubkey ?? "none", pubkey],
     enabled: status === "connected" && !!viewerPubkey && viewerPubkey !== pubkey,
@@ -109,11 +115,11 @@ function StorefrontPage() {
   const merchantAbout = profile?.about?.trim()
   const allTags = useMemo(() => {
     const tagSet = new Set<string>()
-    for (const product of productsQuery.data ?? []) {
+    for (const product of storeProducts) {
       for (const tag of product.tags) tagSet.add(tag.toLowerCase())
     }
     return Array.from(tagSet).sort()
-  }, [productsQuery.data])
+  }, [storeProducts])
 
   const updateSearch = (updates: Partial<StoreSearch>) => {
     navigate({
@@ -131,19 +137,19 @@ function StorefrontPage() {
     })
   }
 
-  const productCount = productsQuery.data?.length ?? 0
+  const productCount = storeProducts.length
   const isFollowing = followOverride ?? followQuery.data === true
   const isFollowBusy = followState !== "idle"
   const canShowPriceSort = useMemo(() => {
-    const products = productsQuery.data ?? []
+    const products = storeProducts
     if (products.length <= 1) return true
     const currencies = new Set(products.map((product) => product.currency.trim().toUpperCase()))
     if (currencies.size <= 1) return true
     return products.every((product) => getComparablePriceValue(product, btcUsdRate) !== null)
-  }, [btcUsdRate, productsQuery.data])
+  }, [btcUsdRate, storeProducts])
 
   const filteredProducts = useMemo(() => {
-    let result = productsQuery.data ?? []
+    let result = storeProducts
 
     if (search.q) {
       const query = search.q.toLowerCase()
@@ -161,13 +167,33 @@ function StorefrontPage() {
 
     const effectiveSort = canShowPriceSort ? search.sort : undefined
     return sortProducts(result, effectiveSort, btcUsdRate)
-  }, [btcUsdRate, canShowPriceSort, productsQuery.data, search.q, search.sort, search.tag])
+  }, [btcUsdRate, canShowPriceSort, search.q, search.sort, search.tag, storeProducts])
 
   useEffect(() => {
     if (!canShowPriceSort && (search.sort === "price_asc" || search.sort === "price_desc")) {
       updateSearch({ sort: undefined })
     }
   }, [canShowPriceSort, search.sort, updateSearch])
+
+  useEffect(() => {
+    const element = tagCloudRef.current
+    if (!element) return
+
+    const measure = () => {
+      setTagCloudOverflows(element.scrollHeight > 76)
+    }
+
+    measure()
+
+    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null
+    resizeObserver?.observe(element)
+    window.addEventListener("resize", measure)
+
+    return () => {
+      resizeObserver?.disconnect()
+      window.removeEventListener("resize", measure)
+    }
+  }, [allTags, search.tag, showAllTags])
 
   useEffect(() => {
     setLocalSearch(search.q ?? "")
@@ -325,12 +351,19 @@ function StorefrontPage() {
                     {merchantName}
                   </h1>
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-[var(--text-secondary)]">
-                    <span className="font-medium text-[var(--text-primary)]">@{profile?.nip05 || formatPubkey(pubkey, 8)}</span>
+                    <span className="inline-flex items-center gap-1 font-medium text-[var(--text-primary)]">
+                      {profile?.nip05 || formatNpub(pubkey, 8)}
+                      <CopyButton value={pubkey} label="Copy pubkey" />
+                    </span>
                     <span className="hidden text-[var(--text-muted)] sm:inline">Created Apr 2024</span>
                   </div>
-                  <p className="mt-3 max-w-3xl text-sm leading-7 text-[var(--text-secondary)]">
-                    {merchantAbout || "Browse this merchant's current listings and add products directly to your cart."}
-                  </p>
+                  <RichProfileText
+                    text={
+                      merchantAbout ||
+                      "Browse this merchant's current listings and add products directly to your cart."
+                    }
+                    className="mt-3 max-w-[56ch] text-sm leading-7 text-[var(--text-secondary)]"
+                  />
                 </div>
               </div>
 
@@ -344,10 +377,10 @@ function StorefrontPage() {
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-3 xl:justify-end">
+                <div className="flex flex-nowrap items-center gap-3 xl:justify-end">
                   <Button
                     variant="outline"
-                    className="h-11 border-white/16 bg-white/[0.05] px-4 text-sm hover:border-white/24 hover:bg-white/[0.08]"
+                    className="h-11 shrink-0 whitespace-nowrap border-white/16 bg-white/[0.05] px-4 text-sm hover:border-white/24 hover:bg-white/[0.08]"
                     onClick={handleSendMessage}
                   >
                     <MessageCircle className="h-4 w-4" />
@@ -356,7 +389,7 @@ function StorefrontPage() {
                   <Button
                     variant={isFollowing ? "outline" : "primary"}
                     className={[
-                      "group h-11 px-4 text-sm",
+                      "group h-11 shrink-0 whitespace-nowrap px-4 text-sm",
                       isFollowing
                         ? "border-white/14 bg-white/[0.06] text-white/92 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] hover:border-white/18 hover:bg-white/[0.08]"
                         : "",
@@ -387,7 +420,7 @@ function StorefrontPage() {
                   </Button>
                   <button
                     type="button"
-                    className="inline-flex h-11 w-11 items-center justify-center text-white/80 transition-colors hover:text-white"
+                    className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-white/80 transition-colors hover:text-white"
                     onClick={handleShareStore}
                     aria-label={shareCopied ? "Store link copied" : "Copy store link"}
                     title={shareCopied ? "Copied" : "Copy store link"}
@@ -404,62 +437,101 @@ function StorefrontPage() {
         <aside className="xl:sticky xl:top-24 xl:self-start">
           <div className="space-y-5 xl:max-h-[calc(100vh-7rem)] xl:overflow-y-auto xl:pr-1">
             <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="text-sm font-medium text-[var(--text-primary)]">Filters</div>
-              {(search.tag || search.q || search.sort) && (
-                <button
-                  type="button"
-                  className="text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
-                  onClick={() => {
-                    setLocalSearch("")
-                    updateSearch({ q: undefined, tag: undefined, sort: undefined })
-                  }}
-                >
-                  Clear all
-                </button>
-              )}
-            </div>
-
-            <div className="mt-4">
-              <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                Category
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2 xl:flex-col xl:items-stretch">
-                <button
-                  type="button"
-                  onClick={() => updateSearch({ tag: undefined })}
-                  className={[
-                    "rounded-full border px-3 py-2 text-left text-sm transition-colors xl:rounded-xl",
-                    !search.tag
-                      ? "border-fuchsia-500/70 bg-fuchsia-500 font-semibold text-white shadow-[0_12px_28px_rgba(217,70,239,0.24)]"
-                      : "border-white/10 bg-white/[0.03] text-[var(--text-secondary)] hover:border-white/20 hover:text-[var(--text-primary)]",
-                  ].join(" ")}
-                >
-                  All products
-                </button>
-                {allTags.map((tag) => (
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-sm font-medium text-[var(--text-primary)]">Filters</div>
+                {(search.tag || search.q || search.sort) && (
                   <button
-                    key={tag}
                     type="button"
-                    onClick={() => updateSearch({ tag: search.tag === tag ? undefined : tag })}
+                    className="text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+                    onClick={() => {
+                      setLocalSearch("")
+                      updateSearch({ q: undefined, tag: undefined, sort: undefined })
+                    }}
+                  >
+                    Clear all
+                  </button>
+                )}
+              </div>
+
+              <div className="mt-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                    Category
+                  </div>
+                  {tagCloudOverflows && (
+                    <button
+                      type="button"
+                      className={[
+                        "text-xs font-medium text-secondary-400 transition-[opacity,color] duration-200 hover:text-secondary-300 xl:hidden",
+                        showAllTags ? "opacity-100" : "pointer-events-none opacity-0",
+                      ].join(" ")}
+                      onClick={() => setShowAllTags(false)}
+                    >
+                      Collapse
+                    </button>
+                  )}
+                </div>
+
+                <div className="relative mt-3">
+                  <div
+                    ref={tagCloudRef}
                     className={[
-                      "rounded-full border px-3 py-2 text-left text-sm capitalize transition-colors xl:rounded-xl",
-                      search.tag === tag
-                        ? "border-fuchsia-500/70 bg-fuchsia-500 font-semibold text-white shadow-[0_12px_28px_rgba(217,70,239,0.24)]"
-                        : "border-white/10 bg-white/[0.03] text-[var(--text-secondary)] hover:border-white/20 hover:text-[var(--text-primary)]",
+                      "overflow-hidden transition-[max-height] duration-300 ease-out xl:max-h-none xl:overflow-visible",
+                      showAllTags || !tagCloudOverflows
+                        ? "max-h-64"
+                        : "max-h-[4.75rem]",
                     ].join(" ")}
                   >
-                    {tag}
-                  </button>
-                ))}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5 xl:flex-col xl:items-stretch">
+                      <button
+                        type="button"
+                        onClick={() => updateSearch({ tag: undefined })}
+                        className={[
+                          "rounded-full border px-3 py-2 text-left text-sm transition-colors xl:rounded-xl",
+                          !search.tag
+                            ? "border-fuchsia-500/70 bg-fuchsia-500 font-semibold text-white shadow-[0_12px_28px_rgba(217,70,239,0.24)]"
+                            : "border-white/10 bg-white/[0.03] text-[var(--text-secondary)] hover:border-white/20 hover:text-[var(--text-primary)]",
+                        ].join(" ")}
+                      >
+                        All products
+                      </button>
+                      {allTags.map((tag) => (
+                        <button
+                          key={tag}
+                          type="button"
+                          onClick={() => updateSearch({ tag: search.tag === tag ? undefined : tag })}
+                          className={[
+                            "rounded-full border px-3 py-2 text-left text-sm font-medium capitalize transition-colors xl:rounded-xl",
+                            search.tag === tag
+                              ? "border-fuchsia-500/70 bg-fuchsia-500 font-semibold text-white shadow-[0_12px_28px_rgba(217,70,239,0.24)]"
+                              : "border-white/10 bg-white/[0.03] text-[var(--text-secondary)] hover:border-white/20 hover:text-[var(--text-primary)]",
+                          ].join(" ")}
+                        >
+                          {tag}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {!showAllTags && tagCloudOverflows && (
+                    <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-12 items-center justify-center bg-gradient-to-b from-transparent via-[var(--background)]/90 to-[var(--background)] transition-opacity duration-200 xl:hidden">
+                      <button
+                        type="button"
+                        className="pointer-events-auto rounded-full bg-white px-3 py-1 text-xs font-medium text-[var(--background)] shadow-[0_6px_18px_rgba(255,255,255,0.18)] transition-[opacity,transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-[0_10px_24px_rgba(255,255,255,0.22)]"
+                        onClick={() => setShowAllTags(true)}
+                      >
+                        Expand categories
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
           </div>
         </aside>
 
         <section className="space-y-4">
-          <div className="flex flex-col gap-3 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="grid gap-3 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
             <form
               className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-white/12 bg-[var(--surface-elevated)] px-3"
               onSubmit={submitSearch}
@@ -479,15 +551,15 @@ function StorefrontPage() {
               </div>
             </form>
 
-            <div className="flex w-full items-center gap-2 sm:w-auto sm:self-auto">
-              <span className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Sort</span>
+            <div className="flex min-w-0 w-full items-center gap-2">
+              <span className="min-w-[2.5rem] text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Sort</span>
               <Select
                 value={search.sort ?? "newest"}
                 onValueChange={(value) =>
                   updateSearch({ sort: value === "newest" ? undefined : (value as SortOption) })
                 }
               >
-                <SelectTrigger className="min-w-0 flex-1 sm:min-w-[160px] sm:flex-none">
+                <SelectTrigger className="min-w-0 flex-1">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -518,7 +590,7 @@ function StorefrontPage() {
           </div>
 
           {productsQuery.isLoading && (
-            <ul className="grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-3">
+            <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
               {Array.from({ length: 6 }).map((_, index) => (
                 <li key={index} className="h-full">
                   <ProductGridCardSkeleton />
@@ -533,7 +605,7 @@ function StorefrontPage() {
             </div>
           )}
 
-          {productsQuery.data && filteredProducts.length === 0 && (
+          {!productsQuery.isLoading && storeProducts.length > 0 && filteredProducts.length === 0 && (
             <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6">
               <div className="text-lg font-semibold text-[var(--text-primary)]">No products match this store view</div>
               <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
@@ -554,7 +626,7 @@ function StorefrontPage() {
           )}
 
           {filteredProducts.length > 0 && (
-            <ul className="grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-3">
+            <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
               {filteredProducts.map((product) => (
                 <li key={product.id} className="h-full">
                   <ProductGridCard

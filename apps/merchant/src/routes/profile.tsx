@@ -84,12 +84,15 @@ function ProfilePage() {
   }
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="text-3xl font-medium text-[var(--text-primary)]">Profile</h1>
-        <p className="mt-1 text-sm text-[var(--text-secondary)]">
-          View and edit your Nostr profile (Kind 0).
-        </p>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">Profile</div>
+          <h1 className="mt-3 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">Store identity</h1>
+          <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
+            Edit the merchant profile buyers see across Market and your storefront surfaces.
+          </p>
+        </div>
       </div>
 
       {profileQuery.isLoading && (
@@ -104,8 +107,8 @@ function ProfilePage() {
       )}
 
       {!editing && profileQuery.data && (
-        <Card>
-          <CardHeader className="flex-row items-center gap-4">
+        <Card className="rounded-[1.6rem] border-white/10 bg-white/[0.04] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+          <CardHeader className="flex-col gap-4 sm:flex-row sm:items-center">
             <Avatar className="h-16 w-16">
               <AvatarImage src={profileQuery.data.picture} alt={displayName ?? "Profile"} />
               <AvatarFallback className="text-lg">{fallbackLetter}</AvatarFallback>
@@ -124,7 +127,7 @@ function ProfilePage() {
             {profileQuery.data.about && (
               <div>
                 <div className="text-xs font-medium text-[var(--text-secondary)]">About</div>
-                <p className="mt-1 text-sm text-[var(--text-primary)]">{profileQuery.data.about}</p>
+                <p className="mt-1 whitespace-pre-wrap break-words text-sm text-[var(--text-primary)]">{profileQuery.data.about}</p>
               </div>
             )}
             {profileQuery.data.lud16 && (
@@ -139,7 +142,14 @@ function ProfilePage() {
                   <Link2 className="h-3.5 w-3.5" />
                   Website
                 </div>
-                <p className="mt-1 text-sm text-[var(--text-primary)]">{profileQuery.data.website}</p>
+                <a
+                  href={profileQuery.data.website}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-1 block text-sm text-[var(--accent)] underline-offset-2 hover:underline"
+                >
+                  {profileQuery.data.website}
+                </a>
               </div>
             )}
             <div>
@@ -151,7 +161,7 @@ function ProfilePage() {
       )}
 
       {editing && (
-        <Card>
+        <Card className="rounded-[1.6rem] border-white/10 bg-white/[0.04] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle>Edit Profile</CardTitle>

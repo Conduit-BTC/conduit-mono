@@ -198,6 +198,27 @@ export function ProductCard({ product, className }: ProductCardProps) {
 - Permanent docs go in `docs/specs/`
 - Meeting notes stay in context/
 
+## Public Repo Posture
+
+Treat `conduit-mono` as a future public client/shared-code repository.
+
+When writing commit messages, PR descriptions, or tracked public-facing docs:
+- treat this repo as a public-facing client/shared-code repo
+- keep repo-scope language aligned with the actual monorepo contents
+- avoid internal company-planning framing
+
+Prefer language centered on:
+- Market
+- Merchant
+- Store Builder
+- shared packages
+- protocol/spec implementation
+- trust/provenance and contributor-safe engineering context
+
+If discussing future repo boundaries, keep `conduit-services` distinct from the current `conduit-mono` scope unless the repo structure has actually changed.
+
+Private company context belongs in private planning or `context/`, not in tracked public history, unless explicitly requested.
+
 ## References
 
 - Existing repos (for patterns only, not merging):

@@ -1,4 +1,5 @@
 import { type ClassValue, clsx } from "clsx"
+import { nip19 } from "@nostr-dev-kit/ndk"
 import { twMerge } from "tailwind-merge"
 
 /**
@@ -33,11 +34,35 @@ export function formatSats(sats: number, showBtc = false): string {
 }
 
 /**
- * Truncate pubkey for display (npub style)
+ * Convert a hex pubkey to npub (bech32). Returns the input unchanged if
+ * it is already an npub or encoding fails.
+ */
+export function pubkeyToNpub(hex: string): string {
+  if (hex.startsWith("npub1")) return hex
+  try {
+    return nip19.npubEncode(hex)
+  } catch {
+    return hex
+  }
+}
+
+/**
+ * Truncate a hex pubkey for display. Prefer `formatNpub` for user-facing
+ * surfaces; this helper is kept for non-pubkey identifiers (order IDs, etc.).
  */
 export function formatPubkey(pubkey: string, chars = 8): string {
   if (pubkey.length <= chars * 2) return pubkey
   return `${pubkey.slice(0, chars)}...${pubkey.slice(-chars)}`
+}
+
+/**
+ * Display a pubkey as a shortened npub (e.g. `npub1abc…wxyz`).
+ * Falls back to shortened hex if encoding fails.
+ */
+export function formatNpub(pubkey: string, chars = 8): string {
+  const npub = pubkeyToNpub(pubkey)
+  if (npub.length <= chars * 2 + 5) return npub
+  return `${npub.slice(0, 5 + chars)}...${npub.slice(-chars)}`
 }
 
 /**

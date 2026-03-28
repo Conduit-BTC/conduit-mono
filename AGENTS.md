@@ -77,6 +77,32 @@ Do not modify without explicit confirmation:
 - `docs/plans/IMPLEMENTATION.md` - Technical build guide
 - `docs/specs/*.md` - Feature specifications
 
+## Public Repo Posture
+
+Treat `conduit-mono` as a future public client/shared-code repository.
+
+When writing:
+- commit messages
+- PR titles
+- PR descriptions
+- tracked public-facing docs
+
+avoid framing this repo around:
+- internal company planning
+- repo-scope assumptions that do not belong to `conduit-mono`
+
+Keep public language focused on:
+- Market
+- Merchant
+- Store Builder
+- shared packages
+- protocol/spec implementation
+- trust, provenance, and open-source-safe engineering context
+
+If discussing future repo boundaries, keep `conduit-services` clearly separate from the current `conduit-mono` scope unless the repo structure has actually changed.
+
+Keep private company context out of tracked public history unless explicitly requested.
+
 ## Commands
 
 ```bash

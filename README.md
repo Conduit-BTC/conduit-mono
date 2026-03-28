@@ -83,6 +83,21 @@ bun run relay:local:start:bun
 
 Each app reads `VITE_`-prefixed env vars via Vite. A root `.env.example` shows available options. For local dev, apps ship with `.env.local` files that point to the local relay in mock mode.
 
+For shared network switching, Market and Merchant also support committed mode files:
+- `.env.mock` for local/mock development
+- `.env.mainnet` for public-relay/mainnet-style testing
+
+Use the mode-specific scripts instead of hand-editing `.env.local`:
+
+```bash
+bun run dev:market:mock
+bun run dev:merchant:mock
+bun run dev:market:mainnet
+bun run dev:merchant:mainnet
+```
+
+`.env.local` should remain for personal overrides only. Keep mode files minimal and let the shared core relay defaults handle the broader fallback strategy unless a mode truly needs different values.
+
 | Variable | Default (dev) | Description |
 |----------|---------------|-------------|
 | `VITE_RELAY_URL` | `ws://127.0.0.1:7777` | Primary relay WebSocket URL |
@@ -144,8 +159,10 @@ conduit-mono/
 │   ├── ARCHITECTURE.md      # System diagrams and data flow
 │   ├── plans/
 │   │   ├── ROADMAP.md       # Strategic epochs
-│   │   └── IMPLEMENTATION.md # Build phases with checklists
+│   │   ├── IMPLEMENTATION.md # Current implementation index
+│   │   └── PHASE_2_IMPLEMENTATION.md # Current post-MVP deliverables
 │   └── specs/               # Feature specifications
+├── PLAN.md                  # Current planning index
 └── scripts/                 # Dev tooling, CI helpers, seed data
 ```
 
@@ -178,7 +195,7 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for system diagrams and protocol det
 
 ## Roadmap
 
-See [ROADMAP.md](docs/plans/ROADMAP.md) for strategic epochs and [IMPLEMENTATION.md](docs/plans/IMPLEMENTATION.md) for build phases.
+See [PLAN.md](PLAN.md) for the current planning index, [ROADMAP.md](docs/plans/ROADMAP.md) for strategic epochs, and [IMPLEMENTATION.md](docs/plans/IMPLEMENTATION.md) for the current implementation index.
 
 | Epoch | Focus | Target |
 |-------|-------|--------|

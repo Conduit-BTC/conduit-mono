@@ -1,18 +1,17 @@
-import { Check, Copy, SearchX, ShoppingCart, Store } from "lucide-react"
+import { SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import {
-  EVENT_KINDS,
-  fetchEventsFanout,
+  type CommerceResult,
   formatPubkey,
-  getNdk,
-  parseProductEvent,
+  getMerchantStorefront,
+  getProductDetail,
   useProfile,
   type Product,
 } from "@conduit/core"
 import { useQuery } from "@tanstack/react-query"
 import { useEffect, useMemo, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
-import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
+import { CopyButton } from "../../components/CopyButton"
 import { MerchantAvatarFallback, getMerchantDisplayName } from "../../components/MerchantIdentity"
 import { ProductGridCard, ProductGridCardSkeleton } from "../../components/ProductGridCard"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
@@ -23,109 +22,18 @@ export const Route = createFileRoute("/products/$productId")({
   component: ProductPage,
 })
 
-function CopyPubkeyButton({ pubkey }: { pubkey: string }) {
-  const [copied, setCopied] = useState(false)
 
-  async function handleCopy() {
-    try {
-      await navigator.clipboard.writeText(pubkey)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1400)
-    } catch {
-      setCopied(false)
-    }
+async function fetchProduct(productId: string): Promise<CommerceResult<Product | null>> {
+  const result = await getProductDetail({ productId })
+  return {
+    data: result.data?.product ?? null,
+    meta: result.meta,
   }
-
-  return (
-    <button
-      type="button"
-      aria-label={copied ? "Pubkey copied" : "Copy pubkey"}
-      className={`inline-flex h-6 w-6 items-center justify-center rounded-full border transition-colors ${
-        copied
-          ? "border-green-500/40 bg-green-500/12 text-green-400"
-          : "border-white/14 bg-white/[0.03] text-[var(--text-muted)] hover:border-white/24 hover:text-[var(--text-primary)]"
-      }`}
-      onClick={handleCopy}
-    >
-      {copied ? (
-        <Check className="h-3.5 w-3.5" />
-      ) : (
-        <Copy className="h-3.5 w-3.5" />
-      )}
-    </button>
-  )
-}
-
-function parseAddress(productId: string): { kind: number; pubkey: string; d: string } | null {
-  const decoded = decodeURIComponent(productId)
-  const [kindStr, pubkey, ...dParts] = decoded.split(":")
-  const d = dParts.join(":")
-  const kind = Number(kindStr)
-  if (!Number.isFinite(kind) || !pubkey || !d) return null
-  return { kind, pubkey, d }
-}
-
-async function fetchProduct(productId: string): Promise<Product | null> {
-  const addr = parseAddress(productId)
-  const ndk = getNdk()
-  const decodedId = decodeURIComponent(productId)
-
-  if (addr && addr.kind === EVENT_KINDS.PRODUCT) {
-    const filter: NDKFilter = {
-      kinds: [EVENT_KINDS.PRODUCT],
-      authors: [addr.pubkey],
-      "#d": [addr.d],
-      limit: 1,
-    }
-    const ev = (await ndk.fetchEvent(filter)) as NDKEvent | null
-    if (ev) return parseProductEvent(ev)
-
-    const byAuthor = Array.from(
-      (await ndk.fetchEvents({
-        kinds: [EVENT_KINDS.PRODUCT],
-        authors: [addr.pubkey],
-        limit: 100,
-      })) as Set<NDKEvent>
-    ) as NDKEvent[]
-
-    const matched = byAuthor.find((event) => {
-      const dTag = event.tags.find((t) => t[0] === "d")?.[1]
-      if (!dTag) return false
-      const addressId = `30402:${event.pubkey}:${dTag}`
-      return addressId === decodedId
-    })
-    if (matched) return parseProductEvent(matched)
-  }
-
-  if (!/^[0-9a-f]{64}$/i.test(decodedId)) {
-    return null
-  }
-
-  const filter: NDKFilter = { ids: [decodedId] }
-  const ev = (await ndk.fetchEvent(filter)) as NDKEvent | null
-  if (!ev) return null
-  return parseProductEvent(ev)
 }
 
 async function fetchRelatedProducts(product: Product): Promise<Product[]> {
-  const merchantProducts = await fetchEventsFanout({
-    kinds: [EVENT_KINDS.PRODUCT],
-    authors: [product.pubkey],
-    limit: 12,
-  }, {
-    connectTimeoutMs: 4_000,
-    fetchTimeoutMs: 8_000,
-  }) as NDKEvent[]
-
-  const parsed = merchantProducts
-    .map((event) => {
-      try {
-        return parseProductEvent(event)
-      } catch {
-        return null
-      }
-    })
-    .filter(Boolean) as Product[]
+  const result = await getMerchantStorefront({ merchantPubkey: product.pubkey, limit: 12 })
+  const parsed = result.data.map((record) => record.product)
 
   return parsed
     .filter((candidate) => candidate.id !== product.id)
@@ -145,16 +53,16 @@ function ProductPage() {
     queryKey: ["product", productId],
     queryFn: () => fetchProduct(productId),
   })
+  const product = productQuery.data?.data ?? null
 
-  const merchantProfile = useProfile(productQuery.data?.pubkey)
+  const merchantProfile = useProfile(product?.pubkey)
 
   const relatedProductsQuery = useQuery({
-    queryKey: ["related-products", productQuery.data?.id],
-    enabled: !!productQuery.data,
-    queryFn: () => fetchRelatedProducts(productQuery.data!),
+    queryKey: ["related-products", product?.id],
+    enabled: !!product,
+    queryFn: () => fetchRelatedProducts(product!),
   })
 
-  const product = productQuery.data
   const images = product?.images.length
     ? product.images
     : [{ url: "/images/placeholders/landscape.jpg", alt: product?.title }]
@@ -323,7 +231,7 @@ function ProductPage() {
                         >
                           {formatPubkey(product.pubkey, 10)}
                         </Link>
-                        <CopyPubkeyButton pubkey={product.pubkey} />
+                        <CopyButton value={product.pubkey} label="Copy pubkey" />
                       </div>
                     </div>
                   </div>

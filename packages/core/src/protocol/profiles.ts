@@ -2,9 +2,8 @@ import { NDKEvent } from "@nostr-dev-kit/ndk"
 import type { Profile } from "../types"
 import { db } from "../db"
 import { EVENT_KINDS } from "./kinds"
+import { getProfiles } from "./commerce"
 import { requireNdkConnected } from "./ndk"
-
-const CACHE_TTL_MS = 5 * 60_000
 
 interface RawProfileContent {
   name?: string
@@ -45,69 +44,8 @@ export async function fetchProfile(
   pubkey: string,
   opts?: { skipCache?: boolean }
 ): Promise<Profile> {
-  const cached = opts?.skipCache ? undefined : await db.profiles.get(pubkey)
-
-  if (!opts?.skipCache) {
-    if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
-      return {
-        pubkey: cached.pubkey,
-        name: cached.name,
-        displayName: cached.displayName,
-        about: cached.about,
-        picture: cached.picture,
-        banner: cached.banner,
-        nip05: cached.nip05,
-        lud16: cached.lud16,
-        website: cached.website,
-      }
-    }
-  }
-
-  const ndk = await requireNdkConnected()
-  const events = await ndk.fetchEvents({
-    kinds: [EVENT_KINDS.PROFILE],
-    authors: [pubkey],
-    limit: 10,
-  })
-
-  const event = Array.from(events)
-    .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))[0] as NDKEvent | undefined
-
-  if (!event) {
-    if (cached && (cached.name || cached.displayName || cached.picture || cached.nip05)) {
-      return {
-        pubkey: cached.pubkey,
-        name: cached.name,
-        displayName: cached.displayName,
-        about: cached.about,
-        picture: cached.picture,
-        banner: cached.banner,
-        nip05: cached.nip05,
-        lud16: cached.lud16,
-        website: cached.website,
-      }
-    }
-
-    // No profile on relays — return bare profile without caching the empty result.
-    return { pubkey }
-  }
-
-  const profile = parseProfileEvent(event)
-
-  await db.profiles.put({
-    pubkey: profile.pubkey,
-    name: profile.name,
-    displayName: profile.displayName,
-    about: profile.about,
-    picture: profile.picture,
-    banner: profile.banner,
-    nip05: profile.nip05,
-    lud16: profile.lud16,
-    website: profile.website,
-    cachedAt: Date.now(),
-  })
-
-  return profile
+  const result = await getProfiles({ pubkeys: [pubkey], skipCache: opts?.skipCache })
+  return result.data[pubkey] ?? { pubkey }
 }
 
 export async function publishProfile(
