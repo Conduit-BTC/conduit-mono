@@ -45,9 +45,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [pubkey, setPubkey] = useState<string | null>(
     () => localStorage.getItem(AUTH_STORAGE_KEY)
   )
-  const [status, setStatus] = useState<AuthStatus>(
-    () => localStorage.getItem(AUTH_STORAGE_KEY) ? "connecting" : "disconnected"
-  )
+  const [status, setStatus] = useState<AuthStatus>("disconnected")
   const [error, setError] = useState<string | null>(null)
   const connecting = useRef(false)
 
@@ -103,9 +101,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const stored = localStorage.getItem(AUTH_STORAGE_KEY)
-    if (stored && hasNip07()) {
+    if (!stored) return
+
+    let cancelled = false
+
+    async function reconnectIfPossible() {
+      for (let i = 0; i < 5 && !hasNip07(); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 200))
+      }
+
+      if (cancelled) return
+
+      if (!hasNip07()) {
+        removeSigner()
+        localStorage.removeItem(AUTH_STORAGE_KEY)
+        setPubkey(null)
+        setStatus("disconnected")
+        setError(null)
+        return
+      }
+
       // Don't crash the app on auto-reconnect failure; surface state via `error`.
-      void connect().catch(() => undefined)
+      void connect().catch(() => {
+        if (cancelled) return
+        removeSigner()
+        localStorage.removeItem(AUTH_STORAGE_KEY)
+        setPubkey(null)
+        setStatus("disconnected")
+      })
+    }
+
+    void reconnectIfPossible()
+
+    return () => {
+      cancelled = true
     }
   }, [connect])
 

@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import {
+  type CommerceResult,
   EVENT_KINDS,
-  fetchEventsFanout,
   formatPubkey,
-  parseProductEvent,
+  getMarketplaceProducts,
   useAuth,
   useProfile,
   type Product,
@@ -25,7 +25,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@conduit/ui"
-import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
 import { SignerSwitch } from "../../components/SignerSwitch"
 import { ProductGridCard, ProductGridCardSkeleton } from "../../components/ProductGridCard"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
@@ -73,26 +72,12 @@ export const Route = createFileRoute("/products/")({
   },
 })
 
-async function fetchProducts(merchant?: string): Promise<Product[]> {
-  const filter: NDKFilter = {
-    kinds: [EVENT_KINDS.PRODUCT],
-    limit: 50,
+async function fetchProducts(merchant?: string): Promise<CommerceResult<Product[]>> {
+  const result = await getMarketplaceProducts({ merchantPubkey: merchant, limit: 50 })
+  return {
+    data: result.data.map((record) => record.product),
+    meta: result.meta,
   }
-  if (merchant) filter.authors = [merchant]
-
-  const list = await fetchEventsFanout(filter, {
-    connectTimeoutMs: 4_000,
-    fetchTimeoutMs: 8_000,
-  }) as NDKEvent[]
-  return list
-    .map((e) => {
-      try {
-        return parseProductEvent(e)
-      } catch {
-        return null
-      }
-    })
-    .filter(Boolean) as Product[]
 }
 
 function filterProducts(products: Product[], search: ProductSearch): Product[] {
@@ -171,33 +156,34 @@ function ProductsPage() {
     queryKey: ["products", search.merchant ?? "all"],
     queryFn: () => fetchProducts(search.merchant),
   })
+  const productData = productsQuery.data?.data ?? []
 
   // Derive all unique tags from the full (unfiltered) product set
   const allTags = useMemo(() => {
-    if (!productsQuery.data) return []
+    if (productData.length === 0) return []
     const tagSet = new Set<string>()
-    for (const p of productsQuery.data) {
+    for (const p of productData) {
       for (const t of p.tags) tagSet.add(t.toLowerCase())
     }
     return Array.from(tagSet).sort()
-  }, [productsQuery.data])
+  }, [productData])
 
   const allMerchants = useMemo(() => {
-    if (!productsQuery.data) return []
+    if (productData.length === 0) return []
     const set = new Set<string>()
-    for (const p of productsQuery.data) set.add(p.pubkey)
+    for (const p of productData) set.add(p.pubkey)
     return Array.from(set).sort()
-  }, [productsQuery.data])
+  }, [productData])
 
   const merchantTagMap = useMemo(() => {
     const byMerchant = new Map<string, Set<string>>()
-    for (const product of productsQuery.data ?? []) {
+    for (const product of productData) {
       const current = byMerchant.get(product.pubkey) ?? new Set<string>()
       for (const tag of product.tags) current.add(tag.toLowerCase())
       byMerchant.set(product.pubkey, current)
     }
     return byMerchant
-  }, [productsQuery.data])
+  }, [productData])
 
   const updateSearch = useCallback((updates: Partial<ProductSearch>) => {
     navigate({
@@ -271,9 +257,8 @@ function ProductsPage() {
   }
 
   const filteredProducts = useMemo(() => {
-    if (!productsQuery.data) return []
-    return filterProducts(productsQuery.data, search)
-  }, [productsQuery.data, search])
+    return filterProducts(productData, search)
+  }, [productData, search])
 
   const hasSingleCurrency = useMemo(() => {
     const currencies = new Set(
@@ -617,7 +602,7 @@ function ProductsPage() {
 
       {/* Loading */}
       {productsQuery.isLoading && (
-        <ul className="grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
+        <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
           {Array.from({ length: PAGE_SIZE }).map((_, idx) => (
             <li key={idx} className="h-full">
               <ProductGridCardSkeleton />
@@ -635,7 +620,7 @@ function ProductsPage() {
       )}
 
       {/* Empty state - no products from relays */}
-      {productsQuery.data && productsQuery.data.length === 0 && (
+      {!productsQuery.isLoading && productData.length === 0 && (
         <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
           No product listings found yet. Once merchants publish kind {EVENT_KINDS.PRODUCT} listings to
           your relays, they will show up here.
@@ -643,7 +628,7 @@ function ProductsPage() {
       )}
 
       {/* Empty state - filters returned nothing */}
-      {productsQuery.data && productsQuery.data.length > 0 && filtered.length === 0 && (
+      {!productsQuery.isLoading && productData.length > 0 && filtered.length === 0 && (
         <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
           No products match your filters. Try adjusting your search or{" "}
           <button
@@ -658,7 +643,7 @@ function ProductsPage() {
 
       {/* Product grid */}
       {visible.length > 0 && (
-        <ul className="grid list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
+        <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
           {visible.map((p) => (
             <li key={p.id} className="h-full">
               <ProductGridCard

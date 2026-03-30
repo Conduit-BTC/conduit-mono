@@ -3,7 +3,19 @@
  * Based on Figma/legacy: ABC Whyte Inktrap (display) + Poppins (body)
  */
 
-@import url("https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&display=swap");
+/* Poppins is loaded via <link> in each app's index.html for early discovery.
+   Only the weights actually used (300-700, italic 400-600) are requested. */
+
+/* Size-adjusted fallback so system-ui approximates Poppins metrics,
+   reducing layout shift while the web font loads. */
+@font-face {
+  font-family: "Poppins Fallback";
+  src: local("BlinkMacSystemFont"), local("Segoe UI"), local("Roboto"), local("Helvetica Neue"), local("Arial");
+  size-adjust: 105%;
+  ascent-override: 105%;
+  descent-override: 28%;
+  line-gap-override: 0%;
+}
 
 @font-face {
   font-family: "Whyte Inktrap Variable";
@@ -22,8 +34,8 @@
 :root {
   /* Font families */
   --font-display: "Whyte Inktrap Variable", system-ui, sans-serif;
-  --font-heading: "Poppins", system-ui, sans-serif;
-  --font-body: "Poppins", system-ui, -apple-system, sans-serif;
+  --font-heading: "Poppins", "Poppins Fallback", system-ui, sans-serif;
+  --font-body: "Poppins", "Poppins Fallback", system-ui, -apple-system, sans-serif;
   --font-mono: "Whyte Mono Inktrap Variable", ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 
   /* shadcn-friendly aliases */

@@ -8,7 +8,7 @@ type StoredRate = {
   fetchedAt: number
 }
 
-async function fetchBtcUsdRate(): Promise<StoredRate> {
+async function fetchCoinbaseRate(): Promise<number> {
   const response = await fetch("https://api.coinbase.com/v2/prices/BTC-USD/spot")
   if (!response.ok) {
     throw new Error(`Failed to fetch BTC/USD rate (${response.status})`)
@@ -22,7 +22,38 @@ async function fetchBtcUsdRate(): Promise<StoredRate> {
 
   const rate = Number.parseFloat(json.data?.amount ?? "")
   if (!Number.isFinite(rate) || rate <= 0) {
-    throw new Error("Invalid BTC/USD rate response")
+    throw new Error("Invalid Coinbase BTC/USD rate response")
+  }
+
+  return rate
+}
+
+async function fetchCoinGeckoRate(): Promise<number> {
+  const response = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd")
+  if (!response.ok) {
+    throw new Error(`Failed to fetch CoinGecko BTC/USD rate (${response.status})`)
+  }
+
+  const json = await response.json() as {
+    bitcoin?: {
+      usd?: number
+    }
+  }
+
+  const rate = json.bitcoin?.usd
+  if (!Number.isFinite(rate) || !rate || rate <= 0) {
+    throw new Error("Invalid CoinGecko BTC/USD rate response")
+  }
+
+  return rate
+}
+
+async function fetchBtcUsdRate(): Promise<StoredRate> {
+  let rate: number
+  try {
+    rate = await fetchCoinbaseRate()
+  } catch {
+    rate = await fetchCoinGeckoRate()
   }
 
   const next = {

@@ -1,6 +1,6 @@
 # Conduit Roadmap
 
-Strategic roadmap for the Conduit commerce platform. For technical implementation details, see [IMPLEMENTATION.md](./IMPLEMENTATION.md). For system architecture, see [ARCHITECTURE.md](../ARCHITECTURE.md).
+Strategic roadmap for the Conduit commerce platform. For the current planning index, see [PLAN.md](../../PLAN.md). For current implementation status, see [IMPLEMENTATION.md](./IMPLEMENTATION.md). For system architecture, see [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ---
 
@@ -207,12 +207,13 @@ See [monetization.md](../specs/monetization.md) for full specification.
 | **Merchant Portal** | 2/12/2026 | 3/12/2026 | TBD | TBD | TBD |
 | **Store Builder** | TBD | TBD | TBD | TBD | TBD |
 | **Relay** | TBD | TBD | TBD | TBD | TBD |
-| **Coordinator** | TBD | TBD | TBD | TBD | TBD |
+| **Conduit Services** | TBD | TBD | TBD | TBD | TBD |
 
 ---
 
 ## References
 
-- [IMPLEMENTATION.md](./IMPLEMENTATION.md) - Build phases and deliverables
+- [PLAN.md](../../PLAN.md) - Current planning index
+- [IMPLEMENTATION.md](./IMPLEMENTATION.md) - Current implementation status
 - [ARCHITECTURE.md](../ARCHITECTURE.md) - System architecture and diagrams
 - [Protocol specs](../specs/) - Feature specifications

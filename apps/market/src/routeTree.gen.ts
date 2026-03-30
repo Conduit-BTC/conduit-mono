@@ -16,6 +16,7 @@ import { Route as CheckoutRouteImport } from './routes/checkout'
 import { Route as CartRouteImport } from './routes/cart'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProductsIndexRouteImport } from './routes/products/index'
+import { Route as UProfileRefRouteImport } from './routes/u/$profileRef'
 import { Route as StorePubkeyRouteImport } from './routes/store/$pubkey'
 import { Route as ProductsProductIdRouteImport } from './routes/products/$productId'
 
@@ -54,6 +55,11 @@ const ProductsIndexRoute = ProductsIndexRouteImport.update({
   path: '/products/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const UProfileRefRoute = UProfileRefRouteImport.update({
+  id: '/u/$profileRef',
+  path: '/u/$profileRef',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const StorePubkeyRoute = StorePubkeyRouteImport.update({
   id: '/store/$pubkey',
   path: '/store/$pubkey',
@@ -74,6 +80,7 @@ export interface FileRoutesByFullPath {
   '/profile': typeof ProfileRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
+  '/u/$profileRef': typeof UProfileRefRoute
   '/products/': typeof ProductsIndexRoute
 }
 export interface FileRoutesByTo {
@@ -85,6 +92,7 @@ export interface FileRoutesByTo {
   '/profile': typeof ProfileRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
+  '/u/$profileRef': typeof UProfileRefRoute
   '/products': typeof ProductsIndexRoute
 }
 export interface FileRoutesById {
@@ -97,6 +105,7 @@ export interface FileRoutesById {
   '/profile': typeof ProfileRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
+  '/u/$profileRef': typeof UProfileRefRoute
   '/products/': typeof ProductsIndexRoute
 }
 export interface FileRouteTypes {
@@ -110,6 +119,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/products/$productId'
     | '/store/$pubkey'
+    | '/u/$profileRef'
     | '/products/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -121,6 +131,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/products/$productId'
     | '/store/$pubkey'
+    | '/u/$profileRef'
     | '/products'
   id:
     | '__root__'
@@ -132,6 +143,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/products/$productId'
     | '/store/$pubkey'
+    | '/u/$profileRef'
     | '/products/'
   fileRoutesById: FileRoutesById
 }
@@ -144,6 +156,7 @@ export interface RootRouteChildren {
   ProfileRoute: typeof ProfileRoute
   ProductsProductIdRoute: typeof ProductsProductIdRoute
   StorePubkeyRoute: typeof StorePubkeyRoute
+  UProfileRefRoute: typeof UProfileRefRoute
   ProductsIndexRoute: typeof ProductsIndexRoute
 }
 
@@ -198,6 +211,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProductsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/u/$profileRef': {
+      id: '/u/$profileRef'
+      path: '/u/$profileRef'
+      fullPath: '/u/$profileRef'
+      preLoaderRoute: typeof UProfileRefRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/store/$pubkey': {
       id: '/store/$pubkey'
       path: '/store/$pubkey'
@@ -224,6 +244,7 @@ const rootRouteChildren: RootRouteChildren = {
   ProfileRoute: ProfileRoute,
   ProductsProductIdRoute: ProductsProductIdRoute,
   StorePubkeyRoute: StorePubkeyRoute,
+  UProfileRefRoute: UProfileRefRoute,
   ProductsIndexRoute: ProductsIndexRoute,
 }
 export const routeTree = rootRouteImport

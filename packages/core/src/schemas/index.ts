@@ -114,6 +114,7 @@ export const orderMessageTypeSchema = z.enum([
   "status_update",
   "shipping_update",
   "receipt",
+  "message",
   "payment_proof",
 ])
 
@@ -168,3 +169,9 @@ export const receiptMessageSchema = z.object({
 })
 
 export type ReceiptMessageSchema = z.infer<typeof receiptMessageSchema>
+
+export const conversationMessageSchema = z.object({
+  note: z.string().min(1).max(2000),
+})
+
+export type ConversationMessageSchema = z.infer<typeof conversationMessageSchema>

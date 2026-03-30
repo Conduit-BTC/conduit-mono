@@ -13,15 +13,15 @@ References:
 ## MVP Hi-Fi Worklist (Target: 3/12/2026)
 
 ### Shared Foundations
-- [ ] Extract Figma design tokens into `packages/ui` (color, typography, spacing, radii, shadows)
-- [ ] Align shared shell patterns across Market and Merchant (header, nav, page chrome, section spacing, mobile nav)
-- [ ] Align core components used in MVP flows (buttons, inputs, selects, tabs, cards, badges, dialogs, sheets)
-- [ ] Align visible feedback states used in MVP flows (loading, empty, error, success)
+- [x] Extract Figma design tokens into `packages/ui` (color, typography, spacing, radii, shadows)
+- [x] Align shared shell patterns across Market and Merchant (header, nav, page chrome, section spacing, mobile nav)
+- [x] Align core components used in MVP flows (buttons, inputs, selects, tabs, cards, badges, dialogs, sheets)
+- [x] Align visible feedback states used in MVP flows (loading, empty, error, success)
 
 ### Auth and Signer Flows
 - [x] Sign-in / signer-connect modal
-- [ ] Connecting / loading state
-- [ ] Failure / retry state
+- [x] Connecting / loading state
+- [x] Failure / retry state
 - [x] Authenticated account menu / profile dropdown
 - [x] Signer-required gating UI in checkout, publishing, or settings
 
@@ -36,17 +36,17 @@ References:
 - [x] Merchant storefront page (`/store/$pubkey`) and store identity surfaces
 
 ### Merchant Seller Flow
-- [ ] Dashboard surfaces: overview layout, summary cards, recent orders/activity modules, quick actions
-- [ ] Product list surfaces: list/table/cards, filters/search if present, empty state, action affordances
-- [ ] Product create/edit surfaces: Basic, Details, Images, and Shipping tabs plus validation and save/publish feedback
-- [ ] Orders surfaces: order list, order detail, item grouping, buyer summary, shipping info, payment state presentation
-- [ ] Invoice/payment surfaces: invoice generation UI, paid/unpaid indicators, payment confirmation actions, failure/retry states
-- [ ] Fulfillment surfaces: processing/shipped/completed/cancelled states, shipping/tracking UI used in MVP
-- [ ] Merchant profile/settings surfaces needed for MVP: profile, wallet/NWC, relays, and any settings entry points already in use
+- [x] Dashboard surfaces: overview layout, summary cards, recent orders/activity modules, quick actions
+- [x] Product list surfaces: list/table/cards, filters/search if present, empty state, action affordances
+- [x] Product create/edit surfaces: Basic, Details, Images, and Shipping tabs plus validation and save/publish feedback
+- [x] Orders surfaces: order list, order detail, item grouping, buyer summary, shipping info, payment state presentation
+- [x] Invoice/payment surfaces: invoice generation UI, paid/unpaid indicators, payment confirmation actions, failure/retry states
+- [x] Fulfillment surfaces: processing/shipped/completed/cancelled states, shipping/tracking UI used in MVP
+- [x] Merchant profile/settings surfaces needed for MVP: profile, wallet/NWC, relays, and any settings entry points already in use
 
 ### Cross-Cutting MVP Polish
-- [ ] Toasts, confirmations, tabs, dropdowns, sheets, and popovers used in MVP flows match Figma intent
-- [ ] Spacing rhythm, typography hierarchy, and responsive behavior are consistent across Market and Merchant
+- [x] Toasts, confirmations, tabs, dropdowns, sheets, and popovers used in MVP flows match Figma intent
+- [x] Spacing rhythm, typography hierarchy, and responsive behavior are consistent across Market and Merchant
 
 ## Post-MVP Hi-Fi Backlog
 

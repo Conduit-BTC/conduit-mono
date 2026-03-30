@@ -1,21 +1,21 @@
-# Commerce Coordinator Specification
+# Conduit Services Specification
 
 ## Overview
 
-A server-side Nostr bot that automates merchant operations. Monitors commerce events and handles checkout, inventory, payments, and fulfillment without requiring merchants to be constantly online.
+A Conduit-operated services layer that automates merchant operations. It monitors commerce events and handles checkout, inventory, payments, and fulfillment without requiring merchants to be constantly online.
 
 **Status**: Post-MVP (Phase 5+)
-**Repo**: https://github.com/Conduit-BTC/a-nostr-commerce-coordinator
+**Repo**: TBD (`conduit-services`)
 
 ## Purpose
 
-Without a coordinator, merchants must:
+Without Conduit services, merchants must:
 - Manually monitor for zap receipts
 - Send order confirmations manually
 - Track inventory in spreadsheets
 - Miss orders when offline
 
-The coordinator automates this flow, providing 24/7 merchant availability.
+Conduit services automate this flow, providing 24/7 merchant availability.
 
 ## Core Functions
 
@@ -49,7 +49,7 @@ Zap Receipt (9735) → Validate → Send Order Confirmation DM
 
 ```
 ┌─────────────────────────────────────────┐
-│           Commerce Coordinator          │
+│             Conduit Services            │
 ├─────────────────────────────────────────┤
 │  Event Listener                         │
 │  ├── Subscribe to merchant events       │
@@ -75,14 +75,14 @@ Zap Receipt (9735) → Validate → Send Order Confirmation DM
 ## Security Model
 
 ### Key Management
-- **NO private key storage** in coordinator
+- **NO private key storage** in Conduit services
 - Uses NIP-46 remote signing (Nostr Connect)
-- Merchant authorizes coordinator pubkey
+- Merchant authorizes a Conduit services pubkey
 - Limited permissions (sign specific event kinds only)
 
 ### Permissions
 ```typescript
-// Coordinator requests only necessary permissions
+// Conduit services request only necessary permissions
 const permissions = [
   "sign_event:4",      // Encrypted DMs
   "sign_event:30402",  // Product updates
@@ -92,7 +92,7 @@ const permissions = [
 ```
 
 ### Trust Model
-- Coordinator is trusted infrastructure (run by Conduit)
+- Conduit services are trusted infrastructure (run by Conduit)
 - Merchants opt-in by connecting NIP-46 signer
 - All actions auditable via Nostr events
 - Merchant can revoke at any time
@@ -109,7 +109,7 @@ const permissions = [
 
 ## Features
 
-### Phase 5 (MVP Coordinator)
+### Phase 5 (MVP Conduit Services)
 - [ ] Zap receipt → order confirmation flow
 - [ ] Basic inventory decrement
 - [ ] NIP-46 signer integration
@@ -127,17 +127,17 @@ const permissions = [
 
 ```
 1. Buyer zaps product (9734 → 9735)
-2. Coordinator receives zap receipt
-3. Coordinator validates:
+2. Conduit services receive zap receipt
+3. Conduit services validate:
    - Correct amount?
    - Product in stock?
    - Valid buyer pubkey?
-4. Coordinator (via NIP-46) signs order confirmation DM
-5. Coordinator updates inventory (new 30402 event)
-6. Coordinator logs order to database
+4. Conduit services (via NIP-46) sign order confirmation DM
+5. Conduit services update inventory (new 30402 event)
+6. Conduit services log order to database
 7. Merchant Portal shows new order
 8. Merchant ships, marks fulfilled
-9. Coordinator sends fulfillment DM to buyer
+9. Conduit services send fulfillment DM to buyer
 ```
 
 ## Deployment
@@ -146,7 +146,7 @@ const permissions = [
 Not recommended for MVP. Complexity of key management, uptime requirements.
 
 ### Conduit-Managed
-- Single coordinator instance for all merchants
+- Single Conduit services deployment for all merchants
 - Horizontal scaling as needed
 - 99.9% uptime SLA (future)
 
@@ -154,7 +154,7 @@ Not recommended for MVP. Complexity of key management, uptime requirements.
 ```yaml
 # docker-compose.yml
 services:
-  coordinator:
+  conduit-services:
     build: .
     environment:
       - DATABASE_URL=postgres://...
@@ -175,7 +175,7 @@ services:
 ## Privacy
 
 - DM content encrypted end-to-end (NIP-17)
-- Coordinator has temporary access to decrypt (for processing)
+- Conduit services have temporary access to decrypt (for processing)
 - No long-term storage of message content
 - Order metadata stored for merchant dashboard
 - Aggregated metrics only, no buyer tracking
@@ -206,9 +206,9 @@ services:
 
 | Component | Integration |
 |-----------|-------------|
-| **Market** | Coordinator confirms orders initiated from Market |
-| **Merchant Portal** | Dashboard reads from coordinator's order database |
-| **Relay** | Coordinator subscribes to Conduit relay primarily |
+| **Market** | Conduit services confirm orders initiated from Market |
+| **Merchant Portal** | Dashboard reads from the services order database |
+| **Relay** | Conduit services subscribe to Conduit relay primarily |
 | **Store Builder** | Same order flow as Market |
 
 ## Success Metrics
@@ -220,6 +220,6 @@ services:
 
 ## References
 
-- Existing repo: https://github.com/Conduit-BTC/a-nostr-commerce-coordinator
+- Planned repo: `conduit-services`
 - NIP-46 (Nostr Connect): https://github.com/nostr-protocol/nips/blob/master/46.md
 - NIP-17 (Private DMs): https://github.com/nostr-protocol/nips/blob/master/17.md

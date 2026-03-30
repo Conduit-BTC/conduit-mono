@@ -1,17 +1,18 @@
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { extractOrderSummary, fetchProfile, formatPubkey, useAuth, useProfile } from "@conduit/core"
+import { extractOrderSummary, formatNpub, getProfiles, formatPubkey, useAuth, useProfile } from "@conduit/core"
 import { Badge, Button } from "@conduit/ui"
 import { CheckCircle2, ChevronDown, ReceiptText, RotateCw, Search } from "lucide-react"
 import { requireAuth } from "../lib/auth"
+import { CopyButton } from "../components/CopyButton"
 import { MerchantAvatarFallback, getMerchantDisplayName } from "../components/MerchantIdentity"
 import {
   OrderConversationMessage,
   formatProductReference,
   getConversationPreview,
 } from "../components/OrderConversationMessage"
-import { buildBuyerConversations, fetchBuyerMessages, type BuyerConversation } from "../lib/orderConversations"
+import { fetchBuyerConversations, type BuyerConversation } from "../lib/orderConversations"
 import { fetchStoreProducts } from "../lib/storeProducts"
 
 export const Route = createFileRoute("/orders")({
@@ -32,7 +33,8 @@ function OrderListItem({
 }) {
   const { data: profile } = useProfile(conversation.merchantPubkey)
   const merchantName = getMerchantDisplayName(profile, conversation.merchantPubkey)
-  const latestMessage = conversation.messages[conversation.messages.length - 1]
+  const messages = conversation.messages ?? []
+  const latestMessage = messages[messages.length - 1]
 
   return (
     <button
@@ -88,7 +90,7 @@ function OrderHero({
 }) {
   const { data: profile } = useProfile(conversation.merchantPubkey)
   const merchantName = getMerchantDisplayName(profile, conversation.merchantPubkey)
-  const summary = extractOrderSummary(conversation.messages)
+  const summary = extractOrderSummary(conversation.messages ?? [])
 
   return (
     <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5">
@@ -103,12 +105,23 @@ function OrderHero({
           </div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <div className="truncate text-lg font-semibold text-[var(--text-primary)]">{merchantName}</div>
+              <Link
+                to="/store/$pubkey"
+                params={{ pubkey: conversation.merchantPubkey }}
+                className="truncate text-lg font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
+              >
+                {merchantName}
+              </Link>
               <Badge variant="outline" className="border-white/10 bg-white/[0.04] capitalize">
                 {conversation.status ?? "pending"}
               </Badge>
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
+              <span className="inline-flex items-center gap-1">
+                <span className="font-mono">{formatNpub(conversation.merchantPubkey, 8)}</span>
+                <CopyButton value={conversation.merchantPubkey} label="Copy pubkey" />
+              </span>
+              <span className="text-[var(--text-muted)]">/</span>
               <span className="font-mono">{conversation.orderId}</span>
               <span className="text-[var(--text-muted)]">/</span>
               <span>{new Date(conversation.latestAt).toLocaleString()}</span>
@@ -125,12 +138,17 @@ function OrderHero({
           </div>
           <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm">
             <span className="text-[var(--text-secondary)]">Messages</span>
-            <span className="ml-2 font-semibold text-[var(--text-primary)]">{conversation.messages.length}</span>
+            <span className="ml-2 font-semibold text-[var(--text-primary)]">{conversation.messages?.length ?? 0}</span>
           </div>
         </div>
       </div>
 
       <div className="mt-4 flex flex-wrap gap-3">
+        <Button asChild variant="outline" className="h-11 px-4 text-sm">
+          <Link to="/store/$pubkey" params={{ pubkey: conversation.merchantPubkey }}>
+            Visit store
+          </Link>
+        </Button>
         <Button asChild variant="outline" className="h-11 px-4 text-sm">
           <Link to="/messages" search={{ tab: "merchants", thread: conversation.id }}>
             Open in messages
@@ -183,7 +201,7 @@ function OrdersPage() {
   const messagesQuery = useQuery({
     queryKey: ["buyer-messages", pubkey ?? "none"],
     enabled: signerConnected,
-    queryFn: () => fetchBuyerMessages(pubkey!),
+    queryFn: () => fetchBuyerConversations(pubkey!),
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   })
@@ -226,10 +244,7 @@ function OrdersPage() {
     void refetchMessages()
   }, [refetchMessages, signerConnected])
 
-  const conversations = useMemo(
-    () => (signerConnected && pubkey ? buildBuyerConversations(messagesQuery.data ?? [], pubkey) : []),
-    [messagesQuery.data, pubkey, signerConnected],
-  )
+  const conversations = useMemo(() => messagesQuery.data?.data ?? [], [messagesQuery.data])
   const merchantPubkeys = useMemo(
     () => Array.from(new Set(conversations.map((conversation) => conversation.merchantPubkey).filter(Boolean))),
     [conversations],
@@ -238,10 +253,8 @@ function OrdersPage() {
     queryKey: ["buyer-order-profiles", merchantPubkeys],
     enabled: signerConnected && merchantPubkeys.length > 0,
     queryFn: async () => {
-      const profiles = await Promise.all(merchantPubkeys.map((merchantPubkey) => fetchProfile(merchantPubkey)))
-      return Object.fromEntries(
-        profiles.map((profile) => [profile.pubkey, profile])
-      )
+      const result = await getProfiles({ pubkeys: merchantPubkeys })
+      return result.data
     },
   })
 
@@ -254,11 +267,11 @@ function OrdersPage() {
       conversation.orderId.toLowerCase().includes(query) ||
       conversation.merchantPubkey.toLowerCase().includes(query) ||
       conversation.status?.toLowerCase().includes(query) ||
-      extractOrderSummary(conversation.messages).items.some((item) =>
+      (conversation.messages ?? []).flatMap((message) => message.type === "order" ? message.payload.items : []).some((item) =>
         item.productId.toLowerCase().includes(query) ||
         formatProductReference(item.productId).title.toLowerCase().includes(query)
       ) ||
-      conversation.messages.some((message) => getConversationPreview(message).toLowerCase().includes(query))
+      (conversation.messages ?? []).some((message) => getConversationPreview(message).toLowerCase().includes(query))
     )
   }, [conversations, merchantProfilesQuery.data, searchValue])
 
@@ -279,15 +292,15 @@ function OrdersPage() {
   }, [selectedConversationId])
 
   const selected = filteredConversations.find((conversation) => conversation.id === selectedConversationId) ?? null
-  const orderSummary = useMemo(() => (selected ? extractOrderSummary(selected.messages) : null), [selected])
+  const orderSummary = useMemo(() => (selected ? extractOrderSummary(selected.messages ?? []) : null), [selected])
   const selectedProductsQuery = useQuery({
     queryKey: ["selected-order-products", selected?.merchantPubkey ?? "none"],
     enabled: !!selected?.merchantPubkey,
     queryFn: () => fetchStoreProducts(selected!.merchantPubkey),
   })
   const selectedProductsById = useMemo(() => {
-    const map = new Map<string, Awaited<ReturnType<typeof fetchStoreProducts>>[number]>()
-    for (const product of selectedProductsQuery.data ?? []) {
+    const map = new Map<string, (Awaited<ReturnType<typeof fetchStoreProducts>>["data"])[number]>()
+    for (const product of selectedProductsQuery.data?.data ?? []) {
       map.set(product.id, product)
     }
     return map
@@ -493,7 +506,7 @@ function OrdersPage() {
                     </div>
                   </div>
                   <div className="mt-5 space-y-3 overflow-auto pr-1 xl:min-h-0 xl:flex-1">
-                    {selected.messages.map((message) => (
+                    {(selected.messages ?? []).map((message) => (
                       <OrderConversationMessage
                         key={message.id}
                         message={message}
