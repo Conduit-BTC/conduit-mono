@@ -27,7 +27,9 @@ Planned approach:
 - Continue parsing legacy/no-version events as backward-compatible defaults during migration windows.
 
 Open-source direction:
-- We should open-source client protocol integration layers and reference implementations once post-MVP release/security workflows are stable, in the spirit of Nostr ecosystem collaboration (similar to Plebeian Market being open and inspectable).
+- We should keep client protocol integration layers and reference implementations public and inspectable in the spirit of Nostr ecosystem collaboration.
+- Public client releases should remain rebuildable from the public repository without private production font or asset dependencies.
+- Official deployments should map cleanly back to a public commit, app version, and source repository.
 
 ## Authentication
 
