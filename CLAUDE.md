@@ -6,17 +6,20 @@ This is the Conduit monorepo - a decentralized Nostr-based commerce platform. Se
 
 ## Planning Documents
 
+- **Docs Index**: `docs/README.md` - Documentation layout and source-of-truth rules
 - **Architecture**: `docs/ARCHITECTURE.md` - System diagrams, protocol, data flow
+- **Design**: `docs/DESIGN.md` - Shared design system and theming guidance
 - **Roadmap**: `docs/plans/ROADMAP.md` - Strategic epochs (no checkboxes)
 - **Implementation**: `docs/plans/IMPLEMENTATION.md` - Build phases with deliverables (checkboxes)
 - **Specs**: `docs/specs/*.md` - Feature specifications
 
 ## Before Starting Implementation
 
-Review `docs/plans/IMPLEMENTATION.md` Phase 0:
-- Extract protocol schemas from legacy repos
-- Extract design tokens from legacy/Figma
-- Use `@conduit/core` Zod schemas for validation (spec-first; interop parsing is best-effort)
+1. Read `docs/README.md` to understand which docs are authoritative.
+2. Read the relevant `docs/specs/*.md` before changing feature or protocol behavior.
+3. For UI/theming work, read `docs/DESIGN.md` before introducing shared style values or tokens.
+4. If the work changes product requirements, protocol behavior, or shared implementation expectations, land the docs/spec PR to `main` before starting the implementation `feat/*` branch.
+5. Use `@conduit/core` Zod schemas for validation. Interop parsing stays best-effort, but shared contracts should be reflected in repo docs first.
 
 ## Critical Protocol Constraints
 
@@ -187,6 +190,8 @@ export function ProductCard({ product, className }: ProductCardProps) {
 - Never force push to main
 - Use `git restore --staged` not `git reset`
 - Confirm before any destructive action
+- Use Conventional Commits for commit messages and PR titles: `type(scope): description`
+- Use `.github/pull_request_template.md` for PRs
 
 ### Packages
 - Build order matters: core → ui → apps
@@ -195,7 +200,9 @@ export function ProductCard({ product, className }: ProductCardProps) {
 
 ### Context Files
 - `context/` is gitignored - ephemeral only
-- Permanent docs go in `docs/specs/`
+- Permanent source-of-truth docs live in `docs/`
+- `docs/specs/` is authoritative for feature and protocol requirements
+- `docs/knowledge/` is for supporting notes and references, not final implementation contracts
 - Meeting notes stay in context/
 
 ## Public Repo Posture
