@@ -22,8 +22,11 @@ conduit-mono/
 │   ├── core/             # Types, protocol, schemas, utilities
 │   └── ui/               # Shared React components
 ├── docs/
+│   ├── README.md         # Docs index and source-of-truth guide
+│   ├── DESIGN.md         # Shared design system and theming guidance
 │   ├── plans/            # ROADMAP.md, IMPLEMENTATION.md
-│   └── specs/            # Feature specifications
+│   ├── specs/            # Feature specifications
+│   └── knowledge/        # Supporting notes and references
 └── context/              # Ephemeral files (gitignored)
 ```
 
@@ -62,13 +65,18 @@ Payments: NWC-based Lightning payments (NIP-47).
 ## Session Workflow
 
 1. **Start**: Read `AGENTS.md`, then:
+   - `docs/README.md` - Documentation layout and source-of-truth rules
    - `docs/ARCHITECTURE.md` - System diagrams, protocol, data flow
    - `docs/plans/ROADMAP.md` - Strategic epochs and direction
    - `docs/plans/IMPLEMENTATION.md` - Current build phases and deliverables
 
 2. **Before building**: Read the relevant `docs/specs/*.md` for feature details
+   - For UI/theming work, also read `docs/DESIGN.md`
 
-3. **End**: Update deliverable checkboxes in `docs/plans/IMPLEMENTATION.md` with user confirmation
+3. **Spec-first rule**:
+   - If work changes product requirements, protocol behavior, or shared implementation expectations, land the relevant docs/spec PR to `main` before starting the implementation `feat/*` branch
+
+4. **End**: Update deliverable checkboxes in `docs/plans/IMPLEMENTATION.md` with user confirmation
 
 ## Protected Files
 
@@ -199,3 +207,5 @@ Pull request required for all changes.
 - Use Conventional Commits by default for commits: `type(scope): description`
 - Use the same convention for PR titles unless the PR is a release or sync promotion with an explicit repo-level naming rule
 - Branch names for new work should use conventional prefixes such as `feat/*`, `fix/*`, `chore/*`, or `docs/*`
+- Use `.github/pull_request_template.md` for all PRs
+- For spec-driven work, merge the relevant docs/spec PR to `main` before starting the implementation `feat/*` branch

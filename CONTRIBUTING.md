@@ -11,7 +11,9 @@
 
 2. Read [README.md](README.md) for local dev setup (relay, env vars, seed data).
 
-3. Read [ARCHITECTURE.md](docs/ARCHITECTURE.md) to understand the system.
+3. Read [docs/README.md](docs/README.md) for the docs layout and source-of-truth rules.
+
+4. Read [ARCHITECTURE.md](docs/ARCHITECTURE.md) to understand the system.
 
 ## Development Workflow
 
@@ -28,6 +30,28 @@ Create branches from `main` with short prefixes:
 | `chore/` | Maintenance, deps, CI |
 
 Examples: `feat/product-search`, `fix/invoice-qr-case`, `chore/upgrade-ndk`
+
+### Planning and Specs
+
+Conduit uses a combined Linear + docs workflow:
+
+- Linear tracks execution, ownership, and status
+- `docs/plans/*` tracks delivery scope and sequencing
+- `docs/specs/*` tracks implementation requirements
+- `docs/knowledge/*` holds supporting notes and references, not the final source of truth
+
+If work changes product requirements, protocol behavior, shared UX rules, or cross-team implementation expectations:
+
+1. Open the relevant docs/spec PR first.
+2. Merge that PR to `main`.
+3. Start the implementation `feat/*` branch only after the docs/spec change lands.
+
+For UI and theming work, also check [docs/DESIGN.md](docs/DESIGN.md) before introducing new shared styles or tokens.
+
+### Commits
+
+- Use Conventional Commits for commit messages: `type(scope): description`
+- Use the same convention for PR titles unless the PR follows an explicit release or sync naming rule
 
 ### Build Order
 
@@ -56,7 +80,10 @@ bun test            # Must pass
 ### Pull Requests
 
 - Keep PRs focused on a single concern
+- Use the repo PR template in `.github/pull_request_template.md`
 - Write a clear description of what changed and why
+- Link the relevant Linear issue
+- If applicable, link the docs/spec PR that established the implementation contract
 - Include a test plan (how to verify the changes work)
 - PRs require review before merging to `main`
 
@@ -205,6 +232,8 @@ packages/ui/src/
 
 ## Questions?
 
+- Check [docs/README.md](docs/README.md) for the documentation map
 - Check [ARCHITECTURE.md](docs/ARCHITECTURE.md) for system design
+- Check [DESIGN.md](docs/DESIGN.md) for shared design and theming guidance
 - Check [docs/specs/](docs/specs/) for feature specifications
 - Check [IMPLEMENTATION.md](docs/plans/IMPLEMENTATION.md) for build phases

@@ -156,12 +156,15 @@ conduit-mono/
 │   ├── core/                # Types, protocol, schemas, hooks, DB, utils
 │   └── ui/                  # Components, theme, styles
 ├── docs/
+│   ├── README.md          # Docs index and source-of-truth guide
 │   ├── ARCHITECTURE.md      # System diagrams and data flow
+│   ├── DESIGN.md          # Shared design system and theming guidance
 │   ├── plans/
 │   │   ├── ROADMAP.md       # Strategic epochs
 │   │   ├── IMPLEMENTATION.md # Current implementation index
 │   │   └── PHASE_2_IMPLEMENTATION.md # Current post-MVP deliverables
-│   └── specs/               # Feature specifications
+│   ├── specs/               # Feature specifications
+│   └── knowledge/           # Supporting notes and references
 ├── PLAN.md                  # Current planning index
 └── scripts/                 # Dev tooling, CI helpers, seed data
 ```
@@ -204,6 +207,14 @@ See [PLAN.md](PLAN.md) for the current planning index, [ROADMAP.md](docs/plans/R
 | Added Value | Social features, enhanced UX | TBD |
 | Monetization | Premium tiers, ads | TBD |
 | Scale | Multi-language, enterprise | TBD |
+
+## Docs
+
+- [Documentation Index](docs/README.md)
+- [Design Guidance](docs/DESIGN.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Specs](docs/specs/)
+- [Knowledge Notes](docs/knowledge/)
 
 ---
 
