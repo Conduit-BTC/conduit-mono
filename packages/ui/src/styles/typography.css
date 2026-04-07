@@ -1,46 +1,42 @@
 /*
  * Conduit Typography System
- * Public build inputs only: Bricolage Grotesque + system monospace stack.
+ * Based on Figma/legacy: ABC Whyte Inktrap (display) + Poppins (body)
  */
 
+/* Poppins is loaded via <link> in each app's index.html for early discovery.
+   Only the weights actually used (300-700, italic 400-600) are requested. */
+
+/* Size-adjusted fallback so system-ui approximates Poppins metrics,
+   reducing layout shift while the web font loads. */
 @font-face {
-  font-family: "Bricolage Grotesque";
-  src: url("../assets/fonts/BricolageGrotesque-Regular.ttf") format("truetype");
-  font-weight: 400;
-  font-style: normal;
+  font-family: "Poppins Fallback";
+  src: local("BlinkMacSystemFont"), local("Segoe UI"), local("Roboto"), local("Helvetica Neue"), local("Arial");
+  size-adjust: 105%;
+  ascent-override: 105%;
+  descent-override: 28%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Whyte Inktrap Variable";
+  src: url("../assets/fonts/ABCWhyteInktrapVariable-Trial.woff2") format("woff2-variations");
+  font-weight: 1 999;
   font-display: swap;
 }
 
 @font-face {
-  font-family: "Bricolage Grotesque";
-  src: url("../assets/fonts/BricolageGrotesque-Medium.ttf") format("truetype");
-  font-weight: 500;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Bricolage Grotesque";
-  src: url("../assets/fonts/BricolageGrotesque-SemiBold.ttf") format("truetype");
-  font-weight: 600;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Bricolage Grotesque";
-  src: url("../assets/fonts/BricolageGrotesque-Bold.ttf") format("truetype");
-  font-weight: 700;
-  font-style: normal;
+  font-family: "Whyte Mono Inktrap Variable";
+  src: url("../assets/fonts/ABCWhyteMonoInktrapVariable-Trial.woff2") format("woff2-variations");
+  font-weight: 1 999;
   font-display: swap;
 }
 
 :root {
   /* Font families */
-  --font-display: "Bricolage Grotesque", system-ui, sans-serif;
-  --font-heading: "Bricolage Grotesque", system-ui, sans-serif;
-  --font-body: "Bricolage Grotesque", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --font-display: "Whyte Inktrap Variable", system-ui, sans-serif;
+  --font-heading: "Poppins", "Poppins Fallback", system-ui, sans-serif;
+  --font-body: "Poppins", "Poppins Fallback", system-ui, -apple-system, sans-serif;
+  --font-mono: "Whyte Mono Inktrap Variable", ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 
   /* shadcn-friendly aliases */
   --font-sans: var(--font-body);
@@ -143,7 +139,7 @@
   letter-spacing: var(--tracking-tighter);
 }
 
-/* Tagline */
+/* Tagline - from Figma */
 .voice-tagline {
   font-family: var(--font-heading);
   font-size: 1rem;
