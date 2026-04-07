@@ -15,7 +15,7 @@ export const Route = createRootRoute({
 
 function RootShell({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-[#090512]">
+    <div className="min-h-screen bg-[var(--background)] text-[var(--text-primary)]">
       <div className="lg:grid lg:grid-cols-[260px_minmax(0,1fr)]">
         <MerchantSidebar />
         <div className="min-h-screen">
@@ -101,10 +101,10 @@ function ConnectGate() {
   }
 
   return (
-    <div className="min-h-screen bg-[#090512]">
+    <div className="min-h-screen bg-[var(--background)] text-[var(--text-primary)]">
       <div className="mx-auto flex min-h-screen max-w-6xl items-center px-4 py-10 sm:px-6 lg:px-8">
         <div className="w-full">
-          <section className="rounded-[2rem] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(255,86,164,0.14),transparent_38%),linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))] p-7 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] sm:p-8 lg:p-10">
+          <section className="rounded-[2rem] border border-[var(--border)] bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--tertiary-500)_16%,transparent),transparent_38%),linear-gradient(180deg,color-mix(in_srgb,var(--surface)_88%,white_12%),var(--surface))] p-7 shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_12%,transparent)] sm:p-8 lg:p-10">
             <div className="flex items-center gap-3">
               <img
                 src="/images/logo/logo-full.svg"
@@ -116,35 +116,35 @@ function ConnectGate() {
             <h1 className="mt-6 max-w-xl text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
               Connect your signer to run your store
             </h1>
-            <p className="mt-4 max-w-2xl text-[15px] leading-6 text-[var(--text-secondary)] sm:text-base">
+            <p className="mt-4 max-w-2xl text-[15px] leading-6 text-[var(--text-primary)]/85 sm:text-base">
               Publish listings, manage orders, and stay in sync with buyers from one merchant workspace.
             </p>
 
             <div className="mt-8 grid gap-4 sm:grid-cols-3 sm:gap-0">
               <div className="px-0 py-2 sm:px-5">
                 <Store className="h-5 w-5 text-secondary-300" />
-                <div className="mt-3 text-sm font-medium text-[var(--text-primary)]">Publish listings</div>
-                <div className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
+                <div className="mt-3 text-sm font-semibold text-[var(--text-primary)]">Publish listings</div>
+                <div className="mt-1 text-sm leading-6 text-[var(--text-primary)]/80">
                   Create and manage products tied to your signer.
                 </div>
               </div>
-              <div className="px-0 py-2 sm:border-l sm:border-white/10 sm:px-5">
+              <div className="px-0 py-2 sm:border-l sm:border-[var(--border)] sm:px-5">
                 <KeyRound className="h-5 w-5 text-secondary-300" />
-                <div className="mt-3 text-sm font-medium text-[var(--text-primary)]">Own your identity</div>
-                <div className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
+                <div className="mt-3 text-sm font-semibold text-[var(--text-primary)]">Own your identity</div>
+                <div className="mt-1 text-sm leading-6 text-[var(--text-primary)]/80">
                   Use an external signer instead of another account.
                 </div>
               </div>
-              <div className="px-0 py-2 sm:border-l sm:border-white/10 sm:px-5">
+              <div className="px-0 py-2 sm:border-l sm:border-[var(--border)] sm:px-5">
                 <ShieldCheck className="h-5 w-5 text-secondary-300" />
-                <div className="mt-3 text-sm font-medium text-[var(--text-primary)]">Stay in the loop</div>
-                <div className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
+                <div className="mt-3 text-sm font-semibold text-[var(--text-primary)]">Stay in the loop</div>
+                <div className="mt-1 text-sm leading-6 text-[var(--text-primary)]/80">
                   Track orders, invoices, and buyer messages in one place.
                 </div>
               </div>
             </div>
 
-            <div className="mt-8 max-w-[28rem] border-t border-white/10 pt-6">
+            <div className="mt-8 max-w-[28rem] border-t border-[var(--border)] pt-6">
               {!mobileSignerUnavailable && (
                 <div className="mt-6">
                   <Button
@@ -158,7 +158,7 @@ function ConnectGate() {
                 </div>
               )}
 
-              <div className="mt-5 text-[15px] leading-6 text-[var(--text-secondary)]">
+              <div className="mt-5 text-[15px] leading-6 text-[var(--text-primary)]/80">
                 {mobileSignerUnavailable
                   ? "This mobile browser does not expose a supported Nostr signer here yet. Use a desktop browser with a signer extension, or a mobile browser that already exposes one."
                   : status === "connecting" || isWorking

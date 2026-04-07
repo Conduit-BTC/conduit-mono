@@ -139,9 +139,9 @@ export function SignerSwitch({
         </DialogTrigger>
       )}
 
-      <DialogContent className="max-h-[calc(100vh-1.5rem)] max-w-xl overflow-y-auto border-white/15 bg-[#090314] p-0 text-[var(--text-primary)] shadow-[0_28px_80px_rgba(0,0,0,0.6)]">
-        <div className="relative rounded-[inherit] border border-white/8 bg-[#090314]">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,86,164,0.16),transparent_36%),linear-gradient(180deg,rgba(255,255,255,0.03),transparent_22%)]" />
+      <DialogContent className="max-h-[calc(100vh-1.5rem)] max-w-xl overflow-y-auto border-[var(--border)] bg-[var(--surface-dialog)] p-0 text-[var(--text-primary)] shadow-[var(--shadow-dialog)]">
+        <div className="relative rounded-[inherit] border border-[var(--border)] bg-[var(--surface-dialog)]">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--tertiary-500)_16%,transparent),transparent_36%),linear-gradient(180deg,color-mix(in_srgb,var(--foreground)_3%,transparent),transparent_22%)]" />
 
           <div className="relative px-5 py-5 sm:px-6 sm:py-6">
             {status === "connected" && pubkey ? (
@@ -160,7 +160,7 @@ export function SignerSwitch({
                       >
                         Connected
                       </Badge>
-                      <Badge variant="outline" className="border-white/12 bg-white/5 text-[var(--text-primary)]">
+                      <Badge variant="outline" className="border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]">
                         {formatPubkey(pubkey, 12)}
                       </Badge>
                     </div>
@@ -170,7 +170,7 @@ export function SignerSwitch({
                   </div>
 
                   {pendingSwitch && (
-                    <div className="rounded-[1.25rem] border border-white/10 bg-white/5 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
+                    <div className="rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
                       Change the active account in your browser extension, then reconnect here.
                     </div>
                   )}
@@ -182,7 +182,7 @@ export function SignerSwitch({
                   )}
                 </div>
 
-                <DialogFooter className="mx-auto mt-6 max-w-md border-t border-white/8 px-0 pt-5">
+                <DialogFooter className="mx-auto mt-6 max-w-md border-t border-[var(--border)] px-0 pt-5">
                   <Button
                     variant="outline"
                     onClick={handleDisconnect}
@@ -218,7 +218,7 @@ export function SignerSwitch({
                     </Button>
                   )}
 
-                  <div className="rounded-[1.25rem] border border-white/10 bg-white/5 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
+                  <div className="rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
                     {mobileSignerUnavailable
                       ? "Try a desktop browser with a signer extension, or a mobile browser that already exposes one."
                       : "Conduit currently supports external signers only."}
@@ -226,7 +226,7 @@ export function SignerSwitch({
                 </div>
 
                 <div className="mx-auto mt-4 grid max-w-md gap-4">
-                  <div className="rounded-[1.25rem] border border-white/10 bg-white/5 p-4">
+                  <div className="rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                     <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
                       <ShieldIcon />
                       What this unlocks
@@ -245,7 +245,7 @@ export function SignerSwitch({
                 </div>
 
                 {pendingSwitch && (
-                  <div className="mx-auto mt-4 max-w-md rounded-[1.25rem] border border-white/10 bg-white/5 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
+                  <div className="mx-auto mt-4 max-w-md rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
                     Change the active account in your browser extension, then reconnect here.
                   </div>
                 )}
@@ -257,7 +257,7 @@ export function SignerSwitch({
                 )}
 
                 {!extensionAvailable && !mobileSignerUnavailable && (
-                  <div className="mx-auto mt-4 max-w-md rounded-[1.25rem] border border-white/10 bg-white/5 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
+                  <div className="mx-auto mt-4 max-w-md rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
                     No signer extension detected. Install a NIP-07 signer such as Alby or nos2x, then refresh and connect.
                   </div>
                 )}

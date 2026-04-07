@@ -160,7 +160,7 @@ function PaymentMethodButton({
         "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition-colors",
         active
           ? "border-secondary-400 bg-white text-[var(--background)]"
-          : "border-white/10 bg-[var(--surface-elevated)] text-[var(--text-primary)] hover:border-white/20",
+          : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] hover:border-[var(--text-secondary)]",
         disabled ? "cursor-not-allowed opacity-70" : "",
       ].join(" ")}
     >
@@ -472,7 +472,7 @@ function CheckoutPage() {
   if (step === "sending") {
     return (
       <div className="flex min-h-[70vh] items-center justify-center">
-        <section className="w-full max-w-3xl rounded-[2rem] bg-[radial-gradient(circle_at_top,_rgba(222,80,255,0.35),_transparent_55%),linear-gradient(180deg,rgba(184,24,255,0.95),rgba(123,0,194,0.92))] px-8 py-14 text-center text-white shadow-[0_24px_60px_rgba(126,0,173,0.4)] sm:px-12">
+        <section className="w-full max-w-3xl rounded-[2rem] bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--tertiary-500)_35%,transparent),transparent_55%),linear-gradient(180deg,var(--primary-500),var(--primary-600))] px-8 py-14 text-center text-white shadow-[0_24px_60px_color-mix(in_srgb,var(--primary-500)_40%,transparent)] sm:px-12">
           <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-white/20 bg-white/10">
             <SpinnerIcon className="h-8 w-8 animate-spin" />
           </div>
@@ -516,7 +516,7 @@ function CheckoutPage() {
           <div
             aria-hidden="true"
             className={[
-              "pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(222,80,255,0.35),_transparent_55%),linear-gradient(180deg,rgba(184,24,255,0.22),rgba(123,0,194,0.18))] transition-opacity duration-700",
+              "pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--tertiary-500)_35%,transparent),transparent_55%),linear-gradient(180deg,color-mix(in_srgb,var(--primary-500)_22%,transparent),color-mix(in_srgb,var(--primary-600)_18%,transparent))] transition-opacity duration-700",
               showSentGlow ? "opacity-100" : "opacity-0",
             ].join(" ")}
           />

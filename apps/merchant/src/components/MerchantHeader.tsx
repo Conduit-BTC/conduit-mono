@@ -169,7 +169,7 @@ function MobileNav() {
           <Menu className="h-5 w-5" />
         </Button>
       </SheetTrigger>
-      <SheetContent side="left" className="w-[320px] border-r border-white/10 bg-[#0b0717]">
+      <SheetContent side="left" className="w-[320px] border-r border-[var(--border)] bg-[var(--surface)]">
         <SheetHeader>
           <SheetTitle>
             <Logo variant="full" className="justify-start" />
@@ -179,7 +179,7 @@ function MobileNav() {
         <div className="mt-6 space-y-6">
           <MerchantNavLinks compact />
 
-          <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
             {config.lightningNetwork !== "mainnet" && (
               <Badge
                 variant="secondary"
@@ -205,8 +205,8 @@ export function MerchantSidebar() {
   const { pubkey, status } = useAuth()
 
   return (
-    <aside className="hidden h-screen flex-col border-r border-white/10 bg-[#0b0717] lg:flex">
-      <div className="border-b border-white/8 px-5 py-5">
+    <aside className="hidden h-screen flex-col border-r border-[var(--border)] bg-[var(--surface)] lg:flex">
+      <div className="border-b border-[var(--border)] px-5 py-5">
         <Logo />
         {config.lightningNetwork !== "mainnet" && (
           <Badge
@@ -226,7 +226,7 @@ export function MerchantSidebar() {
       <div className="flex min-h-0 flex-1 flex-col px-4 py-5">
         <MerchantNavLinks />
 
-        <div className="mt-auto rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+        <div className="mt-auto rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
           <div className="mb-2 text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
             Merchant
           </div>
@@ -242,7 +242,7 @@ export function MerchantHeader() {
   const signerConnected = status === "connected" && !!pubkey
 
   return (
-    <header className="sticky top-0 z-30 border-b border-white/10 bg-[#0b0717]/90 backdrop-blur">
+    <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_84%,transparent)] backdrop-blur">
       <div className="flex h-20 items-center gap-3 px-4 sm:px-6">
         <MobileNav />
 

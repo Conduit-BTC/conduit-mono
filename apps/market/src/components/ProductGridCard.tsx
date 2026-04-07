@@ -50,7 +50,7 @@ export function ProductGridCard({
       role="link"
       tabIndex={0}
       className={cn(
-        "group flex h-full cursor-pointer flex-col overflow-hidden rounded-xl border border-white/16 bg-[color-mix(in_oklab,var(--surface)_92%,white)] text-[var(--text-primary)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03),0_10px_24px_rgba(0,0,0,0.12)] transition-[border-color,box-shadow,transform,background-color] duration-200 hover:border-white/26 hover:bg-[color-mix(in_oklab,var(--surface)_89%,white)] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_16px_32px_rgba(0,0,0,0.16)]"
+        "group flex h-full cursor-pointer flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset),0_10px_24px_rgba(0,0,0,0.12)] transition-[border-color,box-shadow,transform,background-color] duration-200 hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)] hover:shadow-[var(--shadow-glass-inset),0_16px_32px_rgba(0,0,0,0.16)]"
       )}
       onClick={() =>
         navigate({
@@ -67,7 +67,7 @@ export function ProductGridCard({
         })
       }}
     >
-      <div className="aspect-[4/3] overflow-hidden border-b border-white/10 bg-[color-mix(in_oklab,var(--background)_96%,white)]">
+      <div className="aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)]">
         {imageUrl ? (
           <img
             src={imageUrl}
@@ -145,7 +145,7 @@ export function ProductGridCard({
 
               {cartQuantity > 0 && onIncrement && onDecrement && (
                 <div className="pointer-events-none absolute inset-0 hidden items-center justify-center opacity-0 transition-all duration-200 md:flex md:group-hover:pointer-events-auto md:group-hover:opacity-100">
-                  <div className="flex h-7 items-center overflow-hidden rounded-md border border-secondary-400/40 bg-[var(--surface)] shadow-[0_6px_16px_rgba(0,0,0,0.28)]">
+                  <div className="flex h-7 items-center overflow-hidden rounded-md border border-secondary-400/40 bg-[var(--surface)] shadow-md">
                     <button
                       type="button"
                       className="flex h-full w-7 items-center justify-center text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)]"
@@ -158,7 +158,7 @@ export function ProductGridCard({
                     >
                       -
                     </button>
-                    <div className="flex h-full min-w-8 items-center justify-center border-x border-white/10 px-1 text-xs font-medium text-[var(--text-primary)]">
+                    <div className="flex h-full min-w-8 items-center justify-center border-x border-[var(--border)] px-1 text-xs font-medium text-[var(--text-primary)]">
                       {cartQuantity}
                     </div>
                     <button

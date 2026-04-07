@@ -65,14 +65,14 @@ function UserMenu() {
         )}
         {displayName ?? formatPubkey(pubkey, 4)}
       </Button>
-      <DialogContent className="max-w-sm border-white/14 bg-[#090314] text-[var(--text-primary)] shadow-[0_24px_70px_rgba(0,0,0,0.55)]">
+      <DialogContent className="max-w-sm border-[var(--border)] bg-[var(--surface-dialog)] text-[var(--text-primary)] shadow-[var(--shadow-dialog)]">
         <DialogHeader>
           <DialogTitle>Disconnect signer?</DialogTitle>
           <DialogDescription className="text-sm leading-7 text-[var(--text-secondary)]">
             You can reconnect later, but checkout, orders, and merchant follow-up will require signing in again.
           </DialogDescription>
         </DialogHeader>
-        <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-[var(--text-secondary)]">
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
           {displayName && <div className="font-medium text-[var(--text-primary)]">{displayName}</div>}
           <div className="font-mono">{formatPubkey(pubkey, 12)}</div>
         </div>
@@ -228,7 +228,7 @@ export function MarketHeader() {
       className={cn(
         "sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur transition-transform duration-300 ease-out",
         navState === "hidden" && !menuOpen ? "-translate-y-full" : "translate-y-0",
-        navState === "scrolled" ? "shadow-[0_8px_24px_rgba(0,0,0,0.22)]" : ""
+        navState === "scrolled" ? "shadow-md" : ""
       )}
     >
       <div className="mx-auto flex min-h-16 max-w-7xl flex-wrap items-center gap-3 px-4 py-3 lg:flex-nowrap">
@@ -276,7 +276,7 @@ export function MarketHeader() {
             <div className="pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-2 text-[var(--text-muted)]">
               {pendingSearch ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
               {!pendingSearch && (
-                <span className="inline-flex h-5 min-w-5 items-center justify-center rounded border border-white/12 bg-white/[0.04] px-1.5 text-[10px] font-medium text-[var(--text-muted)]">
+                <span className="inline-flex h-5 min-w-5 items-center justify-center rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 text-[10px] font-medium text-[var(--text-muted)]">
                   /
                 </span>
               )}
