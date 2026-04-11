@@ -4,6 +4,8 @@ Decentralized commerce platform built on [Nostr](https://nostr.com). Merchants a
 
 **[conduit.market](https://conduit.market)**
 
+Conduit code is MIT-licensed. Conduit trademarks, names, and logos are reserved. See [LICENSE](./LICENSE), [TRADEMARKS.md](./TRADEMARKS.md), and [OPEN_SOURCE.md](./OPEN_SOURCE.md).
+
 ---
 
 ## Apps
@@ -186,6 +188,15 @@ conduit-mono/
 | Payments | Lightning via NWC (NIP-47) |
 | Messaging | NIP-17 gift-wrapped encrypted DMs |
 
+## Open Source
+
+- Code and redistributable bundled assets in this repository are MIT-licensed.
+- Conduit names, logos, and branded app identities are not granted under the MIT license.
+- Forks are welcome, but they must not imply official Conduit operation or endorsement.
+- Public client builds should remain rebuildable from the public repository without private production assets.
+
+See [OPEN_SOURCE.md](./OPEN_SOURCE.md) for reproducible-build notes and [TRADEMARKS.md](./TRADEMARKS.md) for brand usage rules.
+
 ## Protocol
 
 - **Authentication**: External signers only (NIP-07, NIP-46). No key generation or custody.
@@ -225,4 +236,6 @@ See [PLAN.md](PLAN.md) for the current planning index, [ROADMAP.md](docs/plans/R
 
 ## License
 
-TBD
+MIT for code and redistributable bundled assets in this repository.
+
+Conduit trademarks and logos are reserved and are not licensed under MIT. See [TRADEMARKS.md](./TRADEMARKS.md).
