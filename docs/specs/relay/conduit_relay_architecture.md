@@ -434,6 +434,69 @@ Impact:
 
 ---
 
+## Client Relay Display Contract
+
+This section defines the minimum Phase 2 product contract for how relay roles should appear in Conduit clients.
+
+### Shared labels
+
+Across Conduit apps, relay categories should use the same short labels:
+
+- `merchant`
+- `l2`
+- `cache`
+
+These labels are the current product-facing short names for the three relay roles described in the Executive Summary.
+
+### Badge model
+
+- Relay entries may carry one or more role badges.
+- The data model and UI should allow multiple badges on a single relay entry.
+- In the current expected deployment model, most relay entries will only have one role badge.
+
+### User-facing scope
+
+- Users may view the list of relays and the role badge or badges attached to each relay.
+- This Phase 2 surface is display-only.
+- Users must not edit relay configuration from this surface.
+- This surface should not introduce a separate advanced relay settings flow in Phase 2.
+
+### Entry point and presentation
+
+- The relay display should appear in the modal opened from the top navigation button that shows the current user's name.
+- Presentation should remain minimalist and future-friendly for mobile.
+- The preferred treatment is a simple list of relay names with attached role badges rather than multiple complex configuration sections.
+
+### Fallback and degraded-state handling
+
+- Fallback and degraded-state behavior must still exist in implementation.
+- Those behaviors should be handled in the background rather than surfaced in this relay display.
+- The relay display should not expose source, degraded, or stale read-state messaging to end users in Phase 2.
+
+### Implementation constraint
+
+- Shared protocol and route code should continue preserving source-aware fallback behavior internally.
+- The absence of degraded-state messaging in the relay display must not cause clients to collapse back to a single-source read assumption.
+
+### Shared fetch policy
+
+- Conduit clients should extend the central fetching mechanism so read attempts follow this precedence:
+  1. `cache`
+  2. `l2`
+  3. `merchant`
+- This precedence applies to relay-backed reads that participate in the three-layer relay model.
+- If a preferred layer is unavailable or does not satisfy the read, the shared fetch layer should continue to the next eligible layer in the sequence.
+- The fetch policy should remain centralized in shared protocol or core fetching code rather than being reimplemented route by route.
+
+### Route integration rule
+
+- App routes should use the shared central fetching mechanism for relay-backed reads.
+- Route code should consume typed read results returned by that mechanism rather than constructing layer precedence independently.
+- Route code must not hard-code direct assumptions about cache, L2, or merchant relay internals.
+- New relay-backed routes should be added on top of the shared fetch mechanism instead of introducing app-local fanout logic.
+
+---
+
 ## Security and Privacy Requirements
 
 ### Authentication
