@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useEffect, useMemo, useState } from "react"
 import { Badge, Button } from "@conduit/ui"
 import { MessageCircleMore, Search, Store } from "lucide-react"
-import { EVENT_KINDS, formatNpub, getNdk, getProfiles, formatPubkey, useAuth, useProfile } from "@conduit/core"
+import { EVENT_KINDS, appendConduitClientTag, formatNpub, getNdk, getProfiles, formatPubkey, useAuth, useProfile } from "@conduit/core"
 import { requireAuth } from "../lib/auth"
 import { CopyButton } from "../components/CopyButton"
 import { MerchantAvatarFallback, getMerchantDisplayName } from "../components/MerchantIdentity"
@@ -194,6 +194,7 @@ function MessagesPage() {
         ["type", "message"],
         ["order", selectedConversation.orderId],
       ]
+      rumor.tags = appendConduitClientTag(rumor.tags, "market")
       rumor.content = JSON.stringify({
         note: replyText.trim(),
         orderId: selectedConversation.orderId,

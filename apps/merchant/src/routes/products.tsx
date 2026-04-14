@@ -2,7 +2,7 @@ import { useMemo, useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
-import { EVENT_KINDS, getMerchantStorefront, requireNdkConnected, type CommerceResult, type ProductSchema, useAuth } from "@conduit/core"
+import { EVENT_KINDS, appendConduitClientTag, getMerchantStorefront, requireNdkConnected, type CommerceResult, type ProductSchema, useAuth } from "@conduit/core"
 import { Badge, Button, Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 
@@ -142,6 +142,7 @@ async function publishProduct(
   if (product.summary) event.tags.push(["summary", product.summary])
   if (imageUrl) event.tags.push(["image", imageUrl])
   for (const tag of tags) event.tags.push(["t", tag])
+  event.tags = appendConduitClientTag(event.tags, "merchant")
 
   await event.sign(ndk.signer)
   await event.publish()
@@ -165,7 +166,7 @@ async function deleteProduct(merchantPubkey: string, product: MerchantProduct): 
   if (product.dTag) {
     tags.push(["a", `30402:${product.product.pubkey}:${product.dTag}`])
   }
-  deletion.tags = tags
+  deletion.tags = appendConduitClientTag(tags, "merchant")
   deletion.content = `Delete product ${product.addressId}`
 
   await deletion.sign(ndk.signer)

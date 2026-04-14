@@ -3,6 +3,7 @@ import type { Profile } from "../types"
 import { db } from "../db"
 import { EVENT_KINDS } from "./kinds"
 import { getProfiles } from "./commerce"
+import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { requireNdkConnected } from "./ndk"
 
 interface RawProfileContent {
@@ -49,7 +50,8 @@ export async function fetchProfile(
 }
 
 export async function publishProfile(
-  profile: Omit<Profile, "pubkey">
+  profile: Omit<Profile, "pubkey">,
+  appId: ConduitAppId
 ): Promise<void> {
   const ndk = await requireNdkConnected()
   if (!ndk.signer) throw new Error("Signer not connected")
@@ -72,7 +74,7 @@ export async function publishProfile(
   event.kind = EVENT_KINDS.PROFILE
   event.created_at = Math.floor(Date.now() / 1000)
   event.content = JSON.stringify(content)
-  event.tags = []
+  event.tags = appendConduitClientTag([], appId)
 
   await event.sign(ndk.signer)
   await event.publish()

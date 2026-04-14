@@ -6,6 +6,7 @@
  *   const bolt11 = await nwcMakeInvoice(conn, { amountMsats: 100_000, description: "Order #123" })
  */
 import NDK, { NDKEvent, NDKPrivateKeySigner, NDKRelayStatus, NDKSubscription, NDKUser, type NDKFilter } from "@nostr-dev-kit/ndk"
+import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 
 // NIP-47 event kinds
 const NWC_REQUEST_KIND = 23194
@@ -76,6 +77,7 @@ export async function nwcMakeInvoice(
   connection: NwcConnection,
   params: NwcMakeInvoiceParams,
   timeoutMs = 30_000,
+  clientAppId: ConduitAppId = "merchant",
 ): Promise<NwcMakeInvoiceResult> {
   // Create a dedicated NDK instance for this NWC connection
   const signer = new NDKPrivateKeySigner(connection.secret)
@@ -117,6 +119,7 @@ export async function nwcMakeInvoice(
       ["p", connection.walletPubkey],
       ["encryption", "nip44_v2"],
     ]
+    requestEvent.tags = appendConduitClientTag(requestEvent.tags, clientAppId)
     requestEvent.content = encrypted
     await requestEvent.sign(signer)
     const requestId = requestEvent.id

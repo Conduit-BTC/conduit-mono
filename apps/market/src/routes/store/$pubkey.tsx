@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@conduit/ui"
 import {
+  appendConduitClientTag,
   formatNpub,
   requireNdkConnected,
   useAuth,
@@ -275,7 +276,7 @@ function StorefrontPage() {
       event.kind = 3
       event.created_at = Math.floor(Date.now() / 1000)
       event.content = latest?.content ?? ""
-      event.tags = nextTags
+      event.tags = appendConduitClientTag(nextTags, "market")
 
       await event.sign(ndk.signer)
       await event.publish()

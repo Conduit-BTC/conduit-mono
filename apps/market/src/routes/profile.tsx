@@ -62,7 +62,7 @@ function Field({
 function ProfilePage() {
   const { pubkey } = useAuth()
   const profileQuery = useProfile(pubkey)
-  const updateMutation = useUpdateProfile()
+  const updateMutation = useUpdateProfile("market")
   const [editing, setEditing] = useState(false)
   const [copied, setCopied] = useState(false)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_FORM)

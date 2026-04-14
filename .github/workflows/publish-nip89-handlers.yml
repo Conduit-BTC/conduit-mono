@@ -1,0 +1,55 @@
+name: Publish NIP-89 Handlers
+
+# Run this only after the matching public vars and private secrets are configured.
+# Until then, the apps are expected to run without emitting NIP-89 client tags.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which Conduit handler events to publish"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - market
+          - merchant
+
+env:
+  VITE_RELAY_URL: "wss://relay.conduit.market"
+  VITE_NIP89_RELAY_HINT: "wss://relay.conduit.market"
+  VITE_NIP89_MARKET_D_TAG: "conduit-market"
+  VITE_NIP89_MERCHANT_D_TAG: "conduit-merchant"
+  VITE_NIP89_MARKET_PUBKEY: "${{ vars.VITE_NIP89_MARKET_PUBKEY }}"
+  VITE_NIP89_MERCHANT_PUBKEY: "${{ vars.VITE_NIP89_MERCHANT_PUBKEY }}"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - run: bun install --frozen-lockfile
+
+      - name: Publish Market handler
+        if: github.event.inputs.target == 'all' || github.event.inputs.target == 'market'
+        run: bun scripts/publish_nip89_handlers.ts
+        env:
+          NIP89_TARGET: "market"
+          NIP89_RELAY_URLS: "${{ env.VITE_NIP89_RELAY_HINT }}"
+          NIP89_MARKET_NSEC: "${{ secrets.NIP89_MARKET_NSEC }}"
+          NIP89_MERCHANT_NSEC: "${{ secrets.NIP89_MERCHANT_NSEC }}"
+
+      - name: Publish Merchant handler
+        if: github.event.inputs.target == 'all' || github.event.inputs.target == 'merchant'
+        run: bun scripts/publish_nip89_handlers.ts
+        env:
+          NIP89_TARGET: "merchant"
+          NIP89_RELAY_URLS: "${{ env.VITE_NIP89_RELAY_HINT }}"
+          NIP89_MARKET_NSEC: "${{ secrets.NIP89_MARKET_NSEC }}"
+          NIP89_MERCHANT_NSEC: "${{ secrets.NIP89_MERCHANT_NSEC }}"

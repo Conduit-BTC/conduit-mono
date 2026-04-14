@@ -6,6 +6,7 @@ import {
   convertCommerceAmountToSats,
   decodeLightningInvoiceAmount,
   EVENT_KINDS,
+  appendConduitClientTag,
   extractOrderSummary,
   formatPubkey,
   getNdk,
@@ -134,6 +135,7 @@ async function publishOrderConversationMessage(params: {
     ["order", params.orderId],
     ...(params.tags ?? []),
   ]
+  rumor.tags = appendConduitClientTag(rumor.tags, "merchant")
   rumor.content = JSON.stringify({
     ...params.payload,
     orderId: params.orderId,
@@ -536,7 +538,7 @@ function OrdersPage() {
         const result = await nwcMakeInvoice(nwc.connection, {
           amountMsats: amountSats * 1000,
           description: `Conduit order ${selected.orderId}`,
-        })
+        }, 30_000, "merchant")
         bolt11 = result.invoice
       } else {
         throw new Error("No wallet available. Install Alby extension or connect NWC.")

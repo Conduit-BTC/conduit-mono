@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "seed:nsec": "bun -e 'import { nip19 } from \"@nostr-dev-kit/ndk\"; import { randomBytes } from \"node:crypto\"; console.log(nip19.nsecEncode(randomBytes(32)));'",
+    "nip89:publish-handlers": "bun scripts/publish_nip89_handlers.ts",
     "seed:products": "bun scripts/dev/seed_products.ts",
     "check:products": "bun scripts/dev/check_products.ts",
     "figma:variables": "bun scripts/figma/get_variable_defs.ts",

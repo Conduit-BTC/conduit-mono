@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { NDKEvent, NDKUser, giftWrap } from "@nostr-dev-kit/ndk"
 import {
   EVENT_KINDS,
+  appendConduitClientTag,
   formatPubkey,
   getNdk,
   useAuth,
@@ -408,6 +409,7 @@ function CheckoutPage() {
         ["type", "order"],
         ["order", orderId],
       ]
+      rumor.tags = appendConduitClientTag(rumor.tags, "market")
       rumor.content = JSON.stringify(payload)
 
       const merchantUser = new NDKUser({ pubkey: selectedMerchant })
