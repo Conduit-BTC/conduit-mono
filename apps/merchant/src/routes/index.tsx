@@ -112,7 +112,7 @@ function StatCard({
   icon: ComponentType<{ className?: string }>
 }) {
   return (
-    <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+    <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-glass-inset)]">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">{label}</div>
@@ -120,7 +120,7 @@ function StatCard({
             {value}
           </div>
         </div>
-        <span className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-white/10 bg-white/[0.05] text-[var(--text-primary)]">
+        <span className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]">
           <Icon className="h-5 w-5" />
         </span>
       </div>
@@ -156,11 +156,11 @@ function DashboardPage() {
 
         <div className="flex flex-wrap items-center gap-2">
           {pubkey && (
-            <Badge variant="secondary" className="border-white/10 bg-white/[0.05] text-[var(--text-primary)]">
+            <Badge variant="secondary" className="border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]">
               {formatPubkey(pubkey, 10)}
             </Badge>
           )}
-          <Badge variant="secondary" className="border-white/10 bg-white/[0.05]">
+          <Badge variant="secondary" className="border-[var(--border)] bg-[var(--surface-elevated)]">
             Relay {ndk.status}
           </Badge>
         </div>
@@ -173,7 +173,7 @@ function DashboardPage() {
       )}
 
       {!pubkey && (
-        <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.04] p-5 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
           Connect your signer to manage listings and orders from this merchant workspace.
         </div>
       )}
@@ -186,7 +186,7 @@ function DashboardPage() {
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">
-        <section className="rounded-[1.6rem] border border-white/10 bg-white/[0.04] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+        <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Things to do next</div>
@@ -199,7 +199,7 @@ function DashboardPage() {
           <div className="mt-5 grid gap-3 sm:grid-cols-2">
             <Link
               to="/products"
-              className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 transition-colors hover:bg-white/[0.06]"
+              className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-elevated)]"
             >
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -214,7 +214,7 @@ function DashboardPage() {
 
             <Link
               to="/orders"
-              className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 transition-colors hover:bg-white/[0.06]"
+              className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-elevated)]"
             >
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -229,7 +229,7 @@ function DashboardPage() {
           </div>
         </section>
 
-        <section className="rounded-[1.6rem] border border-white/10 bg-white/[0.04] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+        <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Recent orders</div>
@@ -246,7 +246,7 @@ function DashboardPage() {
             )}
 
             {!statsQuery.isLoading && latestOrders.length === 0 && (
-              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-[var(--text-secondary)]">
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--text-secondary)]">
                 No buyer orders cached yet. Once Market sends an order to this merchant, it will appear here and in Orders.
               </div>
             )}
@@ -255,7 +255,7 @@ function DashboardPage() {
               <Link
                 key={message.id}
                 to="/orders"
-                className="block rounded-2xl border border-white/10 bg-white/[0.03] p-4 transition-colors hover:bg-white/[0.05]"
+                className="block rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-elevated)]"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>

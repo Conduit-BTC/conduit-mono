@@ -159,15 +159,15 @@ function PaymentMethodButton({
       className={[
         "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition-colors",
         active
-          ? "border-secondary-400 bg-white text-[var(--background)]"
-          : "border-white/10 bg-[var(--surface-elevated)] text-[var(--text-primary)] hover:border-white/20",
+          ? "border-secondary-400 bg-secondary-500/12 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]"
+          : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] hover:border-[var(--text-secondary)]",
         disabled ? "cursor-not-allowed opacity-70" : "",
       ].join(" ")}
     >
       {icon}
       {label}
       {subtitle && (
-        <span className={active ? "text-[var(--background)]/70" : "text-[var(--text-muted)]"}>
+        <span className={active ? "text-[var(--text-secondary)]" : "text-[var(--text-muted)]"}>
           {subtitle}
         </span>
       )}
@@ -224,7 +224,7 @@ function OrderSummary({
               key={item.productId}
               className="grid grid-cols-[72px_minmax(0,1fr)_auto] gap-3 border-b border-[var(--border)] pb-4 last:border-b-0 last:pb-0"
             >
-              <div className="overflow-hidden rounded-xl border border-white/10 bg-[var(--background)]">
+              <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--background)]">
                 <img
                   src={item.image ?? "/images/placeholders/product.png"}
                   alt={item.title}
@@ -256,7 +256,7 @@ function OrderSummary({
         })}
       </div>
 
-      <div className="mt-5 rounded-2xl border border-white/10 bg-[var(--surface-elevated)] p-4">
+      <div className="mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
         <div className="flex items-center justify-between gap-3 text-sm text-[var(--text-secondary)]">
           <span>
             Subtotal ({items.reduce((sum, item) => sum + item.quantity, 0)} item
@@ -472,8 +472,8 @@ function CheckoutPage() {
   if (step === "sending") {
     return (
       <div className="flex min-h-[70vh] items-center justify-center">
-        <section className="w-full max-w-3xl rounded-[2rem] bg-[radial-gradient(circle_at_top,_rgba(222,80,255,0.35),_transparent_55%),linear-gradient(180deg,rgba(184,24,255,0.95),rgba(123,0,194,0.92))] px-8 py-14 text-center text-white shadow-[0_24px_60px_rgba(126,0,173,0.4)] sm:px-12">
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-white/20 bg-white/10">
+        <section className="w-full max-w-3xl rounded-[2rem] bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--tertiary-500)_35%,transparent),transparent_55%),linear-gradient(180deg,var(--primary-500),var(--primary-600))] px-8 py-14 text-center text-white shadow-[0_24px_60px_color-mix(in_srgb,var(--primary-500)_40%,transparent)] sm:px-12">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-[color-mix(in_srgb,var(--text-inverse)_20%,transparent)] bg-[color-mix(in_srgb,var(--text-inverse)_10%,transparent)]">
             <SpinnerIcon className="h-8 w-8 animate-spin" />
           </div>
           <h1 className="mt-8 text-4xl font-semibold tracking-tight">Sending your order…</h1>
@@ -491,7 +491,7 @@ function CheckoutPage() {
   if (step === "signing") {
     return (
       <div className="flex min-h-[70vh] items-center justify-center">
-        <section className="w-full max-w-3xl rounded-[2rem] border border-[var(--border)] bg-[var(--surface)] px-8 py-14 text-center shadow-[0_24px_60px_rgba(0,0,0,0.28)] sm:px-12">
+        <section className="w-full max-w-3xl rounded-[2rem] border border-[var(--border)] bg-[var(--surface)] px-8 py-14 text-center shadow-[var(--shadow-xl)] sm:px-12">
           <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-secondary-500/30 bg-secondary-500/10 text-secondary-300">
             <KeyRound className="h-8 w-8" />
           </div>
@@ -516,7 +516,7 @@ function CheckoutPage() {
           <div
             aria-hidden="true"
             className={[
-              "pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(222,80,255,0.35),_transparent_55%),linear-gradient(180deg,rgba(184,24,255,0.22),rgba(123,0,194,0.18))] transition-opacity duration-700",
+              "pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--tertiary-500)_35%,transparent),transparent_55%),linear-gradient(180deg,color-mix(in_srgb,var(--primary-500)_22%,transparent),color-mix(in_srgb,var(--primary-600)_18%,transparent))] transition-opacity duration-700",
               showSentGlow ? "opacity-100" : "opacity-0",
             ].join(" ")}
           />
@@ -625,7 +625,7 @@ function CheckoutPage() {
 
                 {needsShipping ? (
                   <div className="mt-5 grid gap-4">
-                    <div className="rounded-xl border border-white/10 bg-[var(--surface-elevated)] px-4 py-3 text-sm text-[var(--text-secondary)]">
+                    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm text-[var(--text-secondary)]">
                       Required fields: Country, First name, Last name, Street address, Postal code, and City.
                     </div>
 
@@ -839,7 +839,7 @@ function CheckoutPage() {
                   */}
                 </div>
 
-                <div className="mt-6 rounded-2xl border border-white/10 bg-[var(--surface-elevated)] p-5">
+                <div className="mt-6 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
                   <div className="text-sm font-medium text-[var(--text-primary)]">What happens next</div>
                   <ul className="mt-4 space-y-3 text-sm leading-7 text-[var(--text-secondary)]">
                     <li>1. Your order is sent to the merchant through Nostr.</li>

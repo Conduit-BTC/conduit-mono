@@ -177,7 +177,7 @@ function MerchantIdentity({
 
   return (
     <div className={`flex min-w-0 items-center gap-3 ${className}`}>
-        <Avatar className="h-12 w-12 shrink-0 border border-white/10">
+        <Avatar className="h-12 w-12 shrink-0 border border-[var(--border)]">
           <AvatarImage src={profile?.picture} alt={merchantName} />
           <AvatarFallback>
             <MerchantAvatarFallback />
@@ -270,11 +270,11 @@ function RelatedProductRow({
   const merchantLabel = getMerchantDisplayName(profile, product.pubkey)
 
   return (
-    <div className="grid min-h-[9.5rem] grid-cols-[80px_minmax(0,1fr)] items-start gap-3 rounded-xl border border-white/10 bg-[var(--surface)] p-3">
+    <div className="grid min-h-[9.5rem] grid-cols-[80px_minmax(0,1fr)] items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
       <Link
         to="/products/$productId"
         params={{ productId: product.id }}
-        className="shrink-0 overflow-hidden rounded-lg border border-white/10 bg-[var(--background)]"
+        className="shrink-0 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--background)]"
       >
         <img
           src={imageUrl}
@@ -342,7 +342,7 @@ function CartLineItem({
 
   return (
     <div className="grid gap-4 py-5 md:grid-cols-[132px_minmax(0,1fr)_auto] md:items-start">
-      <div className="overflow-hidden rounded-2xl border border-white/10 bg-[var(--background)]">
+      <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--background)]">
         <img
           src={item.image ?? "/images/placeholders/product.png"}
           alt={item.title}
@@ -369,28 +369,28 @@ function CartLineItem({
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <button
             type="button"
-            className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-white/12 bg-[var(--surface-elevated)] text-[var(--text-secondary)] transition-colors hover:border-white/24 hover:text-[var(--text-primary)]"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-secondary)] transition-colors hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]"
             aria-label={`Remove ${item.title} from cart`}
             onClick={onRemove}
           >
             <TrashIcon className="h-4 w-4" />
           </button>
 
-          <div className="inline-flex h-10 items-center overflow-hidden rounded-md border border-white/12 bg-[var(--surface-elevated)]">
+          <div className="inline-flex h-10 items-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-elevated)]">
             <button
               type="button"
-              className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-white/5"
+              className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)]"
               aria-label={`Decrease quantity for ${item.title}`}
               onClick={onDecrement}
             >
               -
             </button>
-            <div className="flex h-full min-w-10 items-center justify-center border-x border-white/10 px-3 text-sm font-medium text-[var(--text-primary)]">
+            <div className="flex h-full min-w-10 items-center justify-center border-x border-[var(--border)] px-3 text-sm font-medium text-[var(--text-primary)]">
               {item.quantity}
             </div>
             <button
               type="button"
-              className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-white/5"
+              className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)]"
               aria-label={`Increase quantity for ${item.title}`}
               onClick={onIncrement}
             >
@@ -545,7 +545,7 @@ function CartPage() {
 
         <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
           <div className="max-w-xl space-y-4">
-            <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-[var(--surface-elevated)] text-secondary-400">
+            <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-400">
               <CartIcon className="h-6 w-6" />
             </div>
             <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">Your cart is empty</h1>
@@ -641,7 +641,7 @@ function CartPage() {
                   Array.from({ length: 4 }).map((_, index) => (
                     <div
                       key={index}
-                      className="h-[9.5rem] animate-pulse rounded-xl border border-white/10 bg-[var(--surface-elevated)]"
+                      className="h-[9.5rem] animate-pulse rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]"
                     />
                   ))}
 
@@ -671,7 +671,7 @@ function CartPage() {
                 })}
 
                 {relatedProductsQuery.data && relatedProductsQuery.data.length === 0 && (
-                  <div className="rounded-xl border border-white/10 bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+                  <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
                     No additional products to suggest yet.
                   </div>
                 )}
@@ -843,7 +843,7 @@ function CartPage() {
                 Array.from({ length: 4 }).map((_, index) => (
                   <div
                     key={index}
-                    className="h-[9.5rem] animate-pulse rounded-xl border border-white/10 bg-[var(--surface-elevated)]"
+                    className="h-[9.5rem] animate-pulse rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]"
                   />
                 ))}
 
@@ -873,7 +873,7 @@ function CartPage() {
               })}
 
               {relatedProductsQuery.data && relatedProductsQuery.data.length === 0 && (
-                <div className="rounded-xl border border-white/10 bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+                <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
                   No additional products to suggest yet.
                 </div>
               )}
@@ -883,7 +883,7 @@ function CartPage() {
       </div>
 
       <Dialog open={confirmClearTarget !== null} onOpenChange={(open) => !open && setConfirmClearTarget(null)}>
-        <DialogContent className="border-white/20 bg-[#0d0424] text-[var(--text-primary)] shadow-[0_30px_80px_rgba(0,0,0,0.6)] ring-1 ring-white/10">
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>
               {confirmClearTarget === "all" ? "Clear all carts?" : "Clear this cart?"}

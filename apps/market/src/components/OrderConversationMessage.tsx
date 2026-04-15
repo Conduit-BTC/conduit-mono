@@ -182,7 +182,7 @@ export function OrderConversationMessage({
               return (
                 <div
                   key={`${message.id}-${item.productId}`}
-                  className="rounded-xl border border-white/8 bg-white/[0.03] p-2.5"
+                  className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-2.5"
                 >
                   <div className="text-sm text-[var(--text-primary)]">{product.title}</div>
                   <div className="mt-1 text-xs text-[var(--text-secondary)]">

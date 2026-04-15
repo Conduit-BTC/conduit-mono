@@ -46,7 +46,7 @@ const navItems: NavItem[] = [
 
 function MerchantAvatarFallback({ iconClassName = "h-4 w-4" }: { iconClassName?: string }) {
   return (
-    <div className="flex h-full w-full items-center justify-center rounded-full bg-[radial-gradient(circle_at_top,rgba(255,86,164,0.24),transparent_55%),linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02))] text-[var(--text-primary)]">
+    <div className="flex h-full w-full items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]">
       <img
         src="/images/logo/logo-icon.svg"
         alt=""
@@ -75,7 +75,7 @@ function Logo({
   return (
     <Link to="/" className={cn("flex items-center gap-3 select-none", className)}>
       <img src={src} alt="Conduit" className="h-8 w-auto" />
-      <span className="hidden border-l border-white/10 pl-3 font-display text-2xl font-medium tracking-tight text-[var(--text-primary)] md:block">
+      <span className="hidden border-l border-[var(--border)] pl-3 font-display text-2xl font-medium tracking-tight text-[var(--text-primary)] md:block">
         merchant
       </span>
     </Link>
@@ -99,12 +99,12 @@ function MerchantNavLinks({
             to={item.to}
             onClick={onNavigate}
             className={cn(
-              "group flex items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:border-white/8 hover:bg-white/[0.04] hover:text-[var(--text-primary)]",
+              "group flex items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface)] hover:text-[var(--text-primary)]",
               compact ? "px-3 py-2" : "",
             )}
             activeProps={{
               className:
-                "border-white/10 bg-white/[0.07] text-[var(--text-primary)] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]",
+                "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]",
             }}
           >
             <Icon className="h-4 w-4 shrink-0" />
@@ -130,9 +130,9 @@ function UserMenu() {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="inline-flex items-center gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-2.5 py-2 text-left transition-colors hover:bg-white/[0.06]"
+          className="inline-flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-2.5 py-2 text-left transition-colors hover:bg-[var(--surface-elevated)]"
         >
-          <Avatar className="h-8 w-8 border border-white/10">
+          <Avatar className="h-8 w-8 border border-[var(--border)]">
             <AvatarImage src={profile?.picture} alt={displayName} />
             <AvatarFallback className="bg-transparent p-0">
               <MerchantAvatarFallback iconClassName="h-4 w-4" />
@@ -169,7 +169,7 @@ function MobileNav() {
           <Menu className="h-5 w-5" />
         </Button>
       </SheetTrigger>
-      <SheetContent side="left" className="w-[320px] border-r border-white/10 bg-[#0b0717]">
+      <SheetContent side="left" className="w-[320px] border-r border-[var(--border)] bg-[var(--surface)]">
         <SheetHeader>
           <SheetTitle>
             <Logo variant="full" className="justify-start" />
@@ -179,7 +179,7 @@ function MobileNav() {
         <div className="mt-6 space-y-6">
           <MerchantNavLinks compact />
 
-          <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
             {config.lightningNetwork !== "mainnet" && (
               <Badge
                 variant="secondary"
@@ -205,8 +205,8 @@ export function MerchantSidebar() {
   const { pubkey, status } = useAuth()
 
   return (
-    <aside className="hidden h-screen flex-col border-r border-white/10 bg-[#0b0717] lg:flex">
-      <div className="border-b border-white/8 px-5 py-5">
+    <aside className="hidden h-screen flex-col border-r border-[var(--border)] bg-[var(--surface)] lg:flex">
+      <div className="border-b border-[var(--border)] px-5 py-5">
         <Logo />
         {config.lightningNetwork !== "mainnet" && (
           <Badge
@@ -226,7 +226,7 @@ export function MerchantSidebar() {
       <div className="flex min-h-0 flex-1 flex-col px-4 py-5">
         <MerchantNavLinks />
 
-        <div className="mt-auto rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+        <div className="mt-auto rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
           <div className="mb-2 text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
             Merchant
           </div>
@@ -242,14 +242,14 @@ export function MerchantHeader() {
   const signerConnected = status === "connected" && !!pubkey
 
   return (
-    <header className="sticky top-0 z-30 border-b border-white/10 bg-[#0b0717]/90 backdrop-blur">
+    <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_84%,transparent)] backdrop-blur">
       <div className="flex h-20 items-center gap-3 px-4 sm:px-6">
         <MobileNav />
 
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
           <Input
-            className="h-12 rounded-2xl border-white/12 bg-white/[0.05] pl-11 pr-4 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+            className="h-12 rounded-2xl border-[var(--border)] bg-[var(--surface-elevated)] pl-11 pr-4 text-sm shadow-[var(--shadow-glass-inset)]"
             placeholder="Search products, orders, or buyers"
             aria-label="Search merchant portal"
           />

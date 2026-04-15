@@ -446,7 +446,7 @@ function ProductsPage() {
               <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-12 items-center justify-center bg-gradient-to-b from-transparent via-[var(--background)]/90 to-[var(--background)] transition-opacity duration-200">
                 <button
                   type="button"
-                  className="pointer-events-auto rounded-full bg-white px-3 py-1 text-xs font-medium text-[var(--background)] shadow-[0_6px_18px_rgba(255,255,255,0.18)] transition-[opacity,transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-[0_10px_24px_rgba(255,255,255,0.22)]"
+                  className="pointer-events-auto rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-1 text-xs font-medium text-[var(--text-primary)] shadow-[var(--shadow-sm)] transition-[opacity,transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-[var(--shadow-md)]"
                   onClick={() => setShowAllTags(true)}
                 >
                   Expand categories
@@ -714,7 +714,7 @@ function ProductsPage() {
           }
         }}
       >
-        <DialogContent className="border-white/20 bg-[#0d0424] text-[var(--text-primary)] shadow-[0_30px_80px_rgba(0,0,0,0.6)] ring-1 ring-white/10">
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>Update store filter?</DialogTitle>
             <DialogDescription className="text-[var(--text-secondary)]">

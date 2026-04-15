@@ -45,10 +45,22 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun test
 
+  color-policy:
+    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+      - run: bun install --frozen-lockfile
+      - name: Enforce no hardcoded colors outside theme.css
+        run: bun test tests/no-hardcoded-colors.test.ts
+
   build-signet:
     if: github.event_name == 'pull_request' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test]
+    needs: [lint, typecheck, test, color-policy]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -61,7 +73,7 @@ jobs:
   build-mainnet:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test]
+    needs: [lint, typecheck, test, color-policy]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2

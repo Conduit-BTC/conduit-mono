@@ -35,7 +35,7 @@ export function CopyButton({
       className={`inline-flex h-6 w-6 items-center justify-center rounded-full border transition-colors ${
         copied
           ? "border-green-500/40 bg-green-500/12 text-green-400"
-          : "border-white/14 bg-white/[0.03] text-[var(--text-muted)] hover:border-white/24 hover:text-[var(--text-primary)]"
+          : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]"
       }`}
       onClick={handleCopy}
     >

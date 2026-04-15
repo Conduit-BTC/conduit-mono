@@ -49,7 +49,7 @@ function Field({
   mono?: boolean
 }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+    <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
       <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">{label}</div>
       <RichProfileText
         text={value}
@@ -157,9 +157,9 @@ function ProfilePage() {
           <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-6">
             <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
               <div className="flex min-w-0 items-start gap-4">
-                <Avatar className="h-20 w-20 shrink-0 border border-white/10">
+                <Avatar className="h-20 w-20 shrink-0 border border-[var(--border)]">
                   <AvatarImage src={profileQuery.data?.picture} alt={displayName} />
-                  <AvatarFallback className="bg-white/[0.04] text-xl text-[var(--text-primary)]">
+                  <AvatarFallback className="bg-[var(--surface-elevated)] text-xl text-[var(--text-primary)]">
                     {fallbackLetter}
                   </AvatarFallback>
                 </Avatar>
@@ -171,14 +171,14 @@ function ProfilePage() {
                   </h2>
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     {profileQuery.data?.nip05 ? (
-                      <Badge variant="outline" className="border-white/10 bg-white/[0.04] text-[var(--text-primary)]">
+                      <Badge variant="outline" className="border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]">
                         {profileQuery.data.nip05}
                       </Badge>
                     ) : null}
                     <button
                       type="button"
                       onClick={() => void copyPubkey()}
-                      className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
+                      className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]"
                     >
                       <span className="font-mono">{shortPubkey}</span>
                       {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
@@ -268,7 +268,7 @@ function ProfilePage() {
                     <Label htmlFor="profile-about">About</Label>
                     <textarea
                       id="profile-about"
-                      className="min-h-28 rounded-xl border border-white/10 bg-[var(--surface-elevated)] px-4 py-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
+                      className="min-h-28 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
                       value={form.about}
                       onChange={(event) => setForm((prev) => ({ ...prev, about: event.target.value }))}
                       placeholder="A short bio"
@@ -344,7 +344,7 @@ function ProfilePage() {
               <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5">
                 <div className="text-sm font-medium text-[var(--text-primary)]">Profile details</div>
                 <div className="mt-4 space-y-3">
-                  <div className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                  <div className="flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                     <UserRound className="mt-0.5 h-4 w-4 text-secondary-300" />
                     <div>
                       <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Pubkey</div>
@@ -354,7 +354,7 @@ function ProfilePage() {
                     </div>
                   </div>
 
-                  <div className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                  <div className="flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                     <Zap className="mt-0.5 h-4 w-4 text-secondary-300" />
                     <div>
                       <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Lightning</div>
@@ -368,7 +368,7 @@ function ProfilePage() {
                     </div>
                   </div>
 
-                  <div className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                  <div className="flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                     <Globe className="mt-0.5 h-4 w-4 text-secondary-300" />
                     <div>
                       <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Website</div>
