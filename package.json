@@ -12,6 +12,9 @@
     "seed:products": "bun scripts/dev/seed_products.ts",
     "check:products": "bun scripts/dev/check_products.ts",
     "figma:variables": "bun scripts/figma/get_variable_defs.ts",
+    "format:check": "bun scripts/ci/prettier_changed.ts --check",
+    "format:fix": "bun scripts/ci/prettier_changed.ts --write",
+    "prepare": "husky",
     "relay:local:start:docker": "mkdir -p context/relay-db && docker rm -f conduit-relay-local >/dev/null 2>&1 || true && docker run -d --name conduit-relay-local -p 7777:8080 --mount src=$(pwd)/context/relay-db,target=/usr/src/app/db,type=bind scsibug/nostr-rs-relay:latest",
     "relay:local:logs:docker": "docker logs -f conduit-relay-local",
     "relay:local:stop:docker": "docker rm -f conduit-relay-local",
@@ -49,8 +52,20 @@
     "eslint": "^9.19.0",
     "eslint-plugin-react": "^7.37.4",
     "eslint-plugin-react-hooks": "^5.1.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.0.0",
+    "prettier": "^3.6.2",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.22.0"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx,cjs,mjs}": [
+      "prettier --write",
+      "eslint --fix --no-warn-ignored"
+    ],
+    "*.{json,md,css,html,yml,yaml}": [
+      "prettier --write"
+    ]
   },
   "engines": {
     "node": ">=20.0.0"

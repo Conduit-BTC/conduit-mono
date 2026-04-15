@@ -18,6 +18,7 @@ build/
 *.swp
 *.swo
 .DS_Store
+.husky/_
 
 # Logs
 *.log

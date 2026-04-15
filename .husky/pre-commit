@@ -1,0 +1,2 @@
+#!/usr/bin/env sh
+bunx --bun lint-staged --config package.json
