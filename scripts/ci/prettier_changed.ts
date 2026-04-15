@@ -25,7 +25,6 @@ const ignoredSegments = new Set([
   "dist",
   "build",
   "coverage",
-  "context",
 ])
 
 const ignoredFiles = new Set(["bun.lock"])
@@ -102,6 +101,10 @@ function resolveBase(head: string, base: string | null) {
 }
 
 function shouldFormat(file: string) {
+  if (file === "context" || file.startsWith("context/")) {
+    return false
+  }
+
   if (!file || ignoredFiles.has(file)) {
     return false
   }
