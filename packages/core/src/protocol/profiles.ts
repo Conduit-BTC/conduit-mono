@@ -44,7 +44,10 @@ export async function fetchProfile(
   pubkey: string,
   opts?: { skipCache?: boolean }
 ): Promise<Profile> {
-  const result = await getProfiles({ pubkeys: [pubkey], skipCache: opts?.skipCache })
+  const result = await getProfiles({
+    pubkeys: [pubkey],
+    skipCache: opts?.skipCache,
+  })
   return result.data[pubkey] ?? { pubkey }
 }
 

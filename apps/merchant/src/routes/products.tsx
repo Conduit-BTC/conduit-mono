@@ -2,8 +2,25 @@ import { useMemo, useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
-import { EVENT_KINDS, getMerchantStorefront, requireNdkConnected, type CommerceResult, type ProductSchema, useAuth } from "@conduit/core"
-import { Badge, Button, Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@conduit/ui"
+import {
+  EVENT_KINDS,
+  getMerchantStorefront,
+  requireNdkConnected,
+  type CommerceResult,
+  type ProductSchema,
+  useAuth,
+} from "@conduit/core"
+import {
+  Badge,
+  Button,
+  Input,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 
 export const Route = createFileRoute("/products")({
@@ -69,8 +86,14 @@ function parseTags(tagsCsv: string): string[] {
     .filter(Boolean)
 }
 
-async function fetchMerchantProducts(merchantPubkey: string): Promise<CommerceResult<MerchantProduct[]>> {
-  const result = await getMerchantStorefront({ merchantPubkey, limit: 200, sort: "updated_at_desc" })
+async function fetchMerchantProducts(
+  merchantPubkey: string
+): Promise<CommerceResult<MerchantProduct[]>> {
+  const result = await getMerchantStorefront({
+    merchantPubkey,
+    limit: 200,
+    sort: "updated_at_desc",
+  })
   return {
     data: result.data.map((record) => ({
       eventId: record.eventId,
@@ -99,7 +122,8 @@ async function publishProduct(
   if (!title) throw new Error("Title is required")
 
   const price = Number(form.price)
-  if (!Number.isFinite(price) || price < 0) throw new Error("Price must be a non-negative number")
+  if (!Number.isFinite(price) || price < 0)
+    throw new Error("Price must be a non-negative number")
 
   const currency = form.currency.trim().toUpperCase() || "USD"
   const summary = form.summary.trim()
@@ -108,7 +132,8 @@ async function publishProduct(
     throw new Error("Image URL must start with https://")
   }
 
-  const dTag = existing?.dTag ?? `${slugify(title) || "product"}-${randomSuffix()}`
+  const dTag =
+    existing?.dTag ?? `${slugify(title) || "product"}-${randomSuffix()}`
   const now = Date.now()
   const tags = parseTags(form.tags)
 
@@ -147,11 +172,16 @@ async function publishProduct(
   await event.publish()
 }
 
-async function deleteProduct(merchantPubkey: string, product: MerchantProduct): Promise<void> {
+async function deleteProduct(
+  merchantPubkey: string,
+  product: MerchantProduct
+): Promise<void> {
   const ndk = await requireNdkConnected()
   if (!ndk.signer) throw new Error("Signer not connected")
   if (product.product.pubkey !== merchantPubkey) {
-    throw new Error("Product pubkey mismatch; refusing to publish deletion event")
+    throw new Error(
+      "Product pubkey mismatch; refusing to publish deletion event"
+    )
   }
 
   const deletion = new NDKEvent(ndk)
@@ -188,13 +218,18 @@ function ProductsPage() {
   const merchantProductsMeta = productsQuery.data?.meta ?? null
 
   const saveMutation = useMutation({
-    mutationFn: async (payload: { form: ProductFormState; existing?: MerchantProduct }) => {
+    mutationFn: async (payload: {
+      form: ProductFormState
+      existing?: MerchantProduct
+    }) => {
       await publishProduct(pubkey!, payload.form, payload.existing)
     },
     onSuccess: async () => {
       setEditing(null)
       setForm(EMPTY_FORM)
-      await queryClient.invalidateQueries({ queryKey: ["merchant-products", pubkey ?? "none"] })
+      await queryClient.invalidateQueries({
+        queryKey: ["merchant-products", pubkey ?? "none"],
+      })
     },
   })
 
@@ -203,7 +238,9 @@ function ProductsPage() {
       await deleteProduct(pubkey!, product)
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["merchant-products", pubkey ?? "none"] })
+      await queryClient.invalidateQueries({
+        queryKey: ["merchant-products", pubkey ?? "none"],
+      })
     },
   })
 
@@ -219,17 +256,23 @@ function ProductsPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">Products</div>
+          <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">
+            Products
+          </div>
           <h1 className="mt-3 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
             Manage your listings
           </h1>
           <p className="mt-2 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
-            Publish, update, and remove kind {EVENT_KINDS.PRODUCT} listings for this merchant signer.
+            Publish, update, and remove kind {EVENT_KINDS.PRODUCT} listings for
+            this merchant signer.
           </p>
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Badge variant="secondary" className="border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]">
+          <Badge
+            variant="secondary"
+            className="border-white/10 bg-white/[0.05] text-[var(--text-primary)]"
+          >
             {itemCountLabel}
           </Badge>
           {editing && (
@@ -248,14 +291,14 @@ function ProductsPage() {
       </div>
 
       {!pubkey && (
-        <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.04] p-5 text-sm text-[var(--text-secondary)]">
           Connect your signer to create and manage listings.
         </div>
       )}
 
       <div className="grid items-start gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
         <section className="xl:sticky xl:top-28">
-          <div className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
+          <div className="rounded-[1.6rem] border border-white/10 bg-white/[0.04] p-5 shadow-[var(--shadow-glass-inset)]">
             <div className="mb-4">
               <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
                 {editing ? "Edit listing" : "Create listing"}
@@ -277,7 +320,9 @@ function ProductsPage() {
                 <Input
                   id="product-title"
                   value={form.title}
-                  onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, title: e.target.value }))
+                  }
                   placeholder="Product title"
                   required
                 />
@@ -287,9 +332,11 @@ function ProductsPage() {
                 <Label htmlFor="product-summary">Summary</Label>
                 <textarea
                   id="product-summary"
-                  className="min-h-28 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-primary/20 transition focus:ring-2"
+                  className="min-h-28 rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-primary/20 transition focus:ring-2"
                   value={form.summary}
-                  onChange={(e) => setForm((prev) => ({ ...prev, summary: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, summary: e.target.value }))
+                  }
                   placeholder="Short description shown to buyers"
                 />
               </div>
@@ -303,7 +350,9 @@ function ProductsPage() {
                     min="0"
                     step="0.01"
                     value={form.price}
-                    onChange={(e) => setForm((prev) => ({ ...prev, price: e.target.value }))}
+                    onChange={(e) =>
+                      setForm((prev) => ({ ...prev, price: e.target.value }))
+                    }
                     required
                   />
                 </div>
@@ -312,7 +361,9 @@ function ProductsPage() {
                   <Label htmlFor="product-currency">Currency</Label>
                   <Select
                     value={form.currency}
-                    onValueChange={(value) => setForm((prev) => ({ ...prev, currency: value }))}
+                    onValueChange={(value) =>
+                      setForm((prev) => ({ ...prev, currency: value }))
+                    }
                   >
                     <SelectTrigger id="product-currency">
                       <SelectValue placeholder="Choose currency" />
@@ -331,7 +382,9 @@ function ProductsPage() {
                   id="product-image"
                   type="url"
                   value={form.imageUrl}
-                  onChange={(e) => setForm((prev) => ({ ...prev, imageUrl: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, imageUrl: e.target.value }))
+                  }
                   placeholder="https://..."
                 />
               </div>
@@ -341,20 +394,32 @@ function ProductsPage() {
                 <Input
                   id="product-tags"
                   value={form.tags}
-                  onChange={(e) => setForm((prev) => ({ ...prev, tags: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, tags: e.target.value }))
+                  }
                   placeholder="gear, hardware, demo"
                 />
               </div>
 
               {saveMutation.error && (
                 <div className="rounded-xl border border-error/30 bg-error/10 p-3 text-sm text-error">
-                  {saveMutation.error instanceof Error ? saveMutation.error.message : "Failed to publish product"}
+                  {saveMutation.error instanceof Error
+                    ? saveMutation.error.message
+                    : "Failed to publish product"}
                 </div>
               )}
 
               <div className="pt-2">
-                <Button type="submit" className="w-full" disabled={!pubkey || isSaving}>
-                  {isSaving ? "Saving…" : editing ? "Save changes" : "Publish product"}
+                <Button
+                  type="submit"
+                  className="w-full"
+                  disabled={!pubkey || isSaving}
+                >
+                  {isSaving
+                    ? "Saving…"
+                    : editing
+                      ? "Save changes"
+                      : "Publish product"}
                 </Button>
               </div>
             </form>
@@ -363,13 +428,13 @@ function ProductsPage() {
 
         <section className="space-y-4">
           {productsQuery.isLoading && (
-              <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
-                Loading products...
-              </div>
-            )}
+            <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-5 text-sm text-[var(--text-secondary)]">
+              Loading products…
+            </div>
+          )}
 
           {merchantProductsMeta && (
-            <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4 text-xs text-[var(--text-secondary)]">
+            <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4 text-xs text-[var(--text-secondary)]">
               Source: {merchantProductsMeta.source.replace("_", " ")}
               {merchantProductsMeta.stale ? " / stale view" : ""}
             </div>
@@ -378,30 +443,40 @@ function ProductsPage() {
           {productsQuery.error && (
             <div className="rounded-[1.4rem] border border-error/30 bg-error/10 p-4 text-sm text-error">
               Failed to load products:{" "}
-              {productsQuery.error instanceof Error ? productsQuery.error.message : "Unknown error"}
+              {productsQuery.error instanceof Error
+                ? productsQuery.error.message
+                : "Unknown error"}
             </div>
           )}
 
           {!productsQuery.isLoading && merchantProducts.length === 0 && (
-              <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
-                No listings yet. Publish your first product from the panel on the left.
-              </div>
-            )}
+            <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-5 text-sm text-[var(--text-secondary)]">
+              No listings yet. Publish your first product from the panel on the
+              left.
+            </div>
+          )}
 
           {merchantProducts.map((item) => (
             <article
               key={item.addressId}
-              className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]"
+              className="rounded-[1.5rem] border border-white/10 bg-white/[0.04] p-5 shadow-[var(--shadow-glass-inset)]"
             >
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-3">
-                    <h2 className="text-lg font-semibold text-[var(--text-primary)]">{item.product.title}</h2>
-                    <Badge variant="secondary" className="border-[var(--border)] bg-[var(--surface-elevated)]">
+                    <h2 className="text-lg font-semibold text-[var(--text-primary)]">
+                      {item.product.title}
+                    </h2>
+                    <Badge
+                      variant="secondary"
+                      className="border-white/10 bg-white/[0.05]"
+                    >
                       {item.product.currency}
                     </Badge>
                   </div>
-                  <div className="mt-2 break-all text-xs font-mono text-[var(--text-muted)]">{item.addressId}</div>
+                  <div className="mt-2 break-all text-xs font-mono text-[var(--text-muted)]">
+                    {item.addressId}
+                  </div>
                 </div>
 
                 <div className="text-left sm:text-right">
@@ -415,7 +490,7 @@ function ProductsPage() {
               </div>
 
               <div className="mt-4 grid gap-4 lg:grid-cols-[112px_minmax(0,1fr)]">
-                <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)]">
+                <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.05]">
                   {item.product.images[0]?.url ? (
                     <img
                       src={item.product.images[0].url}
@@ -432,7 +507,9 @@ function ProductsPage() {
 
                 <div>
                   {item.product.summary && (
-                    <p className="text-sm leading-7 text-[var(--text-secondary)]">{item.product.summary}</p>
+                    <p className="text-sm leading-7 text-[var(--text-secondary)]">
+                      {item.product.summary}
+                    </p>
                   )}
 
                   {item.product.tags.length > 0 && (
@@ -441,7 +518,7 @@ function ProductsPage() {
                         <Badge
                           key={`${item.addressId}-${tag}`}
                           variant="outline"
-                          className="border-[var(--border)] bg-[var(--surface)]"
+                          className="border-white/10 bg-white/[0.04]"
                         >
                           {tag}
                         </Badge>

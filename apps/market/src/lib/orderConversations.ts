@@ -6,6 +6,11 @@ import {
 
 export type BuyerConversation = BuyerConversationSummary
 
-export async function fetchBuyerConversations(buyerPubkey: string): Promise<CommerceResult<BuyerConversation[]>> {
-  return await getBuyerConversationList({ principalPubkey: buyerPubkey, limit: 200 })
+export async function fetchBuyerConversations(
+  buyerPubkey: string
+): Promise<CommerceResult<BuyerConversation[]>> {
+  return await getBuyerConversationList({
+    principalPubkey: buyerPubkey,
+    limit: 200,
+  })
 }

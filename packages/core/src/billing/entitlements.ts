@@ -18,6 +18,7 @@ const FULL_ACCESS: Entitlements = {
   prioritySupport: true,
 }
 
-export function getEntitlements(_pubkey: string): Entitlements {
+export function getEntitlements(pubkey: string): Entitlements {
+  void pubkey
   return FULL_ACCESS
 }

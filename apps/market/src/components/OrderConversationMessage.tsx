@@ -10,17 +10,22 @@ import {
 } from "@conduit/core"
 import { QRCodeSVG } from "qrcode.react"
 
-export function formatProductReference(productId: string): { title: string; detail: string } {
+export function formatProductReference(productId: string): {
+  title: string
+  detail: string
+} {
   const normalized = productId.trim()
   const segments = normalized.split(":").filter(Boolean)
-  const rawLabel = segments.length > 0 ? segments[segments.length - 1] : normalized
+  const rawLabel =
+    segments.length > 0 ? segments[segments.length - 1] : normalized
   const displaySource = rawLabel || normalized
 
-  const title = displaySource
-    .replace(/[-_]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\b\w/g, (char) => char.toUpperCase()) || "Product"
+  const title =
+    displaySource
+      .replace(/[-_]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/\b\w/g, (char) => char.toUpperCase()) || "Product"
 
   return {
     title,
@@ -56,17 +61,22 @@ function InvoiceCard({
   const invoiceNetwork = getLightningInvoiceNetwork(invoice)
   const invoiceMismatch = getLightningNetworkMismatchMessage(invoice)
   const isCompatible = isInvoiceCompatibleWithCurrentNetwork(invoice)
-  const walletUri = invoiceNetwork !== "unknown" && isCompatible ? `lightning:${bolt11}` : null
-  const displayAmount = decodedAmount.sats ?? decodedAmount.msats ?? amount ?? null
+  const walletUri =
+    invoiceNetwork !== "unknown" && isCompatible ? `lightning:${bolt11}` : null
+  const displayAmount =
+    decodedAmount.sats ?? decodedAmount.msats ?? amount ?? null
   const displayCurrency = decodedAmount.currency ?? currency ?? null
 
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <div className="text-sm font-medium text-[var(--text-primary)]">Lightning invoice</div>
+        <div className="text-sm font-medium text-[var(--text-primary)]">
+          Lightning invoice
+        </div>
         {displayAmount != null && (
           <div className="text-sm font-medium text-[var(--text-primary)]">
-            {displayAmount}{displayCurrency ? ` ${displayCurrency}` : " sats"}
+            {displayAmount}
+            {displayCurrency ? ` ${displayCurrency}` : " sats"}
           </div>
         )}
       </div>
@@ -77,7 +87,9 @@ function InvoiceCard({
         {invoiceMismatch ? (
           <span className="text-xs text-error">{invoiceMismatch}</span>
         ) : (
-          <span className="text-xs text-[var(--text-secondary)]">Matches current checkout environment.</span>
+          <span className="text-xs text-[var(--text-secondary)]">
+            Matches current checkout environment.
+          </span>
         )}
       </div>
 
@@ -90,7 +102,12 @@ function InvoiceCard({
             {invoice}
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" className="flex-1" onClick={copyInvoice}>
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-1"
+              onClick={copyInvoice}
+            >
               {copied ? "Copied" : "Copy"}
             </Button>
             {walletUri && (
@@ -107,7 +124,9 @@ function InvoiceCard({
         </div>
       </div>
 
-      {note && <div className="text-xs text-[var(--text-secondary)]">{note}</div>}
+      {note && (
+        <div className="text-xs text-[var(--text-secondary)]">{note}</div>
+      )}
     </div>
   )
 }
@@ -119,7 +138,9 @@ export function getConversationPreview(message: ParsedOrderMessage): string {
     case "payment_request":
       return message.payload.note ?? "Invoice sent"
     case "status_update":
-      return message.payload.note ?? `Status updated to ${message.payload.status}`
+      return (
+        message.payload.note ?? `Status updated to ${message.payload.status}`
+      )
     case "shipping_update":
       return message.payload.note ?? "Shipping updated"
     case "receipt":
@@ -184,7 +205,9 @@ export function OrderConversationMessage({
                   key={`${message.id}-${item.productId}`}
                   className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-2.5"
                 >
-                  <div className="text-sm text-[var(--text-primary)]">{product.title}</div>
+                  <div className="text-sm text-[var(--text-primary)]">
+                    {product.title}
+                  </div>
                   <div className="mt-1 text-xs text-[var(--text-secondary)]">
                     Qty {item.quantity} · {item.priceAtPurchase} {item.currency}
                   </div>
@@ -196,12 +219,16 @@ export function OrderConversationMessage({
             })}
             {message.payload.shippingAddress && (
               <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
-                <div className="font-medium text-[var(--text-primary)]">Ship to:</div>
+                <div className="font-medium text-[var(--text-primary)]">
+                  Ship to:
+                </div>
                 <div>{message.payload.shippingAddress.name}</div>
                 <div>{message.payload.shippingAddress.street}</div>
                 <div>
                   {message.payload.shippingAddress.city}
-                  {message.payload.shippingAddress.state ? `, ${message.payload.shippingAddress.state}` : ""}{" "}
+                  {message.payload.shippingAddress.state
+                    ? `, ${message.payload.shippingAddress.state}`
+                    : ""}{" "}
                   {message.payload.shippingAddress.postalCode}
                 </div>
                 <div>{message.payload.shippingAddress.country}</div>
@@ -226,15 +253,23 @@ export function OrderConversationMessage({
 
         {message.type === "status_update" && (
           <div className="space-y-1">
-            <div className="text-[var(--text-primary)]">Status: {message.payload.status}</div>
-            {message.payload.note && <div className="text-xs text-[var(--text-secondary)]">{message.payload.note}</div>}
+            <div className="text-[var(--text-primary)]">
+              Status: {message.payload.status}
+            </div>
+            {message.payload.note && (
+              <div className="text-xs text-[var(--text-secondary)]">
+                {message.payload.note}
+              </div>
+            )}
           </div>
         )}
 
         {message.type === "shipping_update" && (
           <div className="space-y-1">
             {message.payload.carrier && (
-              <div className="text-[var(--text-primary)]">Carrier: {message.payload.carrier}</div>
+              <div className="text-[var(--text-primary)]">
+                Carrier: {message.payload.carrier}
+              </div>
             )}
             {message.payload.trackingNumber && (
               <div className="font-mono text-xs text-[var(--text-secondary)]">
@@ -246,7 +281,8 @@ export function OrderConversationMessage({
               if (!raw) return null
               try {
                 const url = new URL(raw)
-                if (url.protocol !== "http:" && url.protocol !== "https:") return null
+                if (url.protocol !== "http:" && url.protocol !== "https:")
+                  return null
                 return (
                   <a
                     className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
@@ -261,16 +297,24 @@ export function OrderConversationMessage({
                 return null
               }
             })()}
-            {message.payload.note && <div className="text-xs text-[var(--text-secondary)]">{message.payload.note}</div>}
+            {message.payload.note && (
+              <div className="text-xs text-[var(--text-secondary)]">
+                {message.payload.note}
+              </div>
+            )}
           </div>
         )}
 
         {message.type === "receipt" && message.payload.note && (
-          <div className="text-[var(--text-secondary)]">{message.payload.note}</div>
+          <div className="text-[var(--text-secondary)]">
+            {message.payload.note}
+          </div>
         )}
 
         {message.type === "message" && (
-          <div className="text-[var(--text-primary)]">{message.payload.note}</div>
+          <div className="text-[var(--text-primary)]">
+            {message.payload.note}
+          </div>
         )}
 
         {message.type === "payment_proof" && (

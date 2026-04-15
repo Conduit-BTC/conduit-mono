@@ -12,8 +12,14 @@ import { useQuery } from "@tanstack/react-query"
 import { useEffect, useMemo, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
-import { MerchantAvatarFallback, getMerchantDisplayName } from "../../components/MerchantIdentity"
-import { ProductGridCard, ProductGridCardSkeleton } from "../../components/ProductGridCard"
+import {
+  MerchantAvatarFallback,
+  getMerchantDisplayName,
+} from "../../components/MerchantIdentity"
+import {
+  ProductGridCard,
+  ProductGridCardSkeleton,
+} from "../../components/ProductGridCard"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
 import { getProductPriceDisplay } from "../../lib/pricing"
@@ -22,8 +28,9 @@ export const Route = createFileRoute("/products/$productId")({
   component: ProductPage,
 })
 
-
-async function fetchProduct(productId: string): Promise<CommerceResult<Product | null>> {
+async function fetchProduct(
+  productId: string
+): Promise<CommerceResult<Product | null>> {
   const result = await getProductDetail({ productId })
   return {
     data: result.data?.product ?? null,
@@ -32,7 +39,10 @@ async function fetchProduct(productId: string): Promise<CommerceResult<Product |
 }
 
 async function fetchRelatedProducts(product: Product): Promise<Product[]> {
-  const result = await getMerchantStorefront({ merchantPubkey: product.pubkey, limit: 12 })
+  const result = await getMerchantStorefront({
+    merchantPubkey: product.pubkey,
+    limit: 12,
+  })
   const parsed = result.data.map((record) => record.product)
 
   return parsed
@@ -68,9 +78,12 @@ function ProductPage() {
     : [{ url: "/images/placeholders/landscape.jpg", alt: product?.title }]
   const hasMultipleImages = images.length > 1
   const selectedImage = images[selectedImageIndex] ?? images[0]
-  const merchantName =
-    product ? getMerchantDisplayName(merchantProfile.data, product.pubkey) : ""
-  const cartItem = product ? cart.items.find((item) => item.productId === product.id) : null
+  const merchantName = product
+    ? getMerchantDisplayName(merchantProfile.data, product.pubkey)
+    : ""
+  const cartItem = product
+    ? cart.items.find((item) => item.productId === product.id)
+    : null
   const cartQuantity = cartItem?.quantity ?? 0
   const priceDisplay = product
     ? getProductPriceDisplay(product, btcUsdRateQuery.data?.rate ?? null)
@@ -91,7 +104,10 @@ function ProductPage() {
     <div className="space-y-8">
       <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[var(--text-secondary)]">
         <div className="flex flex-wrap items-center gap-2">
-          <Link to="/products" className="transition-colors hover:text-[var(--text-primary)]">
+          <Link
+            to="/products"
+            className="transition-colors hover:text-[var(--text-primary)]"
+          >
             Shop
           </Link>
           <span>/</span>
@@ -107,12 +123,16 @@ function ProductPage() {
               <span>/</span>
             </>
           )}
-          <span className="text-[var(--text-primary)]">{product?.title ?? "Product"}</span>
+          <span className="text-[var(--text-primary)]">
+            {product?.title ?? "Product"}
+          </span>
         </div>
       </div>
 
       {productQuery.isLoading && (
-        <div className={`grid gap-6 ${hasMultipleImages ? "lg:grid-cols-[88px_minmax(0,1fr)_minmax(320px,420px)]" : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]"}`}>
+        <div
+          className={`grid gap-6 ${hasMultipleImages ? "lg:grid-cols-[88px_minmax(0,1fr)_minmax(320px,420px)]" : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]"}`}
+        >
           {hasMultipleImages && (
             <div className="hidden gap-3 lg:grid">
               {Array.from({ length: 4 }).map((_, index) => (
@@ -136,20 +156,23 @@ function ProductPage() {
       {productQuery.error && (
         <div className="rounded-lg border border-error/30 bg-error/10 p-4 text-sm text-error">
           Failed to load product:{" "}
-          {productQuery.error instanceof Error ? productQuery.error.message : "Unknown error"}
+          {productQuery.error instanceof Error
+            ? productQuery.error.message
+            : "Unknown error"}
         </div>
       )}
 
       {productQuery.data === null && (
         <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 text-center sm:p-10">
-          <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-400">
+          <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-[var(--surface-elevated)] text-secondary-400">
             <SearchX className="h-6 w-6" />
           </div>
           <h2 className="mt-5 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
             Product not found
           </h2>
           <p className="mx-auto mt-3 max-w-xl text-sm leading-7 text-[var(--text-secondary)]">
-            This listing may have been removed, changed, or is no longer available from the current relay view.
+            This listing may have been removed, changed, or is no longer
+            available from the current relay view.
           </p>
           <div className="mt-6 flex justify-center">
             <Button asChild className="h-11 px-5 text-sm">
@@ -161,7 +184,9 @@ function ProductPage() {
 
       {product && (
         <>
-          <div className={`grid gap-5 lg:gap-6 ${hasMultipleImages ? "lg:grid-cols-[88px_minmax(0,1fr)_minmax(320px,420px)]" : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]"}`}>
+          <div
+            className={`grid gap-5 lg:gap-6 ${hasMultipleImages ? "lg:grid-cols-[88px_minmax(0,1fr)_minmax(320px,420px)]" : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]"}`}
+          >
             {hasMultipleImages && (
               <div className="hidden gap-3 lg:grid">
                 {images.slice(0, 4).map((image, index) => (
@@ -172,7 +197,7 @@ function ProductPage() {
                     className={`overflow-hidden rounded-xl border bg-[var(--surface)] transition-colors ${
                       selectedImageIndex === index
                         ? "border-secondary-400 shadow-[var(--shadow-glass-inset)]"
-                        : "border-[var(--border)] hover:border-[var(--text-secondary)]"
+                        : "border-[var(--border)] hover:border-white/30"
                     }`}
                   >
                     <div className="aspect-square">
@@ -190,11 +215,14 @@ function ProductPage() {
             <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
               <div className="flex min-h-[22rem] items-center justify-center bg-[var(--background)] p-4 sm:p-6 lg:min-h-[32rem]">
                 <img
-                  src={selectedImage?.url ?? "/images/placeholders/landscape.jpg"}
+                  src={
+                    selectedImage?.url ?? "/images/placeholders/landscape.jpg"
+                  }
                   alt={selectedImage?.alt ?? product.title}
                   className="max-h-[60vh] w-auto max-w-full object-contain lg:max-h-[34rem]"
                   onError={(e) => {
-                    ;(e.currentTarget as HTMLImageElement).src = "/images/placeholders/landscape.jpg"
+                    ;(e.currentTarget as HTMLImageElement).src =
+                      "/images/placeholders/landscape.jpg"
                   }}
                 />
               </div>
@@ -202,13 +230,16 @@ function ProductPage() {
 
             <aside className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
               <div className="flex flex-col gap-4">
-                <div className="w-full min-w-0 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
+                <div className="w-full min-w-0 rounded-xl border border-white/10 bg-[var(--surface-elevated)] px-4 py-3">
                   <div className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
                     Shop at
                   </div>
                   <div className="mt-3 flex items-start gap-3">
-                    <Avatar className="h-11 w-11 shrink-0 border border-[var(--border)]">
-                      <AvatarImage src={merchantProfile.data?.picture} alt={merchantName} />
+                    <Avatar className="h-11 w-11 shrink-0 border border-white/10">
+                      <AvatarImage
+                        src={merchantProfile.data?.picture}
+                        alt={merchantName}
+                      />
                       <AvatarFallback>
                         <MerchantAvatarFallback />
                       </AvatarFallback>
@@ -231,7 +262,10 @@ function ProductPage() {
                         >
                           {formatPubkey(product.pubkey, 10)}
                         </Link>
-                        <CopyButton value={product.pubkey} label="Copy pubkey" />
+                        <CopyButton
+                          value={product.pubkey}
+                          label="Copy pubkey"
+                        />
                       </div>
                     </div>
                   </div>
@@ -250,7 +284,7 @@ function ProductPage() {
                   )}
                 </div>
 
-                <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+                <div className="rounded-xl border border-white/10 bg-[var(--surface-elevated)] p-4">
                   <div className="text-2xl font-bold text-secondary-400">
                     {priceDisplay?.primary}
                   </div>
@@ -265,21 +299,23 @@ function ProductPage() {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-3">
-                  <div className="inline-flex h-10 items-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-elevated)]">
+                  <div className="inline-flex h-10 items-center overflow-hidden rounded-md border border-white/20 bg-[var(--surface-elevated)]">
                     <button
                       type="button"
-                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)]"
+                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-white/5"
                       aria-label="Decrease quantity"
-                      onClick={() => setQuantity((current) => Math.max(1, current - 1))}
+                      onClick={() =>
+                        setQuantity((current) => Math.max(1, current - 1))
+                      }
                     >
                       -
                     </button>
-                    <div className="flex h-full min-w-10 items-center justify-center border-x border-[var(--border)] px-3 text-sm font-medium text-[var(--text-primary)]">
+                    <div className="flex h-full min-w-10 items-center justify-center border-x border-white/10 px-3 text-sm font-medium text-[var(--text-primary)]">
                       {quantity}
                     </div>
                     <button
                       type="button"
-                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)]"
+                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-white/5"
                       aria-label="Increase quantity"
                       onClick={() => setQuantity((current) => current + 1)}
                     >
@@ -304,7 +340,9 @@ function ProductPage() {
                       )
                     }
                   >
-                    {cartQuantity > 0 ? `Add more (${cartQuantity} in cart)` : `Add ${quantity} to cart`}
+                    {cartQuantity > 0
+                      ? `Add more (${cartQuantity} in cart)`
+                      : `Add ${quantity} to cart`}
                   </Button>
                 </div>
 
@@ -315,21 +353,31 @@ function ProductPage() {
                   </Link>
                 </Button>
 
-                <div className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm">
+                <div className="grid gap-3 rounded-xl border border-white/10 bg-[var(--surface-elevated)] p-4 text-sm">
                   {typeof product.stock === "number" && (
                     <div className="flex items-start justify-between gap-3">
-                      <span className="text-[var(--text-secondary)]">Stock</span>
-                      <span className="text-[var(--text-primary)]">{product.stock} available</span>
+                      <span className="text-[var(--text-secondary)]">
+                        Stock
+                      </span>
+                      <span className="text-[var(--text-primary)]">
+                        {product.stock} available
+                      </span>
                     </div>
                   )}
                   {product.location && (
                     <div className="flex items-start justify-between gap-3">
-                      <span className="text-[var(--text-secondary)]">Location</span>
-                      <span className="text-right text-[var(--text-primary)]">{product.location}</span>
+                      <span className="text-[var(--text-secondary)]">
+                        Location
+                      </span>
+                      <span className="text-right text-[var(--text-primary)]">
+                        {product.location}
+                      </span>
                     </div>
                   )}
                   <div className="flex items-start justify-between gap-3">
-                    <span className="text-[var(--text-secondary)]">Updated</span>
+                    <span className="text-[var(--text-secondary)]">
+                      Updated
+                    </span>
                     <span className="text-right text-[var(--text-primary)]">
                       {new Intl.DateTimeFormat("en-US", {
                         month: "short",
@@ -346,14 +394,18 @@ function ProductPage() {
           <section className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
             <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-xl font-semibold text-[var(--text-primary)]">Details</h2>
+                <h2 className="text-xl font-semibold text-[var(--text-primary)]">
+                  Details
+                </h2>
                 {product.tags.length > 0 && (
                   <button
                     type="button"
                     className="text-xs font-medium text-secondary-400 transition-colors hover:text-secondary-300"
                     onClick={() => setShowAllTags((current) => !current)}
                   >
-                    {showAllTags ? "Show fewer tags" : `Show all tags (${product.tags.length})`}
+                    {showAllTags
+                      ? "Show fewer tags"
+                      : `Show all tags (${product.tags.length})`}
                   </button>
                 )}
               </div>
@@ -371,7 +423,11 @@ function ProductPage() {
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {visibleTags.map((tag) => (
-                        <Badge key={tag} variant="outline" className="capitalize">
+                        <Badge
+                          key={tag}
+                          variant="outline"
+                          className="capitalize"
+                        >
                           {tag}
                         </Badge>
                       ))}
@@ -382,10 +438,18 @@ function ProductPage() {
             </div>
 
             <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6">
-              <h2 className="text-xl font-semibold text-[var(--text-primary)]">Buying with Conduit</h2>
+              <h2 className="text-xl font-semibold text-[var(--text-primary)]">
+                Buying with Conduit
+              </h2>
               <div className="mt-4 space-y-4 text-sm text-[var(--text-secondary)]">
-                <p>Add products to your cart, continue to checkout, and send your order through Nostr.</p>
-                <p>Payment requests and order updates appear in your order conversation after checkout.</p>
+                <p>
+                  Add products to your cart, continue to checkout, and send your
+                  order through Nostr.
+                </p>
+                <p>
+                  Payment requests and order updates appear in your order
+                  conversation after checkout.
+                </p>
               </div>
             </div>
           </section>
@@ -393,9 +457,12 @@ function ProductPage() {
           <section className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h2 className="text-2xl font-semibold text-[var(--text-primary)]">More from this store</h2>
+                <h2 className="text-2xl font-semibold text-[var(--text-primary)]">
+                  More from this store
+                </h2>
                 <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                  Keep browsing merchant listings without leaving the product flow.
+                  Keep browsing merchant listings without leaving the product
+                  flow.
                 </p>
               </div>
               <Button asChild variant="outline" className="h-11 px-4 text-sm">
@@ -416,66 +483,73 @@ function ProductPage() {
               </ul>
             )}
 
-            {relatedProductsQuery.data && relatedProductsQuery.data.length === 0 && (
-              <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 text-sm text-[var(--text-secondary)]">
-                This merchant has not published additional products yet.
-              </div>
-            )}
+            {relatedProductsQuery.data &&
+              relatedProductsQuery.data.length === 0 && (
+                <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 text-sm text-[var(--text-secondary)]">
+                  This merchant has not published additional products yet.
+                </div>
+              )}
 
-            {relatedProductsQuery.data && relatedProductsQuery.data.length > 0 && (
-              <ul className="grid list-none grid-cols-2 gap-3 p-0 lg:grid-cols-4">
-                {relatedProductsQuery.data.map((relatedProduct) => {
-                  const relatedCartItem = cart.items.find((item) => item.productId === relatedProduct.id)
-                  const relatedCartQuantity = relatedCartItem?.quantity ?? 0
+            {relatedProductsQuery.data &&
+              relatedProductsQuery.data.length > 0 && (
+                <ul className="grid list-none grid-cols-2 gap-3 p-0 lg:grid-cols-4">
+                  {relatedProductsQuery.data.map((relatedProduct) => {
+                    const relatedCartItem = cart.items.find(
+                      (item) => item.productId === relatedProduct.id
+                    )
+                    const relatedCartQuantity = relatedCartItem?.quantity ?? 0
 
-                  return (
-                    <li key={relatedProduct.id} className="h-full">
-                      <ProductGridCard
-                        product={relatedProduct}
-                        btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
-                        cartQuantity={relatedCartQuantity}
-                        onAddToCart={() =>
-                          cart.addItem(
-                            {
-                              productId: relatedProduct.id,
-                              merchantPubkey: relatedProduct.pubkey,
-                              title: relatedProduct.title,
-                              price: relatedProduct.price,
-                              currency: relatedProduct.currency,
-                              image: relatedProduct.images[0]?.url,
-                              tags: relatedProduct.tags,
-                            },
-                            1
-                          )
-                        }
-                        onIncrement={() =>
-                          cart.addItem(
-                            {
-                              productId: relatedProduct.id,
-                              merchantPubkey: relatedProduct.pubkey,
-                              title: relatedProduct.title,
-                              price: relatedProduct.price,
-                              currency: relatedProduct.currency,
-                              image: relatedProduct.images[0]?.url,
-                              tags: relatedProduct.tags,
-                            },
-                            1
-                          )
-                        }
-                        onDecrement={() => {
-                          if (!relatedCartItem) return
-                          if (relatedCartItem.quantity <= 1) {
-                            cart.removeItem(relatedProduct.id)
-                            return
+                    return (
+                      <li key={relatedProduct.id} className="h-full">
+                        <ProductGridCard
+                          product={relatedProduct}
+                          btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+                          cartQuantity={relatedCartQuantity}
+                          onAddToCart={() =>
+                            cart.addItem(
+                              {
+                                productId: relatedProduct.id,
+                                merchantPubkey: relatedProduct.pubkey,
+                                title: relatedProduct.title,
+                                price: relatedProduct.price,
+                                currency: relatedProduct.currency,
+                                image: relatedProduct.images[0]?.url,
+                                tags: relatedProduct.tags,
+                              },
+                              1
+                            )
                           }
-                          cart.setQuantity(relatedProduct.id, relatedCartItem.quantity - 1)
-                        }}
-                      />
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
+                          onIncrement={() =>
+                            cart.addItem(
+                              {
+                                productId: relatedProduct.id,
+                                merchantPubkey: relatedProduct.pubkey,
+                                title: relatedProduct.title,
+                                price: relatedProduct.price,
+                                currency: relatedProduct.currency,
+                                image: relatedProduct.images[0]?.url,
+                                tags: relatedProduct.tags,
+                              },
+                              1
+                            )
+                          }
+                          onDecrement={() => {
+                            if (!relatedCartItem) return
+                            if (relatedCartItem.quantity <= 1) {
+                              cart.removeItem(relatedProduct.id)
+                              return
+                            }
+                            cart.setQuantity(
+                              relatedProduct.id,
+                              relatedCartItem.quantity - 1
+                            )
+                          }}
+                        />
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
           </section>
         </>
       )}

@@ -28,7 +28,11 @@ export function hasNip07(): boolean {
   return typeof window !== "undefined" && !!window.nostr
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string
+): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs)
@@ -42,8 +46,8 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [pubkey, setPubkey] = useState<string | null>(
-    () => localStorage.getItem(AUTH_STORAGE_KEY)
+  const [pubkey, setPubkey] = useState<string | null>(() =>
+    localStorage.getItem(AUTH_STORAGE_KEY)
   )
   const [status, setStatus] = useState<AuthStatus>("disconnected")
   const [error, setError] = useState<string | null>(null)
@@ -82,7 +86,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setStatus("connected")
       localStorage.setItem(AUTH_STORAGE_KEY, pk)
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to connect signer"
+      const msg =
+        err instanceof Error ? err.message : "Failed to connect signer"
       setStatus("error")
       setError(msg)
       throw err instanceof Error ? err : new Error(msg)
@@ -139,7 +144,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [connect])
 
   return (
-    <AuthContext.Provider value={{ pubkey, status, error, connect, disconnect }}>
+    <AuthContext.Provider
+      value={{ pubkey, status, error, connect, disconnect }}
+    >
       {children}
     </AuthContext.Provider>
   )

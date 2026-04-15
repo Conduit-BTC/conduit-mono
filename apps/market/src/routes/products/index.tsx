@@ -26,7 +26,10 @@ import {
   SelectValue,
 } from "@conduit/ui"
 import { SignerSwitch } from "../../components/SignerSwitch"
-import { ProductGridCard, ProductGridCardSkeleton } from "../../components/ProductGridCard"
+import {
+  ProductGridCard,
+  ProductGridCardSkeleton,
+} from "../../components/ProductGridCard"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
 import { getComparablePriceValue } from "../../lib/pricing"
@@ -47,12 +50,17 @@ export const Route = createFileRoute("/products/")({
   component: ProductsPage,
   validateSearch: (raw: Record<string, unknown>): ProductSearch => {
     const rawTag = raw.tag
-    const tags =
-      Array.isArray(rawTag)
-        ? rawTag.filter((value): value is string => typeof value === "string" && value.trim() !== "")
-        : typeof rawTag === "string" && rawTag.trim() !== ""
-          ? rawTag.split(",").map((value) => value.trim()).filter(Boolean)
-          : undefined
+    const tags = Array.isArray(rawTag)
+      ? rawTag.filter(
+          (value): value is string =>
+            typeof value === "string" && value.trim() !== ""
+        )
+      : typeof rawTag === "string" && rawTag.trim() !== ""
+        ? rawTag
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean)
+        : undefined
 
     return {
       merchant: typeof raw.merchant === "string" ? raw.merchant : undefined,
@@ -72,8 +80,13 @@ export const Route = createFileRoute("/products/")({
   },
 })
 
-async function fetchProducts(merchant?: string): Promise<CommerceResult<Product[]>> {
-  const result = await getMarketplaceProducts({ merchantPubkey: merchant, limit: 50 })
+async function fetchProducts(
+  merchant?: string
+): Promise<CommerceResult<Product[]>> {
+  const result = await getMarketplaceProducts({
+    merchantPubkey: merchant,
+    limit: 50,
+  })
   return {
     data: result.data.map((record) => record.product),
     meta: result.meta,
@@ -114,15 +127,19 @@ function sortProducts(
       if (!canSortByPrice) return [...products]
       return [...products].sort(
         (a, b) =>
-          (getComparablePriceValue(a, btcUsdRate) ?? (hasSingleCurrency ? a.price : 0)) -
-          (getComparablePriceValue(b, btcUsdRate) ?? (hasSingleCurrency ? b.price : 0))
+          (getComparablePriceValue(a, btcUsdRate) ??
+            (hasSingleCurrency ? a.price : 0)) -
+          (getComparablePriceValue(b, btcUsdRate) ??
+            (hasSingleCurrency ? b.price : 0))
       )
     case "price_desc":
       if (!canSortByPrice) return [...products]
       return [...products].sort(
         (a, b) =>
-          (getComparablePriceValue(b, btcUsdRate) ?? (hasSingleCurrency ? b.price : 0)) -
-          (getComparablePriceValue(a, btcUsdRate) ?? (hasSingleCurrency ? a.price : 0))
+          (getComparablePriceValue(b, btcUsdRate) ??
+            (hasSingleCurrency ? b.price : 0)) -
+          (getComparablePriceValue(a, btcUsdRate) ??
+            (hasSingleCurrency ? a.price : 0))
       )
     case "newest":
     default:
@@ -185,33 +202,38 @@ function ProductsPage() {
     return byMerchant
   }, [productData])
 
-  const updateSearch = useCallback((updates: Partial<ProductSearch>) => {
-    navigate({
-      search: (prev: ProductSearch) => {
-        const next = { ...prev, ...updates }
-        for (const key of Object.keys(next) as (keyof ProductSearch)[]) {
-          const value = next[key]
-          if (
-            value === undefined ||
-            value === null ||
-            value === "" ||
-            (Array.isArray(value) && value.length === 0)
-          ) {
-            delete next[key]
+  const updateSearch = useCallback(
+    (updates: Partial<ProductSearch>) => {
+      navigate({
+        search: (prev: ProductSearch) => {
+          const next = { ...prev, ...updates }
+          for (const key of Object.keys(next) as (keyof ProductSearch)[]) {
+            const value = next[key]
+            if (
+              value === undefined ||
+              value === null ||
+              value === "" ||
+              (Array.isArray(value) && value.length === 0)
+            ) {
+              delete next[key]
+            }
           }
-        }
-        return next
-      },
-      replace: true,
-    })
-  }, [navigate])
+          return next
+        },
+        replace: true,
+      })
+    },
+    [navigate]
+  )
 
   const selectedTags = search.tag ?? []
   const selectedTagSet = useMemo(() => new Set(selectedTags), [selectedTags])
 
   const toggleTag = (tag: string) => {
     if (selectedTagSet.has(tag)) {
-      updateSearch({ tag: selectedTags.filter((selectedTag) => selectedTag !== tag) })
+      updateSearch({
+        tag: selectedTags.filter((selectedTag) => selectedTag !== tag),
+      })
       return
     }
 
@@ -234,7 +256,9 @@ function ProductsPage() {
     }
 
     const supportedTags = merchantTagMap.get(merchant) ?? new Set<string>()
-    const incompatibleTags = selectedTags.filter((tag) => !supportedTags.has(tag))
+    const incompatibleTags = selectedTags.filter(
+      (tag) => !supportedTags.has(tag)
+    )
 
     if (incompatibleTags.length === 0) {
       applyMerchantSelection(merchant)
@@ -271,15 +295,30 @@ function ProductsPage() {
     if (filteredProducts.length <= 1) return true
     if (hasSingleCurrency) return true
 
-    const comparableValues = filteredProducts.map((product) => getComparablePriceValue(product, btcUsdRate))
+    const comparableValues = filteredProducts.map((product) =>
+      getComparablePriceValue(product, btcUsdRate)
+    )
     return comparableValues.every((value) => value !== null)
   }, [btcUsdRate, filteredProducts, hasSingleCurrency])
 
   const effectiveSort = canSortByPrice ? search.sort : undefined
 
   const filtered = useMemo(
-    () => sortProducts(filteredProducts, effectiveSort, canSortByPrice, hasSingleCurrency, btcUsdRate),
-    [btcUsdRate, canSortByPrice, effectiveSort, filteredProducts, hasSingleCurrency]
+    () =>
+      sortProducts(
+        filteredProducts,
+        effectiveSort,
+        canSortByPrice,
+        hasSingleCurrency,
+        btcUsdRate
+      ),
+    [
+      btcUsdRate,
+      canSortByPrice,
+      effectiveSort,
+      filteredProducts,
+      hasSingleCurrency,
+    ]
   )
 
   const searchKey = `${search.q}-${selectedTags.slice().sort().join(",")}-${search.sort}-${search.merchant}`
@@ -288,13 +327,20 @@ function ProductsPage() {
   }, [searchKey])
 
   useEffect(() => {
-    if (!canSortByPrice && (search.sort === "price_asc" || search.sort === "price_desc")) {
+    if (
+      !canSortByPrice &&
+      (search.sort === "price_asc" || search.sort === "price_desc")
+    ) {
       updateSearch({ sort: undefined })
     }
   }, [canSortByPrice, search.sort, updateSearch])
 
   useEffect(() => {
-    if (search.authRequired && status !== "connected" && !hasAutoPromptedConnect.current) {
+    if (
+      search.authRequired &&
+      status !== "connected" &&
+      !hasAutoPromptedConnect.current
+    ) {
       setConnectOpen(true)
       hasAutoPromptedConnect.current = true
     }
@@ -314,14 +360,22 @@ function ProductsPage() {
   const visible = filtered.slice(0, visibleCount)
   const hasMore = visibleCount < filtered.length
 
-  const hasActiveFilters = !!(search.q || selectedTags.length > 0 || search.sort || search.merchant)
+  const hasActiveFilters = !!(
+    search.q ||
+    selectedTags.length > 0 ||
+    search.sort ||
+    search.merchant
+  )
   const orderedTags = useMemo(() => {
     if (selectedTags.length === 0) {
       return allTags
     }
 
     const selectedFirst = selectedTags.filter((tag) => allTags.includes(tag))
-    return [...selectedFirst, ...allTags.filter((tag) => !selectedTagSet.has(tag))]
+    return [
+      ...selectedFirst,
+      ...allTags.filter((tag) => !selectedTagSet.has(tag)),
+    ]
   }, [allTags, selectedTagSet, selectedTags])
 
   useEffect(() => {
@@ -334,7 +388,8 @@ function ProductsPage() {
 
     measure()
 
-    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null
     resizeObserver?.observe(element)
     window.addEventListener("resize", measure)
 
@@ -357,7 +412,8 @@ function ProductsPage() {
                 Connect a signer to continue.
               </h2>
               <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
-                Checkout, orders, and merchant follow-up require a connected Nostr signer.
+                Checkout, orders, and merchant follow-up require a connected
+                Nostr signer.
               </p>
             </div>
 
@@ -374,7 +430,10 @@ function ProductsPage() {
                   Connected
                 </Button>
               ) : (
-                <Button className="h-11 px-4 text-sm" onClick={() => setConnectOpen(true)}>
+                <Button
+                  className="h-11 px-4 text-sm"
+                  onClick={() => setConnectOpen(true)}
+                >
                   Connect
                 </Button>
               )}
@@ -390,7 +449,11 @@ function ProductsPage() {
           <div className="mt-4 text-xs text-[var(--text-secondary)]">
             You were redirected here because the next step requires a signer.
           </div>
-          <SignerSwitch open={connectOpen} onOpenChange={setConnectOpen} hideTrigger />
+          <SignerSwitch
+            open={connectOpen}
+            onOpenChange={setConnectOpen}
+            hideTrigger
+          />
         </section>
       )}
 
@@ -476,7 +539,9 @@ function ProductsPage() {
           ) : (
             <Select
               value="__all"
-              onValueChange={(v) => handleMerchantSelection(v === "__all" ? undefined : v)}
+              onValueChange={(v) =>
+                handleMerchantSelection(v === "__all" ? undefined : v)
+              }
             >
               <SelectTrigger className="h-8 min-w-0 flex-1 text-xs sm:w-auto sm:min-w-[140px] sm:flex-none">
                 <SelectValue placeholder="All stores" />
@@ -500,7 +565,9 @@ function ProductsPage() {
           <Select
             value={effectiveSort ?? "newest"}
             onValueChange={(v) =>
-              updateSearch({ sort: v === "newest" ? undefined : (v as SortOption) })
+              updateSearch({
+                sort: v === "newest" ? undefined : (v as SortOption),
+              })
             }
           >
             <SelectTrigger className="h-8 min-w-0 flex-1 text-xs sm:w-auto sm:min-w-[160px] sm:flex-none">
@@ -523,7 +590,12 @@ function ProductsPage() {
               size="sm"
               className="ml-auto text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
               onClick={() =>
-                updateSearch({ q: undefined, tag: undefined, sort: undefined, merchant: undefined })
+                updateSearch({
+                  q: undefined,
+                  tag: undefined,
+                  sort: undefined,
+                  merchant: undefined,
+                })
               }
             >
               Clear
@@ -534,11 +606,13 @@ function ProductsPage() {
 
       {!canSortByPrice && filteredProducts.length > 1 && (
         <p className="text-xs text-[var(--text-muted)]">
-          Price sorting is available when listings share a currency or when a BTC/USD display rate is configured.
+          Price sorting is available when listings share a currency or when a
+          BTC/USD display rate is configured.
         </p>
       )}
 
-      {(search.q || (search.merchant && !allMerchants.includes(search.merchant))) && (
+      {(search.q ||
+        (search.merchant && !allMerchants.includes(search.merchant))) && (
         <div className="flex flex-wrap items-center gap-2">
           {search.q && (
             <Badge variant="secondary" className="gap-1">
@@ -615,31 +689,42 @@ function ProductsPage() {
       {productsQuery.error && (
         <div className="text-sm text-error">
           Failed to load products:{" "}
-          {productsQuery.error instanceof Error ? productsQuery.error.message : "Unknown error"}
+          {productsQuery.error instanceof Error
+            ? productsQuery.error.message
+            : "Unknown error"}
         </div>
       )}
 
       {/* Empty state - no products from relays */}
       {!productsQuery.isLoading && productData.length === 0 && (
         <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-          No product listings found yet. Once merchants publish kind {EVENT_KINDS.PRODUCT} listings to
-          your relays, they will show up here.
+          No product listings found yet. Once merchants publish kind{" "}
+          {EVENT_KINDS.PRODUCT} listings to your relays, they will show up here.
         </div>
       )}
 
       {/* Empty state - filters returned nothing */}
-      {!productsQuery.isLoading && productData.length > 0 && filtered.length === 0 && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-          No products match your filters. Try adjusting your search or{" "}
-          <button
-            className="underline hover:text-[var(--text-primary)]"
-            onClick={() => updateSearch({ q: undefined, tag: undefined, sort: undefined, merchant: undefined })}
-          >
-            clear all filters
-          </button>
-          .
-        </div>
-      )}
+      {!productsQuery.isLoading &&
+        productData.length > 0 &&
+        filtered.length === 0 && (
+          <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+            No products match your filters. Try adjusting your search or{" "}
+            <button
+              className="underline hover:text-[var(--text-primary)]"
+              onClick={() =>
+                updateSearch({
+                  q: undefined,
+                  tag: undefined,
+                  sort: undefined,
+                  merchant: undefined,
+                })
+              }
+            >
+              clear all filters
+            </button>
+            .
+          </div>
+        )}
 
       {/* Product grid */}
       {visible.length > 0 && (
@@ -649,7 +734,10 @@ function ProductsPage() {
               <ProductGridCard
                 product={p}
                 btcUsdRate={btcUsdRate}
-                cartQuantity={cart.items.find((item) => item.productId === p.id)?.quantity ?? 0}
+                cartQuantity={
+                  cart.items.find((item) => item.productId === p.id)
+                    ?.quantity ?? 0
+                }
                 onAddToCart={() =>
                   cart.addItem(
                     {
@@ -679,7 +767,9 @@ function ProductsPage() {
                   )
                 }
                 onDecrement={() => {
-                  const existing = cart.items.find((item) => item.productId === p.id)
+                  const existing = cart.items.find(
+                    (item) => item.productId === p.id
+                  )
                   if (!existing) return
                   if (existing.quantity <= 1) {
                     cart.removeItem(p.id)
@@ -718,7 +808,8 @@ function ProductsPage() {
           <DialogHeader>
             <DialogTitle>Update store filter?</DialogTitle>
             <DialogDescription className="text-[var(--text-secondary)]">
-              The selected store does not include some of your current category filters. Those filters will be removed if you continue.
+              The selected store does not include some of your current category
+              filters. Those filters will be removed if you continue.
             </DialogDescription>
           </DialogHeader>
 

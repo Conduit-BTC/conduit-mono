@@ -9,12 +9,14 @@ type StoredRate = {
 }
 
 async function fetchCoinbaseRate(): Promise<number> {
-  const response = await fetch("https://api.coinbase.com/v2/prices/BTC-USD/spot")
+  const response = await fetch(
+    "https://api.coinbase.com/v2/prices/BTC-USD/spot"
+  )
   if (!response.ok) {
     throw new Error(`Failed to fetch BTC/USD rate (${response.status})`)
   }
 
-  const json = await response.json() as {
+  const json = (await response.json()) as {
     data?: {
       amount?: string
     }
@@ -29,12 +31,16 @@ async function fetchCoinbaseRate(): Promise<number> {
 }
 
 async function fetchCoinGeckoRate(): Promise<number> {
-  const response = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd")
+  const response = await fetch(
+    "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
+  )
   if (!response.ok) {
-    throw new Error(`Failed to fetch CoinGecko BTC/USD rate (${response.status})`)
+    throw new Error(
+      `Failed to fetch CoinGecko BTC/USD rate (${response.status})`
+    )
   }
 
-  const json = await response.json() as {
+  const json = (await response.json()) as {
     bitcoin?: {
       usd?: number
     }

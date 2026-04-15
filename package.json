@@ -35,6 +35,9 @@
     "build:packages": "bun run --filter @conduit/core build && bun run --filter @conduit/ui build",
     "typecheck": "bun run --filter '*' typecheck",
     "lint": "bun run --filter '*' lint",
+    "format": "prettier --write package.json eslint.config.js apps packages scripts tests .github/workflows",
+    "format:check": "prettier --check package.json eslint.config.js apps packages scripts tests .github/workflows",
+    "prepare": "husky",
     "test": "bun test",
     "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules"
   },
@@ -49,8 +52,18 @@
     "eslint": "^9.19.0",
     "eslint-plugin-react": "^7.37.4",
     "eslint-plugin-react-hooks": "^5.1.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.1",
+    "prettier": "^3.6.2",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.22.0"
+  },
+  "lint-staged": {
+    "*.{js,jsx,ts,tsx}": [
+      "prettier --write",
+      "eslint --fix"
+    ],
+    "*.{json,md,css,scss,html,yml,yaml}": "prettier --write"
   },
   "engines": {
     "node": ">=20.0.0"

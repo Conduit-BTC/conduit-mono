@@ -8,7 +8,9 @@ function stripNostrScheme(value: string): string {
   return value.replace(/^(?:web\+)?nostr:/i, "")
 }
 
-export function resolveProfileReference(value: string): ResolvedProfileReference | null {
+export function resolveProfileReference(
+  value: string
+): ResolvedProfileReference | null {
   const trimmed = stripNostrScheme(value.trim())
 
   if (/^[0-9a-f]{64}$/i.test(trimmed)) {
@@ -24,7 +26,12 @@ export function resolveProfileReference(value: string): ResolvedProfileReference
     if (decoded.type === "npub" && typeof decoded.data === "string") {
       return { pubkey: decoded.data.toLowerCase() }
     }
-    if (decoded.type === "nprofile" && decoded.data && typeof decoded.data === "object" && "pubkey" in decoded.data) {
+    if (
+      decoded.type === "nprofile" &&
+      decoded.data &&
+      typeof decoded.data === "object" &&
+      "pubkey" in decoded.data
+    ) {
       const pubkey = decoded.data.pubkey
       if (typeof pubkey === "string") {
         return { pubkey: pubkey.toLowerCase() }

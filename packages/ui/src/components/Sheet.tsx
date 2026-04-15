@@ -49,7 +49,8 @@ const sheetVariants = cva(
 )
 
 interface SheetContentProps
-  extends ComponentPropsWithoutRef<typeof SheetPrimitive.Content>,
+  extends
+    ComponentPropsWithoutRef<typeof SheetPrimitive.Content>,
     VariantProps<typeof sheetVariants> {}
 
 const SheetContent = forwardRef<
@@ -107,7 +108,10 @@ const SheetTitle = forwardRef<
 >(({ className, ...props }, ref) => (
   <SheetPrimitive.Title
     ref={ref}
-    className={cn("text-lg font-semibold text-[var(--text-primary)]", className)}
+    className={cn(
+      "text-lg font-semibold text-[var(--text-primary)]",
+      className
+    )}
     {...props}
   />
 ))

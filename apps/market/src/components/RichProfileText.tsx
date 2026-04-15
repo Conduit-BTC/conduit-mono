@@ -6,7 +6,10 @@ import { resolveProfileReference } from "../lib/profileRefs"
 const LINK_PATTERN =
   /((?:https?:\/\/|web\+nostr:|nostr:)[^\s]+|(?:npub|nprofile|note|nevent)1[023456789acdefghjklmnpqrstuvwxyz]+)/giu
 
-function stripTrailingPunctuation(value: string): { core: string; trailing: string } {
+function stripTrailingPunctuation(value: string): {
+  core: string
+  trailing: string
+} {
   const match = value.match(/^(.*?)([),.;!?]+)?$/)
   return {
     core: match?.[1] ?? value,
@@ -45,7 +48,7 @@ function renderLine(line: string, lineIndex: number): ReactNode {
       parts.push(
         <span key={`text-${lineIndex}-${index}`}>
           {line.slice(lastIndex, index)}
-        </span>,
+        </span>
       )
     }
 
@@ -62,7 +65,7 @@ function renderLine(line: string, lineIndex: number): ReactNode {
           className="underline decoration-white/20 underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:decoration-white/40"
         >
           {core}
-        </Link>,
+        </Link>
       )
     } else if (href) {
       parts.push(
@@ -74,25 +77,21 @@ function renderLine(line: string, lineIndex: number): ReactNode {
           className="underline decoration-white/20 underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:decoration-white/40"
         >
           {core}
-        </a>,
+        </a>
       )
     } else {
       parts.push(<span key={`raw-${lineIndex}-${index}`}>{core}</span>)
     }
 
     if (trailing) {
-      parts.push(
-        <span key={`trail-${lineIndex}-${index}`}>{trailing}</span>,
-      )
+      parts.push(<span key={`trail-${lineIndex}-${index}`}>{trailing}</span>)
     }
 
     lastIndex = index + matched.length
   }
 
   if (lastIndex < line.length) {
-    parts.push(
-      <span key={`tail-${lineIndex}`}>{line.slice(lastIndex)}</span>,
-    )
+    parts.push(<span key={`tail-${lineIndex}`}>{line.slice(lastIndex)}</span>)
   }
 
   return parts

@@ -35,11 +35,19 @@ export type OrderSummary = {
  * `payment_request` for invoice info, and the latest `shipping_update`
  * for tracking details.
  */
-export function extractOrderSummary(messages: ParsedOrderMessage[]): OrderSummary {
+export function extractOrderSummary(
+  messages: ParsedOrderMessage[]
+): OrderSummary {
   const firstOrder = messages.find((m) => m.type === "order")
-  const latestInvoice = [...messages].reverse().find((m) => m.type === "payment_request")
-  const invoiceCount = messages.filter((message) => message.type === "payment_request").length
-  const latestShipping = [...messages].reverse().find((m) => m.type === "shipping_update")
+  const latestInvoice = [...messages]
+    .reverse()
+    .find((m) => m.type === "payment_request")
+  const invoiceCount = messages.filter(
+    (message) => message.type === "payment_request"
+  ).length
+  const latestShipping = [...messages]
+    .reverse()
+    .find((m) => m.type === "shipping_update")
 
   const items =
     firstOrder?.type === "order"
@@ -51,8 +59,10 @@ export function extractOrderSummary(messages: ParsedOrderMessage[]): OrderSummar
         }))
       : []
 
-  const subtotal = firstOrder?.type === "order" ? firstOrder.payload.subtotal : 0
-  const currency = firstOrder?.type === "order" ? firstOrder.payload.currency : "USD"
+  const subtotal =
+    firstOrder?.type === "order" ? firstOrder.payload.subtotal : 0
+  const currency =
+    firstOrder?.type === "order" ? firstOrder.payload.currency : "USD"
 
   const shippingAddress =
     firstOrder?.type === "order" && firstOrder.payload.shippingAddress
@@ -78,7 +88,10 @@ export function extractOrderSummary(messages: ParsedOrderMessage[]): OrderSummar
       : null
   const invoiceAmount =
     latestInvoice?.type === "payment_request"
-      ? (decodedInvoice?.sats ?? decodedInvoice?.msats ?? latestInvoice.payload.amount ?? null)
+      ? (decodedInvoice?.sats ??
+        decodedInvoice?.msats ??
+        latestInvoice.payload.amount ??
+        null)
       : null
   const invoiceCurrency =
     latestInvoice?.type === "payment_request"
@@ -86,13 +99,17 @@ export function extractOrderSummary(messages: ParsedOrderMessage[]): OrderSummar
       : null
 
   const trackingCarrier =
-    latestShipping?.type === "shipping_update" ? (latestShipping.payload.carrier ?? null) : null
+    latestShipping?.type === "shipping_update"
+      ? (latestShipping.payload.carrier ?? null)
+      : null
   const trackingNumber =
     latestShipping?.type === "shipping_update"
       ? (latestShipping.payload.trackingNumber ?? null)
       : null
   const trackingUrl =
-    latestShipping?.type === "shipping_update" ? (latestShipping.payload.trackingUrl ?? null) : null
+    latestShipping?.type === "shipping_update"
+      ? (latestShipping.payload.trackingUrl ?? null)
+      : null
 
   return {
     items,

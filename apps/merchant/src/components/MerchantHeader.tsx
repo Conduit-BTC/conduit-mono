@@ -44,9 +44,13 @@ const navItems: NavItem[] = [
   { to: "/profile", label: "Profile", icon: Settings },
 ]
 
-function MerchantAvatarFallback({ iconClassName = "h-4 w-4" }: { iconClassName?: string }) {
+function MerchantAvatarFallback({
+  iconClassName = "h-4 w-4",
+}: {
+  iconClassName?: string
+}) {
   return (
-    <div className="flex h-full w-full items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]">
+    <div className="flex h-full w-full items-center justify-center rounded-full bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]">
       <img
         src="/images/logo/logo-icon.svg"
         alt=""
@@ -73,9 +77,12 @@ function Logo({
         : "/images/logo/logo-full.svg"
 
   return (
-    <Link to="/" className={cn("flex items-center gap-3 select-none", className)}>
+    <Link
+      to="/"
+      className={cn("flex items-center gap-3 select-none", className)}
+    >
       <img src={src} alt="Conduit" className="h-8 w-auto" />
-      <span className="hidden border-l border-[var(--border)] pl-3 font-display text-2xl font-medium tracking-tight text-[var(--text-primary)] md:block">
+      <span className="hidden border-l border-white/10 pl-3 font-display text-2xl font-medium tracking-tight text-[var(--text-primary)] md:block">
         merchant
       </span>
     </Link>
@@ -99,12 +106,12 @@ function MerchantNavLinks({
             to={item.to}
             onClick={onNavigate}
             className={cn(
-              "group flex items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface)] hover:text-[var(--text-primary)]",
-              compact ? "px-3 py-2" : "",
+              "group flex items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:border-white/8 hover:bg-white/[0.04] hover:text-[var(--text-primary)]",
+              compact ? "px-3 py-2" : ""
             )}
             activeProps={{
               className:
-                "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]",
+                "border-white/10 bg-white/[0.07] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]",
             }}
           >
             <Icon className="h-4 w-4 shrink-0" />
@@ -123,16 +130,17 @@ function UserMenu() {
 
   if (!pubkey || status === "disconnected" || status === "error") return null
 
-  const displayName = profile?.displayName ?? profile?.name ?? formatPubkey(pubkey, 6)
+  const displayName =
+    profile?.displayName ?? profile?.name ?? formatPubkey(pubkey, 6)
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="inline-flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-2.5 py-2 text-left transition-colors hover:bg-[var(--surface-elevated)]"
+          className="inline-flex items-center gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-2.5 py-2 text-left transition-colors hover:bg-white/[0.06]"
         >
-          <Avatar className="h-8 w-8 border border-[var(--border)]">
+          <Avatar className="h-8 w-8 border border-white/10">
             <AvatarImage src={profile?.picture} alt={displayName} />
             <AvatarFallback className="bg-transparent p-0">
               <MerchantAvatarFallback iconClassName="h-4 w-4" />
@@ -142,7 +150,9 @@ function UserMenu() {
             <div className="truncate text-sm font-medium text-[var(--text-primary)]">
               {displayName}
             </div>
-            <div className="text-xs text-[var(--text-muted)]">Connected signer</div>
+            <div className="text-xs text-[var(--text-muted)]">
+              Connected signer
+            </div>
           </div>
         </button>
       </DropdownMenuTrigger>
@@ -151,9 +161,7 @@ function UserMenu() {
           Profile
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={disconnect}>
-          Disconnect
-        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={disconnect}>Disconnect</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -165,11 +173,19 @@ function MobileNav() {
   return (
     <Sheet>
       <SheetTrigger asChild>
-        <Button variant="ghost" size="sm" className="h-11 w-11 rounded-xl lg:hidden" aria-label="Open menu">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-11 w-11 rounded-xl lg:hidden"
+          aria-label="Open menu"
+        >
           <Menu className="h-5 w-5" />
         </Button>
       </SheetTrigger>
-      <SheetContent side="left" className="w-[320px] border-r border-[var(--border)] bg-[var(--surface)]">
+      <SheetContent
+        side="left"
+        className="w-[320px] border-r border-[var(--border)] bg-[var(--surface)]"
+      >
         <SheetHeader>
           <SheetTitle>
             <Logo variant="full" className="justify-start" />
@@ -187,7 +203,7 @@ function MobileNav() {
                   "mb-3 border",
                   config.lightningNetwork === "mock"
                     ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
-                    : "border-blue-500/30 bg-blue-500/10 text-blue-400",
+                    : "border-blue-500/30 bg-blue-500/10 text-blue-400"
                 )}
               >
                 {config.lightningNetwork}
@@ -215,7 +231,7 @@ export function MerchantSidebar() {
               "mt-4 border",
               config.lightningNetwork === "mock"
                 ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
-                : "border-blue-500/30 bg-blue-500/10 text-blue-400",
+                : "border-blue-500/30 bg-blue-500/10 text-blue-400"
             )}
           >
             {config.lightningNetwork}
@@ -249,17 +265,24 @@ export function MerchantHeader() {
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
           <Input
-            className="h-12 rounded-2xl border-[var(--border)] bg-[var(--surface-elevated)] pl-11 pr-4 text-sm shadow-[var(--shadow-glass-inset)]"
+            className="h-12 rounded-2xl border-white/12 bg-white/[0.05] pl-11 pr-4 text-sm shadow-[var(--shadow-glass-inset)]"
             placeholder="Search products, orders, or buyers"
             aria-label="Search merchant portal"
           />
         </div>
 
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" className="hidden h-11 w-11 rounded-xl sm:inline-flex" aria-label="Notifications">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="hidden h-11 w-11 rounded-xl sm:inline-flex"
+            aria-label="Notifications"
+          >
             <Bell className="h-4 w-4" />
           </Button>
-          <div className="hidden lg:block">{signerConnected ? <UserMenu /> : <SignerSwitch />}</div>
+          <div className="hidden lg:block">
+            {signerConnected ? <UserMenu /> : <SignerSwitch />}
+          </div>
         </div>
       </div>
     </header>

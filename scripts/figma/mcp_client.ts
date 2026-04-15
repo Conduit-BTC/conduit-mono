@@ -28,7 +28,9 @@ export class FigmaMcpClient {
     this.url = url
   }
 
-  private async post(req: JsonRpcRequest): Promise<{ headers: Headers; bodyText: string }> {
+  private async post(
+    req: JsonRpcRequest
+  ): Promise<{ headers: Headers; bodyText: string }> {
     const headers: Record<string, string> = {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
@@ -57,11 +59,18 @@ export class FigmaMcpClient {
     })
 
     const sessionId = headers.get("mcp-session-id")
-    if (!sessionId) throw new Error("MCP response missing mcp-session-id header")
+    if (!sessionId)
+      throw new Error("MCP response missing mcp-session-id header")
     this.sessionId = sessionId
 
-    const msg = parseFirstSseMessage(bodyText) as { result?: InitializeResult; error?: unknown }
-    if (!msg.result) throw new Error(`MCP initialize failed: ${JSON.stringify(msg.error ?? msg)}`)
+    const msg = parseFirstSseMessage(bodyText) as {
+      result?: InitializeResult
+      error?: unknown
+    }
+    if (!msg.result)
+      throw new Error(
+        `MCP initialize failed: ${JSON.stringify(msg.error ?? msg)}`
+      )
 
     // Complete the init handshake. This is a notification (no id).
     await this.post({ jsonrpc: "2.0", method: "initialized" })
@@ -85,9 +94,14 @@ export class FigmaMcpClient {
       },
     })
 
-    const msg = parseFirstSseMessage(bodyText) as { result?: { content?: unknown[] }; error?: unknown }
-    if (!msg.result) throw new Error(`MCP tools/call failed: ${JSON.stringify(msg.error ?? msg)}`)
+    const msg = parseFirstSseMessage(bodyText) as {
+      result?: { content?: unknown[] }
+      error?: unknown
+    }
+    if (!msg.result)
+      throw new Error(
+        `MCP tools/call failed: ${JSON.stringify(msg.error ?? msg)}`
+      )
     return msg.result as unknown as TResult
   }
 }
-

@@ -13,12 +13,14 @@ export const productSchema = z.object({
   type: z.enum(["simple", "variable"]).default("simple"),
   visibility: z.enum(["public", "private"]).default("public"),
   stock: z.number().int().min(0).optional(),
-  images: z.array(
-    z.object({
-      url: z.string().url(),
-      alt: z.string().optional(),
-    })
-  ).default([]),
+  images: z
+    .array(
+      z.object({
+        url: z.string().url(),
+        alt: z.string().optional(),
+      })
+    )
+    .default([]),
   tags: z.array(z.string()).default([]),
   location: z.string().optional(),
   createdAt: z.number(),
@@ -146,14 +148,18 @@ export const paymentRequestMessageSchema = z.object({
   note: z.string().max(2000).optional(),
 })
 
-export type PaymentRequestMessageSchema = z.infer<typeof paymentRequestMessageSchema>
+export type PaymentRequestMessageSchema = z.infer<
+  typeof paymentRequestMessageSchema
+>
 
 export const statusUpdateMessageSchema = z.object({
   status: orderStatusSchema,
   note: z.string().max(2000).optional(),
 })
 
-export type StatusUpdateMessageSchema = z.infer<typeof statusUpdateMessageSchema>
+export type StatusUpdateMessageSchema = z.infer<
+  typeof statusUpdateMessageSchema
+>
 
 export const shippingUpdateMessageSchema = z.object({
   carrier: z.string().min(1).optional(),
@@ -162,7 +168,9 @@ export const shippingUpdateMessageSchema = z.object({
   note: z.string().max(2000).optional(),
 })
 
-export type ShippingUpdateMessageSchema = z.infer<typeof shippingUpdateMessageSchema>
+export type ShippingUpdateMessageSchema = z.infer<
+  typeof shippingUpdateMessageSchema
+>
 
 export const receiptMessageSchema = z.object({
   note: z.string().max(2000).optional(),
@@ -174,4 +182,6 @@ export const conversationMessageSchema = z.object({
   note: z.string().min(1).max(2000),
 })
 
-export type ConversationMessageSchema = z.infer<typeof conversationMessageSchema>
+export type ConversationMessageSchema = z.infer<
+  typeof conversationMessageSchema
+>

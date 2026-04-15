@@ -8,17 +8,14 @@ const badgeVariants = cva(
     variants: {
       variant: {
         default:
-          "border-[var(--border)] bg-primary-500 text-white shadow-[var(--shadow-glass-inset)]",
+          "border-white/20 bg-primary-500 text-white shadow-[var(--shadow-glass-inset)]",
         secondary:
-          "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[var(--surface)] hover:border-[var(--text-secondary)]",
-        success:
-          "border-transparent bg-green-100 text-green-800",
-        warning:
-          "border-transparent bg-orange-100 text-orange-800",
-        destructive:
-          "border-transparent bg-red-100 text-red-800",
+          "border-white/24 bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[var(--surface-elevated)]/80 hover:border-white/35",
+        success: "border-transparent bg-green-100 text-green-800",
+        warning: "border-transparent bg-orange-100 text-orange-800",
+        destructive: "border-transparent bg-red-100 text-red-800",
         outline:
-          "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-primary)] hover:border-[var(--text-secondary)]",
+          "border-white/24 bg-white/[0.02] text-[var(--text-secondary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-primary)] hover:border-white/35",
       },
     },
     defaultVariants: {
@@ -28,8 +25,7 @@ const badgeVariants = cva(
 )
 
 export interface BadgeProps
-  extends HTMLAttributes<HTMLDivElement>,
-    VariantProps<typeof badgeVariants> {}
+  extends HTMLAttributes<HTMLDivElement>, VariantProps<typeof badgeVariants> {}
 
 function Badge({ className, variant, ...props }: BadgeProps) {
   return (

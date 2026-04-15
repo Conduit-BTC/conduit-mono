@@ -21,10 +21,7 @@ export function ErrorPage({
         <CardContent className="space-y-4">
           <p className="text-sm text-[var(--text-secondary)]">{message}</p>
           {showReload && (
-            <Button
-              variant="outline"
-              onClick={() => window.location.reload()}
-            >
+            <Button variant="outline" onClick={() => window.location.reload()}>
               Reload page
             </Button>
           )}

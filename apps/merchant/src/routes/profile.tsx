@@ -87,22 +87,31 @@ function ProfilePage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">Profile</div>
-          <h1 className="mt-3 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">Store identity</h1>
+          <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">
+            Profile
+          </div>
+          <h1 className="mt-3 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+            Store identity
+          </h1>
           <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
-            Edit the merchant profile buyers see across Market and your storefront surfaces.
+            Edit the merchant profile buyers see across Market and your
+            storefront surfaces.
           </p>
         </div>
       </div>
 
       {profileQuery.isLoading && (
-        <div className="text-sm text-[var(--text-secondary)]">Loading profile...</div>
+        <div className="text-sm text-[var(--text-secondary)]">
+          Loading profile...
+        </div>
       )}
 
       {profileQuery.error && (
         <div className="rounded-md border border-error/30 bg-error/10 p-4 text-sm text-error">
           Failed to load profile:{" "}
-          {profileQuery.error instanceof Error ? profileQuery.error.message : "Unknown error"}
+          {profileQuery.error instanceof Error
+            ? profileQuery.error.message
+            : "Unknown error"}
         </div>
       )}
 
@@ -110,30 +119,49 @@ function ProfilePage() {
         <Card className="rounded-[1.6rem] border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-glass-inset)]">
           <CardHeader className="flex-col gap-4 sm:flex-row sm:items-center">
             <Avatar className="h-16 w-16">
-              <AvatarImage src={profileQuery.data.picture} alt={displayName ?? "Profile"} />
-              <AvatarFallback className="text-lg">{fallbackLetter}</AvatarFallback>
+              <AvatarImage
+                src={profileQuery.data.picture}
+                alt={displayName ?? "Profile"}
+              />
+              <AvatarFallback className="text-lg">
+                {fallbackLetter}
+              </AvatarFallback>
             </Avatar>
             <div className="flex-1">
               <CardTitle>{displayName ?? "Anonymous"}</CardTitle>
               {profileQuery.data.nip05 && (
-                <p className="text-sm text-[var(--text-secondary)]">{profileQuery.data.nip05}</p>
+                <p className="text-sm text-[var(--text-secondary)]">
+                  {profileQuery.data.nip05}
+                </p>
               )}
             </div>
-            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setEditing(true)}
+            >
               Edit
             </Button>
           </CardHeader>
           <CardContent className="space-y-3">
             {profileQuery.data.about && (
               <div>
-                <div className="text-xs font-medium text-[var(--text-secondary)]">About</div>
-                <p className="mt-1 whitespace-pre-wrap break-words text-sm text-[var(--text-primary)]">{profileQuery.data.about}</p>
+                <div className="text-xs font-medium text-[var(--text-secondary)]">
+                  About
+                </div>
+                <p className="mt-1 whitespace-pre-wrap break-words text-sm text-[var(--text-primary)]">
+                  {profileQuery.data.about}
+                </p>
               </div>
             )}
             {profileQuery.data.lud16 && (
               <div>
-                <div className="text-xs font-medium text-[var(--text-secondary)]">Lightning Address</div>
-                <p className="mt-1 text-sm font-mono text-[var(--text-primary)]">{profileQuery.data.lud16}</p>
+                <div className="text-xs font-medium text-[var(--text-secondary)]">
+                  Lightning Address
+                </div>
+                <p className="mt-1 text-sm font-mono text-[var(--text-primary)]">
+                  {profileQuery.data.lud16}
+                </p>
               </div>
             )}
             {profileQuery.data.website && (
@@ -153,8 +181,12 @@ function ProfilePage() {
               </div>
             )}
             <div>
-              <div className="text-xs font-medium text-[var(--text-secondary)]">Pubkey</div>
-              <p className="mt-1 text-xs font-mono text-[var(--text-secondary)] break-all">{pubkey}</p>
+              <div className="text-xs font-medium text-[var(--text-secondary)]">
+                Pubkey
+              </div>
+              <p className="mt-1 text-xs font-mono text-[var(--text-secondary)] break-all">
+                {pubkey}
+              </p>
             </div>
           </CardContent>
         </Card>
@@ -195,7 +227,9 @@ function ProfilePage() {
                 <Input
                   id="profile-name"
                   value={form.name}
-                  onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, name: e.target.value }))
+                  }
                   placeholder="satoshi"
                   maxLength={50}
                 />
@@ -206,7 +240,12 @@ function ProfilePage() {
                 <Input
                   id="profile-display-name"
                   value={form.displayName}
-                  onChange={(e) => setForm((prev) => ({ ...prev, displayName: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      displayName: e.target.value,
+                    }))
+                  }
                   placeholder="Satoshi Nakamoto"
                   maxLength={100}
                 />
@@ -218,7 +257,9 @@ function ProfilePage() {
                   id="profile-about"
                   className="min-h-24 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-primary/20 transition focus:ring-2"
                   value={form.about}
-                  onChange={(e) => setForm((prev) => ({ ...prev, about: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, about: e.target.value }))
+                  }
                   placeholder="A short bio"
                   maxLength={500}
                 />
@@ -230,7 +271,9 @@ function ProfilePage() {
                   id="profile-picture"
                   type="url"
                   value={form.picture}
-                  onChange={(e) => setForm((prev) => ({ ...prev, picture: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, picture: e.target.value }))
+                  }
                   placeholder="https://..."
                 />
               </div>
@@ -241,7 +284,9 @@ function ProfilePage() {
                   id="profile-banner"
                   type="url"
                   value={form.banner}
-                  onChange={(e) => setForm((prev) => ({ ...prev, banner: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, banner: e.target.value }))
+                  }
                   placeholder="https://..."
                 />
               </div>
@@ -251,7 +296,9 @@ function ProfilePage() {
                 <Input
                   id="profile-nip05"
                   value={form.nip05}
-                  onChange={(e) => setForm((prev) => ({ ...prev, nip05: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, nip05: e.target.value }))
+                  }
                   placeholder="_@your-domain.com"
                   maxLength={100}
                 />
@@ -262,7 +309,9 @@ function ProfilePage() {
                 <Input
                   id="profile-lud16"
                   value={form.lud16}
-                  onChange={(e) => setForm((prev) => ({ ...prev, lud16: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, lud16: e.target.value }))
+                  }
                   placeholder="name@wallet-provider.com"
                   maxLength={100}
                 />
@@ -274,24 +323,32 @@ function ProfilePage() {
                   id="profile-website"
                   type="url"
                   value={form.website}
-                  onChange={(e) => setForm((prev) => ({ ...prev, website: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, website: e.target.value }))
+                  }
                   placeholder="https://..."
                 />
               </div>
 
               {form.picture && (
                 <div className="md:col-span-2">
-                  <div className="text-xs font-medium text-[var(--text-secondary)] mb-2">Preview</div>
+                  <div className="text-xs font-medium text-[var(--text-secondary)] mb-2">
+                    Preview
+                  </div>
                   <Avatar className="h-20 w-20">
                     <AvatarImage src={form.picture} alt="Avatar preview" />
-                    <AvatarFallback className="text-xl">{fallbackLetter}</AvatarFallback>
+                    <AvatarFallback className="text-xl">
+                      {fallbackLetter}
+                    </AvatarFallback>
                   </Avatar>
                 </div>
               )}
 
               {updateMutation.error && (
                 <div className="md:col-span-2 rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
-                  {updateMutation.error instanceof Error ? updateMutation.error.message : "Failed to update profile"}
+                  {updateMutation.error instanceof Error
+                    ? updateMutation.error.message
+                    : "Failed to update profile"}
                 </div>
               )}
 

@@ -34,7 +34,9 @@ const RELAY_DATA_DIR = process.env.RELAY_DATA_DIR ?? "context/relay-bun"
 const EVENTS_FILE = path.join(RELAY_DATA_DIR, "events.jsonl")
 
 const eventsById = new Map<string, NostrEvent>()
-const clients = new Set<ServerWebSocket<{ subscriptions: Map<string, NostrFilter[]> }>>()
+const clients = new Set<
+  ServerWebSocket<{ subscriptions: Map<string, NostrFilter[]> }>
+>()
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === "string")
@@ -47,7 +49,10 @@ function normalizeFilter(raw: unknown): NostrFilter | null {
 
   if (isStringArray(source.ids)) filter.ids = source.ids
   if (isStringArray(source.authors)) filter.authors = source.authors
-  if (Array.isArray(source.kinds) && source.kinds.every((v) => typeof v === "number")) {
+  if (
+    Array.isArray(source.kinds) &&
+    source.kinds.every((v) => typeof v === "number")
+  ) {
     filter.kinds = source.kinds as number[]
   }
   if (typeof source.since === "number") filter.since = source.since
@@ -71,7 +76,12 @@ function normalizeEvent(raw: unknown): NostrEvent | null {
   if (typeof source.pubkey !== "string") return null
   if (typeof source.created_at !== "number") return null
   if (typeof source.kind !== "number") return null
-  if (!Array.isArray(source.tags) || !source.tags.every((t) => Array.isArray(t) && t.every((v) => typeof v === "string"))) {
+  if (
+    !Array.isArray(source.tags) ||
+    !source.tags.every(
+      (t) => Array.isArray(t) && t.every((v) => typeof v === "string")
+    )
+  ) {
     return null
   }
   if (typeof source.content !== "string") return null
@@ -89,11 +99,19 @@ function normalizeEvent(raw: unknown): NostrEvent | null {
 }
 
 function eventMatchesFilter(event: NostrEvent, filter: NostrFilter): boolean {
-  if (filter.ids && !filter.ids.some((idPrefix) => event.id.startsWith(idPrefix))) {
+  if (
+    filter.ids &&
+    !filter.ids.some((idPrefix) => event.id.startsWith(idPrefix))
+  ) {
     return false
   }
 
-  if (filter.authors && !filter.authors.some((authorPrefix) => event.pubkey.startsWith(authorPrefix))) {
+  if (
+    filter.authors &&
+    !filter.authors.some((authorPrefix) =>
+      event.pubkey.startsWith(authorPrefix)
+    )
+  ) {
     return false
   }
 
@@ -112,7 +130,9 @@ function eventMatchesFilter(event: NostrEvent, filter: NostrFilter): boolean {
   for (const [key, value] of Object.entries(filter)) {
     if (!key.startsWith("#") || !value || value.length === 0) continue
     const tagName = key.slice(1)
-    const hasTagMatch = event.tags.some((tag) => tag[0] === tagName && value.includes(tag[1] ?? ""))
+    const hasTagMatch = event.tags.some(
+      (tag) => tag[0] === tagName && value.includes(tag[1] ?? "")
+    )
     if (!hasTagMatch) return false
   }
 
@@ -126,13 +146,18 @@ function queryEvents(filters: NostrFilter[]): NostrEvent[] {
   for (const filter of filters) {
     const matches = allEvents
       .filter((event) => eventMatchesFilter(event, filter))
-      .sort((a, b) => (b.created_at - a.created_at) || b.id.localeCompare(a.id))
+      .sort((a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id))
 
-    const limited = typeof filter.limit === "number" ? matches.slice(0, filter.limit) : matches
+    const limited =
+      typeof filter.limit === "number"
+        ? matches.slice(0, filter.limit)
+        : matches
     for (const event of limited) deduped.set(event.id, event)
   }
 
-  return Array.from(deduped.values()).sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id))
+  return Array.from(deduped.values()).sort(
+    (a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id)
+  )
 }
 
 function loadPersistedEvents() {
@@ -156,14 +181,22 @@ function persistEvent(event: NostrEvent) {
   appendFileSync(EVENTS_FILE, `${JSON.stringify(event)}\n`, "utf8")
 }
 
-function send(ws: ServerWebSocket<{ subscriptions: Map<string, NostrFilter[]> }>, data: unknown[]) {
+function send(
+  ws: ServerWebSocket<{ subscriptions: Map<string, NostrFilter[]> }>,
+  data: unknown[]
+) {
   ws.send(JSON.stringify(data))
 }
 
 function parseMessage(raw: string): RelayMessage | null {
   try {
     const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed) || parsed.length < 1 || typeof parsed[0] !== "string") return null
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length < 1 ||
+      typeof parsed[0] !== "string"
+    )
+      return null
     return { type: parsed[0], payload: parsed.slice(1) }
   } catch {
     return null
@@ -207,7 +240,12 @@ function handleEvent(
     broadcastEvent(maybeEvent)
   }
 
-  send(ws, ["OK", maybeEvent.id, true, alreadyExists ? "duplicate: accepted" : "saved"])
+  send(ws, [
+    "OK",
+    maybeEvent.id,
+    true,
+    alreadyExists ? "duplicate: accepted" : "saved",
+  ])
 }
 
 function handleReq(
@@ -265,7 +303,10 @@ const server = Bun.serve<{ subscriptions: Map<string, NostrFilter[]> }>({
       clients.delete(ws)
     },
     message(ws, message) {
-      const raw = typeof message === "string" ? message : Buffer.from(message).toString("utf8")
+      const raw =
+        typeof message === "string"
+          ? message
+          : Buffer.from(message).toString("utf8")
       const parsed = parseMessage(raw)
       if (!parsed) {
         send(ws, ["NOTICE", "Invalid relay message"])

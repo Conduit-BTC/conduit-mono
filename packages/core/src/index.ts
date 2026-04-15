@@ -11,7 +11,14 @@ export * from "./schemas"
 export * from "./utils"
 
 // Config
-export { config, isMockPayments, isSignet, isTestnet, isMainnet, type ConduitConfig } from "./config"
+export {
+  config,
+  isMockPayments,
+  isSignet,
+  isTestnet,
+  isMainnet,
+  type ConduitConfig,
+} from "./config"
 
 // Database
 export {
@@ -25,10 +32,20 @@ export {
 } from "./db"
 
 // Billing
-export { getEntitlements, type Entitlements, type BillingTier } from "./billing/entitlements"
+export {
+  getEntitlements,
+  type Entitlements,
+  type BillingTier,
+} from "./billing/entitlements"
 
 // Context
-export { AuthProvider, useAuth, hasNip07, type AuthStatus, type AuthContextValue } from "./context/AuthContext"
+export {
+  AuthProvider,
+  useAuth,
+  hasNip07,
+  type AuthStatus,
+  type AuthContextValue,
+} from "./context/AuthContext"
 
 // Hooks
 export { useNdkState } from "./hooks/useNdkState"

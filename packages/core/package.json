@@ -20,6 +20,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint \"src/**/*.{ts,tsx}\" --quiet",
     "clean": "rm -rf dist"
   },
   "dependencies": {

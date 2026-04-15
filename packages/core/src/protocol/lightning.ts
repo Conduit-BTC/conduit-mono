@@ -16,7 +16,9 @@ export type DecodedLightningInvoiceAmount = {
 const SATS_PER_BTC = 100_000_000
 const MSATS_PER_BTC = 100_000_000_000
 const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-const BECH32_GENERATORS = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
+const BECH32_GENERATORS = [
+  0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3,
+]
 
 function normalizeCurrencyCode(currency: string): string {
   return currency.trim().toUpperCase()
@@ -43,7 +45,8 @@ export function convertCommerceAmountToSats(
   }
 
   if (isUsdCurrency(currency)) {
-    if (!btcUsdRate || !Number.isFinite(btcUsdRate) || btcUsdRate <= 0) return null
+    if (!btcUsdRate || !Number.isFinite(btcUsdRate) || btcUsdRate <= 0)
+      return null
     return Math.round((amount / btcUsdRate) * SATS_PER_BTC)
   }
 
@@ -99,7 +102,9 @@ function isValidBech32Invoice(invoice: string): boolean {
   return bech32Polymod([...bech32HrpExpand(hrp), ...values]) === 1
 }
 
-export function getLightningInvoiceNetwork(invoice: string): LightningInvoiceNetwork {
+export function getLightningInvoiceNetwork(
+  invoice: string
+): LightningInvoiceNetwork {
   const normalized = normalizeLightningInvoice(invoice).toLowerCase()
 
   if (normalized.startsWith("lnbc")) return "mainnet"
@@ -118,13 +123,17 @@ export function getExpectedLightningNetworks(): LightningInvoiceNetwork[] {
   return []
 }
 
-export function isInvoiceCompatibleWithCurrentNetwork(invoice: string): boolean {
+export function isInvoiceCompatibleWithCurrentNetwork(
+  invoice: string
+): boolean {
   const expected = getExpectedLightningNetworks()
   const actual = getLightningInvoiceNetwork(invoice)
   return expected.includes(actual)
 }
 
-export function getLightningNetworkMismatchMessage(invoice: string): string | null {
+export function getLightningNetworkMismatchMessage(
+  invoice: string
+): string | null {
   const actual = getLightningInvoiceNetwork(invoice)
   if (actual === "unknown") {
     return "This invoice format could not be verified against the current Lightning network."
@@ -143,7 +152,9 @@ export function getLightningNetworkMismatchMessage(invoice: string): string | nu
   return `This invoice is for ${actual}, but Conduit is currently running in ${expectedLabel} mode.`
 }
 
-export function decodeLightningInvoiceAmount(invoice: string): DecodedLightningInvoiceAmount {
+export function decodeLightningInvoiceAmount(
+  invoice: string
+): DecodedLightningInvoiceAmount {
   const normalized = normalizeLightningInvoice(invoice).toLowerCase()
   if (!isValidBech32Invoice(normalized)) {
     return { msats: null, sats: null, currency: null }

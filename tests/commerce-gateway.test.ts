@@ -9,7 +9,11 @@ import {
   getProfiles,
 } from "@conduit/core"
 import { EVENT_KINDS } from "@conduit/core"
-import type { CachedOrderMessage, CachedProduct, CachedProfile } from "@conduit/core"
+import type {
+  CachedOrderMessage,
+  CachedProduct,
+  CachedProfile,
+} from "@conduit/core"
 
 const FIXED_NOW = 1_700_000_000_000
 let cachedProducts: CachedProduct[] = []
@@ -63,25 +67,36 @@ beforeEach(async () => {
   __setCommerceTestOverrides({
     now: () => FIXED_NOW,
     getCachedProducts: async (merchantPubkey) =>
-      cachedProducts.filter((row) => !merchantPubkey || row.pubkey === merchantPubkey),
+      cachedProducts.filter(
+        (row) => !merchantPubkey || row.pubkey === merchantPubkey
+      ),
     putCachedProducts: async (rows) => {
       for (const row of rows) {
-        cachedProducts = [...cachedProducts.filter((existing) => existing.id !== row.id), row]
+        cachedProducts = [
+          ...cachedProducts.filter((existing) => existing.id !== row.id),
+          row,
+        ]
       }
     },
-    getCachedProfiles: async (pubkeys) => pubkeys.map((pubkey) => cachedProfiles.get(pubkey)),
+    getCachedProfiles: async (pubkeys) =>
+      pubkeys.map((pubkey) => cachedProfiles.get(pubkey)),
     putCachedProfiles: async (rows) => {
       for (const row of rows) {
         cachedProfiles.set(row.pubkey, row)
       }
     },
     getCachedOrderMessages: async (principalPubkey) =>
-      cachedOrderMessages.filter((row) =>
-        row.recipientPubkey === principalPubkey || row.senderPubkey === principalPubkey
+      cachedOrderMessages.filter(
+        (row) =>
+          row.recipientPubkey === principalPubkey ||
+          row.senderPubkey === principalPubkey
       ),
     putCachedOrderMessages: async (rows) => {
       for (const row of rows) {
-        cachedOrderMessages = [...cachedOrderMessages.filter((existing) => existing.id !== row.id), row]
+        cachedOrderMessages = [
+          ...cachedOrderMessages.filter((existing) => existing.id !== row.id),
+          row,
+        ]
       }
     },
   })
@@ -143,13 +158,15 @@ describe("commerce gateway", () => {
         }
 
         if (filter.kinds?.includes(EVENT_KINDS.DELETION)) {
-          return [{
-            id: "delete-1",
-            pubkey: merchantPubkey,
-            created_at: 101,
-            content: "",
-            tags: [["a", `30402:${merchantPubkey}:deleted-item`]],
-          } as never]
+          return [
+            {
+              id: "delete-1",
+              pubkey: merchantPubkey,
+              created_at: 101,
+              content: "",
+              tags: [["a", `30402:${merchantPubkey}:deleted-item`]],
+            } as never,
+          ]
         }
 
         return []
@@ -182,7 +199,14 @@ describe("commerce gateway", () => {
             id: "order-1",
             merchantPubkey: "merchant",
             buyerPubkey: "buyer",
-            items: [{ productId: "30402:merchant:item", quantity: 1, priceAtPurchase: 25, currency: "USD" }],
+            items: [
+              {
+                productId: "30402:merchant:item",
+                quantity: 1,
+                priceAtPurchase: 25,
+                currency: "USD",
+              },
+            ],
             subtotal: 25,
             currency: "USD",
             createdAt: FIXED_NOW - 10_000,
@@ -210,14 +234,17 @@ describe("commerce gateway", () => {
           },
         }),
         cachedAt: FIXED_NOW - 5_000,
-      },
+      }
     )
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: undefined } as never),
+      requireNdkConnected: async () => ({ signer: undefined }) as never,
     })
 
-    const listResult = await getBuyerConversationList({ principalPubkey: "buyer", limit: 50 })
+    const listResult = await getBuyerConversationList({
+      principalPubkey: "buyer",
+      limit: 50,
+    })
     const detailResult = await getConversationDetail({
       principalPubkey: "buyer",
       orderId: "order-1",
@@ -234,18 +261,19 @@ describe("commerce gateway", () => {
 
   it("dedupes profile requests and serves cached profiles when relays fail later", async () => {
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({
-        fetchEvents: async () =>
-          new Set([
-            {
-              id: "profile-1",
-              pubkey: "alice",
-              created_at: 10,
-              content: JSON.stringify({ display_name: "Alice" }),
-              tags: [],
-            },
-          ]),
-      } as never),
+      requireNdkConnected: async () =>
+        ({
+          fetchEvents: async () =>
+            new Set([
+              {
+                id: "profile-1",
+                pubkey: "alice",
+                created_at: 10,
+                content: JSON.stringify({ display_name: "Alice" }),
+                tags: [],
+              },
+            ]),
+        }) as never,
     })
 
     const firstResult = await getProfiles({ pubkeys: ["alice", "alice"] })

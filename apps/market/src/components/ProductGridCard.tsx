@@ -30,8 +30,12 @@ export function ProductGridCard({
   const imageUrl = product.images[0]?.url
   const fallbackUrl = "/images/placeholders/product.png"
 
-  const merchantName = profile?.displayName || profile?.name || formatPubkey(product.pubkey, 6)
-  const { primary, secondary } = getProductPriceDisplay(product, btcUsdRate ?? null)
+  const merchantName =
+    profile?.displayName || profile?.name || formatPubkey(product.pubkey, 6)
+  const { primary, secondary } = getProductPriceDisplay(
+    product,
+    btcUsdRate ?? null
+  )
 
   useEffect(() => {
     if (cartQuantity > previousQuantityRef.current) {
@@ -111,7 +115,9 @@ export function ProductGridCard({
 
         <div className="mt-auto flex items-end justify-between gap-2 pt-3">
           <div className="min-w-0">
-            <div className="text-sm font-bold text-secondary-400">{primary}</div>
+            <div className="text-sm font-bold text-secondary-400">
+              {primary}
+            </div>
             <div className="min-h-[1rem] truncate text-xs text-[var(--text-muted)]">
               {secondary ?? "\u00a0"}
             </div>

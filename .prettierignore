@@ -1,0 +1,7 @@
+node_modules
+dist
+build
+coverage
+apps/*/src/routeTree.gen.ts
+apps/market/pnpm-lock.yaml
+.codex

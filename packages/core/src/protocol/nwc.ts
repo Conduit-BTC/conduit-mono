@@ -5,7 +5,13 @@
  *   const conn = parseNwcUri("nostr+walletconnect://...")
  *   const bolt11 = await nwcMakeInvoice(conn, { amountMsats: 100_000, description: "Order #123" })
  */
-import NDK, { NDKEvent, NDKPrivateKeySigner, NDKRelayStatus, NDKSubscription, NDKUser, type NDKFilter } from "@nostr-dev-kit/ndk"
+import NDK, {
+  NDKEvent,
+  NDKPrivateKeySigner,
+  NDKRelayStatus,
+  NDKSubscription,
+  NDKUser,
+} from "@nostr-dev-kit/ndk"
 
 // NIP-47 event kinds
 const NWC_REQUEST_KIND = 23194
@@ -75,7 +81,7 @@ export function parseNwcUri(uri: string): NwcConnection {
 export async function nwcMakeInvoice(
   connection: NwcConnection,
   params: NwcMakeInvoiceParams,
-  timeoutMs = 30_000,
+  timeoutMs = 30_000
 ): Promise<NwcMakeInvoiceResult> {
   // Create a dedicated NDK instance for this NWC connection
   const signer = new NDKPrivateKeySigner(connection.secret)
@@ -87,8 +93,9 @@ export async function nwcMakeInvoice(
   await ndk.connect(5000)
 
   // Verify at least one relay connected
-  const connectedRelays = Array.from(ndk.pool?.relays?.entries() ?? [])
-    .filter(([, relay]) => relay.status >= NDKRelayStatus.CONNECTED)
+  const connectedRelays = Array.from(ndk.pool?.relays?.entries() ?? []).filter(
+    ([, relay]) => relay.status >= NDKRelayStatus.CONNECTED
+  )
   if (connectedRelays.length === 0) {
     throw new Error("Failed to connect to NWC relay(s)")
   }
@@ -122,7 +129,14 @@ export async function nwcMakeInvoice(
     const requestId = requestEvent.id
 
     // Subscribe for the response before publishing (to avoid race)
-    const responsePromise = waitForNwcResponse(ndk, signer, walletUser, requestId, clientPubkey, timeoutMs)
+    const responsePromise = waitForNwcResponse(
+      ndk,
+      signer,
+      walletUser,
+      requestId,
+      clientPubkey,
+      timeoutMs
+    )
 
     await requestEvent.publish()
 
@@ -145,33 +159,37 @@ async function waitForNwcResponse(
   walletUser: NDKUser,
   requestId: string,
   clientPubkey: string,
-  timeoutMs: number,
+  timeoutMs: number
 ): Promise<NwcMakeInvoiceResult> {
   return new Promise<NwcMakeInvoiceResult>((resolve, reject) => {
-    let sub: NDKSubscription | undefined
+    const sub: NDKSubscription = ndk.subscribe(
+      {
+        kinds: [NWC_RESPONSE_KIND],
+        "#p": [clientPubkey],
+        "#e": [requestId],
+        limit: 1,
+      },
+      { closeOnEose: false }
+    )
+
     const timer = setTimeout(() => {
-      sub?.stop()
+      sub.stop()
       reject(new Error("NWC make_invoice timed out"))
     }, timeoutMs)
-
-    const filter: NDKFilter = {
-      kinds: [NWC_RESPONSE_KIND],
-      "#p": [clientPubkey],
-      "#e": [requestId],
-      limit: 1,
-    }
-
-    sub = ndk.subscribe(filter, { closeOnEose: false })
 
     sub.on("event", async (event: NDKEvent) => {
       // Reject responses not authored by the configured wallet (prevents relay-level forgery)
       if (event.pubkey !== walletUser.pubkey) return
 
       clearTimeout(timer)
-      sub?.stop()
+      sub.stop()
 
       try {
-        const decrypted = await signer.decrypt(walletUser, event.content, "nip44")
+        const decrypted = await signer.decrypt(
+          walletUser,
+          event.content,
+          "nip44"
+        )
         const response = JSON.parse(decrypted) as {
           result_type: string
           result?: {
@@ -185,11 +203,18 @@ async function waitForNwcResponse(
         }
 
         if (response.error) {
-          reject(new Error(`NWC error (${response.error.code}): ${response.error.message}`))
+          reject(
+            new Error(
+              `NWC error (${response.error.code}): ${response.error.message}`
+            )
+          )
           return
         }
 
-        if (response.result_type !== "make_invoice" || !response.result?.invoice) {
+        if (
+          response.result_type !== "make_invoice" ||
+          !response.result?.invoice
+        ) {
           reject(new Error("Invalid NWC make_invoice response"))
           return
         }
@@ -198,11 +223,14 @@ async function waitForNwcResponse(
           invoice: response.result.invoice,
           paymentHash: response.result.payment_hash ?? "",
           amount: response.result.amount ?? 0,
-          createdAt: response.result.created_at ?? Math.floor(Date.now() / 1000),
+          createdAt:
+            response.result.created_at ?? Math.floor(Date.now() / 1000),
           expiresAt: response.result.expires_at,
         })
       } catch (err) {
-        reject(err instanceof Error ? err : new Error("Failed to parse NWC response"))
+        reject(
+          err instanceof Error ? err : new Error("Failed to parse NWC response")
+        )
       }
     })
   })

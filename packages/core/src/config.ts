@@ -77,7 +77,10 @@ const legacyRelays = getDefaultRelays(env)
 const l2RelayUrls = parseRelayList(env.l2RelayUrls)
 const merchantRelayUrls = parseRelayList(env.merchantRelayUrls)
 const configuredPublicRelayUrls = parseRelayList(env.publicRelayUrls)
-const publicRelayUrls = configuredPublicRelayUrls.length > 0 ? configuredPublicRelayUrls : legacyRelays
+const publicRelayUrls =
+  configuredPublicRelayUrls.length > 0
+    ? configuredPublicRelayUrls
+    : legacyRelays
 const defaultRelays = [
   ...l2RelayUrls,
   ...merchantRelayUrls,
@@ -92,7 +95,8 @@ export const config: ConduitConfig = {
   merchantRelayUrls,
   publicRelayUrls,
   cacheApiUrl: env.cacheApiUrl.trim() || null,
-  lightningNetwork: (env.lightningNetwork || "mainnet") as ConduitConfig["lightningNetwork"],
+  lightningNetwork: (env.lightningNetwork ||
+    "mainnet") as ConduitConfig["lightningNetwork"],
 }
 
 export function isMockPayments(): boolean {
@@ -104,7 +108,10 @@ export function isSignet(): boolean {
 }
 
 export function isTestnet(): boolean {
-  return config.lightningNetwork === "testnet" || config.lightningNetwork === "signet"
+  return (
+    config.lightningNetwork === "testnet" ||
+    config.lightningNetwork === "signet"
+  )
 }
 
 export function isMainnet(): boolean {

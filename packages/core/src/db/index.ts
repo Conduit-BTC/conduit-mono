@@ -101,7 +101,8 @@ class ConduitDB extends Dexie {
       messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
       products: "id, pubkey, *tags, cachedAt",
       profiles: "pubkey, cachedAt",
-      orderMessages: "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
     })
   }
 }
