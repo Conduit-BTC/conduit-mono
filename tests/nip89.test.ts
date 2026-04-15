@@ -24,10 +24,15 @@ describe("nip89 helpers", () => {
     ])
   })
 
-  it("replaces an existing client tag for the same app instead of duplicating it", () => {
-    const next = appendConduitClientTag([["client", "Old", "31990:old:market", "wss://old.example"]], "market")
-    const clientTags = next.filter((tag) => tag[0] === "client")
-    expect(clientTags.length).toBeLessThanOrEqual(1)
+  it("removes stale Conduit client tags when the current handler metadata is unavailable", () => {
+    const next = appendConduitClientTag([["client", "Conduit Market", "31990:old:conduit-market", "wss://old.example"]], "market")
+    expect(next.some((tag) => tag[0] === "client")).toBe(false)
+  })
+
+  it("preserves unrelated client tags when Conduit handler metadata is unavailable", () => {
+    const otherClientTag = ["client", "Another App", "31990:other:another-app", "wss://other.example"]
+    const next = appendConduitClientTag([otherClientTag], "market")
+    expect(next).toEqual([otherClientTag])
   })
 
   it("includes d and k tags in handler metadata", () => {

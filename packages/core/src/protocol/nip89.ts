@@ -105,16 +105,16 @@ export function buildConduitClientTag(appId: ConduitAppId): string[] | null {
   })
 }
 
+function isConduitClientTagForApp(tag: NostrTag, appId: ConduitAppId): boolean {
+  if (tag[0] !== "client") return false
+  const app = getConduitNip89AppDefinition(appId)
+  return tag[1] === app.name || tag[2]?.endsWith(`:${app.dTag}`) === true
+}
+
 export function appendConduitClientTag(tags: NostrTag[] | undefined, appId: ConduitAppId): NostrTag[] {
-  const nextTags = Array.from(tags ?? [])
+  const nextTags = Array.from(tags ?? []).filter((tag) => !isConduitClientTagForApp(tag, appId))
   const clientTag = buildConduitClientTag(appId)
   if (!clientTag) return nextTags
-  const address = clientTag[2]
-  const existingIndex = nextTags.findIndex((tag) => tag[0] === "client" && tag[2] === address)
-  if (existingIndex >= 0) {
-    nextTags[existingIndex] = clientTag
-    return nextTags
-  }
   nextTags.push(clientTag)
   return nextTags
 }
