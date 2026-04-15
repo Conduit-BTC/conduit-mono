@@ -1,0 +1,10 @@
+.husky/_
+node_modules
+dist
+build
+coverage
+context
+bun.lock
+**/pnpm-lock.yaml
+**/*.gen.ts
+**/routeTree.gen.ts
