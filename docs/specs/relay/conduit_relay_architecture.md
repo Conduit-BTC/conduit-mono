@@ -434,6 +434,82 @@ Impact:
 
 ---
 
+## Client Relay Product Contract
+
+This section defines the minimum Phase 2 product contract for how relay roles and relay-backed reads should appear in Conduit clients.
+
+### Product-facing relay roles
+
+Across Conduit clients, product terminology should distinguish between:
+
+- `merchant` for a merchant-controlled source-of-truth relay when present
+- `l2` for de-commerce relay acceleration
+- `general` for broader-network fallback and reach
+
+`cache` or `index` remains a valid internal read source, but it should be treated primarily as an acceleration layer rather than as a user-managed relay role identical to the relay-network roles above.
+
+### Settings surfaces
+
+- Merchant clients should expose three relay groups:
+  1. merchant relay
+  2. de-commerce relays
+  3. general relays
+- Market or shopper clients should expose two relay groups:
+  1. de-commerce relays
+  2. general relays
+- These settings surfaces should map cleanly to shared config and protocol code rather than introducing app-local relay models.
+
+### Presentation guidance
+
+- Relay settings should remain minimalist and future-friendly for mobile.
+- The preferred treatment is a simple list of relay names with concise role badges or icons.
+- Extra explanation may be available through lightweight detail affordances such as tooltips, helper text, or secondary views.
+- The architecture should define the product contract without requiring one specific navigation entry point.
+
+### Fallback and degraded-state messaging
+
+- Fallback and degraded-state behavior must remain explicit in implementation.
+- Not every relay settings view needs to surface stale or degraded-state detail at all times.
+- Mutation-sensitive and trust-sensitive flows must still surface degraded-state behavior clearly when it affects user decisions.
+
+### Shared fetch policy
+
+- Clients should use centralized shared read-planning code for relay-backed reads.
+- Shared read-planning should be route-aware rather than enforcing one universal precedence order.
+- Route code should consume typed read results returned by shared protocol code instead of reconstructing relay precedence independently.
+- Route code must not hard-code direct assumptions about cache, L2, merchant, or general relay internals.
+
+### Route-aware read planning
+
+Typical starting points include:
+
+- marketplace browse and homepage reads may prefer:
+  1. cache or index
+  2. `l2`
+  3. `general`
+- merchant-specific storefront or product-detail reads may prefer:
+  1. `merchant` when the merchant source-of-truth relay is known and available
+  2. `l2`
+  3. `general`
+- mutation-adjacent and verification-sensitive flows may require merchant-first canonical revalidation before acting.
+
+These are product-policy defaults, not a rule that every route must share the same order.
+
+### Progressive verification
+
+- Fast browse surfaces may render from cache or other accelerated reads first to avoid blank-page loading.
+- Clients may update product cards, listings, and detail views as stronger sources confirm or replace earlier accelerated results.
+- Source indicators should be subtle by default for ordinary browsing.
+- Clients may expose more detailed source information through badges, tooltips, or similar affordances for users who want to inspect where data came from.
+- When multiple sources agree, the UI may reflect that confirmation without implying that derived layers have become canonical.
+
+### Implementation constraint
+
+- The absence of prominent source-state messaging in ordinary browsing must not cause clients to collapse back to a single-source read assumption.
+- Merchant-controlled relay truth remains canonical for merchant-authored state even when faster layers render first.
+
+---
+
 ## Security and Privacy Requirements
 
 ### Authentication

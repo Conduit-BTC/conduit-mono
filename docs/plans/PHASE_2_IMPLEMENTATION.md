@@ -93,11 +93,24 @@ Second priority. This work lets relay and caching infrastructure proceed in para
 
 #### Phase 2 implementation work
 
-- Make the three relay roles explicit in product and docs:
-  - merchant relay
-  - public relay
-  - future Conduit-operated acceleration layers such as L2 and cache/index
+- Make the relay roles explicit in product and docs:
+  - merchant relay as the merchant-controlled source of truth when present
+  - de-commerce relay acceleration via Conduit L2
+  - general relays for broader network reach and fallback
+  - cache/index as a read accelerator rather than a hidden application truth source
 - Build relay settings UX that maps to the existing `@conduit/core` config model instead of a single flat relay list.
+- Split the product surface by actor:
+  - Merchant should see three relay groups:
+    - merchant relay
+    - de-commerce relays
+    - general relays
+  - Market / shopper should see two relay groups:
+    - de-commerce relays
+    - general relays
+- Keep the selector minimalist and mobile-friendly:
+  - use concise role badges or icons
+  - prefer a simple relay list with role context over multiple heavy configuration panels
+  - use tooltip or detail affordances only when extra explanation is needed
 - Keep Market and Merchant route code source-agnostic:
   - routes should consume stable typed read results
   - routes should react to source and degraded-state metadata
@@ -106,6 +119,14 @@ Second priority. This work lets relay and caching infrastructure proceed in para
   - browsing may use faster layers first
   - canonical verification should still be possible against merchant-visible state
   - apps should continue to function when cache or L2 is absent
+- Use route-aware read planning instead of one universal precedence rule:
+  - marketplace browse may prefer cache first, then L2, then general relay fallback
+  - merchant-specific surfaces may prefer merchant relay first when the merchant source of truth is known
+  - protected and mutation-adjacent flows may require stronger-source verification before acting
+- Support progressive verification in UI:
+  - fast surfaces may render from cache first to avoid blank-page loading
+  - cards and detail views may update source state as stronger relay-backed reads confirm the same data
+  - source indicators should be subtle by default and more explicit only where degraded or stale state affects user decisions
 - Keep Conduit-operated relay and cache layers narrow in responsibility:
   - hydration
   - performance
@@ -113,12 +134,29 @@ Second priority. This work lets relay and caching infrastructure proceed in para
   - not hidden app-only truth
 - Align frontend behavior with the existing relay architecture docs instead of creating a second architecture in UI code.
 
+#### Recommended PR sequence
+
+1. Shared relay model and settings UX
+   - define the relay-role model in shared code
+   - map that model to Merchant and Market settings surfaces
+   - make the grouped relay UX understandable without exposing relay internals everywhere
+2. Merchant-side relay behavior
+   - publish merchant-authored events to the correct relays
+   - keep merchant messaging and inbox reads aligned with the optimized relay path
+   - preserve source-aware typed results in shared protocol code
+3. Market / shopper read planning
+   - implement route-aware read plans
+   - support progressive source verification after fast initial render
+   - surface source and degraded-state information where it materially helps the user
+
 #### Done when
 
 - Merchant and Market can explain relay roles in product terms, not just env var terms.
 - Relay settings map cleanly to the current config model in `@conduit/core`.
+- Merchant and Market settings surfaces reflect the actor-specific relay model without collapsing everything into one flat list.
 - Frontend reads remain compatible with merchant-only, public-relay, and accelerated-read scenarios.
 - Fallback behavior is explicit in UI and implementation instead of implicit in scattered route logic.
+- Fast browse flows may load from cache first while still supporting later verification against stronger relay sources.
 - The infrastructure team can extend relay and cache layers without forcing route-level rewrites.
 
 ### C) Merchant Setup, Readiness & Payment Eligibility
