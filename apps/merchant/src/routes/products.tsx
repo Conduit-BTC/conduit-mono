@@ -229,7 +229,7 @@ function ProductsPage() {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Badge variant="secondary" className="border-white/10 bg-white/[0.05] text-[var(--text-primary)]">
+          <Badge variant="secondary" className="border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]">
             {itemCountLabel}
           </Badge>
           {editing && (
@@ -248,14 +248,14 @@ function ProductsPage() {
       </div>
 
       {!pubkey && (
-        <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.04] p-5 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
           Connect your signer to create and manage listings.
         </div>
       )}
 
       <div className="grid items-start gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
         <section className="xl:sticky xl:top-28">
-          <div className="rounded-[1.6rem] border border-white/10 bg-white/[0.04] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+          <div className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
             <div className="mb-4">
               <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
                 {editing ? "Edit listing" : "Create listing"}
@@ -287,7 +287,7 @@ function ProductsPage() {
                 <Label htmlFor="product-summary">Summary</Label>
                 <textarea
                   id="product-summary"
-                  className="min-h-28 rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-primary/20 transition focus:ring-2"
+                  className="min-h-28 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-primary/20 transition focus:ring-2"
                   value={form.summary}
                   onChange={(e) => setForm((prev) => ({ ...prev, summary: e.target.value }))}
                   placeholder="Short description shown to buyers"
@@ -363,13 +363,13 @@ function ProductsPage() {
 
         <section className="space-y-4">
           {productsQuery.isLoading && (
-            <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-5 text-sm text-[var(--text-secondary)]">
-              Loading products…
-            </div>
-          )}
+              <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
+                Loading products...
+              </div>
+            )}
 
           {merchantProductsMeta && (
-            <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4 text-xs text-[var(--text-secondary)]">
+            <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4 text-xs text-[var(--text-secondary)]">
               Source: {merchantProductsMeta.source.replace("_", " ")}
               {merchantProductsMeta.stale ? " / stale view" : ""}
             </div>
@@ -383,21 +383,21 @@ function ProductsPage() {
           )}
 
           {!productsQuery.isLoading && merchantProducts.length === 0 && (
-            <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-5 text-sm text-[var(--text-secondary)]">
-              No listings yet. Publish your first product from the panel on the left.
-            </div>
-          )}
+              <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
+                No listings yet. Publish your first product from the panel on the left.
+              </div>
+            )}
 
           {merchantProducts.map((item) => (
             <article
               key={item.addressId}
-              className="rounded-[1.5rem] border border-white/10 bg-white/[0.04] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+              className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]"
             >
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-3">
                     <h2 className="text-lg font-semibold text-[var(--text-primary)]">{item.product.title}</h2>
-                    <Badge variant="secondary" className="border-white/10 bg-white/[0.05]">
+                    <Badge variant="secondary" className="border-[var(--border)] bg-[var(--surface-elevated)]">
                       {item.product.currency}
                     </Badge>
                   </div>
@@ -415,7 +415,7 @@ function ProductsPage() {
               </div>
 
               <div className="mt-4 grid gap-4 lg:grid-cols-[112px_minmax(0,1fr)]">
-                <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.05]">
+                <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)]">
                   {item.product.images[0]?.url ? (
                     <img
                       src={item.product.images[0].url}
@@ -441,7 +441,7 @@ function ProductsPage() {
                         <Badge
                           key={`${item.addressId}-${tag}`}
                           variant="outline"
-                          className="border-white/10 bg-white/[0.04]"
+                          className="border-[var(--border)] bg-[var(--surface)]"
                         >
                           {tag}
                         </Badge>

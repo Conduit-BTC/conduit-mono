@@ -395,7 +395,7 @@ function StorefrontPage() {
           <div className="relative">
             <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
               <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-end">
-                <Avatar className="h-24 w-24 shrink-0 border border-white/12 shadow-[0_18px_40px_rgba(0,0,0,0.28)] sm:h-28 sm:w-28">
+                <Avatar className="h-24 w-24 shrink-0 border border-[var(--border)] shadow-[var(--shadow-lg)] sm:h-28 sm:w-28">
                   <AvatarImage src={profile?.picture} alt={merchantName} />
                   <AvatarFallback>
                     <MerchantAvatarFallback iconClassName="h-8 w-8 sm:h-10 sm:w-10" />
@@ -429,7 +429,7 @@ function StorefrontPage() {
               </div>
 
               <div className="flex flex-col items-start gap-4 xl:items-end">
-                <div className="rounded-2xl border border-white/10 bg-black/15 px-4 py-3 text-left xl:min-w-[132px] xl:text-right">
+                <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-left xl:min-w-[132px] xl:text-right">
                   <div className="text-lg font-semibold leading-none text-[var(--text-primary)]">
                     {productCount}
                   </div>
@@ -441,7 +441,7 @@ function StorefrontPage() {
                 <div className="flex flex-nowrap items-center gap-3 xl:justify-end">
                   <Button
                     variant="outline"
-                    className="h-11 shrink-0 whitespace-nowrap border-white/16 bg-white/[0.05] px-4 text-sm hover:border-white/24 hover:bg-white/[0.08]"
+                    className="h-11 shrink-0 whitespace-nowrap border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]"
                     onClick={handleSendMessage}
                   >
                     <MessageCircle className="h-4 w-4" />
@@ -452,7 +452,7 @@ function StorefrontPage() {
                     className={[
                       "group h-11 shrink-0 whitespace-nowrap px-4 text-sm",
                       isFollowing
-                        ? "border-white/14 bg-white/[0.06] text-white/92 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] hover:border-white/18 hover:bg-white/[0.08]"
+                        ? "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]"
                         : "",
                     ].join(" ")}
                     onClick={() => void handleFollow()}
@@ -489,7 +489,7 @@ function StorefrontPage() {
                   </Button>
                   <button
                     type="button"
-                    className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-white/80 transition-colors hover:text-white"
+                    className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
                     onClick={handleShareStore}
                     aria-label={
                       shareCopied ? "Store link copied" : "Copy store link"
@@ -604,7 +604,7 @@ function StorefrontPage() {
                     <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-12 items-center justify-center bg-gradient-to-b from-transparent via-[var(--background)]/90 to-[var(--background)] transition-opacity duration-200 xl:hidden">
                       <button
                         type="button"
-                        className="pointer-events-auto rounded-full bg-[var(--text-primary)] px-3 py-1 text-xs font-medium text-[var(--background)] shadow-md transition-[opacity,transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-lg"
+                        className="pointer-events-auto rounded-full bg-[var(--text-primary)] px-3 py-1 text-xs font-medium text-[var(--text-inverse)] shadow-md transition-[opacity,transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-lg"
                         onClick={() => setShowAllTags(true)}
                       >
                         Expand categories
@@ -620,7 +620,7 @@ function StorefrontPage() {
         <section className="space-y-4">
           <div className="grid gap-3 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
             <form
-              className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-white/12 bg-[var(--surface-elevated)] px-3"
+              className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3"
               onSubmit={submitSearch}
             >
               <Search className="h-4 w-4 text-[var(--text-muted)]" />

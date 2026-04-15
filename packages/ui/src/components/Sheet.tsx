@@ -30,7 +30,7 @@ const SheetOverlay = forwardRef<
 SheetOverlay.displayName = SheetPrimitive.Overlay.displayName
 
 const sheetVariants = cva(
-  "fixed z-50 gap-4 border border-[var(--border)] bg-[var(--background)] p-6 text-[var(--text-primary)] shadow-[0_22px_50px_rgba(0,0,0,0.34)] transition ease-in-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:duration-500",
+  "fixed z-50 gap-4 border border-[var(--border)] bg-[var(--background)] p-6 text-[var(--text-primary)] shadow-[var(--shadow-xl)] transition ease-in-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:duration-500",
   {
     variants: {
       side: {

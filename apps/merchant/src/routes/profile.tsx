@@ -107,7 +107,7 @@ function ProfilePage() {
       )}
 
       {!editing && profileQuery.data && (
-        <Card className="rounded-[1.6rem] border-white/10 bg-white/[0.04] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+        <Card className="rounded-[1.6rem] border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-glass-inset)]">
           <CardHeader className="flex-col gap-4 sm:flex-row sm:items-center">
             <Avatar className="h-16 w-16">
               <AvatarImage src={profileQuery.data.picture} alt={displayName ?? "Profile"} />
@@ -161,7 +161,7 @@ function ProfilePage() {
       )}
 
       {editing && (
-        <Card className="rounded-[1.6rem] border-white/10 bg-white/[0.04] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+        <Card className="rounded-[1.6rem] border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-glass-inset)]">
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle>Edit Profile</CardTitle>

@@ -142,7 +142,7 @@ function ProductPage() {
 
       {productQuery.data === null && (
         <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 text-center sm:p-10">
-          <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-[var(--surface-elevated)] text-secondary-400">
+          <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-400">
             <SearchX className="h-6 w-6" />
           </div>
           <h2 className="mt-5 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
@@ -171,8 +171,8 @@ function ProductPage() {
                     onClick={() => setSelectedImageIndex(index)}
                     className={`overflow-hidden rounded-xl border bg-[var(--surface)] transition-colors ${
                       selectedImageIndex === index
-                        ? "border-secondary-400 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]"
-                        : "border-[var(--border)] hover:border-white/30"
+                        ? "border-secondary-400 shadow-[var(--shadow-glass-inset)]"
+                        : "border-[var(--border)] hover:border-[var(--text-secondary)]"
                     }`}
                   >
                     <div className="aspect-square">
@@ -202,12 +202,12 @@ function ProductPage() {
 
             <aside className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
               <div className="flex flex-col gap-4">
-                <div className="w-full min-w-0 rounded-xl border border-white/10 bg-[var(--surface-elevated)] px-4 py-3">
+                <div className="w-full min-w-0 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
                   <div className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
                     Shop at
                   </div>
                   <div className="mt-3 flex items-start gap-3">
-                    <Avatar className="h-11 w-11 shrink-0 border border-white/10">
+                    <Avatar className="h-11 w-11 shrink-0 border border-[var(--border)]">
                       <AvatarImage src={merchantProfile.data?.picture} alt={merchantName} />
                       <AvatarFallback>
                         <MerchantAvatarFallback />
@@ -250,7 +250,7 @@ function ProductPage() {
                   )}
                 </div>
 
-                <div className="rounded-xl border border-white/10 bg-[var(--surface-elevated)] p-4">
+                <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                   <div className="text-2xl font-bold text-secondary-400">
                     {priceDisplay?.primary}
                   </div>
@@ -265,21 +265,21 @@ function ProductPage() {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-3">
-                  <div className="inline-flex h-10 items-center overflow-hidden rounded-md border border-white/20 bg-[var(--surface-elevated)]">
+                  <div className="inline-flex h-10 items-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-elevated)]">
                     <button
                       type="button"
-                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-white/5"
+                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)]"
                       aria-label="Decrease quantity"
                       onClick={() => setQuantity((current) => Math.max(1, current - 1))}
                     >
                       -
                     </button>
-                    <div className="flex h-full min-w-10 items-center justify-center border-x border-white/10 px-3 text-sm font-medium text-[var(--text-primary)]">
+                    <div className="flex h-full min-w-10 items-center justify-center border-x border-[var(--border)] px-3 text-sm font-medium text-[var(--text-primary)]">
                       {quantity}
                     </div>
                     <button
                       type="button"
-                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-white/5"
+                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)]"
                       aria-label="Increase quantity"
                       onClick={() => setQuantity((current) => current + 1)}
                     >
@@ -315,7 +315,7 @@ function ProductPage() {
                   </Link>
                 </Button>
 
-                <div className="grid gap-3 rounded-xl border border-white/10 bg-[var(--surface-elevated)] p-4 text-sm">
+                <div className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm">
                   {typeof product.stock === "number" && (
                     <div className="flex items-start justify-between gap-3">
                       <span className="text-[var(--text-secondary)]">Stock</span>

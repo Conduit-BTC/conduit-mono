@@ -12,7 +12,7 @@ type MerchantAvatarFallbackProps = {
 
 export function MerchantAvatarFallback({ iconClassName = "h-6 w-6" }: MerchantAvatarFallbackProps) {
   return (
-    <div className="flex h-full w-full items-center justify-center rounded-full bg-[radial-gradient(circle_at_top,rgba(255,86,164,0.24),transparent_55%),linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02))] text-[var(--text-primary)]">
+    <div className="flex h-full w-full items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-sm)]">
       <img
         src="/images/logo/logo-icon.svg"
         alt=""

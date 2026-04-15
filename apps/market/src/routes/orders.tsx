@@ -44,12 +44,12 @@ function OrderListItem({
       className={[
         "w-full rounded-[1.1rem] border p-3 text-left transition-[border-color,background-color,box-shadow]",
         active
-          ? "border-white/14 bg-white/[0.08]"
-          : "border-white/8 bg-white/[0.02] hover:border-white/14 hover:bg-white/[0.05]",
+          ? "border-[var(--text-secondary)] bg-[var(--surface)]"
+          : "border-[var(--border)] bg-[var(--surface-elevated)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]",
       ].join(" ")}
     >
       <div className="flex items-start gap-3">
-        <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-white/10 bg-[var(--surface-elevated)]">
+        <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
           {profile?.picture ? (
             <img src={profile.picture} alt={merchantName} className="h-full w-full object-cover" />
           ) : (
@@ -64,7 +64,7 @@ function OrderListItem({
             </div>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="border-white/10 bg-white/[0.04]">
+            <Badge variant="outline" className="border-[var(--border)] bg-[var(--surface)]">
               {conversation.status ?? "pending"}
             </Badge>
             <span className="font-mono text-[11px] text-[var(--text-muted)]">
@@ -96,7 +96,7 @@ function OrderHero({
     <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-center gap-3">
-          <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-white/10 bg-[var(--surface-elevated)]">
+          <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
             {profile?.picture ? (
               <img src={profile.picture} alt={merchantName} className="h-full w-full object-cover" />
             ) : (
@@ -112,7 +112,7 @@ function OrderHero({
               >
                 {merchantName}
               </Link>
-              <Badge variant="outline" className="border-white/10 bg-white/[0.04] capitalize">
+              <Badge variant="outline" className="border-[var(--border)] bg-[var(--surface)] capitalize">
                 {conversation.status ?? "pending"}
               </Badge>
             </div>
@@ -130,13 +130,13 @@ function OrderHero({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 lg:justify-end">
-          <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm">
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm">
             <span className="text-[var(--text-secondary)]">Subtotal</span>
             <span className="ml-2 font-semibold text-secondary-300">
               {summary.subtotal} {summary.currency}
             </span>
           </div>
-          <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm">
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm">
             <span className="text-[var(--text-secondary)]">Messages</span>
             <span className="ml-2 font-semibold text-[var(--text-primary)]">{conversation.messages?.length ?? 0}</span>
           </div>
@@ -175,7 +175,7 @@ function CollapsibleInfo({
 }) {
   return (
     <details
-      className="group rounded-2xl border border-white/10 bg-[var(--surface-elevated)]"
+      className="group rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)]"
       open={defaultOpen}
     >
       <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
@@ -185,7 +185,7 @@ function CollapsibleInfo({
         </div>
         <ChevronDown className="h-4 w-4 shrink-0 text-[var(--text-muted)] transition-transform group-open:rotate-180" />
       </summary>
-      <div className="border-t border-white/8 px-4 py-4">{children}</div>
+      <div className="border-t border-[var(--border)] px-4 py-4">{children}</div>
     </details>
   )
 }
@@ -329,7 +329,7 @@ function OrdersPage() {
 
       {!signerConnected && (
         <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
-          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-[var(--surface-elevated)] text-secondary-300">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
             <ReceiptText className="h-7 w-7" />
           </div>
           <h2 className="mt-5 text-2xl font-semibold text-[var(--text-primary)]">Connect to view your orders</h2>
@@ -351,7 +351,7 @@ function OrdersPage() {
 
       {signerConnected && !messagesQuery.isLoading && conversations.length === 0 && (
         <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
-          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-[var(--surface-elevated)] text-secondary-300">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
             <ReceiptText className="h-7 w-7" />
           </div>
           <h2 className="mt-5 text-2xl font-semibold text-[var(--text-primary)]">No order conversations yet</h2>
@@ -377,7 +377,7 @@ function OrdersPage() {
                   value={searchValue}
                   onChange={(event) => setSearchValue(event.target.value)}
                   placeholder="Search orders"
-                  className="h-11 w-full rounded-xl border border-white/10 bg-[var(--surface-elevated)] pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
+                  className="h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
                 />
               </div>
               <div className="mt-4 space-y-2 xl:max-h-[calc(100vh-14rem)] xl:overflow-y-auto xl:pr-1">
@@ -391,7 +391,7 @@ function OrdersPage() {
                     />
                   ))
                 ) : (
-                  <div className="rounded-[1.1rem] border border-white/10 bg-white/[0.03] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                  <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
                     No orders match this search.
                   </div>
                 )}
@@ -419,10 +419,10 @@ function OrdersPage() {
                           return (
                             <div
                               key={`${item.productId}-${index}`}
-                              className="flex items-start justify-between gap-3 rounded-xl border border-white/8 bg-white/[0.03] p-3 text-sm"
+                              className="flex items-start justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm"
                             >
                               <div className="flex min-w-0 flex-1 items-start gap-3">
-                                <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl border border-white/10 bg-white/[0.04]">
+                                <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)]">
                                   {image ? (
                                     <img
                                       src={image.url}
@@ -476,7 +476,7 @@ function OrdersPage() {
                           </span>
                         </div>
                         {orderSummary.shippingAddress && (
-                          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-[var(--text-secondary)]">
+                          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-[var(--text-secondary)]">
                             <div className="font-medium text-[var(--text-primary)]">{orderSummary.shippingAddress.name}</div>
                             <div>{orderSummary.shippingAddress.street}</div>
                             <div>
@@ -488,7 +488,7 @@ function OrdersPage() {
                           </div>
                         )}
                         {orderSummary.orderNote && (
-                          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-[var(--text-secondary)]">
+                          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-[var(--text-secondary)]">
                             {orderSummary.orderNote}
                           </div>
                         )}

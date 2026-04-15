@@ -770,22 +770,22 @@ function OrdersPage() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-3">
-        <div className="rounded-[1.35rem] border border-white/10 bg-white/[0.04] p-4">
+        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
           <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Open threads</div>
           <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">{conversations.length}</div>
         </div>
-        <div className="rounded-[1.35rem] border border-white/10 bg-white/[0.04] p-4">
+        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
           <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Awaiting invoice</div>
           <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">{awaitingInvoiceCount}</div>
         </div>
-        <div className="rounded-[1.35rem] border border-white/10 bg-white/[0.04] p-4">
+        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
           <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Active fulfillment</div>
           <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">{activeFulfillmentCount}</div>
         </div>
       </div>
 
       {showNwcSetup && (
-        <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4">
+        <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
           {weblnAvailable && (
             <div className="mb-3 flex items-center gap-2 text-xs text-green-400">
               <span className="inline-block h-2 w-2 rounded-full bg-green-400" />
@@ -868,7 +868,7 @@ function OrdersPage() {
       )}
 
       {!signerConnected && (
-        <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
           Connect your signer to view incoming orders.
         </div>
       )}
@@ -885,14 +885,14 @@ function OrdersPage() {
       )}
 
       {signerConnected && !ordersQuery.isLoading && conversations.length === 0 && (
-        <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
           No orders yet. Place an order from the Market app targeting this merchant pubkey.
         </div>
       )}
 
       {signerConnected && conversations.length > 0 && (
         <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
-          <aside className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-2">
+          <aside className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-2">
             <div className="mb-2 px-2 text-xs uppercase tracking-wide text-[var(--text-secondary)]">Conversations</div>
             <div className="space-y-1">
               {conversations.map((conversation) => {
@@ -904,7 +904,7 @@ function OrdersPage() {
                     key={conversation.id}
                     className={`w-full rounded-md border px-3 py-2 text-left transition ${
                       active
-                        ? "border-white/14 bg-white/[0.08]"
+                        ? "border-[var(--text-secondary)] bg-[var(--surface)]"
                         : "border-transparent hover:border-[var(--border)] hover:bg-[var(--surface-elevated)]"
                     }`}
                     onClick={() => setSelectedConversationId(conversation.id)}
@@ -933,7 +933,7 @@ function OrdersPage() {
             </div>
           </aside>
 
-          <section className="rounded-[1.4rem] border border-white/10 bg-white/[0.04] p-4">
+          <section className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
             {selected && orderSummary ? (
               <Tabs value={activeTab} onValueChange={setActiveTab}>
                 <TabsList>

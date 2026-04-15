@@ -55,12 +55,12 @@ function MerchantThreadRow({
       className={[
         "w-full rounded-[1.05rem] border px-3 py-3 text-left transition-[border-color,background-color,box-shadow]",
         active
-          ? "border-white/14 bg-white/[0.08]"
-          : "border-transparent hover:border-white/10 hover:bg-white/[0.04]",
+          ? "border-[var(--text-secondary)] bg-[var(--surface)]"
+          : "border-transparent hover:border-[var(--border)] hover:bg-[var(--surface-elevated)]",
       ].join(" ")}
     >
       <div className="flex items-start gap-3">
-        <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-white/10 bg-[var(--surface-elevated)]">
+        <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
           {profile?.picture ? (
             <img src={profile.picture} alt={merchantName} className="h-full w-full object-cover" />
           ) : (
@@ -230,7 +230,7 @@ function MessagesPage() {
         </div>
       </div>
 
-      <div className="border-b border-white/8 xl:shrink-0">
+      <div className="border-b border-[var(--border)] xl:shrink-0">
         <div className="flex flex-wrap items-center gap-6">
           {([
             ["dms", "DMs"],
@@ -264,7 +264,7 @@ function MessagesPage() {
 
       {activeTab === "dms" ? (
         <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
-          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-[var(--surface-elevated)] text-secondary-300">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
             <MessageCircleMore className="h-7 w-7" />
           </div>
           <h2 className="mt-5 text-2xl font-semibold text-[var(--text-primary)]">General DMs are not wired yet</h2>
@@ -290,7 +290,7 @@ function MessagesPage() {
         <>
           {!signerConnected && (
             <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
-              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-[var(--surface-elevated)] text-secondary-300">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
                 <Store className="h-7 w-7" />
               </div>
               <h2 className="mt-5 text-2xl font-semibold text-[var(--text-primary)]">Connect to view merchant threads</h2>
@@ -312,7 +312,7 @@ function MessagesPage() {
 
           {signerConnected && !messagesQuery.isLoading && conversations.length === 0 && (
             <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
-              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-[var(--surface-elevated)] text-secondary-300">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
                 <Store className="h-7 w-7" />
               </div>
               <h2 className="mt-5 text-2xl font-semibold text-[var(--text-primary)]">No merchant threads yet</h2>
@@ -331,7 +331,7 @@ function MessagesPage() {
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
                     placeholder="Search"
-                    className="h-11 w-full rounded-xl border border-white/10 bg-[var(--surface-elevated)] pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
+                    className="h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
                   />
                 </div>
                 <div className="mt-4 space-y-2 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
@@ -350,7 +350,7 @@ function MessagesPage() {
                       />
                     ))
                   ) : (
-                    <div className="rounded-[1.1rem] border border-white/10 bg-white/[0.03] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                    <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
                       {search.merchant
                         ? "No conversation with this merchant yet."
                         : "No merchant threads match this search."}
@@ -364,7 +364,7 @@ function MessagesPage() {
                   <>
                     <div className="border-b border-[var(--border)] px-6 py-5">
                       <div className="flex items-center gap-3">
-                        <div className="h-12 w-12 overflow-hidden rounded-full border border-white/10 bg-[var(--surface-elevated)]">
+                        <div className="h-12 w-12 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]">
                           {selectedProfile.data?.picture ? (
                             <img src={selectedProfile.data.picture} alt={merchantName ?? "Merchant"} className="h-full w-full object-cover" />
                           ) : (
@@ -380,7 +380,7 @@ function MessagesPage() {
                             {merchantName}
                           </Link>
                           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
-                            <Badge variant="outline" className="border-white/10 bg-white/[0.04]">
+                            <Badge variant="outline" className="border-[var(--border)] bg-[var(--surface)]">
                               {selectedConversation.status ?? "pending"}
                             </Badge>
                             <span className="inline-flex items-center gap-1">
@@ -408,7 +408,7 @@ function MessagesPage() {
                           value={replyText}
                           onChange={(event) => setReplyText(event.target.value)}
                           placeholder="Send a message to the merchant"
-                          className="h-11 flex-1 rounded-xl border border-white/10 bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
+                          className="h-11 flex-1 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
                           aria-label="Reply to merchant"
                         />
                         <Button

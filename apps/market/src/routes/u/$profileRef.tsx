@@ -52,7 +52,7 @@ function PublicProfilePage() {
       <section className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] p-6 sm:p-7">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex min-w-0 items-start gap-4">
-            <Avatar className="h-24 w-24 shrink-0 border border-white/12 sm:h-28 sm:w-28">
+            <Avatar className="h-24 w-24 shrink-0 border border-[var(--border)] sm:h-28 sm:w-28">
               <AvatarImage src={profile?.picture} alt={displayName} />
               <AvatarFallback>
                 <MerchantAvatarFallback iconClassName="h-8 w-8 sm:h-10 sm:w-10" />
@@ -66,11 +66,11 @@ function PublicProfilePage() {
               </h1>
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 {profile?.nip05?.trim() ? (
-                  <Badge variant="outline" className="border-white/10 bg-white/[0.04] text-[var(--text-primary)]">
+                  <Badge variant="outline" className="border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]">
                     {profile.nip05.trim()}
                   </Badge>
                 ) : null}
-                <Badge variant="outline" className="border-white/10 bg-white/[0.04] text-[var(--text-primary)]">
+                <Badge variant="outline" className="border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]">
                   {formatPubkey(pubkey, 8)}
                 </Badge>
               </div>
@@ -93,7 +93,7 @@ function PublicProfilePage() {
       </section>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        <div className="rounded-[1.35rem] border border-white/10 bg-[var(--surface)] p-4">
+        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface)] p-4">
           <div className="flex items-start gap-3">
             <UserRound className="mt-0.5 h-4 w-4 text-secondary-300" />
             <div>
@@ -102,7 +102,7 @@ function PublicProfilePage() {
             </div>
           </div>
         </div>
-        <div className="rounded-[1.35rem] border border-white/10 bg-[var(--surface)] p-4">
+        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface)] p-4">
           <div className="flex items-start gap-3">
             <Zap className="mt-0.5 h-4 w-4 text-secondary-300" />
             <div>
@@ -114,7 +114,7 @@ function PublicProfilePage() {
             </div>
           </div>
         </div>
-        <div className="rounded-[1.35rem] border border-white/10 bg-[var(--surface)] p-4">
+        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface)] p-4">
           <div className="flex items-start gap-3">
             <Globe className="mt-0.5 h-4 w-4 text-secondary-300" />
             <div>

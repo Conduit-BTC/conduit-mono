@@ -50,7 +50,7 @@ export function ProductGridCard({
       role="link"
       tabIndex={0}
       className={cn(
-        "group flex h-full cursor-pointer flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset),0_10px_24px_rgba(0,0,0,0.12)] transition-[border-color,box-shadow,transform,background-color] duration-200 hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)] hover:shadow-[var(--shadow-glass-inset),0_16px_32px_rgba(0,0,0,0.16)]"
+        "group flex h-full cursor-pointer flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] shadow-[var(--shadow-md)] transition-[border-color,box-shadow,transform,background-color] duration-200 hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)] hover:shadow-[var(--shadow-lg)]"
       )}
       onClick={() =>
         navigate({
