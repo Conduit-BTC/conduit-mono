@@ -3,7 +3,12 @@
  *
  * Usage:
  *   const conn = parseNwcUri("nostr+walletconnect://...")
- *   const bolt11 = await nwcMakeInvoice(conn, { amountMsats: 100_000, description: "Order #123" })
+ *   const bolt11 = await nwcMakeInvoice(
+ *     conn,
+ *     { amountMsats: 100_000, description: "Order #123" },
+ *     30_000,
+ *     "merchant"
+ *   )
  */
 import NDK, {
   NDKEvent,
@@ -83,7 +88,7 @@ export async function nwcMakeInvoice(
   connection: NwcConnection,
   params: NwcMakeInvoiceParams,
   timeoutMs = 30_000,
-  clientAppId: ConduitAppId = "merchant"
+  clientAppId: ConduitAppId
 ): Promise<NwcMakeInvoiceResult> {
   // Create a dedicated NDK instance for this NWC connection
   const signer = new NDKPrivateKeySigner(connection.secret)
