@@ -30,6 +30,12 @@ export const EVENT_KINDS = {
   /** NIP-65: Relay list metadata */
   RELAY_LIST: 10002,
 
+  /** NIP-89: Recommended application handlers */
+  APPLICATION_RECOMMENDATION: 31989,
+
+  /** NIP-89: Application handler metadata */
+  APPLICATION_HANDLER: 31990,
+
   /** NIP-99: Marketplace product listing (addressable) */
   PRODUCT: 30402,
 

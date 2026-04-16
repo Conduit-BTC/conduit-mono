@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from "@conduit/ui"
 import {
+  appendConduitClientTag,
   formatNpub,
   requireNdkConnected,
   useAuth,
@@ -59,7 +60,7 @@ export const Route = createFileRoute("/store/$pubkey")({
   validateSearch: (raw: Record<string, unknown>): StoreSearch => ({
     q: typeof raw.q === "string" ? raw.q : undefined,
     sort: (["newest", "price_asc", "price_desc"] as const).includes(
-      raw.sort as SortOption,
+      raw.sort as SortOption
     )
       ? (raw.sort as SortOption)
       : undefined,
@@ -73,20 +74,20 @@ export const Route = createFileRoute("/store/$pubkey")({
 function sortProducts(
   products: Product[],
   sort: SortOption | undefined,
-  btcUsdRate: number | null,
+  btcUsdRate: number | null
 ): Product[] {
   switch (sort) {
     case "price_asc":
       return [...products].sort(
         (a, b) =>
           (getComparablePriceValue(a, btcUsdRate) ?? a.price) -
-          (getComparablePriceValue(b, btcUsdRate) ?? b.price),
+          (getComparablePriceValue(b, btcUsdRate) ?? b.price)
       )
     case "price_desc":
       return [...products].sort(
         (a, b) =>
           (getComparablePriceValue(b, btcUsdRate) ?? b.price) -
-          (getComparablePriceValue(a, btcUsdRate) ?? a.price),
+          (getComparablePriceValue(a, btcUsdRate) ?? a.price)
       )
     case "newest":
     default:
@@ -128,11 +129,11 @@ function StorefrontPage() {
         limit: 10,
       })
       const event = Array.from(events).sort(
-        (a, b) => (b.created_at ?? 0) - (a.created_at ?? 0),
+        (a, b) => (b.created_at ?? 0) - (a.created_at ?? 0)
       )[0]
 
       return Array.from(event?.tags ?? []).some(
-        (tag) => tag[0] === "p" && tag[1] === pubkey,
+        (tag) => tag[0] === "p" && tag[1] === pubkey
       )
     },
   })
@@ -174,11 +175,11 @@ function StorefrontPage() {
     const products = storeProducts
     if (products.length <= 1) return true
     const currencies = new Set(
-      products.map((product) => product.currency.trim().toUpperCase()),
+      products.map((product) => product.currency.trim().toUpperCase())
     )
     if (currencies.size <= 1) return true
     return products.every(
-      (product) => getComparablePriceValue(product, btcUsdRate) !== null,
+      (product) => getComparablePriceValue(product, btcUsdRate) !== null
     )
   }, [btcUsdRate, storeProducts])
 
@@ -190,13 +191,13 @@ function StorefrontPage() {
       result = result.filter(
         (product) =>
           product.title.toLowerCase().includes(query) ||
-          (product.summary?.toLowerCase().includes(query) ?? false),
+          (product.summary?.toLowerCase().includes(query) ?? false)
       )
     }
 
     if (search.tag) {
       result = result.filter((product) =>
-        product.tags.some((tag) => tag.toLowerCase() === search.tag),
+        product.tags.some((tag) => tag.toLowerCase() === search.tag)
       )
     }
 
@@ -231,9 +232,7 @@ function StorefrontPage() {
     measure()
 
     const resizeObserver =
-      typeof ResizeObserver !== "undefined"
-        ? new ResizeObserver(measure)
-        : null
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null
     resizeObserver?.observe(element)
     window.addEventListener("resize", measure)
 
@@ -305,12 +304,12 @@ function StorefrontPage() {
         limit: 10,
       })
       const latest = Array.from(existingEvents).sort(
-        (a, b) => (b.created_at ?? 0) - (a.created_at ?? 0),
+        (a, b) => (b.created_at ?? 0) - (a.created_at ?? 0)
       )[0]
 
       const nextTags = Array.from(latest?.tags ?? [])
       const alreadyFollowing = nextTags.some(
-        (tag) => tag[0] === "p" && tag[1] === pubkey,
+        (tag) => tag[0] === "p" && tag[1] === pubkey
       )
       if (nextShouldFollow && !alreadyFollowing) {
         nextTags.push(["p", pubkey])
@@ -328,7 +327,7 @@ function StorefrontPage() {
       event.kind = 3
       event.created_at = Math.floor(Date.now() / 1000)
       event.content = latest?.content ?? ""
-      event.tags = nextTags
+      event.tags = appendConduitClientTag(nextTags, "market")
 
       await event.sign(ndk.signer)
       await event.publish()
@@ -767,7 +766,7 @@ function StorefrontPage() {
                     }
                     onDecrement={() => {
                       const existing = cart.items.find(
-                        (item) => item.productId === product.id,
+                        (item) => item.productId === product.id
                       )
                       if (!existing) return
                       if (existing.quantity <= 1) {

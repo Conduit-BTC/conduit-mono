@@ -17,6 +17,11 @@ export interface ConduitConfig {
   publicRelayUrls: string[]
   cacheApiUrl: string | null
   lightningNetwork: "mainnet" | "signet" | "testnet" | "mock"
+  nip89RelayHint: string
+  nip89MarketPubkey: string | null
+  nip89MerchantPubkey: string | null
+  nip89MarketDTag: string
+  nip89MerchantDTag: string
 }
 
 // Vite only statically replaces direct property access (import.meta.env.VITE_FOO).
@@ -31,6 +36,11 @@ function getViteEnv(): {
   publicRelayUrls: string
   cacheApiUrl: string
   lightningNetwork: string
+  nip89RelayHint: string
+  nip89MarketPubkey: string
+  nip89MerchantPubkey: string
+  nip89MarketDTag: string
+  nip89MerchantDTag: string
 } {
   if (typeof import.meta !== "undefined" && import.meta.env) {
     return {
@@ -42,6 +52,11 @@ function getViteEnv(): {
       publicRelayUrls: import.meta.env.VITE_PUBLIC_RELAY_URLS ?? "",
       cacheApiUrl: import.meta.env.VITE_CACHE_API_URL ?? "",
       lightningNetwork: import.meta.env.VITE_LIGHTNING_NETWORK ?? "",
+      nip89RelayHint: import.meta.env.VITE_NIP89_RELAY_HINT ?? "",
+      nip89MarketPubkey: import.meta.env.VITE_NIP89_MARKET_PUBKEY ?? "",
+      nip89MerchantPubkey: import.meta.env.VITE_NIP89_MERCHANT_PUBKEY ?? "",
+      nip89MarketDTag: import.meta.env.VITE_NIP89_MARKET_D_TAG ?? "",
+      nip89MerchantDTag: import.meta.env.VITE_NIP89_MERCHANT_D_TAG ?? "",
     }
   }
   return {
@@ -53,6 +68,11 @@ function getViteEnv(): {
     publicRelayUrls: "",
     cacheApiUrl: "",
     lightningNetwork: "",
+    nip89RelayHint: "",
+    nip89MarketPubkey: "",
+    nip89MerchantPubkey: "",
+    nip89MarketDTag: "",
+    nip89MerchantDTag: "",
   }
 }
 
@@ -77,7 +97,10 @@ const legacyRelays = getDefaultRelays(env)
 const l2RelayUrls = parseRelayList(env.l2RelayUrls)
 const merchantRelayUrls = parseRelayList(env.merchantRelayUrls)
 const configuredPublicRelayUrls = parseRelayList(env.publicRelayUrls)
-const publicRelayUrls = configuredPublicRelayUrls.length > 0 ? configuredPublicRelayUrls : legacyRelays
+const publicRelayUrls =
+  configuredPublicRelayUrls.length > 0
+    ? configuredPublicRelayUrls
+    : legacyRelays
 const defaultRelays = [
   ...l2RelayUrls,
   ...merchantRelayUrls,
@@ -92,7 +115,13 @@ export const config: ConduitConfig = {
   merchantRelayUrls,
   publicRelayUrls,
   cacheApiUrl: env.cacheApiUrl.trim() || null,
-  lightningNetwork: (env.lightningNetwork || "mainnet") as ConduitConfig["lightningNetwork"],
+  lightningNetwork: (env.lightningNetwork ||
+    "mainnet") as ConduitConfig["lightningNetwork"],
+  nip89RelayHint: env.nip89RelayHint.trim() || relayUrl,
+  nip89MarketPubkey: env.nip89MarketPubkey.trim() || null,
+  nip89MerchantPubkey: env.nip89MerchantPubkey.trim() || null,
+  nip89MarketDTag: env.nip89MarketDTag.trim() || "conduit-market",
+  nip89MerchantDTag: env.nip89MerchantDTag.trim() || "conduit-merchant",
 }
 
 export function isMockPayments(): boolean {
@@ -104,7 +133,10 @@ export function isSignet(): boolean {
 }
 
 export function isTestnet(): boolean {
-  return config.lightningNetwork === "testnet" || config.lightningNetwork === "signet"
+  return (
+    config.lightningNetwork === "testnet" ||
+    config.lightningNetwork === "signet"
+  )
 }
 
 export function isMainnet(): boolean {
