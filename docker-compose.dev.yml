@@ -1,0 +1,87 @@
+# Conduit Local Development Relay Stack
+#
+# Three relay roles for local development:
+#   - conduitl2:      L2 commerce relay   (ws://127.0.0.1:3334)
+#   - haven:          Merchant relay       (ws://127.0.0.1:3355)
+#   - public-relay:   Generic public relay (ws://127.0.0.1:7777)
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up -d
+#   docker compose -f docker-compose.dev.yml down
+#   docker compose -f docker-compose.dev.yml logs -f
+#
+# Reset all relay data:
+#   docker compose -f docker-compose.dev.yml down -v
+
+services:
+  conduitl2:
+    build:
+      context: ../conduitl2
+      dockerfile: Dockerfile
+    ports:
+      - "3334:3334"
+    environment:
+      PORT: "3334"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-q",
+          "--spider",
+          "--header=Accept: application/nostr+json",
+          "http://127.0.0.1:3334",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  haven:
+    build:
+      context: relays/haven
+      dockerfile: Dockerfile
+    ports:
+      - "3355:3355"
+    env_file:
+      - relays/haven/.env.dev
+    volumes:
+      - haven-db:/app/db
+      - haven-blossom:/app/blossom
+      - ./relays/haven/relays_import.json:/app/relays_import.json:ro
+      - ./relays/haven/relays_blastr.json:/app/relays_blastr.json:ro
+      - ./relays/haven/whitelist_npubs.dev.json:/app/whitelist_npubs.dev.json:ro
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-q",
+          "-O",
+          "/dev/null",
+          "--header=Accept: application/nostr+json",
+          "http://127.0.0.1:3355",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  public-relay:
+    image: scsibug/nostr-rs-relay:latest
+    ports:
+      - "7777:8080"
+    volumes:
+      - public-relay-db:/usr/src/app/db
+    restart: unless-stopped
+    healthcheck:
+      test:
+        ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && exec 3>&-'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  haven-db:
+  haven-blossom:
+  public-relay-db:
