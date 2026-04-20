@@ -2,7 +2,7 @@ import { useMemo, useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
-import { EVENT_KINDS, getMerchantStorefront, requireNdkConnected, type CommerceResult, type ProductSchema, useAuth } from "@conduit/core"
+import { EVENT_KINDS, getMerchantStorefront, getWriteRelaySet, requireNdkConnected, type CommerceResult, type ProductSchema, useAuth } from "@conduit/core"
 import { Badge, Button, Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 
@@ -144,7 +144,7 @@ async function publishProduct(
   for (const tag of tags) event.tags.push(["t", tag])
 
   await event.sign(ndk.signer)
-  await event.publish()
+  await event.publish(getWriteRelaySet(ndk))
 }
 
 async function deleteProduct(merchantPubkey: string, product: MerchantProduct): Promise<void> {
@@ -169,7 +169,7 @@ async function deleteProduct(merchantPubkey: string, product: MerchantProduct): 
   deletion.content = `Delete product ${product.addressId}`
 
   await deletion.sign(ndk.signer)
-  await deletion.publish()
+  await deletion.publish(getWriteRelaySet(ndk))
 }
 
 function ProductsPage() {

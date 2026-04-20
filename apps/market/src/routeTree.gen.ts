@@ -8,143 +8,155 @@
 // You should NOT make any changes in this file as it will be overwritten.
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
-import { Route as rootRouteImport } from './routes/__root'
-import { Route as ProfileRouteImport } from './routes/profile'
-import { Route as OrdersRouteImport } from './routes/orders'
-import { Route as MessagesRouteImport } from './routes/messages'
-import { Route as CheckoutRouteImport } from './routes/checkout'
-import { Route as CartRouteImport } from './routes/cart'
-import { Route as IndexRouteImport } from './routes/index'
-import { Route as ProductsIndexRouteImport } from './routes/products/index'
-import { Route as UProfileRefRouteImport } from './routes/u/$profileRef'
-import { Route as StorePubkeyRouteImport } from './routes/store/$pubkey'
-import { Route as ProductsProductIdRouteImport } from './routes/products/$productId'
+import { Route as rootRouteImport } from "./routes/__root"
+import { Route as SettingsRouteImport } from "./routes/settings"
+import { Route as ProfileRouteImport } from "./routes/profile"
+import { Route as OrdersRouteImport } from "./routes/orders"
+import { Route as MessagesRouteImport } from "./routes/messages"
+import { Route as CheckoutRouteImport } from "./routes/checkout"
+import { Route as CartRouteImport } from "./routes/cart"
+import { Route as IndexRouteImport } from "./routes/index"
+import { Route as ProductsIndexRouteImport } from "./routes/products/index"
+import { Route as UProfileRefRouteImport } from "./routes/u/$profileRef"
+import { Route as StorePubkeyRouteImport } from "./routes/store/$pubkey"
+import { Route as ProductsProductIdRouteImport } from "./routes/products/$productId"
 
+const SettingsRoute = SettingsRouteImport.update({
+  id: "/settings",
+  path: "/settings",
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProfileRoute = ProfileRouteImport.update({
-  id: '/profile',
-  path: '/profile',
+  id: "/profile",
+  path: "/profile",
   getParentRoute: () => rootRouteImport,
 } as any)
 const OrdersRoute = OrdersRouteImport.update({
-  id: '/orders',
-  path: '/orders',
+  id: "/orders",
+  path: "/orders",
   getParentRoute: () => rootRouteImport,
 } as any)
 const MessagesRoute = MessagesRouteImport.update({
-  id: '/messages',
-  path: '/messages',
+  id: "/messages",
+  path: "/messages",
   getParentRoute: () => rootRouteImport,
 } as any)
 const CheckoutRoute = CheckoutRouteImport.update({
-  id: '/checkout',
-  path: '/checkout',
+  id: "/checkout",
+  path: "/checkout",
   getParentRoute: () => rootRouteImport,
 } as any)
 const CartRoute = CartRouteImport.update({
-  id: '/cart',
-  path: '/cart',
+  id: "/cart",
+  path: "/cart",
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+  id: "/",
+  path: "/",
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProductsIndexRoute = ProductsIndexRouteImport.update({
-  id: '/products/',
-  path: '/products/',
+  id: "/products/",
+  path: "/products/",
   getParentRoute: () => rootRouteImport,
 } as any)
 const UProfileRefRoute = UProfileRefRouteImport.update({
-  id: '/u/$profileRef',
-  path: '/u/$profileRef',
+  id: "/u/$profileRef",
+  path: "/u/$profileRef",
   getParentRoute: () => rootRouteImport,
 } as any)
 const StorePubkeyRoute = StorePubkeyRouteImport.update({
-  id: '/store/$pubkey',
-  path: '/store/$pubkey',
+  id: "/store/$pubkey",
+  path: "/store/$pubkey",
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProductsProductIdRoute = ProductsProductIdRouteImport.update({
-  id: '/products/$productId',
-  path: '/products/$productId',
+  id: "/products/$productId",
+  path: "/products/$productId",
   getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
-  '/cart': typeof CartRoute
-  '/checkout': typeof CheckoutRoute
-  '/messages': typeof MessagesRoute
-  '/orders': typeof OrdersRoute
-  '/profile': typeof ProfileRoute
-  '/products/$productId': typeof ProductsProductIdRoute
-  '/store/$pubkey': typeof StorePubkeyRoute
-  '/u/$profileRef': typeof UProfileRefRoute
-  '/products/': typeof ProductsIndexRoute
+  "/": typeof IndexRoute
+  "/cart": typeof CartRoute
+  "/checkout": typeof CheckoutRoute
+  "/messages": typeof MessagesRoute
+  "/orders": typeof OrdersRoute
+  "/profile": typeof ProfileRoute
+  "/settings": typeof SettingsRoute
+  "/products/$productId": typeof ProductsProductIdRoute
+  "/store/$pubkey": typeof StorePubkeyRoute
+  "/u/$profileRef": typeof UProfileRefRoute
+  "/products/": typeof ProductsIndexRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
-  '/cart': typeof CartRoute
-  '/checkout': typeof CheckoutRoute
-  '/messages': typeof MessagesRoute
-  '/orders': typeof OrdersRoute
-  '/profile': typeof ProfileRoute
-  '/products/$productId': typeof ProductsProductIdRoute
-  '/store/$pubkey': typeof StorePubkeyRoute
-  '/u/$profileRef': typeof UProfileRefRoute
-  '/products': typeof ProductsIndexRoute
+  "/": typeof IndexRoute
+  "/cart": typeof CartRoute
+  "/checkout": typeof CheckoutRoute
+  "/messages": typeof MessagesRoute
+  "/orders": typeof OrdersRoute
+  "/profile": typeof ProfileRoute
+  "/settings": typeof SettingsRoute
+  "/products/$productId": typeof ProductsProductIdRoute
+  "/store/$pubkey": typeof StorePubkeyRoute
+  "/u/$profileRef": typeof UProfileRefRoute
+  "/products": typeof ProductsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
-  '/cart': typeof CartRoute
-  '/checkout': typeof CheckoutRoute
-  '/messages': typeof MessagesRoute
-  '/orders': typeof OrdersRoute
-  '/profile': typeof ProfileRoute
-  '/products/$productId': typeof ProductsProductIdRoute
-  '/store/$pubkey': typeof StorePubkeyRoute
-  '/u/$profileRef': typeof UProfileRefRoute
-  '/products/': typeof ProductsIndexRoute
+  "/": typeof IndexRoute
+  "/cart": typeof CartRoute
+  "/checkout": typeof CheckoutRoute
+  "/messages": typeof MessagesRoute
+  "/orders": typeof OrdersRoute
+  "/profile": typeof ProfileRoute
+  "/settings": typeof SettingsRoute
+  "/products/$productId": typeof ProductsProductIdRoute
+  "/store/$pubkey": typeof StorePubkeyRoute
+  "/u/$profileRef": typeof UProfileRefRoute
+  "/products/": typeof ProductsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    | '/'
-    | '/cart'
-    | '/checkout'
-    | '/messages'
-    | '/orders'
-    | '/profile'
-    | '/products/$productId'
-    | '/store/$pubkey'
-    | '/u/$profileRef'
-    | '/products/'
+    | "/"
+    | "/cart"
+    | "/checkout"
+    | "/messages"
+    | "/orders"
+    | "/profile"
+    | "/settings"
+    | "/products/$productId"
+    | "/store/$pubkey"
+    | "/u/$profileRef"
+    | "/products/"
   fileRoutesByTo: FileRoutesByTo
   to:
-    | '/'
-    | '/cart'
-    | '/checkout'
-    | '/messages'
-    | '/orders'
-    | '/profile'
-    | '/products/$productId'
-    | '/store/$pubkey'
-    | '/u/$profileRef'
-    | '/products'
+    | "/"
+    | "/cart"
+    | "/checkout"
+    | "/messages"
+    | "/orders"
+    | "/profile"
+    | "/settings"
+    | "/products/$productId"
+    | "/store/$pubkey"
+    | "/u/$profileRef"
+    | "/products"
   id:
-    | '__root__'
-    | '/'
-    | '/cart'
-    | '/checkout'
-    | '/messages'
-    | '/orders'
-    | '/profile'
-    | '/products/$productId'
-    | '/store/$pubkey'
-    | '/u/$profileRef'
-    | '/products/'
+    | "__root__"
+    | "/"
+    | "/cart"
+    | "/checkout"
+    | "/messages"
+    | "/orders"
+    | "/profile"
+    | "/settings"
+    | "/products/$productId"
+    | "/store/$pubkey"
+    | "/u/$profileRef"
+    | "/products/"
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -154,81 +166,89 @@ export interface RootRouteChildren {
   MessagesRoute: typeof MessagesRoute
   OrdersRoute: typeof OrdersRoute
   ProfileRoute: typeof ProfileRoute
+  SettingsRoute: typeof SettingsRoute
   ProductsProductIdRoute: typeof ProductsProductIdRoute
   StorePubkeyRoute: typeof StorePubkeyRoute
   UProfileRefRoute: typeof UProfileRefRoute
   ProductsIndexRoute: typeof ProductsIndexRoute
 }
 
-declare module '@tanstack/react-router' {
+declare module "@tanstack/react-router" {
   interface FileRoutesByPath {
-    '/profile': {
-      id: '/profile'
-      path: '/profile'
-      fullPath: '/profile'
+    "/settings": {
+      id: "/settings"
+      path: "/settings"
+      fullPath: "/settings"
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    "/profile": {
+      id: "/profile"
+      path: "/profile"
+      fullPath: "/profile"
       preLoaderRoute: typeof ProfileRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/orders': {
-      id: '/orders'
-      path: '/orders'
-      fullPath: '/orders'
+    "/orders": {
+      id: "/orders"
+      path: "/orders"
+      fullPath: "/orders"
       preLoaderRoute: typeof OrdersRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/messages': {
-      id: '/messages'
-      path: '/messages'
-      fullPath: '/messages'
+    "/messages": {
+      id: "/messages"
+      path: "/messages"
+      fullPath: "/messages"
       preLoaderRoute: typeof MessagesRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/checkout': {
-      id: '/checkout'
-      path: '/checkout'
-      fullPath: '/checkout'
+    "/checkout": {
+      id: "/checkout"
+      path: "/checkout"
+      fullPath: "/checkout"
       preLoaderRoute: typeof CheckoutRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/cart': {
-      id: '/cart'
-      path: '/cart'
-      fullPath: '/cart'
+    "/cart": {
+      id: "/cart"
+      path: "/cart"
+      fullPath: "/cart"
       preLoaderRoute: typeof CartRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
+    "/": {
+      id: "/"
+      path: "/"
+      fullPath: "/"
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/products/': {
-      id: '/products/'
-      path: '/products'
-      fullPath: '/products/'
+    "/products/": {
+      id: "/products/"
+      path: "/products"
+      fullPath: "/products/"
       preLoaderRoute: typeof ProductsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/u/$profileRef': {
-      id: '/u/$profileRef'
-      path: '/u/$profileRef'
-      fullPath: '/u/$profileRef'
+    "/u/$profileRef": {
+      id: "/u/$profileRef"
+      path: "/u/$profileRef"
+      fullPath: "/u/$profileRef"
       preLoaderRoute: typeof UProfileRefRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/store/$pubkey': {
-      id: '/store/$pubkey'
-      path: '/store/$pubkey'
-      fullPath: '/store/$pubkey'
+    "/store/$pubkey": {
+      id: "/store/$pubkey"
+      path: "/store/$pubkey"
+      fullPath: "/store/$pubkey"
       preLoaderRoute: typeof StorePubkeyRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/products/$productId': {
-      id: '/products/$productId'
-      path: '/products/$productId'
-      fullPath: '/products/$productId'
+    "/products/$productId": {
+      id: "/products/$productId"
+      path: "/products/$productId"
+      fullPath: "/products/$productId"
       preLoaderRoute: typeof ProductsProductIdRouteImport
       parentRoute: typeof rootRouteImport
     }
@@ -242,6 +262,7 @@ const rootRouteChildren: RootRouteChildren = {
   MessagesRoute: MessagesRoute,
   OrdersRoute: OrdersRoute,
   ProfileRoute: ProfileRoute,
+  SettingsRoute: SettingsRoute,
   ProductsProductIdRoute: ProductsProductIdRoute,
   StorePubkeyRoute: StorePubkeyRoute,
   UProfileRefRoute: UProfileRefRoute,

@@ -10,10 +10,12 @@ export * from "./lightning"
 export * from "./commerce"
 export {
   getNdk,
+  getWriteRelaySet,
   connectNdk,
   requireNdkConnected,
   fetchEventsFanout,
   disconnectNdk,
+  refreshNdkRelaySettings,
   setSigner,
   removeSigner,
   subscribeNdkState,

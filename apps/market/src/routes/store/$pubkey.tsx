@@ -24,6 +24,7 @@ import {
 } from "@conduit/ui"
 import {
   formatNpub,
+  getWriteRelaySet,
   requireNdkConnected,
   useAuth,
   useProfile,
@@ -331,7 +332,7 @@ function StorefrontPage() {
       event.tags = nextTags
 
       await event.sign(ndk.signer)
-      await event.publish()
+      await event.publish(getWriteRelaySet(ndk))
 
       setFollowOverride(nextShouldFollow)
       await queryClient.invalidateQueries({

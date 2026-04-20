@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useEffect, useMemo, useState } from "react"
 import { Badge, Button } from "@conduit/ui"
 import { MessageCircleMore, Search, Store } from "lucide-react"
-import { EVENT_KINDS, formatNpub, getNdk, getProfiles, formatPubkey, useAuth, useProfile } from "@conduit/core"
+import { EVENT_KINDS, formatNpub, getNdk, getProfiles, getWriteRelaySet, formatPubkey, useAuth, useProfile } from "@conduit/core"
 import { requireAuth } from "../lib/auth"
 import { CopyButton } from "../components/CopyButton"
 import { MerchantAvatarFallback, getMerchantDisplayName } from "../components/MerchantIdentity"
@@ -211,7 +211,8 @@ function MessagesPage() {
         rumorKind: EVENT_KINDS.ORDER,
       })
 
-      await Promise.all([wrappedToMerchant.publish(), wrappedToBuyer.publish()])
+      const relaySet = getWriteRelaySet(ndk)
+      await Promise.all([wrappedToMerchant.publish(relaySet), wrappedToBuyer.publish(relaySet)])
     },
     onSuccess: async () => {
       setReplyText("")

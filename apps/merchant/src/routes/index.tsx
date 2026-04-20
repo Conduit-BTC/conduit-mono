@@ -5,12 +5,13 @@ import {
   EVENT_KINDS,
   fetchEventsFanout,
   formatPubkey,
+  getEffectiveRelayGroups,
   parseProductEvent,
   useAuth,
   useNdkState,
   type ParsedOrderMessage,
 } from "@conduit/core"
-import { ArrowRight, Package, ShoppingBag, Wallet } from "lucide-react"
+import { ArrowRight, Package, Radio, ShoppingBag, Wallet } from "lucide-react"
 import type { ComponentType } from "react"
 import { Badge, Button } from "@conduit/ui"
 
@@ -160,9 +161,31 @@ function DashboardPage() {
               {formatPubkey(pubkey, 10)}
             </Badge>
           )}
-          <Badge variant="secondary" className="border-[var(--border)] bg-[var(--surface-elevated)]">
-            Relay {ndk.status}
-          </Badge>
+          <Link to="/settings">
+            <Badge variant="secondary" className="border-[var(--border)] bg-[var(--surface-elevated)] cursor-pointer hover:border-[var(--text-secondary)]">
+              <Radio className="mr-1.5 h-3 w-3" />
+              Relay {ndk.status}
+              {ndk.connectedRelays.length > 0 && (
+                <span className="ml-1.5 text-[var(--text-muted)]">
+                  ({ndk.connectedRelays.length})
+                </span>
+              )}
+            </Badge>
+          </Link>
+          {(() => {
+            const groups = getEffectiveRelayGroups()
+            const counts = [
+              groups.merchant.length > 0 ? `${groups.merchant.length} merchant` : null,
+              groups.commerce.length > 0 ? `${groups.commerce.length} commerce` : null,
+              groups.general.length > 0 ? `${groups.general.length} general` : null,
+            ].filter(Boolean)
+            if (counts.length === 0) return null
+            return (
+              <Badge variant="outline" className="border-[var(--border)] text-[var(--text-muted)]">
+                {counts.join(" / ")}
+              </Badge>
+            )
+          })()}
         </div>
       </div>
 

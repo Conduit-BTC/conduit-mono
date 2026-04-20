@@ -11,7 +11,25 @@ export * from "./schemas"
 export * from "./utils"
 
 // Config
-export { config, isMockPayments, isSignet, isTestnet, isMainnet, type ConduitConfig } from "./config"
+export {
+  config,
+  isMockPayments,
+  isSignet,
+  isTestnet,
+  isMainnet,
+  getDefaultRelayGroups,
+  getEffectiveRelayGroups,
+  getEffectiveRelayUrls,
+  getEffectiveReadableRelayUrls,
+  getEffectiveWritableRelayUrls,
+  getRelayGroupsForActor,
+  loadRelayOverrides,
+  saveRelayOverrides,
+  clearRelayOverrides,
+  relayRoleLabel,
+  relayRoleDescription,
+  type ConduitConfig,
+} from "./config"
 
 // Database
 export {
@@ -34,3 +52,4 @@ export { AuthProvider, useAuth, hasNip07, type AuthStatus, type AuthContextValue
 export { useNdkState } from "./hooks/useNdkState"
 export { useProfile } from "./hooks/useProfile"
 export { useUpdateProfile } from "./hooks/useUpdateProfile"
+export { useRelaySettings, type UseRelaySettingsResult } from "./hooks/useRelaySettings"

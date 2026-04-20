@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { readFile } from "node:fs/promises"
 
 const ALLOWED_FILE = "packages/ui/src/styles/theme.css"
+const IGNORED_PATH_SEGMENTS = ["/dist/", "/node_modules/"]
 
 const SCAN_INCLUDE = "{apps,packages}/**/*.{ts,tsx,js,jsx,css}"
 const RGBA_PATTERN = /rgba?\s*\(/g
@@ -30,6 +31,7 @@ async function listSourceFiles(): Promise<string[]> {
     throwErrorOnBrokenSymlink: false,
   })) {
     if (file === ALLOWED_FILE) continue
+    if (IGNORED_PATH_SEGMENTS.some((segment) => file.includes(segment))) continue
     files.push(file)
   }
 

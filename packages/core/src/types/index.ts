@@ -79,6 +79,44 @@ export interface ShippingAddress {
 }
 
 // Relay types
+
+/**
+ * Relay role within the Conduit commerce architecture.
+ *
+ * - `merchant`: merchant-controlled source-of-truth relay (Scope 1)
+ * - `commerce`: de-commerce relay for acceleration and routing (Scope 2 / L2)
+ * - `general`: broader Nostr network relays for reach and fallback
+ */
+export type RelayRole = "merchant" | "commerce" | "general"
+
+/**
+ * A single relay entry with its URL, role, and read/write capabilities.
+ */
+export interface RelayEntry {
+  url: string
+  role: RelayRole
+  read: boolean
+  write: boolean
+}
+
+/**
+ * Relay entries grouped by role for display in settings UX.
+ *
+ * - Merchant clients see all three groups.
+ * - Market / shopper clients see `commerce` and `general` only.
+ */
+export interface RelayGroups {
+  merchant: RelayEntry[]
+  commerce: RelayEntry[]
+  general: RelayEntry[]
+}
+
+/**
+ * Actor type that determines which relay groups are visible in settings.
+ */
+export type RelayActor = "merchant" | "shopper"
+
+/** @deprecated Use RelayEntry instead */
 export interface RelayConfig {
   url: string
   read: boolean

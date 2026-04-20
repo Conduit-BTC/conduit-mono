@@ -6,6 +6,7 @@ import {
   EVENT_KINDS,
   formatPubkey,
   getNdk,
+  getWriteRelaySet,
   useAuth,
   useProfile,
   type ShippingAddressSchema,
@@ -422,9 +423,10 @@ function CheckoutPage() {
 
       setStep("sending")
 
+      const relaySet = getWriteRelaySet(ndk)
       await Promise.all([
-        wrappedToMerchant.publish(),
-        wrappedToSelf.publish(),
+        wrappedToMerchant.publish(relaySet),
+        wrappedToSelf.publish(relaySet),
         new Promise((resolve) => window.setTimeout(resolve, 900)),
       ])
 

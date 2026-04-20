@@ -10,6 +10,7 @@ import {
   formatPubkey,
   getNdk,
   getProfiles,
+  getWriteRelaySet,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
   hasWebLN,
@@ -152,7 +153,8 @@ async function publishOrderConversationMessage(params: {
     rumorKind: EVENT_KINDS.ORDER,
   })
 
-  await Promise.all([wrappedToBuyer.publish(), wrappedToMerchant.publish()])
+  const relaySet = getWriteRelaySet(ndk)
+  await Promise.all([wrappedToBuyer.publish(relaySet), wrappedToMerchant.publish(relaySet)])
 }
 
 function MessageCard({

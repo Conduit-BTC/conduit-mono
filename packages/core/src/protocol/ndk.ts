@@ -1,5 +1,5 @@
-import NDK, { NDKRelayStatus, type NDKEvent, type NDKFilter, type NDKSigner } from "@nostr-dev-kit/ndk"
-import { config } from "../config"
+import NDK, { NDKRelaySet, NDKRelayStatus, type NDKEvent, type NDKFilter, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { getEffectiveReadableRelayUrls, getEffectiveWritableRelayUrls } from "../config"
 
 export type NdkConnectionState = "idle" | "connecting" | "connected" | "error"
 
@@ -27,6 +27,14 @@ let connectPromise: Promise<void> | null = null
 let requirePromise: Promise<NDK> | null = null
 const listeners = new Set<Listener>()
 
+function getReadableRelayUrls(): string[] {
+  return getEffectiveReadableRelayUrls()
+}
+
+function getWritableRelayUrls(): string[] {
+  return getEffectiveWritableRelayUrls()
+}
+
 function setState(partial: Partial<NdkState>): void {
   state = { ...state, ...partial }
   listeners.forEach((fn) => fn())
@@ -50,10 +58,19 @@ export function getNdkState(): NdkState {
 export function getNdk(): NDK {
   if (!ndkInstance) {
     ndkInstance = new NDK({
-      explicitRelayUrls: config.defaultRelays,
+      explicitRelayUrls: getReadableRelayUrls(),
     })
   }
   return ndkInstance
+}
+
+export function getWriteRelaySet(ndk = getNdk()): NDKRelaySet {
+  const relayUrls = getWritableRelayUrls()
+  if (relayUrls.length === 0) {
+    throw new Error("No write-enabled relays configured")
+  }
+
+  return NDKRelaySet.fromRelayUrls(relayUrls, ndk)
 }
 
 function sleep<T>(ms: number, value: T): Promise<T> {
@@ -99,7 +116,7 @@ export async function fetchEventsFanout(
 ): Promise<NDKEvent[]> {
   const relayUrls = (options.relayUrls && options.relayUrls.length > 0
     ? options.relayUrls
-    : config.defaultRelays
+    : getReadableRelayUrls()
   )
     .map((url) => url.trim())
     .filter(Boolean)
@@ -232,5 +249,16 @@ export function disconnectNdk(): void {
     status: "idle",
     connectedRelays: [],
     error: null,
+  })
+}
+
+export function refreshNdkRelaySettings(): void {
+  const signer = ndkInstance?.signer
+  disconnectNdk()
+  if (signer) {
+    getNdk().signer = signer
+  }
+  void connectNdk().catch(() => {
+    // Connection failures are reflected through shared state.
   })
 }

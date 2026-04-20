@@ -3,7 +3,7 @@ import type { Profile } from "../types"
 import { db } from "../db"
 import { EVENT_KINDS } from "./kinds"
 import { getProfiles } from "./commerce"
-import { requireNdkConnected } from "./ndk"
+import { getWriteRelaySet, requireNdkConnected } from "./ndk"
 
 interface RawProfileContent {
   name?: string
@@ -75,7 +75,7 @@ export async function publishProfile(
   event.tags = []
 
   await event.sign(ndk.signer)
-  await event.publish()
+  await event.publish(getWriteRelaySet(ndk))
 
   // Update local cache
   await db.profiles.put({

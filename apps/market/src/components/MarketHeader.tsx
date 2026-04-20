@@ -395,6 +395,9 @@ export function MarketHeader() {
                       <Link to="/profile" onClick={() => setMenuOpen(false)}>Profile</Link>
                     </Button>
                   )}
+                  <Button asChild variant="ghost" className="justify-start">
+                    <Link to="/settings" onClick={() => setMenuOpen(false)}>Relays</Link>
+                  </Button>
                 </div>
 
                 <div className="mt-6 border-t border-[var(--border)] pt-4">

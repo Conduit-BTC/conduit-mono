@@ -3,6 +3,7 @@ import {
   Grid2x2,
   Menu,
   Package,
+  Radio,
   Search,
   Settings,
   ShoppingBag,
@@ -32,7 +33,7 @@ import {
 import { SignerSwitch } from "./SignerSwitch"
 
 type NavItem = {
-  to: "/" | "/orders" | "/products" | "/profile"
+  to: "/" | "/orders" | "/products" | "/profile" | "/settings"
   label: string
   icon: ComponentType<{ className?: string }>
 }
@@ -42,6 +43,7 @@ const navItems: NavItem[] = [
   { to: "/orders", label: "Orders", icon: ShoppingBag },
   { to: "/products", label: "Products", icon: Package },
   { to: "/profile", label: "Profile", icon: Settings },
+  { to: "/settings", label: "Relays", icon: Radio },
 ]
 
 function MerchantAvatarFallback({ iconClassName = "h-4 w-4" }: { iconClassName?: string }) {

@@ -187,5 +187,6 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/products") return "Products"
   if (pathname === "/orders") return "Orders"
   if (pathname === "/profile") return "Profile"
+  if (pathname === "/settings") return "Relays"
   return "Merchant"
 }

@@ -8,7 +8,7 @@
     "routes:gen": "bun scripts/generate-routes.ts",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "bun run routes:gen && tsc --noEmit",
     "lint": "eslint \"src/**/*.{ts,tsx}\""
   },
   "dependencies": {
