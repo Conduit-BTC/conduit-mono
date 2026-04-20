@@ -8,67 +8,67 @@
 // You should NOT make any changes in this file as it will be overwritten.
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
-import { Route as rootRouteImport } from "./routes/__root"
-import { Route as SettingsRouteImport } from "./routes/settings"
-import { Route as ProfileRouteImport } from "./routes/profile"
-import { Route as ProductsRouteImport } from "./routes/products"
-import { Route as OrdersRouteImport } from "./routes/orders"
-import { Route as IndexRouteImport } from "./routes/index"
+import { Route as rootRouteImport } from './routes/__root'
+import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as ProfileRouteImport } from './routes/profile'
+import { Route as ProductsRouteImport } from './routes/products'
+import { Route as OrdersRouteImport } from './routes/orders'
+import { Route as IndexRouteImport } from './routes/index'
 
 const SettingsRoute = SettingsRouteImport.update({
-  id: "/settings",
-  path: "/settings",
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProfileRoute = ProfileRouteImport.update({
-  id: "/profile",
-  path: "/profile",
+  id: '/profile',
+  path: '/profile',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProductsRoute = ProductsRouteImport.update({
-  id: "/products",
-  path: "/products",
+  id: '/products',
+  path: '/products',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OrdersRoute = OrdersRouteImport.update({
-  id: "/orders",
-  path: "/orders",
+  id: '/orders',
+  path: '/orders',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
-  id: "/",
-  path: "/",
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
-  "/": typeof IndexRoute
-  "/orders": typeof OrdersRoute
-  "/products": typeof ProductsRoute
-  "/profile": typeof ProfileRoute
-  "/settings": typeof SettingsRoute
+  '/': typeof IndexRoute
+  '/orders': typeof OrdersRoute
+  '/products': typeof ProductsRoute
+  '/profile': typeof ProfileRoute
+  '/settings': typeof SettingsRoute
 }
 export interface FileRoutesByTo {
-  "/": typeof IndexRoute
-  "/orders": typeof OrdersRoute
-  "/products": typeof ProductsRoute
-  "/profile": typeof ProfileRoute
-  "/settings": typeof SettingsRoute
+  '/': typeof IndexRoute
+  '/orders': typeof OrdersRoute
+  '/products': typeof ProductsRoute
+  '/profile': typeof ProfileRoute
+  '/settings': typeof SettingsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  "/": typeof IndexRoute
-  "/orders": typeof OrdersRoute
-  "/products": typeof ProductsRoute
-  "/profile": typeof ProfileRoute
-  "/settings": typeof SettingsRoute
+  '/': typeof IndexRoute
+  '/orders': typeof OrdersRoute
+  '/products': typeof ProductsRoute
+  '/profile': typeof ProfileRoute
+  '/settings': typeof SettingsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: "/" | "/orders" | "/products" | "/profile" | "/settings"
+  fullPaths: '/' | '/orders' | '/products' | '/profile' | '/settings'
   fileRoutesByTo: FileRoutesByTo
-  to: "/" | "/orders" | "/products" | "/profile" | "/settings"
-  id: "__root__" | "/" | "/orders" | "/products" | "/profile" | "/settings"
+  to: '/' | '/orders' | '/products' | '/profile' | '/settings'
+  id: '__root__' | '/' | '/orders' | '/products' | '/profile' | '/settings'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -79,40 +79,40 @@ export interface RootRouteChildren {
   SettingsRoute: typeof SettingsRoute
 }
 
-declare module "@tanstack/react-router" {
+declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    "/settings": {
-      id: "/settings"
-      path: "/settings"
-      fullPath: "/settings"
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    "/profile": {
-      id: "/profile"
-      path: "/profile"
-      fullPath: "/profile"
+    '/profile': {
+      id: '/profile'
+      path: '/profile'
+      fullPath: '/profile'
       preLoaderRoute: typeof ProfileRouteImport
       parentRoute: typeof rootRouteImport
     }
-    "/products": {
-      id: "/products"
-      path: "/products"
-      fullPath: "/products"
+    '/products': {
+      id: '/products'
+      path: '/products'
+      fullPath: '/products'
       preLoaderRoute: typeof ProductsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    "/orders": {
-      id: "/orders"
-      path: "/orders"
-      fullPath: "/orders"
+    '/orders': {
+      id: '/orders'
+      path: '/orders'
+      fullPath: '/orders'
       preLoaderRoute: typeof OrdersRouteImport
       parentRoute: typeof rootRouteImport
     }
-    "/": {
-      id: "/"
-      path: "/"
-      fullPath: "/"
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }

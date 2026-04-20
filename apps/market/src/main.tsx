@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client"
 import { RouterProvider, createRouter } from "@tanstack/react-router"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools"
-import { AuthProvider, connectNdk } from "@conduit/core"
+import { AuthProvider, connectNdk, setRelayActor } from "@conduit/core"
 import { routeTree } from "./routeTree.gen"
 import "./styles/index.css"
 
@@ -17,6 +17,7 @@ declare module "@tanstack/react-router" {
   }
 }
 
+setRelayActor("shopper")
 connectNdk()
 
 createRoot(document.getElementById("root")!).render(

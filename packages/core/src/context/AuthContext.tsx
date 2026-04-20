@@ -8,7 +8,9 @@ import {
   type ReactNode,
 } from "react"
 import { NDKNip07Signer } from "@nostr-dev-kit/ndk"
+import { clearSignerRelayMap, saveSignerRelayMap } from "../config"
 import { setSigner, removeSigner } from "../protocol/ndk"
+import { refreshNdkRelaySettings } from "../protocol/ndk"
 
 export type AuthStatus = "disconnected" | "connecting" | "connected" | "error"
 
@@ -26,6 +28,10 @@ const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function hasNip07(): boolean {
   return typeof window !== "undefined" && !!window.nostr
+}
+
+type Nip07WithRelays = typeof window.nostr & {
+  getRelays?: () => Promise<Record<string, { read?: boolean; write?: boolean }>>
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
@@ -77,7 +83,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       )
       const pk = user.pubkey
 
+      const nostr = window.nostr as Nip07WithRelays | undefined
+      if (nostr?.getRelays) {
+        const relays = await withTimeout(
+          nostr.getRelays(),
+          10_000,
+          "Fetching relay list from your signer timed out."
+        )
+        saveSignerRelayMap(relays)
+      } else {
+        clearSignerRelayMap()
+      }
+
       setSigner(signer)
+      refreshNdkRelaySettings()
       setPubkey(pk)
       setStatus("connected")
       localStorage.setItem(AUTH_STORAGE_KEY, pk)
@@ -92,7 +111,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const disconnect = useCallback(() => {
+    clearSignerRelayMap()
     removeSigner()
+    refreshNdkRelaySettings()
     setPubkey(null)
     setStatus("disconnected")
     setError(null)

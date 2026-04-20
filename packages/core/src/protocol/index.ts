@@ -11,6 +11,7 @@ export * from "./commerce"
 export {
   getNdk,
   getWriteRelaySet,
+  setRelayActor,
   connectNdk,
   requireNdkConnected,
   fetchEventsFanout,

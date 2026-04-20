@@ -12,17 +12,6 @@ function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">Settings</div>
-        <h1 className="mt-3 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-          Relay configuration
-        </h1>
-        <p className="mt-2 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
-          Configure which relays your merchant portal uses to publish and read commerce events.
-          Your merchant relay is the source of truth for your products and orders.
-        </p>
-      </div>
-
       <div className="flex items-center gap-2">
         <Badge
           variant="secondary"
@@ -37,7 +26,7 @@ function SettingsPage() {
         )}
       </div>
 
-      <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-6 shadow-[var(--shadow-glass-inset)]">
+      <section className="overflow-hidden rounded-[28px] border border-[var(--border)] bg-[var(--background)] p-5 shadow-[var(--shadow-dialog)]">
         <RelaySettingsPanel
           groups={visibleGroups}
           onAddRelay={addRelay}
@@ -48,7 +37,7 @@ function SettingsPage() {
       </section>
 
       {ndk.connectedRelays.length > 0 && (
-        <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-6">
+        <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-6">
           <h2 className="text-sm font-medium text-[var(--text-primary)]">Connected relays</h2>
           <p className="mt-1 text-xs text-[var(--text-muted)]">
             Currently active relay connections from the NDK pool.

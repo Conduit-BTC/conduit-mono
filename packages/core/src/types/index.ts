@@ -89,14 +89,21 @@ export interface ShippingAddress {
  */
 export type RelayRole = "merchant" | "commerce" | "general"
 
+export type RelaySource = "app" | "signer" | "custom"
+
+export type RelayPurpose = "out" | "in" | "find" | "dm"
+
 /**
  * A single relay entry with its URL, role, and read/write capabilities.
  */
 export interface RelayEntry {
   url: string
   role: RelayRole
-  read: boolean
-  write: boolean
+  source: RelaySource
+  out: boolean
+  in: boolean
+  find: boolean
+  dm: boolean
 }
 
 /**
@@ -109,6 +116,19 @@ export interface RelayGroups {
   merchant: RelayEntry[]
   commerce: RelayEntry[]
   general: RelayEntry[]
+}
+
+export interface RelayOverrideState {
+  out?: boolean
+  in?: boolean
+  find?: boolean
+  dm?: boolean
+  hidden?: boolean
+}
+
+export interface RelayOverrides {
+  custom: RelayGroups
+  states: Record<RelayRole, Record<string, RelayOverrideState>>
 }
 
 /**

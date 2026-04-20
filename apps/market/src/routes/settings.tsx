@@ -12,15 +12,6 @@ function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
-          Relay settings
-        </h1>
-        <p className="mt-2 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
-          Configure which relays Conduit Market uses to discover products and communicate with merchants.
-        </p>
-      </div>
-
       <div className="flex items-center gap-2">
         <Badge
           variant="secondary"
@@ -35,7 +26,7 @@ function SettingsPage() {
         )}
       </div>
 
-      <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6">
+      <section className="overflow-hidden rounded-[28px] border border-[var(--border)] bg-[var(--background)] p-5 shadow-[var(--shadow-dialog)]">
         <RelaySettingsPanel
           groups={visibleGroups}
           onAddRelay={addRelay}
@@ -46,10 +37,10 @@ function SettingsPage() {
       </section>
 
       {ndk.connectedRelays.length > 0 && (
-        <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6">
+        <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-6">
           <h2 className="text-sm font-medium text-[var(--text-primary)]">Connected relays</h2>
           <p className="mt-1 text-xs text-[var(--text-muted)]">
-            Currently active relay connections.
+            The active shopper relay pool. Market connects to commerce relays and general relays, not merchant-only relays.
           </p>
           <ul className="mt-3 space-y-1.5">
             {ndk.connectedRelays.map((url) => (

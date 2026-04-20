@@ -1,5 +1,10 @@
 import NDK, { NDKRelaySet, NDKRelayStatus, type NDKEvent, type NDKFilter, type NDKSigner } from "@nostr-dev-kit/ndk"
-import { getEffectiveReadableRelayUrls, getEffectiveWritableRelayUrls } from "../config"
+import {
+  getEffectiveDmRelayUrls,
+  getEffectiveReadableRelayUrls,
+  getEffectiveWritableRelayUrls,
+} from "../config"
+import type { RelayActor } from "../types"
 
 export type NdkConnectionState = "idle" | "connecting" | "connected" | "error"
 
@@ -26,13 +31,18 @@ let state: NdkState = {
 let connectPromise: Promise<void> | null = null
 let requirePromise: Promise<NDK> | null = null
 const listeners = new Set<Listener>()
+let activeActor: RelayActor = "merchant"
 
-function getReadableRelayUrls(): string[] {
-  return getEffectiveReadableRelayUrls()
+function getReadableRelayUrls(actor = activeActor): string[] {
+  return getEffectiveReadableRelayUrls(actor)
 }
 
-function getWritableRelayUrls(): string[] {
-  return getEffectiveWritableRelayUrls()
+function getWritableRelayUrls(actor = activeActor): string[] {
+  return getEffectiveWritableRelayUrls(actor)
+}
+
+export function getDmRelayUrls(actor = activeActor): string[] {
+  return getEffectiveDmRelayUrls(actor)
 }
 
 function setState(partial: Partial<NdkState>): void {
@@ -53,6 +63,12 @@ export function subscribeNdkState(listener: Listener): () => void {
 
 export function getNdkState(): NdkState {
   return state
+}
+
+export function setRelayActor(actor: RelayActor): void {
+  if (activeActor === actor) return
+  activeActor = actor
+  refreshNdkRelaySettings()
 }
 
 export function getNdk(): NDK {

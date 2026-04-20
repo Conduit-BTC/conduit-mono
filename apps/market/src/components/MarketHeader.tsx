@@ -1,4 +1,4 @@
-import { LoaderCircle, MessagesSquare, ReceiptText, Search, ShoppingCart, Store } from "lucide-react"
+import { LoaderCircle, MessagesSquare, Radio, ReceiptText, Search, ShoppingCart, Store } from "lucide-react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 import { config, formatPubkey, useAuth, useProfile } from "@conduit/core"
 import {
@@ -249,6 +249,12 @@ export function MarketHeader() {
             <Link to="/products" activeProps={{ className: "text-[var(--text-primary)]" }}>
               <Store className="h-4 w-4" />
               Shop
+            </Link>
+          </Button>
+          <Button asChild variant="ghost" className="h-10 px-3">
+            <Link to="/settings" activeProps={{ className: "text-[var(--text-primary)]" }}>
+              <Radio className="h-4 w-4" />
+              Relays
             </Link>
           </Button>
         </nav>
