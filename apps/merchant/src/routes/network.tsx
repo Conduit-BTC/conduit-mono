@@ -1,0 +1,41 @@
+import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { useRelaySettings } from "@conduit/core"
+import { RelaySettingsPanel } from "@conduit/ui"
+import { requireAuth } from "../lib/auth"
+
+export const Route = createFileRoute("/network")({
+  beforeLoad: () => {
+    requireAuth()
+  },
+  component: NetworkPage,
+})
+
+function NetworkPage() {
+  const navigate = useNavigate()
+  const { visibleGroups, addRelay, removeRelay, updateRelay, resetToDefaults } =
+    useRelaySettings("merchant")
+
+  function handleClose(): void {
+    if (window.history.length > 1) {
+      window.history.back()
+      return
+    }
+
+    navigate({ to: "/" })
+  }
+
+  return (
+    <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
+      <div className="mx-auto max-w-[50rem]">
+        <RelaySettingsPanel
+          groups={visibleGroups}
+          onAddRelay={addRelay}
+          onRemoveRelay={removeRelay}
+          onUpdateRelay={updateRelay}
+          onReset={resetToDefaults}
+          onClose={handleClose}
+        />
+      </div>
+    </div>
+  )
+}
