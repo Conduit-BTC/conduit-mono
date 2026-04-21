@@ -1,5 +1,4 @@
 import { type HTMLAttributes } from "react"
-import type React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "../utils"
 
@@ -121,12 +120,7 @@ function FilledErrorIcon({ size }: { size: number }) {
   )
 }
 
-const ICONS: Partial<
-  Record<
-    NonNullable<StatusPillProps["variant"]>,
-    ({ size }: { size: number }) => React.ReactElement
-  >
-> = {
+const ICONS = {
   warning: FilledWarningIcon,
   success: FilledSuccessIcon,
   info: FilledInfoIcon,
