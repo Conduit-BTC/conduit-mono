@@ -25,6 +25,7 @@ export {
   getEffectiveWritableRelayUrls,
   getEffectiveDiscoveryRelayUrls,
   getEffectiveDmRelayUrls,
+  getEffectiveRoleRelayUrls,
   getRelayGroupsForActor,
   loadRelayOverrides,
   loadSignerRelayMap,
@@ -52,14 +53,27 @@ export {
 } from "./db"
 
 // Billing
-export { getEntitlements, type Entitlements, type BillingTier } from "./billing/entitlements"
+export {
+  getEntitlements,
+  type Entitlements,
+  type BillingTier,
+} from "./billing/entitlements"
 
 // Context
-export { AuthProvider, useAuth, hasNip07, type AuthStatus, type AuthContextValue } from "./context/AuthContext"
+export {
+  AuthProvider,
+  useAuth,
+  hasNip07,
+  type AuthStatus,
+  type AuthContextValue,
+} from "./context/AuthContext"
 
 // Hooks
 export { useNdkState } from "./hooks/useNdkState"
 export { useNip07Availability } from "./hooks/useNip07Availability"
 export { useProfile } from "./hooks/useProfile"
 export { useUpdateProfile } from "./hooks/useUpdateProfile"
-export { useRelaySettings, type UseRelaySettingsResult } from "./hooks/useRelaySettings"
+export {
+  useRelaySettings,
+  type UseRelaySettingsResult,
+} from "./hooks/useRelaySettings"

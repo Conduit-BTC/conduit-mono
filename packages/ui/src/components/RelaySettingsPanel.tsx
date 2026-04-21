@@ -33,20 +33,24 @@ export interface RelaySettingsPanelProps {
   className?: string
 }
 
-const ROLE_META: Record<RelayRole, {
-  eyebrow: string
-  title: string
-  surface: string
-  border: string
-  dot: string
-  accentText: string
-  addText: string
-  addLabel: string
-}> = {
+const ROLE_META: Record<
+  RelayRole,
+  {
+    eyebrow: string
+    title: string
+    surface: string
+    border: string
+    dot: string
+    accentText: string
+    addText: string
+    addLabel: string
+  }
+> = {
   merchant: {
     eyebrow: "MY RELAYS",
     title: "Your source of truth",
-    surface: "bg-[color-mix(in_srgb,var(--background)_76%,var(--primary-950)_24%)]",
+    surface:
+      "bg-[color-mix(in_srgb,var(--background)_76%,var(--primary-950)_24%)]",
     border: "border-primary-500/20",
     dot: "bg-primary-500",
     accentText: "text-primary-400",
@@ -56,7 +60,8 @@ const ROLE_META: Record<RelayRole, {
   commerce: {
     eyebrow: "COMMERCE RELAYS",
     title: "Used for marketplace and transaction events",
-    surface: "bg-[color-mix(in_srgb,var(--background)_78%,var(--secondary-950)_22%)]",
+    surface:
+      "bg-[color-mix(in_srgb,var(--background)_78%,var(--secondary-950)_22%)]",
     border: "border-secondary-500/18",
     dot: "bg-secondary-500",
     accentText: "text-secondary-400",
@@ -66,7 +71,8 @@ const ROLE_META: Record<RelayRole, {
   general: {
     eyebrow: "PUBLIC RELAYS",
     title: "General network access and discovery",
-    surface: "bg-[color-mix(in_srgb,var(--background)_78%,var(--tertiary-950)_22%)]",
+    surface:
+      "bg-[color-mix(in_srgb,var(--background)_78%,var(--tertiary-950)_22%)]",
     border: "border-tertiary-500/16",
     dot: "bg-tertiary-500",
     accentText: "text-tertiary-400",
@@ -87,12 +93,14 @@ function PurposeButton({
   title,
   icon: Icon,
   activeClass,
+  inactiveClass,
   onToggle,
 }: {
   active: boolean
   title: string
   icon: typeof ArrowUp
   activeClass: string
+  inactiveClass: string
   onToggle: () => void
 }) {
   return (
@@ -104,9 +112,7 @@ function PurposeButton({
       onClick={onToggle}
       className={cn(
         "inline-flex h-11 w-11 items-center justify-center rounded-full border transition-[color,background-color,border-color,box-shadow] sm:h-12 sm:w-12",
-        active
-          ? activeClass
-          : "border-white/14 bg-[color-mix(in_srgb,var(--background)_86%,var(--surface)_14%)] text-white shadow-[inset_0_1px_0_color-mix(in_srgb,white_5%,transparent)]",
+        active ? activeClass : inactiveClass
       )}
     >
       <Icon className="h-4 w-4 sm:h-5 sm:w-5" />
@@ -117,12 +123,14 @@ function PurposeButton({
 function RelayRow({
   entry,
   activeClass,
+  inactiveClass,
   dotClass,
   onRemove,
   onUpdate,
 }: {
   entry: RelayEntry
   activeClass: string
+  inactiveClass: string
   dotClass: string
   onRemove: () => void
   onUpdate: (next: Pick<RelayEntry, "out" | "in" | "find" | "dm">) => void
@@ -133,11 +141,18 @@ function RelayRow({
     <div className="group relative border-b border-white/6 py-4 last:border-b-0">
       <div className="grid grid-cols-[minmax(0,1fr)_repeat(4,minmax(2.75rem,auto))_2rem] items-center gap-2 sm:gap-3">
         <div className="flex min-w-0 items-center gap-4 pr-2">
-          <span className={cn("h-3 w-3 shrink-0 rounded-full", isMuted ? "bg-white/15" : dotClass)} />
+          <span
+            className={cn(
+              "h-3 w-3 shrink-0 rounded-full",
+              isMuted ? "bg-white/15" : dotClass
+            )}
+          />
           <span
             className={cn(
               "truncate font-mono text-[0.95rem] tracking-[0.01em] sm:text-[1.05rem]",
-              isMuted ? "text-[var(--text-muted)]" : "text-[var(--text-primary)]",
+              isMuted
+                ? "text-[var(--text-muted)]"
+                : "text-[var(--text-primary)]"
             )}
           >
             {entry.url}
@@ -149,6 +164,7 @@ function RelayRow({
           icon={ArrowUp}
           active={entry.out}
           activeClass={activeClass}
+          inactiveClass={inactiveClass}
           onToggle={() => onUpdate({ ...entry, out: !entry.out })}
         />
         <PurposeButton
@@ -156,6 +172,7 @@ function RelayRow({
           icon={ArrowDown}
           active={entry.in}
           activeClass={activeClass}
+          inactiveClass={inactiveClass}
           onToggle={() => onUpdate({ ...entry, in: !entry.in })}
         />
         <PurposeButton
@@ -163,6 +180,7 @@ function RelayRow({
           icon={Search}
           active={entry.find}
           activeClass={activeClass}
+          inactiveClass={inactiveClass}
           onToggle={() => onUpdate({ ...entry, find: !entry.find })}
         />
         <PurposeButton
@@ -170,6 +188,7 @@ function RelayRow({
           icon={Send}
           active={entry.dm}
           activeClass={activeClass}
+          inactiveClass={inactiveClass}
           onToggle={() => onUpdate({ ...entry, dm: !entry.dm })}
         />
 
@@ -198,19 +217,23 @@ function RelaySection({
   entries: RelayEntry[]
   onAdd: (url: string) => void
   onRemove: (url: string) => void
-  onUpdate: (url: string, next: Pick<RelayEntry, "out" | "in" | "find" | "dm">) => void
+  onUpdate: (
+    url: string,
+    next: Pick<RelayEntry, "out" | "in" | "find" | "dm">
+  ) => void
 }) {
   const [newUrl, setNewUrl] = useState("")
   const [isAdding, setIsAdding] = useState(false)
   const meta = ROLE_META[role]
+  const inactiveClass = "border-white/10 bg-white/[0.03] text-white shadow-none"
   const activeClass = useMemo(() => {
     if (role === "merchant") {
-      return "border-[color-mix(in_srgb,var(--primary-500)_68%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_16%,transparent)] text-[var(--primary-300)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--primary-500)_22%,transparent),inset_0_1px_0_color-mix(in_srgb,var(--primary-200)_16%,transparent)]"
+      return "border-primary-300/70 bg-primary-500/15 text-primary-300 shadow-none"
     }
     if (role === "commerce") {
-      return "border-[color-mix(in_srgb,var(--secondary-500)_68%,transparent)] bg-[color-mix(in_srgb,var(--secondary-500)_14%,transparent)] text-[var(--secondary-300)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--secondary-500)_22%,transparent),inset_0_1px_0_color-mix(in_srgb,var(--secondary-200)_16%,transparent)]"
+      return "border-secondary-300/70 bg-secondary-500/15 text-secondary-300 shadow-none"
     }
-    return "border-[color-mix(in_srgb,var(--tertiary-500)_68%,transparent)] bg-[color-mix(in_srgb,var(--tertiary-500)_14%,transparent)] text-[var(--tertiary-300)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--tertiary-500)_22%,transparent),inset_0_1px_0_color-mix(in_srgb,var(--tertiary-200)_16%,transparent)]"
+    return "border-tertiary-300/70 bg-tertiary-500/15 text-tertiary-300 shadow-none"
   }, [role])
 
   function handleSubmit(event: FormEvent): void {
@@ -225,17 +248,33 @@ function RelaySection({
   return (
     <section className="space-y-4">
       <div>
-        <div className={cn("text-[1rem] font-semibold tracking-[0.03em]", meta.accentText)}>
+        <div
+          className={cn(
+            "text-[1rem] font-semibold tracking-[0.03em]",
+            meta.accentText
+          )}
+        >
           {meta.eyebrow}
         </div>
-        <div className="mt-1 text-[1rem] text-[var(--text-secondary)]">{meta.title}</div>
+        <div className="mt-1 text-[1rem] text-[var(--text-secondary)]">
+          {meta.title}
+        </div>
       </div>
 
-      <div className={cn("rounded-[2rem] border px-6 py-5 shadow-[inset_0_1px_0_color-mix(in_srgb,white_4%,transparent)]", meta.surface, meta.border)}>
+      <div
+        className={cn(
+          "rounded-[2rem] border px-6 py-5 shadow-[inset_0_1px_0_color-mix(in_srgb,white_4%,transparent)]",
+          meta.surface,
+          meta.border
+        )}
+      >
         <div className="mb-3 grid grid-cols-[minmax(0,1fr)_repeat(4,minmax(2.75rem,auto))_2rem] items-center gap-2 sm:gap-3">
           <div />
           {PURPOSE_META.map((purpose) => (
-            <div key={purpose.key} className="text-center text-[0.75rem] font-medium tracking-[0.18em] text-[var(--text-muted)]">
+            <div
+              key={purpose.key}
+              className="text-center text-[0.75rem] font-medium tracking-[0.18em] text-[var(--text-muted)]"
+            >
               {purpose.label}
             </div>
           ))}
@@ -243,23 +282,29 @@ function RelaySection({
         </div>
 
         <div>
-          {entries.length > 0 ? entries.map((entry) => (
-            <RelayRow
-              key={entry.url}
-              entry={entry}
-              activeClass={activeClass}
-              dotClass={meta.dot}
-              onRemove={() => onRemove(entry.url)}
-              onUpdate={(next) => onUpdate(entry.url, next)}
-            />
-          )) : (
+          {entries.length > 0 ? (
+            entries.map((entry) => (
+              <RelayRow
+                key={entry.url}
+                entry={entry}
+                activeClass={activeClass}
+                inactiveClass={inactiveClass}
+                dotClass={meta.dot}
+                onRemove={() => onRemove(entry.url)}
+                onUpdate={(next) => onUpdate(entry.url, next)}
+              />
+            ))
+          ) : (
             <div className="border-b border-white/6 py-4 text-[0.95rem] text-[var(--text-muted)]">
               No relays configured in this section yet.
             </div>
           )}
 
           {isAdding ? (
-            <form onSubmit={handleSubmit} className="flex flex-col gap-3 pt-5 sm:flex-row">
+            <form
+              onSubmit={handleSubmit}
+              className="flex flex-col gap-3 pt-5 sm:flex-row"
+            >
               <Input
                 type="url"
                 placeholder="wss://relay.example.com"
@@ -268,7 +313,9 @@ function RelaySection({
                 className="h-12 rounded-2xl border-white/10 bg-[color-mix(in_srgb,var(--background)_78%,var(--surface)_22%)] font-mono text-sm"
               />
               <div className="flex gap-2">
-                <Button type="submit" className="h-12 rounded-2xl px-5">Add</Button>
+                <Button type="submit" className="h-12 rounded-2xl px-5">
+                  Add
+                </Button>
                 <Button
                   type="button"
                   variant="ghost"
@@ -286,7 +333,10 @@ function RelaySection({
             <button
               type="button"
               onClick={() => setIsAdding(true)}
-              className={cn("mt-3 inline-flex items-center gap-3 text-[1rem] font-medium transition-colors", meta.addText)}
+              className={cn(
+                "mt-3 inline-flex items-center gap-3 text-[1rem] font-medium transition-colors",
+                meta.addText
+              )}
             >
               <Plus className="h-5 w-5" />
               {meta.addLabel}
@@ -307,13 +357,15 @@ export function RelaySettingsPanel({
   onClose,
   className,
 }: RelaySettingsPanelProps) {
-  const roles = (["merchant", "commerce", "general"] as const).filter((role) => role in groups)
+  const roles = (["merchant", "commerce", "general"] as const).filter(
+    (role) => role in groups
+  )
 
   return (
     <section
       className={cn(
         "rounded-[2.25rem] border border-white/8 bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--primary-500)_8%,transparent),transparent_32%),linear-gradient(180deg,color-mix(in_srgb,var(--background)_90%,var(--surface)_10%),color-mix(in_srgb,var(--background)_94%,black_6%))] px-5 py-6 shadow-[var(--shadow-dialog)] sm:px-8 sm:py-8",
-        className,
+        className
       )}
     >
       <div className="space-y-8">
@@ -346,7 +398,8 @@ export function RelaySettingsPanel({
           </div>
 
           <p className="max-w-[44rem] text-[1rem] leading-8 text-[var(--text-secondary)] sm:text-[1.05rem]">
-            These relays are used across your accounts. Roles determine how each relay is used.
+            These relays are used across your accounts. Roles determine how each
+            relay is used.
           </p>
         </div>
 

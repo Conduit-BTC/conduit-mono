@@ -1,10 +1,6 @@
 import { ChevronDown, CircleUserRound, LogOut, Radio } from "lucide-react"
 import { useState, type ReactNode } from "react"
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "./Avatar"
+import { Avatar, AvatarFallback, AvatarImage } from "./Avatar"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -42,12 +38,17 @@ function SelectorItem({
       onSelect={onSelect}
       className={cn(
         "h-11 rounded-xl px-3 text-[15px] font-medium",
-        variant === "default" && "text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] focus:text-[var(--text-primary)]",
-        variant === "warning" && "text-secondary-400 focus:bg-secondary-500/10 focus:text-secondary-300",
-        variant === "danger" && "text-tertiary-400 focus:bg-transparent focus:text-tertiary-400",
+        variant === "default" &&
+          "text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] focus:text-[var(--text-primary)]",
+        variant === "warning" &&
+          "text-secondary-400 focus:bg-secondary-500/10 focus:text-secondary-300",
+        variant === "danger" &&
+          "text-tertiary-400 focus:bg-transparent focus:text-tertiary-400"
       )}
     >
-      <span className="mr-3 inline-flex h-5 w-5 shrink-0 items-center justify-center">{icon}</span>
+      <span className="mr-3 inline-flex h-5 w-5 shrink-0 items-center justify-center">
+        {icon}
+      </span>
       <span>{label}</span>
     </DropdownMenuItem>
   )
@@ -73,7 +74,7 @@ export function ProfileSelector({
           type="button"
           className={cn(
             "inline-flex h-12 min-w-[12.5rem] items-center gap-3 rounded-[18px] border border-primary-400/35 bg-[linear-gradient(135deg,color-mix(in_srgb,var(--primary-400)_88%,var(--primary-500))_0%,color-mix(in_srgb,var(--primary-300)_76%,var(--tertiary-500)_24%)_100%)] px-3 text-left text-white shadow-[0_10px_28px_color-mix(in_srgb,var(--primary-500)_28%,transparent),inset_0_1px_0_color-mix(in_srgb,white_18%,transparent)] transition-all hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400",
-            className,
+            className
           )}
         >
           <Avatar className="h-8 w-8 border border-white/20 shadow-[0_0_0_1px_color-mix(in_srgb,white_8%,transparent)]">
@@ -82,14 +83,21 @@ export function ProfileSelector({
               {avatarFallback ?? displayName.slice(0, 1).toUpperCase()}
             </AvatarFallback>
           </Avatar>
-          <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">{displayName}</span>
+          <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">
+            {displayName}
+          </span>
           <div className="flex items-center gap-2">
             {alertLabel ? (
               <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-secondary-300/40 bg-secondary-500 text-secondary-50 shadow-[inset_0_1px_0_color-mix(in_srgb,white_24%,transparent)]">
                 !
               </span>
             ) : null}
-            <ChevronDown className={cn("h-5 w-5 transition-transform", open && "rotate-180")} />
+            <ChevronDown
+              className={cn(
+                "h-5 w-5 transition-transform",
+                open && "rotate-180"
+              )}
+            />
           </div>
         </button>
       </DropdownMenuTrigger>
@@ -107,7 +115,9 @@ export function ProfileSelector({
                 {avatarFallback ?? displayName.slice(0, 1).toUpperCase()}
               </AvatarFallback>
             </Avatar>
-            <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">{displayName}</span>
+            <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">
+              {displayName}
+            </span>
             <ChevronDown className="h-5 w-5 rotate-180" />
           </div>
         </div>
@@ -154,7 +164,9 @@ export function ProfileSelector({
             />
           ) : null}
 
-          {(onProfile || onNetwork) ? <DropdownMenuSeparator className="mx-0 my-2 bg-white/8" /> : null}
+          {onProfile || onNetwork ? (
+            <DropdownMenuSeparator className="mx-0 my-2 bg-white/8" />
+          ) : null}
 
           <SelectorItem
             icon={<LogOut className="h-4 w-4" />}

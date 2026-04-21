@@ -132,7 +132,11 @@ function emptyRelayOverrides(): RelayOverrides {
   }
 }
 
-function urlsToEntries(urls: string[], role: RelayRole, source: RelaySource): RelayEntry[] {
+function urlsToEntries(
+  urls: string[],
+  role: RelayRole,
+  source: RelaySource
+): RelayEntry[] {
   return urls.map((url) => ({
     url: normalizeRelayUrl(url),
     role,
@@ -177,7 +181,9 @@ function isRelayEntry(value: unknown, role: RelayRole): value is RelayEntry {
 }
 
 function isRelayGroup(value: unknown, role: RelayRole): value is RelayEntry[] {
-  return Array.isArray(value) && value.every((entry) => isRelayEntry(entry, role))
+  return (
+    Array.isArray(value) && value.every((entry) => isRelayEntry(entry, role))
+  )
 }
 
 function isRelayOverrideState(value: unknown): value is RelayOverrideState {
@@ -193,7 +199,9 @@ function isRelayOverrideState(value: unknown): value is RelayOverrideState {
   )
 }
 
-function isRelayOverrideStateMap(value: unknown): value is Record<string, RelayOverrideState> {
+function isRelayOverrideStateMap(
+  value: unknown
+): value is Record<string, RelayOverrideState> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   return Object.values(value).every((entry) => isRelayOverrideState(entry))
 }
@@ -228,49 +236,51 @@ function migrateLegacyOverrides(value: unknown): RelayOverrides | null {
 
   return {
     custom: {
-      merchant: candidate.merchant
-        .filter(isLegacyRelayShape)
-        .map((entry) => ({
-          url: entry.url,
-          role: "merchant" as const,
-          source: "custom" as const,
-          out: entry.write ?? true,
-          in: entry.read ?? true,
-          find: false,
-          dm: entry.read ?? true,
-        })),
-      commerce: candidate.commerce
-        .filter(isLegacyRelayShape)
-        .map((entry) => ({
-          url: entry.url,
-          role: "commerce" as const,
-          source: "custom" as const,
-          out: entry.write ?? false,
-          in: entry.read ?? true,
-          find: entry.read ?? true,
-          dm: false,
-        })),
-      general: candidate.general
-        .filter(isLegacyRelayShape)
-        .map((entry) => ({
-          url: entry.url,
-          role: "general" as const,
-          source: "custom" as const,
-          out: entry.write ?? true,
-          in: entry.read ?? true,
-          find: entry.read ?? true,
-          dm: entry.read ?? true,
-        })),
+      merchant: candidate.merchant.filter(isLegacyRelayShape).map((entry) => ({
+        url: entry.url,
+        role: "merchant" as const,
+        source: "custom" as const,
+        out: entry.write ?? true,
+        in: entry.read ?? true,
+        find: false,
+        dm: entry.read ?? true,
+      })),
+      commerce: candidate.commerce.filter(isLegacyRelayShape).map((entry) => ({
+        url: entry.url,
+        role: "commerce" as const,
+        source: "custom" as const,
+        out: entry.write ?? false,
+        in: entry.read ?? true,
+        find: entry.read ?? true,
+        dm: false,
+      })),
+      general: candidate.general.filter(isLegacyRelayShape).map((entry) => ({
+        url: entry.url,
+        role: "general" as const,
+        source: "custom" as const,
+        out: entry.write ?? true,
+        in: entry.read ?? true,
+        find: entry.read ?? true,
+        dm: entry.read ?? true,
+      })),
     },
     states: emptyRelayOverrides().states,
   }
 }
 
-function isLegacyRelayShape(value: unknown): value is { url: string; read?: boolean; write?: boolean } {
-  return !!value && typeof value === "object" && typeof (value as { url?: unknown }).url === "string"
+function isLegacyRelayShape(
+  value: unknown
+): value is { url: string; read?: boolean; write?: boolean } {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    typeof (value as { url?: unknown }).url === "string"
+  )
 }
 
-function defaultPurposes(role: RelayRole): Pick<RelayEntry, "out" | "in" | "find" | "dm"> {
+function defaultPurposes(
+  role: RelayRole
+): Pick<RelayEntry, "out" | "in" | "find" | "dm"> {
   switch (role) {
     case "merchant":
       return { out: true, in: true, find: false, dm: true }
@@ -299,19 +309,21 @@ function mergeRelayEntries(...groups: RelayEntry[][]): RelayEntry[] {
 
 function applyStateOverrides(
   entries: RelayEntry[],
-  states: Record<string, RelayOverrideState>,
+  states: Record<string, RelayOverrideState>
 ): RelayEntry[] {
   return entries.flatMap((entry) => {
     const state = states[entry.url]
     if (state?.hidden) return []
 
-    return [{
-      ...entry,
-      out: state?.out ?? entry.out,
-      in: state?.in ?? entry.in,
-      find: state?.find ?? entry.find,
-      dm: state?.dm ?? entry.dm,
-    }]
+    return [
+      {
+        ...entry,
+        out: state?.out ?? entry.out,
+        in: state?.in ?? entry.in,
+        find: state?.find ?? entry.find,
+        dm: state?.dm ?? entry.dm,
+      },
+    ]
   })
 }
 
@@ -324,11 +336,25 @@ function getEntriesForActor(actor: RelayActor): RelayEntry[] {
   return [...groups.commerce, ...groups.general]
 }
 
-function collectRelayUrls(actor: RelayActor, filter: (entry: RelayEntry) => boolean): string[] {
+function collectRelayUrls(
+  actor: RelayActor,
+  filter: (entry: RelayEntry) => boolean
+): string[] {
   return dedupeUrls(
     getEntriesForActor(actor)
       .filter(filter)
-      .map((entry) => entry.url),
+      .map((entry) => entry.url)
+  )
+}
+
+function collectRoleRelayUrls(
+  role: RelayRole,
+  filter: (entry: RelayEntry) => boolean
+): string[] {
+  return dedupeUrls(
+    getEffectiveRelayGroups()
+      [role].filter(filter)
+      .map((entry) => entry.url)
   )
 }
 
@@ -339,7 +365,10 @@ const legacyRelays = getDefaultRelays(env)
 const l2RelayUrls = parseRelayList(env.l2RelayUrls)
 const merchantRelayUrls = parseRelayList(env.merchantRelayUrls)
 const configuredPublicRelayUrls = parseRelayList(env.publicRelayUrls)
-const publicRelayUrls = configuredPublicRelayUrls.length > 0 ? configuredPublicRelayUrls : legacyRelays
+const publicRelayUrls =
+  configuredPublicRelayUrls.length > 0
+    ? configuredPublicRelayUrls
+    : legacyRelays
 const defaultRelays = dedupeUrls([
   ...l2RelayUrls,
   ...merchantRelayUrls,
@@ -354,7 +383,8 @@ export const config: ConduitConfig = {
   merchantRelayUrls,
   publicRelayUrls,
   cacheApiUrl: env.cacheApiUrl.trim() || null,
-  lightningNetwork: (env.lightningNetwork || "mainnet") as ConduitConfig["lightningNetwork"],
+  lightningNetwork: (env.lightningNetwork ||
+    "mainnet") as ConduitConfig["lightningNetwork"],
 }
 
 export function isMockPayments(): boolean {
@@ -366,7 +396,10 @@ export function isSignet(): boolean {
 }
 
 export function isTestnet(): boolean {
-  return config.lightningNetwork === "testnet" || config.lightningNetwork === "signet"
+  return (
+    config.lightningNetwork === "testnet" ||
+    config.lightningNetwork === "signet"
+  )
 }
 
 export function isMainnet(): boolean {
@@ -381,12 +414,19 @@ export function loadSignerRelayMap(): SignerRelayMap {
     if (!raw) return {}
 
     const parsed = JSON.parse(raw) as SignerRelayMap
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {}
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return {}
 
     return Object.fromEntries(
-      Object.entries(parsed).filter(([url, prefs]) => {
-        return typeof url === "string" && normalizeRelayUrl(url).length > 0 && isRelayOverrideState(prefs)
-      }).map(([url, prefs]) => [normalizeRelayUrl(url), prefs]),
+      Object.entries(parsed)
+        .filter(([url, prefs]) => {
+          return (
+            typeof url === "string" &&
+            normalizeRelayUrl(url).length > 0 &&
+            isRelayOverrideState(prefs)
+          )
+        })
+        .map(([url, prefs]) => [normalizeRelayUrl(url), prefs])
     )
   } catch {
     return {}
@@ -399,7 +439,7 @@ export function saveSignerRelayMap(relays: SignerRelayMap): void {
   const normalized = Object.fromEntries(
     Object.entries(relays)
       .map(([url, prefs]) => [normalizeRelayUrl(url), prefs] as const)
-      .filter(([url]) => url.length > 0),
+      .filter(([url]) => url.length > 0)
   )
 
   localStorage.setItem(SIGNER_RELAYS_KEY, JSON.stringify(normalized))
@@ -412,18 +452,24 @@ export function clearSignerRelayMap(): void {
 
 export function getConfiguredRelayGroups(): RelayGroups {
   return {
-    merchant: urlsToEntries(config.merchantRelayUrls, "merchant", "app").map((entry) => ({
-      ...entry,
-      ...defaultPurposes("merchant"),
-    })),
-    commerce: urlsToEntries(config.l2RelayUrls, "commerce", "app").map((entry) => ({
-      ...entry,
-      ...defaultPurposes("commerce"),
-    })),
-    general: urlsToEntries(config.publicRelayUrls, "general", "app").map((entry) => ({
-      ...entry,
-      ...defaultPurposes("general"),
-    })),
+    merchant: urlsToEntries(config.merchantRelayUrls, "merchant", "app").map(
+      (entry) => ({
+        ...entry,
+        ...defaultPurposes("merchant"),
+      })
+    ),
+    commerce: urlsToEntries(config.l2RelayUrls, "commerce", "app").map(
+      (entry) => ({
+        ...entry,
+        ...defaultPurposes("commerce"),
+      })
+    ),
+    general: urlsToEntries(config.publicRelayUrls, "general", "app").map(
+      (entry) => ({
+        ...entry,
+        ...defaultPurposes("general"),
+      })
+    ),
   }
 }
 
@@ -489,15 +535,15 @@ export function getEffectiveRelayGroups(): RelayGroups {
   return {
     merchant: applyStateOverrides(
       mergeRelayEntries(defaults.merchant, overrides.custom.merchant),
-      overrides.states.merchant,
+      overrides.states.merchant
     ),
     commerce: applyStateOverrides(
       mergeRelayEntries(defaults.commerce, overrides.custom.commerce),
-      overrides.states.commerce,
+      overrides.states.commerce
     ),
     general: applyStateOverrides(
       mergeRelayEntries(defaults.general, overrides.custom.general),
-      overrides.states.general,
+      overrides.states.general
     ),
   }
 }
@@ -506,7 +552,9 @@ export function getEffectiveRelayGroups(): RelayGroups {
  * Get visible relay groups for a specific actor type.
  * Merchants see all three groups; shoppers see commerce and general only.
  */
-export function getRelayGroupsForActor(actor: RelayActor): Partial<RelayGroups> {
+export function getRelayGroupsForActor(
+  actor: RelayActor
+): Partial<RelayGroups> {
   const groups = getEffectiveRelayGroups()
   if (actor === "merchant") return groups
 
@@ -519,30 +567,50 @@ export function getRelayGroupsForActor(actor: RelayActor): Partial<RelayGroups> 
 /**
  * Get all effective relay URLs as a flat deduplicated list.
  */
-export function getEffectiveRelayUrls(actor: RelayActor = "merchant"): string[] {
-  return collectRelayUrls(actor, (entry) => entry.out || entry.in || entry.find || entry.dm)
+export function getEffectiveRelayUrls(
+  actor: RelayActor = "merchant"
+): string[] {
+  return collectRelayUrls(
+    actor,
+    (entry) => entry.out || entry.in || entry.find || entry.dm
+  )
 }
 
 /**
  * Get all effective relay URLs enabled for reads.
  */
-export function getEffectiveReadableRelayUrls(actor: RelayActor = "merchant"): string[] {
+export function getEffectiveReadableRelayUrls(
+  actor: RelayActor = "merchant"
+): string[] {
   return collectRelayUrls(actor, (entry) => entry.in)
 }
 
 /**
  * Get all effective relay URLs enabled for writes.
  */
-export function getEffectiveWritableRelayUrls(actor: RelayActor = "merchant"): string[] {
+export function getEffectiveWritableRelayUrls(
+  actor: RelayActor = "merchant"
+): string[] {
   return collectRelayUrls(actor, (entry) => entry.out)
 }
 
-export function getEffectiveDiscoveryRelayUrls(actor: RelayActor = "merchant"): string[] {
+export function getEffectiveDiscoveryRelayUrls(
+  actor: RelayActor = "merchant"
+): string[] {
   return collectRelayUrls(actor, (entry) => entry.find)
 }
 
-export function getEffectiveDmRelayUrls(actor: RelayActor = "merchant"): string[] {
+export function getEffectiveDmRelayUrls(
+  actor: RelayActor = "merchant"
+): string[] {
   return collectRelayUrls(actor, (entry) => entry.dm)
+}
+
+export function getEffectiveRoleRelayUrls(
+  role: RelayRole,
+  purpose: RelayPurpose = "in"
+): string[] {
+  return collectRoleRelayUrls(role, (entry) => entry[purpose])
 }
 
 export function relayRoleLabel(role: RelayRole): string {

@@ -54,7 +54,9 @@ export const Route = createFileRoute("/orders")({
 
 const INVOICE_CURRENCY_OPTIONS = ["USD", "SATS"] as const
 
-function normalizeInvoiceCurrencyChoice(currency: string | undefined): (typeof INVOICE_CURRENCY_OPTIONS)[number] | "" {
+function normalizeInvoiceCurrencyChoice(
+  currency: string | undefined
+): (typeof INVOICE_CURRENCY_OPTIONS)[number] | "" {
   const normalized = currency?.trim().toUpperCase()
   if (normalized === "SAT" || normalized === "SATS") return "SATS"
   if (normalized === "USD") return "USD"
@@ -100,16 +102,21 @@ function friendlyTypeLabel(type: string): string {
   return MESSAGE_TYPE_LABELS[type] ?? type.replace(/_/g, " ")
 }
 
-function formatProductReference(productId: string): { title: string; detail: string } {
+function formatProductReference(productId: string): {
+  title: string
+  detail: string
+} {
   const normalized = productId.trim()
   const segments = normalized.split(":").filter(Boolean)
-  const rawLabel = segments.length > 0 ? segments[segments.length - 1] : normalized
+  const rawLabel =
+    segments.length > 0 ? segments[segments.length - 1] : normalized
   const displaySource = rawLabel || normalized
-  const title = displaySource
-    .replace(/[-_]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\b\w/g, (char) => char.toUpperCase()) || "Product"
+  const title =
+    displaySource
+      .replace(/[-_]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/\b\w/g, (char) => char.toUpperCase()) || "Product"
   return { title, detail: normalized }
 }
 
@@ -117,7 +124,12 @@ async function publishOrderConversationMessage(params: {
   merchantPubkey: string
   buyerPubkey: string
   orderId: string
-  type: "payment_request" | "status_update" | "shipping_update" | "receipt" | "message"
+  type:
+    | "payment_request"
+    | "status_update"
+    | "shipping_update"
+    | "receipt"
+    | "message"
   payload: Record<string, unknown>
   tags?: string[][]
 }): Promise<void> {
@@ -154,7 +166,10 @@ async function publishOrderConversationMessage(params: {
   })
 
   const relaySet = getWriteRelaySet(ndk)
-  await Promise.all([wrappedToBuyer.publish(relaySet), wrappedToMerchant.publish(relaySet)])
+  await Promise.all([
+    wrappedToBuyer.publish(relaySet),
+    wrappedToMerchant.publish(relaySet),
+  ])
 }
 
 function MessageCard({
@@ -194,7 +209,9 @@ function MessageCard({
                   key={`${message.id}-${item.productId}`}
                   className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2"
                 >
-                  <div className="text-sm text-[var(--text-primary)]">{product.title}</div>
+                  <div className="text-sm text-[var(--text-primary)]">
+                    {product.title}
+                  </div>
                   <div className="mt-1 text-xs text-[var(--text-secondary)]">
                     Qty {item.quantity} · {item.priceAtPurchase} {item.currency}
                   </div>
@@ -203,12 +220,16 @@ function MessageCard({
             })}
             {message.payload.shippingAddress && (
               <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
-                <div className="font-medium text-[var(--text-primary)]">Ship to:</div>
+                <div className="font-medium text-[var(--text-primary)]">
+                  Ship to:
+                </div>
                 <div>{message.payload.shippingAddress.name}</div>
                 <div>{message.payload.shippingAddress.street}</div>
                 <div>
                   {message.payload.shippingAddress.city}
-                  {message.payload.shippingAddress.state ? `, ${message.payload.shippingAddress.state}` : ""}{" "}
+                  {message.payload.shippingAddress.state
+                    ? `, ${message.payload.shippingAddress.state}`
+                    : ""}{" "}
                   {message.payload.shippingAddress.postalCode}
                 </div>
                 <div>{message.payload.shippingAddress.country}</div>
@@ -225,9 +246,13 @@ function MessageCard({
         {message.type === "payment_request" && (
           <div className="space-y-2">
             {(() => {
-              const decoded = decodeLightningInvoiceAmount(message.payload.invoice)
-              const displayAmount = decoded.sats ?? decoded.msats ?? message.payload.amount ?? null
-              const displayCurrency = decoded.currency ?? message.payload.currency ?? null
+              const decoded = decodeLightningInvoiceAmount(
+                message.payload.invoice
+              )
+              const displayAmount =
+                decoded.sats ?? decoded.msats ?? message.payload.amount ?? null
+              const displayCurrency =
+                decoded.currency ?? message.payload.currency ?? null
 
               return (
                 <>
@@ -245,21 +270,33 @@ function MessageCard({
             <div className="break-all rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-xs text-[var(--text-secondary)]">
               {message.payload.invoice}
             </div>
-            {message.payload.note && <div className="text-xs text-[var(--text-secondary)]">{message.payload.note}</div>}
+            {message.payload.note && (
+              <div className="text-xs text-[var(--text-secondary)]">
+                {message.payload.note}
+              </div>
+            )}
           </div>
         )}
 
         {message.type === "status_update" && (
           <div className="space-y-1">
-            <div className="text-[var(--text-primary)]">Status: {message.payload.status}</div>
-            {message.payload.note && <div className="text-xs text-[var(--text-secondary)]">{message.payload.note}</div>}
+            <div className="text-[var(--text-primary)]">
+              Status: {message.payload.status}
+            </div>
+            {message.payload.note && (
+              <div className="text-xs text-[var(--text-secondary)]">
+                {message.payload.note}
+              </div>
+            )}
           </div>
         )}
 
         {message.type === "shipping_update" && (
           <div className="space-y-1">
             {message.payload.carrier && (
-              <div className="text-[var(--text-primary)]">Carrier: {message.payload.carrier}</div>
+              <div className="text-[var(--text-primary)]">
+                Carrier: {message.payload.carrier}
+              </div>
             )}
             {message.payload.trackingNumber && (
               <div className="font-mono text-xs text-[var(--text-secondary)]">
@@ -271,7 +308,8 @@ function MessageCard({
               if (!raw) return null
               try {
                 const u = new URL(raw)
-                if (u.protocol !== "http:" && u.protocol !== "https:") return null
+                if (u.protocol !== "http:" && u.protocol !== "https:")
+                  return null
                 return (
                   <a
                     className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
@@ -286,16 +324,24 @@ function MessageCard({
                 return null
               }
             })()}
-            {message.payload.note && <div className="text-xs text-[var(--text-secondary)]">{message.payload.note}</div>}
+            {message.payload.note && (
+              <div className="text-xs text-[var(--text-secondary)]">
+                {message.payload.note}
+              </div>
+            )}
           </div>
         )}
 
         {message.type === "receipt" && message.payload.note && (
-          <div className="text-[var(--text-secondary)]">{message.payload.note}</div>
+          <div className="text-[var(--text-secondary)]">
+            {message.payload.note}
+          </div>
         )}
 
         {message.type === "message" && (
-          <div className="text-[var(--text-primary)]">{message.payload.note}</div>
+          <div className="text-[var(--text-primary)]">
+            {message.payload.note}
+          </div>
         )}
 
         {message.type === "payment_proof" && (
@@ -317,7 +363,9 @@ function useNwcConnection(): {
   disconnect: () => void
   error: string | null
 } {
-  const [rawUri, setRawUri] = useState(() => localStorage.getItem(NWC_URI_KEY) ?? "")
+  const [rawUri, setRawUri] = useState(
+    () => localStorage.getItem(NWC_URI_KEY) ?? ""
+  )
   const [error, setError] = useState<string | null>(null)
   const [connection, setConnection] = useState<NwcConnection | null>(() => {
     const stored = localStorage.getItem(NWC_URI_KEY)
@@ -361,13 +409,17 @@ function OrdersPage() {
   const btcUsdRateQuery = useBtcUsdRate()
   const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
   const queryClient = useQueryClient()
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
+  const [selectedConversationId, setSelectedConversationId] = useState<
+    string | null
+  >(null)
   const [activeTab, setActiveTab] = useState("details")
   const [invoice, setInvoice] = useState("")
   const [invoiceAmount, setInvoiceAmount] = useState("")
   const [invoiceCurrency, setInvoiceCurrency] = useState("USD")
   const [invoiceNote, setInvoiceNote] = useState("")
-  const [orderStatus, setOrderStatus] = useState<StatusUpdateMessageSchema["status"] | "">("")
+  const [orderStatus, setOrderStatus] = useState<
+    StatusUpdateMessageSchema["status"] | ""
+  >("")
   const [statusNote, setStatusNote] = useState("")
   const [carrier, setCarrier] = useState("")
   const [trackingNumber, setTrackingNumber] = useState("")
@@ -378,19 +430,28 @@ function OrdersPage() {
   const [replyNote, setReplyNote] = useState("")
   const [successFlash, setSuccessFlash] = useState<string | null>(null)
   const [weblnAvailable, setWeblnAvailable] = useState(false)
-  const [refreshButtonState, setRefreshButtonState] = useState<"idle" | "refreshing" | "done">("idle")
-  const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [refreshButtonState, setRefreshButtonState] = useState<
+    "idle" | "refreshing" | "done"
+  >("idle")
+  const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  )
   const signerConnected = status === "connected" && !!pubkey
   const invoiceAmountNumber = Number(invoiceAmount) || 0
   const invoiceAmountSats = useMemo(
     () =>
       invoiceCurrency
-        ? convertCommerceAmountToSats(invoiceAmountNumber, invoiceCurrency, btcUsdRate)
+        ? convertCommerceAmountToSats(
+            invoiceAmountNumber,
+            invoiceCurrency,
+            btcUsdRate
+          )
         : null,
     [btcUsdRate, invoiceAmountNumber, invoiceCurrency]
   )
   const manualInvoiceDecoded = useMemo(
-    () => (invoice.trim() ? decodeLightningInvoiceAmount(invoice.trim()) : null),
+    () =>
+      invoice.trim() ? decodeLightningInvoiceAmount(invoice.trim()) : null,
     [invoice]
   )
 
@@ -411,7 +472,8 @@ function OrdersPage() {
   const ordersQuery = useQuery({
     queryKey: ["merchant-order-messages", pubkey ?? "none"],
     enabled: signerConnected,
-    queryFn: () => getMerchantConversationList({ principalPubkey: pubkey!, limit: 200 }),
+    queryFn: () =>
+      getMerchantConversationList({ principalPubkey: pubkey!, limit: 200 }),
     staleTime: 30_000,
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
@@ -440,7 +502,8 @@ function OrdersPage() {
 
   useEffect(() => {
     return () => {
-      if (refreshResetTimerRef.current) clearTimeout(refreshResetTimerRef.current)
+      if (refreshResetTimerRef.current)
+        clearTimeout(refreshResetTimerRef.current)
     }
   }, [])
 
@@ -454,9 +517,19 @@ function OrdersPage() {
     void refetchOrders()
   }, [refetchOrders, signerConnected])
 
-  const conversations = useMemo(() => ordersQuery.data?.data ?? [], [ordersQuery.data])
+  const conversations = useMemo(
+    () => ordersQuery.data?.data ?? [],
+    [ordersQuery.data]
+  )
   const buyerPubkeys = useMemo(
-    () => Array.from(new Set(conversations.map((conversation) => conversation.buyerPubkey).filter(Boolean))),
+    () =>
+      Array.from(
+        new Set(
+          conversations
+            .map((conversation) => conversation.buyerPubkey)
+            .filter(Boolean)
+        )
+      ),
     [conversations]
   )
   const buyerProfilesQuery = useQuery({
@@ -473,45 +546,75 @@ function OrdersPage() {
       setSelectedConversationId(null)
       return
     }
-    if (!selectedConversationId || !conversations.some((conversation) => conversation.id === selectedConversationId)) {
+    if (
+      !selectedConversationId ||
+      !conversations.some(
+        (conversation) => conversation.id === selectedConversationId
+      )
+    ) {
       setSelectedConversationId(conversations[0]?.id ?? null)
     }
   }, [conversations, selectedConversationId])
 
-  const selected = conversations.find((conversation) => conversation.id === selectedConversationId) ?? null
-  const selectedOrderMessage = selected?.messages?.find((message) => message.type === "order")
-  const selectedOrderCurrency = selectedOrderMessage?.type === "order" ? selectedOrderMessage.payload.currency : null
+  const selected =
+    conversations.find(
+      (conversation) => conversation.id === selectedConversationId
+    ) ?? null
+  const selectedOrderMessage = selected?.messages?.find(
+    (message) => message.type === "order"
+  )
+  const selectedOrderCurrency =
+    selectedOrderMessage?.type === "order"
+      ? selectedOrderMessage.payload.currency
+      : null
   const invoiceCurrencyUnsupported =
-    !!selectedOrderCurrency && normalizeInvoiceCurrencyChoice(selectedOrderCurrency) === ""
+    !!selectedOrderCurrency &&
+    normalizeInvoiceCurrencyChoice(selectedOrderCurrency) === ""
 
   useEffect(() => {
     setSuccessFlash(null)
     setActiveTab("details")
     setOrderStatus("")
     setReplyNote("")
-    const firstOrder = selected?.messages?.find((message) => message.type === "order")
+    const firstOrder = selected?.messages?.find(
+      (message) => message.type === "order"
+    )
     if (firstOrder?.type !== "order") return
     setInvoiceAmount(String(firstOrder.payload.subtotal))
-    setInvoiceCurrency(normalizeInvoiceCurrencyChoice(firstOrder.payload.currency))
-  }, [selected?.id])
+    setInvoiceCurrency(
+      normalizeInvoiceCurrencyChoice(firstOrder.payload.currency)
+    )
+  }, [selected?.id, selected?.messages])
 
   const orderSummary = useMemo(
-    () => selected ? extractOrderSummary(selected.messages ?? []) : null,
+    () => (selected ? extractOrderSummary(selected.messages ?? []) : null),
     [selected]
   )
-  const selectedBuyerProfile = selected ? buyerProfilesQuery.data?.[selected.buyerPubkey] : undefined
+  const selectedBuyerProfile = selected
+    ? buyerProfilesQuery.data?.[selected.buyerPubkey]
+    : undefined
   const selectedBuyerName = selected
     ? getDisplayName(selectedBuyerProfile, selected.buyerPubkey)
     : null
   const awaitingInvoiceCount = useMemo(
-    () => conversations.filter((conversation) => !(conversation.messages ?? []).some((message) => message.type === "payment_request")).length,
-    [conversations],
+    () =>
+      conversations.filter(
+        (conversation) =>
+          !(conversation.messages ?? []).some(
+            (message) => message.type === "payment_request"
+          )
+      ).length,
+    [conversations]
   )
   const activeFulfillmentCount = useMemo(
-    () => conversations.filter((conversation) =>
-      conversation.status === "paid" || conversation.status === "processing" || conversation.status === "shipped"
-    ).length,
-    [conversations],
+    () =>
+      conversations.filter(
+        (conversation) =>
+          conversation.status === "paid" ||
+          conversation.status === "processing" ||
+          conversation.status === "shipped"
+      ).length,
+    [conversations]
   )
 
   // Generate invoice via WebLN (Alby) or NWC, then auto-send as payment_request DM
@@ -525,7 +628,10 @@ function OrdersPage() {
       let bolt11: string
 
       if (canMockInvoice()) {
-        bolt11 = mockMakeInvoice({ amountSats, memo: `Conduit order ${selected.orderId}` }).invoice
+        bolt11 = mockMakeInvoice({
+          amountSats,
+          memo: `Conduit order ${selected.orderId}`,
+        }).invoice
       } else if (weblnAvailable) {
         // Primary path: WebLN (Alby browser extension) — zero config
         const result = await weblnMakeInvoice({
@@ -541,7 +647,9 @@ function OrdersPage() {
         })
         bolt11 = result.invoice
       } else {
-        throw new Error("No wallet available. Install Alby extension or connect NWC.")
+        throw new Error(
+          "No wallet available. Install Alby extension or connect NWC."
+        )
       }
 
       const mismatch = getLightningNetworkMismatchMessage(bolt11)
@@ -578,7 +686,9 @@ function OrdersPage() {
       setInvoice("")
       setInvoiceNote("")
       flash("Invoice generated and sent to buyer")
-      await queryClient.invalidateQueries({ queryKey: ["merchant-order-messages", pubkey ?? "none"] })
+      await queryClient.invalidateQueries({
+        queryKey: ["merchant-order-messages", pubkey ?? "none"],
+      })
     },
   })
 
@@ -592,7 +702,9 @@ function OrdersPage() {
       const decoded = decodeLightningInvoiceAmount(manualInvoice)
       const actualAmount = decoded.sats ?? decoded.msats
       if (!actualAmount || !decoded.currency) {
-        throw new Error("Invoice must include a decodable amount before it can be sent.")
+        throw new Error(
+          "Invoice must include a decodable amount before it can be sent."
+        )
       }
       await publishOrderConversationMessage({
         merchantPubkey: pubkey,
@@ -616,7 +728,9 @@ function OrdersPage() {
       setInvoice("")
       setInvoiceNote("")
       flash("Invoice sent to buyer")
-      await queryClient.invalidateQueries({ queryKey: ["merchant-order-messages", pubkey ?? "none"] })
+      await queryClient.invalidateQueries({
+        queryKey: ["merchant-order-messages", pubkey ?? "none"],
+      })
     },
   })
 
@@ -638,7 +752,9 @@ function OrdersPage() {
     onSuccess: async () => {
       setStatusNote("")
       flash("Status update sent to buyer")
-      await queryClient.invalidateQueries({ queryKey: ["merchant-order-messages", pubkey ?? "none"] })
+      await queryClient.invalidateQueries({
+        queryKey: ["merchant-order-messages", pubkey ?? "none"],
+      })
     },
   })
 
@@ -653,7 +769,9 @@ function OrdersPage() {
         type: "shipping_update",
         tags: [
           ...(carrier.trim() ? [["carrier", carrier.trim()]] : []),
-          ...(trackingNumber.trim() ? [["tracking", trackingNumber.trim()]] : []),
+          ...(trackingNumber.trim()
+            ? [["tracking", trackingNumber.trim()]]
+            : []),
         ],
         payload: {
           carrier: carrier.trim() || undefined,
@@ -669,7 +787,9 @@ function OrdersPage() {
       setTrackingUrl("")
       setShippingNote("")
       flash("Shipping update sent to buyer")
-      await queryClient.invalidateQueries({ queryKey: ["merchant-order-messages", pubkey ?? "none"] })
+      await queryClient.invalidateQueries({
+        queryKey: ["merchant-order-messages", pubkey ?? "none"],
+      })
     },
   })
 
@@ -690,7 +810,9 @@ function OrdersPage() {
     onSuccess: async () => {
       setReplyNote("")
       flash("Message sent to buyer")
-      await queryClient.invalidateQueries({ queryKey: ["merchant-order-messages", pubkey ?? "none"] })
+      await queryClient.invalidateQueries({
+        queryKey: ["merchant-order-messages", pubkey ?? "none"],
+      })
     },
   })
 
@@ -698,13 +820,23 @@ function OrdersPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">Orders</div>
-          <h1 className="mt-3 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">Merchant order inbox</h1>
+          <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">
+            Orders
+          </div>
+          <h1 className="mt-3 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+            Merchant order inbox
+          </h1>
           <p className="mt-2 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
-            Review incoming buyer orders, send invoices, update status, and share shipping details from one workspace.
+            Review incoming buyer orders, send invoices, update status, and
+            share shipping details from one workspace.
           </p>
           <div className="mt-3">
-            <Button variant="outline" size="sm" disabled={!signerConnected || isOrdersFetching} onClick={handleRefresh}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!signerConnected || isOrdersFetching}
+              onClick={handleRefresh}
+            >
               <span className="inline-flex items-center gap-1">
                 <span
                   className={`inline-flex h-4 w-4 items-center justify-center transition-colors duration-200 ${
@@ -718,27 +850,35 @@ function OrdersPage() {
                   {refreshButtonState === "done" ? (
                     <CheckCircle2 className="h-3.5 w-3.5" />
                   ) : (
-                    <RotateCw className={`h-3.5 w-3.5 ${refreshButtonState === "refreshing" ? "animate-spin" : ""}`} />
+                    <RotateCw
+                      className={`h-3.5 w-3.5 ${refreshButtonState === "refreshing" ? "animate-spin" : ""}`}
+                    />
                   )}
                 </span>
                 <span className="relative inline-flex h-4 min-w-[7rem] items-center justify-center">
                   <span
                     className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "idle" ? "opacity-100 text-[var(--text-primary)]" : "opacity-0"
+                      refreshButtonState === "idle"
+                        ? "opacity-100 text-[var(--text-primary)]"
+                        : "opacity-0"
                     }`}
                   >
                     Refresh
                   </span>
                   <span
                     className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "refreshing" ? "animate-pulse opacity-100 text-amber-300" : "opacity-0"
+                      refreshButtonState === "refreshing"
+                        ? "animate-pulse opacity-100 text-amber-300"
+                        : "opacity-0"
                     }`}
                   >
                     Refreshing...
                   </span>
                   <span
                     className={`absolute transition-opacity duration-200 ${
-                      refreshButtonState === "done" ? "opacity-100 text-emerald-400" : "opacity-0"
+                      refreshButtonState === "done"
+                        ? "opacity-100 text-emerald-400"
+                        : "opacity-0"
                     }`}
                   >
                     Updated
@@ -750,7 +890,11 @@ function OrdersPage() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button
-            variant={canMockInvoice() || weblnAvailable || nwc.connection ? "outline" : "muted"}
+            variant={
+              canMockInvoice() || weblnAvailable || nwc.connection
+                ? "outline"
+                : "muted"
+            }
             size="sm"
             onClick={() => {
               setShowNwcSetup(true)
@@ -773,16 +917,28 @@ function OrdersPage() {
 
       <div className="grid gap-4 md:grid-cols-3">
         <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Open threads</div>
-          <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">{conversations.length}</div>
+          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+            Open threads
+          </div>
+          <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">
+            {conversations.length}
+          </div>
         </div>
         <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Awaiting invoice</div>
-          <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">{awaitingInvoiceCount}</div>
+          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+            Awaiting invoice
+          </div>
+          <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">
+            {awaitingInvoiceCount}
+          </div>
         </div>
         <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Active fulfillment</div>
-          <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">{activeFulfillmentCount}</div>
+          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+            Active fulfillment
+          </div>
+          <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">
+            {activeFulfillmentCount}
+          </div>
         </div>
       </div>
 
@@ -791,27 +947,52 @@ function OrdersPage() {
           {weblnAvailable && (
             <div className="mb-3 flex items-center gap-2 text-xs text-green-400">
               <span className="inline-block h-2 w-2 rounded-full bg-green-400" />
-              Alby extension detected — invoices will be generated via WebLN (no NWC URI needed).
+              Alby extension detected — invoices will be generated via WebLN (no
+              NWC URI needed).
             </div>
           )}
 
-          <div className="text-sm font-medium text-[var(--text-primary)]">Nostr Wallet Connect (NIP-47)</div>
+          <div className="text-sm font-medium text-[var(--text-primary)]">
+            Nostr Wallet Connect (NIP-47)
+          </div>
 
           {nwc.connection ? (
             <div className="mt-3 space-y-3">
               <div className="flex items-center gap-2 text-xs text-green-400">
                 <span className="inline-block h-2 w-2 rounded-full bg-green-400" />
-                Connected to wallet <span className="font-mono">{formatPubkey(nwc.connection.walletPubkey, 8)}</span> via {nwc.connection.relays[0]}
+                Connected to wallet{" "}
+                <span className="font-mono">
+                  {formatPubkey(nwc.connection.walletPubkey, 8)}
+                </span>{" "}
+                via {nwc.connection.relays[0]}
               </div>
               <div className="grid gap-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-xs text-[var(--text-secondary)]">
-                <div>Wallet pubkey: <span className="font-mono text-[var(--text-primary)]">{nwc.connection.walletPubkey}</span></div>
-                <div>Relay: <span className="font-mono text-[var(--text-primary)]">{nwc.connection.relays[0]}</span></div>
+                <div>
+                  Wallet pubkey:{" "}
+                  <span className="font-mono text-[var(--text-primary)]">
+                    {nwc.connection.walletPubkey}
+                  </span>
+                </div>
+                <div>
+                  Relay:{" "}
+                  <span className="font-mono text-[var(--text-primary)]">
+                    {nwc.connection.relays[0]}
+                  </span>
+                </div>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button variant="muted" size="sm" onClick={() => setShowNwcReplace((current) => !current)}>
+                <Button
+                  variant="muted"
+                  size="sm"
+                  onClick={() => setShowNwcReplace((current) => !current)}
+                >
                   {showNwcReplace ? "Cancel replace" : "Replace connection"}
                 </Button>
-                <Button variant="muted" size="sm" onClick={() => nwc.disconnect()}>
+                <Button
+                  variant="muted"
+                  size="sm"
+                  onClick={() => nwc.disconnect()}
+                >
                   Disconnect wallet
                 </Button>
               </div>
@@ -823,31 +1004,63 @@ function OrdersPage() {
                     placeholder="nostr+walletconnect://..."
                     type="password"
                   />
-                  {nwc.error && <div className="text-xs text-error">{nwc.error}</div>}
+                  {nwc.error && (
+                    <div className="text-xs text-error">{nwc.error}</div>
+                  )}
                 </div>
               )}
             </div>
           ) : (
             <div className="mt-3 space-y-3">
               <p className="text-xs text-[var(--text-secondary)]">
-                Connect a Lightning wallet to generate invoices with one click. Without NWC, you can still paste BOLT11 invoices manually.
+                Connect a Lightning wallet to generate invoices with one click.
+                Without NWC, you can still paste BOLT11 invoices manually.
               </p>
 
               <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
-                <div className="text-xs font-medium text-[var(--text-primary)]">How to get a connection URI:</div>
+                <div className="text-xs font-medium text-[var(--text-primary)]">
+                  How to get a connection URI:
+                </div>
                 <ol className="mt-2 space-y-1.5 text-xs text-[var(--text-secondary)]">
-                  <li>1. Set up a Lightning wallet that supports NWC (NIP-47)</li>
-                  <li>2. Create a new NWC connection with <span className="font-medium text-[var(--text-primary)]">make_invoice</span> permission</li>
-                  <li>3. Copy the <span className="font-mono">nostr+walletconnect://</span> URI and paste below</li>
+                  <li>
+                    1. Set up a Lightning wallet that supports NWC (NIP-47)
+                  </li>
+                  <li>
+                    2. Create a new NWC connection with{" "}
+                    <span className="font-medium text-[var(--text-primary)]">
+                      make_invoice
+                    </span>{" "}
+                    permission
+                  </li>
+                  <li>
+                    3. Copy the{" "}
+                    <span className="font-mono">nostr+walletconnect://</span>{" "}
+                    URI and paste below
+                  </li>
                 </ol>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <a href="https://albyhub.com" target="_blank" rel="noopener noreferrer" className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]">
+                  <a
+                    href="https://albyhub.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]"
+                  >
                     Alby Hub
                   </a>
-                  <a href="https://lnbits.com" target="_blank" rel="noopener noreferrer" className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]">
+                  <a
+                    href="https://lnbits.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]"
+                  >
                     LNbits
                   </a>
-                  <a href="https://nwc.dev" target="_blank" rel="noopener noreferrer" className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]">
+                  <a
+                    href="https://nwc.dev"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]"
+                  >
                     nwc.dev
                   </a>
                 </div>
@@ -882,25 +1095,36 @@ function OrdersPage() {
       {signerConnected && ordersQuery.error && (
         <div className="rounded-md border border-error/30 bg-error/10 p-4 text-sm text-error">
           Failed to load orders:{" "}
-          {ordersQuery.error instanceof Error ? ordersQuery.error.message : "Unknown error"}
+          {ordersQuery.error instanceof Error
+            ? ordersQuery.error.message
+            : "Unknown error"}
         </div>
       )}
 
-      {signerConnected && !ordersQuery.isLoading && conversations.length === 0 && (
-        <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-          No orders yet. Place an order from the Market app targeting this merchant pubkey.
-        </div>
-      )}
+      {signerConnected &&
+        !ordersQuery.isLoading &&
+        conversations.length === 0 && (
+          <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+            No orders yet. Place an order from the Market app targeting this
+            merchant pubkey.
+          </div>
+        )}
 
       {signerConnected && conversations.length > 0 && (
         <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
           <aside className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-2">
-            <div className="mb-2 px-2 text-xs uppercase tracking-wide text-[var(--text-secondary)]">Conversations</div>
+            <div className="mb-2 px-2 text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+              Conversations
+            </div>
             <div className="space-y-1">
               {conversations.map((conversation) => {
                 const active = conversation.id === selectedConversationId
-                const buyerProfile = buyerProfilesQuery.data?.[conversation.buyerPubkey]
-                const buyerName = getDisplayName(buyerProfile, conversation.buyerPubkey)
+                const buyerProfile =
+                  buyerProfilesQuery.data?.[conversation.buyerPubkey]
+                const buyerName = getDisplayName(
+                  buyerProfile,
+                  conversation.buyerPubkey
+                )
                 return (
                   <button
                     key={conversation.id}
@@ -912,8 +1136,13 @@ function OrdersPage() {
                     onClick={() => setSelectedConversationId(conversation.id)}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-mono text-xs text-[var(--text-primary)]">{conversation.orderId}</span>
-                      <Badge variant="secondary" className="border-[var(--border)]">
+                      <span className="font-mono text-xs text-[var(--text-primary)]">
+                        {conversation.orderId}
+                      </span>
+                      <Badge
+                        variant="secondary"
+                        className="border-[var(--border)]"
+                      >
                         {friendlyTypeLabel(conversation.latestType)}
                       </Badge>
                     </div>
@@ -924,10 +1153,14 @@ function OrdersPage() {
                       {formatPubkey(conversation.buyerPubkey, 8)}
                     </div>
                     <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                      {conversation.status ? `Status: ${conversation.status}` : "Status: pending"}
+                      {conversation.status
+                        ? `Status: ${conversation.status}`
+                        : "Status: pending"}
                     </div>
                     {conversation.totalSummary && (
-                      <div className="mt-1 text-xs text-[var(--text-secondary)]">{conversation.totalSummary}</div>
+                      <div className="mt-1 text-xs text-[var(--text-secondary)]">
+                        {conversation.totalSummary}
+                      </div>
                     )}
                   </button>
                 )
@@ -976,7 +1209,9 @@ function OrdersPage() {
 
                     <div className="grid gap-3 md:grid-cols-3">
                       <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
-                        <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">Send invoice</div>
+                        <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+                          Send invoice
+                        </div>
 
                         <div className="grid grid-cols-2 gap-2">
                           <div className="grid gap-1">
@@ -987,14 +1222,18 @@ function OrdersPage() {
                               min="0"
                               step={invoiceCurrency === "USD" ? "0.01" : "1"}
                               value={invoiceAmount}
-                              onChange={(event) => setInvoiceAmount(event.target.value)}
+                              onChange={(event) =>
+                                setInvoiceAmount(event.target.value)
+                              }
                             />
                           </div>
                           <div className="grid gap-1">
                             <Label htmlFor="invoice-currency">Currency</Label>
                             <Select
                               value={invoiceCurrency}
-                              onValueChange={(value) => setInvoiceCurrency(value)}
+                              onValueChange={(value) =>
+                                setInvoiceCurrency(value)
+                              }
                             >
                               <SelectTrigger id="invoice-currency">
                                 <SelectValue placeholder="Choose currency" />
@@ -1011,22 +1250,35 @@ function OrdersPage() {
                         </div>
                         <Input
                           value={invoiceNote}
-                          onChange={(event) => setInvoiceNote(event.target.value)}
+                          onChange={(event) =>
+                            setInvoiceNote(event.target.value)
+                          }
                           placeholder="Optional note"
                         />
                         <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
                           {invoiceCurrencyUnsupported ? (
                             <>
-                              This order was placed in {selectedOrderCurrency}. Choose USD or SATS before generating a Lightning invoice.
+                              This order was placed in {selectedOrderCurrency}.
+                              Choose USD or SATS before generating a Lightning
+                              invoice.
                             </>
                           ) : invoiceAmountNumber > 0 ? (
                             invoiceAmountSats ? (
-                              <>This will generate an invoice for {invoiceAmountSats.toLocaleString()} sats.</>
+                              <>
+                                This will generate an invoice for{" "}
+                                {invoiceAmountSats.toLocaleString()} sats.
+                              </>
                             ) : (
-                              <>BTC/USD conversion is unavailable right now, so this amount cannot be converted yet.</>
+                              <>
+                                BTC/USD conversion is unavailable right now, so
+                                this amount cannot be converted yet.
+                              </>
                             )
                           ) : (
-                            <>Enter the order amount to generate a Lightning invoice.</>
+                            <>
+                              Enter the order amount to generate a Lightning
+                              invoice.
+                            </>
                           )}
                         </div>
 
@@ -1036,14 +1288,22 @@ function OrdersPage() {
                               type="button"
                               size="sm"
                               className="w-full"
-                              disabled={generateInvoiceMutation.isPending || !(invoiceAmountNumber > 0) || !invoiceAmountSats}
+                              disabled={
+                                generateInvoiceMutation.isPending ||
+                                !(invoiceAmountNumber > 0) ||
+                                !invoiceAmountSats
+                              }
                               onClick={() => generateInvoiceMutation.mutate()}
                             >
-                              {generateInvoiceMutation.isPending ? "Generating…" : "Generate & send invoice"}
+                              {generateInvoiceMutation.isPending
+                                ? "Generating…"
+                                : "Generate & send invoice"}
                             </Button>
                             {generateInvoiceMutation.error && (
                               <div className="text-xs text-error">
-                                {generateInvoiceMutation.error instanceof Error ? generateInvoiceMutation.error.message : "Failed"}
+                                {generateInvoiceMutation.error instanceof Error
+                                  ? generateInvoiceMutation.error.message
+                                  : "Failed"}
                               </div>
                             )}
                           </div>
@@ -1055,32 +1315,61 @@ function OrdersPage() {
                             }}
                           >
                             <div className="mb-2 grid gap-1">
-                              <Label htmlFor="invoice-bolt11">BOLT11 (paste manually)</Label>
+                              <Label htmlFor="invoice-bolt11">
+                                BOLT11 (paste manually)
+                              </Label>
                               <Input
                                 id="invoice-bolt11"
                                 value={invoice}
-                                onChange={(event) => setInvoice(event.target.value)}
+                                onChange={(event) =>
+                                  setInvoice(event.target.value)
+                                }
                                 placeholder="lnbc..."
                               />
-                              {invoice.trim() && !isInvoiceCompatibleWithCurrentNetwork(invoice.trim()) && (
-                                <div className="text-xs text-error">
-                                  {getLightningNetworkMismatchMessage(invoice.trim())}
-                                </div>
-                              )}
-                              {invoice.trim() && isInvoiceCompatibleWithCurrentNetwork(invoice.trim()) && manualInvoiceDecoded?.currency && (
-                                <div className="text-xs text-[var(--text-secondary)]">
-                                  Parsed invoice amount: {manualInvoiceDecoded.sats ?? manualInvoiceDecoded.msats} {manualInvoiceDecoded.currency}
-                                </div>
-                              )}
+                              {invoice.trim() &&
+                                !isInvoiceCompatibleWithCurrentNetwork(
+                                  invoice.trim()
+                                ) && (
+                                  <div className="text-xs text-error">
+                                    {getLightningNetworkMismatchMessage(
+                                      invoice.trim()
+                                    )}
+                                  </div>
+                                )}
+                              {invoice.trim() &&
+                                isInvoiceCompatibleWithCurrentNetwork(
+                                  invoice.trim()
+                                ) &&
+                                manualInvoiceDecoded?.currency && (
+                                  <div className="text-xs text-[var(--text-secondary)]">
+                                    Parsed invoice amount:{" "}
+                                    {manualInvoiceDecoded.sats ??
+                                      manualInvoiceDecoded.msats}{" "}
+                                    {manualInvoiceDecoded.currency}
+                                  </div>
+                                )}
                             </div>
-                            <Button type="submit" size="sm" className="w-full" disabled={invoiceMutation.isPending}>
-                              {invoiceMutation.isPending ? "Sending…" : "Send invoice DM"}
+                            <Button
+                              type="submit"
+                              size="sm"
+                              className="w-full"
+                              disabled={invoiceMutation.isPending}
+                            >
+                              {invoiceMutation.isPending
+                                ? "Sending…"
+                                : "Send invoice DM"}
                             </Button>
                           </form>
                         )}
 
                         <p className="text-xs text-[var(--text-secondary)]">
-                          {weblnAvailable ? "Invoice via Alby extension." : nwc.connection ? "Invoice via NWC wallet." : "Install Alby or connect NWC for one-click invoicing."} Conduit shows the parsed amount when the invoice format can be verified.
+                          {weblnAvailable
+                            ? "Invoice via Alby extension."
+                            : nwc.connection
+                              ? "Invoice via NWC wallet."
+                              : "Install Alby or connect NWC for one-click invoicing."}{" "}
+                          Conduit shows the parsed amount when the invoice
+                          format can be verified.
                         </p>
                       </div>
 
@@ -1091,11 +1380,18 @@ function OrdersPage() {
                           statusMutation.mutate()
                         }}
                       >
-                        <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">Status update</div>
+                        <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+                          Status update
+                        </div>
                         <select
                           className="h-10 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--text-primary)]"
                           value={orderStatus}
-                          onChange={(event) => setOrderStatus(event.target.value as StatusUpdateMessageSchema["status"])}
+                          onChange={(event) =>
+                            setOrderStatus(
+                              event.target
+                                .value as StatusUpdateMessageSchema["status"]
+                            )
+                          }
                         >
                           <option value="">Choose status</option>
                           <option value="paid">paid</option>
@@ -1106,11 +1402,20 @@ function OrdersPage() {
                         </select>
                         <Input
                           value={statusNote}
-                          onChange={(event) => setStatusNote(event.target.value)}
+                          onChange={(event) =>
+                            setStatusNote(event.target.value)
+                          }
                           placeholder="Optional note"
                         />
-                        <Button type="submit" size="sm" className="w-full" disabled={statusMutation.isPending || !orderStatus}>
-                          {statusMutation.isPending ? "Sending…" : "Send status DM"}
+                        <Button
+                          type="submit"
+                          size="sm"
+                          className="w-full"
+                          disabled={statusMutation.isPending || !orderStatus}
+                        >
+                          {statusMutation.isPending
+                            ? "Sending…"
+                            : "Send status DM"}
                         </Button>
                       </form>
 
@@ -1121,7 +1426,9 @@ function OrdersPage() {
                           shippingMutation.mutate()
                         }}
                       >
-                        <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">Shipping update</div>
+                        <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+                          Shipping update
+                        </div>
                         <Input
                           value={carrier}
                           onChange={(event) => setCarrier(event.target.value)}
@@ -1129,30 +1436,55 @@ function OrdersPage() {
                         />
                         <Input
                           value={trackingNumber}
-                          onChange={(event) => setTrackingNumber(event.target.value)}
+                          onChange={(event) =>
+                            setTrackingNumber(event.target.value)
+                          }
                           placeholder="Tracking number"
                         />
                         <Input
                           value={trackingUrl}
-                          onChange={(event) => setTrackingUrl(event.target.value)}
+                          onChange={(event) =>
+                            setTrackingUrl(event.target.value)
+                          }
                           placeholder="Tracking URL (optional)"
                         />
                         <Input
                           value={shippingNote}
-                          onChange={(event) => setShippingNote(event.target.value)}
+                          onChange={(event) =>
+                            setShippingNote(event.target.value)
+                          }
                           placeholder="Optional note"
                         />
-                        <Button type="submit" size="sm" className="w-full" disabled={shippingMutation.isPending}>
-                          {shippingMutation.isPending ? "Sending…" : "Send shipping DM"}
+                        <Button
+                          type="submit"
+                          size="sm"
+                          className="w-full"
+                          disabled={shippingMutation.isPending}
+                        >
+                          {shippingMutation.isPending
+                            ? "Sending…"
+                            : "Send shipping DM"}
                         </Button>
                       </form>
                     </div>
 
-                    {(invoiceMutation.error || statusMutation.error || shippingMutation.error || noteMutation.error) && (
+                    {(invoiceMutation.error ||
+                      statusMutation.error ||
+                      shippingMutation.error ||
+                      noteMutation.error) && (
                       <div className="rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
-                        {[invoiceMutation.error, statusMutation.error, shippingMutation.error, noteMutation.error]
+                        {[
+                          invoiceMutation.error,
+                          statusMutation.error,
+                          shippingMutation.error,
+                          noteMutation.error,
+                        ]
                           .filter(Boolean)
-                          .map((error) => (error instanceof Error ? error.message : "Failed to send message"))
+                          .map((error) =>
+                            error instanceof Error
+                              ? error.message
+                              : "Failed to send message"
+                          )
                           .join(" • ")}
                       </div>
                     )}
@@ -1163,7 +1495,11 @@ function OrdersPage() {
                   <div className="space-y-4">
                     <div className="max-h-[44vh] space-y-3 overflow-auto pr-1">
                       {(selected.messages ?? []).map((message) => (
-                        <MessageCard key={message.id} message={message} mine={message.senderPubkey === pubkey} />
+                        <MessageCard
+                          key={message.id}
+                          message={message}
+                          mine={message.senderPubkey === pubkey}
+                        />
                       ))}
                     </div>
                     <form
@@ -1173,13 +1509,20 @@ function OrdersPage() {
                         noteMutation.mutate()
                       }}
                     >
-                      <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">Reply to buyer</div>
+                      <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+                        Reply to buyer
+                      </div>
                       <Input
                         value={replyNote}
                         onChange={(event) => setReplyNote(event.target.value)}
                         placeholder="Send a note to the buyer"
                       />
-                      <Button type="submit" size="sm" className="w-full" disabled={noteMutation.isPending || !replyNote.trim()}>
+                      <Button
+                        type="submit"
+                        size="sm"
+                        className="w-full"
+                        disabled={noteMutation.isPending || !replyNote.trim()}
+                      >
                         {noteMutation.isPending ? "Sending…" : "Send message"}
                       </Button>
                     </form>
@@ -1187,7 +1530,9 @@ function OrdersPage() {
                 </TabsContent>
               </Tabs>
             ) : (
-              <div className="text-sm text-[var(--text-secondary)]">Select a conversation.</div>
+              <div className="text-sm text-[var(--text-secondary)]">
+                Select a conversation.
+              </div>
             )}
           </section>
         </div>

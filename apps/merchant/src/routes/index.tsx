@@ -26,7 +26,9 @@ type MerchantDashboardStats = {
   latestOrders: ParsedOrderMessage[]
 }
 
-async function fetchDashboardStats(pubkey: string): Promise<MerchantDashboardStats> {
+async function fetchDashboardStats(
+  pubkey: string
+): Promise<MerchantDashboardStats> {
   const listingEvents = await fetchEventsFanout(
     {
       kinds: [EVENT_KINDS.PRODUCT],
@@ -36,7 +38,7 @@ async function fetchDashboardStats(pubkey: string): Promise<MerchantDashboardSta
     {
       connectTimeoutMs: 4_000,
       fetchTimeoutMs: 10_000,
-    },
+    }
   )
 
   const listingIds = new Set<string>()
@@ -75,14 +77,19 @@ async function fetchDashboardStats(pubkey: string): Promise<MerchantDashboardSta
   let awaitingFulfillment = 0
 
   for (const messages of byOrder.values()) {
-    const hasPaymentRequest = messages.some((message) => message.type === "payment_request")
+    const hasPaymentRequest = messages.some(
+      (message) => message.type === "payment_request"
+    )
     const latestStatus = [...messages]
       .reverse()
       .find((message) => message.type === "status_update")
 
     if (!hasPaymentRequest) awaitingPayment += 1
     if (latestStatus?.type === "status_update") {
-      if (latestStatus.payload.status === "paid" || latestStatus.payload.status === "processing") {
+      if (
+        latestStatus.payload.status === "paid" ||
+        latestStatus.payload.status === "processing"
+      ) {
         awaitingFulfillment += 1
       }
     }
@@ -115,7 +122,9 @@ function StatCard({
     <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-glass-inset)]">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">{label}</div>
+          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+            {label}
+          </div>
           <div className="mt-3 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
             {value}
           </div>
@@ -137,38 +146,54 @@ function DashboardPage() {
     refetchInterval: 30_000,
   })
   const latestOrders = (statsQuery.data?.latestOrders ?? []).filter(
-    (message): message is Extract<ParsedOrderMessage, { type: "order" }> => message.type === "order",
+    (message): message is Extract<ParsedOrderMessage, { type: "order" }> =>
+      message.type === "order"
   )
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">Merchant Portal</div>
+          <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">
+            Merchant Portal
+          </div>
           <h1 className="mt-3 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
             Run your store
           </h1>
           <p className="mt-2 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
-            Publish products, manage incoming orders, and keep buyer conversations moving from one workspace.
+            Publish products, manage incoming orders, and keep buyer
+            conversations moving from one workspace.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           {pubkey && (
-            <Badge variant="secondary" className="border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]">
+            <Badge
+              variant="secondary"
+              className="border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]"
+            >
               {formatPubkey(pubkey, 10)}
             </Badge>
           )}
           {(() => {
             const groups = getEffectiveRelayGroups()
             const counts = [
-              groups.merchant.length > 0 ? `${groups.merchant.length} merchant` : null,
-              groups.commerce.length > 0 ? `${groups.commerce.length} commerce` : null,
-              groups.general.length > 0 ? `${groups.general.length} general` : null,
+              groups.merchant.length > 0
+                ? `${groups.merchant.length} merchant`
+                : null,
+              groups.commerce.length > 0
+                ? `${groups.commerce.length} commerce`
+                : null,
+              groups.general.length > 0
+                ? `${groups.general.length} general`
+                : null,
             ].filter(Boolean)
             if (counts.length === 0) return null
             return (
-              <Badge variant="outline" className="border-[var(--border)] text-[var(--text-muted)]">
+              <Badge
+                variant="outline"
+                className="border-[var(--border)] text-[var(--text-muted)]"
+              >
                 {counts.join(" / ")}
               </Badge>
             )
@@ -184,22 +209,41 @@ function DashboardPage() {
 
       {!pubkey && (
         <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
-          Connect your signer to manage listings and orders from this merchant workspace.
+          Connect your signer to manage listings and orders from this merchant
+          workspace.
         </div>
       )}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Listings" value={statsQuery.data?.listings ?? 0} icon={Package} />
-        <StatCard label="Open orders" value={statsQuery.data?.openOrders ?? 0} icon={ShoppingBag} />
-        <StatCard label="Awaiting payment" value={statsQuery.data?.awaitingPayment ?? 0} icon={Wallet} />
-        <StatCard label="Awaiting fulfillment" value={statsQuery.data?.awaitingFulfillment ?? 0} icon={ShoppingBag} />
+        <StatCard
+          label="Listings"
+          value={statsQuery.data?.listings ?? 0}
+          icon={Package}
+        />
+        <StatCard
+          label="Open orders"
+          value={statsQuery.data?.openOrders ?? 0}
+          icon={ShoppingBag}
+        />
+        <StatCard
+          label="Awaiting payment"
+          value={statsQuery.data?.awaitingPayment ?? 0}
+          icon={Wallet}
+        />
+        <StatCard
+          label="Awaiting fulfillment"
+          value={statsQuery.data?.awaitingFulfillment ?? 0}
+          icon={ShoppingBag}
+        />
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">
         <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Things to do next</div>
+              <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                Things to do next
+              </div>
               <h2 className="mt-2 text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
                 Keep your merchant loop moving
               </h2>
@@ -213,7 +257,9 @@ function DashboardPage() {
             >
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="text-sm font-medium text-[var(--text-primary)]">Manage listings</div>
+                  <div className="text-sm font-medium text-[var(--text-primary)]">
+                    Manage listings
+                  </div>
                   <div className="mt-1 text-sm text-[var(--text-secondary)]">
                     Create, edit, and publish products.
                   </div>
@@ -228,7 +274,9 @@ function DashboardPage() {
             >
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="text-sm font-medium text-[var(--text-primary)]">Open order inbox</div>
+                  <div className="text-sm font-medium text-[var(--text-primary)]">
+                    Open order inbox
+                  </div>
                   <div className="mt-1 text-sm text-[var(--text-secondary)]">
                     Review buyer messages, invoices, and status updates.
                   </div>
@@ -242,8 +290,12 @@ function DashboardPage() {
         <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Recent orders</div>
-              <h2 className="mt-2 text-xl font-semibold text-[var(--text-primary)]">Latest buyer activity</h2>
+              <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                Recent orders
+              </div>
+              <h2 className="mt-2 text-xl font-semibold text-[var(--text-primary)]">
+                Latest buyer activity
+              </h2>
             </div>
             <Button asChild variant="ghost" size="sm">
               <Link to="/orders">View all</Link>
@@ -252,12 +304,15 @@ function DashboardPage() {
 
           <div className="mt-4 space-y-3">
             {statsQuery.isLoading && (
-              <div className="text-sm text-[var(--text-secondary)]">Loading dashboard…</div>
+              <div className="text-sm text-[var(--text-secondary)]">
+                Loading dashboard…
+              </div>
             )}
 
             {!statsQuery.isLoading && latestOrders.length === 0 && (
               <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--text-secondary)]">
-                No buyer orders cached yet. Once Market sends an order to this merchant, it will appear here and in Orders.
+                No buyer orders cached yet. Once Market sends an order to this
+                merchant, it will appear here and in Orders.
               </div>
             )}
 
@@ -273,7 +328,9 @@ function DashboardPage() {
                       Order {message.orderId.slice(0, 8)}…
                     </div>
                     <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                      {message.payload.items.length} item{message.payload.items.length === 1 ? "" : "s"} · {message.payload.subtotal} {message.payload.currency}
+                      {message.payload.items.length} item
+                      {message.payload.items.length === 1 ? "" : "s"} ·{" "}
+                      {message.payload.subtotal} {message.payload.currency}
                     </div>
                   </div>
                   <div className="text-xs text-[var(--text-muted)]">

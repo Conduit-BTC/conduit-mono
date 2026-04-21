@@ -2,19 +2,27 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
+  clearRelayOverrides,
   getBuyerConversationList,
   getConversationDetail,
   getMarketplaceProducts,
   getMerchantStorefront,
   getProfiles,
+  saveRelayOverrides,
 } from "@conduit/core"
 import { EVENT_KINDS } from "@conduit/core"
-import type { CachedOrderMessage, CachedProduct, CachedProfile } from "@conduit/core"
+import type {
+  CachedOrderMessage,
+  CachedProduct,
+  CachedProfile,
+} from "@conduit/core"
 
 const FIXED_NOW = 1_700_000_000_000
 let cachedProducts: CachedProduct[] = []
 let cachedProfiles = new Map<string, CachedProfile>()
 let cachedOrderMessages: CachedOrderMessage[] = []
+const store: Record<string, string> = {}
+const originalLocalStorage = globalThis.localStorage
 
 function makeProductEvent(params: {
   pubkey: string
@@ -60,28 +68,58 @@ beforeEach(async () => {
   cachedProducts = []
   cachedProfiles = new Map()
   cachedOrderMessages = []
+  Object.keys(store).forEach((key) => delete store[key])
+  Object.defineProperty(globalThis, "localStorage", {
+    value: {
+      getItem: (key: string) => store[key] ?? null,
+      setItem: (key: string, value: string) => {
+        store[key] = value
+      },
+      removeItem: (key: string) => {
+        delete store[key]
+      },
+      clear: () => {
+        Object.keys(store).forEach((key) => delete store[key])
+      },
+      length: 0,
+      key: () => null,
+    },
+    writable: true,
+    configurable: true,
+  })
   __setCommerceTestOverrides({
     now: () => FIXED_NOW,
     getCachedProducts: async (merchantPubkey) =>
-      cachedProducts.filter((row) => !merchantPubkey || row.pubkey === merchantPubkey),
+      cachedProducts.filter(
+        (row) => !merchantPubkey || row.pubkey === merchantPubkey
+      ),
     putCachedProducts: async (rows) => {
       for (const row of rows) {
-        cachedProducts = [...cachedProducts.filter((existing) => existing.id !== row.id), row]
+        cachedProducts = [
+          ...cachedProducts.filter((existing) => existing.id !== row.id),
+          row,
+        ]
       }
     },
-    getCachedProfiles: async (pubkeys) => pubkeys.map((pubkey) => cachedProfiles.get(pubkey)),
+    getCachedProfiles: async (pubkeys) =>
+      pubkeys.map((pubkey) => cachedProfiles.get(pubkey)),
     putCachedProfiles: async (rows) => {
       for (const row of rows) {
         cachedProfiles.set(row.pubkey, row)
       }
     },
     getCachedOrderMessages: async (principalPubkey) =>
-      cachedOrderMessages.filter((row) =>
-        row.recipientPubkey === principalPubkey || row.senderPubkey === principalPubkey
+      cachedOrderMessages.filter(
+        (row) =>
+          row.recipientPubkey === principalPubkey ||
+          row.senderPubkey === principalPubkey
       ),
     putCachedOrderMessages: async (rows) => {
       for (const row of rows) {
-        cachedOrderMessages = [...cachedOrderMessages.filter((existing) => existing.id !== row.id), row]
+        cachedOrderMessages = [
+          ...cachedOrderMessages.filter((existing) => existing.id !== row.id),
+          row,
+        ]
       }
     },
   })
@@ -92,6 +130,12 @@ afterEach(async () => {
   cachedProducts = []
   cachedProfiles = new Map()
   cachedOrderMessages = []
+  clearRelayOverrides()
+  Object.defineProperty(globalThis, "localStorage", {
+    value: originalLocalStorage,
+    writable: true,
+    configurable: true,
+  })
 })
 
 describe("commerce gateway", () => {
@@ -126,6 +170,52 @@ describe("commerce gateway", () => {
     expect(result.data[0]?.product.title).toBe("Cached Item")
   })
 
+  it("uses commerce relays for marketplace browse when configured", async () => {
+    saveRelayOverrides({
+      custom: {
+        merchant: [],
+        commerce: [
+          {
+            url: "wss://commerce-only.test",
+            role: "commerce",
+            source: "custom",
+            out: false,
+            in: true,
+            find: true,
+            dm: false,
+          },
+        ],
+        general: [],
+      },
+      states: {
+        merchant: {},
+        commerce: {},
+        general: {
+          "wss://relay.primal.net": { hidden: true },
+          "wss://relay.damus.io": { hidden: true },
+          "wss://nos.lol": { hidden: true },
+          "wss://relay.nostr.band": { hidden: true },
+          "wss://purplepag.es": { hidden: true },
+          "wss://relay.nostr.net": { hidden: true },
+          "wss://sendit.nosflare.com": { hidden: true },
+          "wss://relay.plebeian.market": { hidden: true },
+        },
+      },
+    })
+
+    let seenRelayUrls: string[] | undefined
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (_filter, options) => {
+        seenRelayUrls = options?.relayUrls
+        return []
+      },
+    })
+
+    await getMarketplaceProducts({ limit: 10 })
+
+    expect(seenRelayUrls).toContain("wss://commerce-only.test")
+  })
+
   it("keeps merchant storefront reads deletion-aware", async () => {
     const merchantPubkey = "merchant"
     const productEvent = makeProductEvent({
@@ -143,13 +233,15 @@ describe("commerce gateway", () => {
         }
 
         if (filter.kinds?.includes(EVENT_KINDS.DELETION)) {
-          return [{
-            id: "delete-1",
-            pubkey: merchantPubkey,
-            created_at: 101,
-            content: "",
-            tags: [["a", `30402:${merchantPubkey}:deleted-item`]],
-          } as never]
+          return [
+            {
+              id: "delete-1",
+              pubkey: merchantPubkey,
+              created_at: 101,
+              content: "",
+              tags: [["a", `30402:${merchantPubkey}:deleted-item`]],
+            } as never,
+          ]
         }
 
         return []
@@ -159,6 +251,45 @@ describe("commerce gateway", () => {
     const result = await getMerchantStorefront({ merchantPubkey, limit: 10 })
 
     expect(result.data).toHaveLength(0)
+  })
+
+  it("keeps merchant storefront reads compatible with commerce fallback relays", async () => {
+    saveRelayOverrides({
+      custom: {
+        merchant: [],
+        commerce: [
+          {
+            url: "wss://commerce-fallback.test",
+            role: "commerce",
+            source: "custom",
+            out: false,
+            in: true,
+            find: true,
+            dm: false,
+          },
+        ],
+        general: [],
+      },
+      states: {
+        merchant: {},
+        commerce: {},
+        general: {},
+      },
+    })
+
+    let seenRelayUrls: string[] | undefined
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          seenRelayUrls = options?.relayUrls
+        }
+        return []
+      },
+    })
+
+    await getMerchantStorefront({ merchantPubkey: "merchant", limit: 10 })
+
+    expect(seenRelayUrls).toContain("wss://commerce-fallback.test")
   })
 
   it("builds stable buyer conversation summaries from cached messages", async () => {
@@ -182,7 +313,14 @@ describe("commerce gateway", () => {
             id: "order-1",
             merchantPubkey: "merchant",
             buyerPubkey: "buyer",
-            items: [{ productId: "30402:merchant:item", quantity: 1, priceAtPurchase: 25, currency: "USD" }],
+            items: [
+              {
+                productId: "30402:merchant:item",
+                quantity: 1,
+                priceAtPurchase: 25,
+                currency: "USD",
+              },
+            ],
             subtotal: 25,
             currency: "USD",
             createdAt: FIXED_NOW - 10_000,
@@ -210,14 +348,17 @@ describe("commerce gateway", () => {
           },
         }),
         cachedAt: FIXED_NOW - 5_000,
-      },
+      }
     )
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({ signer: undefined } as never),
+      requireNdkConnected: async () => ({ signer: undefined }) as never,
     })
 
-    const listResult = await getBuyerConversationList({ principalPubkey: "buyer", limit: 50 })
+    const listResult = await getBuyerConversationList({
+      principalPubkey: "buyer",
+      limit: 50,
+    })
     const detailResult = await getConversationDetail({
       principalPubkey: "buyer",
       orderId: "order-1",
@@ -234,18 +375,19 @@ describe("commerce gateway", () => {
 
   it("dedupes profile requests and serves cached profiles when relays fail later", async () => {
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => ({
-        fetchEvents: async () =>
-          new Set([
-            {
-              id: "profile-1",
-              pubkey: "alice",
-              created_at: 10,
-              content: JSON.stringify({ display_name: "Alice" }),
-              tags: [],
-            },
-          ]),
-      } as never),
+      requireNdkConnected: async () =>
+        ({
+          fetchEvents: async () =>
+            new Set([
+              {
+                id: "profile-1",
+                pubkey: "alice",
+                created_at: 10,
+                content: JSON.stringify({ display_name: "Alice" }),
+                tags: [],
+              },
+            ]),
+        }) as never,
     })
 
     const firstResult = await getProfiles({ pubkeys: ["alice", "alice"] })

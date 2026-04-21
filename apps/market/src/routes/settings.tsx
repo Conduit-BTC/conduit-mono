@@ -8,7 +8,8 @@ export const Route = createFileRoute("/settings")({
 
 function SettingsPage() {
   const navigate = useNavigate()
-  const { visibleGroups, addRelay, removeRelay, updateRelay, resetToDefaults } = useRelaySettings("shopper")
+  const { visibleGroups, addRelay, removeRelay, updateRelay, resetToDefaults } =
+    useRelaySettings("shopper")
 
   function handleClose(): void {
     if (window.history.length > 1) {

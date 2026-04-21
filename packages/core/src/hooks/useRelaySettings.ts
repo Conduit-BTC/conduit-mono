@@ -2,11 +2,18 @@ import { useCallback, useSyncExternalStore } from "react"
 import {
   clearRelayOverrides,
   getEffectiveRelayGroups,
+  getRelayGroupsForActor,
   loadRelayOverrides,
   saveRelayOverrides,
 } from "../config"
 import { refreshNdkRelaySettings } from "../protocol/ndk"
-import type { RelayActor, RelayEntry, RelayGroups, RelayOverrides, RelayRole } from "../types"
+import type {
+  RelayActor,
+  RelayEntry,
+  RelayGroups,
+  RelayOverrides,
+  RelayRole,
+} from "../types"
 
 type Listener = () => void
 
@@ -49,8 +56,12 @@ function persist(nextGroups: RelayGroups): void {
   const nextOverrides: RelayOverrides = {
     ...current,
     custom: {
-      merchant: nextGroups.merchant.filter((entry) => entry.source === "custom"),
-      commerce: nextGroups.commerce.filter((entry) => entry.source === "custom"),
+      merchant: nextGroups.merchant.filter(
+        (entry) => entry.source === "custom"
+      ),
+      commerce: nextGroups.commerce.filter(
+        (entry) => entry.source === "custom"
+      ),
       general: nextGroups.general.filter((entry) => entry.source === "custom"),
     },
   }
@@ -60,7 +71,9 @@ function persist(nextGroups: RelayGroups): void {
   refreshNdkRelaySettings()
 }
 
-function persistOverrides(update: (current: RelayOverrides) => RelayOverrides): void {
+function persistOverrides(
+  update: (current: RelayOverrides) => RelayOverrides
+): void {
   const current = loadRelayOverrides() ?? {
     custom: { merchant: [], commerce: [], general: [] },
     states: { merchant: {}, commerce: {}, general: {} },
@@ -79,66 +92,62 @@ export function useRelaySettings(actor: RelayActor): UseRelaySettingsResult {
   const groups = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 
   const visibleGroups: Partial<RelayGroups> =
-    actor === "merchant"
-      ? groups
-      : { merchant: groups.merchant, commerce: groups.commerce, general: groups.general }
+    actor === "merchant" ? groups : getRelayGroupsForActor(actor)
 
-  const addRelay = useCallback(
-    (role: RelayRole, url: string) => {
-      const trimmed = url.trim()
-      if (!trimmed) return
-      const current = getEffectiveRelayGroups()
-      const group = current[role]
-      if (group.some((entry) => entry.url === trimmed)) return
-      const entry: RelayEntry = {
-        url: trimmed,
-        role,
-        source: "custom",
-        out: role !== "commerce",
-        in: true,
-        find: role !== "merchant",
-        dm: role !== "commerce",
-      }
+  const addRelay = useCallback((role: RelayRole, url: string) => {
+    const trimmed = url.trim()
+    if (!trimmed) return
+    const current = getEffectiveRelayGroups()
+    const group = current[role]
+    if (group.some((entry) => entry.url === trimmed)) return
+    const entry: RelayEntry = {
+      url: trimmed,
+      role,
+      source: "custom",
+      out: role !== "commerce",
+      in: true,
+      find: role !== "merchant",
+      dm: role !== "commerce",
+    }
+    const updated: RelayGroups = {
+      ...current,
+      [role]: [...group, entry],
+    }
+    persist(updated)
+  }, [])
+
+  const removeRelay = useCallback((role: RelayRole, url: string) => {
+    const current = getEffectiveRelayGroups()
+    const existing = current[role].find((entry) => entry.url === url)
+    if (!existing) return
+
+    if (existing.source === "custom") {
       const updated: RelayGroups = {
         ...current,
-        [role]: [...group, entry],
+        [role]: current[role].filter((entry) => entry.url !== url),
       }
       persist(updated)
-    },
-    [],
-  )
+      return
+    }
 
-  const removeRelay = useCallback(
-    (role: RelayRole, url: string) => {
-      const current = getEffectiveRelayGroups()
-      const existing = current[role].find((entry) => entry.url === url)
-      if (!existing) return
-
-      if (existing.source === "custom") {
-        const updated: RelayGroups = {
-          ...current,
-          [role]: current[role].filter((entry) => entry.url !== url),
-        }
-        persist(updated)
-        return
-      }
-
-      persistOverrides((overrides) => ({
-        ...overrides,
-        states: {
-          ...overrides.states,
-          [role]: {
-            ...overrides.states[role],
-            [url]: { ...overrides.states[role][url], hidden: true },
-          },
+    persistOverrides((overrides) => ({
+      ...overrides,
+      states: {
+        ...overrides.states,
+        [role]: {
+          ...overrides.states[role],
+          [url]: { ...overrides.states[role][url], hidden: true },
         },
-      }))
-    },
-    [],
-  )
+      },
+    }))
+  }, [])
 
   const updateRelay = useCallback(
-    (role: RelayRole, url: string, next: Pick<RelayEntry, "out" | "in" | "find" | "dm">) => {
+    (
+      role: RelayRole,
+      url: string,
+      next: Pick<RelayEntry, "out" | "in" | "find" | "dm">
+    ) => {
       const current = getEffectiveRelayGroups()
       const existing = current[role].find((entry) => entry.url === url)
       if (!existing) return
@@ -147,7 +156,7 @@ export function useRelaySettings(actor: RelayActor): UseRelaySettingsResult {
         const updated: RelayGroups = {
           ...current,
           [role]: current[role].map((entry) =>
-            entry.url === url ? { ...entry, ...next } : entry,
+            entry.url === url ? { ...entry, ...next } : entry
           ),
         }
         persist(updated)
@@ -172,7 +181,7 @@ export function useRelaySettings(actor: RelayActor): UseRelaySettingsResult {
         },
       }))
     },
-    [],
+    []
   )
 
   const resetToDefaults = useCallback(() => {
@@ -181,5 +190,12 @@ export function useRelaySettings(actor: RelayActor): UseRelaySettingsResult {
     refreshNdkRelaySettings()
   }, [])
 
-  return { groups, visibleGroups, addRelay, removeRelay, updateRelay, resetToDefaults }
+  return {
+    groups,
+    visibleGroups,
+    addRelay,
+    removeRelay,
+    updateRelay,
+    resetToDefaults,
+  }
 }

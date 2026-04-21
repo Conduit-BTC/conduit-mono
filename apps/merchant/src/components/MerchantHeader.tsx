@@ -37,7 +37,11 @@ const navItems: NavItem[] = [
   { to: "/profile", label: "Profile", icon: Settings },
 ]
 
-function MerchantAvatarFallback({ iconClassName = "h-4 w-4" }: { iconClassName?: string }) {
+function MerchantAvatarFallback({
+  iconClassName = "h-4 w-4",
+}: {
+  iconClassName?: string
+}) {
   return (
     <div className="flex h-full w-full items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]">
       <img
@@ -66,7 +70,10 @@ function Logo({
         : "/images/logo/logo-full.svg"
 
   return (
-    <Link to="/" className={cn("flex items-center gap-3 select-none", className)}>
+    <Link
+      to="/"
+      className={cn("flex items-center gap-3 select-none", className)}
+    >
       <img src={src} alt="Conduit" className="h-8 w-auto" />
       <span className="hidden border-l border-[var(--border)] pl-3 font-display text-2xl font-medium tracking-tight text-[var(--text-primary)] md:block">
         merchant
@@ -93,7 +100,7 @@ function MerchantNavLinks({
             onClick={onNavigate}
             className={cn(
               "group flex items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface)] hover:text-[var(--text-primary)]",
-              compact ? "px-3 py-2" : "",
+              compact ? "px-3 py-2" : ""
             )}
             activeProps={{
               className:
@@ -116,7 +123,8 @@ function UserMenu() {
 
   if (!pubkey || status === "disconnected" || status === "error") return null
 
-  const displayName = profile?.displayName ?? profile?.name ?? formatPubkey(pubkey, 6)
+  const displayName =
+    profile?.displayName ?? profile?.name ?? formatPubkey(pubkey, 6)
 
   return (
     <ProfileSelector
@@ -137,11 +145,19 @@ function MobileNav() {
   return (
     <Sheet>
       <SheetTrigger asChild>
-        <Button variant="ghost" size="sm" className="h-11 w-11 rounded-xl lg:hidden" aria-label="Open menu">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-11 w-11 rounded-xl lg:hidden"
+          aria-label="Open menu"
+        >
           <Menu className="h-5 w-5" />
         </Button>
       </SheetTrigger>
-      <SheetContent side="left" className="w-[320px] border-r border-[var(--border)] bg-[var(--surface)]">
+      <SheetContent
+        side="left"
+        className="w-[320px] border-r border-[var(--border)] bg-[var(--surface)]"
+      >
         <SheetHeader>
           <SheetTitle>
             <Logo variant="full" className="justify-start" />
@@ -159,7 +175,7 @@ function MobileNav() {
                   "mb-3 border",
                   config.lightningNetwork === "mock"
                     ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
-                    : "border-blue-500/30 bg-blue-500/10 text-blue-400",
+                    : "border-blue-500/30 bg-blue-500/10 text-blue-400"
                 )}
               >
                 {config.lightningNetwork}
@@ -187,7 +203,7 @@ export function MerchantSidebar() {
               "mt-4 border",
               config.lightningNetwork === "mock"
                 ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
-                : "border-blue-500/30 bg-blue-500/10 text-blue-400",
+                : "border-blue-500/30 bg-blue-500/10 text-blue-400"
             )}
           >
             {config.lightningNetwork}
@@ -228,10 +244,17 @@ export function MerchantHeader() {
         </div>
 
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" className="hidden h-11 w-11 rounded-xl sm:inline-flex" aria-label="Notifications">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="hidden h-11 w-11 rounded-xl sm:inline-flex"
+            aria-label="Notifications"
+          >
             <Bell className="h-4 w-4" />
           </Button>
-          <div className="hidden lg:block">{signerConnected ? <UserMenu /> : <SignerSwitch />}</div>
+          <div className="hidden lg:block">
+            {signerConnected ? <UserMenu /> : <SignerSwitch />}
+          </div>
         </div>
       </div>
     </header>

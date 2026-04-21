@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import {
   clearRelayOverrides,
   getConfiguredRelayGroups,
+  getEffectiveDmRelayUrls,
   getDefaultRelayGroups,
   getEffectiveRelayGroups,
   getEffectiveReadableRelayUrls,
+  getEffectiveRoleRelayUrls,
   getEffectiveRelayUrls,
   getEffectiveWritableRelayUrls,
   getRelayGroupsForActor,
@@ -56,9 +58,15 @@ describe("relay config model", () => {
     })
 
     const groups = getDefaultRelayGroups()
-    expect(groups.merchant.map((entry) => entry.url)).toContain("wss://signer-a.test")
-    expect(groups.merchant.map((entry) => entry.url)).toContain("wss://signer-b.test")
-    expect(groups.merchant.some((entry) => entry.source === "signer")).toBe(true)
+    expect(groups.merchant.map((entry) => entry.url)).toContain(
+      "wss://signer-a.test"
+    )
+    expect(groups.merchant.map((entry) => entry.url)).toContain(
+      "wss://signer-b.test"
+    )
+    expect(groups.merchant.some((entry) => entry.source === "signer")).toBe(
+      true
+    )
   })
 
   it("keeps configured commerce relays separate from signer general relays", () => {
@@ -74,15 +82,17 @@ describe("relay config model", () => {
       custom: {
         merchant: [],
         commerce: [],
-        general: [{
-          url: "wss://custom-general.test",
-          role: "general",
-          source: "custom",
-          out: true,
-          in: true,
-          find: true,
-          dm: true,
-        }],
+        general: [
+          {
+            url: "wss://custom-general.test",
+            role: "general",
+            source: "custom",
+            out: true,
+            in: true,
+            find: true,
+            dm: true,
+          },
+        ],
       },
       states: {
         merchant: {},
@@ -127,7 +137,9 @@ describe("relay config model", () => {
       },
     })
 
-    expect(getEffectiveRelayGroups().general.some((entry) => entry.url === hiddenUrl)).toBe(false)
+    expect(
+      getEffectiveRelayGroups().general.some((entry) => entry.url === hiddenUrl)
+    ).toBe(false)
   })
 
   it("returns only commerce and general groups for shoppers", () => {
@@ -142,7 +154,11 @@ describe("relay config model", () => {
     const shopperUrls = getEffectiveRelayUrls("shopper")
     const merchantGroup = getEffectiveRelayGroups().merchant
 
-    expect(shopperUrls.every((url) => !merchantGroup.some((entry) => entry.url === url))).toBe(true)
+    expect(
+      shopperUrls.every(
+        (url) => !merchantGroup.some((entry) => entry.url === url)
+      )
+    ).toBe(true)
     expect(merchantUrls.length).toBeGreaterThanOrEqual(shopperUrls.length)
   })
 
@@ -158,6 +174,26 @@ describe("relay config model", () => {
     expect(writable).not.toContain("wss://signer.test")
   })
 
+  it("returns purpose-filtered relay urls for a specific role", () => {
+    saveRelayOverrides({
+      custom: { merchant: [], commerce: [], general: [] },
+      states: {
+        merchant: {},
+        commerce: {},
+        general: {
+          "wss://relay.primal.net": { dm: false },
+        },
+      },
+    })
+
+    expect(getEffectiveRoleRelayUrls("general", "dm")).not.toContain(
+      "wss://relay.primal.net"
+    )
+    expect(getEffectiveDmRelayUrls("merchant")).not.toContain(
+      "wss://relay.primal.net"
+    )
+  })
+
   it("normalizes localhost secure websocket relays to local ws urls", () => {
     saveSignerRelayMap({
       "wss://localhost:7777": { read: true, write: true },
@@ -165,14 +201,22 @@ describe("relay config model", () => {
     })
 
     const groups = getDefaultRelayGroups()
-    expect(groups.merchant.map((entry) => entry.url)).toContain("ws://127.0.0.1:7777")
-    expect(groups.merchant.map((entry) => entry.url)).toContain("ws://127.0.0.1:3334")
+    expect(groups.merchant.map((entry) => entry.url)).toContain(
+      "ws://127.0.0.1:7777"
+    )
+    expect(groups.merchant.map((entry) => entry.url)).toContain(
+      "ws://127.0.0.1:3334"
+    )
   })
 
   it("clearRelayOverrides removes saved overrides", () => {
     saveRelayOverrides({
       custom: { merchant: [], commerce: [], general: [] },
-      states: { merchant: {}, commerce: {}, general: { "wss://x.test": { hidden: true } } },
+      states: {
+        merchant: {},
+        commerce: {},
+        general: { "wss://x.test": { hidden: true } },
+      },
     })
 
     clearRelayOverrides()
