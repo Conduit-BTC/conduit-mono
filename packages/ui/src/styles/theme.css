@@ -97,6 +97,15 @@
   --error: hsla(0, 84%, 60%, 1);
   --info: hsla(217, 91%, 60%, 1);
 
+  /* Text on colored/dark surfaces (e.g. gradient buttons, filled badges) */
+  --on-primary: hsla(0, 0%, 100%, 1);
+
+  /*
+   * Avatar fallback background -- intentionally theme-invariant (always dark).
+   * White icons (brightness-0 invert) remain visible in both light and dark modes.
+   */
+  --avatar-bg: var(--neutral-950);
+
   /*
    * shadcn/ui semantic tokens (canonical)
    * Keep these as the primary contract for shared UI components.
@@ -148,6 +157,13 @@
   /* Back-compat alias */
   --border-focus: var(--ring);
 
+  /*
+   * --border-overlay: used for the ring/outline on floating surfaces (dropdowns, dialogs).
+   * Dark: neutral-700 (26% L) -- visible but not harsh against dark overlays.
+   * Light: overridden to neutral-300 (78% L) -- visible against white surfaces.
+   */
+  --border-overlay: var(--neutral-700);
+
   /* Spacing scale */
   --space-1: 0.25rem;
   --space-2: 0.5rem;
@@ -173,9 +189,12 @@
 
   /* Shadows */
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
-  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  --shadow-md:
+    0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  --shadow-lg:
+    0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+  --shadow-xl:
+    0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
   --shadow-glass-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   --shadow-dialog: 0 28px 80px rgba(0, 0, 0, 0.6);
 }
@@ -184,12 +203,20 @@
 @media (prefers-color-scheme: light) {
   :root {
     color-scheme: light;
-    --background: var(--neutral-50);
+
+    /*
+     * Surface hierarchy in light mode:
+     *   background (neutral-150, 92%) -> surface/card (white) -> elevated (white)
+     * The deeper background gives white surfaces real contrast to lift against.
+     */
+    --background: var(--neutral-150);
     --foreground: var(--neutral-900);
 
+    /* Tier 1 - base panels / cards */
     --card: white;
     --card-foreground: var(--foreground);
 
+    /* Tier 2 - popovers / inline elevated panels */
     --popover: white;
     --popover-foreground: var(--foreground);
 
@@ -201,11 +228,24 @@
     --text-muted: var(--neutral-500);
     --text-inverse: white;
 
-    --surface: var(--card);
-    --surface-elevated: var(--popover);
-    --surface-dialog: white;
+    /* Semantic surface aliases */
+    --surface: var(--card); /* base panel/card */
+    --surface-elevated: var(--popover); /* inline raised panel */
+    --surface-dialog: white; /* full dialogs */
+    --surface-overlay: white; /* floating menus / dropdowns */
 
+    /* Borders are one step darker so they read against white surfaces */
     --border: var(--neutral-200);
-    --input: var(--border);
+    --input: var(--neutral-200);
+    --border-overlay: var(--neutral-300);
+
+    /* Inset highlight visible on white */
+    --shadow-glass-inset:
+      inset 0 1px 0 rgba(255, 255, 255, 0.8), inset 0 -1px 0 var(--neutral-200);
+
+    /* Floating element shadows -- softer than dark mode but still visible */
+    --shadow-dialog:
+      0 8px 30px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
+    --shadow-xl: 0 20px 40px rgba(0, 0, 0, 0.1), 0 8px 16px rgba(0, 0, 0, 0.06);
   }
 }
