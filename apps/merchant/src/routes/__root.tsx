@@ -10,9 +10,9 @@ import { useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
 import {
   getActiveRelaySettingsScope,
-  hasNip07,
   refreshNdkRelaySettings,
   useAuth,
+  useNip07Availability,
 } from "@conduit/core"
 import { Button, ErrorPage, NotFoundPage } from "@conduit/ui"
 import { MerchantHeader, MerchantSidebar } from "../components/MerchantHeader"
@@ -96,7 +96,7 @@ function RootNotFound() {
 function ConnectGate() {
   const { status, connect, error } = useAuth()
   const [isWorking, setIsWorking] = useState(false)
-  const extensionAvailable = hasNip07()
+  const extensionAvailable = useNip07Availability()
   const isProbablyMobileBrowser = useMemo(() => {
     if (typeof navigator === "undefined") return false
     return /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent)
