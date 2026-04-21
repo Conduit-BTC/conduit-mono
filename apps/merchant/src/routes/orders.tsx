@@ -843,9 +843,9 @@ function OrdersPage() {
                 <span
                   className={`inline-flex h-4 w-4 items-center justify-center transition-colors duration-200 ${
                     refreshButtonState === "refreshing"
-                      ? "animate-pulse text-amber-300"
+                      ? "animate-pulse text-[var(--secondary-500)]"
                       : refreshButtonState === "done"
-                        ? "text-emerald-400"
+                        ? "text-[var(--success)]"
                         : "text-[var(--text-secondary)]"
                   }`}
                 >
@@ -870,7 +870,7 @@ function OrdersPage() {
                   <span
                     className={`absolute transition-opacity duration-200 ${
                       refreshButtonState === "refreshing"
-                        ? "animate-pulse opacity-100 text-amber-300"
+                        ? "animate-pulse opacity-100 text-[var(--secondary-500)]"
                         : "opacity-0"
                     }`}
                   >
@@ -879,7 +879,7 @@ function OrdersPage() {
                   <span
                     className={`absolute transition-opacity duration-200 ${
                       refreshButtonState === "done"
-                        ? "opacity-100 text-emerald-400"
+                        ? "opacity-100 text-[var(--success)]"
                         : "opacity-0"
                     }`}
                   >
