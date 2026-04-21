@@ -43,11 +43,11 @@ function SelectorItem({
         "rounded-xl px-3 text-[15px] font-medium",
         pill ? "min-h-11 py-2" : "h-11",
         variant === "default" &&
-          "text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] focus:text-[var(--text-primary)]",
+          "text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_6%,transparent)] focus:text-[var(--text-primary)]",
         variant === "warning" &&
-          "text-secondary-400 focus:bg-secondary-500/10 focus:text-secondary-300",
+          "text-secondary-400 focus:bg-secondary-500/5 focus:text-secondary-300",
         variant === "danger" &&
-          "text-tertiary-400 focus:bg-transparent focus:text-tertiary-400"
+          "text-[var(--tertiary-400)] focus:bg-[color-mix(in_srgb,var(--tertiary-500)_6%,transparent)] focus:text-[var(--tertiary-600)]"
       )}
     >
       <span
