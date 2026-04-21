@@ -1,15 +1,10 @@
-import { LoaderCircle, MessagesSquare, Radio, ReceiptText, Search, ShoppingCart, Store } from "lucide-react"
+import { LoaderCircle, MessagesSquare, ReceiptText, Search, ShoppingCart, Store } from "lucide-react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 import { config, formatPubkey, useAuth, useProfile } from "@conduit/core"
 import {
   Badge,
   Button,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  ProfileSelector,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -50,47 +45,22 @@ function Logo({
 
 function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
+  const navigate = useNavigate()
   const { data: profile } = useProfile(pubkey)
-  const [open, setOpen] = useState(false)
 
   if (!pubkey || status === "disconnected" || status === "error") return null
 
   const displayName = profile?.displayName ?? profile?.name ?? null
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <Button variant="primary" size="sm" className="text-xs" onClick={() => setOpen(true)}>
-        {profile?.picture && (
-          <img src={profile.picture} alt="" className="h-5 w-5 rounded-full object-cover" />
-        )}
-        {displayName ?? formatPubkey(pubkey, 4)}
-      </Button>
-      <DialogContent className="max-w-sm border-[var(--border)] bg-[var(--surface-dialog)] text-[var(--text-primary)] shadow-[var(--shadow-dialog)]">
-        <DialogHeader>
-          <DialogTitle>Disconnect signer?</DialogTitle>
-          <DialogDescription className="text-sm leading-7 text-[var(--text-secondary)]">
-            You can reconnect later, but checkout, orders, and merchant follow-up will require signing in again.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
-          {displayName && <div className="font-medium text-[var(--text-primary)]">{displayName}</div>}
-          <div className="font-mono">{formatPubkey(pubkey, 12)}</div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>
-            Cancel
-          </Button>
-          <Button
-            onClick={() => {
-              disconnect()
-              setOpen(false)
-            }}
-          >
-            Disconnect
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ProfileSelector
+      displayName={displayName ?? formatPubkey(pubkey, 4)}
+      avatarUrl={profile?.picture}
+      onProfile={() => navigate({ to: "/profile" })}
+      onNetwork={() => navigate({ to: "/settings" })}
+      onDisconnect={disconnect}
+      className="h-11 min-w-[12rem] rounded-[16px] px-3"
+    />
   )
 }
 
@@ -251,12 +221,6 @@ export function MarketHeader() {
               Shop
             </Link>
           </Button>
-          <Button asChild variant="ghost" className="h-10 px-3">
-            <Link to="/settings" activeProps={{ className: "text-[var(--text-primary)]" }}>
-              <Radio className="h-4 w-4" />
-              Relays
-            </Link>
-          </Button>
         </nav>
 
         <div className="order-last w-full pb-5 lg:order-none lg:ml-2 lg:flex-1 lg:pb-0">
@@ -401,9 +365,6 @@ export function MarketHeader() {
                       <Link to="/profile" onClick={() => setMenuOpen(false)}>Profile</Link>
                     </Button>
                   )}
-                  <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/settings" onClick={() => setMenuOpen(false)}>Relays</Link>
-                  </Button>
                 </div>
 
                 <div className="mt-6 border-t border-[var(--border)] pt-4">

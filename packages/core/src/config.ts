@@ -82,13 +82,29 @@ function getViteEnv(): {
 function parseRelayList(raw: string): string[] {
   return raw
     .split(",")
-    .map((relay) => relay.trim())
+    .map((relay) => normalizeRelayUrl(relay))
     .filter(Boolean)
     .filter((value, index, all) => all.indexOf(value) === index)
 }
 
+function normalizeRelayUrl(raw: string): string {
+  const trimmed = raw.trim()
+  if (!trimmed) return ""
+
+  if (/^wss:\/\/localhost(?::\d+)?/i.test(trimmed)) {
+    return trimmed.replace(/^wss:\/\/localhost/i, "ws://127.0.0.1")
+  }
+
+  if (/^wss:\/\/127\.0\.0\.1(?::\d+)?/i.test(trimmed)) {
+    return trimmed.replace(/^wss:/i, "ws:")
+  }
+
+  return trimmed
+}
+
 function dedupeUrls(urls: string[]): string[] {
-  return urls.filter((url, index, all) => url && all.indexOf(url) === index)
+  const normalized = urls.map(normalizeRelayUrl).filter(Boolean)
+  return normalized.filter((url, index, all) => all.indexOf(url) === index)
 }
 
 function getDefaultRelays(env: ReturnType<typeof getViteEnv>): string[] {
@@ -118,7 +134,7 @@ function emptyRelayOverrides(): RelayOverrides {
 
 function urlsToEntries(urls: string[], role: RelayRole, source: RelaySource): RelayEntry[] {
   return urls.map((url) => ({
-    url,
+    url: normalizeRelayUrl(url),
     role,
     source,
     out: true,
@@ -130,8 +146,8 @@ function urlsToEntries(urls: string[], role: RelayRole, source: RelaySource): Re
 
 function signerRelayMapToEntries(relays: SignerRelayMap): RelayEntry[] {
   return Object.entries(relays).map(([url, prefs]) => ({
-    url,
-    role: "general",
+    url: normalizeRelayUrl(url),
+    role: "merchant",
     source: "signer",
     out: prefs.write ?? true,
     in: prefs.read ?? true,
@@ -271,9 +287,10 @@ function mergeRelayEntries(...groups: RelayEntry[][]): RelayEntry[] {
 
   for (const group of groups) {
     for (const entry of group) {
-      if (seen.has(entry.url)) continue
-      seen.add(entry.url)
-      merged.push(entry)
+      const normalizedUrl = normalizeRelayUrl(entry.url)
+      if (!normalizedUrl || seen.has(normalizedUrl)) continue
+      seen.add(normalizedUrl)
+      merged.push({ ...entry, url: normalizedUrl })
     }
   }
 
@@ -368,8 +385,8 @@ export function loadSignerRelayMap(): SignerRelayMap {
 
     return Object.fromEntries(
       Object.entries(parsed).filter(([url, prefs]) => {
-        return typeof url === "string" && url.length > 0 && isRelayOverrideState(prefs)
-      }),
+        return typeof url === "string" && normalizeRelayUrl(url).length > 0 && isRelayOverrideState(prefs)
+      }).map(([url, prefs]) => [normalizeRelayUrl(url), prefs]),
     )
   } catch {
     return {}
@@ -378,7 +395,14 @@ export function loadSignerRelayMap(): SignerRelayMap {
 
 export function saveSignerRelayMap(relays: SignerRelayMap): void {
   if (typeof localStorage === "undefined") return
-  localStorage.setItem(SIGNER_RELAYS_KEY, JSON.stringify(relays))
+
+  const normalized = Object.fromEntries(
+    Object.entries(relays)
+      .map(([url, prefs]) => [normalizeRelayUrl(url), prefs] as const)
+      .filter(([url]) => url.length > 0),
+  )
+
+  localStorage.setItem(SIGNER_RELAYS_KEY, JSON.stringify(normalized))
 }
 
 export function clearSignerRelayMap(): void {
@@ -409,12 +433,12 @@ export function getConfiguredRelayGroups(): RelayGroups {
  */
 export function getDefaultRelayGroups(): RelayGroups {
   const configured = getConfiguredRelayGroups()
-  const signerGeneral = signerRelayMapToEntries(loadSignerRelayMap())
+  const signerRelays = signerRelayMapToEntries(loadSignerRelayMap())
 
   return {
-    merchant: configured.merchant,
+    merchant: mergeRelayEntries(signerRelays, configured.merchant),
     commerce: configured.commerce,
-    general: mergeRelayEntries(signerGeneral, configured.general),
+    general: configured.general,
   }
 }
 

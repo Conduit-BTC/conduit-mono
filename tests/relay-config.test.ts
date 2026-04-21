@@ -56,9 +56,9 @@ describe("relay config model", () => {
     })
 
     const groups = getDefaultRelayGroups()
-    expect(groups.general.map((entry) => entry.url)).toContain("wss://signer-a.test")
-    expect(groups.general.map((entry) => entry.url)).toContain("wss://signer-b.test")
-    expect(groups.general.some((entry) => entry.source === "signer")).toBe(true)
+    expect(groups.merchant.map((entry) => entry.url)).toContain("wss://signer-a.test")
+    expect(groups.merchant.map((entry) => entry.url)).toContain("wss://signer-b.test")
+    expect(groups.merchant.some((entry) => entry.source === "signer")).toBe(true)
   })
 
   it("keeps configured commerce relays separate from signer general relays", () => {
@@ -154,8 +154,19 @@ describe("relay config model", () => {
     const readable = getEffectiveReadableRelayUrls("shopper")
     const writable = getEffectiveWritableRelayUrls("shopper")
 
-    expect(readable).toContain("wss://signer.test")
+    expect(readable).not.toContain("wss://signer.test")
     expect(writable).not.toContain("wss://signer.test")
+  })
+
+  it("normalizes localhost secure websocket relays to local ws urls", () => {
+    saveSignerRelayMap({
+      "wss://localhost:7777": { read: true, write: true },
+      "wss://127.0.0.1:3334": { read: true, write: false },
+    })
+
+    const groups = getDefaultRelayGroups()
+    expect(groups.merchant.map((entry) => entry.url)).toContain("ws://127.0.0.1:7777")
+    expect(groups.merchant.map((entry) => entry.url)).toContain("ws://127.0.0.1:3334")
   })
 
   it("clearRelayOverrides removes saved overrides", () => {

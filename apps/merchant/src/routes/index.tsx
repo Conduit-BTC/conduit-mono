@@ -8,10 +8,9 @@ import {
   getEffectiveRelayGroups,
   parseProductEvent,
   useAuth,
-  useNdkState,
   type ParsedOrderMessage,
 } from "@conduit/core"
-import { ArrowRight, Package, Radio, ShoppingBag, Wallet } from "lucide-react"
+import { ArrowRight, Package, ShoppingBag, Wallet } from "lucide-react"
 import type { ComponentType } from "react"
 import { Badge, Button } from "@conduit/ui"
 
@@ -131,7 +130,6 @@ function StatCard({
 
 function DashboardPage() {
   const { pubkey, error } = useAuth()
-  const ndk = useNdkState()
   const statsQuery = useQuery({
     queryKey: ["merchant-dashboard", pubkey ?? "none"],
     enabled: !!pubkey,
@@ -161,17 +159,6 @@ function DashboardPage() {
               {formatPubkey(pubkey, 10)}
             </Badge>
           )}
-          <Link to="/settings">
-            <Badge variant="secondary" className="border-[var(--border)] bg-[var(--surface-elevated)] cursor-pointer hover:border-[var(--text-secondary)]">
-              <Radio className="mr-1.5 h-3 w-3" />
-              Relay {ndk.status}
-              {ndk.connectedRelays.length > 0 && (
-                <span className="ml-1.5 text-[var(--text-muted)]">
-                  ({ndk.connectedRelays.length})
-                </span>
-              )}
-            </Badge>
-          </Link>
           {(() => {
             const groups = getEffectiveRelayGroups()
             const counts = [

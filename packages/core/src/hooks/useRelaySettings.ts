@@ -81,7 +81,7 @@ export function useRelaySettings(actor: RelayActor): UseRelaySettingsResult {
   const visibleGroups: Partial<RelayGroups> =
     actor === "merchant"
       ? groups
-      : { commerce: groups.commerce, general: groups.general }
+      : { merchant: groups.merchant, commerce: groups.commerce, general: groups.general }
 
   const addRelay = useCallback(
     (role: RelayRole, url: string) => {
