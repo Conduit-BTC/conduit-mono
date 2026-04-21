@@ -59,6 +59,7 @@ export { AuthProvider, useAuth, hasNip07, type AuthStatus, type AuthContextValue
 
 // Hooks
 export { useNdkState } from "./hooks/useNdkState"
+export { useNip07Availability } from "./hooks/useNip07Availability"
 export { useProfile } from "./hooks/useProfile"
 export { useUpdateProfile } from "./hooks/useUpdateProfile"
 export { useRelaySettings, type UseRelaySettingsResult } from "./hooks/useRelaySettings"
