@@ -106,7 +106,7 @@ function PaymentsPage() {
                     </div>
                   </div>
 
-                  <div className="rounded-[2rem] bg-[color-mix(in_srgb,var(--surface)_93%,var(--primary-500)_7%)] px-6 py-5 shadow-[var(--shadow-glass-inset)]">
+                  <div className="rounded-[2rem] bg-[color-mix(in_srgb,var(--surface)_98%,var(--primary-500)_2%)] px-6 py-5 shadow-[var(--shadow-glass-inset)]">
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex items-center gap-3">
                         <Zap className="h-5 w-5 shrink-0 text-[var(--text-secondary)]" />
@@ -206,7 +206,7 @@ function PaymentsPage() {
                     </div>
                   </div>
 
-                  <div className="rounded-[2rem] bg-[color-mix(in_srgb,var(--surface)_93%,var(--secondary-500)_7%)] px-6 py-5 shadow-[var(--shadow-glass-inset)]">
+                  <div className="rounded-[2rem] bg-[color-mix(in_srgb,var(--surface)_98%,var(--secondary-500)_2%)] px-6 py-5 shadow-[var(--shadow-glass-inset)]">
                     <div className="mb-1 text-[1rem] font-semibold text-[var(--text-primary)]">
                       Wallet Connect (NWC)
                     </div>

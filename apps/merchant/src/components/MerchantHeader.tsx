@@ -194,12 +194,12 @@ function MerchantNavLinks({
         to={item.to}
         onClick={onNavigate}
         className={cn(
-          "group relative flex items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:border-[color-mix(in_srgb,var(--primary-500)_20%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:text-[var(--text-primary)]",
+          "group relative flex items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)]",
           compact ? "px-3 py-2" : ""
         )}
         activeProps={{
           className:
-            "border-[color-mix(in_srgb,var(--primary-500)_30%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_18%,transparent)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]",
+            "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]",
         }}
       >
         <Icon className="h-4 w-4 shrink-0" />
