@@ -111,11 +111,11 @@ function PurposeButton({
       aria-pressed={active}
       onClick={onToggle}
       className={cn(
-        "inline-flex h-11 w-11 items-center justify-center rounded-full border transition-[color,background-color,border-color,box-shadow] sm:h-12 sm:w-12",
+        "inline-flex h-7 w-7 items-center justify-center rounded-full border transition-[color,background-color,border-color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/15",
         active ? activeClass : inactiveClass
       )}
     >
-      <Icon className="h-4 w-4 sm:h-5 sm:w-5" />
+      <Icon className="h-3.5 w-3.5" />
     </button>
   )
 }
@@ -139,7 +139,7 @@ function RelayRow({
 
   return (
     <div className="group relative border-b border-white/6 py-4 last:border-b-0">
-      <div className="grid grid-cols-[minmax(0,1fr)_repeat(4,minmax(2.75rem,auto))_2rem] items-center gap-2 sm:gap-3">
+      <div className="grid grid-cols-[minmax(0,1fr)_repeat(4,1.75rem)_2rem] items-center gap-3">
         <div className="flex min-w-0 items-center gap-4 pr-2">
           <span
             className={cn(
@@ -225,15 +225,15 @@ function RelaySection({
   const [newUrl, setNewUrl] = useState("")
   const [isAdding, setIsAdding] = useState(false)
   const meta = ROLE_META[role]
-  const inactiveClass = "border-white/10 bg-white/[0.03] text-white shadow-none"
+  const inactiveClass = "border-white/8 bg-white/[0.03] text-white/80"
   const activeClass = useMemo(() => {
     if (role === "merchant") {
-      return "border-primary-300/70 bg-primary-500/15 text-primary-300 shadow-none"
+      return "border-primary-400/40 bg-primary-500/15 text-primary-200"
     }
     if (role === "commerce") {
-      return "border-secondary-300/70 bg-secondary-500/15 text-secondary-300 shadow-none"
+      return "border-secondary-400/40 bg-secondary-500/15 text-secondary-200"
     }
-    return "border-tertiary-300/70 bg-tertiary-500/15 text-tertiary-300 shadow-none"
+    return "border-tertiary-400/40 bg-tertiary-500/15 text-tertiary-200"
   }, [role])
 
   function handleSubmit(event: FormEvent): void {
@@ -268,12 +268,12 @@ function RelaySection({
           meta.border
         )}
       >
-        <div className="mb-3 grid grid-cols-[minmax(0,1fr)_repeat(4,minmax(2.75rem,auto))_2rem] items-center gap-2 sm:gap-3">
+        <div className="mb-3 grid grid-cols-[minmax(0,1fr)_repeat(4,1.75rem)_2rem] items-center gap-3">
           <div />
           {PURPOSE_META.map((purpose) => (
             <div
               key={purpose.key}
-              className="text-center text-[0.75rem] font-medium tracking-[0.18em] text-[var(--text-muted)]"
+              className="text-center text-[0.62rem] font-medium tracking-[0.16em] text-[var(--text-muted)]"
             >
               {purpose.label}
             </div>
