@@ -8,6 +8,7 @@ export * from "./mock-invoice"
 export * from "./order-summary"
 export * from "./lightning"
 export * from "./commerce"
+export * from "./relay-list"
 export {
   getNdk,
   getWriteRelaySet,
@@ -21,6 +22,8 @@ export {
   removeSigner,
   subscribeNdkState,
   getNdkState,
+  getRelayStatusMap,
   type NdkConnectionState,
   type NdkState,
+  type RelayStatus,
 } from "./ndk"

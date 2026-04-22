@@ -11,6 +11,7 @@ import { NDKNip07Signer } from "@nostr-dev-kit/ndk"
 import { clearSignerRelayMap, saveSignerRelayMap } from "../config"
 import { setSigner, removeSigner } from "../protocol/ndk"
 import { refreshNdkRelaySettings } from "../protocol/ndk"
+import { fetchNip65RelayMap } from "../protocol/relay-list"
 
 export type AuthStatus = "disconnected" | "connecting" | "connected" | "error"
 
@@ -84,19 +85,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const pk = user.pubkey
 
       const nostr = window.nostr as Nip07WithRelays | undefined
+      const merged: Record<string, { read?: boolean; write?: boolean }> = {}
+
       if (nostr?.getRelays) {
-        const relays = await withTimeout(
-          nostr.getRelays(),
-          10_000,
-          "Fetching relay list from your signer timed out."
-        )
-        saveSignerRelayMap(relays)
-      } else {
-        clearSignerRelayMap()
+        try {
+          const relays = await withTimeout(
+            nostr.getRelays(),
+            10_000,
+            "Fetching relay list from your signer timed out."
+          )
+          for (const [url, prefs] of Object.entries(relays ?? {})) {
+            merged[url] = { read: prefs?.read, write: prefs?.write }
+          }
+        } catch {
+          // Fall through to NIP-65 fetch; do not fail connect on signer relay list.
+        }
       }
 
       setSigner(signer)
       refreshNdkRelaySettings()
+
+      // Supplement/replace with NIP-65 kind:10002 relay list from the network.
+      // This is authoritative compared to NIP-07 getRelays() and ensures users
+      // who rely on extensions without getRelays() still get their relay list.
+      const nip65 = await fetchNip65RelayMap(pk)
+      for (const [url, prefs] of Object.entries(nip65)) {
+        merged[url] = {
+          read: prefs.read,
+          write: prefs.write,
+        }
+      }
+
+      if (Object.keys(merged).length > 0) {
+        saveSignerRelayMap(merged)
+        refreshNdkRelaySettings()
+      } else if (!nostr?.getRelays) {
+        clearSignerRelayMap()
+      }
+
       setPubkey(pk)
       setStatus("connected")
       localStorage.setItem(AUTH_STORAGE_KEY, pk)

@@ -14,6 +14,12 @@ import type { RelayActor } from "../types"
 
 export type NdkConnectionState = "idle" | "connecting" | "connected" | "error"
 
+export type RelayStatus =
+  | "connected"
+  | "connecting"
+  | "disconnected"
+  | "unknown"
+
 export interface NdkState {
   status: NdkConnectionState
   connectedRelays: string[]
@@ -62,6 +68,52 @@ function getConnectedRelayUrls(ndk: NDK): string[] {
     .map(([url]) => url)
 }
 
+function statusFromRelay(status: number): RelayStatus {
+  if (status >= NDKRelayStatus.CONNECTED) return "connected"
+  if (
+    status === NDKRelayStatus.CONNECTING ||
+    status === NDKRelayStatus.RECONNECTING
+  ) {
+    return "connecting"
+  }
+  return "disconnected"
+}
+
+/**
+ * Live per-relay connection status snapshot, keyed by normalized relay URL.
+ * Relays not present in the NDK pool return `"unknown"` when queried.
+ */
+export function getRelayStatusMap(): Record<string, RelayStatus> {
+  if (!ndkInstance) return {}
+  const result: Record<string, RelayStatus> = {}
+  for (const [url, relay] of ndkInstance.pool?.relays?.entries() ?? []) {
+    result[url] = statusFromRelay(relay.status)
+  }
+  return result
+}
+
+function refreshConnectedRelays(): void {
+  if (!ndkInstance) return
+  const connected = getConnectedRelayUrls(ndkInstance)
+  if (
+    connected.length === state.connectedRelays.length &&
+    connected.every((url) => state.connectedRelays.includes(url))
+  ) {
+    // No change in membership, but per-relay status may have shifted — still notify.
+    listeners.forEach((fn) => fn())
+    return
+  }
+  setState({ connectedRelays: connected })
+}
+
+function attachPoolListeners(ndk: NDK): void {
+  const pool = ndk.pool
+  if (!pool) return
+  pool.on("relay:connect", refreshConnectedRelays)
+  pool.on("relay:disconnect", refreshConnectedRelays)
+  pool.on("relay:ready", refreshConnectedRelays)
+}
+
 export function subscribeNdkState(listener: Listener): () => void {
   listeners.add(listener)
   return () => listeners.delete(listener)
@@ -82,6 +134,7 @@ export function getNdk(): NDK {
     ndkInstance = new NDK({
       explicitRelayUrls: getReadableRelayUrls(),
     })
+    attachPoolListeners(ndkInstance)
   }
   return ndkInstance
 }

@@ -669,3 +669,40 @@ export function relayPurposeLabel(purpose: RelayPurpose): string {
       return "DM"
   }
 }
+
+/**
+ * Returns true when the given actor has no usable relays configured for the
+ * relay roles that are essential to their workflow. Used to surface the
+ * "Set up relays" CTA in the profile dropdown.
+ *
+ * - Shoppers require at least one commerce or general relay enabled for
+ *   discovery (find) or reads (in).
+ * - Merchants additionally require at least one merchant relay enabled for
+ *   writes (out) or reads (in) so their listings/orders can publish.
+ *
+ * Pass `groups` to evaluate against a specific snapshot (keeps the check
+ * reactive when driven from `useRelaySettings`); otherwise it reads the
+ * current effective groups from storage.
+ */
+export function isRelaySetupIncomplete(
+  actor: RelayActor,
+  groups?: Partial<RelayGroups>
+): boolean {
+  const resolved = groups ?? getEffectiveRelayGroups()
+  const commerce = resolved.commerce ?? []
+  const general = resolved.general ?? []
+  const merchant = resolved.merchant ?? []
+
+  const hasCommerceOrGeneral = [...commerce, ...general].some(
+    (entry) => entry.in || entry.find
+  )
+
+  if (!hasCommerceOrGeneral) return true
+
+  if (actor === "merchant") {
+    const hasMerchant = merchant.some((entry) => entry.out || entry.in)
+    if (!hasMerchant) return true
+  }
+
+  return false
+}
