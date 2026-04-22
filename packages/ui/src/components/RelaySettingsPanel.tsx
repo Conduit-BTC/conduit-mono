@@ -6,6 +6,11 @@ import { cn } from "../utils"
 
 type RelayRole = "merchant" | "commerce" | "general"
 type RelaySource = "app" | "signer" | "custom"
+type RelayConnectionStatus =
+  | "connected"
+  | "connecting"
+  | "disconnected"
+  | "unknown"
 
 interface RelayEntry {
   url: string
@@ -21,6 +26,7 @@ type RelayGroupMap = Partial<Record<RelayRole, RelayEntry[]>>
 
 export interface RelaySettingsPanelProps {
   groups: RelayGroupMap
+  statusMap?: Record<string, RelayConnectionStatus>
   onAddRelay: (role: RelayRole, url: string) => void
   onRemoveRelay: (role: RelayRole, url: string) => void
   onUpdateRelay: (
@@ -88,6 +94,28 @@ const PURPOSE_META = [
   { key: "dm", label: "DM", icon: Send },
 ] as const
 
+const STATUS_META: Record<
+  RelayConnectionStatus,
+  { title: string; dotClass: string }
+> = {
+  connected: {
+    title: "Connected",
+    dotClass: "bg-success",
+  },
+  connecting: {
+    title: "Connecting",
+    dotClass: "bg-secondary-500 animate-pulse",
+  },
+  disconnected: {
+    title: "Disconnected",
+    dotClass: "bg-tertiary-500",
+  },
+  unknown: {
+    title: "Not yet connected",
+    dotClass: "bg-white/25",
+  },
+}
+
 function PurposeButton({
   active,
   title,
@@ -122,6 +150,7 @@ function PurposeButton({
 
 function RelayRow({
   entry,
+  status,
   activeClass,
   inactiveClass,
   dotClass,
@@ -129,6 +158,7 @@ function RelayRow({
   onUpdate,
 }: {
   entry: RelayEntry
+  status: RelayConnectionStatus
   activeClass: string
   inactiveClass: string
   dotClass: string
@@ -136,17 +166,30 @@ function RelayRow({
   onUpdate: (next: Pick<RelayEntry, "out" | "in" | "find" | "dm">) => void
 }) {
   const isMuted = !entry.out && !entry.in && !entry.find && !entry.dm
+  const statusMeta = STATUS_META[status]
 
   return (
     <div className="group relative border-b border-white/6 py-4 last:border-b-0">
       <div className="grid grid-cols-[minmax(0,1fr)_repeat(4,1.75rem)_2rem] items-center gap-3">
         <div className="flex min-w-0 items-center gap-4 pr-2">
           <span
-            className={cn(
-              "h-3 w-3 shrink-0 rounded-full",
-              isMuted ? "bg-white/15" : dotClass
-            )}
-          />
+            className="relative flex shrink-0 items-center justify-center"
+            title={statusMeta.title}
+            aria-label={statusMeta.title}
+          >
+            <span
+              className={cn(
+                "h-3 w-3 rounded-full",
+                isMuted ? "bg-white/15" : dotClass
+              )}
+            />
+            <span
+              className={cn(
+                "absolute -right-1 -bottom-1 h-2 w-2 rounded-full ring-2 ring-[var(--background)]",
+                statusMeta.dotClass
+              )}
+            />
+          </span>
           <span
             className={cn(
               "truncate font-mono text-[0.95rem] tracking-[0.01em] sm:text-[1.05rem]",
@@ -209,12 +252,14 @@ function RelayRow({
 function RelaySection({
   role,
   entries,
+  statusMap,
   onAdd,
   onRemove,
   onUpdate,
 }: {
   role: RelayRole
   entries: RelayEntry[]
+  statusMap: Record<string, RelayConnectionStatus>
   onAdd: (url: string) => void
   onRemove: (url: string) => void
   onUpdate: (
@@ -287,6 +332,7 @@ function RelaySection({
               <RelayRow
                 key={entry.url}
                 entry={entry}
+                status={statusMap[entry.url] ?? "unknown"}
                 activeClass={activeClass}
                 inactiveClass={inactiveClass}
                 dotClass={meta.dot}
@@ -350,6 +396,7 @@ function RelaySection({
 
 export function RelaySettingsPanel({
   groups,
+  statusMap,
   onAddRelay,
   onRemoveRelay,
   onUpdateRelay,
@@ -409,6 +456,7 @@ export function RelaySettingsPanel({
               key={role}
               role={role}
               entries={groups[role] ?? []}
+              statusMap={statusMap ?? {}}
               onAdd={(url) => onAddRelay(role, url)}
               onRemove={(url) => onRemoveRelay(role, url)}
               onUpdate={(url, next) => onUpdateRelay(role, url, next)}
