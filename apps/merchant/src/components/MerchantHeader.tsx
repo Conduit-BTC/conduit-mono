@@ -1,15 +1,14 @@
-import {
-  Bell,
-  Grid2x2,
-  Menu,
-  Package,
-  Search,
-  Settings,
-  ShoppingBag,
-} from "lucide-react"
+import { Grid2x2, Menu, Package, Search, ShoppingBag } from "lucide-react"
 import type { ComponentType } from "react"
 import { Link, useNavigate } from "@tanstack/react-router"
-import { config, formatPubkey, useAuth, useProfile } from "@conduit/core"
+import {
+  config,
+  formatPubkey,
+  isRelaySetupIncomplete,
+  useAuth,
+  useProfile,
+  useRelaySettings,
+} from "@conduit/core"
 import {
   Badge,
   Button,
@@ -25,7 +24,7 @@ import {
 import { SignerSwitch } from "./SignerSwitch"
 
 type NavItem = {
-  to: "/" | "/orders" | "/products" | "/profile"
+  to: "/" | "/orders" | "/products"
   label: string
   icon: ComponentType<{ className?: string }>
 }
@@ -34,7 +33,6 @@ const navItems: NavItem[] = [
   { to: "/", label: "Home", icon: Grid2x2 },
   { to: "/orders", label: "Orders", icon: ShoppingBag },
   { to: "/products", label: "Products", icon: Package },
-  { to: "/profile", label: "Profile", icon: Settings },
 ]
 
 function MerchantAvatarFallback({
@@ -120,11 +118,13 @@ function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
   const navigate = useNavigate()
   const { data: profile } = useProfile(pubkey)
+  const { visibleGroups } = useRelaySettings("merchant")
 
   if (!pubkey || status === "disconnected" || status === "error") return null
 
   const displayName =
     profile?.displayName ?? profile?.name ?? formatPubkey(pubkey, 6)
+  const incomplete = isRelaySetupIncomplete("merchant", visibleGroups)
 
   return (
     <ProfileSelector
@@ -133,6 +133,8 @@ function UserMenu() {
       avatarFallback={<MerchantAvatarFallback iconClassName="h-4 w-4" />}
       onProfile={() => navigate({ to: "/profile" })}
       onNetwork={() => navigate({ to: "/settings" })}
+      alertLabel={incomplete ? "Set up relays" : undefined}
+      onAlert={incomplete ? () => navigate({ to: "/settings" }) : undefined}
       onDisconnect={disconnect}
       className="h-12 min-w-[12.75rem] rounded-[16px] px-3"
     />
@@ -244,14 +246,6 @@ export function MerchantHeader() {
         </div>
 
         <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="hidden h-11 w-11 rounded-xl sm:inline-flex"
-            aria-label="Notifications"
-          >
-            <Bell className="h-4 w-4" />
-          </Button>
           <div className="hidden lg:block">
             {signerConnected ? <UserMenu /> : <SignerSwitch />}
           </div>

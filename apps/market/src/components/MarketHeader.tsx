@@ -7,7 +7,14 @@ import {
   Store,
 } from "lucide-react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
-import { config, formatPubkey, useAuth, useProfile } from "@conduit/core"
+import {
+  config,
+  formatPubkey,
+  isRelaySetupIncomplete,
+  useAuth,
+  useProfile,
+  useRelaySettings,
+} from "@conduit/core"
 import {
   Badge,
   Button,
@@ -57,10 +64,12 @@ function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
   const navigate = useNavigate()
   const { data: profile } = useProfile(pubkey)
+  const { visibleGroups } = useRelaySettings("shopper")
 
   if (!pubkey || status === "disconnected" || status === "error") return null
 
   const displayName = profile?.displayName ?? profile?.name ?? null
+  const incomplete = isRelaySetupIncomplete("shopper", visibleGroups)
 
   return (
     <ProfileSelector
@@ -68,6 +77,8 @@ function UserMenu() {
       avatarUrl={profile?.picture}
       onProfile={() => navigate({ to: "/profile" })}
       onNetwork={() => navigate({ to: "/settings" })}
+      alertLabel={incomplete ? "Set up relays" : undefined}
+      onAlert={incomplete ? () => navigate({ to: "/settings" }) : undefined}
       onDisconnect={disconnect}
       className="h-11 min-w-[12rem] rounded-[16px] px-3"
     />
@@ -406,13 +417,6 @@ export function MarketHeader() {
                       <Link to="/orders" onClick={() => setMenuOpen(false)}>
                         <ReceiptText className="h-4 w-4" />
                         Orders
-                      </Link>
-                    </Button>
-                  )}
-                  {status === "connected" && (
-                    <Button asChild variant="ghost" className="justify-start">
-                      <Link to="/profile" onClick={() => setMenuOpen(false)}>
-                        Profile
                       </Link>
                     </Button>
                   )}

@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useRelaySettings } from "@conduit/core"
+import { useRelaySettings, useRelayStatusMap } from "@conduit/core"
 import { RelaySettingsPanel } from "@conduit/ui"
 
 export const Route = createFileRoute("/settings")({
@@ -10,6 +10,7 @@ function SettingsPage() {
   const navigate = useNavigate()
   const { visibleGroups, addRelay, removeRelay, updateRelay, resetToDefaults } =
     useRelaySettings("merchant")
+  const statusMap = useRelayStatusMap()
 
   function handleClose(): void {
     if (window.history.length > 1) {
@@ -25,6 +26,7 @@ function SettingsPage() {
       <div className="mx-auto max-w-[50rem]">
         <RelaySettingsPanel
           groups={visibleGroups}
+          statusMap={statusMap}
           onAddRelay={addRelay}
           onRemoveRelay={removeRelay}
           onUpdateRelay={updateRelay}
