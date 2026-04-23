@@ -11,7 +11,13 @@ import {
 } from "lucide-react"
 import type { ComponentType } from "react"
 import { Link, useNavigate } from "@tanstack/react-router"
-import { config, formatPubkey, useAuth, useProfile } from "@conduit/core"
+import {
+  config,
+  formatPubkey,
+  useAuth,
+  useProfile,
+  useRelaySettings,
+} from "@conduit/core"
 import {
   Badge,
   Button,
@@ -30,9 +36,7 @@ import {
   isProfileComplete,
   isPaymentsComplete,
   isShippingComplete,
-  isNetworkComplete,
   loadShippingConfig,
-  loadNetworkConfig,
   hasNwcConfigured,
 } from "../lib/readiness"
 
@@ -125,14 +129,14 @@ function Logo({
 function useReadinessState() {
   const { pubkey } = useAuth()
   const { data: profile } = useProfile(pubkey)
+  const { groups } = useRelaySettings("merchant")
 
   const shippingConfig = loadShippingConfig()
-  const networkConfig = loadNetworkConfig()
 
   const profileIncomplete = !isProfileComplete(profile)
   const paymentsIncomplete = !isPaymentsComplete(profile)
   const shippingIncomplete = !isShippingComplete(shippingConfig)
-  const networkIncomplete = !isNetworkComplete(networkConfig)
+  const networkIncomplete = groups.merchant.length === 0
 
   const anyIncomplete =
     profileIncomplete ||
