@@ -47,6 +47,7 @@
     "typecheck": "bun run --filter '*' typecheck",
     "lint": "bun run --filter '*' lint",
     "test": "bun test",
+    "test:e2e": "playwright test",
     "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules"
   },
   "dependencies": {
@@ -54,9 +55,10 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@tanstack/router-generator": "^1.158.1",
-    "@nostr-dev-kit/ndk": "^2.14.0",
     "@eslint/js": "^9.19.0",
+    "@nostr-dev-kit/ndk": "^2.14.0",
+    "@playwright/test": "^1.59.1",
+    "@tanstack/router-generator": "^1.158.1",
     "eslint": "^9.19.0",
     "eslint-plugin-react": "^7.37.4",
     "eslint-plugin-react-hooks": "^5.1.0",
