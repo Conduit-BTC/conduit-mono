@@ -8,7 +8,9 @@ It exists to answer a practical question:
 
 **What specific relay behaviors should engineering build so Conduit apps can stop depending on generic public relays for core UX performance, while still degrading safely back to ordinary relay behavior when L2 is unavailable?**
 
-This is a Scope 2 document, not a full system architecture document. The architectural model and layer boundaries remain defined in [conduit_relay_architecture.md](./conduit_relay_architecture.md).
+This is an internal acceleration document, not a full system architecture document. The user-facing relay model remains defined in [conduit_relay_architecture.md](./conduit_relay_architecture.md): users configure `IN` / `OUT` relay preferences and Conduit-local commerce priority, while Conduit detects relay capabilities automatically.
+
+L2 and cache paths described here are implementation details. They must not be exposed in relay settings as user-managed relay categories.
 
 ---
 
@@ -41,6 +43,8 @@ That works for MVP, but large public relays do not reliably provide the behavior
 - stable, app-shaped query performance under load
 
 Scope 2 should solve those gaps while preserving the rule that **L2 is still only a performance layer**. If L2 is down, clients must still be able to fall back to merchant relays and public relays using ordinary Nostr reads, with degraded speed and weaker UX.
+
+In product surfaces, L2 availability may appear as relay health, degraded-state messaging, or faster commerce reads. It should not appear as a user-selectable relay section alongside Commerce Enabled Relays and Other Public Relays.
 
 ---
 

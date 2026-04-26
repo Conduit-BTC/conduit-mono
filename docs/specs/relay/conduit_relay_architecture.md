@@ -2,600 +2,578 @@
 
 ## Executive Summary
 
-Conduit should be implemented as a **three-layer relay architecture with graceful degradation**:
+Conduit's relay architecture should follow Nostr conventions instead of inventing user-managed relay roles.
 
-1. **Merchant Dedicated Relays**
-   The canonical publish and storage layer for merchant-owned events.
-2. **Conduit L2 Relay Layer**
-   A shared relay network that improves routing, read performance, delivery, and marketplace-level behavior.
-3. **Conduit Cache / Index Layer**
-   A derived application-performance layer used for fast hydration, search, and dashboard views.
+Users configure relay preferences:
 
-The design goal is that **no Conduit-operated layer is required for baseline correctness**. If Conduit infrastructure is degraded, Market, Portal, and Store Builder must still be able to operate against merchant relays and compatible public relays, with reduced performance or UX where necessary.
+- `IN` for relays Conduit may read from
+- `OUT` for relays Conduit may publish to
+- commerce priority order for Conduit commerce flows only
 
-This spec adds the implementation constraints needed to make that principle actionable:
+Conduit detects relay capabilities:
 
-- explicit layer responsibilities
-- event lifecycle definitions
-- consistency and freshness rules
-- failure and recovery behavior
-- privacy and authorization requirements for messaging
-- rollout guidance for engineering sequencing
+- relay information availability
+- search/indexing support
+- private DM suitability
+- relay authentication support
+- commerce compatibility
 
----
+The relay settings product surface should expose two groups:
 
-## Core Architectural Principles
+1. **Commerce Enabled Relays**
+2. **Other Public Relays**
 
-### Sovereignty
+Users should not manually categorize relays. Conduit categorizes relays from NIP-11 relay information documents, active probes, cached scan results, and a versioned commerce compatibility profile. Commerce priority is a Conduit-local app preference. It is not a Nostr-level preference and must not be described as a universal relay ranking.
 
-Merchant relays are the canonical infrastructure for merchant-authored state. Conduit may accelerate, cache, index, and rebroadcast merchant data, but it must not become the only place that merchant state can be published or recovered from.
-
-### Graceful degradation
-
-Each layer improves system behavior, but loss of any single layer should degrade performance before it degrades correctness.
-
-### Derived layers stay derived
-
-L2 and cache/index layers may materialize, mirror, rank, or route events, but they do not redefine merchant truth.
-
-### Privacy-preserving messaging
-
-Direct messaging and private metadata access must preserve the privacy expectations of `NIP-17`. Relay access to protected data must require authenticated sessions via `NIP-42`, and relays must not expose query surfaces that allow unauthorized metadata discovery.
-
-### Portable implementation
-
-Merchant infrastructure should remain simple enough to run in hosted or self-hosted form without depending on Conduit-specific backend services.
-
-### Open-source portability and interoperability
-
-Conduit should design the relay stack so another operator can run the same software and participate in the same commerce network model without depending on Conduit-owned infrastructure.
-
-That means the architecture should distinguish clearly between:
-
-- open-source relay software that others can deploy
-- interoperable protocol behavior that other clients and relays can consume
-- optional Conduit-specific performance features that improve UX without becoming mandatory for correctness
+This document defines the product and implementation contract for that model.
 
 ---
 
-## Layer Overview
+## References
 
-## Scope 1 - Merchant Dedicated Relays
-
-**Purpose:** canonical merchant infrastructure
-
-Merchant dedicated relays are the source of truth for merchant-owned events and the merchant's sovereign Nostr presence.
-
-### In scope
-
-- hosted or self-hosted merchant relays
-- canonical publish target for merchant-authored events
-- durable storage and event retention
-- inbox/outbox handling
-- merchant relay list management
-- relay access control
-- basic spam and abuse controls
-- optional rebroadcast to selected public or Conduit relays
-- full Nostr support for merchant identity, commerce, and messaging use cases
-
-### Primary event classes
-
-- merchant metadata
-- product listings
-- inventory updates
-- pricing changes
-- order-related commerce events
-- DMs and private messaging events
-- social events such as notes, follows, and profile changes
-
-### Explicit responsibilities
-
-- accept canonical writes for merchant-authored events
-- preserve event history and deletions according to policy
-- expose merchant-authorized reads
-- serve as the recovery source for merchant state
-- enforce privacy constraints for protected event classes
-
-### Out of scope
-
-- global marketplace ranking
-- marketplace-wide search infrastructure
-- heavy cross-merchant aggregation
-- application hydration APIs
-
-### Design guidance
-
-Keep this layer simple, stable, and portable. Merchant relays should be deployable without requiring the Conduit L2 or cache/index layers to exist.
+- [GammaMarkets market-spec](https://github.com/GammaMarkets/market-spec): interoperability baseline for NIP-99 commerce flows, including `kind:30402` product listings, `kind:30405` collections, merchant preferences, and NIP-17 order communication.
+- [NIP-11 Relay Information Document](https://github.com/nostr-protocol/nips/blob/master/11.md): relay metadata, including `supported_nips` and relay limitations.
+- [NIP-17 Private Direct Messages](https://github.com/nostr-protocol/nips/blob/master/17.md): modern private DMs using NIP-44 encryption and NIP-59 seals/gift wraps.
+- [NIP-42 Authentication of clients to relays](https://github.com/nostr-protocol/nips/blob/master/42.md): relay authentication using signed ephemeral auth events.
+- [NIP-50 Search Capability](https://github.com/nostr-protocol/nips/blob/master/50.md): relay search support via the `search` filter field.
+- [NIP-65 Relay List Metadata](https://github.com/nostr-protocol/nips/blob/master/65.md): `kind:10002` relay list metadata with optional `read` and `write` markers.
 
 ---
 
-## Scope 2 - Conduit L2 Relay Layer
+## Product Principle
 
-**Purpose:** shared performance, routing, and relay-native marketplace behavior
+Users configure preferences. Conduit detects capabilities.
 
-The L2 layer is a Conduit-operated relay network that mirrors and routes events from merchant relays, Conduit relays, and public relays. It exists to improve latency, delivery, reliability, and marketplace-level reads without replacing merchant truth.
+The relay settings screen must not ask users to assign relays to custom Conduit roles. In Nostr, relays are network infrastructure. A user may advertise relays they generally read from or write to, but capability and suitability are properties Conduit should detect.
 
-### In scope
+### User-controlled preferences
 
-- ingest from merchant relays, Conduit relays, and public relays
-- event validation and deduplication
-- relay health scoring
-- relay selection and failover
-- commerce-aware query execution that remains relay-native
-- low-latency marketplace feed delivery
-- notification fan-out and delivery acceleration
-- policy enforcement such as spam controls, rate limiting, and merchant-tier limits
-- selective rebroadcast to public relays
+- Read participation: `IN`
+- Write participation: `OUT`
+- Commerce priority order for Conduit only
 
-### Relay-native behaviors
+### System-detected capabilities
 
-These behaviors belong in L2 because they are close to relay routing and event distribution:
+- NIP-11 availability
+- NIP-50 search support
+- NIP-17 DM support
+- NIP-42 auth support
+- Conduit commerce compatibility
+- warning states such as unreachable, stale relay information, or partial commerce support
 
-- subscription routing
-- read fan-in across upstream relays
-- deduplication of mirrored events
-- delivery retries
-- relay availability tracking
-- bounded server-side filtering and sorting for relay queries
-- notification transport based on event presence and subscription policy
+### Product language
 
-### Not the job of L2
+Use these labels:
 
-The L2 layer must not become a general-purpose application backend. The following belong elsewhere unless there is a relay-specific reason:
+- `Commerce Enabled Relays`
+- `Other Public Relays`
+- `Priority`
+- `Commerce priority`
+- `Relay order`
+- `Preferred order`
 
-- long-lived application materialized views
-- merchant dashboard projections
-- search-document generation
-- storefront hydration payload assembly
-- business analytics pipelines
+Avoid these labels:
 
-### Primary event classes
-
-- mirrored commerce events
-- feed-oriented derived views expressed as relay query results
-- notification events
-- relay health and routing metadata
-- bounded ranking or prioritization signals used directly by relay query execution
-
-### Out of scope
-
-- canonical merchant truth
-- required dependency for write correctness
-- exclusive storage location for merchant events
+- `Primary relay`
+- `Master relay`
+- `Source of truth relay`
+- user-facing `merchant`, `l2`, or `general` relay roles
 
 ---
 
-## Scope 3 - Conduit Cache / Index Layer
+## Relay Preference Model
 
-**Purpose:** application-performance layer for Conduit apps
+### IN and OUT
 
-The cache/index layer is a derived system optimized for fast reads, search, storefront hydration, and dashboard use cases. It should be treated as disposable and rebuildable from relay-visible state.
+`IN` and `OUT` are the only major user-facing relay toggles.
 
-### In scope
+`OUT` means Conduit may publish supported events to this relay.
 
-- caching for fast reads
-- materialized views
-- storefront hydration payloads
-- merchant dashboards
-- search indexes
-- category and tag indexes
-- denormalized read models for app UX
+`IN` means Conduit may read or subscribe to relevant events from this relay.
 
-### Explicit responsibilities
+These controls map to NIP-65 `kind:10002` relay list metadata:
 
-- reduce latency for Conduit applications
-- minimize relay round-trips
-- precompute expensive application views
-- support search and browse experiences
-- rebuild from canonical and mirrored event sources
+```jsonc
+{
+  "kind": 10002,
+  "tags": [
+    ["r", "wss://relay.example.com"],
+    ["r", "wss://write.example.com", "write"],
+    ["r", "wss://read.example.com", "read"]
+  ],
+  "content": ""
+}
+```
 
-### Out of scope
+Serialization rules:
 
-- protocol source of truth
-- required dependency for baseline app correctness
-- private data access that bypasses relay authorization rules
+- `readEnabled: true` and `writeEnabled: true`: omit the marker.
+- `readEnabled: true` and `writeEnabled: false`: use the `read` marker.
+- `readEnabled: false` and `writeEnabled: true`: use the `write` marker.
+- `readEnabled: false` and `writeEnabled: false`: keep the relay in local settings only, not in the published NIP-65 relay list.
 
----
+Clients should keep published NIP-65 lists small and user-understandable. Conduit may track additional scanned relays locally without publishing all of them.
 
-## Responsibility Boundaries
+### Commerce priority
 
-### Merchant relays own
+Commerce priority is an ordered local setting for relays that Conduit has categorized as commerce-compatible.
 
-- canonical merchant-authored writes
-- durable event retention
-- merchant sovereignty
-- private messaging access control
+Commerce priority affects how Conduit prefers relays for commerce behavior, including:
 
-### L2 relays own
+- product and stock sync
+- product updates
+- order-related event delivery
+- buyer/merchant messages
+- selecting which compatible relays to query first
+- selecting where to prioritize publishing commerce events
+- fallback when otherwise valid relay results disagree
 
-- routing
-- mirroring
-- relay-native query acceleration
-- delivery performance
-- notification transport
+Commerce priority does not change how other Nostr apps use a user's relays.
 
-### Cache/index owns
+Recommended UI copy:
 
-- speed
-- search
-- app hydration
-- dashboard-oriented read models
-
-### Boundary rule
-
-If a feature can be removed without changing protocol-visible correctness, it likely belongs in the cache/index layer rather than L2.
-
-### Interoperability checklist
-
-Use this checklist before adding relay features or query extensions:
-
-- merchant relays remain the canonical source for merchant-authored state
-- merchants can publish and recover state without Conduit-operated infrastructure
-- core user flows still have a standards-based fallback using ordinary relay reads
-- L2 acceleration is optional for correctness and only improves speed, ranking, routing, or aggregation
-- relay behavior is expressed through standard Nostr mechanisms whenever possible
-- any non-standard query behavior is capability-advertised and documented as optional
-- Conduit-specific policy modules do not redefine the underlying event model
-- privacy-sensitive messaging features preserve `NIP-17` expectations and require `NIP-42` authorization before protected data is exposed
-- derived views can be rebuilt from relay-visible state rather than hidden private backends
-- another operator can run the relay with different moderation, trust, retention, or routing policy without breaking protocol compatibility
-
-### Interoperability warnings
-
-The architecture is becoming too Conduit-specific if any of the following become true:
-
-- merchants must publish to Conduit infrastructure to be discoverable
-- clients must call Conduit-only query surfaces to render core marketplace or order flows
-- L2 becomes the only practical source for current product state
-- trust or abuse policy changes what events are considered valid rather than what is prioritized or suppressed locally
-- private-thread UX depends on metadata that only Conduit can derive or authorize
-- fallback behavior exists on paper but not at acceptable product or operational cost
+> Higher-ranked commerce relays are preferred by Conduit when syncing products, stock, orders, and messages. This does not change how other Nostr apps use your relays.
 
 ---
 
-## Event Lifecycle
+## Capability Detection
 
-This section defines how major event classes move through the system.
+Relay capabilities are read-only facts in the UI. They are not manual toggles.
 
-### 1. Merchant-authored commerce events
+### Detection order
 
-Examples:
+1. Normalize the relay URL.
+2. Attempt a bounded connection.
+3. Fetch the NIP-11 relay information document.
+4. Read `supported_nips` and relay limitations.
+5. Run active probes needed for Conduit commerce compatibility.
+6. Cache scan results with freshness metadata.
+7. Categorize the relay as `commerce` or `public`.
+8. Surface capability indicators and warning states.
 
-- product listings
-- pricing changes
-- inventory updates
-- merchant metadata
+NIP-11 `supported_nips` is evidence, not proof. Some relays may advertise support incompletely, and some commerce requirements require active read/write probes or a registry/allowlist.
 
-#### Publish path
+### Scan performance
 
-1. Merchant client publishes to the merchant dedicated relay.
-2. Merchant relay validates, stores, and acknowledges the event.
-3. Merchant relay or an authorized replication worker republishes to selected Conduit L2 relays and optional public relays.
-4. L2 relays validate, deduplicate, and make the event available for relay-native reads.
-5. Cache/index consumers ingest the event and update derived read models.
+Capability scans must be bounded and cacheable:
 
-#### Read path
+- use per-relay timeouts for HTTP and WebSocket checks
+- scan relays concurrently with a global limit
+- cache NIP-11 responses and probe results with timestamps
+- mark old results as stale instead of blocking the settings screen
+- allow the UI to render with cached or partial capability data
+- avoid repeated active probes on every route load
 
-1. Client attempts to read from the fastest available source according to product policy.
-2. Preferred order for Conduit apps:
-   a. cache/index for hydration-oriented views
-   b. Conduit L2 for relay-native low-latency reads
-   c. merchant relay for canonical verification or direct fallback
-3. Freshness-sensitive flows may revalidate against the merchant relay before mutating actions.
+### Capability indicators
 
-#### Update and delete handling
+#### Search / Index
 
-- Updates are represented as new events according to the event model.
-- Delete or tombstone semantics must propagate to L2 and cache/index consumers.
-- Rebuilders must honor tombstones during replay or reindex.
+Meaning: the relay supports search or discovery functions useful for finding events.
 
-### 2. Direct messages and private messaging events
+Primary detection:
 
-DMs require stricter handling because privacy guarantees are part of product correctness.
+- NIP-11 `supported_nips` contains `50`
 
-#### Publish path
+Active tooltip:
 
-1. Client publishes private messaging events to an authorized relay endpoint.
-2. Relay requires authenticated session establishment via `NIP-42` before allowing protected subscriptions or protected event interaction.
-3. Relay stores and routes the event according to the merchant's messaging policy.
-4. Any L2 acceleration for messaging must preserve authorization boundaries and must not expose unauthorized message existence or metadata.
+> Search supported
 
-#### Read path
+Expanded tooltip:
 
-1. Client authenticates to the relay using `NIP-42`.
-2. Relay authorizes subscriptions for the requesting principal.
-3. Only then may the client query protected DM/event metadata.
+> This relay advertises search support, so Conduit can use it for discovery and lookup.
 
-#### Privacy requirements
+Inactive tooltip:
 
-- Relays must not allow unauthenticated or unauthorized queries that reveal DM existence, participant metadata, timestamps, or related indexes.
-- If `NIP-17` semantics imply privacy for mailbox discovery or message metadata, Conduit relays must preserve that privacy rather than exposing convenience query APIs.
-- Search, caching, and indexing layers must not create side channels that expose private message metadata outside relay authorization.
-- Any messaging acceleration in L2 must be implemented as authorized routing and delivery assistance, not as an unauthenticated discovery surface.
+> Search not advertised
 
-#### Implementation constraint
+#### DM
 
-`NIP-42` support is required for merchant relays and any Conduit-operated relay that serves protected messaging or metadata queries.
+Meaning: the relay appears suitable for modern private direct messages.
 
-### 3. Social events
+Primary detection:
 
-Examples:
+- NIP-11 `supported_nips` contains `17`
 
-- notes
-- follows
-- profile changes
+Active tooltip:
 
-#### Handling
+> DM support detected
 
-- Merchant relays may act as canonical publish targets for merchant-operated identities.
-- L2 may mirror and accelerate reads.
-- Cache/index may derive app views, but social correctness must remain recoverable from relay-visible state.
+Expanded tooltip:
 
-### 4. Notifications
+> This relay advertises support for modern encrypted direct messages.
 
-Notifications are a delivery concern, not a new source of truth.
+#### Auth / Security
 
-#### Handling
+Meaning: the relay supports or requires client authentication.
 
-- Notification triggers derive from underlying events.
-- L2 may accelerate fan-out and delivery tracking.
-- Cache/index may store user-facing notification views.
-- Rebuilding notifications must be possible from underlying event history and policy.
+Primary detection:
 
----
+- NIP-11 `supported_nips` contains `42`
+- NIP-11 `limitation.auth_required` may add supporting evidence
+- relay `AUTH` challenges during connection may add supporting evidence
 
-## Consistency and Freshness Model
+Active tooltip:
 
-This architecture uses an **authoritative-origin with derived replicas** model.
+> Auth supported
 
-### Canonical truth
+Expanded tooltip:
 
-- Merchant-authored commerce state is canonical on the merchant relay.
-- Derived copies on L2 and cache/index are read accelerators.
+> This relay supports client authentication, which can help protect restricted or sensitive relay access.
 
-### Freshness expectations
+#### DM without auth warning
 
-- Cache/index may be stale.
-- L2 may be stale or partially replicated.
-- Merchant relay is the source for canonical verification.
+If a relay appears DM-capable but does not advertise or demonstrate NIP-42 auth support, show a warning state.
 
-### Client read policy
+Tooltip:
 
-- Browsing flows may use cache/index or L2 for speed.
-- Mutation-adjacent flows should verify freshness against canonical sources when stale reads could cause user-visible correctness issues.
-- Product-specific tolerance for staleness should be defined per flow, especially for inventory and price-sensitive actions.
+> DM relay without auth
 
-### Conflict and reconciliation rules
+Expanded tooltip:
 
-- Duplicate mirrored events are resolved by event identity and relay validation rules.
-- If L2 or cache/index diverges from merchant relay state, merchant relay state wins for merchant-authored records.
-- Replay and backfill jobs must support rebuilding derived layers from canonical and mirrored sources.
-- Deletions and tombstones must be replay-safe and idempotent.
+> This relay appears to support DMs but does not advertise relay authentication. Conduit may limit DM use here because access controls may be weaker.
 
-### Recovery rule
-
-If a merchant relay comes back after downtime, L2 and cache/index must reconcile by replaying from the merchant relay rather than preserving stale derived state as authoritative.
+This warning must not say the relay is categorically unsafe. It only explains that Conduit may limit DM usage because access control signals are weaker.
 
 ---
 
-## Failure and Degradation Behavior
+## Commerce Compatibility
 
-### Merchant relay down
+Commerce compatibility is Conduit-detected. The user does not choose whether a relay is a commerce relay.
 
-Apps may continue serving:
+Conduit should use a versioned commerce compatibility profile so requirements can evolve without turning the UI into a manual role picker.
 
-- mirrored data from Conduit L2
-- previously seen data from public relays
-- cache/index views
+### Baseline commerce event set
 
-Constraints:
+The commerce profile should align with the GammaMarkets market-spec and Conduit's current protocol contracts.
 
-- reads may be stale
-- writes requiring canonical merchant acceptance may be blocked or queued according to product policy
-- mutation-sensitive flows should surface degraded-state behavior clearly
+Baseline requirements:
 
-### L2 relay down
+- `kind:30402` product listings
+- `kind:30405` product collections where collections are used
+- merchant preferences, including relevant NIP-89 and kind `0` preference data
+- NIP-17 order communication and buyer/merchant messages
 
-Apps fall back to:
+Optional or extended requirements:
 
-- merchant relays
-- public relays
-- local or app cache
+- `kind:30406` shipping options
+- product reviews
+- richer payment and service-assisted order processing flows
+- Conduit-specific commerce probes or registry checks
 
-Impact:
+### Minimum compatibility checks
 
-- higher latency
-- weaker feed performance
-- reduced notification reliability
+A relay should appear under **Commerce Enabled Relays** only when Conduit determines it is suitable for commerce activity.
 
-### Cache/index down
+Minimum checks:
 
-Apps fall back to:
+- NIP-11 is responsive or an equivalent probe succeeds.
+- The relay can perform normal Nostr reads for Conduit's commerce event set.
+- The relay accepts writes for supported commerce event kinds when `OUT` is enabled and user policy allows publishing there.
+- The relay handles replaceable or parameterized replaceable commerce state needed for product and inventory updates.
+- The relay meets baseline reliability expectations for commerce flows.
+- If used for DMs, the relay is suitable for NIP-17 delivery and warning states are surfaced when auth support is absent.
 
-- direct L2 reads
-- direct merchant relay reads
+Compatibility may be determined by:
 
-Impact:
+- NIP-11 `supported_nips`
+- active read probes
+- active write probes using safe test events where appropriate
+- relay compatibility registry
+- allowlist for known commerce relays
+- recent success/failure telemetry stored locally or in an operator-managed registry
 
-- slower storefront hydration
-- degraded search and dashboard UX
+### Partial support
 
-### Public relays down
+If a relay supports some but not all commerce requirements, keep it under **Other Public Relays** and show a `commercePartialSupport` warning or detail state where useful.
 
-System continues via:
-
-- merchant relays
-- Conduit L2 relays
-
-Impact:
-
-- reduced public network reach
-- weaker ecosystem replication
+Partial support should not create a third user-facing section.
 
 ---
 
-## Client Relay Product Contract
+## Internal Status Model
 
-This section defines the minimum Phase 2 product contract for how relay roles and relay-backed reads should appear in Conduit clients.
+This model is implementation guidance for Conduit clients. It is not a Nostr protocol event schema.
 
-### Product-facing relay roles
+```typescript
+interface RelaySettingsEntry {
+  url: string
+  readEnabled: boolean
+  writeEnabled: boolean
+  section: "commerce" | "public"
+  commercePriority?: number
+  capabilities: {
+    nip11: boolean
+    search: boolean
+    dm: boolean
+    auth: boolean
+    commerce: boolean
+  }
+  warnings: {
+    dmWithoutAuth: boolean
+    staleRelayInfo: boolean
+    unreachable: boolean
+    commercePartialSupport: boolean
+  }
+}
+```
 
-Across Conduit clients, product terminology should distinguish between:
+Implementation notes:
 
-- `merchant` for a merchant-controlled source-of-truth relay when present
-- `l2` for de-commerce relay acceleration
-- `general` for broader-network fallback and reach
-
-`cache` or `index` remains a valid internal read source, but it should be treated primarily as an acceleration layer rather than as a user-managed relay role identical to the relay-network roles above.
-
-### Settings surfaces
-
-- Merchant clients should expose three relay groups:
-  1. merchant relay
-  2. de-commerce relays
-  3. general relays
-- Market or shopper clients should expose two relay groups:
-  1. de-commerce relays
-  2. general relays
-- These settings surfaces should map cleanly to shared config and protocol code rather than introducing app-local relay models.
-
-### Presentation guidance
-
-- Relay settings should remain minimalist and future-friendly for mobile.
-- The preferred treatment is a simple list of relay names with concise role badges or icons.
-- Extra explanation may be available through lightweight detail affordances such as tooltips, helper text, or secondary views.
-- The architecture should define the product contract without requiring one specific navigation entry point.
-
-### Fallback and degraded-state messaging
-
-- Fallback and degraded-state behavior must remain explicit in implementation.
-- Not every relay settings view needs to surface stale or degraded-state detail at all times.
-- Mutation-sensitive and trust-sensitive flows must still surface degraded-state behavior clearly when it affects user decisions.
-
-### Shared fetch policy
-
-- Clients should use centralized shared read-planning code for relay-backed reads.
-- Shared read-planning should be route-aware rather than enforcing one universal precedence order.
-- Route code should consume typed read results returned by shared protocol code instead of reconstructing relay precedence independently.
-- Route code must not hard-code direct assumptions about cache, L2, merchant, or general relay internals.
-
-### Route-aware read planning
-
-Typical starting points include:
-
-- marketplace browse and homepage reads may prefer:
-  1. cache or index
-  2. `l2`
-  3. `general`
-- merchant-specific storefront or product-detail reads may prefer:
-  1. `merchant` when the merchant source-of-truth relay is known and available
-  2. `l2`
-  3. `general`
-- mutation-adjacent and verification-sensitive flows may require merchant-first canonical revalidation before acting.
-
-These are product-policy defaults, not a rule that every route must share the same order.
-
-### Progressive verification
-
-- Fast browse surfaces may render from cache or other accelerated reads first to avoid blank-page loading.
-- Clients may update product cards, listings, and detail views as stronger sources confirm or replace earlier accelerated results.
-- Source indicators should be subtle by default for ordinary browsing.
-- Clients may expose more detailed source information through badges, tooltips, or similar affordances for users who want to inspect where data came from.
-- When multiple sources agree, the UI may reflect that confirmation without implying that derived layers have become canonical.
-
-### Implementation constraint
-
-- The absence of prominent source-state messaging in ordinary browsing must not cause clients to collapse back to a single-source read assumption.
-- Merchant-controlled relay truth remains canonical for merchant-authored state even when faster layers render first.
+- `section` is derived from scan results.
+- `commercePriority` is present only for commerce-compatible relays.
+- `readEnabled` and `writeEnabled` are user preferences.
+- `capabilities` and `warnings` are scan outputs.
+- URL normalization must be stable before deduplication.
 
 ---
 
-## Security and Privacy Requirements
+## Settings UI Contract
+
+### Header
+
+Title:
+
+> Relay Settings
+
+Header sentence:
+
+> Relays store and deliver data across the Nostr network.
+
+Footer sentence:
+
+> Conduit automatically categorizes relays based on supported NIPs.
+
+### Commerce Enabled Relays
+
+Commerce relays are shown first because they are operationally important for:
+
+- merchant listings
+- inventory and stock updates
+- product updates
+- order-related events
+- buyer/merchant communications
+- Conduit commerce flows
+
+This section allows drag-to-rank commerce priority.
+
+Section tooltip:
+
+> Relays that Conduit can use for commerce events like products, stock updates, orders, and merchant messages.
+
+Expanded tooltip:
+
+> These relays meet Conduit's commerce requirements. Drag to set Conduit's preferred order for syncing and publishing commerce data. This priority only affects Conduit.
+
+Ranking tooltip:
+
+> Drag to change Conduit's commerce priority.
+
+Expanded ranking tooltip:
+
+> Higher-ranked commerce relays are preferred by Conduit when reading, publishing, and resolving commerce data. This does not change relay behavior in other Nostr apps.
+
+### Other Public Relays
+
+Public relays may be useful for general Nostr reads, writes, discovery, or visibility, but they do not currently meet Conduit's full commerce requirements.
+
+They should not be rankable for commerce priority.
+
+Section tooltip:
+
+> General Nostr relays used for broader network reading, publishing, and discovery.
+
+Expanded tooltip:
+
+> These relays may be useful across Nostr, but they do not currently meet Conduit's full commerce requirements.
+
+### IN / OUT toggle copy
+
+`OUT` tooltip:
+
+> Publish events to this relay.
+
+Expanded:
+
+> When enabled, Conduit can publish supported events to this relay.
+
+`IN` tooltip:
+
+> Read events from this relay.
+
+Expanded:
+
+> When enabled, Conduit can read relevant events from this relay.
+
+### Add Relay behavior
+
+There should be one **Add Relay** action.
+
+When a user adds a relay:
+
+1. Normalize the relay URL.
+2. Attempt connection.
+3. Fetch NIP-11 relay information.
+4. Read `supported_nips`.
+5. Probe Conduit-required commerce behavior.
+6. Categorize automatically as commerce or public.
+7. Show capability indicators.
+8. Apply safe default IN/OUT settings.
+
+The UI must not ask whether the user is adding a commerce relay or a public relay.
+
+### Safe defaults
+
+Default IN/OUT behavior should be conservative:
+
+- If a relay is reachable and public, default `IN` to enabled.
+- Default `OUT` to enabled only when the relay is known to accept relevant writes or the user explicitly chooses to publish there.
+- For commerce-compatible relays, default `IN` to enabled and place the relay at the end of the commerce priority list.
+- If a relay is unreachable, add it disabled with a warning rather than silently discarding it.
+
+---
+
+## Read and Write Planning
+
+Conduit should use relay preferences and capability scans to build route-aware read and write plans.
+
+### General Nostr reads
+
+For general reads, Conduit should prefer relays where:
+
+- `readEnabled` is true
+- the relay is reachable or has fresh cached capability data
+- the route's requested capability is available
+
+### General Nostr writes
+
+For general writes, Conduit should publish to relays where:
+
+- `writeEnabled` is true
+- the relay is reachable
+- the relay accepts the event kind
+- user policy allows publishing there
+
+### Commerce reads
+
+For commerce reads, Conduit should:
+
+1. Prefer commerce-compatible relays in commerce priority order.
+2. Use public relays as fallback or discovery sources when commerce relays are unavailable or incomplete.
+3. Use NIP-50 search capability only when the route needs search behavior.
+4. Use cached local data only as a performance fallback with stale-state awareness.
+
+### Commerce writes
+
+For commerce writes, Conduit should:
+
+1. Prefer commerce-compatible relays in commerce priority order where `writeEnabled` is true.
+2. Publish to additional user-enabled write relays when appropriate for reach and interoperability.
+3. Surface partial publish failures when they materially affect commerce behavior.
+4. Avoid treating a Conduit-local priority list as a universal relay preference.
+
+### Messaging
+
+For NIP-17 buyer/merchant communication, Conduit should:
+
+- prefer relays that advertise or demonstrate DM suitability
+- prefer auth-capable relays for protected or restricted access patterns
+- warn when DM support exists without auth support
+- limit DM usage on weaker relays when policy requires stronger access control
+
+---
+
+## Conflict and Fallback Rules
+
+When multiple relays return competing commerce state, Conduit should resolve results in this order:
+
+1. Prefer valid signed events.
+2. Prefer newer replaceable or parameterized replaceable events when applicable.
+3. If otherwise valid events still disagree or some relays return stale data, prefer the result from the higher-ranked commerce relay.
+4. If the highest-ranked commerce relay is unavailable, fall back to the next ranked valid commerce relay.
+5. If no commerce relay returns a usable result, fall back to user-enabled public relays and clearly mark stale or degraded states when user decisions depend on freshness.
+
+Commerce priority is only a Conduit fallback and planning signal. It does not redefine event validity.
+
+---
+
+## Privacy and Security Requirements
+
+### DM privacy
+
+NIP-17 protects message content and hides much of the direct message structure inside seals and gift wraps. Relay choice still matters because relay access policy can affect message metadata exposure.
+
+Conduit should prefer auth-capable relays for private or restricted messaging behavior and should avoid overclaiming privacy guarantees in UI copy.
 
 ### Authentication
 
-- Protected relay reads must require `NIP-42` authentication.
-- Conduit-operated relays must reject unauthorized subscriptions for protected event classes.
+NIP-42 support is a capability signal and may be required for Conduit-controlled protected relay behavior. Relays that serve protected message or metadata queries should require authenticated sessions before exposing restricted data.
 
-### Authorization
+### Derived data
 
-- Authorization policies must be applied before query execution for protected data.
-- Relay filters must not leak whether hidden data exists when the requester is unauthorized.
+Any internal acceleration, cache, index, or relay routing system must remain derived from relay-visible state and must not become a hidden private-data API.
 
-### Abuse controls
-
-- Merchant relays and L2 relays should implement spam controls, rate limiting, and policy hooks.
-- Abuse controls must not silently weaken privacy guarantees for protected messaging surfaces.
-
-### Derived-system constraints
-
-- Cache/index systems must never become an alternate private-data API.
-- Internal operators should be able to rebuild derived systems without bypassing relay-layer authorization design.
+Derived systems may improve performance, hydration, search, or routing, but they must not be presented in the selector as user-managed relay roles.
 
 ---
 
-## Implementation Sequence
+## Implementation Guidance
 
-### Phase 1 - Merchant relay baseline
+### Keep shared relay logic centralized
 
-Build the sovereign core first:
+Relay normalization, NIP-65 serialization, capability scanning, commerce categorization, and route-aware read/write planning should live in shared code rather than being reconstructed in each route.
 
-- canonical merchant writes
-- durable storage
-- relay list management
-- basic replication hooks
-- `NIP-42` support for protected reads
-- baseline DM/privacy enforcement
+### Keep UI simple
 
-### Phase 2 - L2 relay acceleration
+The settings screen should communicate:
 
-Add shared network behavior:
+- relays are Nostr infrastructure
+- Conduit automatically detects capabilities
+- users control read/write participation and commerce priority
+- commerce priority only affects Conduit
+- capability icons are informational
+- warning states explain risk without creating fear
 
-- mirroring
-- deduplication
-- relay health scoring
-- relay-native query acceleration
-- notification transport
-- bounded policy modules
+### Keep implementation extensible
 
-### Phase 3 - Cache/index optimization
+The model should support future improvements without changing the user contract:
 
-Add app-performance systems:
-
-- storefront hydration views
-- search indexes
-- dashboard projections
-- rebuild and replay tooling
-
-### Sequence rule
-
-Do not implement application-critical behavior in L2 or cache/index before the merchant relay path can operate correctly on its own.
+- compatibility registry
+- active relay probes
+- operator-managed relay recommendations
+- improved stale-state handling
+- additional commerce event kinds
+- optional Conduit acceleration paths
 
 ---
 
 ## Open Implementation Decisions
 
-These items should be resolved during detailed design:
+These decisions are intentionally left for the implementation spec or code PR:
 
-- exact staleness policy per user flow, especially inventory and checkout-adjacent reads
-- whether message acceleration mirrors encrypted payloads, envelopes, or only routing metadata
-- replay cursor and backfill strategy between merchant relays and L2
-- deletion retention policy and tombstone propagation windows
-- operational model for hosted merchant relays versus self-hosted merchant relays
+- exact URL normalization function and accepted input formats
+- scan cache TTLs and stale thresholds
+- active write-probe strategy and safety constraints
+- compatibility profile version naming
+- default curated relay list
+- whether commerce priority is stored per app, per identity, or shared across Conduit apps
+- whether Conduit later defines a publishable event for commerce priority
+
+Until a publishable event is defined, commerce priority remains local/app-specific.
 
 ---
 
 ## Summary
 
-Scope 1 is merchant truth.
+The relay architecture should be Nostr-native:
 
-Scope 2 is relay-native network performance and routing.
+- NIP-65 expresses user read/write relay preferences.
+- NIP-11 and active probes detect relay capabilities.
+- GammaMarkets market-spec anchors the commerce event set.
+- Conduit categorizes relays automatically.
+- Users rank only commerce-compatible relays for Conduit-local commerce priority.
+- Capability icons are read-only.
+- Internal acceleration remains an implementation detail, not a user-facing relay role.
 
-Scope 3 is application-performance and search.
+Core rule:
 
-All Conduit-operated layers are optional for baseline functionality, but only if:
-
-- merchant relays remain the canonical source
-- derived layers can be rebuilt
-- freshness and reconciliation rules are explicit
-- private messaging remains protected with `NIP-42`-gated access that preserves `NIP-17` privacy expectations
+> Users configure preferences. Conduit detects capabilities. The app orchestrates relay usage without pretending the network has fixed relay roles.
