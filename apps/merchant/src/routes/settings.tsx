@@ -17,19 +17,21 @@ function SettingsPage() {
   )
 
   return (
-    <div className="mx-auto max-w-5xl">
-      <RelaySettingsPanel
-        settings={relaySettings.settings}
-        scanningUrls={relaySettings.scanningUrls}
-        error={relaySettings.error}
-        onAddRelay={relaySettings.addRelay}
-        onRefreshRelay={relaySettings.refreshRelay}
-        onRemoveRelay={relaySettings.removeRelay}
-        onToggleRead={relaySettings.toggleRelayRead}
-        onToggleWrite={relaySettings.toggleRelayWrite}
-        onReorderCommerceRelay={relaySettings.reorderRelay}
-        onReset={relaySettings.resetRelaySettings}
-      />
+    <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
+      <div className="mx-auto max-w-[50rem]">
+        <RelaySettingsPanel
+          settings={relaySettings.settings}
+          scanningUrls={relaySettings.scanningUrls}
+          error={relaySettings.error}
+          onAddRelay={relaySettings.addRelay}
+          onRefreshRelay={relaySettings.refreshRelay}
+          onRemoveRelay={relaySettings.removeRelay}
+          onToggleRead={relaySettings.toggleRelayRead}
+          onToggleWrite={relaySettings.toggleRelayWrite}
+          onReorderCommerceRelay={relaySettings.reorderRelay}
+          onReset={relaySettings.resetRelaySettings}
+        />
+      </div>
     </div>
   )
 }

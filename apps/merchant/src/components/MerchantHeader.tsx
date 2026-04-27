@@ -50,7 +50,7 @@ type NavRoute =
   | "/products"
   | "/payments"
   | "/shipping"
-  | "/network"
+  | "/settings"
 
 type NavItem = {
   to: NavRoute
@@ -69,7 +69,7 @@ const mainNavItems: NavItem[] = [
 const setupNavItems: NavItem[] = [
   { to: "/payments", label: "Payments", icon: Bitcoin, hasReadiness: true },
   { to: "/shipping", label: "Shipping", icon: Truck, hasReadiness: true },
-  { to: "/network", label: "Network", icon: Wifi, hasReadiness: true },
+  { to: "/settings", label: "Network", icon: Wifi, hasReadiness: true },
 ]
 
 // ---------------------------------------------------------------------------
@@ -129,14 +129,14 @@ function Logo({
 function useReadinessState() {
   const { pubkey } = useAuth()
   const { data: profile } = useProfile(pubkey)
-  const { groups } = useRelaySettings("merchant")
+  const { settings } = useRelaySettings("merchant")
 
   const shippingConfig = loadShippingConfig()
 
   const profileIncomplete = !isProfileComplete(profile)
   const paymentsIncomplete = !isPaymentsComplete(profile)
   const shippingIncomplete = !isShippingComplete(shippingConfig)
-  const networkIncomplete = groups.merchant.length === 0
+  const networkIncomplete = settings.entries.length === 0
 
   const anyIncomplete =
     profileIncomplete ||
@@ -182,7 +182,7 @@ function MerchantNavLinks({
   const setupIncompleteMap: Record<NavRoute, boolean> = {
     "/payments": paymentsIncomplete,
     "/shipping": shippingIncomplete,
-    "/network": networkIncomplete,
+    "/settings": networkIncomplete,
     "/": false,
     "/orders": false,
     "/products": false,
@@ -249,7 +249,7 @@ function UserMenu() {
       avatarFallback={<MerchantAvatarFallback iconClassName="h-4 w-4" />}
       alertLabel={anyIncomplete ? "Needs completion" : undefined}
       onProfile={() => navigate({ to: "/profile" })}
-      onNetwork={() => navigate({ to: "/network" })}
+      onNetwork={() => navigate({ to: "/settings" })}
       onDisconnect={disconnect}
       className="h-12 min-w-[12.75rem] rounded-[16px] px-3"
     />

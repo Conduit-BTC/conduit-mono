@@ -22,7 +22,7 @@ export const Route = createFileRoute("/payments")({
 function PaymentsPage() {
   const { pubkey } = useAuth()
   const profileQuery = useProfile(pubkey)
-  const updateMutation = useUpdateProfile()
+  const updateMutation = useUpdateProfile("merchant")
   const nwc = useNwcConnection()
 
   const profile = profileQuery.data
