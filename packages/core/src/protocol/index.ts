@@ -9,12 +9,14 @@ export * from "./order-summary"
 export * from "./lightning"
 export * from "./commerce"
 export * from "./nip89"
+export * from "./relay-settings"
 export {
   getNdk,
   connectNdk,
   requireNdkConnected,
   fetchEventsFanout,
   disconnectNdk,
+  refreshNdkRelaySettings,
   setSigner,
   removeSigner,
   subscribeNdkState,

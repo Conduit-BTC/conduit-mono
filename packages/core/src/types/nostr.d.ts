@@ -1,5 +1,6 @@
 interface Nip07Nostr {
   getPublicKey(): Promise<string>
+  getRelays?(): Promise<Record<string, { read: boolean; write: boolean }>>
   signEvent(event: {
     kind: number
     content: string

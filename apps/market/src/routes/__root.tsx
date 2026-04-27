@@ -1,4 +1,9 @@
-import { createRootRoute, Outlet, useRouterState, type ErrorComponentProps } from "@tanstack/react-router"
+import {
+  createRootRoute,
+  Outlet,
+  useRouterState,
+  type ErrorComponentProps,
+} from "@tanstack/react-router"
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { useEffect } from "react"
 import { MarketHeader } from "../components/MarketHeader"
@@ -44,7 +49,11 @@ function RootLayout() {
 }
 
 function getPageTitle(pathname: string): string {
-  if (pathname === "/" || pathname === "/products" || pathname === "/products/") {
+  if (
+    pathname === "/" ||
+    pathname === "/products" ||
+    pathname === "/products/"
+  ) {
     return "Shop"
   }
   if (pathname === "/cart") {
@@ -61,6 +70,9 @@ function getPageTitle(pathname: string): string {
   }
   if (pathname === "/profile") {
     return "Profile"
+  }
+  if (pathname === "/settings") {
+    return "Relay Settings"
   }
   if (pathname.startsWith("/u/")) {
     return "User Profile"

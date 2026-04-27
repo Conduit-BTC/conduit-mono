@@ -54,6 +54,12 @@ export {
 } from "./Select"
 export { Skeleton } from "./Skeleton"
 export { Tabs, TabsList, TabsTrigger, TabsContent } from "./Tabs"
+export {
+  RelaySettingsPanel,
+  type RelaySettingsPanelEntry,
+  type RelaySettingsPanelProps,
+  type RelaySettingsPanelState,
+} from "./RelaySettingsPanel"
 export { OrderDetailCard, type OrderDetailCardProps } from "./OrderDetailCard"
 export { ErrorPage } from "./ErrorPage"
 export { NotFoundPage } from "./NotFoundPage"
