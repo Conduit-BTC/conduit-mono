@@ -100,7 +100,7 @@ export function ProfileSelector({
             {alertLabel && !open ? (
               <span
                 aria-hidden="true"
-                className="absolute -right-1 -top-1 text-[var(--warning)] drop-shadow-[0_1px_2px_rgba(0,0,0,0.5)]"
+                className="absolute -right-1 -top-1 text-[var(--warning)] drop-shadow"
               >
                 <FilledWarningIcon size={13} />
               </span>
