@@ -5,11 +5,13 @@ Phase 2 is the execution plan for the next Conduit sprint after MVP.
 This document preserves the finalized Phase 2 scope agreed between the parties, but translates that scope into a codebase-aware implementation map for `conduit-mono`.
 
 For each included area, this plan states:
+
 - current codebase state
 - Phase 2 implementation work
 - done when
 
 The goal is to make this file usable as both:
+
 - a human-readable scope reference
 - an operational planning document that can be turned into issues and PRs without re-discovering the repo
 
@@ -88,40 +90,36 @@ Second priority. This work lets relay and caching infrastructure proceed in para
 - Relay architecture is already documented in:
   - `docs/specs/relay/conduit_relay_architecture.md`
   - `docs/specs/relay/conduit_l2_scope2_functional.md`
-- Merchant and Market already depend on relay reads, local cache, and fallback handling, but relay roles are not yet a clear user-facing product concept.
-- Merchant UI currently exposes relay health at a high level on the dashboard, but there is not yet a full relay settings product surface aligned to the three-layer architecture.
+- Merchant and Market already depend on relay reads, local cache, and fallback handling, but relay preferences and capability detection are not yet exposed as a clear user-facing product concept.
+- Merchant UI currently exposes relay health at a high level on the dashboard, but there is not yet a full relay settings product surface aligned to the Nostr-native relay architecture.
 
 #### Phase 2 implementation work
 
-- Make the relay roles explicit in product and docs:
-  - merchant relay as the merchant-controlled source of truth when present
-  - de-commerce relay acceleration via Conduit L2
-  - general relays for broader network reach and fallback
-  - cache/index as a read accelerator rather than a hidden application truth source
-- Build relay settings UX that maps to the existing `@conduit/core` config model instead of a single flat relay list.
-- Split the product surface by actor:
-  - Merchant should see three relay groups:
-    - merchant relay
-    - de-commerce relays
-    - general relays
-  - Market / shopper should see two relay groups:
-    - de-commerce relays
-    - general relays
+- Make relay preferences and detected capabilities explicit in product and docs:
+  - `IN` for relays Conduit may read from
+  - `OUT` for relays Conduit may publish to
+  - commerce priority order as a Conduit-local app setting
+  - capability indicators derived from NIP-11, active probes, and commerce compatibility checks
+- Build relay settings UX that maps to shared relay preference and capability state instead of user-managed relay roles.
+- Use two user-facing relay sections across Conduit clients:
+  - Commerce Enabled Relays
+  - Other Public Relays
 - Keep the selector minimalist and mobile-friendly:
-  - use concise role badges or icons
-  - prefer a simple relay list with role context over multiple heavy configuration panels
+  - use IN/OUT controls for user preferences
+  - use read-only capability icons for search, DM, auth, and warnings
+  - allow drag-to-rank only in Commerce Enabled Relays
   - use tooltip or detail affordances only when extra explanation is needed
 - Keep Market and Merchant route code source-agnostic:
   - routes should consume stable typed read results
   - routes should react to source and degraded-state metadata
-  - routes should not hard-code assumptions about cache or L2 internals
+  - routes should not hard-code assumptions about internal acceleration paths
 - Preserve graceful degradation:
   - browsing may use faster layers first
-  - canonical verification should still be possible against merchant-visible state
-  - apps should continue to function when cache or L2 is absent
+  - verification should still be possible through ordinary relay reads
+  - apps should continue to function when acceleration or cache paths are absent
 - Use route-aware read planning instead of one universal precedence rule:
-  - marketplace browse may prefer cache first, then L2, then general relay fallback
-  - merchant-specific surfaces may prefer merchant relay first when the merchant source of truth is known
+  - commerce flows should prefer Commerce Enabled Relays in Conduit commerce priority order
+  - general Nostr flows should follow user `IN` / `OUT` preferences
   - protected and mutation-adjacent flows may require stronger-source verification before acting
 - Support progressive verification in UI:
   - fast surfaces may render from cache first to avoid blank-page loading
@@ -131,17 +129,17 @@ Second priority. This work lets relay and caching infrastructure proceed in para
   - hydration
   - performance
   - verification support
-  - not hidden app-only truth
+  - not user-managed selector roles
 - Align frontend behavior with the existing relay architecture docs instead of creating a second architecture in UI code.
 
 #### Recommended PR sequence
 
 1. Shared relay model and settings UX
-   - define the relay-role model in shared code
+   - define relay preference, capability, warning, and commerce priority state in shared code
    - map that model to Merchant and Market settings surfaces
-   - make the grouped relay UX understandable without exposing relay internals everywhere
+   - make the grouped relay UX understandable without exposing internal acceleration details
 2. Merchant-side relay behavior
-   - publish merchant-authored events to the correct relays
+   - publish merchant-authored events to user-enabled `OUT` relays, prioritizing commerce-compatible relays for commerce events
    - keep merchant messaging and inbox reads aligned with the optimized relay path
    - preserve source-aware typed results in shared protocol code
 3. Market / shopper read planning
@@ -151,10 +149,10 @@ Second priority. This work lets relay and caching infrastructure proceed in para
 
 #### Done when
 
-- Merchant and Market can explain relay roles in product terms, not just env var terms.
-- Relay settings map cleanly to the current config model in `@conduit/core`.
-- Merchant and Market settings surfaces reflect the actor-specific relay model without collapsing everything into one flat list.
-- Frontend reads remain compatible with merchant-only, public-relay, and accelerated-read scenarios.
+- Merchant and Market can explain relay preferences and detected capabilities in product terms, not just env var terms.
+- Relay settings map cleanly to shared relay preference and capability state in `@conduit/core`.
+- Merchant and Market settings surfaces use Commerce Enabled Relays and Other Public Relays without asking users to assign relay roles.
+- Frontend reads remain compatible with public-relay, commerce-compatible-relay, and accelerated-read scenarios.
 - Fallback behavior is explicit in UI and implementation instead of implicit in scattered route logic.
 - Fast browse flows may load from cache first while still supporting later verification against stronger relay sources.
 - The infrastructure team can extend relay and cache layers without forcing route-level rewrites.
@@ -425,6 +423,7 @@ These items are optional unless added later in writing.
 - NIP-46 support
 
 Current codebase note:
+
 - Basic trust context and follow behavior are partially present in Market store surfaces.
 - Repo workflow and AI review instructions already mention NIP-46 as an auth constraint, but broad NIP-46 product support is not yet a required Phase 2 deliverable.
 
@@ -438,6 +437,7 @@ Not included in Phase 2 unless added later.
 - Full social feed or non-commerce social features
 
 Current codebase note:
+
 - The privacy-observability spec already pushes the implementation away from user tracking and toward aggregate metrics.
 - Relay and trust docs include broader trust-network ideas, but they are not part of required Phase 2 delivery.
 

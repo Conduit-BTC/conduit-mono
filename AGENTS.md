@@ -32,27 +32,28 @@ conduit-mono/
 
 ### Tech Stack
 
-| Layer | Technology |
-|-------|------------|
-| Runtime | Bun |
-| Build | Vite 6 + SWC |
-| Framework | React 19 |
-| Routing | TanStack Router (file-based, type-safe) |
-| Server State | TanStack Query + NDK |
-| Client State | React Context (auth only) |
-| Persistence | localStorage (cart, preferences) |
-| Database | Dexie (IndexedDB) for orders, messages, cache |
-| UI | shadcn/ui + Tailwind CSS |
-| Forms | react-hook-form + Zod |
-| Validation | Zod schemas in `@conduit/core` |
-| Protocol | Nostr via NDK |
-| Analytics | Plausible (traffic) + PostHog (events/errors) |
+| Layer        | Technology                                    |
+| ------------ | --------------------------------------------- |
+| Runtime      | Bun                                           |
+| Build        | Vite 6 + SWC                                  |
+| Framework    | React 19                                      |
+| Routing      | TanStack Router (file-based, type-safe)       |
+| Server State | TanStack Query + NDK                          |
+| Client State | React Context (auth only)                     |
+| Persistence  | localStorage (cart, preferences)              |
+| Database     | Dexie (IndexedDB) for orders, messages, cache |
+| UI           | shadcn/ui + Tailwind CSS                      |
+| Forms        | react-hook-form + Zod                         |
+| Validation   | Zod schemas in `@conduit/core`                |
+| Protocol     | Nostr via NDK                                 |
+| Analytics    | Plausible (traffic) + PostHog (events/errors) |
 
 **No Zustand. No Jotai. No state management library.**
 
 ### Nostr Protocol
 
 Core event kinds used:
+
 - **Kind 0** - User profile metadata
 - **Kind 5** - Event deletion (NIP-09)
 - **Kind 10002** - Relay list (NIP-65)
@@ -73,14 +74,17 @@ Payments: NWC-based Lightning payments (NIP-47).
 2. **Before building**: Read the relevant `docs/specs/*.md` for feature details
    - For UI/theming work, also read `docs/DESIGN.md`
 
-3. **Spec-first rule**:
+3. **Plan before implementing**: For non-trivial implementation work, write a concise plan from the relevant spec/docs and get user approval before editing code.
+
+4. **Spec-first rule**:
    - If work changes product requirements, protocol behavior, or shared implementation expectations, land the relevant docs/spec PR to `main` before starting the implementation `feat/*` branch
 
-4. **End**: Update deliverable checkboxes in `docs/plans/IMPLEMENTATION.md` with user confirmation
+5. **End**: Update deliverable checkboxes in `docs/plans/IMPLEMENTATION.md` with user confirmation
 
 ## Protected Files
 
 Do not modify without explicit confirmation:
+
 - `docs/ARCHITECTURE.md` - System architecture and diagrams
 - `docs/plans/IMPLEMENTATION.md` - Technical build guide
 - `docs/specs/*.md` - Feature specifications
@@ -90,16 +94,19 @@ Do not modify without explicit confirmation:
 Treat `conduit-mono` as a future public client/shared-code repository.
 
 When writing:
+
 - commit messages
 - PR titles
 - PR descriptions
 - tracked public-facing docs
 
 avoid framing this repo around:
+
 - internal company planning
 - repo-scope assumptions that do not belong to `conduit-mono`
 
 Keep public language focused on:
+
 - Market
 - Merchant
 - Store Builder
