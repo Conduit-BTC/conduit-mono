@@ -214,31 +214,38 @@ function CapabilityIcon({
   active,
   icon: Icon,
   label,
+  shortLabel,
   description,
   warning = false,
 }: {
   active: boolean
   icon: typeof Search
   label: string
+  shortLabel: string
   description: string
   warning?: boolean
 }) {
   return (
     <CapabilityTooltip label={label} description={description}>
-      <span
-        tabIndex={0}
-        title={label}
-        aria-label={label}
-        className={cn(
-          "inline-flex h-8 w-8 items-center justify-center rounded-full border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
-          warning
-            ? "border-warning/35 bg-warning/10 text-warning"
-            : active
-              ? "border-success/35 bg-success/10 text-success"
-              : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)]"
-        )}
-      >
-        <Icon className="h-3.5 w-3.5" />
+      <span className="inline-flex flex-col items-center gap-1">
+        <span
+          tabIndex={0}
+          title={label}
+          aria-label={label}
+          className={cn(
+            "inline-flex h-8 w-8 items-center justify-center rounded-full border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+            warning
+              ? "border-warning/35 bg-warning/10 text-warning"
+              : active
+                ? "border-success/35 bg-success/10 text-success"
+                : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)]"
+          )}
+        >
+          <Icon className="h-3.5 w-3.5" />
+        </span>
+        <span className="text-[0.56rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+          {shortLabel}
+        </span>
       </span>
     </CapabilityTooltip>
   )
@@ -382,6 +389,7 @@ function RelayRow({
         <CapabilityIcon
           active={entry.capabilities.search}
           icon={Search}
+          shortLabel="Search"
           label={
             entry.capabilities.search
               ? "Search supported"
@@ -389,13 +397,14 @@ function RelayRow({
           }
           description={
             entry.capabilities.search
-              ? `This relay advertises NIP-50 search support. ${compatibilityText}`
-              : `This relay did not advertise NIP-50 search support in NIP-11. ${compatibilityText}`
+              ? `This relay advertises NIP-50 search. Conduit can use it for discovery and lookup when a route needs search behavior. ${compatibilityText}`
+              : `This relay does not advertise NIP-50 search. Conduit can still read ordinary events here, but should not rely on it for product search or discovery. ${compatibilityText}`
           }
         />
         <CapabilityIcon
           active={entry.capabilities.dm}
           icon={Send}
+          shortLabel="DM"
           label={
             entry.capabilities.dm
               ? "DM support detected"
@@ -403,13 +412,14 @@ function RelayRow({
           }
           description={
             entry.capabilities.dm
-              ? `This relay advertises NIP-17 support for modern encrypted direct messages. ${compatibilityText}`
-              : `This relay did not advertise NIP-17 DM support in NIP-11. ${compatibilityText}`
+              ? `This relay advertises NIP-17 support. Conduit can consider it for modern encrypted buyer and merchant message delivery. ${compatibilityText}`
+              : `This relay does not advertise NIP-17 support. Conduit should avoid depending on it for buyer and merchant message delivery. ${compatibilityText}`
           }
         />
         <CapabilityIcon
           active={entry.capabilities.auth || entry.warnings.dmWithoutAuth}
           icon={LockKeyhole}
+          shortLabel="Auth"
           label={
             entry.warnings.dmWithoutAuth
               ? "DM relay without auth"
@@ -417,10 +427,10 @@ function RelayRow({
           }
           description={
             entry.warnings.dmWithoutAuth
-              ? `This relay appears DM-capable but does not advertise NIP-42 auth. Conduit may limit DM use here because access controls may be weaker. ${compatibilityText}`
+              ? `This relay advertises NIP-17 DMs but not NIP-42 auth. Message content remains encrypted, but relay access controls may be weaker, so Conduit may limit protected messaging use here. ${compatibilityText}`
               : entry.capabilities.auth
-                ? `This relay advertises or requires NIP-42 authentication. ${compatibilityText}`
-                : `This relay did not advertise NIP-42 authentication. ${compatibilityText}`
+                ? `This relay advertises or requires NIP-42 authentication. Conduit can authenticate when a relay requires signed access for protected reads or writes. ${compatibilityText}`
+                : `This relay does not advertise NIP-42 authentication. Conduit can still use it for public reads or writes, but should avoid it for protected messaging paths. ${compatibilityText}`
           }
           warning={entry.warnings.dmWithoutAuth}
         />
@@ -430,6 +440,7 @@ function RelayRow({
           <CapabilityIcon
             active
             icon={entry.warnings.unreachable ? WifiOff : AlertTriangle}
+            shortLabel="Warn"
             label={warningText ?? "Relay warning"}
             description={`${warningText ?? "Conduit detected a relay warning."} ${compatibilityText}`}
             warning
