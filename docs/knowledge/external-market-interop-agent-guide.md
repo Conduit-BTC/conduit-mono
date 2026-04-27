@@ -22,7 +22,7 @@ Source policy: `docs/knowledge/external-market-interop-policy.md` (2026-02-10).
 
 - Level 1 (minimum): Conduit listings show up externally and external listings show up in Conduit with intelligible core fields.
 - Level 2 (critical): External discovery -> checkout with Conduit merchant (one-way). Blockers must be escalated.
-- Level 3 (optional): Conduit discovery -> checkout with external merchant (link-outs preferred, must not delay L1/L2).
+- Level 3 (optional): Conduit discovery -> checkout with external merchant (link-outs preferred, must not delay Level 1 or Level 2).
 
 ## How To Implement Compat Safely
 
@@ -34,7 +34,7 @@ When you observe external behavior that differs from spec or our emitter:
    - do not pollute core types with UI-state or app-specific meaning
 3. Document the divergence:
    - add a short entry to the "Compat Notes" appendix in `docs/knowledge/external-market-interop-policy.md`
-4. If it affects L1/L2 materially, create an interop issue:
+4. If it affects Level 1 or Level 2 materially, create an interop issue:
    - tag with one of: `spec-ambiguity`, `external-quirk`, `missing-surface`, `rendering-mismatch`, `checkout-blocker`, `security-or-privacy-risk`
 
 ## PR/Review Language (Use This)
@@ -47,5 +47,4 @@ When you observe external behavior that differs from spec or our emitter:
 - Can we render a Plebeian listing without throwing?
 - Do we show title/description/price/media/merchant identity even if fields are missing or differently tagged?
 - Are we emitting spec-aligned events that Plebeian can discover?
-- If L2 is in scope: can an externally discovered item route into Conduit checkout (or a clear link-out)?
-
+- If Level 2 is in scope: can an externally discovered item route into Conduit checkout (or a clear link-out)?

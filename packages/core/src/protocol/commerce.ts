@@ -26,12 +26,7 @@ import {
 const PRODUCT_CACHE_TTL_MS = 5 * 60_000
 const PROFILE_CACHE_TTL_MS = 5 * 60_000
 
-export type CommerceReadSource =
-  | "cache"
-  | "l2"
-  | "merchant"
-  | "public"
-  | "local_cache"
+export type CommerceReadSource = "commerce" | "public" | "local_cache"
 export type CommerceSortMode =
   | "newest"
   | "price_asc"
@@ -196,18 +191,12 @@ const PROFILE_CAPABILITIES: CommerceCapabilities = {
 }
 
 const READ_PLANS: Record<CommerceReadPlanName, CommerceReadSource[]> = {
-  marketplace_products: ["cache", "l2", "public", "local_cache"],
-  merchant_storefront: ["cache", "l2", "merchant", "public", "local_cache"],
-  product_detail: ["cache", "l2", "merchant", "public", "local_cache"],
-  profile_batch: ["cache", "l2", "public", "local_cache"],
-  protected_conversation_list: [
-    "cache",
-    "l2",
-    "merchant",
-    "public",
-    "local_cache",
-  ],
-  conversation_detail: ["cache", "l2", "merchant", "public", "local_cache"],
+  marketplace_products: ["public", "local_cache"],
+  merchant_storefront: ["commerce", "public", "local_cache"],
+  product_detail: ["commerce", "public", "local_cache"],
+  profile_batch: ["public", "local_cache"],
+  protected_conversation_list: ["commerce", "public", "local_cache"],
+  conversation_detail: ["commerce", "public", "local_cache"],
 }
 
 let testOverrides: CommerceTestOverrides = {}
@@ -226,8 +215,8 @@ function publicReadRelayUrls(): string[] {
 function commerceReadRelayUrls(): string[] {
   return getCommerceReadRelayUrls({
     fallbackRelayUrls:
-      config.merchantRelayUrls.length > 0
-        ? config.merchantRelayUrls
+      config.commerceRelayUrls.length > 0
+        ? config.commerceRelayUrls
         : config.publicRelayUrls,
   })
 }
@@ -745,7 +734,7 @@ export async function getMerchantStorefront(
     await cacheProductRecords(filtered)
     return {
       data: filtered,
-      meta: createMeta("merchant_storefront", "public", PRODUCT_CAPABILITIES),
+      meta: createMeta("merchant_storefront", "commerce", PRODUCT_CAPABILITIES),
     }
   } catch (error) {
     const cached = sortProducts(
@@ -1135,7 +1124,7 @@ async function fetchParsedOrderMessages(
     const messages = Array.from(cachedById.values()).sort(
       (a, b) => a.createdAt - b.createdAt
     )
-    return { messages, source: "public", stale: false }
+    return { messages, source: "commerce", stale: false }
   } catch (error) {
     if (cachedById.size > 0) {
       const messages = Array.from(cachedById.values()).sort(
