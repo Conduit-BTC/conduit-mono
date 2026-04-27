@@ -2,7 +2,7 @@ import { SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import {
   type CommerceResult,
-  formatPubkey,
+  formatNpub,
   getMerchantStorefront,
   getProductDetail,
   useProfile,
@@ -229,7 +229,7 @@ function ProductPage() {
                           params={{ pubkey: product.pubkey }}
                           className="truncate font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
                         >
-                          {formatPubkey(product.pubkey, 10)}
+                          {formatNpub(product.pubkey, 10)}
                         </Link>
                         <CopyButton value={product.pubkey} label="Copy pubkey" />
                       </div>
