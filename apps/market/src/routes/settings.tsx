@@ -1,0 +1,29 @@
+import { createFileRoute } from "@tanstack/react-router"
+import { useAuth, useRelaySettings } from "@conduit/core"
+import { RelaySettingsPanel } from "@conduit/ui"
+
+export const Route = createFileRoute("/settings")({
+  component: SettingsPage,
+})
+
+function SettingsPage() {
+  const { pubkey } = useAuth()
+  const relaySettings = useRelaySettings(pubkey ? `market:${pubkey}` : "market")
+
+  return (
+    <div className="mx-auto max-w-5xl">
+      <RelaySettingsPanel
+        settings={relaySettings.settings}
+        scanningUrls={relaySettings.scanningUrls}
+        error={relaySettings.error}
+        onAddRelay={relaySettings.addRelay}
+        onRefreshRelay={relaySettings.refreshRelay}
+        onRemoveRelay={relaySettings.removeRelay}
+        onToggleRead={relaySettings.toggleRelayRead}
+        onToggleWrite={relaySettings.toggleRelayWrite}
+        onReorderCommerceRelay={relaySettings.reorderRelay}
+        onReset={relaySettings.resetRelaySettings}
+      />
+    </div>
+  )
+}

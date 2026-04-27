@@ -6,9 +6,8 @@ const ALLOWED_FILE = "packages/ui/src/styles/theme.css"
 const SCAN_INCLUDE = "{apps,packages}/**/*.{ts,tsx,js,jsx,css}"
 const RGBA_PATTERN = /rgba?\s*\(/g
 const HEX_PATTERN = /#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})\b/g
-const ALLOWED_LINE_PATTERNS = [
-  /Order\s+#\d+/,
-]
+const ALLOWED_LINE_PATTERNS = [/Order\s+#\d+/]
+const IGNORED_PATH_SEGMENTS = ["/dist/"]
 
 type Match = {
   file: string
@@ -30,6 +29,9 @@ async function listSourceFiles(): Promise<string[]> {
     throwErrorOnBrokenSymlink: false,
   })) {
     if (file === ALLOWED_FILE) continue
+    if (IGNORED_PATH_SEGMENTS.some((segment) => file.includes(segment))) {
+      continue
+    }
     files.push(file)
   }
 

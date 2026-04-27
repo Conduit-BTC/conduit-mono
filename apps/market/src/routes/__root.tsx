@@ -1,8 +1,18 @@
-import { createRootRoute, Outlet, useRouterState, type ErrorComponentProps } from "@tanstack/react-router"
+import {
+  createRootRoute,
+  Outlet,
+  useRouterState,
+  type ErrorComponentProps,
+} from "@tanstack/react-router"
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { useEffect } from "react"
-import { MarketHeader } from "../components/MarketHeader"
+import {
+  getActiveRelaySettingsScope,
+  refreshNdkRelaySettings,
+  useAuth,
+} from "@conduit/core"
 import { ErrorPage, NotFoundPage } from "@conduit/ui"
+import { MarketHeader } from "../components/MarketHeader"
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -23,9 +33,11 @@ function RootShell({ children }: { children: React.ReactNode }) {
 }
 
 function RootLayout() {
+  const { pubkey } = useAuth()
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
+  const relaySettingsScope = pubkey ? `market:${pubkey}` : "market"
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" })
@@ -36,6 +48,11 @@ function RootLayout() {
     document.title = `${title} | Conduit Market`
   }, [pathname])
 
+  useEffect(() => {
+    if (getActiveRelaySettingsScope() === relaySettingsScope) return
+    refreshNdkRelaySettings(relaySettingsScope)
+  }, [relaySettingsScope])
+
   return (
     <RootShell>
       <Outlet />
@@ -44,7 +61,11 @@ function RootLayout() {
 }
 
 function getPageTitle(pathname: string): string {
-  if (pathname === "/" || pathname === "/products" || pathname === "/products/") {
+  if (
+    pathname === "/" ||
+    pathname === "/products" ||
+    pathname === "/products/"
+  ) {
     return "Shop"
   }
   if (pathname === "/cart") {
@@ -61,6 +82,9 @@ function getPageTitle(pathname: string): string {
   }
   if (pathname === "/profile") {
     return "Profile"
+  }
+  if (pathname === "/settings") {
+    return "Relay Settings"
   }
   if (pathname.startsWith("/u/")) {
     return "User Profile"
