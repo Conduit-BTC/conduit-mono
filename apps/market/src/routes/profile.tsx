@@ -50,7 +50,9 @@ function Field({
 }) {
   return (
     <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-      <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">{label}</div>
+      <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+        {label}
+      </div>
       <RichProfileText
         text={value}
         className={`mt-2 text-sm text-[var(--text-primary)] ${mono ? "font-mono text-xs" : ""}`}
@@ -62,7 +64,7 @@ function Field({
 function ProfilePage() {
   const { pubkey } = useAuth()
   const profileQuery = useProfile(pubkey)
-  const updateMutation = useUpdateProfile()
+  const updateMutation = useUpdateProfile("market")
   const [editing, setEditing] = useState(false)
   const [copied, setCopied] = useState(false)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_FORM)
@@ -81,7 +83,10 @@ function ProfilePage() {
     })
   }, [profileQuery.data])
 
-  const displayName = profileQuery.data?.displayName?.trim() || profileQuery.data?.name?.trim() || "Your profile"
+  const displayName =
+    profileQuery.data?.displayName?.trim() ||
+    profileQuery.data?.name?.trim() ||
+    "Your profile"
   const shortPubkey = useMemo(() => formatNpub(pubkey ?? "", 8), [pubkey])
   const fallbackLetter = (displayName?.[0] ?? pubkey?.[0] ?? "?").toUpperCase()
 
@@ -136,19 +141,27 @@ function ProfilePage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">Profile</h1>
+        <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+          Profile
+        </h1>
         <p className="mt-2 max-w-3xl text-sm leading-7 text-[var(--text-secondary)]">
-          Manage the Nostr identity buyers and merchants will see across Conduit.
+          Manage the Nostr identity buyers and merchants will see across
+          Conduit.
         </p>
       </div>
 
       {profileQuery.isLoading && (
-        <div className="text-sm text-[var(--text-secondary)]">Loading profile…</div>
+        <div className="text-sm text-[var(--text-secondary)]">
+          Loading profile…
+        </div>
       )}
 
       {profileQuery.error && (
         <div className="rounded-2xl border border-error/30 bg-error/10 p-4 text-sm text-error">
-          Failed to load profile: {profileQuery.error instanceof Error ? profileQuery.error.message : "Unknown error"}
+          Failed to load profile:{" "}
+          {profileQuery.error instanceof Error
+            ? profileQuery.error.message
+            : "Unknown error"}
         </div>
       )}
 
@@ -158,20 +171,28 @@ function ProfilePage() {
             <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
               <div className="flex min-w-0 items-start gap-4">
                 <Avatar className="h-20 w-20 shrink-0 border border-[var(--border)]">
-                  <AvatarImage src={profileQuery.data?.picture} alt={displayName} />
+                  <AvatarImage
+                    src={profileQuery.data?.picture}
+                    alt={displayName}
+                  />
                   <AvatarFallback className="bg-[var(--surface-elevated)] text-xl text-[var(--text-primary)]">
                     {fallbackLetter}
                   </AvatarFallback>
                 </Avatar>
 
                 <div className="min-w-0">
-                  <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Your identity</div>
+                  <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                    Your identity
+                  </div>
                   <h2 className="mt-2 truncate text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
                     {displayName}
                   </h2>
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     {profileQuery.data?.nip05 ? (
-                      <Badge variant="outline" className="border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]">
+                      <Badge
+                        variant="outline"
+                        className="border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]"
+                      >
                         {profileQuery.data.nip05}
                       </Badge>
                     ) : null}
@@ -181,7 +202,11 @@ function ProfilePage() {
                       className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]"
                     >
                       <span className="font-mono">{shortPubkey}</span>
-                      {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                      {copied ? (
+                        <Check className="h-3.5 w-3.5 text-emerald-400" />
+                      ) : (
+                        <Copy className="h-3.5 w-3.5" />
+                      )}
                     </button>
                   </div>
                 </div>
@@ -190,7 +215,11 @@ function ProfilePage() {
               <div className="flex flex-wrap gap-3">
                 {editing ? (
                   <>
-                    <Button variant="outline" className="h-11 px-4 text-sm" onClick={resetForm}>
+                    <Button
+                      variant="outline"
+                      className="h-11 px-4 text-sm"
+                      onClick={resetForm}
+                    >
                       Cancel
                     </Button>
                     <Button
@@ -203,7 +232,10 @@ function ProfilePage() {
                     </Button>
                   </>
                 ) : (
-                  <Button className="h-11 px-4 text-sm" onClick={() => setEditing(true)}>
+                  <Button
+                    className="h-11 px-4 text-sm"
+                    onClick={() => setEditing(true)}
+                  >
                     <PencilLine className="h-4 w-4" />
                     Edit profile
                   </Button>
@@ -217,7 +249,9 @@ function ProfilePage() {
               {!editing ? (
                 <div className="space-y-6">
                   <div>
-                    <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">About</div>
+                    <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                      About
+                    </div>
                     <RichProfileText
                       text={
                         profileQuery.data?.about?.trim() ||
@@ -229,25 +263,45 @@ function ProfilePage() {
 
                   <div className="grid gap-4 md:grid-cols-2">
                     {profileQuery.data?.lud16 ? (
-                      <Field label="Lightning" value={profileQuery.data.lud16} mono />
+                      <Field
+                        label="Lightning"
+                        value={profileQuery.data.lud16}
+                        mono
+                      />
                     ) : (
-                      <Field label="Lightning" value="No lightning address yet" />
+                      <Field
+                        label="Lightning"
+                        value="No lightning address yet"
+                      />
                     )}
                     {profileQuery.data?.website ? (
-                      <Field label="Website" value={profileQuery.data.website} mono />
+                      <Field
+                        label="Website"
+                        value={profileQuery.data.website}
+                        mono
+                      />
                     ) : (
                       <Field label="Website" value="No website added" />
                     )}
                   </div>
                 </div>
               ) : (
-                <form id="market-profile-form" className="grid gap-4 md:grid-cols-2" onSubmit={handleSave}>
+                <form
+                  id="market-profile-form"
+                  className="grid gap-4 md:grid-cols-2"
+                  onSubmit={handleSave}
+                >
                   <div className="grid gap-1.5">
                     <Label htmlFor="profile-name">Name</Label>
                     <Input
                       id="profile-name"
                       value={form.name}
-                      onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
+                      onChange={(event) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          name: event.target.value,
+                        }))
+                      }
                       placeholder="satoshi"
                       maxLength={50}
                     />
@@ -258,7 +312,12 @@ function ProfilePage() {
                     <Input
                       id="profile-display-name"
                       value={form.displayName}
-                      onChange={(event) => setForm((prev) => ({ ...prev, displayName: event.target.value }))}
+                      onChange={(event) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          displayName: event.target.value,
+                        }))
+                      }
                       placeholder="Satoshi Nakamoto"
                       maxLength={100}
                     />
@@ -270,7 +329,12 @@ function ProfilePage() {
                       id="profile-about"
                       className="min-h-28 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
                       value={form.about}
-                      onChange={(event) => setForm((prev) => ({ ...prev, about: event.target.value }))}
+                      onChange={(event) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          about: event.target.value,
+                        }))
+                      }
                       placeholder="A short bio"
                       maxLength={500}
                     />
@@ -282,7 +346,12 @@ function ProfilePage() {
                       id="profile-picture"
                       type="url"
                       value={form.picture}
-                      onChange={(event) => setForm((prev) => ({ ...prev, picture: event.target.value }))}
+                      onChange={(event) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          picture: event.target.value,
+                        }))
+                      }
                       placeholder="https://..."
                     />
                   </div>
@@ -293,7 +362,12 @@ function ProfilePage() {
                       id="profile-banner"
                       type="url"
                       value={form.banner}
-                      onChange={(event) => setForm((prev) => ({ ...prev, banner: event.target.value }))}
+                      onChange={(event) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          banner: event.target.value,
+                        }))
+                      }
                       placeholder="https://..."
                     />
                   </div>
@@ -303,7 +377,12 @@ function ProfilePage() {
                     <Input
                       id="profile-nip05"
                       value={form.nip05}
-                      onChange={(event) => setForm((prev) => ({ ...prev, nip05: event.target.value }))}
+                      onChange={(event) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          nip05: event.target.value,
+                        }))
+                      }
                       placeholder="_@your-domain.com"
                       maxLength={100}
                     />
@@ -314,7 +393,12 @@ function ProfilePage() {
                     <Input
                       id="profile-lud16"
                       value={form.lud16}
-                      onChange={(event) => setForm((prev) => ({ ...prev, lud16: event.target.value }))}
+                      onChange={(event) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          lud16: event.target.value,
+                        }))
+                      }
                       placeholder="name@wallet-provider.com"
                       maxLength={100}
                     />
@@ -326,14 +410,21 @@ function ProfilePage() {
                       id="profile-website"
                       type="url"
                       value={form.website}
-                      onChange={(event) => setForm((prev) => ({ ...prev, website: event.target.value }))}
+                      onChange={(event) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          website: event.target.value,
+                        }))
+                      }
                       placeholder="https://..."
                     />
                   </div>
 
                   {updateMutation.error && (
                     <div className="rounded-2xl border border-error/30 bg-error/10 p-4 text-sm text-error md:col-span-2">
-                      {updateMutation.error instanceof Error ? updateMutation.error.message : "Failed to update profile"}
+                      {updateMutation.error instanceof Error
+                        ? updateMutation.error.message
+                        : "Failed to update profile"}
                     </div>
                   )}
                 </form>
@@ -342,12 +433,16 @@ function ProfilePage() {
 
             <aside className="space-y-4 xl:sticky xl:top-24 xl:self-start">
               <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5">
-                <div className="text-sm font-medium text-[var(--text-primary)]">Profile details</div>
+                <div className="text-sm font-medium text-[var(--text-primary)]">
+                  Profile details
+                </div>
                 <div className="mt-4 space-y-3">
                   <div className="flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                     <UserRound className="mt-0.5 h-4 w-4 text-secondary-300" />
                     <div>
-                      <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Pubkey</div>
+                      <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                        Pubkey
+                      </div>
                       <div className="mt-2 font-mono text-xs leading-6 text-[var(--text-secondary)] break-all">
                         {pubkey}
                       </div>
@@ -357,7 +452,9 @@ function ProfilePage() {
                   <div className="flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                     <Zap className="mt-0.5 h-4 w-4 text-secondary-300" />
                     <div>
-                      <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Lightning</div>
+                      <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                        Lightning
+                      </div>
                       <RichProfileText
                         text={
                           profileQuery.data?.lud16?.trim() ||
@@ -371,7 +468,9 @@ function ProfilePage() {
                   <div className="flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                     <Globe className="mt-0.5 h-4 w-4 text-secondary-300" />
                     <div>
-                      <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Website</div>
+                      <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                        Website
+                      </div>
                       <RichProfileText
                         text={
                           profileQuery.data?.website?.trim() ||
