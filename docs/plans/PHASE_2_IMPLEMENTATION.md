@@ -5,11 +5,13 @@ Phase 2 is the execution plan for the next Conduit sprint after MVP.
 This document preserves the finalized Phase 2 scope agreed between the parties, but translates that scope into a codebase-aware implementation map for `conduit-mono`.
 
 For each included area, this plan states:
+
 - current codebase state
 - Phase 2 implementation work
 - done when
 
 The goal is to make this file usable as both:
+
 - a human-readable scope reference
 - an operational planning document that can be turned into issues and PRs without re-discovering the repo
 
@@ -421,6 +423,7 @@ These items are optional unless added later in writing.
 - NIP-46 support
 
 Current codebase note:
+
 - Basic trust context and follow behavior are partially present in Market store surfaces.
 - Repo workflow and AI review instructions already mention NIP-46 as an auth constraint, but broad NIP-46 product support is not yet a required Phase 2 deliverable.
 
@@ -434,6 +437,7 @@ Not included in Phase 2 unless added later.
 - Full social feed or non-commerce social features
 
 Current codebase note:
+
 - The privacy-observability spec already pushes the implementation away from user tracking and toward aggregate metrics.
 - Relay and trust docs include broader trust-network ideas, but they are not part of required Phase 2 delivery.
 

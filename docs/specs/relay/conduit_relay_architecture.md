@@ -99,9 +99,9 @@ These controls map to NIP-65 `kind:10002` relay list metadata:
   "tags": [
     ["r", "wss://relay.example.com"],
     ["r", "wss://write.example.com", "write"],
-    ["r", "wss://read.example.com", "read"]
+    ["r", "wss://read.example.com", "read"],
   ],
-  "content": ""
+  "content": "",
 }
 ```
 
