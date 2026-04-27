@@ -56,7 +56,7 @@ function RequiredMark() {
 function ProfilePage() {
   const { pubkey } = useAuth()
   const profileQuery = useProfile(pubkey)
-  const updateMutation = useUpdateProfile()
+  const updateMutation = useUpdateProfile("merchant")
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_FORM)
 
