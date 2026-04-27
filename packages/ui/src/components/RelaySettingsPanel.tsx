@@ -9,7 +9,7 @@ import {
   Trash2,
   WifiOff,
 } from "lucide-react"
-import { type DragEvent, type FormEvent, useState } from "react"
+import { type DragEvent, type FormEvent, type ReactNode, useState } from "react"
 import { Button } from "./Button"
 import { Input } from "./Input"
 import { cn } from "../utils"
@@ -136,6 +136,47 @@ function getRelayWarningText(entry: RelaySettingsPanelEntry): string | null {
   return null
 }
 
+function getRelayCompatibilityText(entry: RelaySettingsPanelEntry): string {
+  if (entry.warnings.unreachable) {
+    return "Compatibility unknown because Conduit could not reach this relay."
+  }
+  if (entry.capabilities.commerce) {
+    return "Commerce compatible. Conduit can prioritize this relay for products, stock, orders, and merchant messages."
+  }
+  if (entry.warnings.commercePartialSupport) {
+    return "Partial commerce signals detected. Conduit keeps this relay public until full commerce checks pass."
+  }
+  if (entry.capabilities.nip11) {
+    return "Public relay verified. Conduit can use it for general Nostr reads or writes when enabled."
+  }
+  if (entry.warnings.staleRelayInfo) {
+    return "Compatibility has not been freshly verified. Refresh this relay to update detected capabilities."
+  }
+  return "Compatibility has not been scanned yet."
+}
+
+function CapabilityTooltip({
+  label,
+  description,
+  children,
+}: {
+  label: string
+  description: string
+  children: ReactNode
+}) {
+  return (
+    <span className="group/tooltip relative inline-flex">
+      {children}
+      <span className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 w-64 max-w-[calc(100vw-3rem)] rounded-xl border border-[var(--border)] bg-[var(--surface-dialog)] px-3 py-2 text-left text-xs leading-5 text-[var(--text-secondary)] opacity-0 shadow-[var(--shadow-dialog)] transition-opacity group-focus-within/tooltip:opacity-100 group-hover/tooltip:opacity-100 sm:left-1/2 sm:-translate-x-1/2">
+        <span className="block font-semibold text-[var(--text-primary)]">
+          {label}
+        </span>
+        <span className="mt-1 block">{description}</span>
+      </span>
+    </span>
+  )
+}
+
 function PreferenceToggle({
   label,
   active,
@@ -172,32 +213,34 @@ function PreferenceToggle({
 function CapabilityIcon({
   active,
   icon: Icon,
-  activeLabel,
-  inactiveLabel,
+  label,
+  description,
   warning = false,
 }: {
   active: boolean
   icon: typeof Search
-  activeLabel: string
-  inactiveLabel: string
+  label: string
+  description: string
   warning?: boolean
 }) {
-  const title = active ? activeLabel : inactiveLabel
   return (
-    <span
-      title={title}
-      aria-label={title}
-      className={cn(
-        "inline-flex h-8 w-8 items-center justify-center rounded-full border",
-        warning
-          ? "border-warning/35 bg-warning/10 text-warning"
-          : active
-            ? "border-success/35 bg-success/10 text-success"
-            : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)]"
-      )}
-    >
-      <Icon className="h-3.5 w-3.5" />
-    </span>
+    <CapabilityTooltip label={label} description={description}>
+      <span
+        tabIndex={0}
+        title={label}
+        aria-label={label}
+        className={cn(
+          "inline-flex h-8 w-8 items-center justify-center rounded-full border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+          warning
+            ? "border-warning/35 bg-warning/10 text-warning"
+            : active
+              ? "border-success/35 bg-success/10 text-success"
+              : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)]"
+        )}
+      >
+        <Icon className="h-3.5 w-3.5" />
+      </span>
+    </CapabilityTooltip>
   )
 }
 
@@ -227,6 +270,7 @@ function RelayRow({
   onToggleWrite: (url: string, enabled: boolean) => void
 }) {
   const warningText = getRelayWarningText(entry)
+  const compatibilityText = getRelayCompatibilityText(entry)
   const isDisabled = entry.warnings.unreachable || scanning
   const draggable = section === "commerce"
 
@@ -255,7 +299,7 @@ function RelayRow({
       }}
       onDrop={handleDrop}
       className={cn(
-        "group grid gap-3 border-b border-[var(--border)] py-4 last:border-b-0 lg:grid-cols-[2rem_minmax(0,1fr)_7.25rem_9.5rem_5.75rem]",
+        "group grid min-w-0 gap-3 border-b border-[var(--border)] py-4 last:border-b-0 lg:grid-cols-[2rem_minmax(0,1fr)_7.25rem_10rem_5.75rem] lg:items-center",
         draggedUrl === entry.url && "opacity-55"
       )}
     >
@@ -268,7 +312,7 @@ function RelayRow({
         ) : null}
       </div>
 
-      <div className="min-w-0">
+      <div className="min-w-0 rounded-2xl bg-[color-mix(in_srgb,var(--surface)_60%,transparent)] p-3 lg:bg-transparent lg:p-0">
         <div className="flex min-w-0 items-center gap-3">
           <span
             className={cn(
@@ -290,6 +334,16 @@ function RelayRow({
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
               <span>{getRelayStatusLabel(entry)}</span>
+              <span
+                className="rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2 py-0.5"
+                title={compatibilityText}
+              >
+                {entry.capabilities.commerce
+                  ? "Commerce compatible"
+                  : entry.warnings.commercePartialSupport
+                    ? "Partial commerce"
+                    : "Public relay"}
+              </span>
               {entry.relayName ? <span>{entry.relayName}</span> : null}
               {warningText ? (
                 <span className="text-warning" title={warningText}>
@@ -301,7 +355,10 @@ function RelayRow({
         </div>
       </div>
 
-      <div className="flex items-center gap-2 lg:justify-center">
+      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:justify-center">
+        <div className="mr-1 text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)] lg:hidden">
+          Use
+        </div>
         <PreferenceToggle
           label="OUT"
           active={entry.writeEnabled}
@@ -318,28 +375,53 @@ function RelayRow({
         />
       </div>
 
-      <div className="flex items-center gap-2 lg:justify-center">
+      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-nowrap lg:justify-center">
+        <div className="mr-1 text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)] lg:hidden">
+          Signals
+        </div>
         <CapabilityIcon
           active={entry.capabilities.search}
           icon={Search}
-          activeLabel="Search supported"
-          inactiveLabel="Search not advertised"
+          label={
+            entry.capabilities.search
+              ? "Search supported"
+              : "Search not advertised"
+          }
+          description={
+            entry.capabilities.search
+              ? `This relay advertises NIP-50 search support. ${compatibilityText}`
+              : `This relay did not advertise NIP-50 search support in NIP-11. ${compatibilityText}`
+          }
         />
         <CapabilityIcon
           active={entry.capabilities.dm}
           icon={Send}
-          activeLabel="DM support detected"
-          inactiveLabel="DM support not advertised"
+          label={
+            entry.capabilities.dm
+              ? "DM support detected"
+              : "DM support not advertised"
+          }
+          description={
+            entry.capabilities.dm
+              ? `This relay advertises NIP-17 support for modern encrypted direct messages. ${compatibilityText}`
+              : `This relay did not advertise NIP-17 DM support in NIP-11. ${compatibilityText}`
+          }
         />
         <CapabilityIcon
           active={entry.capabilities.auth || entry.warnings.dmWithoutAuth}
           icon={LockKeyhole}
-          activeLabel={
+          label={
             entry.warnings.dmWithoutAuth
               ? "DM relay without auth"
               : "Auth supported"
           }
-          inactiveLabel="Auth not advertised"
+          description={
+            entry.warnings.dmWithoutAuth
+              ? `This relay appears DM-capable but does not advertise NIP-42 auth. Conduit may limit DM use here because access controls may be weaker. ${compatibilityText}`
+              : entry.capabilities.auth
+                ? `This relay advertises or requires NIP-42 authentication. ${compatibilityText}`
+                : `This relay did not advertise NIP-42 authentication. ${compatibilityText}`
+          }
           warning={entry.warnings.dmWithoutAuth}
         />
         {(entry.warnings.unreachable ||
@@ -348,14 +430,17 @@ function RelayRow({
           <CapabilityIcon
             active
             icon={entry.warnings.unreachable ? WifiOff : AlertTriangle}
-            activeLabel={warningText ?? "Relay warning"}
-            inactiveLabel="Relay warning"
+            label={warningText ?? "Relay warning"}
+            description={`${warningText ?? "Conduit detected a relay warning."} ${compatibilityText}`}
             warning
           />
         )}
       </div>
 
-      <div className="flex items-center gap-2 lg:justify-end">
+      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">
+        <div className="mr-1 text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)] lg:hidden">
+          Manage
+        </div>
         <button
           type="button"
           onClick={() => onRefreshRelay(entry.url)}
