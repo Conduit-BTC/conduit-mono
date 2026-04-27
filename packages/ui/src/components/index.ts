@@ -65,4 +65,8 @@ export { ErrorPage } from "./ErrorPage"
 export { NotFoundPage } from "./NotFoundPage"
 
 export { ProfileSelector, type ProfileSelectorProps } from "./ProfileSelector"
-export { StatusPill, statusPillVariants, type StatusPillProps } from "./StatusPill"
+export {
+  StatusPill,
+  statusPillVariants,
+  type StatusPillProps,
+} from "./StatusPill"

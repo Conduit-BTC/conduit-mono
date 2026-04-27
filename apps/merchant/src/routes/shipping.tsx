@@ -409,7 +409,9 @@ function ShippingPage() {
 
               <div className="flex items-center gap-3">
                 <Button type="submit">Save shipping settings</Button>
-                {saved && <span className="text-sm text-[var(--success)]">Saved</span>}
+                {saved && (
+                  <span className="text-sm text-[var(--success)]">Saved</span>
+                )}
               </div>
             </form>
           </div>
