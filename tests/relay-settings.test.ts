@@ -5,9 +5,11 @@ import {
   deriveRelayScanResult,
   getCommerceReadRelayUrls,
   getGeneralWriteRelayUrls,
+  mergeRelayPreferencesIntoSettings,
   normalizeRelaySettingsState,
   normalizeRelayUrl,
   parseNip65RelayTags,
+  scanRelaySettingsEntry,
   serializeNip65RelayTags,
   type RelaySettingsEntry,
   type RelaySettingsState,
@@ -178,7 +180,7 @@ describe("relay settings protocol helpers", () => {
     ])
   })
 
-  it("requires verified or seeded capability before write planning uses a relay", () => {
+  it("requires verified fresh capability before write planning uses a relay", () => {
     const settings = state([
       entry("wss://stale-write.example", {
         writeEnabled: true,
@@ -204,6 +206,111 @@ describe("relay settings protocol helpers", () => {
     expect(
       getGeneralWriteRelayUrls({ settings, fallbackRelayUrls: [] })
     ).toEqual(["wss://verified-write.example"])
+    expect(
+      getGeneralWriteRelayUrls({
+        settings: state([
+          entry("wss://stale-only.example", {
+            writeEnabled: true,
+            warnings: {
+              dmWithoutAuth: false,
+              staleRelayInfo: true,
+              unreachable: false,
+              commercePartialSupport: false,
+            },
+          }),
+        ]),
+        fallbackRelayUrls: ["wss://fallback.example"],
+      })
+    ).toEqual([])
+  })
+
+  it("treats invalid NIP-11 responses as unreachable", async () => {
+    const existing = entry("wss://relay.example", {
+      writeEnabled: true,
+      capabilities: {
+        nip11: true,
+        search: true,
+        dm: true,
+        auth: true,
+        commerce: false,
+      },
+    })
+    const fetchImpl: typeof fetch = async () =>
+      new Response(JSON.stringify(["not", "nip11"]))
+
+    const scanned = await scanRelaySettingsEntry(
+      "wss://relay.example",
+      { fetchImpl, now: () => 20 },
+      existing
+    )
+
+    expect(scanned.readEnabled).toBe(false)
+    expect(scanned.writeEnabled).toBe(false)
+    expect(scanned.warnings.unreachable).toBe(true)
+    expect(scanned.warnings.staleRelayInfo).toBe(true)
+    expect(
+      getGeneralWriteRelayUrls({
+        settings: state([scanned]),
+        fallbackRelayUrls: [],
+      })
+    ).toEqual([])
+  })
+
+  it("does not write-plan relays with incomplete NIP-11 capability data", async () => {
+    const existing = entry("wss://relay.example", {
+      writeEnabled: true,
+    })
+    const fetchImpl: typeof fetch = async () =>
+      new Response(JSON.stringify({ name: "Relay" }))
+
+    const scanned = await scanRelaySettingsEntry(
+      "wss://relay.example",
+      { fetchImpl },
+      existing
+    )
+
+    expect(scanned.capabilities.nip11).toBe(true)
+    expect(scanned.warnings.staleRelayInfo).toBe(true)
+    expect(
+      getGeneralWriteRelayUrls({
+        settings: state([scanned]),
+        fallbackRelayUrls: [],
+      })
+    ).toEqual([])
+  })
+
+  it("preserves local read and write toggles when importing signer relays", () => {
+    const settings = state([
+      entry("wss://relay.example", {
+        readEnabled: false,
+        writeEnabled: true,
+        source: "manual",
+      }),
+    ])
+
+    const next = mergeRelayPreferencesIntoSettings(settings, [
+      {
+        url: "wss://relay.example",
+        readEnabled: true,
+        writeEnabled: false,
+      },
+      {
+        url: "wss://new.example",
+        readEnabled: true,
+        writeEnabled: false,
+      },
+    ])
+    const existing = next.entries.find(
+      (item) => item.url === "wss://relay.example"
+    )
+    const added = next.entries.find((item) => item.url === "wss://new.example")
+
+    expect(existing?.readEnabled).toBe(false)
+    expect(existing?.writeEnabled).toBe(true)
+    expect(existing?.source).toBe("manual")
+    expect(added?.readEnabled).toBe(true)
+    expect(added?.writeEnabled).toBe(false)
+    expect(added?.source).toBe("signer")
   })
 
   it("applies safe defaults when creating an entry from a scan", () => {

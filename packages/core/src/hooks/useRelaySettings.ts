@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   createDefaultRelaySettings,
   getRelaySettingsStorageKey,
@@ -43,11 +43,15 @@ export function useRelaySettings(
   const [settings, setSettings] = useState<RelaySettingsState>(() =>
     loadRelaySettings(scope)
   )
+  const settingsRef = useRef(settings)
   const [scanningUrls, setScanningUrls] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    setSettings(loadRelaySettings(scope))
+    const next = loadRelaySettings(scope)
+    settingsRef.current = next
+    setSettings(next)
+    refreshNdkRelaySettings(scope)
   }, [scope])
 
   useEffect(() => {
@@ -56,7 +60,10 @@ export function useRelaySettings(
     const storageKey = getRelaySettingsStorageKey(scope)
     function handleStorage(event: StorageEvent): void {
       if (event.key !== storageKey) return
-      setSettings(loadRelaySettings(scope))
+      const next = loadRelaySettings(scope)
+      settingsRef.current = next
+      setSettings(next)
+      refreshNdkRelaySettings(scope)
     }
 
     window.addEventListener("storage", handleStorage)
@@ -70,14 +77,13 @@ export function useRelaySettings(
       const preferences = await readNip07RelayPreferences()
       if (cancelled || preferences.length === 0) return
 
-      setSettings((current) => {
-        const next = saveRelaySettings(
-          mergeRelayPreferencesIntoSettings(current, preferences),
-          scope
-        )
-        refreshNdkRelaySettings()
-        return next
-      })
+      const next = saveRelaySettings(
+        mergeRelayPreferencesIntoSettings(settingsRef.current, preferences),
+        scope
+      )
+      settingsRef.current = next
+      setSettings(next)
+      refreshNdkRelaySettings(scope)
     }
 
     void importSignerRelays()
@@ -90,11 +96,10 @@ export function useRelaySettings(
   function persist(
     update: (current: RelaySettingsState) => RelaySettingsState
   ): void {
-    setSettings((current) => {
-      const next = saveRelaySettings(update(current), scope)
-      refreshNdkRelaySettings()
-      return next
-    })
+    const next = saveRelaySettings(update(settingsRef.current), scope)
+    settingsRef.current = next
+    setSettings(next)
+    refreshNdkRelaySettings(scope)
   }
 
   async function addRelay(url: string): Promise<void> {
@@ -105,7 +110,7 @@ export function useRelaySettings(
     try {
       if (!normalized.ok) throw new Error(normalized.error)
 
-      const existing = settings.entries.find(
+      const existing = settingsRef.current.entries.find(
         (entry) => entry.url === normalized.url
       )
       setScanningUrls((current) =>
@@ -122,7 +127,9 @@ export function useRelaySettings(
 
   async function refreshRelay(url: string): Promise<void> {
     setError(null)
-    const existing = settings.entries.find((entry) => entry.url === url)
+    const existing = settingsRef.current.entries.find(
+      (entry) => entry.url === url
+    )
 
     try {
       setScanningUrls((current) =>
@@ -164,8 +171,9 @@ export function useRelaySettings(
   function resetRelaySettings(): void {
     setError(null)
     const defaults = saveRelaySettings(createDefaultRelaySettings(), scope)
+    settingsRef.current = defaults
     setSettings(defaults)
-    refreshNdkRelaySettings()
+    refreshNdkRelaySettings(scope)
   }
 
   return {

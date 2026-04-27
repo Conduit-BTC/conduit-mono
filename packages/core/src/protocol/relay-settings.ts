@@ -83,6 +83,7 @@ export interface RelayScanOptions {
 
 export interface RelayPlanOptions {
   settings?: RelaySettingsState
+  scope?: string | null
   storageKey?: string
   fallbackRelayUrls?: readonly string[]
   includePublicFallback?: boolean
@@ -113,12 +114,21 @@ const EMPTY_WARNINGS: RelayWarnings = {
   commercePartialSupport: false,
 }
 
+let activeRelaySettingsScope: string | null = null
+
 function now(): number {
   return Date.now()
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isRelayInfoDocument(value: unknown): value is RelayInfoDocument {
+  return (
+    isRecord(value) &&
+    (!("supported_nips" in value) || Array.isArray(value.supported_nips))
+  )
 }
 
 function uniqueRelayUrls(urls: readonly string[]): string[] {
@@ -187,7 +197,12 @@ function withRelayFallback(
 }
 
 function getSettingsForPlan(options: RelayPlanOptions): RelaySettingsState {
-  return options.settings ?? loadRelaySettings(options.storageKey)
+  return (
+    options.settings ??
+    loadRelaySettings(
+      options.scope ?? options.storageKey ?? activeRelaySettingsScope
+    )
+  )
 }
 
 function hasFreshOrSeededRead(entry: RelaySettingsEntry): boolean {
@@ -198,9 +213,8 @@ function hasVerifiedWrite(entry: RelaySettingsEntry): boolean {
   return (
     entry.writeEnabled &&
     !entry.warnings.unreachable &&
-    (entry.capabilities.nip11 ||
-      entry.capabilities.commerce ||
-      !entry.warnings.staleRelayInfo)
+    !entry.warnings.staleRelayInfo &&
+    (entry.capabilities.nip11 || entry.capabilities.commerce)
   )
 }
 
@@ -330,6 +344,7 @@ export function deriveRelayScanResult(
 ): RelayScanResult {
   const normalizedUrl = normalizeRelayUrl(relayUrl)
   const supportedNips = getSupportedNips(info)
+  const hasSupportedNips = Array.isArray(info?.supported_nips)
   const supportsSearch = supportedNips.includes(50)
   const supportsDm = supportedNips.includes(17)
   const supportsAuth = supportedNips.includes(42) || getAuthRequired(info)
@@ -349,6 +364,7 @@ export function deriveRelayScanResult(
   const warnings: RelayWarnings = {
     ...EMPTY_WARNINGS,
     dmWithoutAuth: supportsDm && !supportsAuth,
+    staleRelayInfo: hasNip11 && !hasSupportedNips,
     commercePartialSupport:
       hasNip11 && !commerce && (supportsSearch || supportsDm),
   }
@@ -404,6 +420,7 @@ export function createUnreachableRelaySettingsEntry(
     capabilities: EMPTY_CAPABILITIES,
     warnings: {
       ...EMPTY_WARNINGS,
+      staleRelayInfo: true,
       unreachable: true,
     },
     source,
@@ -447,7 +464,15 @@ export async function scanRelaySettingsEntry(
     }
 
     const json = await response.json()
-    const info = isRecord(json) ? (json as RelayInfoDocument) : null
+    if (!isRelayInfoDocument(json)) {
+      return createUnreachableRelaySettingsEntry(
+        normalizedUrl,
+        existing?.source ?? "manual",
+        scannedAt
+      )
+    }
+
+    const info = json
     const scan = deriveRelayScanResult(normalizedUrl, info, {
       knownCommerceRelayUrls: options.knownCommerceRelayUrls,
       now: () => scannedAt,
@@ -502,6 +527,14 @@ export function getRelaySettingsStorageKey(scope?: string | null): string {
   return normalizedScope
     ? `${RELAY_SETTINGS_STORAGE_KEY}:${normalizedScope}`
     : `${RELAY_SETTINGS_STORAGE_KEY}:default`
+}
+
+export function getActiveRelaySettingsScope(): string | null {
+  return activeRelaySettingsScope
+}
+
+export function setActiveRelaySettingsScope(scope?: string | null): void {
+  activeRelaySettingsScope = scope?.trim() || null
 }
 
 export function normalizeRelaySettingsState(
@@ -692,26 +725,38 @@ export function mergeRelayPreferencesIntoSettings(
     const normalizedUrl = normalizeRelayUrl(preference.url)
     const existing = next.entries.find((entry) => entry.url === normalizedUrl)
     const commerce = isKnownCommerceRelay(normalizedUrl, knownCommerceRelayUrls)
+    const capabilities: RelayCapabilities = existing?.capabilities
+      ? {
+          ...existing.capabilities,
+          commerce: existing.capabilities.commerce || commerce,
+        }
+      : {
+          ...EMPTY_CAPABILITIES,
+          commerce,
+        }
+    const warnings: RelayWarnings = existing?.warnings ?? {
+      ...EMPTY_WARNINGS,
+      staleRelayInfo: true,
+    }
+    const section: RelaySettingsSection = capabilities.commerce
+      ? "commerce"
+      : "public"
     const entry: RelaySettingsEntry = {
       url: normalizedUrl,
-      readEnabled: preference.readEnabled,
-      writeEnabled: preference.writeEnabled,
-      section: commerce ? "commerce" : "public",
+      readEnabled: existing?.readEnabled ?? preference.readEnabled,
+      writeEnabled: existing?.writeEnabled ?? preference.writeEnabled,
+      section,
       commercePriority:
-        commerce && existing?.commercePriority !== undefined
+        section === "commerce" && existing?.commercePriority !== undefined
           ? existing.commercePriority
           : undefined,
-      capabilities: {
-        ...EMPTY_CAPABILITIES,
-        commerce,
-      },
-      warnings: {
-        ...EMPTY_WARNINGS,
-        staleRelayInfo: true,
-      },
-      source,
+      capabilities,
+      warnings,
+      source: existing?.source ?? source,
+      scannedAt: existing?.scannedAt,
+      relayName: existing?.relayName,
     }
-    next = upsertRelaySettingsEntry(next, { ...existing, ...entry })
+    next = upsertRelaySettingsEntry(next, entry)
   }
 
   return next
@@ -752,10 +797,11 @@ export function getGeneralWriteRelayUrls(
   options: RelayPlanOptions = {}
 ): string[] {
   const settings = getSettingsForPlan(options)
-  const relayUrls = settings.entries
-    .filter((entry) => hasVerifiedWrite(entry))
-    .map((entry) => entry.url)
-  return withRelayFallback(relayUrls, options.fallbackRelayUrls)
+  return uniqueRelayUrls(
+    settings.entries
+      .filter((entry) => hasVerifiedWrite(entry))
+      .map((entry) => entry.url)
+  )
 }
 
 export function getCommerceReadRelayUrls(
@@ -802,10 +848,7 @@ export function getCommerceWriteRelayUrls(
           )
           .map((entry) => entry.url)
 
-  return withRelayFallback(
-    [...commerceUrls, ...publicUrls],
-    options.fallbackRelayUrls
-  )
+  return uniqueRelayUrls([...commerceUrls, ...publicUrls])
 }
 
 export function isRelaySetupIncomplete(

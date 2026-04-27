@@ -5,7 +5,10 @@ import NDK, {
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
 import { config } from "../config"
-import { getGeneralReadRelayUrls } from "./relay-settings"
+import {
+  getGeneralReadRelayUrls,
+  setActiveRelaySettingsScope,
+} from "./relay-settings"
 
 export type NdkConnectionState = "idle" | "connecting" | "connected" | "error"
 
@@ -31,6 +34,7 @@ let state: NdkState = {
 }
 let connectPromise: Promise<void> | null = null
 let requirePromise: Promise<NDK> | null = null
+let ndkGeneration = 0
 const listeners = new Set<Listener>()
 
 function setState(partial: Partial<NdkState>): void {
@@ -141,6 +145,7 @@ export async function fetchEventsFanout(
 
 export async function connectNdk(timeoutMs = 10_000): Promise<void> {
   const ndk = getNdk()
+  const generation = ndkGeneration
 
   // If already connected with live relays, skip
   if (state.status === "connected" && getConnectedRelayUrls(ndk).length > 0) {
@@ -152,11 +157,14 @@ export async function connectNdk(timeoutMs = 10_000): Promise<void> {
     return
   }
 
-  setState({ status: "connecting", error: null })
+  if (generation === ndkGeneration) {
+    setState({ status: "connecting", error: null })
+  }
 
   connectPromise = (async () => {
     try {
       await ndk.connect(timeoutMs)
+      if (generation !== ndkGeneration) return
 
       const connected = getConnectedRelayUrls(ndk)
 
@@ -174,6 +182,7 @@ export async function connectNdk(timeoutMs = 10_000): Promise<void> {
         })
       }
     } catch (err) {
+      if (generation !== ndkGeneration) return
       setState({
         status: "error",
         error:
@@ -181,7 +190,9 @@ export async function connectNdk(timeoutMs = 10_000): Promise<void> {
         connectedRelays: [],
       })
     } finally {
-      connectPromise = null
+      if (generation === ndkGeneration) {
+        connectPromise = null
+      }
     }
   })()
 
@@ -194,9 +205,13 @@ export async function requireNdkConnected(timeoutMs = 10_000): Promise<NDK> {
     return requirePromise
   }
 
-  requirePromise = (async () => {
+  const generation = ndkGeneration
+  const promise = (async () => {
     try {
       await connectNdk(timeoutMs)
+      if (generation !== ndkGeneration) {
+        return requireNdkConnected(timeoutMs)
+      }
 
       let ndk = getNdk()
       if (getConnectedRelayUrls(ndk).length > 0) {
@@ -216,6 +231,9 @@ export async function requireNdkConnected(timeoutMs = 10_000): Promise<NDK> {
       if (savedSigner) ndk.signer = savedSigner
 
       await connectNdk(timeoutMs * 2)
+      if (generation !== ndkGeneration) {
+        return requireNdkConnected(timeoutMs)
+      }
 
       const retryRelays = getConnectedRelayUrls(ndk)
       if (retryRelays.length === 0) {
@@ -229,10 +247,13 @@ export async function requireNdkConnected(timeoutMs = 10_000): Promise<NDK> {
       })
       return ndk
     } finally {
-      requirePromise = null
+      if (generation === ndkGeneration) {
+        requirePromise = null
+      }
     }
   })()
 
+  requirePromise = promise
   return requirePromise
 }
 
@@ -247,6 +268,7 @@ export function removeSigner(): void {
 }
 
 export function disconnectNdk(): void {
+  ndkGeneration += 1
   if (ndkInstance) {
     ndkInstance.signer = undefined
     ndkInstance = null
@@ -260,7 +282,12 @@ export function disconnectNdk(): void {
   })
 }
 
-export function refreshNdkRelaySettings(): void {
+export function refreshNdkRelaySettings(scope?: string | null): void {
+  ndkGeneration += 1
+  if (scope !== undefined) {
+    setActiveRelaySettingsScope(scope)
+  }
+
   const savedSigner = ndkInstance?.signer
 
   if (ndkInstance) {
