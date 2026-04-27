@@ -1,11 +1,11 @@
 import {
   Bell,
+  CircleUserRound,
   Grid2x2,
   Menu,
   Package,
   RadioTower,
   Search,
-  Settings,
   ShoppingBag,
 } from "lucide-react"
 import type { ComponentType } from "react"
@@ -42,7 +42,7 @@ const navItems: NavItem[] = [
   { to: "/", label: "Home", icon: Grid2x2 },
   { to: "/orders", label: "Orders", icon: ShoppingBag },
   { to: "/products", label: "Products", icon: Package },
-  { to: "/profile", label: "Profile", icon: Settings },
+  { to: "/profile", label: "Profile", icon: CircleUserRound },
   { to: "/settings", label: "Relays", icon: RadioTower },
 ]
 
@@ -223,8 +223,6 @@ function MobileNav() {
 }
 
 export function MerchantSidebar() {
-  const { pubkey, status } = useAuth()
-
   return (
     <aside className="hidden h-screen flex-col border-r border-[var(--border)] bg-[var(--surface)] lg:flex">
       <div className="border-b border-[var(--border)] px-5 py-5">
@@ -246,13 +244,6 @@ export function MerchantSidebar() {
 
       <div className="flex min-h-0 flex-1 flex-col px-4 py-5">
         <MerchantNavLinks />
-
-        <div className="mt-auto rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-          <div className="mb-2 text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
-            Merchant
-          </div>
-          {status === "connected" && pubkey ? <UserMenu /> : <SignerSwitch />}
-        </div>
       </div>
     </aside>
   )
