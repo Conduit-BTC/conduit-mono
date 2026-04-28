@@ -209,8 +209,8 @@ function PreferenceToggle({
       className={cn(
         "inline-flex h-9 w-9 items-center justify-center rounded-full border text-[0.68rem] font-semibold tracking-[0.12em] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-40",
         active
-          ? "border-primary-400 bg-primary-500/25 text-[var(--text-primary)]"
-          : "border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)] hover:border-[var(--text-muted)] hover:text-[var(--text-primary)]"
+          ? "border-primary-400 bg-primary-500 text-white"
+          : "border-[var(--border-overlay)] bg-transparent text-[var(--text-secondary)] hover:border-[var(--text-muted)] hover:text-[var(--text-primary)]"
       )}
     >
       {label}
@@ -489,7 +489,7 @@ function RelayRow({
           <button
             type="button"
             onClick={() => onRemoveRelay(entry.url)}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)] opacity-100 transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 lg:opacity-0 lg:group-hover:opacity-100"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)] opacity-100 transition-colors hover:border-[var(--error)] hover:bg-[color-mix(in_srgb,var(--error)_12%,transparent)] hover:text-[var(--error)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 lg:opacity-0 lg:group-hover:opacity-100"
             aria-label={`Remove ${entry.url}`}
             title="Remove relay"
           >
