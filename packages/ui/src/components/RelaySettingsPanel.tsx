@@ -80,7 +80,7 @@ const sectionMeta: Record<
     labelClassName: "text-[var(--primary-500)]",
     dotClassName: "bg-primary-400",
     surfaceClassName:
-      "bg-[radial-gradient(circle_at_top_left,color-mix(in_srgb,var(--primary-500)_16%,transparent),transparent_38%),color-mix(in_srgb,var(--surface)_88%,var(--background)_12%)]",
+      "bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)]",
     empty:
       "No verified commerce relays yet. Add a relay and Conduit will verify whether it belongs here.",
   },
@@ -91,7 +91,7 @@ const sectionMeta: Record<
     labelClassName: "text-[var(--accent-500)]",
     dotClassName: "bg-accent-400",
     surfaceClassName:
-      "bg-[radial-gradient(circle_at_top_left,color-mix(in_srgb,var(--accent-500)_13%,transparent),transparent_38%),color-mix(in_srgb,var(--surface)_88%,var(--background)_12%)]",
+      "bg-[color-mix(in_srgb,var(--accent-500)_1%,transparent)]",
     empty:
       "No public relays configured yet. Reachable non-commerce relays will appear here.",
   },
