@@ -3,11 +3,14 @@
 ## Getting Started
 
 1. Clone the repo and install dependencies:
+
    ```bash
    git clone https://github.com/Conduit-BTC/conduit-mono.git
    cd conduit-mono
    bun install
    ```
+
+   `bun install` also installs the pre-commit hook that formats and lints staged files.
 
 2. Read [README.md](README.md) for local dev setup (relay, env vars, seed data).
 
@@ -21,13 +24,13 @@
 
 Create branches from `main` with short prefixes:
 
-| Prefix | Use |
-|--------|-----|
-| `feat/` | New features |
-| `fix/` | Bug fixes |
-| `refactor/` | Code restructuring |
-| `docs/` | Documentation only |
-| `chore/` | Maintenance, deps, CI |
+| Prefix      | Use                   |
+| ----------- | --------------------- |
+| `feat/`     | New features          |
+| `fix/`      | Bug fixes             |
+| `refactor/` | Code restructuring    |
+| `docs/`     | Documentation only    |
+| `chore/`    | Maintenance, deps, CI |
 
 Examples: `feat/product-search`, `fix/invoice-qr-case`, `chore/upgrade-ndk`
 
@@ -69,9 +72,30 @@ cd packages/ui && bun run build
 cd apps/market && bun run build
 ```
 
+### Formatting
+
+CI checks Prettier formatting on changed files with `scripts/ci/prettier_changed.ts`.
+The same helper is available locally:
+
+```bash
+bun run format:fix     # Format changed files
+bun run format:check   # Check changed files without writing
+```
+
+If a PR fails the `format` check:
+
+1. Pull or fetch the latest branch.
+2. Run `bun run format:fix`.
+3. Commit the formatting changes.
+4. Push the branch again.
+
+The format helper intentionally skips generated files, `bun.lock`, ignored build outputs,
+and files under `context/`.
+
 ### Before Committing
 
 ```bash
+bun run format:check # Must pass - no Prettier changes needed
 bun run typecheck   # Must pass — no TS errors
 bun run lint        # Must pass — no lint errors
 bun test            # Must pass
@@ -86,6 +110,7 @@ bun test            # Must pass
 - If applicable, link the docs/spec PR that established the implementation contract
 - Include a test plan (how to verify the changes work)
 - PRs require review before merging to `main`
+- PRs from forks may need a maintainer to approve GitHub Actions before CI runs
 
 ## CI and Preview Deploy Notes
 
@@ -109,9 +134,12 @@ bun test            # Must pass
 ### Required checks before merge
 
 Branch protection on `main` expects:
+
+- `format`
 - `lint`
 - `typecheck`
 - `test`
+- `color-policy`
 - `build-signet`
 - `preview-links`
 - `Cloudflare Pages: conduit-market`
@@ -191,17 +219,20 @@ export function useProducts(filters?: ProductFilters) {
 These are non-negotiable across all code:
 
 ### Authentication
+
 - External signers only (NIP-07, NIP-46)
 - **Never** generate, store, or manage private keys in app code
 - Identity = pubkey only
 
 ### Privacy
+
 - **No** behavioral tracking or profiling
 - **No** message content inspection
 - System metrics only (relay success rates, load times)
 - All user data stays on the user's device or their relays
 
 ### Payments
+
 - NWC-based Lightning invoicing (NIP-47)
 - Invoice generation only — no balance management
 - No fund custody

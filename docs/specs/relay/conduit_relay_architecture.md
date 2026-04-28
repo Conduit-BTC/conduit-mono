@@ -77,7 +77,7 @@ Avoid these labels:
 - `Primary relay`
 - `Master relay`
 - `Source of truth relay`
-- user-facing `merchant`, `l2`, or `general` relay roles
+- user-facing relay roles such as merchant, acceleration, or general relay categories
 
 ---
 

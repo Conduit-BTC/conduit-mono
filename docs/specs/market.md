@@ -7,18 +7,22 @@ Conduit Market is the buyer-facing marketplace for discovering products, communi
 ## Reference
 
 **Figma** (Primary - visual design):
+
 ```
 File: "Conduit High Fi - Website" in Conduit Market Team
 URL: https://www.figma.com/design/adfNXYE3nBqr35frkl0b5q
 Page: "High Fi - WIP" for screen designs
 ```
+
 - Use Figma MCP tools to extract design context when implementing screens
 - Select specific frames to get component details and design tokens
 
 **Legacy repo** (Secondary - code patterns):
+
 ```
 /Users/dylangolow/workspace/CONDUIT/conduit-market-client
 ```
+
 - Use for state management patterns, Nostr integration, checkout flow logic
 - Do NOT copy code directly - rebuild with TanStack Router/Query
 
@@ -27,12 +31,14 @@ Page: "High Fi - WIP" for screen designs
 ## Core Flows
 
 ### Product Discovery
+
 1. Browse product grid (all, by category, by merchant)
 2. Filter and search
 3. View product detail
 4. Add to cart
 
 ### Checkout
+
 1. Review cart
 2. Enter shipping info
 3. Generate Lightning invoice (NWC)
@@ -40,6 +46,7 @@ Page: "High Fi - WIP" for screen designs
 5. Order confirmation
 
 ### Messaging
+
 1. Open conversation with merchant
 2. Send NIP-17 encrypted DM
 3. Receive order updates inline
@@ -49,18 +56,18 @@ Page: "High Fi - WIP" for screen designs
 
 ## Pages
 
-| Route | Component | Description |
-|-------|-----------|-------------|
-| `/` | HomePage | Featured products, categories |
-| `/products` | ProductsPage | Product grid with filters |
-| `/products/$productId` | ProductDetailPage | Single product view |
-| `/cart` | CartPage | Shopping cart |
-| `/checkout` | CheckoutPage | Payment flow |
-| `/orders` | OrdersPage | Order history |
-| `/orders/$orderId` | OrderDetailPage | Single order |
-| `/messages` | MessagesPage | DM inbox |
-| `/profile` | ProfilePage | User profile |
-| `/store/$pubkey` | StorePage | Merchant storefront |
+| Route                  | Component         | Description                   |
+| ---------------------- | ----------------- | ----------------------------- |
+| `/`                    | HomePage          | Featured products, categories |
+| `/products`            | ProductsPage      | Product grid with filters     |
+| `/products/$productId` | ProductDetailPage | Single product view           |
+| `/cart`                | CartPage          | Shopping cart                 |
+| `/checkout`            | CheckoutPage      | Payment flow                  |
+| `/orders`              | OrdersPage        | Order history                 |
+| `/orders/$orderId`     | OrderDetailPage   | Single order                  |
+| `/messages`            | MessagesPage      | DM inbox                      |
+| `/profile`             | ProfilePage       | User profile                  |
+| `/store/$pubkey`       | StorePage         | Merchant storefront           |
 
 ---
 
@@ -88,13 +95,16 @@ useMessages(pubkey)        // Thread with counterparty
 ```
 
 ### React Context
+
 - `AuthContext` - Pubkey, signer connection state
 
 ### Dexie (IndexedDB)
+
 - `orders` table - Full order event history
 - `messages` table - DM cache for offline access
 
 ### localStorage
+
 - Cart items (per merchant)
 - Shipping info (for checkout prefill)
 - Relay preferences
@@ -108,7 +118,7 @@ useMessages(pubkey)        // Thread with counterparty
 ```typescript
 // Cart grouped by merchant
 interface CartState {
-  carts: Map<string, Cart>  // key = merchantPubkey
+  carts: Map<string, Cart> // key = merchantPubkey
 }
 
 interface Cart {
@@ -117,29 +127,30 @@ interface Cart {
 }
 
 interface CartItem {
-  productId: string         // d-tag value
-  eventId: string           // Nostr event ID
+  productId: string // d-tag value
+  eventId: string // Nostr event ID
   name: string
   price: number
-  currency: string          // "SAT", "USD", etc
+  currency: string // "SAT", "USD", etc
   image?: string
   quantity: number
-  tags: string[][]          // Original product tags (for order creation)
+  tags: string[][] // Original product tags (for order creation)
 }
 ```
 
 ### Cart Hooks
 
 ```typescript
-useCart()                   // All carts
-useCartForMerchant(pubkey)  // Single merchant's cart
-useAddToCart()              // Add/update item
-useRemoveFromCart()         // Remove item
-useClearCart()              // Clear after checkout
-useCartTotal()              // Calculate totals
+useCart() // All carts
+useCartForMerchant(pubkey) // Single merchant's cart
+useAddToCart() // Add/update item
+useRemoveFromCart() // Remove item
+useClearCart() // Clear after checkout
+useCartTotal() // Calculate totals
 ```
 
 ### Persistence
+
 - localStorage key: `conduit-market-carts`
 - Persist only: carts Map (not actions)
 - Clear on successful checkout
@@ -209,7 +220,7 @@ const orderEvent = {
     ["phone", phone],
     ["email", email],
   ],
-  content: "Order message/notes"
+  content: "Order message/notes",
 }
 ```
 
@@ -230,12 +241,14 @@ Merchant's Relays
 ## Protocol Events
 
 ### Read
+
 - Kind 0: Profiles
 - Kind 30402: Product listings
 - Kind 1059: Gift-wrapped DMs (decrypt to get order updates)
 - Kind 9735: Zap receipts (payment confirmation)
 
 ### Publish
+
 - Kind 1059: Gift-wrapped order DMs
 - Kind 9734: Zap requests (if using zaps for payment)
 
@@ -266,21 +279,25 @@ interface UseSatsReturn {
 ### From Legacy (adapt for shadcn/ui)
 
 **Product Display:**
+
 - ProductCard - Image, title, price, merchant avatar, quick add
 - ProductGrid - Responsive grid with loading skeletons
 - ProductDetail - Gallery, description, variants, add to cart
 
 **Cart:**
+
 - CartDrawer (Sheet) - Slide-out cart summary
 - CartItem - Image, name, quantity controls, remove
 - CartTotal - Subtotal with currency conversion
 
 **Checkout:**
+
 - ShippingForm - Address fields with validation
 - InvoiceDisplay - QR code, copy button, timer
 - PaymentStatus - Loading, success, error states
 
 **Orders:**
+
 - OrderCard - Status badge, date, items summary
 - OrderTimeline - Status progression visualization
 
@@ -311,22 +328,23 @@ export function RootLayout() {
 
 ### Cloudflare Pages
 
-| Environment | URL |
-|-------------|-----|
-| Production | `shop.conduit.market` |
-| Preview | `<branch>.conduit-market.pages.dev` |
+| Environment | URL                                 |
+| ----------- | ----------------------------------- |
+| Production  | `shop.conduit.market`               |
+| Preview     | `<branch>.conduit-market.pages.dev` |
 
 ### Environment Variables
 
 ```bash
 # Production
 VITE_RELAY_URL=wss://relay.conduit.market
-VITE_DEFAULT_RELAYS=wss://relay.conduit.market,wss://relay.damus.io
+VITE_COMMERCE_RELAY_URLS=wss://relay.conduit.market,wss://relay.plebeian.market
+VITE_PUBLIC_RELAY_URLS=wss://relay.damus.io,wss://nos.lol
 VITE_LIGHTNING_NETWORK=mainnet
 
 # Preview
 VITE_RELAY_URL=wss://relay.damus.io
-VITE_DEFAULT_RELAYS=wss://relay.damus.io,wss://nos.lol
+VITE_PUBLIC_RELAY_URLS=wss://relay.damus.io,wss://nos.lol
 VITE_LIGHTNING_NETWORK=mutinynet
 ```
 
