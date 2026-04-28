@@ -1,4 +1,5 @@
 import { type HTMLAttributes } from "react"
+import type React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "../utils"
 
@@ -14,6 +15,8 @@ const statusPillVariants = cva(
         info: "border-[var(--info)] bg-[color-mix(in_srgb,var(--info)_12%,transparent)] text-[var(--info)]",
         error:
           "border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_12%,transparent)] text-[var(--error)]",
+        neutral:
+          "border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_8%,transparent)] text-[var(--text-secondary)]",
       },
     },
     defaultVariants: {
@@ -118,7 +121,12 @@ function FilledErrorIcon({ size }: { size: number }) {
   )
 }
 
-const ICONS = {
+const ICONS: Partial<
+  Record<
+    NonNullable<StatusPillProps["variant"]>,
+    ({ size }: { size: number }) => React.ReactElement
+  >
+> = {
   warning: FilledWarningIcon,
   success: FilledSuccessIcon,
   info: FilledInfoIcon,
@@ -154,7 +162,7 @@ function StatusPill({
 
   return (
     <span className={cn(statusPillVariants({ variant }), className)} {...props}>
-      {!noIcon && <Icon size={iconSize} />}
+      {!noIcon && Icon && <Icon size={iconSize} />}
       {children}
     </span>
   )
