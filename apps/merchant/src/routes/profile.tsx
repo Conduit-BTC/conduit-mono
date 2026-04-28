@@ -101,7 +101,7 @@ function ProfilePage() {
   return (
     <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
       <div className="mx-auto max-w-[50rem]">
-        <section className="rounded-[2.25rem] border border-[var(--border)] bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--primary-500)_14%,transparent),transparent_40%),linear-gradient(white,white)] p-5 shadow-[var(--shadow-dialog)] sm:p-8">
+        <section className="rounded-[2.25rem] border border-[var(--border)] bg-[color:var(--surface-elevated)] bg-[image:radial-gradient(circle_at_top,color-mix(in_srgb,var(--primary-500)_14%,transparent),transparent_40%)] p-5 shadow-[var(--shadow-dialog)] sm:p-8">
           <div className="space-y-8">
             {/* Page header */}
             <div className="flex flex-wrap items-start justify-between gap-4">
