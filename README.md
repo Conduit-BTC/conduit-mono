@@ -144,11 +144,15 @@ bun run seed:nsec
 ```bash
 bun run dev            # Start all apps
 bun run build          # Build all (core -> ui -> apps)
+bun run format:fix     # Format changed files
+bun run format:check   # Check changed-file formatting
 bun run typecheck      # TypeScript check all packages
 bun run lint           # Lint all packages
 bun test               # Run tests
 bun run clean          # Remove all node_modules
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full PR checklist and CI recovery notes.
 
 ## Project Structure
 

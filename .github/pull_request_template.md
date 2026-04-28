@@ -1,6 +1,7 @@
 ## Preview Settings
 
 <!-- preview:show-commit-links-cloudflare -->
+
 - [ ] Show commit preview links (Cloudflare creates deployments automatically)
 
 ## Summary
@@ -36,10 +37,11 @@
 
 ## Changes
 
-- 
+-
 
 ## Test Plan
 
+- [ ] `bun run format:check` passes
 - [ ] `bun run typecheck` passes
 - [ ] `bun run lint` passes
 - [ ] `bun test` passes
