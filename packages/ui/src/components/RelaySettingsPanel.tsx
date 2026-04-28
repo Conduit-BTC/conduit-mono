@@ -13,6 +13,7 @@ import {
 import { type DragEvent, type FormEvent, type ReactNode, useState } from "react"
 import { Button } from "./Button"
 import { Input } from "./Input"
+import { StatusPill } from "./StatusPill"
 import { cn } from "../utils"
 
 type RelaySettingsSection = "commerce" | "public"
@@ -208,8 +209,8 @@ function PreferenceToggle({
       className={cn(
         "inline-flex h-9 w-9 items-center justify-center rounded-full border text-[0.68rem] font-semibold tracking-[0.12em] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-40",
         active
-          ? "border-primary-400/60 bg-primary-500/20 text-primary-100"
-          : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+          ? "border-primary-400 bg-primary-500/25 text-[var(--text-primary)]"
+          : "border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)] hover:border-[var(--text-muted)] hover:text-[var(--text-primary)]"
       )}
     >
       {label}
@@ -242,10 +243,10 @@ function CapabilityIcon({
           className={cn(
             "inline-flex h-8 w-8 items-center justify-center rounded-full border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
             warning
-              ? "border-warning/35 bg-warning/10 text-warning"
+              ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_18%,transparent)] text-[var(--warning)]"
               : active
-                ? "border-success/35 bg-success/10 text-success"
-                : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)]"
+                ? "border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_18%,transparent)] text-[var(--success)]"
+                : "border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)]"
           )}
         >
           <Icon className="h-3.5 w-3.5" />
@@ -313,7 +314,7 @@ function RelayRow({
       }}
       onDrop={handleDrop}
       className={cn(
-        "group grid min-w-0 gap-3 border-b border-[var(--border)] py-4 last:border-b-0 lg:grid-cols-[2rem_minmax(0,1fr)_7.25rem_10rem_5.75rem] lg:items-center",
+        "group flex flex-col gap-3 border-b border-[var(--border)] py-4 last:border-b-0 sm:flex-row sm:items-center lg:grid lg:grid-cols-[2rem_minmax(0,1fr)_7.25rem_10rem_5.75rem] lg:items-center",
         draggedUrl === entry.url && "opacity-55"
       )}
     >
@@ -326,7 +327,7 @@ function RelayRow({
         ) : null}
       </div>
 
-      <div className="min-w-0 rounded-2xl bg-[color-mix(in_srgb,var(--surface)_60%,transparent)] p-3 lg:bg-transparent lg:p-0">
+      <div className="min-w-0 flex-1 rounded-2xl bg-[color-mix(in_srgb,var(--surface)_60%,transparent)] p-3 sm:bg-transparent sm:p-0 lg:bg-transparent lg:p-0">
         <div className="flex min-w-0 items-center gap-3">
           <span
             className={cn(
@@ -348,16 +349,34 @@ function RelayRow({
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
               <span>{getRelayStatusLabel(entry)}</span>
-              <span
-                className="rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2 py-0.5"
-                title={compatibilityText}
+              <CapabilityTooltip
+                label={
+                  entry.capabilities.commerce
+                    ? "Commerce compatible"
+                    : entry.warnings.commercePartialSupport
+                      ? "Partial commerce"
+                      : "Public relay"
+                }
+                description={compatibilityText}
               >
-                {entry.capabilities.commerce
-                  ? "Commerce compatible"
-                  : entry.warnings.commercePartialSupport
-                    ? "Partial commerce"
-                    : "Public relay"}
-              </span>
+                <StatusPill
+                  variant={
+                    entry.capabilities.commerce
+                      ? "success"
+                      : entry.warnings.commercePartialSupport
+                        ? "warning"
+                        : "neutral"
+                  }
+                  noIcon
+                  className="cursor-default py-0.5 text-[0.68rem]"
+                >
+                  {entry.capabilities.commerce
+                    ? "Commerce compatible"
+                    : entry.warnings.commercePartialSupport
+                      ? "Partial commerce"
+                      : "Public relay"}
+                </StatusPill>
+              </CapabilityTooltip>
               {entry.relayName ? <span>{entry.relayName}</span> : null}
               {warningText ? (
                 <span className="text-warning" title={warningText}>
@@ -369,7 +388,7 @@ function RelayRow({
         </div>
       </div>
 
-      <div className="flex items-center gap-2 lg:[display:contents]">
+      <div className="flex items-center justify-center gap-2 sm:shrink-0 sm:justify-end lg:[display:contents]">
         <div className="flex items-center gap-1.5 lg:justify-center">
           <PreferenceToggle
             label="OUT"
@@ -459,7 +478,7 @@ function RelayRow({
             type="button"
             onClick={() => onRefreshRelay(entry.url)}
             disabled={scanning}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-wait disabled:opacity-50"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-wait disabled:opacity-50"
             aria-label={`Refresh ${entry.url}`}
             title="Refresh relay verification"
           >
@@ -470,7 +489,7 @@ function RelayRow({
           <button
             type="button"
             onClick={() => onRemoveRelay(entry.url)}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] opacity-100 transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 lg:opacity-0 lg:group-hover:opacity-100"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)] opacity-100 transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 lg:opacity-0 lg:group-hover:opacity-100"
             aria-label={`Remove ${entry.url}`}
             title="Remove relay"
           >
