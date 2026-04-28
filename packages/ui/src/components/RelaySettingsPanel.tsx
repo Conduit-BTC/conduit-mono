@@ -647,7 +647,7 @@ export function RelaySettingsPanel({
   return (
     <section
       className={cn(
-        "rounded-[2.25rem] border border-[var(--border)] bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--primary-500)_14%,transparent),transparent_35%),linear-gradient(white,white)] p-5 shadow-[var(--shadow-dialog)] sm:p-8",
+        "rounded-[2.25rem] border border-[var(--border)] bg-[color:var(--surface-elevated)] bg-[image:radial-gradient(circle_at_top,color-mix(in_srgb,var(--primary-500)_14%,transparent),transparent_35%)] p-5 shadow-[var(--shadow-dialog)] sm:p-8",
         className
       )}
     >
