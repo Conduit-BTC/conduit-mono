@@ -75,21 +75,14 @@ Top priority. This work enables the team to move faster and lets outside contrib
 
 ### B) Relay Architecture and Frontend Setup
 
-Second priority. This work lets relay and caching infrastructure proceed in parallel without forcing another frontend rewrite.
+Second priority. This work aligns relay preferences, commerce compatibility, and the relay settings UI around the Nostr-native model.
 
 #### Current codebase state
 
-- `packages/core/src/config.ts` already supports:
-  - `relayUrl`
-  - `l2RelayUrls`
-  - `merchantRelayUrls`
-  - `publicRelayUrls`
-  - `cacheApiUrl`
+- `packages/core/src/config.ts` supports commerce, public, and default relay lists.
 - The current config already builds a merged relay list for client use.
-- `packages/core/src/protocol/commerce.ts` already uses source-aware read plans and returns source metadata such as `cache`, `l2`, `merchant`, `public`, and `local_cache`.
-- Relay architecture is already documented in:
-  - `docs/specs/relay/conduit_relay_architecture.md`
-  - `docs/specs/relay/conduit_l2_scope2_functional.md`
+- `packages/core/src/protocol/commerce.ts` returns source metadata for commerce, public, and local-cache reads without exposing fixed relay roles as the product model.
+- Relay architecture is documented in `docs/specs/relay/conduit_relay_architecture.md`.
 - Merchant and Market already depend on relay reads, local cache, and fallback handling, but relay preferences and capability detection are not yet exposed as a clear user-facing product concept.
 - Merchant UI currently exposes relay health at a high level on the dashboard, but there is not yet a full relay settings product surface aligned to the Nostr-native relay architecture.
 
@@ -125,7 +118,7 @@ Second priority. This work lets relay and caching infrastructure proceed in para
   - fast surfaces may render from cache first to avoid blank-page loading
   - cards and detail views may update source state as stronger relay-backed reads confirm the same data
   - source indicators should be subtle by default and more explicit only where degraded or stale state affects user decisions
-- Keep Conduit-operated relay and cache layers narrow in responsibility:
+- Keep any future acceleration or local cache paths narrow in responsibility:
   - hydration
   - performance
   - verification support
@@ -152,10 +145,10 @@ Second priority. This work lets relay and caching infrastructure proceed in para
 - Merchant and Market can explain relay preferences and detected capabilities in product terms, not just env var terms.
 - Relay settings map cleanly to shared relay preference and capability state in `@conduit/core`.
 - Merchant and Market settings surfaces use Commerce Enabled Relays and Other Public Relays without asking users to assign relay roles.
-- Frontend reads remain compatible with public-relay, commerce-compatible-relay, and accelerated-read scenarios.
+- Frontend reads remain compatible with public-relay, commerce-compatible-relay, and cached/degraded-read scenarios.
 - Fallback behavior is explicit in UI and implementation instead of implicit in scattered route logic.
 - Fast browse flows may load from cache first while still supporting later verification against stronger relay sources.
-- The infrastructure team can extend relay and cache layers without forcing route-level rewrites.
+- The infrastructure team can extend relay and local cache behavior without forcing route-level rewrites.
 
 ### C) Merchant Setup, Readiness & Payment Eligibility
 

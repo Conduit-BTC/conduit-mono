@@ -101,7 +101,8 @@ class ConduitDB extends Dexie {
       messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
       products: "id, pubkey, *tags, cachedAt",
       profiles: "pubkey, cachedAt",
-      orderMessages: "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
     })
   }
 }
@@ -115,8 +116,7 @@ function getCommerceCacheScope(): string {
     lightningNetwork: config.lightningNetwork,
     relayUrl: config.relayUrl,
     defaultRelays: config.defaultRelays,
-    l2RelayUrls: config.l2RelayUrls,
-    merchantRelayUrls: config.merchantRelayUrls,
+    commerceRelayUrls: config.commerceRelayUrls,
     publicRelayUrls: config.publicRelayUrls,
   })
 }

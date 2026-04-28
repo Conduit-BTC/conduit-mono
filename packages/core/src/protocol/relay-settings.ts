@@ -148,7 +148,7 @@ function uniqueRelayUrls(urls: readonly string[]): string[] {
 function getConfiguredKnownCommerceRelayUrls(
   cfg: ConduitConfig = config
 ): string[] {
-  return uniqueRelayUrls([...cfg.l2RelayUrls, ...cfg.merchantRelayUrls])
+  return uniqueRelayUrls(cfg.commerceRelayUrls)
 }
 
 function getRelayHost(url: string): string | null {
