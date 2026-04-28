@@ -84,7 +84,7 @@ const sectionMeta: Record<
     label: "Commerce Enabled Relays",
     description:
       "Relays that Conduit can use for commerce events like products, stock updates, orders, and merchant messages.",
-    labelClassName: "text-primary-300",
+    labelClassName: "text-[var(--primary-500)]",
     dotClassName: "bg-primary-400",
     surfaceClassName:
       "bg-[radial-gradient(circle_at_top_left,color-mix(in_srgb,var(--primary-500)_16%,transparent),transparent_38%),color-mix(in_srgb,var(--surface)_88%,var(--background)_12%)]",
@@ -95,7 +95,7 @@ const sectionMeta: Record<
     label: "Other Public Relays",
     description:
       "General Nostr relays used for broader network reading, publishing, and discovery.",
-    labelClassName: "text-accent-300",
+    labelClassName: "text-[var(--accent-500)]",
     dotClassName: "bg-accent-400",
     surfaceClassName:
       "bg-[radial-gradient(circle_at_top_left,color-mix(in_srgb,var(--accent-500)_13%,transparent),transparent_38%),color-mix(in_srgb,var(--surface)_88%,var(--background)_12%)]",
