@@ -1,11 +1,21 @@
-import { createRootRoute, Outlet, useRouterState, type ErrorComponentProps } from "@tanstack/react-router"
+import {
+  createRootRoute,
+  Outlet,
+  useRouterState,
+  type ErrorComponentProps,
+} from "@tanstack/react-router"
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { KeyRound, ShieldCheck, Store } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
-import { hasNip07, useAuth } from "@conduit/core"
-import { MerchantHeader, MerchantSidebar } from "../components/MerchantHeader"
+import {
+  getActiveRelaySettingsScope,
+  hasNip07,
+  refreshNdkRelaySettings,
+  useAuth,
+} from "@conduit/core"
 import { Button, ErrorPage, NotFoundPage } from "@conduit/ui"
+import { MerchantHeader, MerchantSidebar } from "../components/MerchantHeader"
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -21,9 +31,7 @@ function RootShell({ children }: { children: ReactNode }) {
         <div className="min-h-screen">
           <MerchantHeader />
           <main className="px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-            <div className="mx-auto w-full max-w-[1280px]">
-              {children}
-            </div>
+            <div className="mx-auto w-full max-w-[1280px]">{children}</div>
           </main>
         </div>
       </div>
@@ -38,6 +46,7 @@ function RootLayout() {
     select: (state) => state.location.pathname,
   })
   const signerConnected = status === "connected" && !!pubkey
+  const relaySettingsScope = pubkey ? `merchant:${pubkey}` : "merchant"
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" })
@@ -47,6 +56,11 @@ function RootLayout() {
     const title = signerConnected ? getPageTitle(pathname) : "Connect"
     document.title = `${title} | Conduit Merchant`
   }, [pathname, signerConnected])
+
+  useEffect(() => {
+    if (getActiveRelaySettingsScope() === relaySettingsScope) return
+    refreshNdkRelaySettings(relaySettingsScope)
+  }, [relaySettingsScope])
 
   if (!signerConnected) {
     return <ConnectGate />
@@ -117,27 +131,34 @@ function ConnectGate() {
               Connect your signer to run your store
             </h1>
             <p className="mt-4 max-w-2xl text-[15px] leading-6 text-[var(--text-primary)]/85 sm:text-base">
-              Publish listings, manage orders, and stay in sync with buyers from one merchant workspace.
+              Publish listings, manage orders, and stay in sync with buyers from
+              one merchant workspace.
             </p>
 
             <div className="mt-8 grid gap-4 sm:grid-cols-3 sm:gap-0">
               <div className="px-0 py-2 sm:px-5">
                 <Store className="h-5 w-5 text-secondary-300" />
-                <div className="mt-3 text-sm font-semibold text-[var(--text-primary)]">Publish listings</div>
+                <div className="mt-3 text-sm font-semibold text-[var(--text-primary)]">
+                  Publish listings
+                </div>
                 <div className="mt-1 text-sm leading-6 text-[var(--text-primary)]/80">
                   Create and manage products tied to your signer.
                 </div>
               </div>
               <div className="px-0 py-2 sm:border-l sm:border-[var(--border)] sm:px-5">
                 <KeyRound className="h-5 w-5 text-secondary-300" />
-                <div className="mt-3 text-sm font-semibold text-[var(--text-primary)]">Own your identity</div>
+                <div className="mt-3 text-sm font-semibold text-[var(--text-primary)]">
+                  Own your identity
+                </div>
                 <div className="mt-1 text-sm leading-6 text-[var(--text-primary)]/80">
                   Use an external signer instead of another account.
                 </div>
               </div>
               <div className="px-0 py-2 sm:border-l sm:border-[var(--border)] sm:px-5">
                 <ShieldCheck className="h-5 w-5 text-secondary-300" />
-                <div className="mt-3 text-sm font-semibold text-[var(--text-primary)]">Stay in the loop</div>
+                <div className="mt-3 text-sm font-semibold text-[var(--text-primary)]">
+                  Stay in the loop
+                </div>
                 <div className="mt-1 text-sm leading-6 text-[var(--text-primary)]/80">
                   Track orders, invoices, and buyer messages in one place.
                 </div>
@@ -149,11 +170,17 @@ function ConnectGate() {
                 <div className="mt-6">
                   <Button
                     onClick={() => void handleConnect()}
-                    disabled={isWorking || status === "connecting" || !extensionAvailable}
+                    disabled={
+                      isWorking ||
+                      status === "connecting" ||
+                      !extensionAvailable
+                    }
                     className="h-12 w-full justify-center gap-2 text-base"
                   >
                     <KeyRound className="h-5 w-5" />
-                    {status === "connecting" || isWorking ? "Connecting..." : "Connect signer"}
+                    {status === "connecting" || isWorking
+                      ? "Connecting..."
+                      : "Connect signer"}
                   </Button>
                 </div>
               )}
@@ -187,5 +214,6 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/products") return "Products"
   if (pathname === "/orders") return "Orders"
   if (pathname === "/profile") return "Profile"
+  if (pathname === "/settings") return "Relay Settings"
   return "Merchant"
 }

@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as OrdersRouteImport } from './routes/orders'
 import { Route as MessagesRouteImport } from './routes/messages'
@@ -20,6 +21,11 @@ import { Route as UProfileRefRouteImport } from './routes/u/$profileRef'
 import { Route as StorePubkeyRouteImport } from './routes/store/$pubkey'
 import { Route as ProductsProductIdRouteImport } from './routes/products/$productId'
 
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProfileRoute = ProfileRouteImport.update({
   id: '/profile',
   path: '/profile',
@@ -78,6 +84,7 @@ export interface FileRoutesByFullPath {
   '/messages': typeof MessagesRoute
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
+  '/settings': typeof SettingsRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
@@ -90,6 +97,7 @@ export interface FileRoutesByTo {
   '/messages': typeof MessagesRoute
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
+  '/settings': typeof SettingsRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
@@ -103,6 +111,7 @@ export interface FileRoutesById {
   '/messages': typeof MessagesRoute
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
+  '/settings': typeof SettingsRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
@@ -117,6 +126,7 @@ export interface FileRouteTypes {
     | '/messages'
     | '/orders'
     | '/profile'
+    | '/settings'
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
@@ -129,6 +139,7 @@ export interface FileRouteTypes {
     | '/messages'
     | '/orders'
     | '/profile'
+    | '/settings'
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
@@ -141,6 +152,7 @@ export interface FileRouteTypes {
     | '/messages'
     | '/orders'
     | '/profile'
+    | '/settings'
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
@@ -154,6 +166,7 @@ export interface RootRouteChildren {
   MessagesRoute: typeof MessagesRoute
   OrdersRoute: typeof OrdersRoute
   ProfileRoute: typeof ProfileRoute
+  SettingsRoute: typeof SettingsRoute
   ProductsProductIdRoute: typeof ProductsProductIdRoute
   StorePubkeyRoute: typeof StorePubkeyRoute
   UProfileRefRoute: typeof UProfileRefRoute
@@ -162,6 +175,13 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/profile': {
       id: '/profile'
       path: '/profile'
@@ -242,6 +262,7 @@ const rootRouteChildren: RootRouteChildren = {
   MessagesRoute: MessagesRoute,
   OrdersRoute: OrdersRoute,
   ProfileRoute: ProfileRoute,
+  SettingsRoute: SettingsRoute,
   ProductsProductIdRoute: ProductsProductIdRoute,
   StorePubkeyRoute: StorePubkeyRoute,
   UProfileRefRoute: UProfileRefRoute,

@@ -1,5 +1,15 @@
-import { giftUnwrap, type NDKEvent, type NDKFilter, type NDKSigner } from "@nostr-dev-kit/ndk"
-import { db, type CachedOrderMessage, type CachedProduct, type CachedProfile } from "../db"
+import {
+  giftUnwrap,
+  type NDKEvent,
+  type NDKFilter,
+  type NDKSigner,
+} from "@nostr-dev-kit/ndk"
+import {
+  db,
+  type CachedOrderMessage,
+  type CachedProduct,
+  type CachedProfile,
+} from "../db"
 import { config } from "../config"
 import type { Product, Profile } from "../types"
 import { EVENT_KINDS } from "./kinds"
@@ -8,12 +18,25 @@ import { extractOrderSummary } from "./order-summary"
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import { parseProductEvent } from "./products"
 import { parseProfileEvent } from "./profiles"
+import {
+  getCommerceReadRelayUrls,
+  getGeneralReadRelayUrls,
+} from "./relay-settings"
 
 const PRODUCT_CACHE_TTL_MS = 5 * 60_000
 const PROFILE_CACHE_TTL_MS = 5 * 60_000
 
-export type CommerceReadSource = "cache" | "l2" | "merchant" | "public" | "local_cache"
-export type CommerceSortMode = "newest" | "price_asc" | "price_desc" | "updated_at_desc"
+export type CommerceReadSource =
+  | "cache"
+  | "l2"
+  | "merchant"
+  | "public"
+  | "local_cache"
+export type CommerceSortMode =
+  | "newest"
+  | "price_asc"
+  | "price_desc"
+  | "updated_at_desc"
 export type CommerceReadPlanName =
   | "marketplace_products"
   | "merchant_storefront"
@@ -112,7 +135,9 @@ export interface MerchantConversationSummary extends ConversationSummaryBase {
   buyerPubkey: string
 }
 
-export type ConversationSummary = BuyerConversationSummary | MerchantConversationSummary
+export type ConversationSummary =
+  | BuyerConversationSummary
+  | MerchantConversationSummary
 
 export interface ConversationDetail {
   orderId: string
@@ -136,9 +161,13 @@ type CommerceTestOverrides = {
   now?: () => number
   getCachedProducts?: (merchantPubkey?: string) => Promise<CachedProduct[]>
   putCachedProducts?: (rows: CachedProduct[]) => Promise<void>
-  getCachedProfiles?: (pubkeys: string[]) => Promise<Array<CachedProfile | undefined>>
+  getCachedProfiles?: (
+    pubkeys: string[]
+  ) => Promise<Array<CachedProfile | undefined>>
   putCachedProfiles?: (rows: CachedProfile[]) => Promise<void>
-  getCachedOrderMessages?: (principalPubkey: string) => Promise<CachedOrderMessage[]>
+  getCachedOrderMessages?: (
+    principalPubkey: string
+  ) => Promise<CachedOrderMessage[]>
   putCachedOrderMessages?: (rows: CachedOrderMessage[]) => Promise<void>
 }
 
@@ -171,7 +200,13 @@ const READ_PLANS: Record<CommerceReadPlanName, CommerceReadSource[]> = {
   merchant_storefront: ["cache", "l2", "merchant", "public", "local_cache"],
   product_detail: ["cache", "l2", "merchant", "public", "local_cache"],
   profile_batch: ["cache", "l2", "public", "local_cache"],
-  protected_conversation_list: ["cache", "l2", "merchant", "public", "local_cache"],
+  protected_conversation_list: [
+    "cache",
+    "l2",
+    "merchant",
+    "public",
+    "local_cache",
+  ],
   conversation_detail: ["cache", "l2", "merchant", "public", "local_cache"],
 }
 
@@ -181,15 +216,33 @@ function now(): number {
   return testOverrides.now?.() ?? Date.now()
 }
 
+function publicReadRelayUrls(): string[] {
+  return getGeneralReadRelayUrls({
+    fallbackRelayUrls:
+      config.publicRelayUrls.length > 0 ? config.publicRelayUrls : undefined,
+  })
+}
+
+function commerceReadRelayUrls(): string[] {
+  return getCommerceReadRelayUrls({
+    fallbackRelayUrls:
+      config.merchantRelayUrls.length > 0
+        ? config.merchantRelayUrls
+        : config.publicRelayUrls,
+  })
+}
+
 async function runFetchEventsFanout(
   filter: NDKFilter,
   options?: Parameters<typeof fetchEventsFanout>[1]
 ): Promise<NDKEvent[]> {
   const impl = testOverrides.fetchEventsFanout ?? fetchEventsFanout
-  return await impl(filter, options) as NDKEvent[]
+  return (await impl(filter, options)) as NDKEvent[]
 }
 
-async function runRequireNdkConnected(): Promise<Awaited<ReturnType<typeof requireNdkConnected>>> {
+async function runRequireNdkConnected(): Promise<
+  Awaited<ReturnType<typeof requireNdkConnected>>
+> {
   const impl = testOverrides.requireNdkConnected ?? requireNdkConnected
   return await impl()
 }
@@ -201,7 +254,9 @@ export function resolveReadPlan(name: CommerceReadPlanName): CommerceReadPlan {
   }
 }
 
-export function __setCommerceTestOverrides(overrides: Partial<CommerceTestOverrides>): void {
+export function __setCommerceTestOverrides(
+  overrides: Partial<CommerceTestOverrides>
+): void {
   testOverrides = { ...testOverrides, ...overrides }
 }
 
@@ -226,7 +281,10 @@ function createMeta(
   }
 }
 
-function getTagValue(tags: string[][] | undefined, name: string): string | null {
+function getTagValue(
+  tags: string[][] | undefined,
+  name: string
+): string | null {
   if (!tags) return null
   for (const tag of tags) {
     if (tag[0] === name && typeof tag[1] === "string") return tag[1]
@@ -242,10 +300,14 @@ function normalizeText(value: string | undefined): string {
   return (value ?? "").trim().toLowerCase()
 }
 
-function productMatchesQuery(record: CommerceProductRecord, query: MarketplaceProductsQuery): boolean {
+function productMatchesQuery(
+  record: CommerceProductRecord,
+  query: MarketplaceProductsQuery
+): boolean {
   const { product } = record
   const textQuery = normalizeText(query.textQuery)
-  if (query.merchantPubkey && product.pubkey !== query.merchantPubkey) return false
+  if (query.merchantPubkey && product.pubkey !== query.merchantPubkey)
+    return false
   if (textQuery) {
     const haystack = `${product.title}\n${product.summary ?? ""}`.toLowerCase()
     if (!haystack.includes(textQuery)) return false
@@ -259,18 +321,37 @@ function productMatchesQuery(record: CommerceProductRecord, query: MarketplacePr
   return true
 }
 
-function sortProducts(records: CommerceProductRecord[], sort: CommerceSortMode | undefined): CommerceProductRecord[] {
+function sortProducts(
+  records: CommerceProductRecord[],
+  sort: CommerceSortMode | undefined
+): CommerceProductRecord[] {
   const items = [...records]
   switch (sort) {
     case "price_asc":
-      return items.sort((a, b) => a.product.price - b.product.price || b.product.updatedAt - a.product.updatedAt)
+      return items.sort(
+        (a, b) =>
+          a.product.price - b.product.price ||
+          b.product.updatedAt - a.product.updatedAt
+      )
     case "price_desc":
-      return items.sort((a, b) => b.product.price - a.product.price || b.product.updatedAt - a.product.updatedAt)
+      return items.sort(
+        (a, b) =>
+          b.product.price - a.product.price ||
+          b.product.updatedAt - a.product.updatedAt
+      )
     case "updated_at_desc":
-      return items.sort((a, b) => b.product.updatedAt - a.product.updatedAt || b.eventCreatedAt - a.eventCreatedAt)
+      return items.sort(
+        (a, b) =>
+          b.product.updatedAt - a.product.updatedAt ||
+          b.eventCreatedAt - a.eventCreatedAt
+      )
     case "newest":
     default:
-      return items.sort((a, b) => b.eventCreatedAt - a.eventCreatedAt || b.product.updatedAt - a.product.updatedAt)
+      return items.sort(
+        (a, b) =>
+          b.eventCreatedAt - a.eventCreatedAt ||
+          b.product.updatedAt - a.product.updatedAt
+      )
   }
 }
 
@@ -313,7 +394,9 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     updatedAt: row.updatedAt ?? row.cachedAt,
   }
 
-  const dTag = product.id.startsWith("30402:") ? product.id.split(":").slice(2).join(":") : null
+  const dTag = product.id.startsWith("30402:")
+    ? product.id.split(":").slice(2).join(":")
+    : null
   return {
     product,
     eventId: product.id,
@@ -323,7 +406,9 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
   }
 }
 
-async function loadCachedProducts(merchantPubkey?: string): Promise<CachedProduct[]> {
+async function loadCachedProducts(
+  merchantPubkey?: string
+): Promise<CachedProduct[]> {
   if (testOverrides.getCachedProducts) {
     return await testOverrides.getCachedProducts(merchantPubkey)
   }
@@ -344,19 +429,25 @@ async function storeCachedProducts(rows: CachedProduct[]): Promise<void> {
   await db.products.bulkPut(rows)
 }
 
-async function getCachedProductRecords(merchantPubkey?: string): Promise<CommerceProductRecord[]> {
+async function getCachedProductRecords(
+  merchantPubkey?: string
+): Promise<CommerceProductRecord[]> {
   const rows = await loadCachedProducts(merchantPubkey)
   return rows
     .filter((row) => now() - row.cachedAt < PRODUCT_CACHE_TTL_MS)
     .map(fromCachedProduct)
 }
 
-async function cacheProductRecords(records: CommerceProductRecord[]): Promise<void> {
+async function cacheProductRecords(
+  records: CommerceProductRecord[]
+): Promise<void> {
   if (records.length === 0) return
   await storeCachedProducts(records.map(toCachedProduct))
 }
 
-async function loadCachedProfiles(pubkeys: string[]): Promise<Array<CachedProfile | undefined>> {
+async function loadCachedProfiles(
+  pubkeys: string[]
+): Promise<Array<CachedProfile | undefined>> {
   if (testOverrides.getCachedProfiles) {
     return await testOverrides.getCachedProfiles(pubkeys)
   }
@@ -375,18 +466,24 @@ async function storeCachedProfiles(rows: CachedProfile[]): Promise<void> {
   await db.profiles.bulkPut(rows)
 }
 
-async function loadCachedOrderMessages(principalPubkey: string): Promise<CachedOrderMessage[]> {
+async function loadCachedOrderMessages(
+  principalPubkey: string
+): Promise<CachedOrderMessage[]> {
   if (testOverrides.getCachedOrderMessages) {
     return await testOverrides.getCachedOrderMessages(principalPubkey)
   }
 
   return await db.orderMessages
-    .where("recipientPubkey").equals(principalPubkey)
-    .or("senderPubkey").equals(principalPubkey)
+    .where("recipientPubkey")
+    .equals(principalPubkey)
+    .or("senderPubkey")
+    .equals(principalPubkey)
     .toArray()
 }
 
-async function storeCachedOrderMessages(rows: CachedOrderMessage[]): Promise<void> {
+async function storeCachedOrderMessages(
+  rows: CachedOrderMessage[]
+): Promise<void> {
   if (rows.length === 0) return
 
   if (testOverrides.putCachedOrderMessages) {
@@ -402,7 +499,11 @@ type DeletionTimestamps = {
   byAddressId: Map<string, number>
 }
 
-function setLatestTimestamp(map: Map<string, number>, key: string, value: number): void {
+function setLatestTimestamp(
+  map: Map<string, number>,
+  key: string,
+  value: number
+): void {
   const existing = map.get(key) ?? -1
   if (value >= existing) map.set(key, value)
 }
@@ -446,7 +547,7 @@ async function fetchDeletionTimestamps(
   const deletionEvents: NDKEvent[] = []
   for (const filter of filters) {
     const fetched = await runFetchEventsFanout(filter, {
-      relayUrls: config.merchantRelayUrls.length > 0 ? config.merchantRelayUrls : undefined,
+      relayUrls: commerceReadRelayUrls(),
       connectTimeoutMs: 4_000,
       fetchTimeoutMs: 10_000,
     })
@@ -454,15 +555,18 @@ async function fetchDeletionTimestamps(
   }
 
   if (deletionEvents.length === 0) {
-    const fallback = await runFetchEventsFanout({
-      kinds: [EVENT_KINDS.DELETION],
-      authors: [merchantPubkey],
-      limit: 300,
-    }, {
-      relayUrls: config.merchantRelayUrls.length > 0 ? config.merchantRelayUrls : undefined,
-      connectTimeoutMs: 4_000,
-      fetchTimeoutMs: 10_000,
-    })
+    const fallback = await runFetchEventsFanout(
+      {
+        kinds: [EVENT_KINDS.DELETION],
+        authors: [merchantPubkey],
+        limit: 300,
+      },
+      {
+        relayUrls: commerceReadRelayUrls(),
+        connectTimeoutMs: 4_000,
+        fetchTimeoutMs: 10_000,
+      }
+    )
     deletionEvents.push(...fallback)
   }
 
@@ -495,7 +599,10 @@ function isDeletedByNip09(
   return deletedAtAddress >= createdAt
 }
 
-function dedupeProductEvents(events: NDKEvent[], deletionTimestamps?: DeletionTimestamps): CommerceProductRecord[] {
+function dedupeProductEvents(
+  events: NDKEvent[],
+  deletionTimestamps?: DeletionTimestamps
+): CommerceProductRecord[] {
   const byAddress = new Map<string, CommerceProductRecord>()
 
   for (const event of events) {
@@ -504,7 +611,10 @@ function dedupeProductEvents(events: NDKEvent[], deletionTimestamps?: DeletionTi
       const dTag = getTagValue(event.tags ?? [], "d")
       const addressId = dTag ? `30402:${event.pubkey}:${dTag}` : parsed.id
 
-      if (deletionTimestamps && isDeletedByNip09(event, addressId, deletionTimestamps)) {
+      if (
+        deletionTimestamps &&
+        isDeletedByNip09(event, addressId, deletionTimestamps)
+      ) {
         continue
       }
 
@@ -529,7 +639,12 @@ function dedupeProductEvents(events: NDKEvent[], deletionTimestamps?: DeletionTi
   return Array.from(byAddress.values())
 }
 
-async function fetchPublicProductRecords(query: { authors?: string[]; ids?: string[]; dTags?: string[]; limit: number }): Promise<CommerceProductRecord[]> {
+async function fetchPublicProductRecords(query: {
+  authors?: string[]
+  ids?: string[]
+  dTags?: string[]
+  limit: number
+}): Promise<CommerceProductRecord[]> {
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.PRODUCT],
     limit: query.limit,
@@ -540,7 +655,7 @@ async function fetchPublicProductRecords(query: { authors?: string[]; ids?: stri
   if (query.dTags) filter["#d"] = query.dTags
 
   const events = await runFetchEventsFanout(filter, {
-    relayUrls: config.publicRelayUrls.length > 0 ? config.publicRelayUrls : undefined,
+    relayUrls: publicReadRelayUrls(),
     connectTimeoutMs: 4_000,
     fetchTimeoutMs: 8_000,
   })
@@ -548,7 +663,9 @@ async function fetchPublicProductRecords(query: { authors?: string[]; ids?: stri
   return dedupeProductEvents(events)
 }
 
-export async function getMarketplaceProducts(query: MarketplaceProductsQuery = {}): Promise<CommerceResult<CommerceProductRecord[]>> {
+export async function getMarketplaceProducts(
+  query: MarketplaceProductsQuery = {}
+): Promise<CommerceResult<CommerceProductRecord[]>> {
   try {
     const records = await fetchPublicProductRecords({
       authors: query.merchantPubkey ? [query.merchantPubkey] : undefined,
@@ -557,41 +674,59 @@ export async function getMarketplaceProducts(query: MarketplaceProductsQuery = {
 
     const filtered = sortProducts(
       records.filter((record) => productMatchesQuery(record, query)),
-      query.sort,
+      query.sort
     ).slice(0, query.limit ?? 50)
 
     await cacheProductRecords(filtered)
-    return { data: filtered, meta: createMeta("marketplace_products", "public", PRODUCT_CAPABILITIES) }
+    return {
+      data: filtered,
+      meta: createMeta("marketplace_products", "public", PRODUCT_CAPABILITIES),
+    }
   } catch (error) {
     const cached = sortProducts(
-      (await getCachedProductRecords(query.merchantPubkey)).filter((record) => productMatchesQuery(record, query)),
-      query.sort,
+      (await getCachedProductRecords(query.merchantPubkey)).filter((record) =>
+        productMatchesQuery(record, query)
+      ),
+      query.sort
     ).slice(0, query.limit ?? 50)
 
     if (cached.length > 0) {
-      return { data: cached, meta: createMeta("marketplace_products", "local_cache", PRODUCT_CAPABILITIES, { stale: true }) }
+      return {
+        data: cached,
+        meta: createMeta(
+          "marketplace_products",
+          "local_cache",
+          PRODUCT_CAPABILITIES,
+          { stale: true }
+        ),
+      }
     }
 
     throw error
   }
 }
 
-export async function getMerchantStorefront(query: MerchantStorefrontQuery): Promise<CommerceResult<CommerceProductRecord[]>> {
+export async function getMerchantStorefront(
+  query: MerchantStorefrontQuery
+): Promise<CommerceResult<CommerceProductRecord[]>> {
   try {
-    const rawEvents = await runFetchEventsFanout({
-      kinds: [EVENT_KINDS.PRODUCT],
-      authors: [query.merchantPubkey],
-      limit: query.limit ?? 200,
-    }, {
-      relayUrls: config.merchantRelayUrls.length > 0 ? config.merchantRelayUrls : undefined,
-      connectTimeoutMs: 4_000,
-      fetchTimeoutMs: 10_000,
-    })
+    const rawEvents = await runFetchEventsFanout(
+      {
+        kinds: [EVENT_KINDS.PRODUCT],
+        authors: [query.merchantPubkey],
+        limit: query.limit ?? 200,
+      },
+      {
+        relayUrls: commerceReadRelayUrls(),
+        connectTimeoutMs: 4_000,
+        fetchTimeoutMs: 10_000,
+      }
+    )
 
     const deletionTimestamps = await fetchDeletionTimestamps(
       query.merchantPubkey,
       rawEvents.map((event) => event.id).filter(Boolean) as string[],
-      collectProductAddresses(rawEvents),
+      collectProductAddresses(rawEvents)
     )
 
     const filtered = sortProducts(
@@ -604,11 +739,14 @@ export async function getMerchantStorefront(query: MerchantStorefrontQuery): Pro
           limit: query.limit,
         })
       ),
-      query.sort,
+      query.sort
     ).slice(0, query.limit ?? 200)
 
     await cacheProductRecords(filtered)
-    return { data: filtered, meta: createMeta("merchant_storefront", "public", PRODUCT_CAPABILITIES) }
+    return {
+      data: filtered,
+      meta: createMeta("merchant_storefront", "public", PRODUCT_CAPABILITIES),
+    }
   } catch (error) {
     const cached = sortProducts(
       (await getCachedProductRecords(query.merchantPubkey)).filter((record) =>
@@ -618,18 +756,28 @@ export async function getMerchantStorefront(query: MerchantStorefrontQuery): Pro
           tags: query.tag ? [query.tag] : undefined,
         })
       ),
-      query.sort,
+      query.sort
     )
 
     if (cached.length > 0) {
-      return { data: cached, meta: createMeta("merchant_storefront", "local_cache", PRODUCT_CAPABILITIES, { stale: true }) }
+      return {
+        data: cached,
+        meta: createMeta(
+          "merchant_storefront",
+          "local_cache",
+          PRODUCT_CAPABILITIES,
+          { stale: true }
+        ),
+      }
     }
 
     throw error
   }
 }
 
-function parseAddress(productId: string): { kind: number; pubkey: string; d: string } | null {
+function parseAddress(
+  productId: string
+): { kind: number; pubkey: string; d: string } | null {
   const decoded = decodeURIComponent(productId)
   const [kindStr, pubkey, ...dParts] = decoded.split(":")
   const d = dParts.join(":")
@@ -638,7 +786,9 @@ function parseAddress(productId: string): { kind: number; pubkey: string; d: str
   return { kind, pubkey, d }
 }
 
-export async function getProductDetail(query: ProductDetailQuery): Promise<CommerceResult<CommerceProductRecord | null>> {
+export async function getProductDetail(
+  query: ProductDetailQuery
+): Promise<CommerceResult<CommerceProductRecord | null>> {
   const addr = parseAddress(query.productId)
   const decodedId = decodeURIComponent(query.productId)
 
@@ -648,29 +798,50 @@ export async function getProductDetail(query: ProductDetailQuery): Promise<Comme
         merchantPubkey: addr.pubkey,
         limit: 200,
       })
-      const record = storefront.data.find((item) => item.addressId === decodedId) ?? null
+      const record =
+        storefront.data.find((item) => item.addressId === decodedId) ?? null
       return { data: record, meta: { ...storefront.meta, fetchedAt: now() } }
     }
 
     if (/^[0-9a-f]{64}$/i.test(decodedId)) {
-      const records = await fetchPublicProductRecords({ ids: [decodedId], limit: 1 })
+      const records = await fetchPublicProductRecords({
+        ids: [decodedId],
+        limit: 1,
+      })
       const record = records[0] ?? null
       if (record) {
         await cacheProductRecords([record])
       }
-      return { data: record, meta: createMeta("product_detail", "public", PRODUCT_CAPABILITIES) }
+      return {
+        data: record,
+        meta: createMeta("product_detail", "public", PRODUCT_CAPABILITIES),
+      }
     }
   } catch (error) {
     const cached = await getCachedProductRecords()
-    const record = cached.find((item) => item.product.id === decodedId || item.addressId === decodedId) ?? null
+    const record =
+      cached.find(
+        (item) => item.product.id === decodedId || item.addressId === decodedId
+      ) ?? null
     if (record) {
-      return { data: record, meta: createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, { stale: true }) }
+      return {
+        data: record,
+        meta: createMeta(
+          "product_detail",
+          "local_cache",
+          PRODUCT_CAPABILITIES,
+          { stale: true }
+        ),
+      }
     }
     throw error
   }
 
   const cached = await getCachedProductRecords()
-  const record = cached.find((item) => item.product.id === decodedId || item.addressId === decodedId) ?? null
+  const record =
+    cached.find(
+      (item) => item.product.id === decodedId || item.addressId === decodedId
+    ) ?? null
   return {
     data: record,
     meta: createMeta(
@@ -682,13 +853,20 @@ export async function getProductDetail(query: ProductDetailQuery): Promise<Comme
   }
 }
 
-export async function getProfiles(query: ProfileBatchQuery): Promise<CommerceResult<Record<string, Profile>>> {
-  const pubkeys = Array.from(new Set(query.pubkeys.map((pubkey) => pubkey.trim()).filter(Boolean)))
+export async function getProfiles(
+  query: ProfileBatchQuery
+): Promise<CommerceResult<Record<string, Profile>>> {
+  const pubkeys = Array.from(
+    new Set(query.pubkeys.map((pubkey) => pubkey.trim()).filter(Boolean))
+  )
   const result: Record<string, Profile> = {}
   const missing: string[] = []
 
   if (pubkeys.length === 0) {
-    return { data: result, meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES) }
+    return {
+      data: result,
+      meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
+    }
   }
 
   const cachedRows = query.skipCache ? [] : await loadCachedProfiles(pubkeys)
@@ -712,16 +890,23 @@ export async function getProfiles(query: ProfileBatchQuery): Promise<CommerceRes
   })
 
   if (missing.length === 0) {
-    return { data: result, meta: createMeta("profile_batch", "local_cache", PROFILE_CAPABILITIES, { stale: false }) }
+    return {
+      data: result,
+      meta: createMeta("profile_batch", "local_cache", PROFILE_CAPABILITIES, {
+        stale: false,
+      }),
+    }
   }
 
   try {
     const ndk = await runRequireNdkConnected()
-    const events = Array.from(await ndk.fetchEvents({
-      kinds: [EVENT_KINDS.PROFILE],
-      authors: missing,
-      limit: Math.max(10, missing.length * 3),
-    })) as NDKEvent[]
+    const events = Array.from(
+      await ndk.fetchEvents({
+        kinds: [EVENT_KINDS.PROFILE],
+        authors: missing,
+        limit: Math.max(10, missing.length * 3),
+      })
+    ) as NDKEvent[]
 
     const latestByPubkey = new Map<string, NDKEvent>()
     for (const event of events) {
@@ -766,14 +951,22 @@ export async function getProfiles(query: ProfileBatchQuery): Promise<CommerceRes
       await storeCachedProfiles(rowsToCache)
     }
 
-    return { data: result, meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES) }
+    return {
+      data: result,
+      meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
+    }
   } catch (error) {
     const hasAnyCached = Object.keys(result).length > 0
     if (hasAnyCached) {
       for (const pubkey of missing) {
         result[pubkey] = result[pubkey] ?? { pubkey }
       }
-      return { data: result, meta: createMeta("profile_batch", "local_cache", PROFILE_CAPABILITIES, { stale: true }) }
+      return {
+        data: result,
+        meta: createMeta("profile_batch", "local_cache", PROFILE_CAPABILITIES, {
+          stale: true,
+        }),
+      }
     }
     throw error
   }
@@ -786,7 +979,9 @@ function getConversationPreview(message: ParsedOrderMessage): string {
     case "payment_request":
       return message.payload.note ?? "Invoice sent"
     case "status_update":
-      return message.payload.note ?? `Status updated to ${message.payload.status}`
+      return (
+        message.payload.note ?? `Status updated to ${message.payload.status}`
+      )
     case "shipping_update":
       return message.payload.note ?? "Shipping updated"
     case "receipt":
@@ -800,7 +995,11 @@ function getConversationPreview(message: ParsedOrderMessage): string {
   }
 }
 
-function raceTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+function raceTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  fallback: T
+): Promise<T> {
   return Promise.race([
     promise,
     new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
@@ -824,7 +1023,7 @@ async function tryUnwrap(event: NDKEvent, signer: NDKSigner) {
         }
       })(),
       8_000,
-      null,
+      null
     )
   } catch {
     return null
@@ -840,7 +1039,9 @@ async function unwrapBatch(
 
   for (let index = 0; index < events.length; index += batchSize) {
     const batch = events.slice(index, index + batchSize)
-    const batchResults = await Promise.all(batch.map((event) => tryUnwrap(event, signer)))
+    const batchResults = await Promise.all(
+      batch.map((event) => tryUnwrap(event, signer))
+    )
     results.push(...batchResults)
   }
 
@@ -849,7 +1050,10 @@ async function unwrapBatch(
 
 const knownWrapIds = new Set<string>()
 
-async function fetchParsedOrderMessages(principalPubkey: string, limit: number): Promise<RawMessageFetchResult> {
+async function fetchParsedOrderMessages(
+  principalPubkey: string,
+  limit: number
+): Promise<RawMessageFetchResult> {
   const cached = await loadCachedOrderMessages(principalPubkey)
 
   const cachedById = new Map<string, ParsedOrderMessage>()
@@ -866,7 +1070,9 @@ async function fetchParsedOrderMessages(principalPubkey: string, limit: number):
     const signer = ndk.signer
     if (!signer) {
       if (cachedById.size > 0) {
-        const messages = Array.from(cachedById.values()).sort((a, b) => a.createdAt - b.createdAt)
+        const messages = Array.from(cachedById.values()).sort(
+          (a, b) => a.createdAt - b.createdAt
+        )
         return { messages, source: "local_cache", stale: true }
       }
       throw new Error("Connect your Nostr signer to view order conversations.")
@@ -879,7 +1085,7 @@ async function fetchParsedOrderMessages(principalPubkey: string, limit: number):
     }
 
     const wrapped = await runFetchEventsFanout(filter, {
-      relayUrls: config.publicRelayUrls.length > 0 ? config.publicRelayUrls : undefined,
+      relayUrls: commerceReadRelayUrls(),
       connectTimeoutMs: 4_000,
       fetchTimeoutMs: 12_000,
     })
@@ -926,11 +1132,15 @@ async function fetchParsedOrderMessages(principalPubkey: string, limit: number):
       await storeCachedOrderMessages(newRows)
     }
 
-    const messages = Array.from(cachedById.values()).sort((a, b) => a.createdAt - b.createdAt)
+    const messages = Array.from(cachedById.values()).sort(
+      (a, b) => a.createdAt - b.createdAt
+    )
     return { messages, source: "public", stale: false }
   } catch (error) {
     if (cachedById.size > 0) {
-      const messages = Array.from(cachedById.values()).sort((a, b) => a.createdAt - b.createdAt)
+      const messages = Array.from(cachedById.values()).sort(
+        (a, b) => a.createdAt - b.createdAt
+      )
       return { messages, source: "local_cache", stale: true }
     }
     throw error
@@ -958,11 +1168,17 @@ function buildBuyerConversationSummaries(
     const latestStatus = [...bucket]
       .reverse()
       .find((message) => message.type === "status_update")
-    const otherParticipants = Array.from(new Set(
-      bucket
-        .map((message) => message.senderPubkey === buyerPubkey ? message.recipientPubkey : message.senderPubkey)
-        .filter(Boolean)
-    ))
+    const otherParticipants = Array.from(
+      new Set(
+        bucket
+          .map((message) =>
+            message.senderPubkey === buyerPubkey
+              ? message.recipientPubkey
+              : message.senderPubkey
+          )
+          .filter(Boolean)
+      )
+    )
     const merchantPubkey = otherParticipants[0] ?? ""
     const summary = extractOrderSummary(bucket)
 
@@ -972,8 +1188,14 @@ function buildBuyerConversationSummaries(
       merchantPubkey,
       latestAt: latest.createdAt,
       latestType: latest.type,
-      status: latestStatus?.type === "status_update" ? latestStatus.payload.status : null,
-      totalSummary: summary.items.length > 0 ? `${summary.subtotal} ${summary.currency}` : null,
+      status:
+        latestStatus?.type === "status_update"
+          ? latestStatus.payload.status
+          : null,
+      totalSummary:
+        summary.items.length > 0
+          ? `${summary.subtotal} ${summary.currency}`
+          : null,
       preview: getConversationPreview(latest),
       messageCount: bucket.length,
       messages: bucket,
@@ -1005,11 +1227,17 @@ function buildMerchantConversationSummaries(
     const latestStatus = [...bucket]
       .reverse()
       .find((message) => message.type === "status_update")
-    const otherParticipants = Array.from(new Set(
-      bucket
-        .map((message) => message.senderPubkey === merchantPubkey ? message.recipientPubkey : message.senderPubkey)
-        .filter(Boolean)
-    ))
+    const otherParticipants = Array.from(
+      new Set(
+        bucket
+          .map((message) =>
+            message.senderPubkey === merchantPubkey
+              ? message.recipientPubkey
+              : message.senderPubkey
+          )
+          .filter(Boolean)
+      )
+    )
     const buyerPubkey = otherParticipants[0] ?? ""
     const summary = extractOrderSummary(bucket)
 
@@ -1019,8 +1247,14 @@ function buildMerchantConversationSummaries(
       buyerPubkey,
       latestAt: latest.createdAt,
       latestType: latest.type,
-      status: latestStatus?.type === "status_update" ? latestStatus.payload.status : null,
-      totalSummary: summary.items.length > 0 ? `${summary.subtotal} ${summary.currency}` : null,
+      status:
+        latestStatus?.type === "status_update"
+          ? latestStatus.payload.status
+          : null,
+      totalSummary:
+        summary.items.length > 0
+          ? `${summary.subtotal} ${summary.currency}`
+          : null,
       preview: getConversationPreview(latest),
       messageCount: bucket.length,
       messages: bucket,
@@ -1034,20 +1268,42 @@ function buildMerchantConversationSummaries(
 export async function getBuyerConversationList(
   query: ConversationListQuery
 ): Promise<CommerceResult<BuyerConversationSummary[]>> {
-  const result = await fetchParsedOrderMessages(query.principalPubkey, query.limit ?? 200)
+  const result = await fetchParsedOrderMessages(
+    query.principalPubkey,
+    query.limit ?? 200
+  )
   return {
-    data: buildBuyerConversationSummaries(result.messages, query.principalPubkey),
-    meta: createMeta("protected_conversation_list", result.source, CONVERSATION_CAPABILITIES, { stale: result.stale }),
+    data: buildBuyerConversationSummaries(
+      result.messages,
+      query.principalPubkey
+    ),
+    meta: createMeta(
+      "protected_conversation_list",
+      result.source,
+      CONVERSATION_CAPABILITIES,
+      { stale: result.stale }
+    ),
   }
 }
 
 export async function getMerchantConversationList(
   query: ConversationListQuery
 ): Promise<CommerceResult<MerchantConversationSummary[]>> {
-  const result = await fetchParsedOrderMessages(query.principalPubkey, query.limit ?? 200)
+  const result = await fetchParsedOrderMessages(
+    query.principalPubkey,
+    query.limit ?? 200
+  )
   return {
-    data: buildMerchantConversationSummaries(result.messages, query.principalPubkey),
-    meta: createMeta("protected_conversation_list", result.source, CONVERSATION_CAPABILITIES, { stale: result.stale }),
+    data: buildMerchantConversationSummaries(
+      result.messages,
+      query.principalPubkey
+    ),
+    meta: createMeta(
+      "protected_conversation_list",
+      result.source,
+      CONVERSATION_CAPABILITIES,
+      { stale: result.stale }
+    ),
   }
 }
 
@@ -1055,9 +1311,16 @@ export async function getConversationDetail(
   query: ConversationDetailQuery
 ): Promise<CommerceResult<ConversationDetail | null>> {
   const result = await fetchParsedOrderMessages(query.principalPubkey, 200)
-  const messages = result.messages.filter((message) => message.orderId === query.orderId)
+  const messages = result.messages.filter(
+    (message) => message.orderId === query.orderId
+  )
   return {
     data: messages.length > 0 ? { orderId: query.orderId, messages } : null,
-    meta: createMeta("conversation_detail", result.source, CONVERSATION_CAPABILITIES, { stale: result.stale }),
+    meta: createMeta(
+      "conversation_detail",
+      result.source,
+      CONVERSATION_CAPABILITIES,
+      { stale: result.stale }
+    ),
   }
 }
