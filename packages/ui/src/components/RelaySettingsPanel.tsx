@@ -243,7 +243,7 @@ function CapabilityIcon({
         >
           <Icon className="h-3.5 w-3.5" />
         </span>
-        <span className="text-[0.56rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+        <span className="hidden text-[0.56rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)] lg:block">
           {shortLabel}
         </span>
       </span>
@@ -362,117 +362,114 @@ function RelayRow({
         </div>
       </div>
 
-      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:justify-center">
-        <div className="mr-1 text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)] lg:hidden">
-          Use
+      <div className="flex items-center gap-2 lg:[display:contents]">
+        <div className="flex items-center gap-1.5 lg:justify-center">
+          <PreferenceToggle
+            label="OUT"
+            active={entry.writeEnabled}
+            disabled={isDisabled}
+            tooltip="Publish events to this relay."
+            onToggle={() => onToggleWrite(entry.url, !entry.writeEnabled)}
+          />
+          <PreferenceToggle
+            label="IN"
+            active={entry.readEnabled}
+            disabled={isDisabled}
+            tooltip="Read events from this relay."
+            onToggle={() => onToggleRead(entry.url, !entry.readEnabled)}
+          />
         </div>
-        <PreferenceToggle
-          label="OUT"
-          active={entry.writeEnabled}
-          disabled={isDisabled}
-          tooltip="Publish events to this relay."
-          onToggle={() => onToggleWrite(entry.url, !entry.writeEnabled)}
-        />
-        <PreferenceToggle
-          label="IN"
-          active={entry.readEnabled}
-          disabled={isDisabled}
-          tooltip="Read events from this relay."
-          onToggle={() => onToggleRead(entry.url, !entry.readEnabled)}
-        />
-      </div>
 
-      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-nowrap lg:justify-center">
-        <div className="mr-1 text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)] lg:hidden">
-          Signals
-        </div>
-        <CapabilityIcon
-          active={entry.capabilities.search}
-          icon={Search}
-          shortLabel="Search"
-          label={
-            entry.capabilities.search
-              ? "Search supported"
-              : "Search not advertised"
-          }
-          description={
-            entry.capabilities.search
-              ? `This relay advertises NIP-50 search. Conduit can use it for discovery and lookup when a route needs search behavior. ${compatibilityText}`
-              : `This relay does not advertise NIP-50 search. Conduit can still read ordinary events here, but should not rely on it for product search or discovery. ${compatibilityText}`
-          }
-        />
-        <CapabilityIcon
-          active={entry.capabilities.dm}
-          icon={Send}
-          shortLabel="DM"
-          label={
-            entry.capabilities.dm
-              ? "DM support detected"
-              : "DM support not advertised"
-          }
-          description={
-            entry.capabilities.dm
-              ? `This relay advertises NIP-17 support. Conduit can consider it for modern encrypted buyer and merchant message delivery. ${compatibilityText}`
-              : `This relay does not advertise NIP-17 support. Conduit should avoid depending on it for buyer and merchant message delivery. ${compatibilityText}`
-          }
-        />
-        <CapabilityIcon
-          active={entry.capabilities.auth || entry.warnings.dmWithoutAuth}
-          icon={LockKeyhole}
-          shortLabel="Auth"
-          label={
-            entry.warnings.dmWithoutAuth
-              ? "DM relay without auth"
-              : "Auth supported"
-          }
-          description={
-            entry.warnings.dmWithoutAuth
-              ? `This relay advertises NIP-17 DMs but not NIP-42 auth. Message content remains encrypted, but relay access controls may be weaker, so Conduit may limit protected messaging use here. ${compatibilityText}`
-              : entry.capabilities.auth
-                ? `This relay advertises or requires NIP-42 authentication. Conduit can authenticate when a relay requires signed access for protected reads or writes. ${compatibilityText}`
-                : `This relay does not advertise NIP-42 authentication. Conduit can still use it for public reads or writes, but should avoid it for protected messaging paths. ${compatibilityText}`
-          }
-          warning={entry.warnings.dmWithoutAuth}
-        />
-        {(entry.warnings.unreachable ||
-          entry.warnings.commercePartialSupport ||
-          entry.warnings.staleRelayInfo) && (
+        <div className="h-5 w-px shrink-0 bg-[var(--border)] lg:hidden" />
+
+        <div className="flex items-center gap-1.5 lg:flex-nowrap lg:justify-center">
           <CapabilityIcon
-            active
-            icon={entry.warnings.unreachable ? WifiOff : AlertTriangle}
-            shortLabel="Warn"
-            label={warningText ?? "Relay warning"}
-            description={`${warningText ?? "Conduit detected a relay warning."} ${compatibilityText}`}
-            warning
+            active={entry.capabilities.search}
+            icon={Search}
+            shortLabel="Search"
+            label={
+              entry.capabilities.search
+                ? "Search supported"
+                : "Search not advertised"
+            }
+            description={
+              entry.capabilities.search
+                ? `This relay advertises NIP-50 search. Conduit can use it for discovery and lookup when a route needs search behavior. ${compatibilityText}`
+                : `This relay does not advertise NIP-50 search. Conduit can still read ordinary events here, but should not rely on it for product search or discovery. ${compatibilityText}`
+            }
           />
-        )}
-      </div>
-
-      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">
-        <div className="mr-1 text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)] lg:hidden">
-          Manage
+          <CapabilityIcon
+            active={entry.capabilities.dm}
+            icon={Send}
+            shortLabel="DM"
+            label={
+              entry.capabilities.dm
+                ? "DM support detected"
+                : "DM support not advertised"
+            }
+            description={
+              entry.capabilities.dm
+                ? `This relay advertises NIP-17 support. Conduit can consider it for modern encrypted buyer and merchant message delivery. ${compatibilityText}`
+                : `This relay does not advertise NIP-17 support. Conduit should avoid depending on it for buyer and merchant message delivery. ${compatibilityText}`
+            }
+          />
+          <CapabilityIcon
+            active={entry.capabilities.auth || entry.warnings.dmWithoutAuth}
+            icon={LockKeyhole}
+            shortLabel="Auth"
+            label={
+              entry.warnings.dmWithoutAuth
+                ? "DM relay without auth"
+                : "Auth supported"
+            }
+            description={
+              entry.warnings.dmWithoutAuth
+                ? `This relay advertises NIP-17 DMs but not NIP-42 auth. Message content remains encrypted, but relay access controls may be weaker, so Conduit may limit protected messaging use here. ${compatibilityText}`
+                : entry.capabilities.auth
+                  ? `This relay advertises or requires NIP-42 authentication. Conduit can authenticate when a relay requires signed access for protected reads or writes. ${compatibilityText}`
+                  : `This relay does not advertise NIP-42 authentication. Conduit can still use it for public reads or writes, but should avoid it for protected messaging paths. ${compatibilityText}`
+            }
+            warning={entry.warnings.dmWithoutAuth}
+          />
+          {(entry.warnings.unreachable ||
+            entry.warnings.commercePartialSupport ||
+            entry.warnings.staleRelayInfo) && (
+            <CapabilityIcon
+              active
+              icon={entry.warnings.unreachable ? WifiOff : AlertTriangle}
+              shortLabel="Warn"
+              label={warningText ?? "Relay warning"}
+              description={`${warningText ?? "Conduit detected a relay warning."} ${compatibilityText}`}
+              warning
+            />
+          )}
         </div>
-        <button
-          type="button"
-          onClick={() => onRefreshRelay(entry.url)}
-          disabled={scanning}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-wait disabled:opacity-50"
-          aria-label={`Refresh ${entry.url}`}
-          title="Refresh relay verification"
-        >
-          <RefreshCw
-            className={cn("h-3.5 w-3.5", scanning && "animate-spin")}
-          />
-        </button>
-        <button
-          type="button"
-          onClick={() => onRemoveRelay(entry.url)}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] opacity-100 transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 lg:opacity-0 lg:group-hover:opacity-100"
-          aria-label={`Remove ${entry.url}`}
-          title="Remove relay"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
+
+        <div className="h-5 w-px shrink-0 bg-[var(--border)] lg:hidden" />
+
+        <div className="flex items-center gap-1.5 lg:justify-end">
+          <button
+            type="button"
+            onClick={() => onRefreshRelay(entry.url)}
+            disabled={scanning}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-wait disabled:opacity-50"
+            aria-label={`Refresh ${entry.url}`}
+            title="Refresh relay verification"
+          >
+            <RefreshCw
+              className={cn("h-3.5 w-3.5", scanning && "animate-spin")}
+            />
+          </button>
+          <button
+            type="button"
+            onClick={() => onRemoveRelay(entry.url)}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] opacity-100 transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 lg:opacity-0 lg:group-hover:opacity-100"
+            aria-label={`Remove ${entry.url}`}
+            title="Remove relay"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -530,7 +527,7 @@ function RelaySection({
 
       <div
         className={cn(
-          "overflow-hidden rounded-[1.75rem] border border-[var(--border)] px-4 py-2 shadow-[var(--shadow-glass-inset)] sm:px-5",
+          "rounded-[1.75rem] border border-[var(--border)] px-4 py-2 shadow-[var(--shadow-glass-inset)] sm:px-5",
           meta.surfaceClassName
         )}
       >
@@ -597,7 +594,7 @@ export function RelaySettingsPanel({
   return (
     <section
       className={cn(
-        "rounded-[2.25rem] border border-[var(--border)] bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--primary-500)_14%,transparent),transparent_35%),linear-gradient(180deg,color-mix(in_srgb,var(--surface)_92%,var(--background)_8%),var(--background))] p-5 shadow-[var(--shadow-dialog)] sm:p-8",
+        "rounded-[2.25rem] border border-[var(--border)] bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--primary-500)_14%,transparent),transparent_35%),linear-gradient(white,white)] p-5 shadow-[var(--shadow-dialog)] sm:p-8",
         className
       )}
     >

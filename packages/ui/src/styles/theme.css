@@ -221,7 +221,7 @@
     --popover-foreground: var(--foreground);
 
     --muted: var(--neutral-100);
-    --muted-foreground: var(--neutral-600);
+    --muted-foreground: var(--neutral-700);
 
     --text-primary: var(--foreground);
     --text-secondary: var(--muted-foreground);
