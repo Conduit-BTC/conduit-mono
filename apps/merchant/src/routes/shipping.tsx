@@ -371,7 +371,7 @@ function ShippingPage() {
                   </div>
                 </div>
 
-                <div className="rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_8%,transparent)] px-6 py-5 shadow-[var(--shadow-glass-inset)]">
+                <div className="rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)] px-6 py-5 shadow-[var(--shadow-glass-inset)]">
                   <div className="space-y-4">
                     <CountrySelector
                       selected={config.countries.map((c) => c.code)}

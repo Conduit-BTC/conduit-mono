@@ -167,7 +167,7 @@ function ProfilePage() {
                   </div>
                 </div>
 
-                <div className="overflow-hidden rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_8%,transparent)] shadow-[var(--shadow-glass-inset)]">
+                <div className="overflow-hidden rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)] shadow-[var(--shadow-glass-inset)]">
                   {/* Banner */}
                   {profileData?.banner ? (
                     <div className="h-32 w-full overflow-hidden sm:h-44">
@@ -288,7 +288,7 @@ function ProfilePage() {
                   </div>
                 </div>
 
-                <div className="rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_8%,transparent)] px-6 py-5 shadow-[var(--shadow-glass-inset)]">
+                <div className="rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)] px-6 py-5 shadow-[var(--shadow-glass-inset)]">
                   <div className="flex items-center justify-between pb-4">
                     <span className="text-[1rem] font-semibold text-[var(--text-primary)]">
                       Edit Profile
