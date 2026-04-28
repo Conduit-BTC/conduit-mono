@@ -101,15 +101,18 @@ function ProfilePage() {
   return (
     <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
       <div className="mx-auto max-w-[50rem]">
-        <section className="rounded-[2.25rem] border border-[var(--border)] bg-[var(--surface)] px-5 py-6 shadow-[var(--shadow-dialog)] sm:px-8 sm:py-8">
+        <section className="rounded-[2.25rem] border border-[var(--border)] bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--primary-500)_14%,transparent),transparent_35%),linear-gradient(180deg,color-mix(in_srgb,var(--surface)_92%,var(--background)_8%),var(--background))] p-5 shadow-[var(--shadow-dialog)] sm:p-8">
           <div className="space-y-8">
             {/* Page header */}
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <h1 className="text-[1.9rem] font-semibold tracking-tight text-[var(--text-primary)] sm:text-[2.25rem]">
+                <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
+                  Setup
+                </div>
+                <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
                   Store identity
                 </h1>
-                <p className="mt-2 max-w-[44rem] text-[1rem] leading-8 text-[var(--text-secondary)] sm:text-[1.05rem]">
+                <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
                   Edit the merchant profile buyers see across Market and your
                   storefront surfaces.
                 </p>
