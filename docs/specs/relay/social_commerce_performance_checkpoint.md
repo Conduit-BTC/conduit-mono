@@ -777,17 +777,20 @@ machine_readable_addendum:
       notes:
         - "Commerce-critical writes must use explicit relay plans before order and merchant flows depend on them."
     - id: "CND-9"
-      relationship: "product_detail_overlap"
+      relationship: "payment_proof_delivery_overlap"
       notes:
-        - "Product detail should use direct address/event lookup and cached hydration, not broad storefront scans."
+        - "Payment proof and order payment states remain owned by CND-9."
+        - "CND-20 only provides the shared recipient-aware NIP-17 delivery path and delivery metadata that proof messages should consume."
     - id: "CND-10"
-      relationship: "storefront_overlap"
+      relationship: "merchant_trust_context_overlap"
       notes:
-        - "Merchant storefront routes should share the same planner, cache, freshness, and degradation model."
+        - "Merchant trust context, storefront identity, and checkout trust presentation remain owned by CND-10."
+        - "CND-20 may provide cache-first profile/social hydration primitives and source/freshness metadata for CND-10 to consume."
     - id: "CND-12"
-      relationship: "future_social_overlap"
+      relationship: "launch_safety_listing_state_overlap"
       notes:
-        - "Comments, reactions, zaps, reviews, and social proof should use staged hydration APIs instead of route-local fanout."
+        - "Launch safety, listing state, unsupported/blocked visibility, and beta transparency remain owned by CND-12."
+        - "CND-20 should provide deletion/tombstone-aware product reads plus loading, stale, unavailable, and degraded metadata that CND-12 can consume."
   current_codebase_state:
     completed:
       - "Relay settings UI model exists with commerce and public relay grouping."
@@ -865,8 +868,9 @@ machine_readable_addendum:
         - "Use tooltips, hover details, or row expansion for capability explanations instead of permanent labels under every icon."
   ux_reference:
     desired_visual_reference:
-      local_path: "/Users/ericfj/Downloads/Dark-Mode Relay Selector UI - Relay Selector UI 3 (1).png"
+      linear_issue: "CND-20"
       linear_attachment_title: "Desired darker relay settings UX reference"
+      linear_attachment_url: "https://uploads.linear.app/d189da67-d54f-44b6-8973-6f5718681a1e/7a63df6a-9cf7-4503-8b28-e3c8f21a932b/51e25cc6-caeb-4d58-b714-e3f60825bbec"
       interpretation:
         - "Darker, quieter, compact page."
         - "Relay groups are framed but not visually heavy."
