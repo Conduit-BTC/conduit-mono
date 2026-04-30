@@ -13,6 +13,7 @@ export * from "./relay-settings"
 export * from "./relay-list"
 export * from "./relay-health"
 export * from "./relay-planner"
+export * from "./relay-publish"
 export {
   getNdk,
   connectNdk,

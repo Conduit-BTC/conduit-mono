@@ -14,6 +14,7 @@ import {
   appendConduitClientTag,
   formatPubkey,
   getNdk,
+  publishWithPlanner,
   useAuth,
   useProfile,
   type ShippingAddressSchema,
@@ -475,8 +476,16 @@ function CheckoutPage() {
       setStep("sending")
 
       await Promise.all([
-        wrappedToMerchant.publish(),
-        wrappedToSelf.publish(),
+        publishWithPlanner(wrappedToMerchant, {
+          intent: "recipient_event",
+          authorPubkey: pubkey,
+          recipientPubkeys: [selectedMerchant],
+        }),
+        publishWithPlanner(wrappedToSelf, {
+          intent: "recipient_event",
+          authorPubkey: pubkey,
+          recipientPubkeys: [pubkey],
+        }),
         new Promise((resolve) => window.setTimeout(resolve, 900)),
       ])
 

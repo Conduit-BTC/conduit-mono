@@ -5,6 +5,7 @@ import { EVENT_KINDS } from "./kinds"
 import { getProfiles } from "./commerce"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { requireNdkConnected } from "./ndk"
+import { publishWithPlanner } from "./relay-publish"
 
 interface RawProfileContent {
   name?: string
@@ -80,7 +81,10 @@ export async function publishProfile(
   event.tags = appendConduitClientTag([], appId)
 
   await event.sign(ndk.signer)
-  await event.publish()
+  await publishWithPlanner(event, {
+    intent: "author_event",
+    authorPubkey: pubkey,
+  })
 
   // Update local cache
   await db.profiles.put({

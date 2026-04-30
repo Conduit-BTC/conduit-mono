@@ -25,6 +25,7 @@ import {
 import {
   appendConduitClientTag,
   formatNpub,
+  publishWithPlanner,
   requireNdkConnected,
   useAuth,
   useProfile,
@@ -330,7 +331,10 @@ function StorefrontPage() {
       event.tags = appendConduitClientTag(nextTags, "market")
 
       await event.sign(ndk.signer)
-      await event.publish()
+      await publishWithPlanner(event, {
+        intent: "author_event",
+        authorPubkey: viewerPubkey,
+      })
 
       setFollowOverride(nextShouldFollow)
       await queryClient.invalidateQueries({
