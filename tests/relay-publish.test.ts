@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import {
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
+  deriveRelayOutcomes,
   planPublishRelays,
   type RelayList,
 } from "@conduit/core"
@@ -92,5 +93,62 @@ describe("planPublishRelays", () => {
   // Mark relay list usage helper as used to avoid lint flag.
   it("relayList helper compiles", () => {
     expect(relayList("zz").pubkey).toBe("zz")
+  })
+})
+
+describe("deriveRelayOutcomes", () => {
+  const A = "wss://a.example"
+  const B = "wss://b.example"
+  const C = "wss://c.example"
+
+  it("marks every attempted relay as successful when all are acked", () => {
+    const result = deriveRelayOutcomes({
+      attemptedRelayUrls: [A, B],
+      publishedUrls: [A, B],
+    })
+    expect(result.successfulRelayUrls.sort()).toEqual([A, B].sort())
+    expect(result.failedRelayUrls).toEqual([])
+  })
+
+  it("marks unacked attempted relays as failed (timeout case)", () => {
+    const result = deriveRelayOutcomes({
+      attemptedRelayUrls: [A, B, C],
+      publishedUrls: [A],
+    })
+    expect(result.successfulRelayUrls).toEqual([A])
+    expect(result.failedRelayUrls.sort()).toEqual([B, C].sort())
+  })
+
+  it("honors partial-failure split from NDKPublishError", () => {
+    // NDK acked A; reported explicit error for B; C silently dropped.
+    const result = deriveRelayOutcomes({
+      attemptedRelayUrls: [A, B, C],
+      publishedUrls: [A],
+      failedUrls: [B],
+    })
+    expect(result.successfulRelayUrls).toEqual([A])
+    expect(result.failedRelayUrls.sort()).toEqual([B, C].sort())
+  })
+
+  it("does not double-count: success wins over failure for the same URL", () => {
+    // Defensive: should the report list a URL in both buckets, treat it as
+    // success so we don't punish a relay that actually accepted the event.
+    const result = deriveRelayOutcomes({
+      attemptedRelayUrls: [A, B],
+      publishedUrls: [A],
+      failedUrls: [A, B],
+    })
+    expect(result.successfulRelayUrls).toEqual([A])
+    expect(result.failedRelayUrls).toEqual([B])
+  })
+
+  it("ignores URLs not in the attempted set", () => {
+    const result = deriveRelayOutcomes({
+      attemptedRelayUrls: [A],
+      publishedUrls: [B],
+      failedUrls: [C],
+    })
+    expect(result.successfulRelayUrls).toEqual([])
+    expect(result.failedRelayUrls).toEqual([A])
   })
 })
