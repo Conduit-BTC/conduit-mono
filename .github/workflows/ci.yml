@@ -2,10 +2,17 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened]
     branches: [main]
   push:
     branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
   VITE_RELAY_URL: "wss://relay.primal.net"
@@ -15,10 +22,12 @@ jobs:
   format:
     if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.5"
@@ -51,8 +60,11 @@ jobs:
   lint:
     if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.5"
@@ -62,8 +74,11 @@ jobs:
   typecheck:
     if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.5"
@@ -73,8 +88,11 @@ jobs:
   test:
     if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.5"
@@ -84,8 +102,11 @@ jobs:
   color-policy:
     if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.5"
@@ -96,9 +117,12 @@ jobs:
   build-signet:
     if: github.event_name == 'pull_request' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [format, lint, typecheck, test, color-policy]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.5"
@@ -109,9 +133,12 @@ jobs:
   build-mainnet:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [format, lint, typecheck, test, color-policy]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.5"
@@ -127,9 +154,16 @@ jobs:
     permissions:
       checks: read
       contents: read
+      issues: write
       pull-requests: write
     steps:
+      - name: Skip preview links for fork PRs
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "Preview link comments are skipped for fork PRs because GitHub provides a read-only token and Cloudflare Pages does not publish same-repository preview checks for fork heads."
+
       - name: Post preview links
+        if: github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v7
         with:
           script: |
@@ -371,6 +405,10 @@ jobs:
               MARKER_START,
               "## Preview Deploys",
               "",
+              `- Source commit: ${headSha}`,
+              `- Last applied: ${updatedAt}`,
+              `- Workflow run: ${runUrl}`,
+              "",
               "### Branch URLs",
               "",
               branchTable,
@@ -405,12 +443,12 @@ jobs:
               body: newBody,
             });
 
-            // --- 2. Per-commit comment (idempotent by commit SHA) ---
-            const commentBody = `${previewCommentBlock}\n\n_Preview links for commit ${shortSha}_`;
+            // --- 2. Sticky preview comment (idempotent across commits) ---
+            const commentBody = `${previewCommentBlock}\n\n_Preview links for latest commit ${shortSha}_`;
 
-            const alreadyPosted = comments.find((comment) =>
-              comment.body?.includes(MARKER_START)
-              && comment.body?.includes(`commit ${shortSha}`)
+            const alreadyPosted = [...comments].reverse().find((comment) =>
+              comment.user?.login === "github-actions[bot]"
+              && comment.body?.includes(MARKER_START)
             );
 
             if (alreadyPosted) {
