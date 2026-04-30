@@ -22,6 +22,8 @@ import {
   getCommerceReadRelayUrls,
   getGeneralReadRelayUrls,
 } from "./relay-settings"
+import { getRelayLists } from "./relay-list"
+import { planRelayReads, type RelayReadIntent } from "./relay-planner"
 
 const PRODUCT_CACHE_TTL_MS = 5 * 60_000
 const PROFILE_CACHE_TTL_MS = 5 * 60_000
@@ -219,6 +221,49 @@ function commerceReadRelayUrls(): string[] {
         ? config.commerceRelayUrls
         : config.publicRelayUrls,
   })
+}
+
+/**
+ * Resolve a planner-driven relay URL list for a commerce read intent.
+ * Pulls cached NIP-65 relay lists for any author/recipient hints so
+ * fanout includes the author's write/read relays alongside user settings.
+ * Falls back to the legacy URL accessors if planning yields nothing.
+ */
+async function planCommerceReadRelays(input: {
+  intent: RelayReadIntent
+  authors?: readonly string[]
+  recipients?: readonly string[]
+}): Promise<string[]> {
+  const hintPubkeys = Array.from(
+    new Set(
+      [...(input.authors ?? []), ...(input.recipients ?? [])]
+        .map((p) => p.trim())
+        .filter(Boolean)
+    )
+  )
+
+  const relayLists =
+    hintPubkeys.length > 0
+      ? await getRelayLists(hintPubkeys, { cacheOnly: true })
+      : undefined
+
+  const plan = planRelayReads({
+    intent: input.intent,
+    authors: input.authors,
+    recipients: input.recipients,
+    relayLists,
+  })
+
+  if (plan.relayUrls.length > 0) return plan.relayUrls
+
+  // Defensive fallback: legacy resolution paths.
+  switch (input.intent) {
+    case "commerce_products":
+    case "author_products":
+      return commerceReadRelayUrls()
+    default:
+      return publicReadRelayUrls()
+  }
 }
 
 async function runFetchEventsFanout(
@@ -534,9 +579,13 @@ async function fetchDeletionTimestamps(
   }
 
   const deletionEvents: NDKEvent[] = []
+  const deletionRelayUrls = await planCommerceReadRelays({
+    intent: "author_products",
+    authors: [merchantPubkey],
+  })
   for (const filter of filters) {
     const fetched = await runFetchEventsFanout(filter, {
-      relayUrls: commerceReadRelayUrls(),
+      relayUrls: deletionRelayUrls,
       connectTimeoutMs: 4_000,
       fetchTimeoutMs: 10_000,
     })
@@ -551,7 +600,7 @@ async function fetchDeletionTimestamps(
         limit: 300,
       },
       {
-        relayUrls: commerceReadRelayUrls(),
+        relayUrls: deletionRelayUrls,
         connectTimeoutMs: 4_000,
         fetchTimeoutMs: 10_000,
       }
@@ -643,8 +692,16 @@ async function fetchPublicProductRecords(query: {
   if (query.ids) filter.ids = query.ids
   if (query.dTags) filter["#d"] = query.dTags
 
+  const relayUrls = await planCommerceReadRelays({
+    intent:
+      query.authors && query.authors.length > 0
+        ? "author_products"
+        : "commerce_products",
+    authors: query.authors,
+  })
+
   const events = await runFetchEventsFanout(filter, {
-    relayUrls: publicReadRelayUrls(),
+    relayUrls,
     connectTimeoutMs: 4_000,
     fetchTimeoutMs: 8_000,
   })
@@ -699,6 +756,11 @@ export async function getMerchantStorefront(
   query: MerchantStorefrontQuery
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
   try {
+    const relayUrls = await planCommerceReadRelays({
+      intent: "author_products",
+      authors: [query.merchantPubkey],
+    })
+
     const rawEvents = await runFetchEventsFanout(
       {
         kinds: [EVENT_KINDS.PRODUCT],
@@ -706,7 +768,7 @@ export async function getMerchantStorefront(
         limit: query.limit ?? 200,
       },
       {
-        relayUrls: commerceReadRelayUrls(),
+        relayUrls,
         connectTimeoutMs: 4_000,
         fetchTimeoutMs: 10_000,
       }
@@ -1073,8 +1135,13 @@ async function fetchParsedOrderMessages(
       limit,
     }
 
+    const dmRelayUrls = await planCommerceReadRelays({
+      intent: "dm_inbox",
+      recipients: [principalPubkey],
+    })
+
     const wrapped = await runFetchEventsFanout(filter, {
-      relayUrls: commerceReadRelayUrls(),
+      relayUrls: dmRelayUrls,
       connectTimeoutMs: 4_000,
       fetchTimeoutMs: 12_000,
     })

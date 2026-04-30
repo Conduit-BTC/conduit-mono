@@ -40,6 +40,8 @@ export interface RelayList {
 export interface RelayListLookupOptions {
   /** Skip cache check and fetch from network. */
   skipCache?: boolean
+  /** Only consult the cache; do NOT issue a network fetch for missing entries. */
+  cacheOnly?: boolean
   /** Custom relay set to scan; defaults to user's general read relays. */
   relayUrls?: readonly string[]
   /** Override `Date.now()` (test seam). */
@@ -151,8 +153,13 @@ async function loadCached(pubkey: string): Promise<RelayList | undefined> {
     const row = await testOverrides.loadCached(pubkey)
     return row ? fromCachedRow(row) : undefined
   }
-  const row = await db.relayLists.get(pubkey)
-  return row ? fromCachedRow(row) : undefined
+  try {
+    const row = await db.relayLists.get(pubkey)
+    return row ? fromCachedRow(row) : undefined
+  } catch {
+    // IndexedDB unavailable (e.g. SSR / non-browser test env) — treat as miss.
+    return undefined
+  }
 }
 
 async function putCached(list: RelayList): Promise<void> {
@@ -161,7 +168,11 @@ async function putCached(list: RelayList): Promise<void> {
     await testOverrides.putCached(row)
     return
   }
-  await db.relayLists.put(row)
+  try {
+    await db.relayLists.put(row)
+  } catch {
+    // best-effort; ignore persistence failures in non-browser environments.
+  }
 }
 
 /**
@@ -210,6 +221,7 @@ export async function getRelayList(
   if (cached && now(opts) - cached.cachedAt < RELAY_LIST_CACHE_TTL_MS) {
     return cached
   }
+  if (opts.cacheOnly) return cached
 
   const relayUrls =
     opts.relayUrls ??
@@ -263,6 +275,7 @@ export async function getRelayLists(
   }
 
   if (missing.length === 0) return out
+  if (opts.cacheOnly) return out
 
   const relayUrls =
     opts.relayUrls ??
