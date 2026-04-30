@@ -195,7 +195,16 @@ const TIER_PRIORITY: Record<HydrationTier, number> = {
 class HydrationQueue {
   private readonly pending: QueueTask<unknown>[] = []
   private active = 0
-  private maxConcurrency = 6
+  /**
+   * Global concurrency cap across tiers. We size it to the largest tier
+   * concurrency so a burst of `detail` work isn't choked by a prior
+   * `prefetch` request, but we never exceed it — tiers with smaller
+   * concurrency budgets express their preference via priority ordering,
+   * not by lowering an already-running cap.
+   */
+  private readonly maxConcurrency = Math.max(
+    ...Object.values(TIER_CONFIG).map((cfg) => cfg.concurrency)
+  )
 
   enqueue<T>(tier: HydrationTier, run: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
@@ -206,10 +215,6 @@ class HydrationQueue {
       )
       if (idx === -1) this.pending.push(task as QueueTask<unknown>)
       else this.pending.splice(idx, 0, task as QueueTask<unknown>)
-      this.maxConcurrency = Math.max(
-        this.maxConcurrency,
-        TIER_CONFIG[tier].concurrency
-      )
       this.tick()
     })
   }
@@ -304,9 +309,12 @@ export async function getProductSocialSummary(
           return summary
         }
 
-        const filter: NDKFilter = input.coordinate
+        const filter: NDKFilter | undefined = input.coordinate
           ? { "#a": [input.coordinate], kinds: [7, 1111, 9735] }
-          : { "#e": [input.eventId ?? ""], kinds: [7, 1111, 9735] }
+          : input.eventId
+            ? { "#e": [input.eventId], kinds: [7, 1111, 9735] }
+            : undefined
+        if (!filter) return summary
 
         const events = await fetchEventsFanout(filter, {
           relayUrls,
@@ -343,9 +351,12 @@ export async function getProductCommentsPreview(
     const authors = input.authorPubkey ? [input.authorPubkey] : []
     const relayUrls = await planRead("product_comments_preview", authors, tier)
     if (relayUrls.length === 0) return []
-    const filter: NDKFilter = input.coordinate
+    const filter: NDKFilter | undefined = input.coordinate
       ? { "#a": [input.coordinate], kinds: [1111], limit }
-      : { "#e": [input.eventId ?? ""], kinds: [1111], limit }
+      : input.eventId
+        ? { "#e": [input.eventId], kinds: [1111], limit }
+        : undefined
+    if (!filter) return []
     const events = await fetchEventsFanout(filter, {
       relayUrls,
       fetchTimeoutMs: TIER_CONFIG[tier].fetchTimeoutMs,
