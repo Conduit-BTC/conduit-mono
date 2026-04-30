@@ -79,12 +79,36 @@ export interface CachedOrderMessage {
   cachedAt: number
 }
 
+/**
+ * NIP-65 relay list cache entry for an arbitrary pubkey.
+ *
+ * Used by the relay planner to route reads at an author's write relays
+ * and writes at a recipient's read/inbox relays. Distinct from the
+ * local user's relay-settings preferences (`RelaySettingsState`), which
+ * describe what the user has configured rather than what is observed
+ * for other pubkeys.
+ */
+export interface CachedRelayList {
+  pubkey: string
+  /** Relays the pubkey reads from (NIP-65 marker `read` or unmarked). */
+  readRelayUrls: string[]
+  /** Relays the pubkey writes to (NIP-65 marker `write` or unmarked). */
+  writeRelayUrls: string[]
+  /** `created_at` of the kind-10002 event in seconds. */
+  eventCreatedAt: number
+  /** Relays the kind-10002 event was observed on, if known. */
+  sourceRelayUrls?: string[]
+  /** Local cache time in milliseconds. */
+  cachedAt: number
+}
+
 class ConduitDB extends Dexie {
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
   products!: EntityTable<CachedProduct, "id">
   profiles!: EntityTable<CachedProfile, "pubkey">
   orderMessages!: EntityTable<CachedOrderMessage, "id">
+  relayLists!: EntityTable<CachedRelayList, "pubkey">
 
   constructor() {
     super("conduit")
@@ -103,6 +127,16 @@ class ConduitDB extends Dexie {
       profiles: "pubkey, cachedAt",
       orderMessages:
         "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+    })
+
+    this.version(3).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
     })
   }
 }
@@ -133,6 +167,7 @@ export async function ensureCommerceCacheScope(): Promise<void> {
     db.products.clear(),
     db.profiles.clear(),
     db.orderMessages.clear(),
+    db.relayLists.clear(),
   ])
 
   window.localStorage.setItem(CACHE_SCOPE_KEY, nextScope)
