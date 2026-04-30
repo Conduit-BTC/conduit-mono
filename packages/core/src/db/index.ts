@@ -102,6 +102,33 @@ export interface CachedRelayList {
   cachedAt: number
 }
 
+/**
+ * Aggregate social signals for a product, keyed by the product's
+ * coordinate (NIP-33 `kind:pubkey:d-tag`) or event id when available.
+ *
+ * This is a scaffold cache: counters are filled in by the social
+ * hydrator over time and consumed by product card surfaces. UI must
+ * treat any field as optional/stale until `cachedAt` is recent.
+ */
+export interface CachedProductSocialSummary {
+  /** `kind:pubkey:d-tag` coordinate or event id. */
+  key: string
+  /** Number of distinct reaction (kind 7) events seen. */
+  reactionCount?: number
+  /** Number of distinct zap receipts (kind 9735) seen. */
+  zapCount?: number
+  /** Sum of zap receipts in millisats, when payable. */
+  zapAmountMsats?: number
+  /** Number of distinct comment (kind 1111) events seen. */
+  commentCount?: number
+  /** Number of distinct reviews (NIP-25 / merchant feedback) seen. */
+  reviewCount?: number
+  /** Local cache time in ms. */
+  cachedAt: number
+  /** Last verified-fresh timestamp in ms. */
+  verifiedAt?: number
+}
+
 class ConduitDB extends Dexie {
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
@@ -109,6 +136,7 @@ class ConduitDB extends Dexie {
   profiles!: EntityTable<CachedProfile, "pubkey">
   orderMessages!: EntityTable<CachedOrderMessage, "id">
   relayLists!: EntityTable<CachedRelayList, "pubkey">
+  productSocialSummaries!: EntityTable<CachedProductSocialSummary, "key">
 
   constructor() {
     super("conduit")
@@ -137,6 +165,17 @@ class ConduitDB extends Dexie {
       orderMessages:
         "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
       relayLists: "pubkey, cachedAt",
+    })
+
+    this.version(4).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
+      productSocialSummaries: "key, cachedAt",
     })
   }
 }
@@ -168,6 +207,7 @@ export async function ensureCommerceCacheScope(): Promise<void> {
     db.profiles.clear(),
     db.orderMessages.clear(),
     db.relayLists.clear(),
+    db.productSocialSummaries.clear(),
   ])
 
   window.localStorage.setItem(CACHE_SCOPE_KEY, nextScope)

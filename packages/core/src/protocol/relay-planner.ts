@@ -45,6 +45,14 @@ export type RelayReadIntent =
   | "relay_lists"
   /** Encrypted DMs for a recipient (NIP-17 inbox). */
   | "dm_inbox"
+  /** Aggregate social signals (reactions, zaps, comments) for a product. */
+  | "product_card_social_summary"
+  /** Top-N comments preview for a product card. */
+  | "product_comments_preview"
+  /** Full review/comment thread for a product detail surface. */
+  | "product_reviews"
+  /** A profile's recent social feed (kind 1 / kind 6 / kind 30023, etc.). */
+  | "profile_social_feed"
   /** Generic kind-fanout that has no author hint. */
   | "general"
 
@@ -209,6 +217,10 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
       case "commerce_products":
       case "author_products":
         return getCommerceReadRelayUrls(settingsOpts)
+      case "product_card_social_summary":
+      case "product_comments_preview":
+      case "product_reviews":
+      case "profile_social_feed":
       case "profiles":
       case "relay_lists":
       case "dm_inbox":
