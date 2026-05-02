@@ -7,6 +7,7 @@ const DEFAULT_RELAYS = [
   "wss://relay.nostr.net",
   "wss://sendit.nosflare.com",
   "wss://relay.plebeian.market",
+  "wss://conduitl2.fly.dev",
 ]
 
 export interface ConduitConfig {

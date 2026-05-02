@@ -96,6 +96,7 @@ export const RELAY_SCAN_TIMEOUT_MS = 4_000
 
 const KNOWN_COMMERCE_RELAY_HOSTS = new Set([
   "relay.conduit.market",
+  "conduitl2.fly.dev",
   "relay.plebeian.market",
 ])
 
