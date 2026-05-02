@@ -10,6 +10,7 @@ import {
   getNdk,
   getProfiles,
   formatPubkey,
+  publishWithPlanner,
   useAuth,
   useProfile,
 } from "@conduit/core"
@@ -288,7 +289,18 @@ function MessagesPage() {
         rumorKind: EVENT_KINDS.ORDER,
       })
 
-      await Promise.all([wrappedToMerchant.publish(), wrappedToBuyer.publish()])
+      await Promise.all([
+        publishWithPlanner(wrappedToMerchant, {
+          intent: "recipient_event",
+          authorPubkey: pubkey,
+          recipientPubkeys: [selectedConversation.merchantPubkey],
+        }),
+        publishWithPlanner(wrappedToBuyer, {
+          intent: "recipient_event",
+          authorPubkey: pubkey,
+          recipientPubkeys: [pubkey],
+        }),
+      ])
     },
     onSuccess: async () => {
       setReplyText("")

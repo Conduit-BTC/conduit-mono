@@ -9,6 +9,11 @@ import {
   getGeneralReadRelayUrls,
   setActiveRelaySettingsScope,
 } from "./relay-settings"
+import {
+  partitionByHealth,
+  recordRelayFailure,
+  recordRelaySuccess,
+} from "./relay-health"
 
 export type NdkConnectionState = "idle" | "connecting" | "connected" | "error"
 
@@ -22,6 +27,7 @@ export interface FetchEventsFanoutOptions {
   relayUrls?: string[]
   connectTimeoutMs?: number
   fetchTimeoutMs?: number
+  skipHealthFilter?: boolean
 }
 
 type Listener = () => void
@@ -91,15 +97,20 @@ async function fetchEventsFromRelay(
       sleep(connectTimeoutMs + 250, false),
     ])
 
-    if (!connected) return []
+    if (!connected) {
+      recordRelayFailure(relayUrl)
+      return []
+    }
 
     const events = await Promise.race([
       ndk.fetchEvents(filter),
       sleep(fetchTimeoutMs, new Set<NDKEvent>()),
     ])
 
+    recordRelaySuccess(relayUrl)
     return Array.from(events) as NDKEvent[]
   } catch {
+    recordRelayFailure(relayUrl)
     return []
   } finally {
     for (const [, relay] of ndk.pool?.relays?.entries() ?? []) {
@@ -112,7 +123,7 @@ export async function fetchEventsFanout(
   filter: NDKFilter,
   options: FetchEventsFanoutOptions = {}
 ): Promise<NDKEvent[]> {
-  const relayUrls = (
+  const dedupedUrls = (
     options.relayUrls && options.relayUrls.length > 0
       ? options.relayUrls
       : getGeneralReadRelayUrls({ fallbackRelayUrls: config.defaultRelays })
@@ -120,6 +131,19 @@ export async function fetchEventsFanout(
     .map((url) => url.trim())
     .filter(Boolean)
     .filter((url, index, all) => all.indexOf(url) === index)
+
+  const relayUrls = options.skipHealthFilter
+    ? dedupedUrls
+    : (() => {
+        const { healthy, parked } = partitionByHealth(dedupedUrls)
+        // If health filter would leave no relays, fall back to the full set
+        // so a transient cooldown does not silently break reads.
+        return healthy.length > 0
+          ? healthy
+          : parked.length > 0
+            ? dedupedUrls
+            : []
+      })()
 
   if (relayUrls.length === 0) return []
 

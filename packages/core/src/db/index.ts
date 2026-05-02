@@ -79,12 +79,64 @@ export interface CachedOrderMessage {
   cachedAt: number
 }
 
+/**
+ * NIP-65 relay list cache entry for an arbitrary pubkey.
+ *
+ * Used by the relay planner to route reads at an author's write relays
+ * and writes at a recipient's read/inbox relays. Distinct from the
+ * local user's relay-settings preferences (`RelaySettingsState`), which
+ * describe what the user has configured rather than what is observed
+ * for other pubkeys.
+ */
+export interface CachedRelayList {
+  pubkey: string
+  /** Relays the pubkey reads from (NIP-65 marker `read` or unmarked). */
+  readRelayUrls: string[]
+  /** Relays the pubkey writes to (NIP-65 marker `write` or unmarked). */
+  writeRelayUrls: string[]
+  /** `created_at` of the kind-10002 event in seconds. */
+  eventCreatedAt: number
+  /** Relays the kind-10002 event was observed on, if known. */
+  sourceRelayUrls?: string[]
+  /** Local cache time in milliseconds. */
+  cachedAt: number
+}
+
+/**
+ * Aggregate social signals for a product, keyed by the product's
+ * coordinate (NIP-33 `kind:pubkey:d-tag`) or event id when available.
+ *
+ * This is a scaffold cache: counters are filled in by the social
+ * hydrator over time and consumed by product card surfaces. UI must
+ * treat any field as optional/stale until `cachedAt` is recent.
+ */
+export interface CachedProductSocialSummary {
+  /** `kind:pubkey:d-tag` coordinate or event id. */
+  key: string
+  /** Number of distinct reaction (kind 7) events seen. */
+  reactionCount?: number
+  /** Number of distinct zap receipts (kind 9735) seen. */
+  zapCount?: number
+  /** Sum of zap receipts in millisats, when payable. */
+  zapAmountMsats?: number
+  /** Number of distinct comment (kind 1111) events seen. */
+  commentCount?: number
+  /** Number of distinct reviews (NIP-25 / merchant feedback) seen. */
+  reviewCount?: number
+  /** Local cache time in ms. */
+  cachedAt: number
+  /** Last verified-fresh timestamp in ms. */
+  verifiedAt?: number
+}
+
 class ConduitDB extends Dexie {
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
   products!: EntityTable<CachedProduct, "id">
   profiles!: EntityTable<CachedProfile, "pubkey">
   orderMessages!: EntityTable<CachedOrderMessage, "id">
+  relayLists!: EntityTable<CachedRelayList, "pubkey">
+  productSocialSummaries!: EntityTable<CachedProductSocialSummary, "key">
 
   constructor() {
     super("conduit")
@@ -103,6 +155,27 @@ class ConduitDB extends Dexie {
       profiles: "pubkey, cachedAt",
       orderMessages:
         "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+    })
+
+    this.version(3).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
+    })
+
+    this.version(4).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
+      productSocialSummaries: "key, cachedAt",
     })
   }
 }
@@ -133,6 +206,8 @@ export async function ensureCommerceCacheScope(): Promise<void> {
     db.products.clear(),
     db.profiles.clear(),
     db.orderMessages.clear(),
+    db.relayLists.clear(),
+    db.productSocialSummaries.clear(),
   ])
 
   window.localStorage.setItem(CACHE_SCOPE_KEY, nextScope)

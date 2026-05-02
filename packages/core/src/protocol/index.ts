@@ -10,6 +10,11 @@ export * from "./lightning"
 export * from "./commerce"
 export * from "./nip89"
 export * from "./relay-settings"
+export * from "./relay-list"
+export * from "./relay-health"
+export * from "./relay-planner"
+export * from "./relay-publish"
+export * from "./social-hydrator"
 export {
   getNdk,
   connectNdk,

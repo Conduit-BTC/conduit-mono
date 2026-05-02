@@ -61,54 +61,19 @@ export interface RelaySettingsPanelProps {
   className?: string
 }
 
-const sectionMeta: Record<
-  RelaySettingsSection,
-  {
-    label: string
-    description: string
-    labelClassName: string
-    dotClassName: string
-    surfaceClassName: string
-    empty: string
-  }
-> = {
-  commerce: {
-    label: "Commerce Enabled Relays",
-    description:
-      "Relays that Conduit can use for commerce events like products, stock updates, orders, and merchant messages.",
-    labelClassName: "text-primary-300",
-    dotClassName: "bg-primary-400",
-    surfaceClassName:
-      "bg-[radial-gradient(circle_at_top_left,color-mix(in_srgb,var(--primary-500)_16%,transparent),transparent_38%),color-mix(in_srgb,var(--surface)_88%,var(--background)_12%)]",
-    empty:
-      "No verified commerce relays yet. Add a relay and Conduit will verify whether it belongs here.",
-  },
-  public: {
-    label: "Other Public Relays",
-    description:
-      "General Nostr relays used for broader network reading, publishing, and discovery.",
-    labelClassName: "text-accent-300",
-    dotClassName: "bg-accent-400",
-    surfaceClassName:
-      "bg-[radial-gradient(circle_at_top_left,color-mix(in_srgb,var(--accent-500)_13%,transparent),transparent_38%),color-mix(in_srgb,var(--surface)_88%,var(--background)_12%)]",
-    empty:
-      "No public relays configured yet. Reachable non-commerce relays will appear here.",
-  },
-}
-
-function sortSectionEntries(
-  entries: readonly RelaySettingsPanelEntry[],
-  section: RelaySettingsSection
+function sortAllEntries(
+  entries: readonly RelaySettingsPanelEntry[]
 ): RelaySettingsPanelEntry[] {
-  const sectionEntries = entries.filter((entry) => entry.section === section)
-  if (section !== "commerce") {
-    return sectionEntries.sort((a, b) => a.url.localeCompare(b.url))
-  }
-
-  return sectionEntries.sort((a, b) => {
-    const aPriority = a.commercePriority ?? Number.MAX_SAFE_INTEGER
-    const bPriority = b.commercePriority ?? Number.MAX_SAFE_INTEGER
-    if (aPriority !== bPriority) return aPriority - bPriority
+  return [...entries].sort((a, b) => {
+    // Commerce first, ordered by priority; then public alphabetical.
+    if (a.section !== b.section) {
+      return a.section === "commerce" ? -1 : 1
+    }
+    if (a.section === "commerce") {
+      const aPriority = a.commercePriority ?? Number.MAX_SAFE_INTEGER
+      const bPriority = b.commercePriority ?? Number.MAX_SAFE_INTEGER
+      if (aPriority !== bPriority) return aPriority - bPriority
+    }
     return a.url.localeCompare(b.url)
   })
 }
@@ -167,7 +132,7 @@ function CapabilityTooltip({
   return (
     <span className="group/tooltip relative inline-flex">
       {children}
-      <span className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 w-64 max-w-[calc(100vw-3rem)] rounded-xl border border-[var(--border)] bg-[var(--surface-dialog)] px-3 py-2 text-left text-xs leading-5 text-[var(--text-secondary)] opacity-0 shadow-[var(--shadow-dialog)] transition-opacity group-focus-within/tooltip:opacity-100 group-hover/tooltip:opacity-100 sm:left-1/2 sm:-translate-x-1/2">
+      <span className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 w-64 max-w-[calc(100vw-3rem)] rounded-lg border border-[var(--border)] bg-[var(--surface-dialog)] px-3 py-2 text-left text-xs leading-5 text-[var(--text-secondary)] opacity-0 shadow-[var(--shadow-dialog)] transition-opacity group-focus-within/tooltip:opacity-100 group-hover/tooltip:opacity-100 sm:left-1/2 sm:-translate-x-1/2">
         <span className="block font-semibold text-[var(--text-primary)]">
           {label}
         </span>
@@ -199,7 +164,7 @@ function PreferenceToggle({
       disabled={disabled}
       onClick={onToggle}
       className={cn(
-        "inline-flex h-9 w-9 items-center justify-center rounded-full border text-[0.68rem] font-semibold tracking-[0.12em] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-40",
+        "inline-flex h-7 w-9 items-center justify-center rounded-md border text-[0.62rem] font-semibold tracking-[0.12em] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-40",
         active
           ? "border-primary-400/60 bg-primary-500/20 text-primary-100"
           : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
@@ -214,46 +179,61 @@ function CapabilityIcon({
   active,
   icon: Icon,
   label,
-  shortLabel,
   description,
   warning = false,
 }: {
   active: boolean
   icon: typeof Search
   label: string
-  shortLabel: string
   description: string
   warning?: boolean
 }) {
   return (
     <CapabilityTooltip label={label} description={description}>
-      <span className="inline-flex flex-col items-center gap-1">
-        <span
-          tabIndex={0}
-          title={label}
-          aria-label={label}
-          className={cn(
-            "inline-flex h-8 w-8 items-center justify-center rounded-full border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
-            warning
-              ? "border-warning/35 bg-warning/10 text-warning"
-              : active
-                ? "border-success/35 bg-success/10 text-success"
-                : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)]"
-          )}
-        >
-          <Icon className="h-3.5 w-3.5" />
-        </span>
-        <span className="text-[0.56rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
-          {shortLabel}
-        </span>
+      <span
+        tabIndex={0}
+        title={label}
+        aria-label={label}
+        className={cn(
+          "inline-flex h-6 w-6 items-center justify-center rounded-md border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+          warning
+            ? "border-warning/35 bg-warning/10 text-warning"
+            : active
+              ? "border-success/35 bg-success/10 text-success"
+              : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)]"
+        )}
+      >
+        <Icon className="h-3 w-3" />
       </span>
     </CapabilityTooltip>
   )
 }
 
+function SectionTag({ section }: { section: RelaySettingsSection }) {
+  const isCommerce = section === "commerce"
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.14em]",
+        isCommerce
+          ? "border-primary-400/40 bg-primary-500/10 text-primary-200"
+          : "border-accent-400/30 bg-accent-500/10 text-accent-200"
+      )}
+    >
+      <span
+        className={cn(
+          "h-1.5 w-1.5 rounded-full",
+          isCommerce ? "bg-primary-400" : "bg-accent-400"
+        )}
+        aria-hidden="true"
+      />
+      {isCommerce ? "Commerce" : "Public"}
+    </span>
+  )
+}
+
 function RelayRow({
   entry,
-  section,
   scanning,
   draggedUrl,
   onDragStart,
@@ -265,7 +245,6 @@ function RelayRow({
   onToggleWrite,
 }: {
   entry: RelaySettingsPanelEntry
-  section: RelaySettingsSection
   scanning: boolean
   draggedUrl: string | null
   onDragStart: (url: string) => void
@@ -279,7 +258,7 @@ function RelayRow({
   const warningText = getRelayWarningText(entry)
   const compatibilityText = getRelayCompatibilityText(entry)
   const isDisabled = entry.warnings.unreachable || scanning
-  const draggable = section === "commerce"
+  const draggable = entry.section === "commerce"
 
   function handleDragStart(event: DragEvent<HTMLDivElement>): void {
     if (!draggable) return
@@ -306,66 +285,56 @@ function RelayRow({
       }}
       onDrop={handleDrop}
       className={cn(
-        "group grid min-w-0 gap-3 border-b border-[var(--border)] py-4 last:border-b-0 lg:grid-cols-[2rem_minmax(0,1fr)_7.25rem_10rem_5.75rem] lg:items-center",
+        "group grid min-w-0 gap-2 border-b border-[var(--border)]/60 px-3 py-2.5 last:border-b-0 lg:grid-cols-[1.25rem_minmax(0,1fr)_5.5rem_6.75rem_4.25rem] lg:items-center",
         draggedUrl === entry.url && "opacity-55"
       )}
     >
       <div className="hidden items-center justify-center lg:flex">
         {draggable ? (
           <GripVertical
-            className="h-4 w-4 cursor-grab text-[var(--text-muted)] active:cursor-grabbing"
+            className="h-3.5 w-3.5 cursor-grab text-[var(--text-muted)] active:cursor-grabbing"
             aria-label="Drag to change Conduit's commerce priority"
           />
         ) : null}
       </div>
 
-      <div className="min-w-0 rounded-2xl bg-[color-mix(in_srgb,var(--surface)_60%,transparent)] p-3 lg:bg-transparent lg:p-0">
-        <div className="flex min-w-0 items-center gap-3">
+      <div className="min-w-0">
+        <div className="flex min-w-0 items-center gap-2">
           <span
             className={cn(
-              "h-2.5 w-2.5 shrink-0 rounded-full",
-              sectionMeta[section].dotClassName,
+              "h-2 w-2 shrink-0 rounded-full",
+              entry.section === "commerce" ? "bg-primary-400" : "bg-accent-400",
               (entry.warnings.unreachable || !entry.readEnabled) && "opacity-35"
             )}
             aria-hidden="true"
           />
-          <div className="min-w-0">
-            <div
-              className={cn(
-                "truncate font-mono text-sm text-[var(--text-primary)]",
-                entry.warnings.unreachable && "text-[var(--text-muted)]"
-              )}
-              title={entry.url}
-            >
-              {entry.url}
-            </div>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
-              <span>{getRelayStatusLabel(entry)}</span>
-              <span
-                className="rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2 py-0.5"
-                title={compatibilityText}
-              >
-                {entry.capabilities.commerce
-                  ? "Commerce compatible"
-                  : entry.warnings.commercePartialSupport
-                    ? "Partial commerce"
-                    : "Public relay"}
-              </span>
-              {entry.relayName ? <span>{entry.relayName}</span> : null}
-              {warningText ? (
-                <span className="text-warning" title={warningText}>
-                  {warningText}
-                </span>
-              ) : null}
-            </div>
+          <div
+            className={cn(
+              "min-w-0 truncate font-mono text-[0.8rem] text-[var(--text-primary)]",
+              entry.warnings.unreachable && "text-[var(--text-muted)]"
+            )}
+            title={entry.url}
+          >
+            {entry.url}
           </div>
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[0.7rem] text-[var(--text-muted)]">
+          <SectionTag section={entry.section} />
+          <span title={compatibilityText}>{getRelayStatusLabel(entry)}</span>
+          {entry.relayName ? (
+            <span className="truncate" title={entry.relayName}>
+              {entry.relayName}
+            </span>
+          ) : null}
+          {warningText ? (
+            <span className="text-warning" title={warningText}>
+              {warningText}
+            </span>
+          ) : null}
         </div>
       </div>
 
-      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:justify-center">
-        <div className="mr-1 text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)] lg:hidden">
-          Use
-        </div>
+      <div className="flex min-w-0 items-center gap-1.5 lg:justify-center">
         <PreferenceToggle
           label="OUT"
           active={entry.writeEnabled}
@@ -382,14 +351,10 @@ function RelayRow({
         />
       </div>
 
-      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-nowrap lg:justify-center">
-        <div className="mr-1 text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)] lg:hidden">
-          Signals
-        </div>
+      <div className="flex min-w-0 items-center gap-1.5 lg:justify-center">
         <CapabilityIcon
           active={entry.capabilities.search}
           icon={Search}
-          shortLabel="Search"
           label={
             entry.capabilities.search
               ? "Search supported"
@@ -397,14 +362,13 @@ function RelayRow({
           }
           description={
             entry.capabilities.search
-              ? `This relay advertises NIP-50 search. Conduit can use it for discovery and lookup when a route needs search behavior. ${compatibilityText}`
-              : `This relay does not advertise NIP-50 search. Conduit can still read ordinary events here, but should not rely on it for product search or discovery. ${compatibilityText}`
+              ? `This relay advertises NIP-50 search. ${compatibilityText}`
+              : `This relay does not advertise NIP-50 search. ${compatibilityText}`
           }
         />
         <CapabilityIcon
           active={entry.capabilities.dm}
           icon={Send}
-          shortLabel="DM"
           label={
             entry.capabilities.dm
               ? "DM support detected"
@@ -412,14 +376,13 @@ function RelayRow({
           }
           description={
             entry.capabilities.dm
-              ? `This relay advertises NIP-17 support. Conduit can consider it for modern encrypted buyer and merchant message delivery. ${compatibilityText}`
-              : `This relay does not advertise NIP-17 support. Conduit should avoid depending on it for buyer and merchant message delivery. ${compatibilityText}`
+              ? `This relay advertises NIP-17 support. ${compatibilityText}`
+              : `This relay does not advertise NIP-17 support. ${compatibilityText}`
           }
         />
         <CapabilityIcon
           active={entry.capabilities.auth || entry.warnings.dmWithoutAuth}
           icon={LockKeyhole}
-          shortLabel="Auth"
           label={
             entry.warnings.dmWithoutAuth
               ? "DM relay without auth"
@@ -427,10 +390,10 @@ function RelayRow({
           }
           description={
             entry.warnings.dmWithoutAuth
-              ? `This relay advertises NIP-17 DMs but not NIP-42 auth. Message content remains encrypted, but relay access controls may be weaker, so Conduit may limit protected messaging use here. ${compatibilityText}`
+              ? `This relay advertises NIP-17 DMs but not NIP-42 auth. ${compatibilityText}`
               : entry.capabilities.auth
-                ? `This relay advertises or requires NIP-42 authentication. Conduit can authenticate when a relay requires signed access for protected reads or writes. ${compatibilityText}`
-                : `This relay does not advertise NIP-42 authentication. Conduit can still use it for public reads or writes, but should avoid it for protected messaging paths. ${compatibilityText}`
+                ? `This relay advertises or requires NIP-42 authentication. ${compatibilityText}`
+                : `This relay does not advertise NIP-42 authentication. ${compatibilityText}`
           }
           warning={entry.warnings.dmWithoutAuth}
         />
@@ -440,7 +403,6 @@ function RelayRow({
           <CapabilityIcon
             active
             icon={entry.warnings.unreachable ? WifiOff : AlertTriangle}
-            shortLabel="Warn"
             label={warningText ?? "Relay warning"}
             description={`${warningText ?? "Conduit detected a relay warning."} ${compatibilityText}`}
             warning
@@ -448,116 +410,28 @@ function RelayRow({
         )}
       </div>
 
-      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">
-        <div className="mr-1 text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)] lg:hidden">
-          Manage
-        </div>
+      <div className="flex min-w-0 items-center gap-1 lg:justify-end">
         <button
           type="button"
           onClick={() => onRefreshRelay(entry.url)}
           disabled={scanning}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-wait disabled:opacity-50"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-wait disabled:opacity-50"
           aria-label={`Refresh ${entry.url}`}
           title="Refresh relay verification"
         >
-          <RefreshCw
-            className={cn("h-3.5 w-3.5", scanning && "animate-spin")}
-          />
+          <RefreshCw className={cn("h-3 w-3", scanning && "animate-spin")} />
         </button>
         <button
           type="button"
           onClick={() => onRemoveRelay(entry.url)}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] opacity-100 transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 lg:opacity-0 lg:group-hover:opacity-100"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 lg:opacity-0 lg:group-hover:opacity-100"
           aria-label={`Remove ${entry.url}`}
           title="Remove relay"
         >
-          <Trash2 className="h-3.5 w-3.5" />
+          <Trash2 className="h-3 w-3" />
         </button>
       </div>
     </div>
-  )
-}
-
-function RelaySection({
-  section,
-  entries,
-  scanningUrls,
-  draggedUrl,
-  onDragStart,
-  onDragEnd,
-  onDropRelay,
-  onRefreshRelay,
-  onRemoveRelay,
-  onToggleRead,
-  onToggleWrite,
-}: {
-  section: RelaySettingsSection
-  entries: RelaySettingsPanelEntry[]
-  scanningUrls: readonly string[]
-  draggedUrl: string | null
-  onDragStart: (url: string) => void
-  onDragEnd: () => void
-  onDropRelay: (sourceUrl: string, targetUrl: string) => void
-  onRefreshRelay: (url: string) => void
-  onRemoveRelay: (url: string) => void
-  onToggleRead: (url: string, enabled: boolean) => void
-  onToggleWrite: (url: string, enabled: boolean) => void
-}) {
-  const meta = sectionMeta[section]
-
-  return (
-    <section>
-      <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h2
-            className={cn(
-              "text-sm font-semibold uppercase tracking-[0.2em]",
-              meta.labelClassName
-            )}
-          >
-            {meta.label}
-          </h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
-            {meta.description}
-          </p>
-        </div>
-        {section === "commerce" && entries.length > 1 ? (
-          <div className="text-xs text-[var(--text-muted)]">
-            Drag to change Conduit's commerce priority.
-          </div>
-        ) : null}
-      </div>
-
-      <div
-        className={cn(
-          "overflow-hidden rounded-[1.75rem] border border-[var(--border)] px-4 py-2 shadow-[var(--shadow-glass-inset)] sm:px-5",
-          meta.surfaceClassName
-        )}
-      >
-        {entries.length > 0 ? (
-          entries.map((entry) => (
-            <RelayRow
-              key={entry.url}
-              entry={entry}
-              section={section}
-              scanning={scanningUrls.includes(entry.url)}
-              draggedUrl={draggedUrl}
-              onDragStart={onDragStart}
-              onDragEnd={onDragEnd}
-              onDropRelay={onDropRelay}
-              onRefreshRelay={onRefreshRelay}
-              onRemoveRelay={onRemoveRelay}
-              onToggleRead={onToggleRead}
-              onToggleWrite={onToggleWrite}
-            />
-          ))
-        ) : (
-          <div className="py-8 text-sm leading-6 text-[var(--text-muted)]">
-            {meta.empty}
-          </div>
-        )}
-      </div>
-    </section>
   )
 }
 
@@ -577,8 +451,8 @@ export function RelaySettingsPanel({
   const [newRelayUrl, setNewRelayUrl] = useState("")
   const [isAdding, setIsAdding] = useState(false)
   const [draggedUrl, setDraggedUrl] = useState<string | null>(null)
-  const commerceEntries = sortSectionEntries(settings.entries, "commerce")
-  const publicEntries = sortSectionEntries(settings.entries, "public")
+  const entries = sortAllEntries(settings.entries)
+  const commerceCount = entries.filter((e) => e.section === "commerce").length
 
   async function handleAddRelay(event: FormEvent): Promise<void> {
     event.preventDefault()
@@ -596,90 +470,87 @@ export function RelaySettingsPanel({
 
   return (
     <section
+      data-testid="relay-settings-panel"
       className={cn(
-        "rounded-[2.25rem] border border-[var(--border)] bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--primary-500)_14%,transparent),transparent_35%),linear-gradient(180deg,color-mix(in_srgb,var(--surface)_92%,var(--background)_8%),var(--background))] p-5 shadow-[var(--shadow-dialog)] sm:p-8",
+        "rounded-2xl border border-[var(--border)] bg-[color-mix(in_srgb,var(--background)_70%,var(--surface)_30%)] p-4 shadow-[var(--shadow-glass-inset)] sm:p-6",
         className
       )}
     >
-      <div className="space-y-8">
-        <div>
-          <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
-            Network
+      <div className="space-y-5">
+        <header className="flex flex-wrap items-baseline justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="font-display text-xl font-semibold tracking-tight text-[var(--text-primary)]">
+              Relays
+            </h1>
+            <p className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
+              Conduit prioritizes commerce-capable relays for products and
+              orders, and uses public relays for general reads and writes.
+            </p>
           </div>
-          <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
-            Relay Settings
-          </h1>
-          <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
-            Relays store and deliver data across the Nostr network.
-          </p>
+          {commerceCount > 1 ? (
+            <span className="text-[0.65rem] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+              Drag commerce rows to reorder priority
+            </span>
+          ) : null}
+        </header>
+
+        <div
+          data-testid="relay-settings-list"
+          className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)]"
+        >
+          {entries.length > 0 ? (
+            entries.map((entry) => (
+              <RelayRow
+                key={entry.url}
+                entry={entry}
+                scanning={scanningUrls.includes(entry.url)}
+                draggedUrl={draggedUrl}
+                onDragStart={setDraggedUrl}
+                onDragEnd={() => setDraggedUrl(null)}
+                onDropRelay={(sourceUrl, targetUrl) => {
+                  setDraggedUrl(null)
+                  onReorderCommerceRelay(sourceUrl, targetUrl)
+                }}
+                onRefreshRelay={(url) => void onRefreshRelay(url)}
+                onRemoveRelay={onRemoveRelay}
+                onToggleRead={onToggleRead}
+                onToggleWrite={onToggleWrite}
+              />
+            ))
+          ) : (
+            <div className="px-4 py-6 text-sm leading-6 text-[var(--text-muted)]">
+              No relays configured. Add one below to get started.
+            </div>
+          )}
         </div>
-
-        <RelaySection
-          section="commerce"
-          entries={commerceEntries}
-          scanningUrls={scanningUrls}
-          draggedUrl={draggedUrl}
-          onDragStart={setDraggedUrl}
-          onDragEnd={() => setDraggedUrl(null)}
-          onDropRelay={(sourceUrl, targetUrl) => {
-            setDraggedUrl(null)
-            onReorderCommerceRelay(sourceUrl, targetUrl)
-          }}
-          onRefreshRelay={(url) => void onRefreshRelay(url)}
-          onRemoveRelay={onRemoveRelay}
-          onToggleRead={onToggleRead}
-          onToggleWrite={onToggleWrite}
-        />
-
-        <RelaySection
-          section="public"
-          entries={publicEntries}
-          scanningUrls={scanningUrls}
-          draggedUrl={draggedUrl}
-          onDragStart={setDraggedUrl}
-          onDragEnd={() => setDraggedUrl(null)}
-          onDropRelay={(sourceUrl, targetUrl) => {
-            setDraggedUrl(null)
-            onReorderCommerceRelay(sourceUrl, targetUrl)
-          }}
-          onRefreshRelay={(url) => void onRefreshRelay(url)}
-          onRemoveRelay={onRemoveRelay}
-          onToggleRead={onToggleRead}
-          onToggleWrite={onToggleWrite}
-        />
 
         <form
           onSubmit={(event) => void handleAddRelay(event)}
-          className="rounded-[1.5rem] border border-dashed border-[var(--border)] bg-[var(--surface)] p-4"
+          className="rounded-xl border border-dashed border-[var(--border)] bg-[var(--surface)]/60 p-3"
         >
-          <label
-            htmlFor="relay-url"
-            className="text-sm font-medium text-[var(--text-primary)]"
-          >
-            Add Relay
-          </label>
-          <div className="mt-3 flex flex-col gap-3 sm:flex-row">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <Input
               id="relay-url"
               value={newRelayUrl}
               onChange={(event) => setNewRelayUrl(event.target.value)}
               placeholder="wss://relay.example.com"
-              className="h-12 rounded-2xl bg-[var(--surface-elevated)] font-mono"
+              aria-label="Add relay URL"
+              className="h-9 rounded-md bg-[var(--surface-elevated)] font-mono text-sm"
             />
             <Button
               type="submit"
               disabled={isAdding || !newRelayUrl.trim()}
-              className="h-12 rounded-2xl px-5"
+              className="h-9 rounded-md px-3 text-sm"
             >
-              <Plus className="h-4 w-4" />
-              {isAdding ? "Checking..." : "Add Relay"}
+              <Plus className="h-3.5 w-3.5" />
+              {isAdding ? "Checking..." : "Add"}
             </Button>
           </div>
-          <p className="mt-3 text-sm leading-6 text-[var(--text-muted)]">
-            Conduit automatically categorizes relays based on supported NIPs.
+          <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
+            Conduit auto-categorizes relays based on advertised NIPs.
           </p>
           {error ? (
-            <div className="mt-3 rounded-xl border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
+            <div className="mt-2 rounded-md border border-error/30 bg-error/10 px-2.5 py-1.5 text-xs text-error">
               {error}
             </div>
           ) : null}
@@ -687,7 +558,12 @@ export function RelaySettingsPanel({
 
         {onReset ? (
           <div className="flex justify-end">
-            <Button type="button" variant="ghost" onClick={onReset}>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={onReset}
+              className="h-8 px-3 text-xs"
+            >
               Reset to defaults
             </Button>
           </div>

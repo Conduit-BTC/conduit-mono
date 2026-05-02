@@ -162,9 +162,6 @@ function UserMenu() {
         <DropdownMenuItem onSelect={() => navigate({ to: "/profile" })}>
           Profile
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => navigate({ to: "/settings" })}>
-          Relay settings
-        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={disconnect}>Disconnect</DropdownMenuItem>
       </DropdownMenuContent>

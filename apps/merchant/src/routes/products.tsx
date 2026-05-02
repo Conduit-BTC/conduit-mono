@@ -6,6 +6,7 @@ import {
   EVENT_KINDS,
   appendConduitClientTag,
   getMerchantStorefront,
+  publishWithPlanner,
   requireNdkConnected,
   type CommerceResult,
   type ProductSchema,
@@ -171,7 +172,10 @@ async function publishProduct(
   event.tags = appendConduitClientTag(event.tags, "merchant")
 
   await event.sign(ndk.signer)
-  await event.publish()
+  await publishWithPlanner(event, {
+    intent: "author_event",
+    authorPubkey: signerPubkey,
+  })
 }
 
 async function deleteProduct(
@@ -201,7 +205,10 @@ async function deleteProduct(
   deletion.content = `Delete product ${product.addressId}`
 
   await deletion.sign(ndk.signer)
-  await deletion.publish()
+  await publishWithPlanner(deletion, {
+    intent: "author_event",
+    authorPubkey: merchantPubkey,
+  })
 }
 
 function ProductsPage() {

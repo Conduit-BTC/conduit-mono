@@ -18,6 +18,7 @@ import {
   mockMakeInvoice,
   nwcMakeInvoice,
   parseNwcUri,
+  publishWithPlanner,
   weblnMakeInvoice,
   type NwcConnection,
   type ParsedOrderMessage,
@@ -166,7 +167,18 @@ async function publishOrderConversationMessage(params: {
     rumorKind: EVENT_KINDS.ORDER,
   })
 
-  await Promise.all([wrappedToBuyer.publish(), wrappedToMerchant.publish()])
+  await Promise.all([
+    publishWithPlanner(wrappedToBuyer, {
+      intent: "recipient_event",
+      authorPubkey: params.merchantPubkey,
+      recipientPubkeys: [params.buyerPubkey],
+    }),
+    publishWithPlanner(wrappedToMerchant, {
+      intent: "recipient_event",
+      authorPubkey: params.merchantPubkey,
+      recipientPubkeys: [params.merchantPubkey],
+    }),
+  ])
 }
 
 function MessageCard({
