@@ -47,6 +47,38 @@ export function pubkeyToNpub(hex: string): string {
 }
 
 /**
+ * Normalize a hex, npub, or nprofile value into a hex pubkey.
+ * Returns null when the value is not a valid public key reference.
+ */
+export function normalizePubkey(
+  value: string | null | undefined
+): string | null {
+  const trimmed = value?.trim()
+  if (!trimmed) return null
+  if (/^[0-9a-f]{64}$/i.test(trimmed)) return trimmed.toLowerCase()
+
+  try {
+    const decoded = nip19.decode(trimmed)
+    if (decoded.type === "npub" && typeof decoded.data === "string") {
+      return decoded.data.toLowerCase()
+    }
+    if (
+      decoded.type === "nprofile" &&
+      decoded.data &&
+      typeof decoded.data === "object" &&
+      "pubkey" in decoded.data &&
+      typeof decoded.data.pubkey === "string"
+    ) {
+      return decoded.data.pubkey.toLowerCase()
+    }
+  } catch {
+    return null
+  }
+
+  return null
+}
+
+/**
  * Truncate a hex pubkey for display. Prefer `formatNpub` for user-facing
  * surfaces; this helper is kept for non-pubkey identifiers (order IDs, etc.).
  */

@@ -13,7 +13,11 @@ import {
 import { config } from "../config"
 import type { Product, Profile } from "../types"
 import { EVENT_KINDS } from "./kinds"
-import { fetchEventsFanout, requireNdkConnected } from "./ndk"
+import {
+  fetchEventsFanout,
+  fetchEventsFanoutProgressive,
+  requireNdkConnected,
+} from "./ndk"
 import { extractOrderSummary } from "./order-summary"
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import { parseProductEvent } from "./products"
@@ -25,7 +29,7 @@ import {
 import { getRelayLists } from "./relay-list"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
 
-const PRODUCT_CACHE_TTL_MS = 5 * 60_000
+const PRODUCT_CACHE_TTL_MS = 24 * 60 * 60_000
 const PROFILE_CACHE_TTL_MS = 5 * 60_000
 
 export type CommerceReadSource = "commerce" | "public" | "local_cache"
@@ -74,11 +78,13 @@ export interface CommerceProductRecord {
 
 export interface MarketplaceProductsQuery {
   merchantPubkey?: string
+  authorPubkeys?: string[]
   textQuery?: string
   tags?: string[]
   sort?: CommerceSortMode
   limit?: number
   cursor?: string
+  readPolicy?: CommerceReadPolicy
 }
 
 export interface MerchantStorefrontQuery {
@@ -98,6 +104,10 @@ export interface ProductDetailQuery {
 export interface ProfileBatchQuery {
   pubkeys: string[]
   skipCache?: boolean
+}
+
+export interface FollowListQuery {
+  pubkey: string
 }
 
 export interface ConversationListQuery {
@@ -122,6 +132,16 @@ interface ConversationSummaryBase {
   preview: string
   messageCount: number
   messages?: ParsedOrderMessage[]
+}
+
+export interface CachedProductReadOptions {
+  includeStale?: boolean
+}
+
+export interface CommerceReadPolicy {
+  maxRelays?: number
+  connectTimeoutMs?: number
+  fetchTimeoutMs?: number
 }
 
 export interface BuyerConversationSummary extends ConversationSummaryBase {
@@ -233,6 +253,7 @@ async function planCommerceReadRelays(input: {
   intent: RelayReadIntent
   authors?: readonly string[]
   recipients?: readonly string[]
+  maxRelays?: number
 }): Promise<string[]> {
   const hintPubkeys = Array.from(
     new Set(
@@ -244,7 +265,10 @@ async function planCommerceReadRelays(input: {
 
   const relayLists =
     hintPubkeys.length > 0
-      ? await getRelayLists(hintPubkeys, { cacheOnly: true })
+      ? await getRelayLists(
+          hintPubkeys,
+          testOverrides.fetchEventsFanout ? { cacheOnly: true } : {}
+        )
       : undefined
 
   const plan = planRelayReads({
@@ -252,6 +276,7 @@ async function planCommerceReadRelays(input: {
     authors: input.authors,
     recipients: input.recipients,
     relayLists,
+    maxRelays: input.maxRelays,
   })
 
   if (plan.relayUrls.length > 0) return plan.relayUrls
@@ -334,6 +359,14 @@ function normalizeText(value: string | undefined): string {
   return (value ?? "").trim().toLowerCase()
 }
 
+function uniqueStrings(
+  values: readonly (string | undefined | null)[]
+): string[] {
+  return Array.from(
+    new Set(values.map((value) => value?.trim()).filter(Boolean) as string[])
+  )
+}
+
 function productMatchesQuery(
   record: CommerceProductRecord,
   query: MarketplaceProductsQuery
@@ -342,6 +375,13 @@ function productMatchesQuery(
   const textQuery = normalizeText(query.textQuery)
   if (query.merchantPubkey && product.pubkey !== query.merchantPubkey)
     return false
+  if (
+    query.authorPubkeys &&
+    query.authorPubkeys.length > 0 &&
+    !query.authorPubkeys.includes(product.pubkey)
+  ) {
+    return false
+  }
   if (textQuery) {
     const haystack = `${product.title}\n${product.summary ?? ""}`.toLowerCase()
     if (!haystack.includes(textQuery)) return false
@@ -387,6 +427,22 @@ function sortProducts(
           b.product.updatedAt - a.product.updatedAt
       )
   }
+}
+
+function isValidProductImageUrl(url: string | undefined): boolean {
+  if (!url) return false
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+  } catch {
+    return false
+  }
+}
+
+export function hasMarketProductImage(
+  product: Pick<Product, "images">
+): boolean {
+  return product.images.some((image) => isValidProductImageUrl(image.url))
 }
 
 function toCachedProduct(record: CommerceProductRecord) {
@@ -464,19 +520,27 @@ async function storeCachedProducts(rows: CachedProduct[]): Promise<void> {
 }
 
 async function getCachedProductRecords(
-  merchantPubkey?: string
+  merchantPubkey?: string,
+  options: CachedProductReadOptions = {}
 ): Promise<CommerceProductRecord[]> {
   const rows = await loadCachedProducts(merchantPubkey)
   return rows
-    .filter((row) => now() - row.cachedAt < PRODUCT_CACHE_TTL_MS)
+    .filter(
+      (row) =>
+        options.includeStale || now() - row.cachedAt < PRODUCT_CACHE_TTL_MS
+    )
     .map(fromCachedProduct)
+    .filter((record) => hasMarketProductImage(record.product))
 }
 
 async function cacheProductRecords(
   records: CommerceProductRecord[]
 ): Promise<void> {
-  if (records.length === 0) return
-  await storeCachedProducts(records.map(toCachedProduct))
+  const marketable = records.filter((record) =>
+    hasMarketProductImage(record.product)
+  )
+  if (marketable.length === 0) return
+  await storeCachedProducts(marketable.map(toCachedProduct))
 }
 
 async function loadCachedProfiles(
@@ -646,6 +710,8 @@ function dedupeProductEvents(
   for (const event of events) {
     try {
       const parsed = parseProductEvent(event)
+      if (!hasMarketProductImage(parsed)) continue
+
       const dTag = getTagValue(event.tags ?? [], "d")
       const addressId = dTag ? `30402:${event.pubkey}:${dTag}` : parsed.id
 
@@ -681,13 +747,14 @@ async function fetchPublicProductRecords(query: {
   authors?: string[]
   ids?: string[]
   dTags?: string[]
-  limit: number
+  limit?: number
+  readPolicy?: CommerceReadPolicy
 }): Promise<CommerceProductRecord[]> {
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.PRODUCT],
-    limit: query.limit,
   }
 
+  if (query.limit !== undefined) filter.limit = query.limit
   if (query.authors) filter.authors = query.authors
   if (query.ids) filter.ids = query.ids
   if (query.dTags) filter["#d"] = query.dTags
@@ -698,30 +765,162 @@ async function fetchPublicProductRecords(query: {
         ? "author_products"
         : "commerce_products",
     authors: query.authors,
+    maxRelays: query.readPolicy?.maxRelays,
   })
 
   const events = await runFetchEventsFanout(filter, {
     relayUrls,
-    connectTimeoutMs: 4_000,
-    fetchTimeoutMs: 8_000,
+    connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
+    fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 8_000,
   })
 
   return dedupeProductEvents(events)
 }
 
+async function fetchPublicProductRecordsProgressive(
+  query: {
+    authors?: string[]
+    ids?: string[]
+    dTags?: string[]
+    limit?: number
+    readPolicy?: CommerceReadPolicy
+  },
+  onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
+): Promise<CommerceProductRecord[]> {
+  if (testOverrides.fetchEventsFanout) {
+    const records = await fetchPublicProductRecords(query)
+    onRecords(records, "test")
+    return records
+  }
+
+  const filter: NDKFilter = {
+    kinds: [EVENT_KINDS.PRODUCT],
+  }
+
+  if (query.limit !== undefined) filter.limit = query.limit
+  if (query.authors) filter.authors = query.authors
+  if (query.ids) filter.ids = query.ids
+  if (query.dTags) filter["#d"] = query.dTags
+
+  const relayUrls = await planCommerceReadRelays({
+    intent:
+      query.authors && query.authors.length > 0
+        ? "author_products"
+        : "commerce_products",
+    authors: query.authors,
+    maxRelays: query.readPolicy?.maxRelays,
+  })
+
+  const events = await fetchEventsFanoutProgressive(
+    filter,
+    {
+      relayUrls,
+      connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
+      fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 8_000,
+    },
+    ({ mergedEvents, relayUrl }) => {
+      onRecords(dedupeProductEvents(mergedEvents), relayUrl)
+    }
+  )
+
+  return dedupeProductEvents(events)
+}
+
+function applyProductLimit(
+  records: CommerceProductRecord[],
+  limit: number | undefined
+): CommerceProductRecord[] {
+  return limit === undefined ? records : records.slice(0, limit)
+}
+
+function parseContactListPubkeys(
+  event: Pick<NDKEvent, "tags"> | undefined
+): string[] {
+  if (!event) return []
+  return uniqueStrings(
+    (event.tags ?? [])
+      .filter((tag) => tag[0] === "p" && typeof tag[1] === "string")
+      .map((tag) => tag[1])
+  )
+}
+
+function pickLatestEvent<T extends Pick<NDKEvent, "created_at">>(
+  events: T[]
+): T | undefined {
+  return events.reduce<T | undefined>((latest, event) => {
+    if (!latest) return event
+    return (event.created_at ?? 0) >= (latest.created_at ?? 0) ? event : latest
+  }, undefined)
+}
+
+export async function getFollowPubkeys(
+  query: FollowListQuery
+): Promise<CommerceResult<string[]>> {
+  const pubkey = query.pubkey.trim()
+  if (!pubkey) {
+    return {
+      data: [],
+      meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
+    }
+  }
+
+  const relayUrls = await planCommerceReadRelays({
+    intent: "profile_social_feed",
+    authors: [pubkey],
+  })
+  const events = await runFetchEventsFanout(
+    {
+      kinds: [EVENT_KINDS.CONTACT_LIST],
+      authors: [pubkey],
+      limit: 5,
+    },
+    {
+      relayUrls,
+      connectTimeoutMs: 2_500,
+      fetchTimeoutMs: 4_000,
+    }
+  )
+
+  return {
+    data: parseContactListPubkeys(pickLatestEvent(events)),
+    meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
+  }
+}
+
 export async function getMarketplaceProducts(
   query: MarketplaceProductsQuery = {}
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
+  if (
+    !query.merchantPubkey &&
+    query.authorPubkeys &&
+    query.authorPubkeys.length === 0
+  ) {
+    return {
+      data: [],
+      meta: createMeta("marketplace_products", "public", PRODUCT_CAPABILITIES),
+    }
+  }
+
   try {
+    const authorPubkeys = query.merchantPubkey
+      ? [query.merchantPubkey]
+      : query.authorPubkeys
     const records = await fetchPublicProductRecords({
-      authors: query.merchantPubkey ? [query.merchantPubkey] : undefined,
-      limit: query.limit ?? 50,
+      authors:
+        authorPubkeys && authorPubkeys.length > 0
+          ? uniqueStrings(authorPubkeys)
+          : undefined,
+      limit: query.limit ?? (authorPubkeys ? undefined : 50),
+      readPolicy: query.readPolicy,
     })
 
-    const filtered = sortProducts(
-      records.filter((record) => productMatchesQuery(record, query)),
-      query.sort
-    ).slice(0, query.limit ?? 50)
+    const filtered = applyProductLimit(
+      sortProducts(
+        records.filter((record) => productMatchesQuery(record, query)),
+        query.sort
+      ),
+      query.limit ?? (authorPubkeys ? undefined : 50)
+    )
 
     await cacheProductRecords(filtered)
     return {
@@ -729,12 +928,15 @@ export async function getMarketplaceProducts(
       meta: createMeta("marketplace_products", "public", PRODUCT_CAPABILITIES),
     }
   } catch (error) {
-    const cached = sortProducts(
-      (await getCachedProductRecords(query.merchantPubkey)).filter((record) =>
-        productMatchesQuery(record, query)
+    const cached = applyProductLimit(
+      sortProducts(
+        (await getCachedProductRecords(query.merchantPubkey)).filter((record) =>
+          productMatchesQuery(record, query)
+        ),
+        query.sort
       ),
-      query.sort
-    ).slice(0, query.limit ?? 50)
+      query.limit ?? (query.authorPubkeys ? undefined : 50)
+    )
 
     if (cached.length > 0) {
       return {
@@ -749,6 +951,106 @@ export async function getMarketplaceProducts(
     }
 
     throw error
+  }
+}
+
+export async function getMarketplaceProductsProgressive(
+  query: MarketplaceProductsQuery = {},
+  onProgress: (
+    result: CommerceResult<CommerceProductRecord[]>,
+    relayUrl: string
+  ) => void
+): Promise<CommerceResult<CommerceProductRecord[]>> {
+  if (
+    !query.merchantPubkey &&
+    query.authorPubkeys &&
+    query.authorPubkeys.length === 0
+  ) {
+    const empty = {
+      data: [],
+      meta: createMeta("marketplace_products", "public", PRODUCT_CAPABILITIES),
+    }
+    onProgress(empty, "none")
+    return empty
+  }
+
+  const authorPubkeys = query.merchantPubkey
+    ? [query.merchantPubkey]
+    : query.authorPubkeys
+  const limit = query.limit ?? (authorPubkeys ? undefined : 50)
+  const toResult = (records: CommerceProductRecord[]) => ({
+    data: applyProductLimit(
+      sortProducts(
+        records.filter((record) => productMatchesQuery(record, query)),
+        query.sort
+      ),
+      limit
+    ),
+    meta: createMeta("marketplace_products", "public", PRODUCT_CAPABILITIES),
+  })
+
+  const records = await fetchPublicProductRecordsProgressive(
+    {
+      authors:
+        authorPubkeys && authorPubkeys.length > 0
+          ? uniqueStrings(authorPubkeys)
+          : undefined,
+      limit,
+      readPolicy: query.readPolicy,
+    },
+    (records, relayUrl) => {
+      onProgress(toResult(records), relayUrl)
+    }
+  )
+
+  const result = toResult(records)
+  await cacheProductRecords(result.data)
+  return result
+}
+
+export async function getCachedMarketplaceProducts(
+  query: MarketplaceProductsQuery = {},
+  options: CachedProductReadOptions = { includeStale: true }
+): Promise<CommerceResult<CommerceProductRecord[]>> {
+  if (
+    !query.merchantPubkey &&
+    query.authorPubkeys &&
+    query.authorPubkeys.length === 0
+  ) {
+    return {
+      data: [],
+      meta: createMeta(
+        "marketplace_products",
+        "local_cache",
+        PRODUCT_CAPABILITIES,
+        {
+          stale: true,
+        }
+      ),
+    }
+  }
+
+  const cached = applyProductLimit(
+    sortProducts(
+      (await getCachedProductRecords(query.merchantPubkey, options)).filter(
+        (record) => productMatchesQuery(record, query)
+      ),
+      query.sort
+    ),
+    query.limit ?? (query.authorPubkeys ? undefined : 500)
+  )
+
+  return {
+    data: cached,
+    meta: createMeta(
+      "marketplace_products",
+      "local_cache",
+      PRODUCT_CAPABILITIES,
+      {
+        stale: true,
+        degraded: cached.length > 0,
+      }
+    ),
   }
 }
 
@@ -826,6 +1128,37 @@ export async function getMerchantStorefront(
   }
 }
 
+export async function getCachedMerchantStorefront(
+  query: MerchantStorefrontQuery,
+  options: CachedProductReadOptions = { includeStale: true }
+): Promise<CommerceResult<CommerceProductRecord[]>> {
+  const cached = sortProducts(
+    (await getCachedProductRecords(query.merchantPubkey, options)).filter(
+      (record) =>
+        productMatchesQuery(record, {
+          merchantPubkey: query.merchantPubkey,
+          textQuery: query.textQuery,
+          tags: query.tag ? [query.tag] : undefined,
+          sort: query.sort,
+        })
+    ),
+    query.sort
+  ).slice(0, query.limit ?? 500)
+
+  return {
+    data: cached,
+    meta: createMeta(
+      "merchant_storefront",
+      "local_cache",
+      PRODUCT_CAPABILITIES,
+      {
+        stale: true,
+        degraded: cached.length > 0,
+      }
+    ),
+  }
+}
+
 function parseAddress(
   productId: string
 ): { kind: number; pubkey: string; d: string } | null {
@@ -845,13 +1178,30 @@ export async function getProductDetail(
 
   try {
     if (addr && addr.kind === EVENT_KINDS.PRODUCT) {
+      const direct = await fetchPublicProductRecords({
+        authors: [addr.pubkey],
+        dTags: [addr.d],
+        limit: 10,
+      })
+      const record = direct.find((item) => item.addressId === decodedId) ?? null
+      if (record) {
+        await cacheProductRecords([record])
+        return {
+          data: record,
+          meta: createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES),
+        }
+      }
+
       const storefront = await getMerchantStorefront({
         merchantPubkey: addr.pubkey,
-        limit: 200,
+        limit: 500,
       })
-      const record =
+      const fallbackRecord =
         storefront.data.find((item) => item.addressId === decodedId) ?? null
-      return { data: record, meta: { ...storefront.meta, fetchedAt: now() } }
+      return {
+        data: fallbackRecord,
+        meta: { ...storefront.meta, fetchedAt: now() },
+      }
     }
 
     if (/^[0-9a-f]{64}$/i.test(decodedId)) {
@@ -893,6 +1243,28 @@ export async function getProductDetail(
     cached.find(
       (item) => item.product.id === decodedId || item.addressId === decodedId
     ) ?? null
+  return {
+    data: record,
+    meta: createMeta(
+      "product_detail",
+      record ? "local_cache" : "public",
+      PRODUCT_CAPABILITIES,
+      { stale: !!record, degraded: !!record }
+    ),
+  }
+}
+
+export async function getCachedProductDetail(
+  query: ProductDetailQuery,
+  options: CachedProductReadOptions = { includeStale: true }
+): Promise<CommerceResult<CommerceProductRecord | null>> {
+  const decodedId = decodeURIComponent(query.productId)
+  const cached = await getCachedProductRecords(undefined, options)
+  const record =
+    cached.find(
+      (item) => item.product.id === decodedId || item.addressId === decodedId
+    ) ?? null
+
   return {
     data: record,
     meta: createMeta(

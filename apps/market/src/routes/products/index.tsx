@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import {
-  type CommerceResult,
   EVENT_KINDS,
   formatPubkey,
-  getMarketplaceProducts,
+  getFollowPubkeys,
+  getProfiles,
   useAuth,
   useProfile,
   type Product,
@@ -26,9 +26,22 @@ import {
   SelectValue,
 } from "@conduit/ui"
 import { SignerSwitch } from "../../components/SignerSwitch"
-import { ProductGridCard, ProductGridCardSkeleton } from "../../components/ProductGridCard"
+import {
+  ProductGridCard,
+  ProductGridCardSkeleton,
+} from "../../components/ProductGridCard"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
+import {
+  MARKETPLACE_NETWORK_LIMIT,
+  useProgressiveProducts,
+} from "../../hooks/useProgressiveProducts"
+import {
+  DEFAULT_MARKET_PERSPECTIVE_NPUB,
+  DEFAULT_MARKET_PERSPECTIVE_PUBKEY,
+  getDefaultMarketPerspectiveFollowPubkeys,
+  storeDefaultMarketPerspectiveFollowPubkeys,
+} from "../../lib/defaultMarketPerspective"
 import { getComparablePriceValue } from "../../lib/pricing"
 
 const PAGE_SIZE = 12
@@ -47,12 +60,17 @@ export const Route = createFileRoute("/products/")({
   component: ProductsPage,
   validateSearch: (raw: Record<string, unknown>): ProductSearch => {
     const rawTag = raw.tag
-    const tags =
-      Array.isArray(rawTag)
-        ? rawTag.filter((value): value is string => typeof value === "string" && value.trim() !== "")
-        : typeof rawTag === "string" && rawTag.trim() !== ""
-          ? rawTag.split(",").map((value) => value.trim()).filter(Boolean)
-          : undefined
+    const tags = Array.isArray(rawTag)
+      ? rawTag.filter(
+          (value): value is string =>
+            typeof value === "string" && value.trim() !== ""
+        )
+      : typeof rawTag === "string" && rawTag.trim() !== ""
+        ? rawTag
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean)
+        : undefined
 
     return {
       merchant: typeof raw.merchant === "string" ? raw.merchant : undefined,
@@ -71,14 +89,6 @@ export const Route = createFileRoute("/products/")({
     }
   },
 })
-
-async function fetchProducts(merchant?: string): Promise<CommerceResult<Product[]>> {
-  const result = await getMarketplaceProducts({ merchantPubkey: merchant, limit: 50 })
-  return {
-    data: result.data.map((record) => record.product),
-    meta: result.meta,
-  }
-}
 
 function filterProducts(products: Product[], search: ProductSearch): Product[] {
   let result = products
@@ -114,15 +124,19 @@ function sortProducts(
       if (!canSortByPrice) return [...products]
       return [...products].sort(
         (a, b) =>
-          (getComparablePriceValue(a, btcUsdRate) ?? (hasSingleCurrency ? a.price : 0)) -
-          (getComparablePriceValue(b, btcUsdRate) ?? (hasSingleCurrency ? b.price : 0))
+          (getComparablePriceValue(a, btcUsdRate) ??
+            (hasSingleCurrency ? a.price : 0)) -
+          (getComparablePriceValue(b, btcUsdRate) ??
+            (hasSingleCurrency ? b.price : 0))
       )
     case "price_desc":
       if (!canSortByPrice) return [...products]
       return [...products].sort(
         (a, b) =>
-          (getComparablePriceValue(b, btcUsdRate) ?? (hasSingleCurrency ? b.price : 0)) -
-          (getComparablePriceValue(a, btcUsdRate) ?? (hasSingleCurrency ? a.price : 0))
+          (getComparablePriceValue(b, btcUsdRate) ??
+            (hasSingleCurrency ? b.price : 0)) -
+          (getComparablePriceValue(a, btcUsdRate) ??
+            (hasSingleCurrency ? a.price : 0))
       )
     case "newest":
     default:
@@ -139,7 +153,7 @@ function MerchantName({ pubkey }: { pubkey: string }) {
 function ProductsPage() {
   const cart = useCart()
   const search = Route.useSearch()
-  const { status } = useAuth()
+  const { pubkey, status } = useAuth()
   const navigate = useNavigate({ from: Route.fullPath })
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [connectOpen, setConnectOpen] = useState(false)
@@ -147,16 +161,50 @@ function ProductsPage() {
   const [tagCloudOverflows, setTagCloudOverflows] = useState(false)
   const [pendingMerchant, setPendingMerchant] = useState<string | null>(null)
   const [merchantTagConflicts, setMerchantTagConflicts] = useState<string[]>([])
+  const [anonymousFollowPubkeys, setAnonymousFollowPubkeys] = useState(
+    getDefaultMarketPerspectiveFollowPubkeys
+  )
   const hasAutoPromptedConnect = useRef(false)
   const tagCloudRef = useRef<HTMLDivElement | null>(null)
   const btcUsdRateQuery = useBtcUsdRate()
   const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
+  const usesAnonymousPerspective = !search.merchant && status !== "connected"
 
-  const productsQuery = useQuery({
-    queryKey: ["products", search.merchant ?? "all"],
-    queryFn: () => fetchProducts(search.merchant),
+  // Anonymous Market should paint from the bundled Conduit follow seed
+  // immediately, then refresh that kind-3 list in the background for future visits.
+  const defaultPerspectiveRefreshQuery = useQuery({
+    queryKey: ["default-market-perspective-follow-refresh"],
+    queryFn: () =>
+      getFollowPubkeys({ pubkey: DEFAULT_MARKET_PERSPECTIVE_PUBKEY }),
+    enabled: usesAnonymousPerspective,
+    staleTime: 6 * 60 * 60_000,
+    refetchOnWindowFocus: false,
   })
-  const productData = productsQuery.data?.data ?? []
+
+  useEffect(() => {
+    const pubkeys = defaultPerspectiveRefreshQuery.data?.data
+    if (!pubkeys || pubkeys.length === 0) return
+    storeDefaultMarketPerspectiveFollowPubkeys(pubkeys)
+    setAnonymousFollowPubkeys(pubkeys)
+  }, [defaultPerspectiveRefreshQuery.data?.data])
+
+  const productsQuery = useProgressiveProducts({
+    scope: "marketplace",
+    merchantPubkey: search.merchant,
+    perspectivePubkey: search.merchant
+      ? null
+      : status === "connected" && pubkey
+        ? pubkey
+        : DEFAULT_MARKET_PERSPECTIVE_NPUB,
+    seedAuthorPubkeys: usesAnonymousPerspective
+      ? anonymousFollowPubkeys
+      : undefined,
+    textQuery: search.q,
+    tags: search.tag,
+    sort: search.sort,
+    limit: search.merchant ? MARKETPLACE_NETWORK_LIMIT : undefined,
+  })
+  const productData = productsQuery.products
 
   // Derive all unique tags from the full (unfiltered) product set
   const allTags = useMemo(() => {
@@ -185,33 +233,38 @@ function ProductsPage() {
     return byMerchant
   }, [productData])
 
-  const updateSearch = useCallback((updates: Partial<ProductSearch>) => {
-    navigate({
-      search: (prev: ProductSearch) => {
-        const next = { ...prev, ...updates }
-        for (const key of Object.keys(next) as (keyof ProductSearch)[]) {
-          const value = next[key]
-          if (
-            value === undefined ||
-            value === null ||
-            value === "" ||
-            (Array.isArray(value) && value.length === 0)
-          ) {
-            delete next[key]
+  const updateSearch = useCallback(
+    (updates: Partial<ProductSearch>) => {
+      navigate({
+        search: (prev: ProductSearch) => {
+          const next = { ...prev, ...updates }
+          for (const key of Object.keys(next) as (keyof ProductSearch)[]) {
+            const value = next[key]
+            if (
+              value === undefined ||
+              value === null ||
+              value === "" ||
+              (Array.isArray(value) && value.length === 0)
+            ) {
+              delete next[key]
+            }
           }
-        }
-        return next
-      },
-      replace: true,
-    })
-  }, [navigate])
+          return next
+        },
+        replace: true,
+      })
+    },
+    [navigate]
+  )
 
   const selectedTags = search.tag ?? []
   const selectedTagSet = useMemo(() => new Set(selectedTags), [selectedTags])
 
   const toggleTag = (tag: string) => {
     if (selectedTagSet.has(tag)) {
-      updateSearch({ tag: selectedTags.filter((selectedTag) => selectedTag !== tag) })
+      updateSearch({
+        tag: selectedTags.filter((selectedTag) => selectedTag !== tag),
+      })
       return
     }
 
@@ -234,7 +287,9 @@ function ProductsPage() {
     }
 
     const supportedTags = merchantTagMap.get(merchant) ?? new Set<string>()
-    const incompatibleTags = selectedTags.filter((tag) => !supportedTags.has(tag))
+    const incompatibleTags = selectedTags.filter(
+      (tag) => !supportedTags.has(tag)
+    )
 
     if (incompatibleTags.length === 0) {
       applyMerchantSelection(merchant)
@@ -271,15 +326,30 @@ function ProductsPage() {
     if (filteredProducts.length <= 1) return true
     if (hasSingleCurrency) return true
 
-    const comparableValues = filteredProducts.map((product) => getComparablePriceValue(product, btcUsdRate))
+    const comparableValues = filteredProducts.map((product) =>
+      getComparablePriceValue(product, btcUsdRate)
+    )
     return comparableValues.every((value) => value !== null)
   }, [btcUsdRate, filteredProducts, hasSingleCurrency])
 
   const effectiveSort = canSortByPrice ? search.sort : undefined
 
   const filtered = useMemo(
-    () => sortProducts(filteredProducts, effectiveSort, canSortByPrice, hasSingleCurrency, btcUsdRate),
-    [btcUsdRate, canSortByPrice, effectiveSort, filteredProducts, hasSingleCurrency]
+    () =>
+      sortProducts(
+        filteredProducts,
+        effectiveSort,
+        canSortByPrice,
+        hasSingleCurrency,
+        btcUsdRate
+      ),
+    [
+      btcUsdRate,
+      canSortByPrice,
+      effectiveSort,
+      filteredProducts,
+      hasSingleCurrency,
+    ]
   )
 
   const searchKey = `${search.q}-${selectedTags.slice().sort().join(",")}-${search.sort}-${search.merchant}`
@@ -288,13 +358,20 @@ function ProductsPage() {
   }, [searchKey])
 
   useEffect(() => {
-    if (!canSortByPrice && (search.sort === "price_asc" || search.sort === "price_desc")) {
+    if (
+      !canSortByPrice &&
+      (search.sort === "price_asc" || search.sort === "price_desc")
+    ) {
       updateSearch({ sort: undefined })
     }
   }, [canSortByPrice, search.sort, updateSearch])
 
   useEffect(() => {
-    if (search.authRequired && status !== "connected" && !hasAutoPromptedConnect.current) {
+    if (
+      search.authRequired &&
+      status !== "connected" &&
+      !hasAutoPromptedConnect.current
+    ) {
       setConnectOpen(true)
       hasAutoPromptedConnect.current = true
     }
@@ -313,15 +390,36 @@ function ProductsPage() {
 
   const visible = filtered.slice(0, visibleCount)
   const hasMore = visibleCount < filtered.length
+  const visibleMerchantPubkeys = useMemo(
+    () => Array.from(new Set(visible.map((product) => product.pubkey))),
+    [visible]
+  )
+  const visibleMerchantProfilesQuery = useQuery({
+    queryKey: ["visible-product-card-profiles", visibleMerchantPubkeys],
+    enabled: visibleMerchantPubkeys.length > 0,
+    queryFn: async () => {
+      const result = await getProfiles({ pubkeys: visibleMerchantPubkeys })
+      return result.data
+    },
+    staleTime: 5 * 60_000,
+  })
 
-  const hasActiveFilters = !!(search.q || selectedTags.length > 0 || search.sort || search.merchant)
+  const hasActiveFilters = !!(
+    search.q ||
+    selectedTags.length > 0 ||
+    search.sort ||
+    search.merchant
+  )
   const orderedTags = useMemo(() => {
     if (selectedTags.length === 0) {
       return allTags
     }
 
     const selectedFirst = selectedTags.filter((tag) => allTags.includes(tag))
-    return [...selectedFirst, ...allTags.filter((tag) => !selectedTagSet.has(tag))]
+    return [
+      ...selectedFirst,
+      ...allTags.filter((tag) => !selectedTagSet.has(tag)),
+    ]
   }, [allTags, selectedTagSet, selectedTags])
 
   useEffect(() => {
@@ -334,7 +432,8 @@ function ProductsPage() {
 
     measure()
 
-    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null
     resizeObserver?.observe(element)
     window.addEventListener("resize", measure)
 
@@ -357,7 +456,8 @@ function ProductsPage() {
                 Connect a signer to continue.
               </h2>
               <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
-                Checkout, orders, and merchant follow-up require a connected Nostr signer.
+                Checkout, orders, and merchant follow-up require a connected
+                Nostr signer.
               </p>
             </div>
 
@@ -374,7 +474,10 @@ function ProductsPage() {
                   Connected
                 </Button>
               ) : (
-                <Button className="h-11 px-4 text-sm" onClick={() => setConnectOpen(true)}>
+                <Button
+                  className="h-11 px-4 text-sm"
+                  onClick={() => setConnectOpen(true)}
+                >
                   Connect
                 </Button>
               )}
@@ -390,7 +493,11 @@ function ProductsPage() {
           <div className="mt-4 text-xs text-[var(--text-secondary)]">
             You were redirected here because the next step requires a signer.
           </div>
-          <SignerSwitch open={connectOpen} onOpenChange={setConnectOpen} hideTrigger />
+          <SignerSwitch
+            open={connectOpen}
+            onOpenChange={setConnectOpen}
+            hideTrigger
+          />
         </section>
       )}
 
@@ -476,7 +583,9 @@ function ProductsPage() {
           ) : (
             <Select
               value="__all"
-              onValueChange={(v) => handleMerchantSelection(v === "__all" ? undefined : v)}
+              onValueChange={(v) =>
+                handleMerchantSelection(v === "__all" ? undefined : v)
+              }
             >
               <SelectTrigger className="h-8 min-w-0 flex-1 text-xs sm:w-auto sm:min-w-[140px] sm:flex-none">
                 <SelectValue placeholder="All stores" />
@@ -500,7 +609,9 @@ function ProductsPage() {
           <Select
             value={effectiveSort ?? "newest"}
             onValueChange={(v) =>
-              updateSearch({ sort: v === "newest" ? undefined : (v as SortOption) })
+              updateSearch({
+                sort: v === "newest" ? undefined : (v as SortOption),
+              })
             }
           >
             <SelectTrigger className="h-8 min-w-0 flex-1 text-xs sm:w-auto sm:min-w-[160px] sm:flex-none">
@@ -523,7 +634,12 @@ function ProductsPage() {
               size="sm"
               className="ml-auto text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
               onClick={() =>
-                updateSearch({ q: undefined, tag: undefined, sort: undefined, merchant: undefined })
+                updateSearch({
+                  q: undefined,
+                  tag: undefined,
+                  sort: undefined,
+                  merchant: undefined,
+                })
               }
             >
               Clear
@@ -534,11 +650,13 @@ function ProductsPage() {
 
       {!canSortByPrice && filteredProducts.length > 1 && (
         <p className="text-xs text-[var(--text-muted)]">
-          Price sorting is available when listings share a currency or when a BTC/USD display rate is configured.
+          Price sorting is available when listings share a currency or when a
+          BTC/USD display rate is configured.
         </p>
       )}
 
-      {(search.q || (search.merchant && !allMerchants.includes(search.merchant))) && (
+      {(search.q ||
+        (search.merchant && !allMerchants.includes(search.merchant))) && (
         <div className="flex flex-wrap items-center gap-2">
           {search.q && (
             <Badge variant="secondary" className="gap-1">
@@ -596,12 +714,48 @@ function ProductsPage() {
         </div>
       )}
 
-      <div className="text-xs text-[var(--text-muted)]">
-        {filtered.length} {filtered.length === 1 ? "result" : "results"}
+      <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
+        <span>
+          {filtered.length} {filtered.length === 1 ? "result" : "results"}
+        </span>
+        <span aria-hidden="true">/</span>
+        <span>
+          {productsQuery.isShowingCache
+            ? "showing cached listings"
+            : productsQuery.hydrationStage === "resolving_follows"
+              ? status === "connected"
+                ? "reading your follow graph"
+                : "reading Conduit follow graph"
+              : productsQuery.hydrationStage === "first_degree"
+                ? "hydrated from follow feed"
+                : productsQuery.meta?.source === "public"
+                  ? "verified from relays"
+                  : productsQuery.meta?.source === "commerce"
+                    ? "verified from commerce relays"
+                    : "preparing relay view"}
+        </span>
+        {productsQuery.firstDegreeAuthorCount > 0 && (
+          <>
+            <span aria-hidden="true">/</span>
+            <span>{productsQuery.firstDegreeAuthorCount} followed authors</span>
+          </>
+        )}
+        {productsQuery.isHydrating && (
+          <>
+            <span aria-hidden="true">/</span>
+            <span className="text-secondary-300">hydrating cards</span>
+          </>
+        )}
+        {productsQuery.meta?.stale && (
+          <>
+            <span aria-hidden="true">/</span>
+            <span>stale-aware</span>
+          </>
+        )}
       </div>
 
       {/* Loading */}
-      {productsQuery.isLoading && (
+      {productsQuery.isInitialLoading && (
         <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
           {Array.from({ length: PAGE_SIZE }).map((_, idx) => (
             <li key={idx} className="h-full">
@@ -612,34 +766,48 @@ function ProductsPage() {
       )}
 
       {/* Error */}
-      {productsQuery.error && (
+      {!!productsQuery.error && (
         <div className="text-sm text-error">
           Failed to load products:{" "}
-          {productsQuery.error instanceof Error ? productsQuery.error.message : "Unknown error"}
+          {productsQuery.error instanceof Error
+            ? productsQuery.error.message
+            : "Unknown error"}
         </div>
       )}
 
       {/* Empty state - no products from relays */}
-      {!productsQuery.isLoading && productData.length === 0 && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-          No product listings found yet. Once merchants publish kind {EVENT_KINDS.PRODUCT} listings to
-          your relays, they will show up here.
-        </div>
-      )}
+      {!productsQuery.isInitialLoading &&
+        !productsQuery.isHydrating &&
+        productData.length === 0 && (
+          <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+            No product listings found yet. Once merchants publish kind{" "}
+            {EVENT_KINDS.PRODUCT} listings to your relays, they will show up
+            here.
+          </div>
+        )}
 
       {/* Empty state - filters returned nothing */}
-      {!productsQuery.isLoading && productData.length > 0 && filtered.length === 0 && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-          No products match your filters. Try adjusting your search or{" "}
-          <button
-            className="underline hover:text-[var(--text-primary)]"
-            onClick={() => updateSearch({ q: undefined, tag: undefined, sort: undefined, merchant: undefined })}
-          >
-            clear all filters
-          </button>
-          .
-        </div>
-      )}
+      {!productsQuery.isInitialLoading &&
+        productData.length > 0 &&
+        filtered.length === 0 && (
+          <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+            No products match your filters. Try adjusting your search or{" "}
+            <button
+              className="underline hover:text-[var(--text-primary)]"
+              onClick={() =>
+                updateSearch({
+                  q: undefined,
+                  tag: undefined,
+                  sort: undefined,
+                  merchant: undefined,
+                })
+              }
+            >
+              clear all filters
+            </button>
+            .
+          </div>
+        )}
 
       {/* Product grid */}
       {visible.length > 0 && (
@@ -648,8 +816,16 @@ function ProductsPage() {
             <li key={p.id} className="h-full">
               <ProductGridCard
                 product={p}
+                merchantName={
+                  visibleMerchantProfilesQuery.data?.[p.pubkey]?.displayName ||
+                  visibleMerchantProfilesQuery.data?.[p.pubkey]?.name ||
+                  formatPubkey(p.pubkey, 6)
+                }
                 btcUsdRate={btcUsdRate}
-                cartQuantity={cart.items.find((item) => item.productId === p.id)?.quantity ?? 0}
+                cartQuantity={
+                  cart.items.find((item) => item.productId === p.id)
+                    ?.quantity ?? 0
+                }
                 onAddToCart={() =>
                   cart.addItem(
                     {
@@ -679,7 +855,9 @@ function ProductsPage() {
                   )
                 }
                 onDecrement={() => {
-                  const existing = cart.items.find((item) => item.productId === p.id)
+                  const existing = cart.items.find(
+                    (item) => item.productId === p.id
+                  )
                   if (!existing) return
                   if (existing.quantity <= 1) {
                     cart.removeItem(p.id)
@@ -718,7 +896,8 @@ function ProductsPage() {
           <DialogHeader>
             <DialogTitle>Update store filter?</DialogTitle>
             <DialogDescription className="text-[var(--text-secondary)]">
-              The selected store does not include some of your current category filters. Those filters will be removed if you continue.
+              The selected store does not include some of your current category
+              filters. Those filters will be removed if you continue.
             </DialogDescription>
           </DialogHeader>
 

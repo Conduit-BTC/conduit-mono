@@ -1,11 +1,14 @@
 import {
+  ChevronDown,
   LoaderCircle,
+  LogOut,
   MessagesSquare,
+  RadioTower,
   ReceiptText,
   Search,
-  Settings,
   ShoppingCart,
   Store,
+  UserRound,
 } from "lucide-react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 import { config, formatPubkey, useAuth, useProfile } from "@conduit/core"
@@ -18,6 +21,12 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -62,60 +71,101 @@ function Logo({
 function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
   const { data: profile } = useProfile(pubkey)
-  const [open, setOpen] = useState(false)
+  const [disconnectOpen, setDisconnectOpen] = useState(false)
 
   if (!pubkey || status === "disconnected" || status === "error") return null
 
   const displayName = profile?.displayName ?? profile?.name ?? null
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <Button
-        variant="primary"
-        size="sm"
-        className="text-xs"
-        onClick={() => setOpen(true)}
-      >
-        {profile?.picture && (
-          <img
-            src={profile.picture}
-            alt=""
-            className="h-5 w-5 rounded-full object-cover"
-          />
-        )}
-        {displayName ?? formatPubkey(pubkey, 4)}
-      </Button>
-      <DialogContent className="max-w-sm border-[var(--border)] bg-[var(--surface-dialog)] text-[var(--text-primary)] shadow-[var(--shadow-dialog)]">
-        <DialogHeader>
-          <DialogTitle>Disconnect signer?</DialogTitle>
-          <DialogDescription className="text-sm leading-7 text-[var(--text-secondary)]">
-            You can reconnect later, but checkout, orders, and merchant
-            follow-up will require signing in again.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
-          {displayName && (
-            <div className="font-medium text-[var(--text-primary)]">
-              {displayName}
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="primary" size="sm" className="gap-2 text-xs">
+            {profile?.picture && (
+              <img
+                src={profile.picture}
+                alt=""
+                className="h-5 w-5 rounded-full object-cover"
+              />
+            )}
+            {displayName ?? formatPubkey(pubkey, 4)}
+            <ChevronDown className="h-3.5 w-3.5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="end"
+          className="min-w-[15rem] rounded-xl border-[var(--border)] bg-[var(--surface-dialog)] p-2"
+        >
+          <DropdownMenuLabel className="px-2 py-2">
+            <div className="flex items-center gap-2 text-xs font-normal text-[var(--text-secondary)]">
+              <span className="h-2 w-2 rounded-full bg-emerald-400" />
+              Connected signer
             </div>
-          )}
-          <div className="font-mono">{formatPubkey(pubkey, 12)}</div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>
-            Cancel
-          </Button>
-          <Button
-            onClick={() => {
-              disconnect()
-              setOpen(false)
-            }}
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            asChild
+            className="h-10 cursor-pointer gap-2 rounded-lg"
           >
+            <Link to="/profile">
+              <UserRound className="h-4 w-4 text-secondary-300" />
+              Profile
+            </Link>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            asChild
+            className="h-10 cursor-pointer gap-2 rounded-lg"
+          >
+            <Link to="/settings">
+              <RadioTower className="h-4 w-4 text-secondary-300" />
+              Network
+            </Link>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            className="h-10 cursor-pointer gap-2 rounded-lg text-pink-400 focus:text-pink-300"
+            onSelect={() => setDisconnectOpen(true)}
+          >
+            <LogOut className="h-4 w-4" />
             Disconnect
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <Dialog open={disconnectOpen} onOpenChange={setDisconnectOpen}>
+        <DialogContent className="max-w-sm border-[var(--border)] bg-[var(--surface-dialog)] text-[var(--text-primary)] shadow-[var(--shadow-dialog)]">
+          <DialogHeader>
+            <DialogTitle>Disconnect signer?</DialogTitle>
+            <DialogDescription className="text-sm leading-7 text-[var(--text-secondary)]">
+              You can reconnect later, but checkout, orders, and merchant
+              follow-up will require signing in again.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+            {displayName && (
+              <div className="font-medium text-[var(--text-primary)]">
+                {displayName}
+              </div>
+            )}
+            <div className="font-mono">{formatPubkey(pubkey, 12)}</div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDisconnectOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                disconnect()
+                setDisconnectOpen(false)
+              }}
+            >
+              Disconnect
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
 
@@ -291,15 +341,6 @@ export function MarketHeader() {
               Shop
             </Link>
           </Button>
-          <Button asChild variant="ghost" className="h-10 px-3">
-            <Link
-              to="/settings"
-              activeProps={{ className: "text-[var(--text-primary)]" }}
-            >
-              <Settings className="h-4 w-4" />
-              Relays
-            </Link>
-          </Button>
         </nav>
 
         <div className="order-last w-full pb-5 lg:order-none lg:ml-2 lg:flex-1 lg:pb-0">
@@ -445,12 +486,6 @@ export function MarketHeader() {
                     <Link to="/cart" onClick={() => setMenuOpen(false)}>
                       <ShoppingCart className="h-4 w-4" />
                       Cart ({cart.totals.count})
-                    </Link>
-                  </Button>
-                  <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/settings" onClick={() => setMenuOpen(false)}>
-                      <Settings className="h-4 w-4" />
-                      Relays
                     </Link>
                   </Button>
                   {status === "connected" && (

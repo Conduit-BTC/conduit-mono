@@ -46,7 +46,10 @@ import {
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
 import { getComparablePriceValue } from "../../lib/pricing"
-import { fetchStoreProducts } from "../../lib/storeProducts"
+import {
+  STOREFRONT_NETWORK_LIMIT,
+  useProgressiveProducts,
+} from "../../hooks/useProgressiveProducts"
 
 type SortOption = "newest" | "price_asc" | "price_desc"
 
@@ -113,11 +116,15 @@ function StorefrontPage() {
   const [connectOpen, setConnectOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
   const tagCloudRef = useRef<HTMLDivElement | null>(null)
-  const productsQuery = useQuery({
-    queryKey: ["store-products", pubkey],
-    queryFn: () => fetchStoreProducts(pubkey),
+  const productsQuery = useProgressiveProducts({
+    scope: "storefront",
+    merchantPubkey: pubkey,
+    textQuery: search.q,
+    tag: search.tag,
+    sort: search.sort,
+    limit: STOREFRONT_NETWORK_LIMIT,
   })
-  const storeProducts = productsQuery.data?.data ?? []
+  const storeProducts = productsQuery.products
   const followQuery = useQuery({
     queryKey: ["following-store", viewerPubkey ?? "none", pubkey],
     enabled:
@@ -673,12 +680,26 @@ function StorefrontPage() {
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-sm text-[var(--text-secondary)]">
-              {filteredProducts.length} product
-              {filteredProducts.length === 1 ? "" : "s"}
+            <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
+              <span>
+                {filteredProducts.length} product
+                {filteredProducts.length === 1 ? "" : "s"}
+              </span>
               {search.tag && (
-                <span className="ml-2 text-[var(--text-muted)]">
+                <span className="text-[var(--text-muted)]">
                   in {search.tag}
+                </span>
+              )}
+              <span className="text-xs text-[var(--text-muted)]">
+                {productsQuery.isShowingCache
+                  ? "/ cached catalog"
+                  : productsQuery.meta?.source === "commerce"
+                    ? "/ verified from planned relays"
+                    : "/ relay catalog"}
+              </span>
+              {productsQuery.isHydrating && (
+                <span className="text-xs text-secondary-300">
+                  / hydrating merchant network
                 </span>
               )}
             </div>
@@ -690,7 +711,7 @@ function StorefrontPage() {
             )}
           </div>
 
-          {productsQuery.isLoading && (
+          {productsQuery.isInitialLoading && (
             <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
               {Array.from({ length: 6 }).map((_, index) => (
                 <li key={index} className="h-full">
@@ -700,13 +721,13 @@ function StorefrontPage() {
             </ul>
           )}
 
-          {productsQuery.error && (
+          {!!productsQuery.error && (
             <div className="rounded-xl border border-error/20 bg-error/10 p-4 text-sm text-error">
               Failed to load this storefront.
             </div>
           )}
 
-          {!productsQuery.isLoading &&
+          {!productsQuery.isInitialLoading &&
             storeProducts.length > 0 &&
             filteredProducts.length === 0 && (
               <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6">
@@ -741,6 +762,7 @@ function StorefrontPage() {
                 <li key={product.id} className="h-full">
                   <ProductGridCard
                     product={product}
+                    merchantName={merchantName}
                     btcUsdRate={btcUsdRate}
                     cartQuantity={
                       cart.items.find((item) => item.productId === product.id)

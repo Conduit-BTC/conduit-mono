@@ -20,6 +20,7 @@ export {
   connectNdk,
   requireNdkConnected,
   fetchEventsFanout,
+  fetchEventsFanoutProgressive,
   disconnectNdk,
   refreshNdkRelaySettings,
   setSigner,

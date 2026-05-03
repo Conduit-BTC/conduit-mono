@@ -1,14 +1,6 @@
 import { SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
-import {
-  type CommerceResult,
-  formatNpub,
-  getMerchantStorefront,
-  getProductDetail,
-  useProfile,
-  type Product,
-} from "@conduit/core"
-import { useQuery } from "@tanstack/react-query"
+import { formatNpub, useProfile } from "@conduit/core"
 import { useEffect, useMemo, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
@@ -22,34 +14,15 @@ import {
 } from "../../components/ProductGridCard"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
+import {
+  useProgressiveProductDetail,
+  useProgressiveProducts,
+} from "../../hooks/useProgressiveProducts"
 import { getProductPriceDisplay } from "../../lib/pricing"
 
 export const Route = createFileRoute("/products/$productId")({
   component: ProductPage,
 })
-
-async function fetchProduct(
-  productId: string
-): Promise<CommerceResult<Product | null>> {
-  const result = await getProductDetail({ productId })
-  return {
-    data: result.data?.product ?? null,
-    meta: result.meta,
-  }
-}
-
-async function fetchRelatedProducts(product: Product): Promise<Product[]> {
-  const result = await getMerchantStorefront({
-    merchantPubkey: product.pubkey,
-    limit: 12,
-  })
-  const parsed = result.data.map((record) => record.product)
-
-  return parsed
-    .filter((candidate) => candidate.id !== product.id)
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, 4)
-}
 
 function ProductPage() {
   const cart = useCart()
@@ -59,23 +32,28 @@ function ProductPage() {
   const [showAllTags, setShowAllTags] = useState(false)
   const btcUsdRateQuery = useBtcUsdRate()
 
-  const productQuery = useQuery({
-    queryKey: ["product", productId],
-    queryFn: () => fetchProduct(productId),
-  })
-  const product = productQuery.data?.data ?? null
+  const productQuery = useProgressiveProductDetail(productId)
+  const product = productQuery.product
 
   const merchantProfile = useProfile(product?.pubkey)
 
-  const relatedProductsQuery = useQuery({
-    queryKey: ["related-products", product?.id],
+  const relatedProductsQuery = useProgressiveProducts({
+    scope: "marketplace",
+    merchantPubkey: product?.pubkey ?? "",
     enabled: !!product,
-    queryFn: () => fetchRelatedProducts(product!),
+    sort: "newest",
   })
+  const relatedProducts = useMemo(
+    () =>
+      product
+        ? relatedProductsQuery.products
+            .filter((candidate) => candidate.id !== product.id)
+            .slice(0, 4)
+        : [],
+    [product, relatedProductsQuery.products]
+  )
 
-  const images = product?.images.length
-    ? product.images
-    : [{ url: "/images/placeholders/landscape.jpg", alt: product?.title }]
+  const images = product?.images ?? []
   const hasMultipleImages = images.length > 1
   const selectedImage = images[selectedImageIndex] ?? images[0]
   const merchantName = product
@@ -129,7 +107,7 @@ function ProductPage() {
         </div>
       </div>
 
-      {productQuery.isLoading && (
+      {productQuery.isInitialLoading && (
         <div
           className={`grid gap-6 ${hasMultipleImages ? "lg:grid-cols-[88px_minmax(0,1fr)_minmax(320px,420px)]" : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]"}`}
         >
@@ -153,7 +131,7 @@ function ProductPage() {
         </div>
       )}
 
-      {productQuery.error && (
+      {!!productQuery.error && (
         <div className="rounded-lg border border-error/30 bg-error/10 p-4 text-sm text-error">
           Failed to load product:{" "}
           {productQuery.error instanceof Error
@@ -162,7 +140,33 @@ function ProductPage() {
         </div>
       )}
 
-      {productQuery.data === null && (
+      {product && (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
+          <span>
+            {productQuery.isShowingCache
+              ? "Showing cached listing"
+              : productQuery.meta?.source === "commerce"
+                ? "Verified by direct relay lookup"
+                : "Loaded from relay view"}
+          </span>
+          {productQuery.isHydrating && (
+            <>
+              <span aria-hidden="true">/</span>
+              <span className="text-secondary-300">
+                checking latest relay state
+              </span>
+            </>
+          )}
+          {productQuery.meta?.stale && (
+            <>
+              <span aria-hidden="true">/</span>
+              <span>stale-aware</span>
+            </>
+          )}
+        </div>
+      )}
+
+      {!productQuery.isInitialLoading && !product && (
         <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 text-center sm:p-10">
           <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-400">
             <SearchX className="h-6 w-6" />
@@ -215,15 +219,9 @@ function ProductPage() {
             <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
               <div className="flex min-h-[22rem] items-center justify-center bg-[var(--background)] p-4 sm:p-6 lg:min-h-[32rem]">
                 <img
-                  src={
-                    selectedImage?.url ?? "/images/placeholders/landscape.jpg"
-                  }
+                  src={selectedImage?.url}
                   alt={selectedImage?.alt ?? product.title}
                   className="max-h-[60vh] w-auto max-w-full object-contain lg:max-h-[34rem]"
-                  onError={(e) => {
-                    ;(e.currentTarget as HTMLImageElement).src =
-                      "/images/placeholders/landscape.jpg"
-                  }}
                 />
               </div>
             </div>
@@ -473,7 +471,7 @@ function ProductPage() {
               </Button>
             </div>
 
-            {relatedProductsQuery.isLoading && (
+            {relatedProductsQuery.isInitialLoading && (
               <ul className="grid list-none grid-cols-2 gap-3 p-0 lg:grid-cols-4">
                 {Array.from({ length: 4 }).map((_, index) => (
                   <li key={index} className="h-full">
@@ -483,73 +481,74 @@ function ProductPage() {
               </ul>
             )}
 
-            {relatedProductsQuery.data &&
-              relatedProductsQuery.data.length === 0 && (
+            {!relatedProductsQuery.isInitialLoading &&
+              !relatedProductsQuery.isHydrating &&
+              relatedProducts.length === 0 && (
                 <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 text-sm text-[var(--text-secondary)]">
                   This merchant has not published additional products yet.
                 </div>
               )}
 
-            {relatedProductsQuery.data &&
-              relatedProductsQuery.data.length > 0 && (
-                <ul className="grid list-none grid-cols-2 gap-3 p-0 lg:grid-cols-4">
-                  {relatedProductsQuery.data.map((relatedProduct) => {
-                    const relatedCartItem = cart.items.find(
-                      (item) => item.productId === relatedProduct.id
-                    )
-                    const relatedCartQuantity = relatedCartItem?.quantity ?? 0
+            {relatedProducts.length > 0 && (
+              <ul className="grid list-none grid-cols-2 gap-3 p-0 lg:grid-cols-4">
+                {relatedProducts.map((relatedProduct) => {
+                  const relatedCartItem = cart.items.find(
+                    (item) => item.productId === relatedProduct.id
+                  )
+                  const relatedCartQuantity = relatedCartItem?.quantity ?? 0
 
-                    return (
-                      <li key={relatedProduct.id} className="h-full">
-                        <ProductGridCard
-                          product={relatedProduct}
-                          btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
-                          cartQuantity={relatedCartQuantity}
-                          onAddToCart={() =>
-                            cart.addItem(
-                              {
-                                productId: relatedProduct.id,
-                                merchantPubkey: relatedProduct.pubkey,
-                                title: relatedProduct.title,
-                                price: relatedProduct.price,
-                                currency: relatedProduct.currency,
-                                image: relatedProduct.images[0]?.url,
-                                tags: relatedProduct.tags,
-                              },
-                              1
-                            )
+                  return (
+                    <li key={relatedProduct.id} className="h-full">
+                      <ProductGridCard
+                        product={relatedProduct}
+                        merchantName={merchantName}
+                        btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+                        cartQuantity={relatedCartQuantity}
+                        onAddToCart={() =>
+                          cart.addItem(
+                            {
+                              productId: relatedProduct.id,
+                              merchantPubkey: relatedProduct.pubkey,
+                              title: relatedProduct.title,
+                              price: relatedProduct.price,
+                              currency: relatedProduct.currency,
+                              image: relatedProduct.images[0]?.url,
+                              tags: relatedProduct.tags,
+                            },
+                            1
+                          )
+                        }
+                        onIncrement={() =>
+                          cart.addItem(
+                            {
+                              productId: relatedProduct.id,
+                              merchantPubkey: relatedProduct.pubkey,
+                              title: relatedProduct.title,
+                              price: relatedProduct.price,
+                              currency: relatedProduct.currency,
+                              image: relatedProduct.images[0]?.url,
+                              tags: relatedProduct.tags,
+                            },
+                            1
+                          )
+                        }
+                        onDecrement={() => {
+                          if (!relatedCartItem) return
+                          if (relatedCartItem.quantity <= 1) {
+                            cart.removeItem(relatedProduct.id)
+                            return
                           }
-                          onIncrement={() =>
-                            cart.addItem(
-                              {
-                                productId: relatedProduct.id,
-                                merchantPubkey: relatedProduct.pubkey,
-                                title: relatedProduct.title,
-                                price: relatedProduct.price,
-                                currency: relatedProduct.currency,
-                                image: relatedProduct.images[0]?.url,
-                                tags: relatedProduct.tags,
-                              },
-                              1
-                            )
-                          }
-                          onDecrement={() => {
-                            if (!relatedCartItem) return
-                            if (relatedCartItem.quantity <= 1) {
-                              cart.removeItem(relatedProduct.id)
-                              return
-                            }
-                            cart.setQuantity(
-                              relatedProduct.id,
-                              relatedCartItem.quantity - 1
-                            )
-                          }}
-                        />
-                      </li>
-                    )
-                  })}
-                </ul>
-              )}
+                          cart.setQuantity(
+                            relatedProduct.id,
+                            relatedCartItem.quantity - 1
+                          )
+                        }}
+                      />
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
           </section>
         </>
       )}

@@ -7,6 +7,7 @@ import { getProductPriceDisplay } from "../lib/pricing"
 
 type ProductGridCardProps = {
   product: Product
+  merchantName?: string
   onAddToCart?: () => void
   btcUsdRate?: number | null
   cartQuantity?: number
@@ -16,6 +17,7 @@ type ProductGridCardProps = {
 
 export function ProductGridCard({
   product,
+  merchantName: merchantNameOverride,
   onAddToCart,
   btcUsdRate,
   cartQuantity = 0,
@@ -23,15 +25,23 @@ export function ProductGridCard({
   onDecrement,
 }: ProductGridCardProps) {
   const navigate = useNavigate()
-  const { data: profile } = useProfile(product.pubkey)
+  const { data: profile } = useProfile(
+    merchantNameOverride ? undefined : product.pubkey
+  )
   const [didJustAdd, setDidJustAdd] = useState(false)
   const previousQuantityRef = useRef(cartQuantity)
 
   const imageUrl = product.images[0]?.url
-  const fallbackUrl = "/images/placeholders/product.png"
 
-  const merchantName = profile?.displayName || profile?.name || formatPubkey(product.pubkey, 6)
-  const { primary, secondary } = getProductPriceDisplay(product, btcUsdRate ?? null)
+  const merchantName =
+    merchantNameOverride ||
+    profile?.displayName ||
+    profile?.name ||
+    formatPubkey(product.pubkey, 6)
+  const { primary, secondary } = getProductPriceDisplay(
+    product,
+    btcUsdRate ?? null
+  )
 
   useEffect(() => {
     if (cartQuantity > previousQuantityRef.current) {
@@ -68,21 +78,11 @@ export function ProductGridCard({
       }}
     >
       <div className="aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)]">
-        {imageUrl ? (
+        {imageUrl && (
           <img
             src={imageUrl}
             alt={product.images[0]?.alt ?? product.title}
             className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-            loading="lazy"
-            onError={(e) => {
-              ;(e.currentTarget as HTMLImageElement).src = fallbackUrl
-            }}
-          />
-        ) : (
-          <img
-            src={fallbackUrl}
-            alt=""
-            className="h-full w-full object-cover opacity-90"
             loading="lazy"
           />
         )}
@@ -111,7 +111,9 @@ export function ProductGridCard({
 
         <div className="mt-auto flex items-end justify-between gap-2 pt-3">
           <div className="min-w-0">
-            <div className="text-sm font-bold text-secondary-400">{primary}</div>
+            <div className="text-sm font-bold text-secondary-400">
+              {primary}
+            </div>
             <div className="min-h-[1rem] truncate text-xs text-[var(--text-muted)]">
               {secondary ?? "\u00a0"}
             </div>
