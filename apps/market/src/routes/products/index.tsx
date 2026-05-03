@@ -161,6 +161,9 @@ function ProductsPage() {
   const [tagCloudOverflows, setTagCloudOverflows] = useState(false)
   const [pendingMerchant, setPendingMerchant] = useState<string | null>(null)
   const [merchantTagConflicts, setMerchantTagConflicts] = useState<string[]>([])
+  const [invalidImageProductIds, setInvalidImageProductIds] = useState<
+    Set<string>
+  >(new Set())
   const [anonymousFollowPubkeys, setAnonymousFollowPubkeys] = useState(
     getDefaultMarketPerspectiveFollowPubkeys
   )
@@ -204,7 +207,21 @@ function ProductsPage() {
     sort: search.sort,
     limit: search.merchant ? MARKETPLACE_NETWORK_LIMIT : undefined,
   })
-  const productData = productsQuery.products
+  const productData = useMemo(
+    () =>
+      productsQuery.products.filter(
+        (product) => !invalidImageProductIds.has(product.id)
+      ),
+    [invalidImageProductIds, productsQuery.products]
+  )
+  const markInvalidProductImage = useCallback((productId: string) => {
+    setInvalidImageProductIds((current) => {
+      if (current.has(productId)) return current
+      const next = new Set(current)
+      next.add(productId)
+      return next
+    })
+  }, [])
 
   // Derive all unique tags from the full (unfiltered) product set
   const allTags = useMemo(() => {
@@ -865,6 +882,7 @@ function ProductsPage() {
                   }
                   cart.setQuantity(p.id, existing.quantity - 1)
                 }}
+                onInvalidImage={markInvalidProductImage}
               />
             </li>
           ))}

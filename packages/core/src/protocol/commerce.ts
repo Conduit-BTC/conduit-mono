@@ -279,7 +279,27 @@ async function planCommerceReadRelays(input: {
     maxRelays: input.maxRelays,
   })
 
-  if (plan.relayUrls.length > 0) return plan.relayUrls
+  const fallbackRelayUrls = (() => {
+    switch (input.intent) {
+      case "commerce_products":
+      case "author_products":
+        return config.defaultRelays
+      default:
+        return config.publicRelayUrls.length > 0
+          ? config.publicRelayUrls
+          : config.defaultRelays
+    }
+  })()
+  const plannedRelayUrls = uniqueStrings([
+    ...plan.relayUrls,
+    ...fallbackRelayUrls,
+  ])
+  const expandedRelayUrls =
+    input.maxRelays === undefined
+      ? plannedRelayUrls
+      : plannedRelayUrls.slice(0, input.maxRelays)
+
+  if (expandedRelayUrls.length > 0) return expandedRelayUrls
 
   // Defensive fallback: legacy resolution paths.
   switch (input.intent) {
@@ -365,6 +385,15 @@ function uniqueStrings(
   return Array.from(
     new Set(values.map((value) => value?.trim()).filter(Boolean) as string[])
   )
+}
+
+function chunkStrings(values: readonly string[], size: number): string[][] {
+  if (values.length === 0) return []
+  const chunks: string[][] = []
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size))
+  }
+  return chunks
 }
 
 function productMatchesQuery(
@@ -798,10 +827,13 @@ async function fetchPublicProductRecordsProgressive(
   }
 
   if (query.limit !== undefined) filter.limit = query.limit
-  if (query.authors) filter.authors = query.authors
   if (query.ids) filter.ids = query.ids
   if (query.dTags) filter["#d"] = query.dTags
 
+  const authorChunks =
+    query.authors && query.authors.length > 0
+      ? chunkStrings(uniqueStrings(query.authors), 64)
+      : [undefined]
   const relayUrls = await planCommerceReadRelays({
     intent:
       query.authors && query.authors.length > 0
@@ -810,20 +842,37 @@ async function fetchPublicProductRecordsProgressive(
     authors: query.authors,
     maxRelays: query.readPolicy?.maxRelays,
   })
+  const merged = new Map<string, NDKEvent>()
 
-  const events = await fetchEventsFanoutProgressive(
-    filter,
-    {
-      relayUrls,
-      connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
-      fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 8_000,
-    },
-    ({ mergedEvents, relayUrl }) => {
-      onRecords(dedupeProductEvents(mergedEvents), relayUrl)
-    }
+  await Promise.all(
+    authorChunks.map(async (authors) => {
+      const chunkFilter: NDKFilter = {
+        ...filter,
+        ...(authors ? { authors } : {}),
+      }
+      const events = await fetchEventsFanoutProgressive(
+        chunkFilter,
+        {
+          relayUrls,
+          connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
+          fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 8_000,
+        },
+        ({ mergedEvents, relayUrl }) => {
+          for (const event of mergedEvents) {
+            const fallbackId = `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
+            merged.set(event.id || fallbackId, event)
+          }
+          onRecords(dedupeProductEvents(Array.from(merged.values())), relayUrl)
+        }
+      )
+      for (const event of events) {
+        const fallbackId = `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
+        merged.set(event.id || fallbackId, event)
+      }
+    })
   )
 
-  return dedupeProductEvents(events)
+  return dedupeProductEvents(Array.from(merged.values()))
 }
 
 function applyProductLimit(

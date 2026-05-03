@@ -1,7 +1,7 @@
 import { SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { formatNpub, useProfile } from "@conduit/core"
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
 import {
@@ -30,6 +30,9 @@ function ProductPage() {
   const [selectedImageIndex, setSelectedImageIndex] = useState(0)
   const [quantity, setQuantity] = useState(1)
   const [showAllTags, setShowAllTags] = useState(false)
+  const [invalidRelatedImageIds, setInvalidRelatedImageIds] = useState<
+    Set<string>
+  >(new Set())
   const btcUsdRateQuery = useBtcUsdRate()
 
   const productQuery = useProgressiveProductDetail(productId)
@@ -48,10 +51,19 @@ function ProductPage() {
       product
         ? relatedProductsQuery.products
             .filter((candidate) => candidate.id !== product.id)
+            .filter((candidate) => !invalidRelatedImageIds.has(candidate.id))
             .slice(0, 4)
         : [],
-    [product, relatedProductsQuery.products]
+    [invalidRelatedImageIds, product, relatedProductsQuery.products]
   )
+  const markInvalidRelatedImage = useCallback((productId: string) => {
+    setInvalidRelatedImageIds((current) => {
+      if (current.has(productId)) return current
+      const next = new Set(current)
+      next.add(productId)
+      return next
+    })
+  }, [])
 
   const images = product?.images ?? []
   const hasMultipleImages = images.length > 1
@@ -543,6 +555,7 @@ function ProductPage() {
                             relatedCartItem.quantity - 1
                           )
                         }}
+                        onInvalidImage={markInvalidRelatedImage}
                       />
                     </li>
                   )

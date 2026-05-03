@@ -8,7 +8,14 @@ import {
   UserMinus,
   UserPlus,
 } from "lucide-react"
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
@@ -115,6 +122,9 @@ function StorefrontPage() {
   const [tagCloudOverflows, setTagCloudOverflows] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
+  const [invalidImageProductIds, setInvalidImageProductIds] = useState<
+    Set<string>
+  >(new Set())
   const tagCloudRef = useRef<HTMLDivElement | null>(null)
   const productsQuery = useProgressiveProducts({
     scope: "storefront",
@@ -124,7 +134,21 @@ function StorefrontPage() {
     sort: search.sort,
     limit: STOREFRONT_NETWORK_LIMIT,
   })
-  const storeProducts = productsQuery.products
+  const storeProducts = useMemo(
+    () =>
+      productsQuery.products.filter(
+        (product) => !invalidImageProductIds.has(product.id)
+      ),
+    [invalidImageProductIds, productsQuery.products]
+  )
+  const markInvalidProductImage = useCallback((productId: string) => {
+    setInvalidImageProductIds((current) => {
+      if (current.has(productId)) return current
+      const next = new Set(current)
+      next.add(productId)
+      return next
+    })
+  }, [])
   const followQuery = useQuery({
     queryKey: ["following-store", viewerPubkey ?? "none", pubkey],
     enabled:
@@ -801,6 +825,7 @@ function StorefrontPage() {
                       }
                       cart.setQuantity(product.id, existing.quantity - 1)
                     }}
+                    onInvalidImage={markInvalidProductImage}
                   />
                 </li>
               ))}

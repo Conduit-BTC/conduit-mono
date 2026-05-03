@@ -84,7 +84,9 @@ function parseRelayList(raw: string): string[] {
 function getDefaultRelays(env: ReturnType<typeof getViteEnv>): string[] {
   const raw = env.defaultRelays.trim() || env.defaultRelayUrl.trim()
   if (!raw) return DEFAULT_RELAYS
-  return parseRelayList(raw)
+  return [...parseRelayList(raw), ...DEFAULT_RELAYS].filter(
+    (url, index, all) => all.indexOf(url) === index
+  )
 }
 
 const env = getViteEnv()

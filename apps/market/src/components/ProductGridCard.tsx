@@ -13,6 +13,7 @@ type ProductGridCardProps = {
   cartQuantity?: number
   onIncrement?: () => void
   onDecrement?: () => void
+  onInvalidImage?: (productId: string) => void
 }
 
 export function ProductGridCard({
@@ -23,12 +24,14 @@ export function ProductGridCard({
   cartQuantity = 0,
   onIncrement,
   onDecrement,
+  onInvalidImage,
 }: ProductGridCardProps) {
   const navigate = useNavigate()
   const { data: profile } = useProfile(
     merchantNameOverride ? undefined : product.pubkey
   )
   const [didJustAdd, setDidJustAdd] = useState(false)
+  const [imageFailed, setImageFailed] = useState(false)
   const previousQuantityRef = useRef(cartQuantity)
 
   const imageUrl = product.images[0]?.url
@@ -44,6 +47,10 @@ export function ProductGridCard({
   )
 
   useEffect(() => {
+    setImageFailed(false)
+  }, [imageUrl])
+
+  useEffect(() => {
     if (cartQuantity > previousQuantityRef.current) {
       setDidJustAdd(true)
       const timeoutId = window.setTimeout(() => setDidJustAdd(false), 220)
@@ -54,6 +61,8 @@ export function ProductGridCard({
     previousQuantityRef.current = cartQuantity
     return undefined
   }, [cartQuantity])
+
+  if (!imageUrl || imageFailed) return null
 
   return (
     <div
@@ -78,14 +87,16 @@ export function ProductGridCard({
       }}
     >
       <div className="aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)]">
-        {imageUrl && (
-          <img
-            src={imageUrl}
-            alt={product.images[0]?.alt ?? product.title}
-            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-            loading="lazy"
-          />
-        )}
+        <img
+          src={imageUrl}
+          alt={product.images[0]?.alt ?? product.title}
+          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+          loading="lazy"
+          onError={() => {
+            setImageFailed(true)
+            onInvalidImage?.(product.id)
+          }}
+        />
       </div>
 
       <div className="flex flex-1 flex-col p-3">

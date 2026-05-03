@@ -260,10 +260,13 @@ function RelatedProductRow({
   cartQuantity: number
   onAdd: () => void
 }) {
-  const imageUrl = product.images[0]?.url ?? "/images/placeholders/product.png"
+  const [imageFailed, setImageFailed] = useState(false)
+  const imageUrl = product.images[0]?.url
   const price = getProductPriceDisplay(product, btcUsdRate)
   const { data: profile } = useProfile(product.pubkey)
   const merchantLabel = getMerchantDisplayName(profile, product.pubkey)
+
+  if (!imageUrl || imageFailed) return null
 
   return (
     <div className="grid min-h-[9.5rem] grid-cols-[80px_minmax(0,1fr)] items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
@@ -279,10 +282,7 @@ function RelatedProductRow({
           width={80}
           height={80}
           loading="lazy"
-          onError={(e) => {
-            ;(e.currentTarget as HTMLImageElement).src =
-              "/images/placeholders/product.png"
-          }}
+          onError={() => setImageFailed(true)}
         />
       </Link>
 
@@ -344,16 +344,17 @@ function CartLineItem({
   return (
     <div className="grid gap-4 py-5 md:grid-cols-[132px_minmax(0,1fr)_auto] md:items-start">
       <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--background)]">
-        <img
-          src={item.image ?? "/images/placeholders/product.png"}
-          alt={item.title}
-          className="aspect-square h-full w-full object-cover"
-          loading="lazy"
-          onError={(e) => {
-            ;(e.currentTarget as HTMLImageElement).src =
-              "/images/placeholders/product.png"
-          }}
-        />
+        {item.image && (
+          <img
+            src={item.image}
+            alt={item.title}
+            className="aspect-square h-full w-full object-cover"
+            loading="lazy"
+            onError={(event) => {
+              event.currentTarget.style.display = "none"
+            }}
+          />
+        )}
       </div>
 
       <div className="min-w-0">

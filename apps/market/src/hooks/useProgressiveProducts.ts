@@ -20,6 +20,7 @@ import {
 export const MARKETPLACE_NETWORK_LIMIT = 1_200
 export const STOREFRONT_NETWORK_LIMIT = 1_000
 const PERSPECTIVE_STREAM_READ_POLICY: CommerceReadPolicy = {
+  maxRelays: 32,
   connectTimeoutMs: 1_200,
   fetchTimeoutMs: 2_500,
 }
