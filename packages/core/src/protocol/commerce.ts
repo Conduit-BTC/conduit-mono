@@ -30,6 +30,8 @@ import { getRelayLists } from "./relay-list"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
 
 const PRODUCT_CACHE_TTL_MS = 24 * 60 * 60_000
+const BROAD_AUTHOR_HINT_LIMIT = 16
+const PRODUCT_AUTHOR_CHUNK_SIZE = 256
 const PROFILE_CACHE_TTL_MS = 5 * 60_000
 
 export type CommerceReadSource = "commerce" | "public" | "local_cache"
@@ -254,6 +256,7 @@ async function planCommerceReadRelays(input: {
   authors?: readonly string[]
   recipients?: readonly string[]
   maxRelays?: number
+  relayHintMode?: "auto" | "skip" | "force"
 }): Promise<string[]> {
   const hintPubkeys = Array.from(
     new Set(
@@ -263,13 +266,17 @@ async function planCommerceReadRelays(input: {
     )
   )
 
-  const relayLists =
-    hintPubkeys.length > 0
-      ? await getRelayLists(
-          hintPubkeys,
-          testOverrides.fetchEventsFanout ? { cacheOnly: true } : {}
-        )
-      : undefined
+  const shouldFetchRelayHints =
+    hintPubkeys.length > 0 &&
+    (input.relayHintMode === "force" ||
+      (input.relayHintMode !== "skip" &&
+        hintPubkeys.length <= BROAD_AUTHOR_HINT_LIMIT))
+  const relayLists = shouldFetchRelayHints
+    ? await getRelayLists(
+        hintPubkeys,
+        testOverrides.fetchEventsFanout ? { cacheOnly: true } : {}
+      )
+    : undefined
 
   const plan = planRelayReads({
     intent: input.intent,
@@ -290,10 +297,12 @@ async function planCommerceReadRelays(input: {
           : config.defaultRelays
     }
   })()
-  const plannedRelayUrls = uniqueStrings([
-    ...plan.relayUrls,
-    ...fallbackRelayUrls,
-  ])
+  const preferFallbackFirst =
+    input.intent === "commerce_products" ||
+    (input.intent === "author_products" && (input.authors?.length ?? 0) > 1)
+  const plannedRelayUrls = preferFallbackFirst
+    ? uniqueStrings([...fallbackRelayUrls, ...plan.relayUrls])
+    : uniqueStrings([...plan.relayUrls, ...fallbackRelayUrls])
   const expandedRelayUrls =
     input.maxRelays === undefined
       ? plannedRelayUrls
@@ -394,6 +403,51 @@ function chunkStrings(values: readonly string[], size: number): string[][] {
     chunks.push(values.slice(index, index + size))
   }
   return chunks
+}
+
+function putMergedEvent(merged: Map<string, NDKEvent>, event: NDKEvent): void {
+  const fallbackId = `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
+  merged.set(event.id || fallbackId, event)
+}
+
+async function streamProductRecordChunks(input: {
+  baseFilter: NDKFilter
+  authorChunks: Array<string[] | undefined>
+  relayUrls: string[]
+  readPolicy?: CommerceReadPolicy
+  merged: Map<string, NDKEvent>
+  onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
+}): Promise<void> {
+  if (input.relayUrls.length === 0) return
+
+  await Promise.all(
+    input.authorChunks.map(async (authors) => {
+      const chunkFilter: NDKFilter = {
+        ...input.baseFilter,
+        ...(authors ? { authors } : {}),
+      }
+      const events = await fetchEventsFanoutProgressive(
+        chunkFilter,
+        {
+          relayUrls: input.relayUrls,
+          connectTimeoutMs: input.readPolicy?.connectTimeoutMs ?? 4_000,
+          fetchTimeoutMs: input.readPolicy?.fetchTimeoutMs ?? 8_000,
+        },
+        ({ mergedEvents, relayUrl }) => {
+          for (const event of mergedEvents) {
+            putMergedEvent(input.merged, event)
+          }
+          input.onRecords(
+            dedupeProductEvents(Array.from(input.merged.values())),
+            relayUrl
+          )
+        }
+      )
+      for (const event of events) {
+        putMergedEvent(input.merged, event)
+      }
+    })
+  )
 }
 
 function productMatchesQuery(
@@ -832,7 +886,7 @@ async function fetchPublicProductRecordsProgressive(
 
   const authorChunks =
     query.authors && query.authors.length > 0
-      ? chunkStrings(uniqueStrings(query.authors), 64)
+      ? chunkStrings(uniqueStrings(query.authors), PRODUCT_AUTHOR_CHUNK_SIZE)
       : [undefined]
   const relayUrls = await planCommerceReadRelays({
     intent:
@@ -841,36 +895,41 @@ async function fetchPublicProductRecordsProgressive(
         : "commerce_products",
     authors: query.authors,
     maxRelays: query.readPolicy?.maxRelays,
+    relayHintMode: "skip",
   })
   const merged = new Map<string, NDKEvent>()
+  const shouldExpandRelayHints =
+    query.authors && query.authors.length > BROAD_AUTHOR_HINT_LIMIT
+  const expandedRelayUrlsPromise = shouldExpandRelayHints
+    ? planCommerceReadRelays({
+        intent: "author_products",
+        authors: query.authors,
+        maxRelays: query.readPolicy?.maxRelays,
+        relayHintMode: "force",
+      })
+    : Promise.resolve(relayUrls)
 
-  await Promise.all(
-    authorChunks.map(async (authors) => {
-      const chunkFilter: NDKFilter = {
-        ...filter,
-        ...(authors ? { authors } : {}),
-      }
-      const events = await fetchEventsFanoutProgressive(
-        chunkFilter,
-        {
-          relayUrls,
-          connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
-          fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 8_000,
-        },
-        ({ mergedEvents, relayUrl }) => {
-          for (const event of mergedEvents) {
-            const fallbackId = `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
-            merged.set(event.id || fallbackId, event)
-          }
-          onRecords(dedupeProductEvents(Array.from(merged.values())), relayUrl)
-        }
-      )
-      for (const event of events) {
-        const fallbackId = `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
-        merged.set(event.id || fallbackId, event)
-      }
-    })
+  await streamProductRecordChunks({
+    baseFilter: filter,
+    authorChunks,
+    relayUrls,
+    readPolicy: query.readPolicy,
+    merged,
+    onRecords,
+  })
+
+  const expandedRelayUrls = await expandedRelayUrlsPromise
+  const expansionRelayUrls = expandedRelayUrls.filter(
+    (relayUrl) => !relayUrls.includes(relayUrl)
   )
+  await streamProductRecordChunks({
+    baseFilter: filter,
+    authorChunks,
+    relayUrls: expansionRelayUrls,
+    readPolicy: query.readPolicy,
+    merged,
+    onRecords,
+  })
 
   return dedupeProductEvents(Array.from(merged.values()))
 }
