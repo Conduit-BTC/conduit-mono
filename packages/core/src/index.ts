@@ -24,6 +24,7 @@ export {
 export {
   db,
   ensureCommerceCacheScope,
+  pruneCommerceCaches,
   type StoredOrder,
   type StoredMessage,
   type CachedProduct,

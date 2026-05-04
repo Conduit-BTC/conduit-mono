@@ -106,6 +106,8 @@ export interface ProductDetailQuery {
 export interface ProfileBatchQuery {
   pubkeys: string[]
   skipCache?: boolean
+  priority?: "visible" | "background"
+  readPolicy?: CommerceReadPolicy
 }
 
 export interface FollowListQuery {
@@ -1430,14 +1432,90 @@ export async function getProfiles(
   }
 
   try {
-    const ndk = await runRequireNdkConnected()
-    const events = Array.from(
-      await ndk.fetchEvents({
+    if (testOverrides.requireNdkConnected && !testOverrides.fetchEventsFanout) {
+      const ndk = await runRequireNdkConnected()
+      const events = Array.from(
+        await ndk.fetchEvents({
+          kinds: [EVENT_KINDS.PROFILE],
+          authors: missing,
+          limit: Math.max(10, missing.length * 3),
+        })
+      ) as NDKEvent[]
+
+      const latestByPubkey = new Map<string, NDKEvent>()
+      for (const event of events) {
+        const existing = latestByPubkey.get(event.pubkey)
+        if (!existing || (event.created_at ?? 0) > (existing.created_at ?? 0)) {
+          latestByPubkey.set(event.pubkey, event)
+        }
+      }
+
+      const rowsToCache: Array<{
+        pubkey: string
+        name?: string
+        displayName?: string
+        about?: string
+        picture?: string
+        banner?: string
+        nip05?: string
+        lud16?: string
+        website?: string
+        cachedAt: number
+      }> = []
+
+      for (const pubkey of missing) {
+        const event = latestByPubkey.get(pubkey)
+        const profile = event ? parseProfileEvent(event) : { pubkey }
+        result[pubkey] = profile
+        rowsToCache.push({
+          pubkey: profile.pubkey,
+          name: profile.name,
+          displayName: profile.displayName,
+          about: profile.about,
+          picture: profile.picture,
+          banner: profile.banner,
+          nip05: profile.nip05,
+          lud16: profile.lud16,
+          website: profile.website,
+          cachedAt: now(),
+        })
+      }
+
+      if (rowsToCache.length > 0) {
+        await storeCachedProfiles(rowsToCache)
+      }
+
+      return {
+        data: result,
+        meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
+      }
+    }
+
+    const connectTimeoutMs =
+      query.readPolicy?.connectTimeoutMs ??
+      (query.priority === "visible" ? 800 : 1_500)
+    const fetchTimeoutMs =
+      query.readPolicy?.fetchTimeoutMs ??
+      (query.priority === "visible" ? 1_600 : 3_000)
+    const relayUrls = await planCommerceReadRelays({
+      intent: "profiles",
+      authors: missing,
+      maxRelays:
+        query.readPolicy?.maxRelays ?? (query.priority === "visible" ? 8 : 6),
+      relayHintMode: query.priority === "visible" ? "skip" : "auto",
+    })
+    const events = (await runFetchEventsFanout(
+      {
         kinds: [EVENT_KINDS.PROFILE],
         authors: missing,
         limit: Math.max(10, missing.length * 3),
-      })
-    ) as NDKEvent[]
+      },
+      {
+        relayUrls,
+        connectTimeoutMs,
+        fetchTimeoutMs,
+      }
+    )) as NDKEvent[]
 
     const latestByPubkey = new Map<string, NDKEvent>()
     for (const event of events) {

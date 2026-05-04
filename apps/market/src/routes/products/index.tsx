@@ -415,7 +415,10 @@ function ProductsPage() {
     queryKey: ["visible-product-card-profiles", visibleMerchantPubkeys],
     enabled: visibleMerchantPubkeys.length > 0,
     queryFn: async () => {
-      const result = await getProfiles({ pubkeys: visibleMerchantPubkeys })
+      const result = await getProfiles({
+        pubkeys: visibleMerchantPubkeys,
+        priority: "visible",
+      })
       return result.data
     },
     staleTime: 5 * 60_000,

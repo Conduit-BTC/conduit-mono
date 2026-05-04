@@ -1,4 +1,4 @@
-import Dexie, { type EntityTable } from "dexie"
+import Dexie, { type EntityTable, type Table } from "dexie"
 import { config } from "../config"
 
 export interface StoredOrder {
@@ -183,6 +183,9 @@ class ConduitDB extends Dexie {
 export const db = new ConduitDB()
 
 const CACHE_SCOPE_KEY = "conduit:commerce-cache-scope:v1"
+const CACHE_PRUNE_HIGH_WATER_BYTES = 35 * 1024 * 1024
+const CACHE_PRUNE_TARGET_BYTES = 24 * 1024 * 1024
+const CACHE_PRUNE_FRESH_MS = 24 * 60 * 60 * 1_000
 
 function getCommerceCacheScope(): string {
   return JSON.stringify({
@@ -211,4 +214,67 @@ export async function ensureCommerceCacheScope(): Promise<void> {
   ])
 
   window.localStorage.setItem(CACHE_SCOPE_KEY, nextScope)
+}
+
+async function pruneTableByCachedAt(
+  table: Table,
+  options: {
+    estimatedRowBytes: number
+    highWaterBytes: number
+    targetBytes: number
+    freshMs: number
+  }
+): Promise<void> {
+  const count = await table.count()
+  const estimatedBytes = count * options.estimatedRowBytes
+  if (estimatedBytes <= options.highWaterBytes) return
+
+  const targetRowCount = Math.ceil(
+    options.targetBytes / options.estimatedRowBytes
+  )
+  const deleteCount = Math.max(0, count - targetRowCount)
+  if (deleteCount === 0) return
+
+  const staleBefore = Date.now() - options.freshMs
+  const staleRows = await table
+    .orderBy("cachedAt")
+    .filter((row) => {
+      const cachedAt = (row as { cachedAt?: unknown }).cachedAt
+      return typeof cachedAt === "number" && cachedAt < staleBefore
+    })
+    .limit(deleteCount)
+    .primaryKeys()
+  if (staleRows.length === 0) return
+  await table.bulkDelete(staleRows)
+}
+
+export async function pruneCommerceCaches(): Promise<void> {
+  if (typeof window === "undefined") return
+
+  await Promise.all([
+    pruneTableByCachedAt(db.products, {
+      estimatedRowBytes: 2_500,
+      highWaterBytes: CACHE_PRUNE_HIGH_WATER_BYTES,
+      targetBytes: CACHE_PRUNE_TARGET_BYTES,
+      freshMs: CACHE_PRUNE_FRESH_MS,
+    }),
+    pruneTableByCachedAt(db.profiles, {
+      estimatedRowBytes: 1_200,
+      highWaterBytes: CACHE_PRUNE_HIGH_WATER_BYTES,
+      targetBytes: CACHE_PRUNE_TARGET_BYTES,
+      freshMs: CACHE_PRUNE_FRESH_MS,
+    }),
+    pruneTableByCachedAt(db.relayLists, {
+      estimatedRowBytes: 900,
+      highWaterBytes: CACHE_PRUNE_HIGH_WATER_BYTES,
+      targetBytes: CACHE_PRUNE_TARGET_BYTES,
+      freshMs: CACHE_PRUNE_FRESH_MS,
+    }),
+    pruneTableByCachedAt(db.productSocialSummaries, {
+      estimatedRowBytes: 500,
+      highWaterBytes: CACHE_PRUNE_HIGH_WATER_BYTES,
+      targetBytes: CACHE_PRUNE_TARGET_BYTES,
+      freshMs: CACHE_PRUNE_FRESH_MS,
+    }),
+  ])
 }

@@ -70,7 +70,7 @@ function Logo({
 
 function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
-  const { data: profile } = useProfile(pubkey)
+  const { data: profile } = useProfile(pubkey, { priority: "visible" })
   const [disconnectOpen, setDisconnectOpen] = useState(false)
 
   if (!pubkey || status === "disconnected" || status === "error") return null
