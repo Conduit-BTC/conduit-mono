@@ -7,6 +7,7 @@ import {
   getProfiles,
   useAuth,
   useProfile,
+  type Profile,
   type Product,
 } from "@conduit/core"
 import { useQuery } from "@tanstack/react-query"
@@ -109,6 +110,10 @@ function filterProducts(products: Product[], search: ProductSearch): Product[] {
   return result
 }
 
+function getProfileName(profile: Profile | undefined): string | undefined {
+  return profile?.displayName?.trim() || profile?.name?.trim() || undefined
+}
+
 function sortProducts(
   products: Product[],
   sort: SortOption | undefined,
@@ -143,8 +148,8 @@ function sortProducts(
 
 /** Resolves a merchant pubkey to a display name */
 function MerchantName({ pubkey }: { pubkey: string }) {
-  const { data: profile } = useProfile(pubkey)
-  return <>{profile?.displayName || profile?.name || formatPubkey(pubkey, 6)}</>
+  const { data: profile } = useProfile(pubkey, { priority: "visible" })
+  return <>{getProfileName(profile) || formatPubkey(pubkey, 6)}</>
 }
 
 function ProductsPage() {
@@ -418,6 +423,15 @@ function ProductsPage() {
       return result.data
     },
     staleTime: 5 * 60_000,
+    refetchInterval: (query) => {
+      const data = query.state.data
+      if (!data) return false
+      return visibleMerchantPubkeys.some(
+        (pubkey) => !getProfileName(data[pubkey])
+      )
+        ? 2_000
+        : false
+    },
   })
 
   const hasActiveFilters = !!(
@@ -832,11 +846,9 @@ function ProductsPage() {
             <li key={p.id} className="h-full">
               <ProductGridCard
                 product={p}
-                merchantName={
-                  visibleMerchantProfilesQuery.data?.[p.pubkey]?.displayName ||
-                  visibleMerchantProfilesQuery.data?.[p.pubkey]?.name ||
-                  formatPubkey(p.pubkey, 6)
-                }
+                merchantName={getProfileName(
+                  visibleMerchantProfilesQuery.data?.[p.pubkey]
+                )}
                 btcUsdRate={btcUsdRate}
                 cartQuantity={
                   cart.items.find((item) => item.productId === p.id)

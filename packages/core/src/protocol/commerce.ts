@@ -649,6 +649,31 @@ async function storeCachedProfiles(rows: CachedProfile[]): Promise<void> {
   await db.profiles.bulkPut(rows)
 }
 
+function hasProfileContent(
+  profile: Pick<
+    CachedProfile,
+    | "name"
+    | "displayName"
+    | "about"
+    | "picture"
+    | "banner"
+    | "nip05"
+    | "lud16"
+    | "website"
+  >
+): boolean {
+  return [
+    profile.name,
+    profile.displayName,
+    profile.about,
+    profile.picture,
+    profile.banner,
+    profile.nip05,
+    profile.lud16,
+    profile.website,
+  ].some((value) => typeof value === "string" && value.trim().length > 0)
+}
+
 async function loadCachedOrderMessages(
   principalPubkey: string
 ): Promise<CachedOrderMessage[]> {
@@ -1406,7 +1431,11 @@ export async function getProfiles(
   const cachedRows = query.skipCache ? [] : await loadCachedProfiles(pubkeys)
   pubkeys.forEach((pubkey, index) => {
     const cached = cachedRows[index]
-    if (cached && now() - cached.cachedAt < PROFILE_CACHE_TTL_MS) {
+    if (
+      cached &&
+      hasProfileContent(cached) &&
+      now() - cached.cachedAt < PROFILE_CACHE_TTL_MS
+    ) {
       result[pubkey] = {
         pubkey: cached.pubkey,
         name: cached.name,
@@ -1468,18 +1497,20 @@ export async function getProfiles(
         const event = latestByPubkey.get(pubkey)
         const profile = event ? parseProfileEvent(event) : { pubkey }
         result[pubkey] = profile
-        rowsToCache.push({
-          pubkey: profile.pubkey,
-          name: profile.name,
-          displayName: profile.displayName,
-          about: profile.about,
-          picture: profile.picture,
-          banner: profile.banner,
-          nip05: profile.nip05,
-          lud16: profile.lud16,
-          website: profile.website,
-          cachedAt: now(),
-        })
+        if (hasProfileContent(profile)) {
+          rowsToCache.push({
+            pubkey: profile.pubkey,
+            name: profile.name,
+            displayName: profile.displayName,
+            about: profile.about,
+            picture: profile.picture,
+            banner: profile.banner,
+            nip05: profile.nip05,
+            lud16: profile.lud16,
+            website: profile.website,
+            cachedAt: now(),
+          })
+        }
       }
 
       if (rowsToCache.length > 0) {
@@ -1503,7 +1534,7 @@ export async function getProfiles(
       authors: missing,
       maxRelays:
         query.readPolicy?.maxRelays ?? (query.priority === "visible" ? 8 : 6),
-      relayHintMode: query.priority === "visible" ? "skip" : "auto",
+      relayHintMode: "auto",
     })
     const events = (await runFetchEventsFanout(
       {
@@ -1543,18 +1574,20 @@ export async function getProfiles(
       const event = latestByPubkey.get(pubkey)
       const profile = event ? parseProfileEvent(event) : { pubkey }
       result[pubkey] = profile
-      rowsToCache.push({
-        pubkey: profile.pubkey,
-        name: profile.name,
-        displayName: profile.displayName,
-        about: profile.about,
-        picture: profile.picture,
-        banner: profile.banner,
-        nip05: profile.nip05,
-        lud16: profile.lud16,
-        website: profile.website,
-        cachedAt: now(),
-      })
+      if (hasProfileContent(profile)) {
+        rowsToCache.push({
+          pubkey: profile.pubkey,
+          name: profile.name,
+          displayName: profile.displayName,
+          about: profile.about,
+          picture: profile.picture,
+          banner: profile.banner,
+          nip05: profile.nip05,
+          lud16: profile.lud16,
+          website: profile.website,
+          cachedAt: now(),
+        })
+      }
     }
 
     if (rowsToCache.length > 0) {

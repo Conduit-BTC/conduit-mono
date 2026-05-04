@@ -38,7 +38,7 @@ function ProductPage() {
   const productQuery = useProgressiveProductDetail(productId)
   const product = productQuery.product
 
-  const merchantProfile = useProfile(product?.pubkey)
+  const merchantProfile = useProfile(product?.pubkey, { priority: "visible" })
 
   const relatedProductsQuery = useProgressiveProducts({
     scope: "marketplace",
