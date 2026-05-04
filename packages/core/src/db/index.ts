@@ -183,9 +183,10 @@ class ConduitDB extends Dexie {
 export const db = new ConduitDB()
 
 const CACHE_SCOPE_KEY = "conduit:commerce-cache-scope:v1"
-const CACHE_PRUNE_HIGH_WATER_BYTES = 35 * 1024 * 1024
-const CACHE_PRUNE_TARGET_BYTES = 24 * 1024 * 1024
+const FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES = 35 * 1024 * 1024
+const FALLBACK_CACHE_PRUNE_TARGET_BYTES = 24 * 1024 * 1024
 const CACHE_PRUNE_FRESH_MS = 24 * 60 * 60 * 1_000
+const STORAGE_PRESSURE_HIGH_WATER_RATIO = 0.7
 
 function getCommerceCacheScope(): string {
   return JSON.stringify({
@@ -251,29 +252,48 @@ async function pruneTableByCachedAt(
 export async function pruneCommerceCaches(): Promise<void> {
   if (typeof window === "undefined") return
 
+  const storageEstimate =
+    typeof navigator !== "undefined" && navigator.storage?.estimate
+      ? await navigator.storage.estimate()
+      : undefined
+  const storageUsage = storageEstimate?.usage
+  const storageQuota = storageEstimate?.quota
+
+  // Product cache pruning should protect the browser, not define catalog truth.
+  // When the browser exposes quota telemetry, only prune under real storage
+  // pressure; otherwise fall back to a conservative per-table byte estimate.
+  if (
+    typeof storageUsage === "number" &&
+    typeof storageQuota === "number" &&
+    storageQuota > 0 &&
+    storageUsage / storageQuota < STORAGE_PRESSURE_HIGH_WATER_RATIO
+  ) {
+    return
+  }
+
   await Promise.all([
     pruneTableByCachedAt(db.products, {
       estimatedRowBytes: 2_500,
-      highWaterBytes: CACHE_PRUNE_HIGH_WATER_BYTES,
-      targetBytes: CACHE_PRUNE_TARGET_BYTES,
+      highWaterBytes: FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES,
+      targetBytes: FALLBACK_CACHE_PRUNE_TARGET_BYTES,
       freshMs: CACHE_PRUNE_FRESH_MS,
     }),
     pruneTableByCachedAt(db.profiles, {
       estimatedRowBytes: 1_200,
-      highWaterBytes: CACHE_PRUNE_HIGH_WATER_BYTES,
-      targetBytes: CACHE_PRUNE_TARGET_BYTES,
+      highWaterBytes: FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES,
+      targetBytes: FALLBACK_CACHE_PRUNE_TARGET_BYTES,
       freshMs: CACHE_PRUNE_FRESH_MS,
     }),
     pruneTableByCachedAt(db.relayLists, {
       estimatedRowBytes: 900,
-      highWaterBytes: CACHE_PRUNE_HIGH_WATER_BYTES,
-      targetBytes: CACHE_PRUNE_TARGET_BYTES,
+      highWaterBytes: FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES,
+      targetBytes: FALLBACK_CACHE_PRUNE_TARGET_BYTES,
       freshMs: CACHE_PRUNE_FRESH_MS,
     }),
     pruneTableByCachedAt(db.productSocialSummaries, {
       estimatedRowBytes: 500,
-      highWaterBytes: CACHE_PRUNE_HIGH_WATER_BYTES,
-      targetBytes: CACHE_PRUNE_TARGET_BYTES,
+      highWaterBytes: FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES,
+      targetBytes: FALLBACK_CACHE_PRUNE_TARGET_BYTES,
       freshMs: CACHE_PRUNE_FRESH_MS,
     }),
   ])

@@ -9,7 +9,6 @@ export async function fetchStoreProducts(
 ): Promise<CommerceResult<Product[]>> {
   const result = await getMerchantStorefront({
     merchantPubkey: pubkey,
-    limit: 1_000,
   })
   return {
     data: result.data.map((record) => record.product),

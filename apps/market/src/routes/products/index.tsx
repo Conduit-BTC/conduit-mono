@@ -32,10 +32,7 @@ import {
 } from "../../components/ProductGridCard"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
-import {
-  MARKETPLACE_NETWORK_LIMIT,
-  useProgressiveProducts,
-} from "../../hooks/useProgressiveProducts"
+import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
 import {
   DEFAULT_MARKET_PERSPECTIVE_NPUB,
   DEFAULT_MARKET_PERSPECTIVE_PUBKEY,
@@ -205,7 +202,6 @@ function ProductsPage() {
     textQuery: search.q,
     tags: search.tag,
     sort: search.sort,
-    limit: search.merchant ? MARKETPLACE_NETWORK_LIMIT : undefined,
   })
   const productData = useMemo(
     () =>

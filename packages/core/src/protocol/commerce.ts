@@ -1020,7 +1020,7 @@ export async function getMarketplaceProducts(
         authorPubkeys && authorPubkeys.length > 0
           ? uniqueStrings(authorPubkeys)
           : undefined,
-      limit: query.limit ?? (authorPubkeys ? undefined : 50),
+      limit: query.limit,
       readPolicy: query.readPolicy,
     })
 
@@ -1029,7 +1029,7 @@ export async function getMarketplaceProducts(
         records.filter((record) => productMatchesQuery(record, query)),
         query.sort
       ),
-      query.limit ?? (authorPubkeys ? undefined : 50)
+      query.limit
     )
 
     await cacheProductRecords(filtered)
@@ -1045,7 +1045,7 @@ export async function getMarketplaceProducts(
         ),
         query.sort
       ),
-      query.limit ?? (query.authorPubkeys ? undefined : 50)
+      query.limit
     )
 
     if (cached.length > 0) {
@@ -1087,7 +1087,7 @@ export async function getMarketplaceProductsProgressive(
   const authorPubkeys = query.merchantPubkey
     ? [query.merchantPubkey]
     : query.authorPubkeys
-  const limit = query.limit ?? (authorPubkeys ? undefined : 50)
+  const limit = query.limit
   const toResult = (records: CommerceProductRecord[]) => ({
     data: applyProductLimit(
       sortProducts(
@@ -1147,7 +1147,7 @@ export async function getCachedMarketplaceProducts(
       ),
       query.sort
     ),
-    query.limit ?? (query.authorPubkeys ? undefined : 500)
+    query.limit
   )
 
   return {
@@ -1172,19 +1172,17 @@ export async function getMerchantStorefront(
       intent: "author_products",
       authors: [query.merchantPubkey],
     })
+    const productFilter: NDKFilter = {
+      kinds: [EVENT_KINDS.PRODUCT],
+      authors: [query.merchantPubkey],
+    }
+    if (query.limit !== undefined) productFilter.limit = query.limit
 
-    const rawEvents = await runFetchEventsFanout(
-      {
-        kinds: [EVENT_KINDS.PRODUCT],
-        authors: [query.merchantPubkey],
-        limit: query.limit ?? 200,
-      },
-      {
-        relayUrls,
-        connectTimeoutMs: 4_000,
-        fetchTimeoutMs: 10_000,
-      }
-    )
+    const rawEvents = await runFetchEventsFanout(productFilter, {
+      relayUrls,
+      connectTimeoutMs: 4_000,
+      fetchTimeoutMs: 10_000,
+    })
 
     const deletionTimestamps = await fetchDeletionTimestamps(
       query.merchantPubkey,
@@ -1192,7 +1190,7 @@ export async function getMerchantStorefront(
       collectProductAddresses(rawEvents)
     )
 
-    const filtered = sortProducts(
+    const sorted = sortProducts(
       dedupeProductEvents(rawEvents, deletionTimestamps).filter((record) =>
         productMatchesQuery(record, {
           merchantPubkey: query.merchantPubkey,
@@ -1203,7 +1201,8 @@ export async function getMerchantStorefront(
         })
       ),
       query.sort
-    ).slice(0, query.limit ?? 200)
+    )
+    const filtered = applyProductLimit(sorted, query.limit)
 
     await cacheProductRecords(filtered)
     return {
@@ -1242,18 +1241,21 @@ export async function getCachedMerchantStorefront(
   query: MerchantStorefrontQuery,
   options: CachedProductReadOptions = { includeStale: true }
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
-  const cached = sortProducts(
-    (await getCachedProductRecords(query.merchantPubkey, options)).filter(
-      (record) =>
-        productMatchesQuery(record, {
-          merchantPubkey: query.merchantPubkey,
-          textQuery: query.textQuery,
-          tags: query.tag ? [query.tag] : undefined,
-          sort: query.sort,
-        })
+  const cached = applyProductLimit(
+    sortProducts(
+      (await getCachedProductRecords(query.merchantPubkey, options)).filter(
+        (record) =>
+          productMatchesQuery(record, {
+            merchantPubkey: query.merchantPubkey,
+            textQuery: query.textQuery,
+            tags: query.tag ? [query.tag] : undefined,
+            sort: query.sort,
+          })
+      ),
+      query.sort
     ),
-    query.sort
-  ).slice(0, query.limit ?? 500)
+    query.limit
+  )
 
   return {
     data: cached,
@@ -1304,7 +1306,6 @@ export async function getProductDetail(
 
       const storefront = await getMerchantStorefront({
         merchantPubkey: addr.pubkey,
-        limit: 500,
       })
       const fallbackRecord =
         storefront.data.find((item) => item.addressId === decodedId) ?? null

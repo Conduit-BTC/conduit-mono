@@ -53,10 +53,7 @@ import {
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
 import { getComparablePriceValue } from "../../lib/pricing"
-import {
-  STOREFRONT_NETWORK_LIMIT,
-  useProgressiveProducts,
-} from "../../hooks/useProgressiveProducts"
+import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
 
 type SortOption = "newest" | "price_asc" | "price_desc"
 
@@ -132,7 +129,6 @@ function StorefrontPage() {
     textQuery: search.q,
     tag: search.tag,
     sort: search.sort,
-    limit: STOREFRONT_NETWORK_LIMIT,
   })
   const storeProducts = useMemo(
     () =>

@@ -17,8 +17,6 @@ import {
   type Product,
 } from "@conduit/core"
 
-export const MARKETPLACE_NETWORK_LIMIT = 1_200
-export const STOREFRONT_NETWORK_LIMIT = 1_000
 const PERSPECTIVE_STREAM_READ_POLICY: CommerceReadPolicy = {
   maxRelays: 32,
   connectTimeoutMs: 1_200,
@@ -161,11 +159,7 @@ async function fetchCachedList(
       textQuery: input.textQuery,
       tags: input.tags,
       sort: input.sort,
-      limit:
-        input.limit ??
-        (input.merchantPubkey || authorPubkeys
-          ? undefined
-          : MARKETPLACE_NETWORK_LIMIT),
+      limit: input.limit,
     })
   }
 
@@ -174,7 +168,7 @@ async function fetchCachedList(
     textQuery: input.textQuery,
     tag: input.tag,
     sort: input.sort,
-    limit: input.limit ?? STOREFRONT_NETWORK_LIMIT,
+    limit: input.limit,
   })
 }
 
@@ -190,11 +184,7 @@ async function fetchNetworkList(
       textQuery: input.textQuery,
       tags: input.tags,
       sort: input.sort,
-      limit:
-        input.limit ??
-        (input.merchantPubkey || authorPubkeys
-          ? undefined
-          : MARKETPLACE_NETWORK_LIMIT),
+      limit: input.limit,
       readPolicy,
     })
   }
@@ -204,7 +194,7 @@ async function fetchNetworkList(
     textQuery: input.textQuery,
     tag: input.tag,
     sort: input.sort,
-    limit: input.limit ?? STOREFRONT_NETWORK_LIMIT,
+    limit: input.limit,
   })
 }
 
