@@ -3,7 +3,9 @@ import {
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
   deriveRelayOutcomes,
+  EVENT_KINDS,
   planPublishRelays,
+  publishWithPlanner,
   type RelayList,
 } from "@conduit/core"
 
@@ -93,6 +95,21 @@ describe("planPublishRelays", () => {
   // Mark relay list usage helper as used to avoid lint flag.
   it("relayList helper compiles", () => {
     expect(relayList("zz").pubkey).toBe("zz")
+  })
+
+  it("refuses tiny NIP-65 relay-list publishes before planning relays", async () => {
+    await expect(
+      publishWithPlanner(
+        {
+          kind: EVENT_KINDS.RELAY_LIST,
+          tags: [["r", "wss://only.example"]],
+        } as never,
+        {
+          intent: "author_event",
+          authorPubkey: "alice",
+        }
+      )
+    ).rejects.toThrow("Refusing to publish a tiny NIP-65 relay list")
   })
 })
 

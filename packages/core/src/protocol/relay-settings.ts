@@ -1,7 +1,7 @@
 import { config, type ConduitConfig } from "../config"
 
 export type RelaySettingsSection = "commerce" | "public"
-export type RelaySettingsSource = "default" | "manual" | "signer"
+export type RelaySettingsSource = "default" | "manual" | "signer" | "published"
 export type RelayCapabilityKey = "nip11" | "search" | "dm" | "auth" | "commerce"
 export type RelayWarningKey =
   | "dmWithoutAuth"
@@ -179,6 +179,31 @@ function getSupportedNips(info: RelayInfoDocument | null): number[] {
     .filter((value) => Number.isInteger(value) && value >= 0)
 }
 
+function hasCommerceCompatibilityEvidence(
+  relayUrl: string,
+  supportedNips: readonly number[],
+  knownCommerceRelayUrls?: readonly string[]
+): boolean {
+  if (isKnownCommerceRelay(relayUrl, knownCommerceRelayUrls)) return true
+
+  const supportsRelayLists = supportedNips.includes(65)
+  const supportsParameterizedReplaceable = supportedNips.includes(33)
+  const supportsMarketSpec = supportedNips.includes(99)
+
+  return (
+    supportsRelayLists && supportsParameterizedReplaceable && supportsMarketSpec
+  )
+}
+
+function hasPartialCommerceEvidence(supportedNips: readonly number[]): boolean {
+  return (
+    supportedNips.includes(33) ||
+    supportedNips.includes(50) ||
+    supportedNips.includes(65) ||
+    supportedNips.includes(99)
+  )
+}
+
 function getRelayName(info: RelayInfoDocument | null): string | undefined {
   return typeof info?.name === "string" && info.name.trim()
     ? info.name.trim()
@@ -330,6 +355,46 @@ export function serializeNip65RelayTags(
   return tags
 }
 
+export function countActiveNip65RelayTags(
+  relays: readonly Pick<
+    RelaySettingsEntry,
+    "url" | "readEnabled" | "writeEnabled"
+  >[]
+): number {
+  return serializeNip65RelayTags(relays).length
+}
+
+export function countActiveNip65RelayTagsFromTags(
+  tags: readonly string[][]
+): number {
+  return parseNip65RelayTags(tags).filter(
+    (preference) => preference.readEnabled || preference.writeEnabled
+  ).length
+}
+
+export function assertSafeNip65RelayList(
+  relays: readonly Pick<
+    RelaySettingsEntry,
+    "url" | "readEnabled" | "writeEnabled"
+  >[]
+): void {
+  const activeRelayCount = countActiveNip65RelayTags(relays)
+  if (activeRelayCount <= 1) {
+    throw new Error(
+      "Refusing to publish a tiny NIP-65 relay list. Load or add at least two active relays before publishing."
+    )
+  }
+}
+
+export function assertSafeNip65RelayTags(tags: readonly string[][]): void {
+  const activeRelayCount = countActiveNip65RelayTagsFromTags(tags)
+  if (activeRelayCount <= 1) {
+    throw new Error(
+      "Refusing to publish a tiny NIP-65 relay list. Load or add at least two active relays before publishing."
+    )
+  }
+}
+
 export function mergeNip65RelayUrls(list: Nip65RelayUrls): RelayPreference[] {
   return parseNip65RelayTags([
     ...(list.readRelayUrls ?? []).map((url) => ["r", url, "read"]),
@@ -352,7 +417,11 @@ export function deriveRelayScanResult(
   const hasNip11 = !!info
   const commerce =
     hasNip11 &&
-    isKnownCommerceRelay(normalizedUrl, options.knownCommerceRelayUrls)
+    hasCommerceCompatibilityEvidence(
+      normalizedUrl,
+      supportedNips,
+      options.knownCommerceRelayUrls
+    )
 
   const capabilities: RelayCapabilities = {
     nip11: hasNip11,
@@ -367,7 +436,7 @@ export function deriveRelayScanResult(
     dmWithoutAuth: supportsDm && !supportsAuth,
     staleRelayInfo: hasNip11 && !hasSupportedNips,
     commercePartialSupport:
-      hasNip11 && !commerce && (supportsSearch || supportsDm),
+      hasNip11 && !commerce && hasPartialCommerceEvidence(supportedNips),
   }
 
   return {
@@ -411,21 +480,34 @@ export function createRelaySettingsEntryFromScan(
 export function createUnreachableRelaySettingsEntry(
   relayUrl: string,
   source: RelaySettingsSource = "manual",
-  scannedAt = now()
+  scannedAt = now(),
+  existing?: RelaySettingsEntry
 ): RelaySettingsEntry {
+  const preservePreference =
+    existing?.source === "published" || existing?.source === "signer"
+  const baseCapabilities = preservePreference
+    ? (existing?.capabilities ?? EMPTY_CAPABILITIES)
+    : EMPTY_CAPABILITIES
   return {
     url: normalizeRelayUrl(relayUrl),
-    readEnabled: false,
-    writeEnabled: false,
-    section: "public",
-    capabilities: EMPTY_CAPABILITIES,
+    readEnabled: preservePreference ? (existing?.readEnabled ?? false) : false,
+    writeEnabled: preservePreference
+      ? (existing?.writeEnabled ?? false)
+      : false,
+    section: preservePreference ? (existing?.section ?? "public") : "public",
+    commercePriority: preservePreference
+      ? existing?.commercePriority
+      : undefined,
+    capabilities: baseCapabilities,
     warnings: {
       ...EMPTY_WARNINGS,
+      ...existing?.warnings,
       staleRelayInfo: true,
       unreachable: true,
     },
     source,
     scannedAt,
+    relayName: existing?.relayName,
   }
 }
 
@@ -443,7 +525,8 @@ export async function scanRelaySettingsEntry(
     return createUnreachableRelaySettingsEntry(
       normalizedUrl,
       existing?.source ?? "manual",
-      scannedAt
+      scannedAt,
+      existing
     )
   }
 
@@ -460,7 +543,8 @@ export async function scanRelaySettingsEntry(
       return createUnreachableRelaySettingsEntry(
         normalizedUrl,
         existing?.source ?? "manual",
-        scannedAt
+        scannedAt,
+        existing
       )
     }
 
@@ -469,7 +553,8 @@ export async function scanRelaySettingsEntry(
       return createUnreachableRelaySettingsEntry(
         normalizedUrl,
         existing?.source ?? "manual",
-        scannedAt
+        scannedAt,
+        existing
       )
     }
 
@@ -483,7 +568,8 @@ export async function scanRelaySettingsEntry(
     return createUnreachableRelaySettingsEntry(
       normalizedUrl,
       existing?.source ?? "manual",
-      scannedAt
+      scannedAt,
+      existing
     )
   } finally {
     clearTimeout(timeoutId)
@@ -521,6 +607,25 @@ export function createDefaultRelaySettings(
     entries,
     updatedAt: now(),
   })
+}
+
+export function createRelaySettingsFromPreferences(
+  preferences: readonly RelayPreference[],
+  source: RelaySettingsSource = "published"
+): RelaySettingsState {
+  return mergeRelayPreferencesIntoSettings(
+    {
+      version: RELAY_SETTINGS_STORAGE_VERSION,
+      entries: [],
+      updatedAt: now(),
+    },
+    preferences,
+    source
+  )
+}
+
+export function hasManualRelaySettings(state: RelaySettingsState): boolean {
+  return state.entries.some((entry) => entry.source === "manual")
 }
 
 export function getRelaySettingsStorageKey(scope?: string | null): string {
@@ -665,7 +770,9 @@ export function removeRelaySettingsEntry(
 export function updateRelaySettingsEntry(
   state: RelaySettingsState,
   relayUrl: string,
-  updates: Partial<Pick<RelaySettingsEntry, "readEnabled" | "writeEnabled">>
+  updates: Partial<
+    Pick<RelaySettingsEntry, "readEnabled" | "writeEnabled" | "source">
+  >
 ): RelaySettingsState {
   const normalizedUrl = normalizeRelayUrl(relayUrl)
   return normalizeRelaySettingsState({
@@ -708,7 +815,11 @@ export function reorderCommerceRelay(
     ...state,
     entries: state.entries.map((entry) =>
       entry.section === "commerce"
-        ? { ...entry, commercePriority: priorityByUrl.get(entry.url) ?? 0 }
+        ? {
+            ...entry,
+            commercePriority: priorityByUrl.get(entry.url) ?? 0,
+            source: "manual" as const,
+          }
         : entry
     ),
   })
@@ -742,10 +853,17 @@ export function mergeRelayPreferencesIntoSettings(
     const section: RelaySettingsSection = capabilities.commerce
       ? "commerce"
       : "public"
+    const preserveLocalControls = existing?.source === "manual"
+    const preferPublishedControls =
+      source === "published" && !preserveLocalControls
     const entry: RelaySettingsEntry = {
       url: normalizedUrl,
-      readEnabled: existing?.readEnabled ?? preference.readEnabled,
-      writeEnabled: existing?.writeEnabled ?? preference.writeEnabled,
+      readEnabled: preferPublishedControls
+        ? preference.readEnabled
+        : (existing?.readEnabled ?? preference.readEnabled),
+      writeEnabled: preferPublishedControls
+        ? preference.writeEnabled
+        : (existing?.writeEnabled ?? preference.writeEnabled),
       section,
       commercePriority:
         section === "commerce" && existing?.commercePriority !== undefined
@@ -753,7 +871,7 @@ export function mergeRelayPreferencesIntoSettings(
           : undefined,
       capabilities,
       warnings,
-      source: existing?.source ?? source,
+      source: preserveLocalControls ? existing.source : source,
       scannedAt: existing?.scannedAt,
       relayName: existing?.relayName,
     }

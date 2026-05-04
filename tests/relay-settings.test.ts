@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import {
+  assertSafeNip65RelayList,
   createRelaySettingsEntryFromScan,
+  createRelaySettingsFromPreferences,
   createUnreachableRelaySettingsEntry,
   deriveRelayScanResult,
   getCommerceReadRelayUrls,
@@ -130,7 +132,23 @@ describe("relay settings protocol helpers", () => {
     expect(dmWithoutAuth.capabilities.dm).toBe(true)
     expect(dmWithoutAuth.capabilities.auth).toBe(false)
     expect(dmWithoutAuth.warnings.dmWithoutAuth).toBe(true)
-    expect(dmWithoutAuth.warnings.commercePartialSupport).toBe(true)
+    expect(dmWithoutAuth.warnings.commercePartialSupport).toBe(false)
+  })
+
+  it("categorizes relays with the commerce NIP evidence as commerce enabled", () => {
+    const scanned = deriveRelayScanResult("wss://relay.example", {
+      supported_nips: [33, 65, 99],
+    })
+
+    expect(scanned.capabilities.commerce).toBe(true)
+    expect(scanned.warnings.commercePartialSupport).toBe(false)
+
+    const partial = deriveRelayScanResult("wss://partial.example", {
+      supported_nips: [33, 65],
+    })
+
+    expect(partial.capabilities.commerce).toBe(false)
+    expect(partial.warnings.commercePartialSupport).toBe(true)
   })
 
   it("keeps unreachable relays disabled instead of silently discarding them", () => {
@@ -139,6 +157,23 @@ describe("relay settings protocol helpers", () => {
     expect(relay.url).toBe("wss://relay.example")
     expect(relay.readEnabled).toBe(false)
     expect(relay.writeEnabled).toBe(false)
+    expect(relay.warnings.unreachable).toBe(true)
+  })
+
+  it("preserves published NIP-65 controls when a capability refresh is unreachable", () => {
+    const relay = createUnreachableRelaySettingsEntry(
+      "relay.example",
+      "published",
+      10,
+      entry("wss://relay.example", {
+        readEnabled: true,
+        writeEnabled: true,
+        source: "published",
+      })
+    )
+
+    expect(relay.readEnabled).toBe(true)
+    expect(relay.writeEnabled).toBe(true)
     expect(relay.warnings.unreachable).toBe(true)
   })
 
@@ -311,6 +346,63 @@ describe("relay settings protocol helpers", () => {
     expect(added?.readEnabled).toBe(true)
     expect(added?.writeEnabled).toBe(false)
     expect(added?.source).toBe("signer")
+  })
+
+  it("lets a published NIP-65 list replace default relay controls", () => {
+    const settings = state([
+      entry("wss://relay.example", {
+        readEnabled: true,
+        writeEnabled: false,
+        source: "default",
+      }),
+    ])
+
+    const next = mergeRelayPreferencesIntoSettings(
+      settings,
+      [
+        {
+          url: "wss://relay.example",
+          readEnabled: false,
+          writeEnabled: true,
+        },
+      ],
+      "published"
+    )
+
+    expect(next.entries[0]?.readEnabled).toBe(false)
+    expect(next.entries[0]?.writeEnabled).toBe(true)
+    expect(next.entries[0]?.source).toBe("published")
+  })
+
+  it("blocks unsafe tiny NIP-65 publishes", () => {
+    expect(() =>
+      assertSafeNip65RelayList(
+        createRelaySettingsFromPreferences([
+          {
+            url: "wss://only.example",
+            readEnabled: true,
+            writeEnabled: true,
+          },
+        ]).entries
+      )
+    ).toThrow("Refusing to publish a tiny NIP-65 relay list")
+
+    expect(() =>
+      assertSafeNip65RelayList(
+        createRelaySettingsFromPreferences([
+          {
+            url: "wss://one.example",
+            readEnabled: true,
+            writeEnabled: true,
+          },
+          {
+            url: "wss://two.example",
+            readEnabled: true,
+            writeEnabled: false,
+          },
+        ]).entries
+      )
+    ).not.toThrow()
   })
 
   it("applies safe defaults when creating an entry from a scan", () => {

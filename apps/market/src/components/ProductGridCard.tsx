@@ -8,6 +8,7 @@ import { getProductPriceDisplay } from "../lib/pricing"
 type ProductGridCardProps = {
   product: Product
   merchantName?: string
+  imageLoading?: "eager" | "lazy"
   onAddToCart?: () => void
   btcUsdRate?: number | null
   cartQuantity?: number
@@ -19,6 +20,7 @@ type ProductGridCardProps = {
 export function ProductGridCard({
   product,
   merchantName: merchantNameOverride,
+  imageLoading = "lazy",
   onAddToCart,
   btcUsdRate,
   cartQuantity = 0,
@@ -32,9 +34,14 @@ export function ProductGridCard({
   )
   const [didJustAdd, setDidJustAdd] = useState(false)
   const [imageFailed, setImageFailed] = useState(false)
+  const [imageIndex, setImageIndex] = useState(0)
   const previousQuantityRef = useRef(cartQuantity)
 
-  const imageUrl = product.images[0]?.url
+  const imageCandidates = product.images.filter((image) =>
+    /^https?:\/\//i.test(image.url)
+  )
+  const activeImage = imageCandidates[imageIndex]
+  const imageUrl = activeImage?.url
 
   const merchantName =
     merchantNameOverride ||
@@ -48,7 +55,8 @@ export function ProductGridCard({
 
   useEffect(() => {
     setImageFailed(false)
-  }, [imageUrl])
+    setImageIndex(0)
+  }, [product.id])
 
   useEffect(() => {
     if (cartQuantity > previousQuantityRef.current) {
@@ -89,10 +97,15 @@ export function ProductGridCard({
       <div className="aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)]">
         <img
           src={imageUrl}
-          alt={product.images[0]?.alt ?? product.title}
+          alt={activeImage?.alt ?? product.title}
           className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-          loading="lazy"
+          decoding="async"
+          loading={imageLoading}
           onError={() => {
+            if (imageIndex < imageCandidates.length - 1) {
+              setImageIndex((current) => current + 1)
+              return
+            }
             setImageFailed(true)
             onInvalidImage?.(product.id)
           }}

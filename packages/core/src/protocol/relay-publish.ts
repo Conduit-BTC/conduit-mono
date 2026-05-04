@@ -20,6 +20,8 @@ import {
   type RelayWriteIntent,
   type RelayWritePlan,
 } from "./relay-planner"
+import { EVENT_KINDS } from "./kinds"
+import { assertSafeNip65RelayTags } from "./relay-settings"
 
 export interface PublishWithPlannerInput {
   intent: RelayWriteIntent
@@ -143,6 +145,10 @@ export async function publishWithPlanner(
   event: NDKEvent,
   input: PublishWithPlannerInput
 ): Promise<PublishWithPlannerResult> {
+  if (event.kind === EVENT_KINDS.RELAY_LIST) {
+    assertSafeNip65RelayTags(event.tags ?? [])
+  }
+
   const plan = await planPublishRelays(input)
   const attemptedRelayUrls = Array.from(
     new Set([...plan.primaryRelayUrls, ...plan.broadcastRelayUrls])

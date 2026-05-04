@@ -778,11 +778,12 @@ function StorefrontPage() {
 
           {filteredProducts.length > 0 && (
             <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
-              {filteredProducts.map((product) => (
+              {filteredProducts.map((product, index) => (
                 <li key={product.id} className="h-full">
                   <ProductGridCard
                     product={product}
                     merchantName={merchantName}
+                    imageLoading={index < 12 ? "eager" : "lazy"}
                     btcUsdRate={btcUsdRate}
                     cartQuantity={
                       cart.items.find((item) => item.productId === product.id)

@@ -22,6 +22,9 @@ export function useProfile(pubkey: string | null | undefined) {
     enabled: !!pubkey,
     queryFn: () => fetchProfile(pubkey!),
     staleTime: 5 * 60_000,
+    retry: 2,
+    refetchOnWindowFocus: true,
+    refetchIntervalInBackground: true,
     refetchInterval: (query) =>
       query.state.data && !hasProfileContent(query.state.data) ? 2_000 : false,
   })

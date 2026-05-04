@@ -503,7 +503,7 @@ function ProductPage() {
 
             {relatedProducts.length > 0 && (
               <ul className="grid list-none grid-cols-2 gap-3 p-0 lg:grid-cols-4">
-                {relatedProducts.map((relatedProduct) => {
+                {relatedProducts.map((relatedProduct, index) => {
                   const relatedCartItem = cart.items.find(
                     (item) => item.productId === relatedProduct.id
                   )
@@ -514,6 +514,7 @@ function ProductPage() {
                       <ProductGridCard
                         product={relatedProduct}
                         merchantName={merchantName}
+                        imageLoading={index < 4 ? "eager" : "lazy"}
                         btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
                         cartQuantity={relatedCartQuantity}
                         onAddToCart={() =>

@@ -414,6 +414,9 @@ function ProductsPage() {
     },
     staleTime: 5 * 60_000,
     placeholderData: (previousData) => previousData,
+    retry: 2,
+    refetchOnWindowFocus: true,
+    refetchIntervalInBackground: true,
     refetchInterval: (query) => {
       const data = query.state.data
       if (!data) return false
@@ -433,6 +436,9 @@ function ProductsPage() {
     },
     staleTime: 5 * 60_000,
     placeholderData: (previousData) => previousData,
+    retry: 2,
+    refetchOnWindowFocus: true,
+    refetchIntervalInBackground: true,
     refetchInterval: (query) => {
       const data = query.state.data
       if (!data) return false
@@ -863,11 +869,12 @@ function ProductsPage() {
       {/* Product grid */}
       {visible.length > 0 && (
         <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
-          {visible.map((p) => (
+          {visible.map((p, index) => (
             <li key={p.id} className="h-full">
               <ProductGridCard
                 product={p}
                 merchantName={getProfileName(merchantProfiles[p.pubkey])}
+                imageLoading={index < 12 ? "eager" : "lazy"}
                 btcUsdRate={btcUsdRate}
                 cartQuantity={
                   cart.items.find((item) => item.productId === p.id)

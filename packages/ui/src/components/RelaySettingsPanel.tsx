@@ -7,6 +7,7 @@ import {
   Search,
   Send,
   Trash2,
+  Upload,
   WifiOff,
 } from "lucide-react"
 import { type DragEvent, type FormEvent, type ReactNode, useState } from "react"
@@ -36,6 +37,7 @@ export interface RelaySettingsPanelEntry {
   readEnabled: boolean
   writeEnabled: boolean
   section: RelaySettingsSection
+  source?: "default" | "manual" | "signer" | "published"
   commercePriority?: number
   capabilities: RelayCapabilities
   warnings: RelayWarnings
@@ -51,6 +53,10 @@ export interface RelaySettingsPanelProps {
   settings: RelaySettingsPanelState
   scanningUrls?: readonly string[]
   error?: string | null
+  isLoadingPublishedRelayList?: boolean
+  publishedRelayListUpdatedAt?: number | null
+  publishingRelayList?: boolean
+  publishError?: string | null
   onAddRelay: (url: string) => void | Promise<void>
   onRefreshRelay: (url: string) => void | Promise<void>
   onRemoveRelay: (url: string) => void
@@ -58,6 +64,7 @@ export interface RelaySettingsPanelProps {
   onToggleWrite: (url: string, enabled: boolean) => void
   onReorderCommerceRelay: (sourceUrl: string, targetUrl: string) => void
   onReset?: () => void
+  onPublishRelayList?: () => void | Promise<void>
   className?: string
 }
 
@@ -439,6 +446,10 @@ export function RelaySettingsPanel({
   settings,
   scanningUrls = [],
   error,
+  isLoadingPublishedRelayList = false,
+  publishedRelayListUpdatedAt = null,
+  publishingRelayList = false,
+  publishError = null,
   onAddRelay,
   onRefreshRelay,
   onRemoveRelay,
@@ -446,13 +457,25 @@ export function RelaySettingsPanel({
   onToggleWrite,
   onReorderCommerceRelay,
   onReset,
+  onPublishRelayList,
   className,
 }: RelaySettingsPanelProps) {
   const [newRelayUrl, setNewRelayUrl] = useState("")
   const [isAdding, setIsAdding] = useState(false)
+  const [isPublishing, setIsPublishing] = useState(false)
   const [draggedUrl, setDraggedUrl] = useState<string | null>(null)
   const entries = sortAllEntries(settings.entries)
   const commerceCount = entries.filter((e) => e.section === "commerce").length
+  const activeRelayCount = entries.filter(
+    (entry) => entry.readEnabled || entry.writeEnabled
+  ).length
+  const publishedLabel = publishedRelayListUpdatedAt
+    ? `Published NIP-65 loaded ${new Date(
+        publishedRelayListUpdatedAt * 1000
+      ).toLocaleDateString()}`
+    : isLoadingPublishedRelayList
+      ? "Loading published NIP-65"
+      : "Local relay draft"
 
   async function handleAddRelay(event: FormEvent): Promise<void> {
     event.preventDefault()
@@ -465,6 +488,17 @@ export function RelaySettingsPanel({
       setNewRelayUrl("")
     } finally {
       setIsAdding(false)
+    }
+  }
+
+  async function handlePublishRelayList(): Promise<void> {
+    if (!onPublishRelayList || isPublishing || publishingRelayList) return
+
+    setIsPublishing(true)
+    try {
+      await onPublishRelayList()
+    } finally {
+      setIsPublishing(false)
     }
   }
 
@@ -487,11 +521,16 @@ export function RelaySettingsPanel({
               orders, and uses public relays for general reads and writes.
             </p>
           </div>
-          {commerceCount > 1 ? (
+          <div className="flex flex-col items-start gap-1 sm:items-end">
             <span className="text-[0.65rem] uppercase tracking-[0.18em] text-[var(--text-muted)]">
-              Drag commerce rows to reorder priority
+              {publishedLabel}
             </span>
-          ) : null}
+            {commerceCount > 1 ? (
+              <span className="text-[0.65rem] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                Drag commerce rows to reorder priority
+              </span>
+            ) : null}
+          </div>
         </header>
 
         <div
@@ -556,16 +595,42 @@ export function RelaySettingsPanel({
           ) : null}
         </form>
 
-        {onReset ? (
-          <div className="flex justify-end">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={onReset}
-              className="h-8 px-3 text-xs"
-            >
-              Reset to defaults
-            </Button>
+        {onReset || onPublishRelayList ? (
+          <div className="flex flex-wrap justify-end gap-2">
+            {onReset ? (
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={onReset}
+                className="h-8 px-3 text-xs"
+              >
+                Reset to defaults
+              </Button>
+            ) : null}
+            {onPublishRelayList ? (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={
+                  activeRelayCount <= 1 ||
+                  isLoadingPublishedRelayList ||
+                  isPublishing ||
+                  publishingRelayList
+                }
+                onClick={() => void handlePublishRelayList()}
+                className="h-8 gap-1.5 px-3 text-xs"
+              >
+                <Upload className="h-3.5 w-3.5" />
+                {isPublishing || publishingRelayList
+                  ? "Publishing..."
+                  : "Publish NIP-65"}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        {publishError ? (
+          <div className="rounded-md border border-error/30 bg-error/10 px-2.5 py-1.5 text-xs text-error">
+            {publishError}
           </div>
         ) : null}
       </div>
