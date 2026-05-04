@@ -6,7 +6,6 @@ import {
   getFollowPubkeys,
   getProfiles,
   useAuth,
-  useProfile,
   type Profile,
   type Product,
 } from "@conduit/core"
@@ -144,12 +143,6 @@ function sortProducts(
     default:
       return [...products].sort((a, b) => b.createdAt - a.createdAt)
   }
-}
-
-/** Resolves a merchant pubkey to a display name */
-function MerchantName({ pubkey }: { pubkey: string }) {
-  const { data: profile } = useProfile(pubkey, { priority: "visible" })
-  return <>{getProfileName(profile) || formatPubkey(pubkey, 6)}</>
 }
 
 function ProductsPage() {
@@ -416,13 +409,11 @@ function ProductsPage() {
     queryKey: ["visible-product-card-profiles", visibleMerchantPubkeys],
     enabled: visibleMerchantPubkeys.length > 0,
     queryFn: async () => {
-      const result = await getProfiles({
-        pubkeys: visibleMerchantPubkeys,
-        priority: "visible",
-      })
+      const result = await getProfiles({ pubkeys: visibleMerchantPubkeys })
       return result.data
     },
     staleTime: 5 * 60_000,
+    placeholderData: (previousData) => previousData,
     refetchInterval: (query) => {
       const data = query.state.data
       if (!data) return false
@@ -433,6 +424,36 @@ function ProductsPage() {
         : false
     },
   })
+  const allMerchantProfilesQuery = useQuery({
+    queryKey: ["all-product-store-profiles", allMerchants],
+    enabled: allMerchants.length > 0,
+    queryFn: async () => {
+      const result = await getProfiles({ pubkeys: allMerchants })
+      return result.data
+    },
+    staleTime: 5 * 60_000,
+    placeholderData: (previousData) => previousData,
+    refetchInterval: (query) => {
+      const data = query.state.data
+      if (!data) return false
+      return allMerchants.some((pubkey) => !getProfileName(data[pubkey]))
+        ? 3_000
+        : false
+    },
+  })
+  const merchantProfiles = useMemo(
+    () => ({
+      ...(allMerchantProfilesQuery.data ?? {}),
+      ...(visibleMerchantProfilesQuery.data ?? {}),
+    }),
+    [allMerchantProfilesQuery.data, visibleMerchantProfilesQuery.data]
+  )
+  const getMerchantName = useCallback(
+    (merchantPubkey: string) =>
+      getProfileName(merchantProfiles[merchantPubkey]) ??
+      formatPubkey(merchantPubkey, 6),
+    [merchantProfiles]
+  )
 
   const hasActiveFilters = !!(
     search.q ||
@@ -601,7 +622,7 @@ function ProductsPage() {
           </span>
           {search.merchant ? (
             <Badge variant="secondary" className="h-8 max-w-full gap-1.5 px-3">
-              <MerchantName pubkey={search.merchant} />
+              {getMerchantName(search.merchant)}
               <button
                 onClick={() => updateSearch({ merchant: undefined })}
                 className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
@@ -624,7 +645,7 @@ function ProductsPage() {
                 <SelectItem value="__all">All stores</SelectItem>
                 {allMerchants.map((pk) => (
                   <SelectItem key={pk} value={pk}>
-                    <MerchantName pubkey={pk} />
+                    {getMerchantName(pk)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -714,7 +735,7 @@ function ProductsPage() {
           )}
           {search.merchant && !allMerchants.includes(search.merchant) && (
             <Badge variant="secondary" className="gap-1">
-              <MerchantName pubkey={search.merchant} />
+              {getMerchantName(search.merchant)}
               <button
                 onClick={() => updateSearch({ merchant: undefined })}
                 className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
@@ -846,9 +867,7 @@ function ProductsPage() {
             <li key={p.id} className="h-full">
               <ProductGridCard
                 product={p}
-                merchantName={getProfileName(
-                  visibleMerchantProfilesQuery.data?.[p.pubkey]
-                )}
+                merchantName={getProfileName(merchantProfiles[p.pubkey])}
                 btcUsdRate={btcUsdRate}
                 cartQuantity={
                   cart.items.find((item) => item.productId === p.id)

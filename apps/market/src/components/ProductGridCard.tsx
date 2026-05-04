@@ -28,8 +28,7 @@ export function ProductGridCard({
 }: ProductGridCardProps) {
   const navigate = useNavigate()
   const { data: profile } = useProfile(
-    merchantNameOverride ? undefined : product.pubkey,
-    { priority: "visible" }
+    merchantNameOverride ? undefined : product.pubkey
   )
   const [didJustAdd, setDidJustAdd] = useState(false)
   const [imageFailed, setImageFailed] = useState(false)

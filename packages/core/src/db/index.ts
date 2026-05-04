@@ -278,12 +278,6 @@ export async function pruneCommerceCaches(): Promise<void> {
       targetBytes: FALLBACK_CACHE_PRUNE_TARGET_BYTES,
       freshMs: CACHE_PRUNE_FRESH_MS,
     }),
-    pruneTableByCachedAt(db.profiles, {
-      estimatedRowBytes: 1_200,
-      highWaterBytes: FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES,
-      targetBytes: FALLBACK_CACHE_PRUNE_TARGET_BYTES,
-      freshMs: CACHE_PRUNE_FRESH_MS,
-    }),
     pruneTableByCachedAt(db.relayLists, {
       estimatedRowBytes: 900,
       highWaterBytes: FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES,

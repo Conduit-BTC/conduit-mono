@@ -110,7 +110,7 @@ function StorefrontPage() {
   const queryClient = useQueryClient()
   const cart = useCart()
   const { pubkey: viewerPubkey, status } = useAuth()
-  const { data: profile } = useProfile(pubkey, { priority: "visible" })
+  const { data: profile } = useProfile(pubkey)
   const btcUsdRateQuery = useBtcUsdRate()
   const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
