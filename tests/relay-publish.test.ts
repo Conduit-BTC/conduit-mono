@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import {
   __resetRelayListTestOverrides,
+  __resetRelayPublishTestOverrides,
   __setRelayListTestOverrides,
+  __setRelayPublishTestOverrides,
   deriveRelayOutcomes,
   EVENT_KINDS,
   planPublishRelays,
@@ -34,6 +36,7 @@ describe("planPublishRelays", () => {
 
   afterEach(() => {
     __resetRelayListTestOverrides()
+    __resetRelayPublishTestOverrides()
   })
 
   it("returns an author plan with no recipient hints", async () => {
@@ -110,6 +113,80 @@ describe("planPublishRelays", () => {
         }
       )
     ).rejects.toThrow("Refusing to publish a tiny NIP-65 relay list")
+  })
+
+  it("does not let broadcast success mask recipient primary failure", async () => {
+    const primaryRelay = "wss://recipient.example"
+    const broadcastRelay = "wss://sender.example"
+    const attempts: string[][] = []
+    const fakeEvent = {
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        if (relayUrls.some((url) => url.startsWith(primaryRelay))) {
+          throw new Error("recipient relay failed")
+        }
+        return new Set(relayUrls.map((url) => ({ url })))
+      },
+    } as never
+
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "recipient_event",
+        primaryRelayUrls: [primaryRelay],
+        broadcastRelayUrls: [broadcastRelay],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await expect(
+      publishWithPlanner(fakeEvent, {
+        intent: "recipient_event",
+        authorPubkey: "alice",
+        recipientPubkeys: ["bob"],
+      })
+    ).rejects.toThrow("recipient relay failed")
+
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0]?.[0]).toStartWith(primaryRelay)
+  })
+
+  it("returns broadcast failures as diagnostics after primary delivery succeeds", async () => {
+    const primaryRelay = "wss://recipient.example"
+    const broadcastRelay = "wss://sender.example"
+    const fakeEvent = {
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        if (relayUrls.some((url) => url.startsWith(broadcastRelay))) {
+          throw new Error("broadcast relay failed")
+        }
+        return new Set(relayUrls.map((url) => ({ url })))
+      },
+    } as never
+
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "recipient_event",
+        primaryRelayUrls: [primaryRelay],
+        broadcastRelayUrls: [broadcastRelay],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    const result = await publishWithPlanner(fakeEvent, {
+      intent: "recipient_event",
+      authorPubkey: "alice",
+      recipientPubkeys: ["bob"],
+    })
+
+    expect(result.successfulRelayUrls).toEqual([primaryRelay])
+    expect(result.failedRelayUrls).toEqual([broadcastRelay])
   })
 })
 

@@ -84,6 +84,8 @@ function sleep<T>(ms: number, value: T): Promise<T> {
   return new Promise((resolve) => setTimeout(() => resolve(value), ms))
 }
 
+const FETCH_TIMEOUT = Symbol("fetch-timeout")
+
 async function fetchEventsFromRelay(
   relayUrl: string,
   filter: NDKFilter,
@@ -110,8 +112,13 @@ async function fetchEventsFromRelay(
 
     const events = await Promise.race([
       ndk.fetchEvents(filter),
-      sleep(fetchTimeoutMs, new Set<NDKEvent>()),
+      sleep(fetchTimeoutMs, FETCH_TIMEOUT),
     ])
+
+    if (events === FETCH_TIMEOUT) {
+      recordRelayFailure(relayUrl)
+      return []
+    }
 
     recordRelaySuccess(relayUrl)
     return Array.from(events) as NDKEvent[]

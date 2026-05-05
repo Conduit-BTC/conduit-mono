@@ -8,7 +8,12 @@ import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { KeyRound, ShieldCheck, Store } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
-import { hasNip07, useAuth } from "@conduit/core"
+import {
+  getActiveRelaySettingsScope,
+  hasNip07,
+  refreshNdkRelaySettings,
+  useAuth,
+} from "@conduit/core"
 import { Button, ErrorPage, NotFoundPage } from "@conduit/ui"
 import { MerchantHeader, MerchantSidebar } from "../components/MerchantHeader"
 
@@ -41,6 +46,7 @@ function RootLayout() {
     select: (state) => state.location.pathname,
   })
   const signerConnected = status === "connected" && !!pubkey
+  const relaySettingsScope = pubkey ? `merchant:${pubkey}` : "merchant"
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" })
@@ -50,6 +56,11 @@ function RootLayout() {
     const title = signerConnected ? getPageTitle(pathname) : "Connect"
     document.title = `${title} | Conduit Merchant`
   }, [pathname, signerConnected])
+
+  useEffect(() => {
+    if (getActiveRelaySettingsScope() === relaySettingsScope) return
+    refreshNdkRelaySettings(relaySettingsScope)
+  }, [relaySettingsScope])
 
   if (!signerConnected) {
     return <ConnectGate />

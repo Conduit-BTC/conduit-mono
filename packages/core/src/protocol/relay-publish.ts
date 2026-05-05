@@ -21,7 +21,10 @@ import {
   type RelayWritePlan,
 } from "./relay-planner"
 import { EVENT_KINDS } from "./kinds"
-import { assertSafeNip65RelayTags } from "./relay-settings"
+import {
+  assertSafeNip65RelayTags,
+  tryNormalizeRelayUrl,
+} from "./relay-settings"
 
 export interface PublishWithPlannerInput {
   intent: RelayWriteIntent
@@ -43,10 +46,30 @@ export interface PublishWithPlannerResult {
   failedRelayUrls: string[]
 }
 
+interface RelayPublishTestOverrides {
+  planPublishRelays?: (
+    input: PublishWithPlannerInput
+  ) => Promise<RelayWritePlan>
+  getNdk?: typeof getNdk
+}
+
+let testOverrides: RelayPublishTestOverrides = {}
+
+export function __setRelayPublishTestOverrides(
+  overrides: Partial<RelayPublishTestOverrides>
+): void {
+  testOverrides = { ...testOverrides, ...overrides }
+}
+
+export function __resetRelayPublishTestOverrides(): void {
+  testOverrides = {}
+}
+
 function relayUrl(relay: NDKRelay): string | undefined {
   // NDKRelay exposes `url` via its WebSocket-like getter; guard for safety.
   const url = (relay as unknown as { url?: string }).url
-  return typeof url === "string" && url.length > 0 ? url : undefined
+  if (typeof url !== "string" || url.length === 0) return undefined
+  return normalizeOutcomeRelayUrl(url)
 }
 
 function collectRelayUrls(relays: Iterable<NDKRelay>): Set<string> {
@@ -56,6 +79,11 @@ function collectRelayUrls(relays: Iterable<NDKRelay>): Set<string> {
     if (url) urls.add(url)
   }
   return urls
+}
+
+function normalizeOutcomeRelayUrl(url: string): string {
+  const normalized = tryNormalizeRelayUrl(url)
+  return normalized.ok ? normalized.url : url
 }
 
 /**
@@ -74,15 +102,21 @@ export function deriveRelayOutcomes(input: {
   publishedUrls?: Iterable<string>
   failedUrls?: Iterable<string>
 }): { successfulRelayUrls: string[]; failedRelayUrls: string[] } {
-  const attempted = new Set(input.attemptedRelayUrls)
+  const attempted = new Set(
+    input.attemptedRelayUrls.map(normalizeOutcomeRelayUrl)
+  )
   const successful = new Set<string>()
   const failed = new Set<string>()
 
   for (const url of input.publishedUrls ?? []) {
-    if (attempted.has(url)) successful.add(url)
+    const normalized = normalizeOutcomeRelayUrl(url)
+    if (attempted.has(normalized)) successful.add(normalized)
   }
   for (const url of input.failedUrls ?? []) {
-    if (attempted.has(url) && !successful.has(url)) failed.add(url)
+    const normalized = normalizeOutcomeRelayUrl(url)
+    if (attempted.has(normalized) && !successful.has(normalized)) {
+      failed.add(normalized)
+    }
   }
   for (const url of attempted) {
     if (!successful.has(url) && !failed.has(url)) failed.add(url)
@@ -101,6 +135,65 @@ function emptyPlan(intent: RelayWriteIntent): RelayWritePlan {
     broadcastRelayUrls: [],
     parkedRelayUrls: [],
   }
+}
+
+function mergeUnique(urls: readonly string[][]): string[] {
+  return Array.from(new Set(urls.flat()))
+}
+
+async function publishToRelayUrls(input: {
+  event: NDKEvent
+  ndk: ReturnType<typeof getNdk>
+  relayUrls: readonly string[]
+  requiredRelayCount: number
+}): Promise<{
+  successfulRelayUrls: string[]
+  failedRelayUrls: string[]
+  thrown: unknown
+}> {
+  if (input.relayUrls.length === 0) {
+    return {
+      successfulRelayUrls: [],
+      failedRelayUrls: [],
+      thrown: null,
+    }
+  }
+
+  const relaySet = NDKRelaySet.fromRelayUrls([...input.relayUrls], input.ndk)
+  let publishedUrls = new Set<string>()
+  let explicitFailedUrls = new Set<string>()
+  let thrown: unknown = null
+
+  try {
+    const publishedRelays = await input.event.publish(
+      relaySet,
+      undefined,
+      input.requiredRelayCount
+    )
+    publishedUrls = collectRelayUrls(publishedRelays)
+  } catch (err) {
+    thrown = err
+    if (err instanceof NDKPublishError) {
+      publishedUrls = collectRelayUrls(err.publishedToRelays)
+      for (const relay of err.errors.keys()) {
+        const url = relayUrl(relay)
+        if (url) explicitFailedUrls.add(url)
+      }
+    } else {
+      explicitFailedUrls = new Set(input.relayUrls)
+    }
+  }
+
+  const outcome = deriveRelayOutcomes({
+    attemptedRelayUrls: input.relayUrls,
+    publishedUrls,
+    failedUrls: explicitFailedUrls,
+  })
+
+  for (const url of outcome.successfulRelayUrls) recordRelaySuccess(url)
+  for (const url of outcome.failedRelayUrls) recordRelayFailure(url)
+
+  return { ...outcome, thrown }
 }
 
 /**
@@ -144,6 +237,9 @@ export async function planPublishRelays(
  * Returns the resolved plan and the URL list that was attempted so callers
  * can surface diagnostics. If the planner yields no relays we fall back to
  * the NDKEvent's default `publish()` (NDK's pool of connected relays).
+ *
+ * Primary relays are the delivery requirement. Broadcast relays are diagnostic
+ * best-effort fanout and must not make a recipient delivery look successful.
  */
 export async function publishWithPlanner(
   event: NDKEvent,
@@ -153,7 +249,9 @@ export async function publishWithPlanner(
     assertSafeNip65RelayTags(event.tags ?? [])
   }
 
-  const plan = await planPublishRelays(input)
+  const plan = testOverrides.planPublishRelays
+    ? await testOverrides.planPublishRelays(input)
+    : await planPublishRelays(input)
   const attemptedRelayUrls = Array.from(
     new Set([...plan.primaryRelayUrls, ...plan.broadcastRelayUrls])
   )
@@ -169,45 +267,33 @@ export async function publishWithPlanner(
     }
   }
 
-  const ndk = getNdk()
-  const relaySet = NDKRelaySet.fromRelayUrls(attemptedRelayUrls, ndk)
-
-  let publishedUrls = new Set<string>()
-  let explicitFailedUrls = new Set<string>()
-  let thrown: unknown = null
-
-  try {
-    const publishedRelays = await event.publish(relaySet)
-    publishedUrls = collectRelayUrls(publishedRelays)
-  } catch (err) {
-    thrown = err
-    if (err instanceof NDKPublishError) {
-      publishedUrls = collectRelayUrls(err.publishedToRelays)
-      for (const relay of err.errors.keys()) {
-        const url = relayUrl(relay)
-        if (url) explicitFailedUrls.add(url)
-      }
-    } else {
-      // Unknown failure mode — back off the entire attempted set.
-      explicitFailedUrls = new Set(attemptedRelayUrls)
-    }
-  }
-
-  const { successfulRelayUrls, failedRelayUrls } = deriveRelayOutcomes({
-    attemptedRelayUrls,
-    publishedUrls,
-    failedUrls: explicitFailedUrls,
+  const ndk = testOverrides.getNdk ? testOverrides.getNdk() : getNdk()
+  const primary = await publishToRelayUrls({
+    event,
+    ndk,
+    relayUrls: plan.primaryRelayUrls,
+    requiredRelayCount: plan.primaryRelayUrls.length > 0 ? 1 : 0,
   })
 
-  for (const url of successfulRelayUrls) recordRelaySuccess(url)
-  for (const url of failedRelayUrls) recordRelayFailure(url)
+  if (primary.thrown) throw primary.thrown
 
-  if (thrown) throw thrown
+  const broadcast = await publishToRelayUrls({
+    event,
+    ndk,
+    relayUrls: plan.broadcastRelayUrls,
+    requiredRelayCount: plan.broadcastRelayUrls.length > 0 ? 1 : 0,
+  })
 
   return {
     plan,
     attemptedRelayUrls,
-    successfulRelayUrls,
-    failedRelayUrls,
+    successfulRelayUrls: mergeUnique([
+      primary.successfulRelayUrls,
+      broadcast.successfulRelayUrls,
+    ]),
+    failedRelayUrls: mergeUnique([
+      primary.failedRelayUrls,
+      broadcast.failedRelayUrls,
+    ]),
   }
 }
