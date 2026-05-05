@@ -21,6 +21,7 @@ export function useProfile(pubkey: string | null | undefined) {
     queryKey: ["profile", pubkey],
     enabled: !!pubkey,
     queryFn: () => fetchProfile(pubkey!),
+    placeholderData: () => (pubkey ? { pubkey } : undefined),
     staleTime: 5 * 60_000,
     retry: 2,
     refetchOnWindowFocus: true,

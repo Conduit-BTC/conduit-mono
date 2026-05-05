@@ -26,6 +26,7 @@ import {
   getConversationPreview,
 } from "../components/OrderConversationMessage"
 import {
+  fetchCachedBuyerConversations,
   fetchBuyerConversations,
   type BuyerConversation,
 } from "../lib/orderConversations"
@@ -129,16 +130,22 @@ function MessagesPage() {
   const activeTab = search.tab ?? "merchants"
 
   const messagesQuery = useQuery({
-    queryKey: ["buyer-messages", pubkey ?? "none"],
+    queryKey: ["buyer-messages-live", pubkey ?? "none"],
     enabled: signerConnected,
     queryFn: () => fetchBuyerConversations(pubkey!),
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   })
+  const cachedMessagesQuery = useQuery({
+    queryKey: ["buyer-messages", pubkey ?? "none"],
+    enabled: signerConnected,
+    queryFn: () => fetchCachedBuyerConversations(pubkey!),
+    staleTime: 5_000,
+  })
 
   const conversations = useMemo(
-    () => messagesQuery.data?.data ?? [],
-    [messagesQuery.data]
+    () => messagesQuery.data?.data ?? cachedMessagesQuery.data?.data ?? [],
+    [cachedMessagesQuery.data, messagesQuery.data]
   )
   const merchantPubkeys = useMemo(
     () =>
@@ -304,9 +311,14 @@ function MessagesPage() {
     },
     onSuccess: async () => {
       setReplyText("")
-      await queryClient.invalidateQueries({
-        queryKey: ["buyer-messages", pubkey ?? "none"],
-      })
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["buyer-messages", pubkey ?? "none"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["buyer-messages-live", pubkey ?? "none"],
+        }),
+      ])
     },
   })
 
@@ -402,9 +414,9 @@ function MessagesPage() {
             </section>
           )}
 
-          {signerConnected && messagesQuery.isLoading && (
+          {signerConnected && messagesQuery.isFetching && (
             <div className="text-sm text-[var(--text-secondary)]">
-              Loading merchant conversations…
+              Checking latest merchant conversations…
             </div>
           )}
 
@@ -418,7 +430,7 @@ function MessagesPage() {
           )}
 
           {signerConnected &&
-            !messagesQuery.isLoading &&
+            !cachedMessagesQuery.isLoading &&
             conversations.length === 0 && (
               <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">

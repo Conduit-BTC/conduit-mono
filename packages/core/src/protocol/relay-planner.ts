@@ -25,6 +25,7 @@
 import { config } from "../config"
 import {
   getCommerceReadRelayUrls,
+  getCommerceWriteRelayUrls,
   getGeneralReadRelayUrls,
   getGeneralWriteRelayUrls,
   loadRelaySettings,
@@ -271,7 +272,10 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
  */
 export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
   const settingsOpts = settingsPlanOptions(input)
-  const userWriteRelays = getGeneralWriteRelayUrls(settingsOpts)
+  const userWriteRelays =
+    input.intent === "author_event"
+      ? getCommerceWriteRelayUrls(settingsOpts)
+      : getGeneralWriteRelayUrls(settingsOpts)
 
   if (input.intent === "author_event") {
     const ordered = dedupeOrdered(userWriteRelays)

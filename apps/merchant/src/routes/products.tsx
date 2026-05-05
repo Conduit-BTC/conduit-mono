@@ -5,7 +5,11 @@ import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   EVENT_KINDS,
   appendConduitClientTag,
+  getCachedMerchantStorefront,
   getMerchantStorefront,
+  getProductImageCandidates,
+  getProductPriceDisplay,
+  hasMarketVisibleProductImage,
   publishWithPlanner,
   requireNdkConnected,
   type CommerceResult,
@@ -17,6 +21,7 @@ import {
   Button,
   Input,
   Label,
+  ProductCard,
   Select,
   SelectContent,
   SelectItem,
@@ -93,8 +98,28 @@ async function fetchMerchantProducts(
 ): Promise<CommerceResult<MerchantProduct[]>> {
   const result = await getMerchantStorefront({
     merchantPubkey,
-    limit: 200,
     sort: "updated_at_desc",
+    includeMarketHidden: true,
+  })
+  return {
+    data: result.data.map((record) => ({
+      eventId: record.eventId,
+      addressId: record.addressId,
+      dTag: record.dTag,
+      eventCreatedAt: record.eventCreatedAt,
+      product: record.product,
+    })),
+    meta: result.meta,
+  }
+}
+
+async function fetchCachedMerchantProducts(
+  merchantPubkey: string
+): Promise<CommerceResult<MerchantProduct[]>> {
+  const result = await getCachedMerchantStorefront({
+    merchantPubkey,
+    sort: "updated_at_desc",
+    includeMarketHidden: true,
   })
   return {
     data: result.data.map((record) => ({
@@ -130,7 +155,10 @@ async function publishProduct(
   const currency = form.currency.trim().toUpperCase() || "USD"
   const summary = form.summary.trim()
   const imageUrl = form.imageUrl.trim()
-  if (imageUrl && !/^https:\/\//.test(imageUrl)) {
+  if (!imageUrl) {
+    throw new Error("Image URL is required for Market-visible products")
+  }
+  if (!/^https:\/\//.test(imageUrl)) {
     throw new Error("Image URL must start with https://")
   }
 
@@ -149,7 +177,7 @@ async function publishProduct(
     type: "simple",
     visibility: "public",
     stock: undefined,
-    images: imageUrl ? [{ url: imageUrl }] : [],
+    images: [{ url: imageUrl }],
     tags,
     location: undefined,
     createdAt: existing?.product.createdAt ?? now,
@@ -218,13 +246,23 @@ function ProductsPage() {
   const [editing, setEditing] = useState<MerchantProduct | null>(null)
 
   const productsQuery = useQuery({
-    queryKey: ["merchant-products", pubkey ?? "none"],
+    queryKey: ["merchant-products-live", pubkey ?? "none"],
     enabled: !!pubkey,
     queryFn: () => fetchMerchantProducts(pubkey!),
     refetchInterval: 15_000,
   })
-  const merchantProducts = productsQuery.data?.data ?? []
-  const merchantProductsMeta = productsQuery.data?.meta ?? null
+  const cachedProductsQuery = useQuery({
+    queryKey: ["merchant-products", pubkey ?? "none"],
+    enabled: !!pubkey,
+    queryFn: () => fetchCachedMerchantProducts(pubkey!),
+    staleTime: 5_000,
+  })
+  const merchantProducts = useMemo(
+    () => productsQuery.data?.data ?? cachedProductsQuery.data?.data ?? [],
+    [cachedProductsQuery.data?.data, productsQuery.data?.data]
+  )
+  const merchantProductsMeta =
+    productsQuery.data?.meta ?? cachedProductsQuery.data?.meta ?? null
 
   const saveMutation = useMutation({
     mutationFn: async (payload: {
@@ -239,6 +277,9 @@ function ProductsPage() {
       await queryClient.invalidateQueries({
         queryKey: ["merchant-products", pubkey ?? "none"],
       })
+      await queryClient.invalidateQueries({
+        queryKey: ["merchant-products-live", pubkey ?? "none"],
+      })
     },
   })
 
@@ -249,6 +290,9 @@ function ProductsPage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({
         queryKey: ["merchant-products", pubkey ?? "none"],
+      })
+      await queryClient.invalidateQueries({
+        queryKey: ["merchant-products-live", pubkey ?? "none"],
       })
     },
   })
@@ -395,7 +439,11 @@ function ProductsPage() {
                     setForm((prev) => ({ ...prev, imageUrl: e.target.value }))
                   }
                   placeholder="https://..."
+                  required
                 />
+                <div className="text-xs leading-5 text-[var(--text-muted)]">
+                  Products without images are not shown in Market.
+                </div>
               </div>
 
               <div className="grid gap-1.5">
@@ -436,7 +484,7 @@ function ProductsPage() {
         </section>
 
         <section className="space-y-4">
-          {productsQuery.isLoading && (
+          {productsQuery.isLoading && cachedProductsQuery.isLoading && (
             <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
               Loading products...
             </div>
@@ -446,6 +494,7 @@ function ProductsPage() {
             <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4 text-xs text-[var(--text-secondary)]">
               Source: {merchantProductsMeta.source.replace("_", " ")}
               {merchantProductsMeta.stale ? " / stale view" : ""}
+              {productsQuery.isFetching ? " / checking latest relays" : ""}
             </div>
           )}
 
@@ -458,110 +507,94 @@ function ProductsPage() {
             </div>
           )}
 
-          {!productsQuery.isLoading && merchantProducts.length === 0 && (
+          {!cachedProductsQuery.isLoading && merchantProducts.length === 0 && (
             <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
               No listings yet. Publish your first product from the panel on the
               left.
             </div>
           )}
 
-          {merchantProducts.map((item) => (
-            <article
-              key={item.addressId}
-              className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]"
-            >
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <h2 className="text-lg font-semibold text-[var(--text-primary)]">
+          <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+            {merchantProducts.map((item) => {
+              const { primary, secondary } = getProductPriceDisplay(
+                item.product
+              )
+              const marketVisible = hasMarketVisibleProductImage(item.product)
+
+              if (!marketVisible) {
+                return (
+                  <article
+                    key={item.addressId}
+                    className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning"
+                  >
+                    <div className="font-semibold text-[var(--text-primary)]">
                       {item.product.title}
-                    </h2>
-                    <Badge
-                      variant="secondary"
-                      className="border-[var(--border)] bg-[var(--surface-elevated)]"
+                    </div>
+                    <div className="mt-2 leading-6">
+                      Missing a valid image URL. This listing is hidden from
+                      Market until it is fixed.
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-3"
+                      onClick={() => {
+                        setEditing(item)
+                        setForm(productToForm(item.product))
+                      }}
                     >
-                      {item.product.currency}
-                    </Badge>
-                  </div>
-                  <div className="mt-2 break-all text-xs font-mono text-[var(--text-muted)]">
-                    {item.addressId}
-                  </div>
-                </div>
+                      Fix listing
+                    </Button>
+                  </article>
+                )
+              }
 
-                <div className="text-left sm:text-right">
-                  <div className="text-lg font-semibold text-[var(--text-primary)]">
-                    {item.product.price} {item.product.currency}
-                  </div>
-                  <div className="mt-1 text-xs text-[var(--text-muted)]">
-                    Updated {new Date(item.product.updatedAt).toLocaleString()}
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-4 grid gap-4 lg:grid-cols-[112px_minmax(0,1fr)]">
-                <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)]">
-                  {item.product.images[0]?.url ? (
-                    <img
-                      src={item.product.images[0].url}
-                      alt={item.product.title}
-                      className="h-28 w-full object-cover"
-                      loading="lazy"
-                    />
-                  ) : (
-                    <div className="flex h-28 items-center justify-center text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                      No image
+              return (
+                <ProductCard
+                  key={item.addressId}
+                  title={item.product.title}
+                  merchantName="Your store"
+                  images={getProductImageCandidates(item.product)}
+                  primaryPrice={primary}
+                  secondaryPrice={secondary}
+                  imageLoading="lazy"
+                  action={
+                    <div className="flex gap-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={(event) => {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          setEditing(item)
+                          setForm(productToForm(item.product))
+                        }}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        disabled={isDeleting}
+                        onClick={(event) => {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          const ok = window.confirm(
+                            `Delete "${item.product.title}"?`
+                          )
+                          if (ok) deleteMutation.mutate(item)
+                        }}
+                      >
+                        {isDeleting ? "..." : "Delete"}
+                      </Button>
                     </div>
-                  )}
-                </div>
-
-                <div>
-                  {item.product.summary && (
-                    <p className="text-sm leading-7 text-[var(--text-secondary)]">
-                      {item.product.summary}
-                    </p>
-                  )}
-
-                  {item.product.tags.length > 0 && (
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                      {item.product.tags.map((tag) => (
-                        <Badge
-                          key={`${item.addressId}-${tag}`}
-                          variant="outline"
-                          className="border-[var(--border)] bg-[var(--surface)]"
-                        >
-                          {tag}
-                        </Badge>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setEditing(item)
-                    setForm(productToForm(item.product))
-                  }}
-                >
-                  Edit
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={isDeleting}
-                  onClick={() => {
-                    const ok = window.confirm(`Delete "${item.product.title}"?`)
-                    if (ok) deleteMutation.mutate(item)
-                  }}
-                >
-                  {isDeleting ? "Deleting…" : "Delete"}
-                </Button>
-              </div>
-            </article>
-          ))}
+                  }
+                />
+              )
+            })}
+          </div>
         </section>
       </div>
     </div>

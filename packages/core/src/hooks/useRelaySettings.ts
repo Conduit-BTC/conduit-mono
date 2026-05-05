@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   assertSafeNip65RelayList,
@@ -12,6 +12,7 @@ import {
   readNip07RelayPreferences,
   removeRelaySettingsEntry,
   reorderCommerceRelay,
+  RELAY_SETTINGS_STORAGE_VERSION,
   saveRelaySettings,
   scanRelaySettingsEntry,
   serializeNip65RelayTags,
@@ -56,30 +57,58 @@ function removeScanningUrl(urls: readonly string[], url: string): string[] {
   return urls.filter((item) => item !== url)
 }
 
+function createEmptyRelaySettings(): RelaySettingsState {
+  return {
+    version: RELAY_SETTINGS_STORAGE_VERSION,
+    entries: [],
+    updatedAt: Date.now(),
+  }
+}
+
+function isDefaultOnlyRelaySettings(settings: RelaySettingsState): boolean {
+  return (
+    settings.entries.length > 0 &&
+    settings.entries.every((entry) => entry.source === "default")
+  )
+}
+
+function maskDefaultSettingsForIdentity(
+  settings: RelaySettingsState,
+  pubkey: string | null
+): RelaySettingsState {
+  return pubkey && isDefaultOnlyRelaySettings(settings)
+    ? createEmptyRelaySettings()
+    : settings
+}
+
 export function useRelaySettings(
   scope?: string | null,
   options: UseRelaySettingsOptions = {}
 ): UseRelaySettingsResult {
   const pubkey = options.pubkey?.trim() || null
   const [settings, setSettings] = useState<RelaySettingsState>(() =>
-    loadRelaySettings(scope)
+    maskDefaultSettingsForIdentity(loadRelaySettings(scope), pubkey)
   )
   const settingsRef = useRef(settings)
   const [scanningUrls, setScanningUrls] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [isLoadingPublishedRelayList, setIsLoadingPublishedRelayList] =
-    useState(false)
+    useState(!!pubkey && isDefaultOnlyRelaySettings(loadRelaySettings(scope)))
   const [publishedRelayListUpdatedAt, setPublishedRelayListUpdatedAt] =
     useState<number | null>(null)
   const [publishingRelayList, setPublishingRelayList] = useState(false)
   const [publishError, setPublishError] = useState<string | null>(null)
 
   useEffect(() => {
-    const next = loadRelaySettings(scope)
+    const loaded = loadRelaySettings(scope)
+    const next = maskDefaultSettingsForIdentity(loaded, pubkey)
     settingsRef.current = next
     setSettings(next)
     refreshNdkRelaySettings(scope)
-  }, [scope])
+    if (pubkey && isDefaultOnlyRelaySettings(loaded)) {
+      setIsLoadingPublishedRelayList(true)
+    }
+  }, [pubkey, scope])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -87,7 +116,10 @@ export function useRelaySettings(
     const storageKey = getRelaySettingsStorageKey(scope)
     function handleStorage(event: StorageEvent): void {
       if (event.key !== storageKey) return
-      const next = loadRelaySettings(scope)
+      const next = maskDefaultSettingsForIdentity(
+        loadRelaySettings(scope),
+        pubkey
+      )
       settingsRef.current = next
       setSettings(next)
       refreshNdkRelaySettings(scope)
@@ -95,65 +127,72 @@ export function useRelaySettings(
 
     window.addEventListener("storage", handleStorage)
     return () => window.removeEventListener("storage", handleStorage)
-  }, [scope])
+  }, [pubkey, scope])
 
-  function persist(
-    update: (current: RelaySettingsState) => RelaySettingsState
-  ): void {
-    const next = saveRelaySettings(update(settingsRef.current), scope)
-    settingsRef.current = next
-    setSettings(next)
-    refreshNdkRelaySettings(scope)
-  }
+  const persist = useCallback(
+    (update: (current: RelaySettingsState) => RelaySettingsState): void => {
+      const next = saveRelaySettings(update(settingsRef.current), scope)
+      settingsRef.current = next
+      setSettings(next)
+      refreshNdkRelaySettings(scope)
+    },
+    [scope]
+  )
 
-  function persistImportedPreferences(
-    preferences: RelayPreference[],
-    source: "published" | "signer"
-  ): RelaySettingsState {
-    const base =
-      source === "published" && !hasManualRelaySettings(settingsRef.current)
-        ? createRelaySettingsFromPreferences(preferences, source)
-        : mergeRelayPreferencesIntoSettings(
-            settingsRef.current,
-            preferences,
-            source
-          )
-    const next = saveRelaySettings(base, scope)
-    settingsRef.current = next
-    setSettings(next)
-    refreshNdkRelaySettings(scope)
-    return next
-  }
+  const persistImportedPreferences = useCallback(
+    (
+      preferences: RelayPreference[],
+      source: "published" | "signer"
+    ): RelaySettingsState => {
+      const base =
+        source === "published" && !hasManualRelaySettings(settingsRef.current)
+          ? createRelaySettingsFromPreferences(preferences, source)
+          : mergeRelayPreferencesIntoSettings(
+              settingsRef.current,
+              preferences,
+              source
+            )
+      const next = saveRelaySettings(base, scope)
+      settingsRef.current = next
+      setSettings(next)
+      refreshNdkRelaySettings(scope)
+      return next
+    },
+    [scope]
+  )
 
-  async function scanImportedRelayUrls(urls: readonly string[]): Promise<void> {
-    const uniqueUrls = Array.from(new Set(urls))
-    if (uniqueUrls.length === 0) return
+  const scanImportedRelayUrls = useCallback(
+    async (urls: readonly string[]): Promise<void> => {
+      const uniqueUrls = Array.from(new Set(urls))
+      if (uniqueUrls.length === 0) return
 
-    setScanningUrls((current) =>
-      Array.from(new Set([...current, ...uniqueUrls]))
-    )
-
-    try {
-      const scanned = await Promise.all(
-        uniqueUrls.map(async (url) => {
-          const existing = settingsRef.current.entries.find(
-            (entry) => entry.url === url
-          )
-          return scanRelaySettingsEntry(url, {}, existing)
-        })
-      )
-      persist((current) =>
-        scanned.reduce(
-          (next, entry) => upsertRelaySettingsEntry(next, entry),
-          current
-        )
-      )
-    } finally {
       setScanningUrls((current) =>
-        current.filter((url) => !uniqueUrls.includes(url))
+        Array.from(new Set([...current, ...uniqueUrls]))
       )
-    }
-  }
+
+      try {
+        const scanned = await Promise.all(
+          uniqueUrls.map(async (url) => {
+            const existing = settingsRef.current.entries.find(
+              (entry) => entry.url === url
+            )
+            return scanRelaySettingsEntry(url, {}, existing)
+          })
+        )
+        persist((current) =>
+          scanned.reduce(
+            (next, entry) => upsertRelaySettingsEntry(next, entry),
+            current
+          )
+        )
+      } finally {
+        setScanningUrls((current) =>
+          current.filter((url) => !uniqueUrls.includes(url))
+        )
+      }
+    },
+    [persist]
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -161,6 +200,7 @@ export function useRelaySettings(
     async function loadPublishedRelayList(): Promise<void> {
       if (!pubkey) {
         setPublishedRelayListUpdatedAt(null)
+        setIsLoadingPublishedRelayList(false)
         const preferences = await readNip07RelayPreferences()
         if (cancelled || preferences.length === 0) return
         const next = persistImportedPreferences(preferences, "signer")
@@ -171,10 +211,43 @@ export function useRelaySettings(
       setIsLoadingPublishedRelayList(true)
       try {
         const signerPreferences = await readNip07RelayPreferences()
+        if (cancelled) return
+
+        if (signerPreferences.length > 0) {
+          const next = persistImportedPreferences(signerPreferences, "signer")
+          void scanImportedRelayUrls(next.entries.map((entry) => entry.url))
+          setIsLoadingPublishedRelayList(false)
+        }
+
+        const cachedRelayList = await getRelayList(pubkey, {
+          cacheOnly: true,
+        })
+        if (cancelled) return
+
+        if (cachedRelayList) {
+          setPublishedRelayListUpdatedAt(cachedRelayList.eventCreatedAt || null)
+          const cachedPreferences = mergeNip65RelayUrls({
+            readRelayUrls: cachedRelayList.readRelayUrls,
+            writeRelayUrls: cachedRelayList.writeRelayUrls,
+          })
+          if (cachedPreferences.length > 0) {
+            const next = persistImportedPreferences(
+              cachedPreferences,
+              "published"
+            )
+            void scanImportedRelayUrls(next.entries.map((entry) => entry.url))
+          }
+          setIsLoadingPublishedRelayList(false)
+        }
+
+        if (signerPreferences.length === 0 && !cachedRelayList) {
+          setIsLoadingPublishedRelayList(false)
+        }
+
         const relayListSearchUrls = Array.from(
           new Set([
-            ...settingsRef.current.entries
-              .filter((entry) => entry.readEnabled)
+            ...loadRelaySettings(scope)
+              .entries.filter((entry) => entry.readEnabled)
               .map((entry) => entry.url),
             ...signerPreferences.map((preference) => preference.url),
           ])
@@ -198,10 +271,6 @@ export function useRelaySettings(
             return
           }
         }
-
-        if (cancelled || signerPreferences.length === 0) return
-        const next = persistImportedPreferences(signerPreferences, "signer")
-        void scanImportedRelayUrls(next.entries.map((entry) => entry.url))
       } finally {
         if (!cancelled) setIsLoadingPublishedRelayList(false)
       }
@@ -212,7 +281,7 @@ export function useRelaySettings(
     return () => {
       cancelled = true
     }
-  }, [pubkey, scope])
+  }, [persistImportedPreferences, pubkey, scanImportedRelayUrls, scope])
 
   async function addRelay(url: string): Promise<void> {
     setError(null)
@@ -289,7 +358,10 @@ export function useRelaySettings(
   function resetRelaySettings(): void {
     setError(null)
     setPublishError(null)
-    const defaults = saveRelaySettings(createDefaultRelaySettings(), scope)
+    const defaults = saveRelaySettings(
+      pubkey ? createEmptyRelaySettings() : createDefaultRelaySettings(),
+      scope
+    )
     settingsRef.current = defaults
     setSettings(defaults)
     refreshNdkRelaySettings(scope)

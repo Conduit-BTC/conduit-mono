@@ -1,13 +1,12 @@
 const DEFAULT_RELAYS = [
+  // Bootstrap read relays for product discovery. Capability scans determine
+  // trust/commerce status; inclusion here does not grant write authority.
+  "wss://conduitl2.fly.dev",
+  "wss://relay.plebeian.market",
   "wss://relay.primal.net",
   "wss://relay.damus.io",
   "wss://nos.lol",
-  "wss://relay.nostr.band",
   "wss://purplepag.es",
-  "wss://relay.nostr.net",
-  "wss://sendit.nosflare.com",
-  "wss://relay.plebeian.market",
-  "wss://conduitl2.fly.dev",
 ]
 
 export interface ConduitConfig {

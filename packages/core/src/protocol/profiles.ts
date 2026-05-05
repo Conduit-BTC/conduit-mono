@@ -62,6 +62,22 @@ export async function publishProfile(
 
   const user = await ndk.signer.user()
   const pubkey = user.pubkey
+  const hasSubmittedContent = [
+    profile.name,
+    profile.displayName,
+    profile.about,
+    profile.picture,
+    profile.banner,
+    profile.nip05,
+    profile.lud16,
+    profile.website,
+  ].some((value) => typeof value === "string" && value.trim().length > 0)
+
+  if (!hasSubmittedContent) {
+    throw new Error(
+      "Refusing to publish an empty profile. Wait for the profile to load or add profile details before saving."
+    )
+  }
 
   // Build NIP-01 snake_case content, omitting empty/undefined fields
   const content: Record<string, string> = {}

@@ -12,6 +12,7 @@ import {
   AuthProvider,
   connectNdk,
   pruneCommerceCaches,
+  refreshNdkRelaySettings,
   setActiveRelaySettingsScope,
   useAuth,
 } from "@conduit/core"
@@ -28,6 +29,8 @@ function MarketAuthQueryBoundary({ children }: { children: ReactNode }) {
   const identityRef = useRef<string | null>(null)
   const identity =
     status === "connected" && pubkey ? `connected:${pubkey}` : "anonymous"
+  const relayScope =
+    status === "connected" && pubkey ? `market:${pubkey}` : "market"
 
   useEffect(() => {
     const previous = identityRef.current
@@ -46,6 +49,10 @@ function MarketAuthQueryBoundary({ children }: { children: ReactNode }) {
       },
     })
   }, [identity, queryClient])
+
+  useEffect(() => {
+    refreshNdkRelaySettings(relayScope)
+  }, [relayScope])
 
   return <>{children}</>
 }

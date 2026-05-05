@@ -206,7 +206,7 @@ describe("planRelayWrites", () => {
     __resetRelayHealth()
   })
 
-  it("author_event uses user's verified write relays as primary", () => {
+  it("author_event uses user-enabled write relays as primary", () => {
     const state = settings([
       entry("wss://commerce.example.com", {
         section: "commerce",
@@ -234,7 +234,10 @@ describe("planRelayWrites", () => {
       authorPubkey: "alice",
       settings: state,
     })
-    expect(plan.primaryRelayUrls).toEqual(["wss://commerce.example.com"])
+    expect(plan.primaryRelayUrls).toEqual([
+      "wss://commerce.example.com",
+      "wss://stale.example.com",
+    ])
     expect(plan.broadcastRelayUrls).toEqual([])
   })
 

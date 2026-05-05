@@ -1,27 +1,11 @@
-import {
-  Bell,
-  CircleUserRound,
-  Grid2x2,
-  Menu,
-  Package,
-  RadioTower,
-  Search,
-  ShoppingBag,
-} from "lucide-react"
+import { Bell, Grid2x2, Menu, Package, Search, ShoppingBag } from "lucide-react"
 import type { ComponentType } from "react"
 import { Link, useNavigate } from "@tanstack/react-router"
 import { config, formatPubkey, useAuth, useProfile } from "@conduit/core"
 import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
+  AccountMenu,
   Badge,
   Button,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
   Input,
   Sheet,
   SheetContent,
@@ -33,7 +17,7 @@ import {
 import { SignerSwitch } from "./SignerSwitch"
 
 type NavItem = {
-  to: "/" | "/orders" | "/products" | "/profile" | "/settings"
+  to: "/" | "/orders" | "/products"
   label: string
   icon: ComponentType<{ className?: string }>
 }
@@ -42,8 +26,6 @@ const navItems: NavItem[] = [
   { to: "/", label: "Home", icon: Grid2x2 },
   { to: "/orders", label: "Orders", icon: ShoppingBag },
   { to: "/products", label: "Products", icon: Package },
-  { to: "/profile", label: "Profile", icon: CircleUserRound },
-  { to: "/settings", label: "Relays", icon: RadioTower },
 ]
 
 function MerchantAvatarFallback({
@@ -136,36 +118,16 @@ function UserMenu() {
     profile?.displayName ?? profile?.name ?? formatPubkey(pubkey, 6)
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className="inline-flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-2.5 py-2 text-left transition-colors hover:bg-[var(--surface-elevated)]"
-        >
-          <Avatar className="h-8 w-8 border border-[var(--border)]">
-            <AvatarImage src={profile?.picture} alt={displayName} />
-            <AvatarFallback className="bg-transparent p-0">
-              <MerchantAvatarFallback iconClassName="h-4 w-4" />
-            </AvatarFallback>
-          </Avatar>
-          <div className="hidden min-w-0 sm:block">
-            <div className="truncate text-sm font-medium text-[var(--text-primary)]">
-              {displayName}
-            </div>
-            <div className="text-xs text-[var(--text-muted)]">
-              Connected signer
-            </div>
-          </div>
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-44">
-        <DropdownMenuItem onSelect={() => navigate({ to: "/profile" })}>
-          Profile
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={disconnect}>Disconnect</DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <AccountMenu
+      variant="panel"
+      displayName={displayName}
+      pubkeyLabel={formatPubkey(pubkey, 12)}
+      avatarUrl={profile?.picture}
+      fallback={<MerchantAvatarFallback iconClassName="h-4 w-4" />}
+      onProfile={() => navigate({ to: "/profile" })}
+      onNetwork={() => navigate({ to: "/settings" })}
+      onDisconnect={disconnect}
+    />
   )
 }
 

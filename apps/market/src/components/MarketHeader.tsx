@@ -1,32 +1,17 @@
 import {
-  ChevronDown,
   LoaderCircle,
-  LogOut,
   MessagesSquare,
-  RadioTower,
   ReceiptText,
   Search,
   ShoppingCart,
   Store,
-  UserRound,
 } from "lucide-react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 import { config, formatPubkey, useAuth, useProfile } from "@conduit/core"
 import {
+  AccountMenu,
   Badge,
   Button,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -71,101 +56,22 @@ function Logo({
 function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
   const { data: profile } = useProfile(pubkey)
-  const [disconnectOpen, setDisconnectOpen] = useState(false)
+  const navigate = useNavigate()
 
   if (!pubkey || status === "disconnected" || status === "error") return null
 
-  const displayName = profile?.displayName ?? profile?.name ?? null
+  const displayName =
+    profile?.displayName ?? profile?.name ?? formatPubkey(pubkey, 4)
 
   return (
-    <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="primary" size="sm" className="gap-2 text-xs">
-            {profile?.picture && (
-              <img
-                src={profile.picture}
-                alt=""
-                className="h-5 w-5 rounded-full object-cover"
-              />
-            )}
-            {displayName ?? formatPubkey(pubkey, 4)}
-            <ChevronDown className="h-3.5 w-3.5" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="end"
-          className="min-w-[15rem] rounded-xl border-[var(--border)] bg-[var(--surface-dialog)] p-2"
-        >
-          <DropdownMenuLabel className="px-2 py-2">
-            <div className="flex items-center gap-2 text-xs font-normal text-[var(--text-secondary)]">
-              <span className="h-2 w-2 rounded-full bg-emerald-400" />
-              Connected signer
-            </div>
-          </DropdownMenuLabel>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            asChild
-            className="h-10 cursor-pointer gap-2 rounded-lg"
-          >
-            <Link to="/profile">
-              <UserRound className="h-4 w-4 text-secondary-300" />
-              Profile
-            </Link>
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            asChild
-            className="h-10 cursor-pointer gap-2 rounded-lg"
-          >
-            <Link to="/settings">
-              <RadioTower className="h-4 w-4 text-secondary-300" />
-              Network
-            </Link>
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            className="h-10 cursor-pointer gap-2 rounded-lg text-pink-400 focus:text-pink-300"
-            onSelect={() => setDisconnectOpen(true)}
-          >
-            <LogOut className="h-4 w-4" />
-            Disconnect
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-
-      <Dialog open={disconnectOpen} onOpenChange={setDisconnectOpen}>
-        <DialogContent className="max-w-sm border-[var(--border)] bg-[var(--surface-dialog)] text-[var(--text-primary)] shadow-[var(--shadow-dialog)]">
-          <DialogHeader>
-            <DialogTitle>Disconnect signer?</DialogTitle>
-            <DialogDescription className="text-sm leading-7 text-[var(--text-secondary)]">
-              You can reconnect later, but checkout, orders, and merchant
-              follow-up will require signing in again.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
-            {displayName && (
-              <div className="font-medium text-[var(--text-primary)]">
-                {displayName}
-              </div>
-            )}
-            <div className="font-mono">{formatPubkey(pubkey, 12)}</div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDisconnectOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => {
-                disconnect()
-                setDisconnectOpen(false)
-              }}
-            >
-              Disconnect
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+    <AccountMenu
+      displayName={displayName}
+      pubkeyLabel={formatPubkey(pubkey, 12)}
+      avatarUrl={profile?.picture}
+      onProfile={() => navigate({ to: "/profile" })}
+      onNetwork={() => navigate({ to: "/settings" })}
+      onDisconnect={disconnect}
+    />
   )
 }
 
@@ -501,13 +407,6 @@ export function MarketHeader() {
                       <Link to="/orders" onClick={() => setMenuOpen(false)}>
                         <ReceiptText className="h-4 w-4" />
                         Orders
-                      </Link>
-                    </Button>
-                  )}
-                  {status === "connected" && (
-                    <Button asChild variant="ghost" className="justify-start">
-                      <Link to="/profile" onClick={() => setMenuOpen(false)}>
-                        Profile
                       </Link>
                     </Button>
                   )}

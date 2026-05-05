@@ -178,6 +178,115 @@ describe("commerce gateway", () => {
     expect(result.data).toHaveLength(0)
   })
 
+  it("does not let an empty merchant live read blank cached products", async () => {
+    cachedProducts.push({
+      id: "30402:merchant:cached-item",
+      pubkey: "merchant",
+      title: "Cached Item",
+      summary: "cached summary",
+      price: 25,
+      currency: "USD",
+      type: "simple",
+      visibility: "public",
+      images: [{ url: "https://example.com/cached-item.png" }],
+      tags: ["cached"],
+      createdAt: FIXED_NOW - 5_000,
+      updatedAt: FIXED_NOW - 5_000,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+    })
+
+    const result = await getMerchantStorefront({
+      merchantPubkey: "merchant",
+      limit: 10,
+    })
+
+    expect(result.meta.source).toBe("local_cache")
+    expect(result.meta.stale).toBe(true)
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.product.title).toBe("Cached Item")
+  })
+
+  it("removes cached merchant products when deletion truth targets the address", async () => {
+    const merchantPubkey = "merchant"
+    cachedProducts.push({
+      id: `30402:${merchantPubkey}:deleted-cached-item`,
+      pubkey: merchantPubkey,
+      title: "Deleted Cached Item",
+      summary: "cached summary",
+      price: 25,
+      currency: "USD",
+      type: "simple",
+      visibility: "public",
+      images: [{ url: "https://example.com/deleted-cached-item.png" }],
+      tags: ["cached"],
+      createdAt: 100_000,
+      updatedAt: 100_000,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.DELETION)) {
+          return [
+            {
+              id: "delete-cached-1",
+              pubkey: merchantPubkey,
+              created_at: 101,
+              content: "",
+              tags: [["a", `30402:${merchantPubkey}:deleted-cached-item`]],
+            } as never,
+          ]
+        }
+
+        return []
+      },
+    })
+
+    const result = await getMerchantStorefront({ merchantPubkey, limit: 10 })
+
+    expect(result.data).toHaveLength(0)
+  })
+
+  it("keeps image-broken products manageable for Merchant but hidden from Market storefront reads", async () => {
+    cachedProducts.push({
+      id: "30402:merchant:needs-image",
+      pubkey: "merchant",
+      title: "Needs Image",
+      summary: "cached summary",
+      price: 25,
+      currency: "USD",
+      type: "simple",
+      visibility: "public",
+      images: [],
+      tags: ["cached"],
+      createdAt: FIXED_NOW - 5_000,
+      updatedAt: FIXED_NOW - 5_000,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+    })
+
+    const marketResult = await getMerchantStorefront({
+      merchantPubkey: "merchant",
+      limit: 10,
+    })
+    const merchantResult = await getMerchantStorefront({
+      merchantPubkey: "merchant",
+      includeMarketHidden: true,
+      limit: 10,
+    })
+
+    expect(marketResult.data).toHaveLength(0)
+    expect(merchantResult.data).toHaveLength(1)
+    expect(merchantResult.data[0]?.product.title).toBe("Needs Image")
+  })
+
   it("builds stable buyer conversation summaries from cached messages", async () => {
     cachedOrderMessages.push(
       {

@@ -120,9 +120,10 @@ describe("relay settings protocol helpers", () => {
       search: true,
       dm: true,
       auth: true,
-      commerce: true,
+      commerce: false,
     })
     expect(verified.warnings.dmWithoutAuth).toBe(false)
+    expect(verified.warnings.commercePartialSupport).toBe(true)
     expect(verified.scannedAt).toBe(10)
 
     const dmWithoutAuth = deriveRelayScanResult("wss://relay.example", {
@@ -132,19 +133,19 @@ describe("relay settings protocol helpers", () => {
     expect(dmWithoutAuth.capabilities.dm).toBe(true)
     expect(dmWithoutAuth.capabilities.auth).toBe(false)
     expect(dmWithoutAuth.warnings.dmWithoutAuth).toBe(true)
-    expect(dmWithoutAuth.warnings.commercePartialSupport).toBe(false)
+    expect(dmWithoutAuth.warnings.commercePartialSupport).toBe(true)
   })
 
-  it("categorizes relays with the commerce NIP evidence as commerce enabled", () => {
+  it("requires the full commerce NIP profile before marking a relay commerce", () => {
     const scanned = deriveRelayScanResult("wss://relay.example", {
-      supported_nips: [33, 65, 99],
+      supported_nips: [17, 33, 42, 65, 99],
     })
 
     expect(scanned.capabilities.commerce).toBe(true)
     expect(scanned.warnings.commercePartialSupport).toBe(false)
 
     const partial = deriveRelayScanResult("wss://partial.example", {
-      supported_nips: [33, 65],
+      supported_nips: [33, 65, 99],
     })
 
     expect(partial.capabilities.commerce).toBe(false)
@@ -177,7 +178,7 @@ describe("relay settings protocol helpers", () => {
     expect(relay.warnings.unreachable).toBe(true)
   })
 
-  it("orders commerce reads by local priority with public fallback", () => {
+  it("orders commerce reads before public fallback without manual priority", () => {
     const settings = state([
       entry("wss://public.example"),
       entry("wss://commerce-b.example", {
@@ -209,13 +210,13 @@ describe("relay settings protocol helpers", () => {
     expect(
       getCommerceReadRelayUrls({ settings, fallbackRelayUrls: [] })
     ).toEqual([
-      "wss://commerce-a.example",
       "wss://commerce-b.example",
+      "wss://commerce-a.example",
       "wss://public.example",
     ])
   })
 
-  it("requires verified fresh capability before write planning uses a relay", () => {
+  it("keeps user-enabled write relays in the plan while carrying trust warnings", () => {
     const settings = state([
       entry("wss://stale-write.example", {
         writeEnabled: true,
@@ -240,7 +241,7 @@ describe("relay settings protocol helpers", () => {
 
     expect(
       getGeneralWriteRelayUrls({ settings, fallbackRelayUrls: [] })
-    ).toEqual(["wss://verified-write.example"])
+    ).toEqual(["wss://stale-write.example", "wss://verified-write.example"])
     expect(
       getGeneralWriteRelayUrls({
         settings: state([
@@ -256,7 +257,7 @@ describe("relay settings protocol helpers", () => {
         ]),
         fallbackRelayUrls: ["wss://fallback.example"],
       })
-    ).toEqual([])
+    ).toEqual(["wss://stale-only.example"])
   })
 
   it("treats invalid NIP-11 responses as unreachable", async () => {
@@ -279,8 +280,8 @@ describe("relay settings protocol helpers", () => {
       existing
     )
 
-    expect(scanned.readEnabled).toBe(false)
-    expect(scanned.writeEnabled).toBe(false)
+    expect(scanned.readEnabled).toBe(true)
+    expect(scanned.writeEnabled).toBe(true)
     expect(scanned.warnings.unreachable).toBe(true)
     expect(scanned.warnings.staleRelayInfo).toBe(true)
     expect(
@@ -288,10 +289,10 @@ describe("relay settings protocol helpers", () => {
         settings: state([scanned]),
         fallbackRelayUrls: [],
       })
-    ).toEqual([])
+    ).toEqual(["wss://relay.example"])
   })
 
-  it("does not write-plan relays with incomplete NIP-11 capability data", async () => {
+  it("does not drop user-enabled write relays with incomplete NIP-11 data", async () => {
     const existing = entry("wss://relay.example", {
       writeEnabled: true,
     })
@@ -311,7 +312,7 @@ describe("relay settings protocol helpers", () => {
         settings: state([scanned]),
         fallbackRelayUrls: [],
       })
-    ).toEqual([])
+    ).toEqual(["wss://relay.example"])
   })
 
   it("preserves local read and write toggles when importing signer relays", () => {
@@ -415,8 +416,8 @@ describe("relay settings protocol helpers", () => {
     expect(publicEntry.readEnabled).toBe(true)
     expect(publicEntry.writeEnabled).toBe(false)
 
-    const commerceScan = deriveRelayScanResult("wss://relay.plebeian.market", {
-      supported_nips: [17, 42, 50],
+    const commerceScan = deriveRelayScanResult("wss://commerce.example", {
+      supported_nips: [17, 33, 42, 65, 99],
     })
     const commerceEntry = createRelaySettingsEntryFromScan(commerceScan)
 

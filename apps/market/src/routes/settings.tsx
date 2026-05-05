@@ -28,7 +28,6 @@ function SettingsPage() {
         onRemoveRelay={relaySettings.removeRelay}
         onToggleRead={relaySettings.toggleRelayRead}
         onToggleWrite={relaySettings.toggleRelayWrite}
-        onReorderCommerceRelay={relaySettings.reorderRelay}
         onReset={relaySettings.resetRelaySettings}
         onPublishRelayList={pubkey ? relaySettings.publishRelayList : undefined}
       />

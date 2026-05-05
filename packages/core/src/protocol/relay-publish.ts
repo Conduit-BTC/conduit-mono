@@ -27,6 +27,8 @@ export interface PublishWithPlannerInput {
   intent: RelayWriteIntent
   authorPubkey?: string
   recipientPubkeys?: readonly string[]
+  /** Fetch missing NIP-65 hints before planning instead of cache-only lookup. */
+  refreshRelayLists?: boolean
   /** Disable per-relay health filtering (last-resort retries). */
   skipHealthFilter?: boolean
 }
@@ -122,7 +124,9 @@ export async function planPublishRelays(
 
   const relayLists =
     hintPubkeys.length > 0
-      ? await getRelayLists(hintPubkeys, { cacheOnly: true })
+      ? await getRelayLists(hintPubkeys, {
+          cacheOnly: input.refreshRelayLists !== true,
+        })
       : undefined
 
   return planRelayWrites({

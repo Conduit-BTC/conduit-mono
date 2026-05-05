@@ -3,6 +3,8 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
   formatPubkey,
+  getCachedMarketplaceProducts,
+  getCachedMerchantStorefront,
   getMarketplaceProducts,
   getMerchantStorefront,
   useAuth,
@@ -18,7 +20,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@conduit/ui"
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   MerchantAvatarFallback,
   getMerchantDisplayName,
@@ -103,11 +105,16 @@ function getCartSummaryPrice(items: CartItem[], btcUsdRate: number | null) {
 async function fetchSuggestedProducts(
   merchantPubkey: string | undefined,
   excludedIds: string[],
-  preferredTags: string[]
+  preferredTags: string[],
+  source: "cache" | "live" = "live"
 ): Promise<Product[]> {
   const result = merchantPubkey
-    ? await getMerchantStorefront({ merchantPubkey, limit: 48 })
-    : await getMarketplaceProducts({ limit: 120 })
+    ? source === "cache"
+      ? await getCachedMerchantStorefront({ merchantPubkey, limit: 48 })
+      : await getMerchantStorefront({ merchantPubkey, limit: 48 })
+    : source === "cache"
+      ? await getCachedMarketplaceProducts({ limit: 120 })
+      : await getMarketplaceProducts({ limit: 120 })
 
   const excludedSet = new Set(excludedIds)
   const preferredTagSet = new Set(
@@ -462,7 +469,7 @@ function CartPage() {
     }
 
     return undefined
-  }, [merchantGroups, search.merchant])
+  }, [forceOverview, merchantGroups, search.merchant])
 
   const selectedGroup = merchantGroups.find(
     (group) => group.merchantPubkey === selectedMerchant
@@ -480,12 +487,15 @@ function CartPage() {
 
   const signerConnected = status === "connected" && !!pubkey
 
-  function continueToCheckout(merchant: string): void {
-    navigate({
-      to: "/checkout",
-      search: { merchant },
-    })
-  }
+  const continueToCheckout = useCallback(
+    (merchant: string): void => {
+      navigate({
+        to: "/checkout",
+        search: { merchant },
+      })
+    },
+    [navigate]
+  )
 
   function handleCheckout(merchant: string): void {
     if (signerConnected) {
@@ -504,7 +514,7 @@ function CartPage() {
       setConnectOpen(false)
       continueToCheckout(merchant)
     }
-  }, [pendingCheckoutMerchant, signerConnected])
+  }, [continueToCheckout, pendingCheckoutMerchant, signerConnected])
 
   function handleConfirmClear(): void {
     if (!confirmClearTarget) return
@@ -532,16 +542,33 @@ function CartPage() {
     setConfirmClearTarget(null)
   }
 
+  const relatedProductsQueryKey = [
+    "cart-related-products",
+    selectedMerchant ?? "all",
+    cart.items
+      .map((item) => item.productId)
+      .sort()
+      .join(":"),
+    preferredTags.slice().sort().join(":"),
+  ] as const
+
+  const cachedRelatedProductsQuery = useQuery({
+    queryKey: ["cache", ...relatedProductsQueryKey],
+    enabled: cart.items.length > 0,
+    queryFn: () =>
+      fetchSuggestedProducts(
+        selectedMerchant,
+        selectedGroup
+          ? selectedGroup.items.map((item) => item.productId)
+          : cart.items.map((item) => item.productId),
+        preferredTags,
+        "cache"
+      ),
+    staleTime: 15_000,
+  })
+
   const relatedProductsQuery = useQuery({
-    queryKey: [
-      "cart-related-products",
-      selectedMerchant ?? "all",
-      cart.items
-        .map((item) => item.productId)
-        .sort()
-        .join(":"),
-      preferredTags.slice().sort().join(":"),
-    ],
+    queryKey: ["live", ...relatedProductsQueryKey],
     enabled: cart.items.length > 0,
     placeholderData: (previousData) => previousData,
     queryFn: () =>
@@ -550,9 +577,18 @@ function CartPage() {
         selectedGroup
           ? selectedGroup.items.map((item) => item.productId)
           : cart.items.map((item) => item.productId),
-        preferredTags
+        preferredTags,
+        "live"
       ),
   })
+  const relatedProducts =
+    relatedProductsQuery.data && relatedProductsQuery.data.length > 0
+      ? relatedProductsQuery.data
+      : (cachedRelatedProductsQuery.data ?? [])
+  const isRelatedProductsInitialLoading =
+    relatedProducts.length === 0 &&
+    relatedProductsQuery.isLoading &&
+    cachedRelatedProductsQuery.isLoading
 
   if (cart.items.length === 0) {
     return (
@@ -677,16 +713,13 @@ function CartPage() {
                 </div>
               </div>
               <div className="mt-4 space-y-3">
-                {!relatedProductsQuery.data &&
-                  relatedProductsQuery.isLoading &&
-                  Array.from({ length: 4 }).map((_, index) => (
-                    <div
-                      key={index}
-                      className="h-[9.5rem] animate-pulse rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]"
-                    />
-                  ))}
+                {isRelatedProductsInitialLoading && (
+                  <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+                    Checking cached suggestions and nearby relay results.
+                  </div>
+                )}
 
-                {relatedProductsQuery.data?.map((product) => {
+                {relatedProducts.map((product) => {
                   const cartQuantity =
                     cart.items.find((item) => item.productId === product.id)
                       ?.quantity ?? 0
@@ -712,8 +745,8 @@ function CartPage() {
                   )
                 })}
 
-                {relatedProductsQuery.data &&
-                  relatedProductsQuery.data.length === 0 && (
+                {!isRelatedProductsInitialLoading &&
+                  relatedProducts.length === 0 && (
                     <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
                       No additional products to suggest yet.
                     </div>
@@ -921,16 +954,13 @@ function CartPage() {
               </div>
             </div>
             <div className="mt-4 space-y-3">
-              {!relatedProductsQuery.data &&
-                relatedProductsQuery.isLoading &&
-                Array.from({ length: 4 }).map((_, index) => (
-                  <div
-                    key={index}
-                    className="h-[9.5rem] animate-pulse rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]"
-                  />
-                ))}
+              {isRelatedProductsInitialLoading && (
+                <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+                  Checking cached suggestions and nearby relay results.
+                </div>
+              )}
 
-              {relatedProductsQuery.data?.map((product) => {
+              {relatedProducts.map((product) => {
                 const cartQuantity =
                   cart.items.find((item) => item.productId === product.id)
                     ?.quantity ?? 0
@@ -956,8 +986,8 @@ function CartPage() {
                 )
               })}
 
-              {relatedProductsQuery.data &&
-                relatedProductsQuery.data.length === 0 && (
+              {!isRelatedProductsInitialLoading &&
+                relatedProducts.length === 0 && (
                   <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
                     No additional products to suggest yet.
                   </div>

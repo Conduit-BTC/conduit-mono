@@ -66,6 +66,7 @@ function ProfilePage() {
 
   function handleSave(e: React.FormEvent) {
     e.preventDefault()
+    if (profileQuery.isLoading) return
     updateMutation.mutate(
       {
         name: form.name || undefined,
@@ -353,7 +354,10 @@ function ProfilePage() {
               )}
 
               <div className="md:col-span-2 flex items-center justify-end gap-2">
-                <Button type="submit" disabled={updateMutation.isPending}>
+                <Button
+                  type="submit"
+                  disabled={updateMutation.isPending || profileQuery.isLoading}
+                >
                   {updateMutation.isPending ? "Saving..." : "Save profile"}
                 </Button>
               </div>
