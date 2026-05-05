@@ -274,9 +274,50 @@ export function OrderConversationMessage({
         )}
 
         {message.type === "payment_proof" && (
-          <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
-            {JSON.stringify(message.payload, null, 2)}
-          </pre>
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-[var(--text-primary)]">Lightning payment sent</span>
+            </div>
+            <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-3 space-y-2 text-xs">
+              {message.payload.invoice && (
+                <div className="min-w-0">
+                  <div className="text-[var(--text-muted)] mb-0.5">Invoice</div>
+                  <div className="break-all font-mono text-[var(--text-secondary)] leading-5 max-h-16 overflow-hidden">
+                    {message.payload.invoice.slice(0, 80)}&hellip;
+                  </div>
+                </div>
+              )}
+              {message.payload.preimage && (
+                <div className="min-w-0 border-t border-[var(--border)] pt-2">
+                  <div className="text-[var(--text-muted)] mb-0.5">Payment preimage</div>
+                  <div className="break-all font-mono text-[var(--text-secondary)] leading-5">
+                    {message.payload.preimage}
+                  </div>
+                </div>
+              )}
+              {message.payload.paymentHash && (
+                <div className="min-w-0 border-t border-[var(--border)] pt-2">
+                  <div className="text-[var(--text-muted)] mb-0.5">Payment hash</div>
+                  <div className="break-all font-mono text-[var(--text-secondary)] leading-5">
+                    {message.payload.paymentHash}
+                  </div>
+                </div>
+              )}
+              {message.payload.feeMsats != null && (
+                <div className="border-t border-[var(--border)] pt-2">
+                  <div className="text-[var(--text-muted)] mb-0.5">Routing fee</div>
+                  <div className="text-[var(--text-secondary)]">
+                    {message.payload.feeMsats} msats
+                  </div>
+                </div>
+              )}
+            </div>
+            {message.payload.note && (
+              <div className="text-xs text-[var(--text-secondary)]">
+                {message.payload.note}
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>

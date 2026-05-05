@@ -6,6 +6,131 @@ import {
   type PricingRateInput,
 } from "../pricing"
 
+// ─── LNURL / Zap helpers ──────────────────────────────────────────────────────
+
+export interface LnurlPayMetadata {
+  callback: string
+  minSendable: number
+  maxSendable: number
+  tag: string
+  /** Whether the LNURL endpoint declares `allowsNostr: true`. */
+  allowsNostr: boolean
+  /** Hex pubkey the endpoint wants zap receipts published to. */
+  nostrPubkey?: string
+  /** Raw metadata array from the endpoint. */
+  metadata: string
+}
+
+/**
+ * Resolve an lud16 address (user@domain) to an LNURL pay metadata object.
+ *
+ * Throws if the address is malformed, the endpoint is unreachable, or the
+ * response is not a valid LNURL-pay response.
+ */
+export async function fetchLnurlPayMetadata(lud16: string): Promise<LnurlPayMetadata> {
+  const trimmed = lud16.trim().toLowerCase()
+  const atIndex = trimmed.indexOf("@")
+  if (atIndex <= 0 || atIndex === trimmed.length - 1) {
+    throw new Error(`Invalid lud16 address: ${lud16}`)
+  }
+  const user = trimmed.slice(0, atIndex)
+  const domain = trimmed.slice(atIndex + 1)
+  const url = `https://${domain}/.well-known/lnurlp/${user}`
+
+  let data: Record<string, unknown>
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+    if (!res.ok) throw new Error(`LNURL endpoint returned ${res.status}`)
+    data = (await res.json()) as Record<string, unknown>
+  } catch (e) {
+    throw new Error(
+      `Failed to reach LNURL endpoint for ${lud16}: ${e instanceof Error ? e.message : "network error"}`
+    )
+  }
+
+  if (data.tag !== "payRequest") {
+    throw new Error(`Not a LNURL-pay endpoint (tag=${String(data.tag)})`)
+  }
+
+  const callback = typeof data.callback === "string" ? data.callback : ""
+  const minSendable = typeof data.minSendable === "number" ? data.minSendable : 0
+  const maxSendable = typeof data.maxSendable === "number" ? data.maxSendable : 0
+  if (!callback) throw new Error("LNURL-pay response missing callback")
+
+  return {
+    callback,
+    minSendable,
+    maxSendable,
+    tag: "payRequest",
+    allowsNostr: data.allowsNostr === true,
+    nostrPubkey: typeof data.nostrPubkey === "string" ? data.nostrPubkey : undefined,
+    metadata: typeof data.metadata === "string" ? data.metadata : "[]",
+  }
+}
+
+export interface ZapRequestParams {
+  /** Recipient pubkey (merchant). */
+  recipientPubkey: string
+  /** Amount in millisatoshis. */
+  amountMsats: number
+  /** LNURL callback URL (from the LNURL-pay metadata). */
+  lnurlCallback: string
+  /** Optional order ID appended to the zap relays list. */
+  orderId?: string
+  /** Optional human-readable comment. */
+  comment?: string
+  /** Relays to include in the zap request (kind 9734). */
+  relays?: string[]
+}
+
+export interface FetchZapInvoiceResult {
+  /** BOLT11 invoice returned by the LNURL callback. */
+  invoice: string
+}
+
+/**
+ * Fetch a zap invoice by calling the LNURL-pay callback with a NIP-57 zap
+ * request event attached.
+ *
+ * The caller must sign the kind-9734 zap request before calling this function.
+ * Pass the signed event as a JSON string in `zapRequestJson`.
+ *
+ * @param lnurlCallback - The callback URL from the merchant's LNURL-pay metadata.
+ * @param amountMsats   - Amount to request in millisatoshis.
+ * @param zapRequestJson - Signed kind-9734 event (serialised JSON).
+ * @returns The BOLT11 invoice string.
+ */
+export async function fetchZapInvoice(
+  lnurlCallback: string,
+  amountMsats: number,
+  zapRequestJson: string
+): Promise<FetchZapInvoiceResult> {
+  const url = new URL(lnurlCallback)
+  url.searchParams.set("amount", String(amountMsats))
+  url.searchParams.set("nostr", zapRequestJson)
+
+  let data: Record<string, unknown>
+  try {
+    const res = await fetch(url.toString(), { signal: AbortSignal.timeout(15_000) })
+    if (!res.ok) throw new Error(`LNURL callback returned ${res.status}`)
+    data = (await res.json()) as Record<string, unknown>
+  } catch (e) {
+    throw new Error(
+      `Failed to fetch zap invoice: ${e instanceof Error ? e.message : "network error"}`
+    )
+  }
+
+  if (data.status === "ERROR") {
+    const reason = typeof data.reason === "string" ? data.reason : "unknown LNURL error"
+    throw new Error(`LNURL error: ${reason}`)
+  }
+
+  const invoice = typeof data.pr === "string" ? data.pr : ""
+  if (!invoice) throw new Error("LNURL callback did not return a BOLT11 invoice")
+
+  return { invoice }
+}
+
 export type LightningInvoiceNetwork =
   | "mainnet"
   | "testnet"
