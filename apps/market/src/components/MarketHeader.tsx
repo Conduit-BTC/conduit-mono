@@ -7,7 +7,13 @@ import {
   Store,
 } from "lucide-react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
-import { config, formatPubkey, useAuth, useProfile } from "@conduit/core"
+import {
+  config,
+  formatPubkey,
+  getProfileDisplayLabel,
+  useAuth,
+  useProfile,
+} from "@conduit/core"
 import {
   AccountMenu,
   Badge,
@@ -55,13 +61,17 @@ function Logo({
 
 function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
-  const { data: profile } = useProfile(pubkey)
+  const profileQuery = useProfile(pubkey)
+  const profile = profileQuery.data
   const navigate = useNavigate()
 
   if (!pubkey || status === "disconnected" || status === "error") return null
 
-  const displayName =
-    profile?.displayName ?? profile?.name ?? formatPubkey(pubkey, 4)
+  const displayName = getProfileDisplayLabel(profile, pubkey, {
+    lookupSettled: !profileQuery.isPlaceholderData,
+    pendingLabel: "Loading profile",
+    chars: 4,
+  })
 
   return (
     <AccountMenu

@@ -15,6 +15,7 @@ export * from "./relay-health"
 export * from "./relay-planner"
 export * from "./relay-publish"
 export * from "./social-hydrator"
+export * from "./session"
 export {
   getNdk,
   connectNdk,

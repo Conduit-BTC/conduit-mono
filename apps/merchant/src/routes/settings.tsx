@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { useAuth, useRelaySettings } from "@conduit/core"
+import { useAuth, useConduitSession, useRelaySettings } from "@conduit/core"
 import { RelaySettingsPanel } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 
@@ -12,10 +12,11 @@ export const Route = createFileRoute("/settings")({
 
 function SettingsPage() {
   const { pubkey } = useAuth()
-  const relaySettings = useRelaySettings(
-    pubkey ? `merchant:${pubkey}` : "merchant",
-    { pubkey }
-  )
+  const session = useConduitSession()
+  const relaySettings = useRelaySettings(session.relayScope, {
+    pubkey,
+    bootstrapRelayList: false,
+  })
 
   return (
     <div className="mx-auto max-w-5xl">

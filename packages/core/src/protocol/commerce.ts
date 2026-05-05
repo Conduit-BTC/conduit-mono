@@ -110,6 +110,8 @@ export interface ProductDetailQuery {
 export interface ProfileBatchQuery {
   pubkeys: string[]
   skipCache?: boolean
+  priority?: "visible" | "background"
+  readPolicy?: CommerceReadPolicy
 }
 
 export interface FollowListQuery {
@@ -1541,18 +1543,26 @@ export async function getProfiles(
   }
 
   try {
-    // Profiles are global identity metadata, not commerce truth. Product
-    // discovery may surface merchants from a wider relay view than the commerce
-    // planner would choose for kind-0 reads, so keep this on NDK's connected
-    // relay pool instead of the narrower planner/fanout path.
-    const ndk = await runRequireNdkConnected()
-    const events = Array.from(
-      await ndk.fetchEvents({
+    const visible = query.priority !== "background"
+    const relayUrls = await planCommerceReadRelays({
+      intent: "profiles",
+      authors: missing,
+      maxRelays: query.readPolicy?.maxRelays ?? (visible ? 8 : 4),
+    })
+    const events = await runFetchEventsFanout(
+      {
         kinds: [EVENT_KINDS.PROFILE],
         authors: missing,
         limit: Math.max(10, missing.length * 3),
-      })
-    ) as NDKEvent[]
+      },
+      {
+        relayUrls,
+        connectTimeoutMs:
+          query.readPolicy?.connectTimeoutMs ?? (visible ? 1_500 : 3_000),
+        fetchTimeoutMs:
+          query.readPolicy?.fetchTimeoutMs ?? (visible ? 3_000 : 6_000),
+      }
+    )
 
     const latestByPubkey = new Map<string, NDKEvent>()
     for (const event of events) {

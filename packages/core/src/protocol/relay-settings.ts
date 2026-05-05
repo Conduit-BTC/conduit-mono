@@ -110,6 +110,7 @@ const EMPTY_WARNINGS: RelayWarnings = {
 }
 
 let activeRelaySettingsScope: string | null = null
+const relaySettingsListeners = new Set<(scope: string | null) => void>()
 
 function now(): number {
   return Date.now()
@@ -597,6 +598,18 @@ export function setActiveRelaySettingsScope(scope?: string | null): void {
   activeRelaySettingsScope = scope?.trim() || null
 }
 
+export function subscribeRelaySettingsChanges(
+  listener: (scope: string | null) => void
+): () => void {
+  relaySettingsListeners.add(listener)
+  return () => relaySettingsListeners.delete(listener)
+}
+
+function notifyRelaySettingsChanged(scope?: string | null): void {
+  const normalizedScope = scope?.trim() || null
+  relaySettingsListeners.forEach((listener) => listener(normalizedScope))
+}
+
 export function normalizeRelaySettingsState(
   state: RelaySettingsState
 ): RelaySettingsState {
@@ -687,6 +700,8 @@ export function saveRelaySettings(
       JSON.stringify(normalized)
     )
   }
+
+  notifyRelaySettingsChanged(scope)
 
   return normalized
 }

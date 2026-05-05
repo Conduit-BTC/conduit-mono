@@ -16,11 +16,17 @@ function hasProfileContent(profile: Profile | undefined): boolean {
   ].some((value) => typeof value === "string" && value.trim().length > 0)
 }
 
-export function useProfile(pubkey: string | null | undefined) {
+export function useProfile(
+  pubkey: string | null | undefined,
+  options: { priority?: "visible" | "background" } = {}
+) {
   return useQuery({
     queryKey: ["profile", pubkey],
     enabled: !!pubkey,
-    queryFn: () => fetchProfile(pubkey!),
+    queryFn: () =>
+      fetchProfile(pubkey!, {
+        priority: options.priority,
+      }),
     placeholderData: () => (pubkey ? { pubkey } : undefined),
     staleTime: 5 * 60_000,
     retry: 2,

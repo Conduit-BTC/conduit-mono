@@ -32,6 +32,7 @@ import {
 import {
   appendConduitClientTag,
   formatNpub,
+  getProfileDisplayLabel,
   publishWithPlanner,
   requireNdkConnected,
   useAuth,
@@ -46,10 +47,7 @@ import {
   ProductGridCardSkeleton,
 } from "../../components/ProductGridCard"
 import { CopyButton } from "../../components/CopyButton"
-import {
-  MerchantAvatarFallback,
-  getMerchantDisplayName,
-} from "../../components/MerchantIdentity"
+import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
 import { getComparablePriceValue } from "../../lib/pricing"
@@ -110,7 +108,8 @@ function StorefrontPage() {
   const queryClient = useQueryClient()
   const cart = useCart()
   const { pubkey: viewerPubkey, status } = useAuth()
-  const { data: profile } = useProfile(pubkey)
+  const profileQuery = useProfile(pubkey)
+  const profile = profileQuery.data
   const btcUsdRateQuery = useBtcUsdRate()
   const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
@@ -119,9 +118,6 @@ function StorefrontPage() {
   const [tagCloudOverflows, setTagCloudOverflows] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
-  const [invalidImageProductIds, setInvalidImageProductIds] = useState<
-    Set<string>
-  >(new Set())
   const tagCloudRef = useRef<HTMLDivElement | null>(null)
   const productsQuery = useProgressiveProducts({
     scope: "storefront",
@@ -130,21 +126,7 @@ function StorefrontPage() {
     tag: search.tag,
     sort: search.sort,
   })
-  const storeProducts = useMemo(
-    () =>
-      productsQuery.products.filter(
-        (product) => !invalidImageProductIds.has(product.id)
-      ),
-    [invalidImageProductIds, productsQuery.products]
-  )
-  const markInvalidProductImage = useCallback((productId: string) => {
-    setInvalidImageProductIds((current) => {
-      if (current.has(productId)) return current
-      const next = new Set(current)
-      next.add(productId)
-      return next
-    })
-  }, [])
+  const storeProducts = productsQuery.products
   const followQuery = useQuery({
     queryKey: ["following-store", viewerPubkey ?? "none", pubkey],
     enabled:
@@ -170,7 +152,13 @@ function StorefrontPage() {
   >("idle")
   const [followOverride, setFollowOverride] = useState<boolean | null>(null)
 
-  const merchantName = getMerchantDisplayName(profile, pubkey)
+  const merchantName = getProfileDisplayLabel(profile, pubkey, {
+    lookupSettled: !profileQuery.isPlaceholderData,
+    pendingLabel: "Loading store",
+    emptyPrefix: "Store",
+    chars: 8,
+  })
+  const identityReady = !profileQuery.isPlaceholderData
   const merchantAbout = profile?.about?.trim()
   const allTags = useMemo(() => {
     const tagSet = new Set<string>()
@@ -180,21 +168,24 @@ function StorefrontPage() {
     return Array.from(tagSet).sort()
   }, [storeProducts])
 
-  const updateSearch = (updates: Partial<StoreSearch>) => {
-    navigate({
-      search: (prev) => {
-        const next = { ...prev, ...updates }
-        for (const key of Object.keys(next) as (keyof StoreSearch)[]) {
-          const value = next[key]
-          if (value === undefined || value === "") {
-            delete next[key]
+  const updateSearch = useCallback(
+    (updates: Partial<StoreSearch>) => {
+      navigate({
+        search: (prev) => {
+          const next = { ...prev, ...updates }
+          for (const key of Object.keys(next) as (keyof StoreSearch)[]) {
+            const value = next[key]
+            if (value === undefined || value === "") {
+              delete next[key]
+            }
           }
-        }
-        return next
-      },
-      replace: true,
-    })
-  }
+          return next
+        },
+        replace: true,
+      })
+    },
+    [navigate]
+  )
 
   const productCount = storeProducts.length
   const isFollowing = followOverride ?? followQuery.data === true
@@ -290,7 +281,7 @@ function StorefrontPage() {
     }, 260)
 
     return () => window.clearTimeout(timeoutId)
-  }, [normalizedSearch, searchDirty])
+  }, [normalizedSearch, searchDirty, updateSearch])
 
   function submitSearch(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault()
@@ -783,7 +774,7 @@ function StorefrontPage() {
                   <ProductGridCard
                     product={product}
                     merchantName={merchantName}
-                    imageLoading={index < 12 ? "eager" : "lazy"}
+                    imageLoading={identityReady && index < 4 ? "eager" : "lazy"}
                     btcUsdRate={btcUsdRate}
                     cartQuantity={
                       cart.items.find((item) => item.productId === product.id)
@@ -822,7 +813,6 @@ function StorefrontPage() {
                       }
                       cart.setQuantity(product.id, existing.quantity - 1)
                     }}
-                    onInvalidImage={markInvalidProductImage}
                   />
                 </li>
               ))}

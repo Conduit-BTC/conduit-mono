@@ -10,11 +10,9 @@ import {
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools"
 import {
   AuthProvider,
-  connectNdk,
+  ConduitSessionProvider,
   pruneCommerceCaches,
-  refreshNdkRelaySettings,
-  setActiveRelaySettingsScope,
-  useAuth,
+  useConduitSession,
 } from "@conduit/core"
 import { routeTree } from "./routeTree.gen"
 import "./styles/index.css"
@@ -24,13 +22,13 @@ const queryClient = new QueryClient()
 const router = createRouter({ routeTree })
 
 function MarketAuthQueryBoundary({ children }: { children: ReactNode }) {
-  const { pubkey, status } = useAuth()
+  const session = useConduitSession()
   const queryClient = useQueryClient()
   const identityRef = useRef<string | null>(null)
   const identity =
-    status === "connected" && pubkey ? `connected:${pubkey}` : "anonymous"
-  const relayScope =
-    status === "connected" && pubkey ? `market:${pubkey}` : "market"
+    session.mode === "signed_in" && session.pubkey
+      ? `connected:${session.pubkey}`
+      : "anonymous"
 
   useEffect(() => {
     const previous = identityRef.current
@@ -50,10 +48,6 @@ function MarketAuthQueryBoundary({ children }: { children: ReactNode }) {
     })
   }, [identity, queryClient])
 
-  useEffect(() => {
-    refreshNdkRelaySettings(relayScope)
-  }, [relayScope])
-
   return <>{children}</>
 }
 
@@ -63,17 +57,17 @@ declare module "@tanstack/react-router" {
   }
 }
 
-setActiveRelaySettingsScope("market")
-connectNdk()
 void pruneCommerceCaches()
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <MarketAuthQueryBoundary>
-          <RouterProvider router={router} />
-        </MarketAuthQueryBoundary>
+        <ConduitSessionProvider appId="market">
+          <MarketAuthQueryBoundary>
+            <RouterProvider router={router} />
+          </MarketAuthQueryBoundary>
+        </ConduitSessionProvider>
       </AuthProvider>
       {import.meta.env.DEV && <ReactQueryDevtools />}
     </QueryClientProvider>

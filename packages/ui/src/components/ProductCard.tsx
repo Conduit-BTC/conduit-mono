@@ -1,4 +1,4 @@
-import { Check, ShoppingCart } from "lucide-react"
+import { Check, ImageOff, ShoppingCart } from "lucide-react"
 import { type ReactNode, useEffect, useRef, useState } from "react"
 import { Button } from "./Button"
 import { cn } from "../utils"
@@ -47,8 +47,6 @@ export function ProductCard({
     setImageIndex(0)
   }, [imageKey, title])
 
-  if (!activeImage || imageFailed) return null
-
   return (
     <div
       role={onActivate ? "link" : undefined}
@@ -66,21 +64,28 @@ export function ProductCard({
       }}
     >
       <div className="aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)]">
-        <img
-          src={activeImage.url}
-          alt={activeImage.alt ?? title}
-          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-          decoding="async"
-          loading={imageLoading}
-          onError={() => {
-            if (imageIndex < images.length - 1) {
-              setImageIndex((current) => current + 1)
-              return
-            }
-            setImageFailed(true)
-            onInvalidImage?.()
-          }}
-        />
+        {activeImage && !imageFailed ? (
+          <img
+            src={activeImage.url}
+            alt={activeImage.alt ?? title}
+            className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
+            decoding="async"
+            loading={imageLoading}
+            onError={() => {
+              if (imageIndex < images.length - 1) {
+                setImageIndex((current) => current + 1)
+                return
+              }
+              setImageFailed(true)
+              onInvalidImage?.()
+            }}
+          />
+        ) : (
+          <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-[var(--surface-elevated)] text-[var(--text-muted)]">
+            <ImageOff className="h-6 w-6" aria-hidden="true" />
+            <span className="px-4 text-center text-xs">Image unavailable</span>
+          </div>
+        )}
       </div>
 
       <div className="flex flex-1 flex-col p-3">

@@ -1,6 +1,7 @@
 import { type ClassValue, clsx } from "clsx"
 import { nip19 } from "@nostr-dev-kit/ndk"
 import { twMerge } from "tailwind-merge"
+import type { Profile } from "../types"
 
 /**
  * Merge Tailwind classes with clsx
@@ -170,6 +171,31 @@ export function formatNpub(pubkey: string, chars = 8): string {
   const npub = pubkeyToNpub(pubkey)
   if (npub.length <= chars * 2 + 5) return npub
   return `${npub.slice(0, 5 + chars)}...${npub.slice(-chars)}`
+}
+
+export function getProfileName(profile: Profile | undefined): string | null {
+  return profile?.displayName?.trim() || profile?.name?.trim() || null
+}
+
+export function getProfileDisplayLabel(
+  profile: Profile | undefined,
+  pubkey: string,
+  options: {
+    lookupSettled?: boolean
+    pendingLabel?: string
+    emptyPrefix?: string
+    chars?: number
+  } = {}
+): string {
+  const name = getProfileName(profile)
+  if (name) return name
+
+  if (!options.lookupSettled) {
+    return options.pendingLabel ?? "Loading profile"
+  }
+
+  const fallback = formatNpub(pubkey, options.chars ?? 8)
+  return options.emptyPrefix ? `${options.emptyPrefix} ${fallback}` : fallback
 }
 
 /**

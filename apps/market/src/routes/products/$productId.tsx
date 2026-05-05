@@ -1,13 +1,10 @@
 import { SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
-import { formatNpub, useProfile } from "@conduit/core"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { formatNpub, getProfileDisplayLabel, useProfile } from "@conduit/core"
+import { useEffect, useMemo, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
-import {
-  MerchantAvatarFallback,
-  getMerchantDisplayName,
-} from "../../components/MerchantIdentity"
+import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
 import {
   ProductGridCard,
   ProductGridCardSkeleton,
@@ -30,9 +27,6 @@ function ProductPage() {
   const [selectedImageIndex, setSelectedImageIndex] = useState(0)
   const [quantity, setQuantity] = useState(1)
   const [showAllTags, setShowAllTags] = useState(false)
-  const [invalidRelatedImageIds, setInvalidRelatedImageIds] = useState<
-    Set<string>
-  >(new Set())
   const btcUsdRateQuery = useBtcUsdRate()
 
   const productQuery = useProgressiveProductDetail(productId)
@@ -51,26 +45,23 @@ function ProductPage() {
       product
         ? relatedProductsQuery.products
             .filter((candidate) => candidate.id !== product.id)
-            .filter((candidate) => !invalidRelatedImageIds.has(candidate.id))
             .slice(0, 4)
         : [],
-    [invalidRelatedImageIds, product, relatedProductsQuery.products]
+    [product, relatedProductsQuery.products]
   )
-  const markInvalidRelatedImage = useCallback((productId: string) => {
-    setInvalidRelatedImageIds((current) => {
-      if (current.has(productId)) return current
-      const next = new Set(current)
-      next.add(productId)
-      return next
-    })
-  }, [])
 
   const images = product?.images ?? []
   const hasMultipleImages = images.length > 1
   const selectedImage = images[selectedImageIndex] ?? images[0]
   const merchantName = product
-    ? getMerchantDisplayName(merchantProfile.data, product.pubkey)
+    ? getProfileDisplayLabel(merchantProfile.data, product.pubkey, {
+        lookupSettled: !merchantProfile.isPlaceholderData,
+        pendingLabel: "Loading store",
+        emptyPrefix: "Store",
+        chars: 8,
+      })
     : ""
+  const merchantIdentityReady = !merchantProfile.isPlaceholderData
   const cartItem = product
     ? cart.items.find((item) => item.productId === product.id)
     : null
@@ -514,7 +505,9 @@ function ProductPage() {
                       <ProductGridCard
                         product={relatedProduct}
                         merchantName={merchantName}
-                        imageLoading={index < 4 ? "eager" : "lazy"}
+                        imageLoading={
+                          merchantIdentityReady && index < 4 ? "eager" : "lazy"
+                        }
                         btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
                         cartQuantity={relatedCartQuantity}
                         onAddToCart={() =>
@@ -556,7 +549,6 @@ function ProductPage() {
                             relatedCartItem.quantity - 1
                           )
                         }}
-                        onInvalidImage={markInvalidRelatedImage}
                       />
                     </li>
                   )

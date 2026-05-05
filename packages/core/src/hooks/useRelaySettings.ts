@@ -16,6 +16,7 @@ import {
   saveRelaySettings,
   scanRelaySettingsEntry,
   serializeNip65RelayTags,
+  subscribeRelaySettingsChanges,
   tryNormalizeRelayUrl,
   updateRelaySettingsEntry,
   upsertRelaySettingsEntry,
@@ -24,11 +25,13 @@ import {
 } from "../protocol/relay-settings"
 import { getRelayList } from "../protocol/relay-list"
 import { EVENT_KINDS } from "../protocol/kinds"
-import { refreshNdkRelaySettings, requireNdkConnected } from "../protocol/ndk"
+import { requireNdkConnected } from "../protocol/ndk"
 import { publishWithPlanner } from "../protocol/relay-publish"
 
 export interface UseRelaySettingsOptions {
   pubkey?: string | null
+  enabled?: boolean
+  bootstrapRelayList?: boolean
 }
 
 export interface UseRelaySettingsResult {
@@ -86,6 +89,8 @@ export function useRelaySettings(
   options: UseRelaySettingsOptions = {}
 ): UseRelaySettingsResult {
   const pubkey = options.pubkey?.trim() || null
+  const enabled = options.enabled ?? true
+  const bootstrapRelayList = options.bootstrapRelayList ?? true
   const [settings, setSettings] = useState<RelaySettingsState>(() =>
     maskDefaultSettingsForIdentity(loadRelaySettings(scope), pubkey)
   )
@@ -93,24 +98,34 @@ export function useRelaySettings(
   const [scanningUrls, setScanningUrls] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [isLoadingPublishedRelayList, setIsLoadingPublishedRelayList] =
-    useState(!!pubkey && isDefaultOnlyRelaySettings(loadRelaySettings(scope)))
+    useState(
+      enabled &&
+        bootstrapRelayList &&
+        !!pubkey &&
+        isDefaultOnlyRelaySettings(loadRelaySettings(scope))
+    )
   const [publishedRelayListUpdatedAt, setPublishedRelayListUpdatedAt] =
     useState<number | null>(null)
   const [publishingRelayList, setPublishingRelayList] = useState(false)
   const [publishError, setPublishError] = useState<string | null>(null)
 
   useEffect(() => {
+    if (!enabled) {
+      setIsLoadingPublishedRelayList(false)
+      return
+    }
+
     const loaded = loadRelaySettings(scope)
     const next = maskDefaultSettingsForIdentity(loaded, pubkey)
     settingsRef.current = next
     setSettings(next)
-    refreshNdkRelaySettings(scope)
     if (pubkey && isDefaultOnlyRelaySettings(loaded)) {
       setIsLoadingPublishedRelayList(true)
     }
-  }, [pubkey, scope])
+  }, [enabled, pubkey, scope])
 
   useEffect(() => {
+    if (!enabled) return
     if (typeof window === "undefined") return
 
     const storageKey = getRelaySettingsStorageKey(scope)
@@ -122,19 +137,31 @@ export function useRelaySettings(
       )
       settingsRef.current = next
       setSettings(next)
-      refreshNdkRelaySettings(scope)
     }
 
     window.addEventListener("storage", handleStorage)
     return () => window.removeEventListener("storage", handleStorage)
-  }, [pubkey, scope])
+  }, [enabled, pubkey, scope])
+
+  useEffect(() => {
+    if (!enabled) return
+    return subscribeRelaySettingsChanges((changedScope) => {
+      const targetScope = scope?.trim() || null
+      if (changedScope !== targetScope) return
+      const next = maskDefaultSettingsForIdentity(
+        loadRelaySettings(scope),
+        pubkey
+      )
+      settingsRef.current = next
+      setSettings(next)
+    })
+  }, [enabled, pubkey, scope])
 
   const persist = useCallback(
     (update: (current: RelaySettingsState) => RelaySettingsState): void => {
       const next = saveRelaySettings(update(settingsRef.current), scope)
       settingsRef.current = next
       setSettings(next)
-      refreshNdkRelaySettings(scope)
     },
     [scope]
   )
@@ -155,7 +182,6 @@ export function useRelaySettings(
       const next = saveRelaySettings(base, scope)
       settingsRef.current = next
       setSettings(next)
-      refreshNdkRelaySettings(scope)
       return next
     },
     [scope]
@@ -195,16 +221,13 @@ export function useRelaySettings(
   )
 
   useEffect(() => {
+    if (!enabled || !bootstrapRelayList) return
     let cancelled = false
 
     async function loadPublishedRelayList(): Promise<void> {
       if (!pubkey) {
         setPublishedRelayListUpdatedAt(null)
         setIsLoadingPublishedRelayList(false)
-        const preferences = await readNip07RelayPreferences()
-        if (cancelled || preferences.length === 0) return
-        const next = persistImportedPreferences(preferences, "signer")
-        void scanImportedRelayUrls(next.entries.map((entry) => entry.url))
         return
       }
 
@@ -281,7 +304,14 @@ export function useRelaySettings(
     return () => {
       cancelled = true
     }
-  }, [persistImportedPreferences, pubkey, scanImportedRelayUrls, scope])
+  }, [
+    bootstrapRelayList,
+    enabled,
+    persistImportedPreferences,
+    pubkey,
+    scanImportedRelayUrls,
+    scope,
+  ])
 
   async function addRelay(url: string): Promise<void> {
     setError(null)
@@ -364,7 +394,6 @@ export function useRelaySettings(
     )
     settingsRef.current = defaults
     setSettings(defaults)
-    refreshNdkRelaySettings(scope)
   }
 
   async function publishRelayList(): Promise<void> {

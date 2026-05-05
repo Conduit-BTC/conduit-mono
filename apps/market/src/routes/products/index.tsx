@@ -2,11 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import {
   EVENT_KINDS,
-  formatPubkey,
-  getFollowPubkeys,
+  getProfileDisplayLabel,
+  getProfileName,
   getProfiles,
   useAuth,
-  type Profile,
   type Product,
 } from "@conduit/core"
 import { useQuery } from "@tanstack/react-query"
@@ -32,13 +31,8 @@ import {
 } from "../../components/ProductGridCard"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
+import { useGuestMarketDiscovery } from "../../hooks/useGuestMarketDiscovery"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
-import {
-  DEFAULT_MARKET_PERSPECTIVE_NPUB,
-  DEFAULT_MARKET_PERSPECTIVE_PUBKEY,
-  getDefaultMarketPerspectiveFollowPubkeys,
-  storeDefaultMarketPerspectiveFollowPubkeys,
-} from "../../lib/defaultMarketPerspective"
 import { getComparablePriceValue } from "../../lib/pricing"
 
 const PAGE_SIZE = 12
@@ -109,10 +103,6 @@ function filterProducts(products: Product[], search: ProductSearch): Product[] {
   return result
 }
 
-function getProfileName(profile: Profile | undefined): string | undefined {
-  return profile?.displayName?.trim() || profile?.name?.trim() || undefined
-}
-
 function sortProducts(
   products: Product[],
   sort: SortOption | undefined,
@@ -156,35 +146,14 @@ function ProductsPage() {
   const [tagCloudOverflows, setTagCloudOverflows] = useState(false)
   const [pendingMerchant, setPendingMerchant] = useState<string | null>(null)
   const [merchantTagConflicts, setMerchantTagConflicts] = useState<string[]>([])
-  const [invalidImageProductIds, setInvalidImageProductIds] = useState<
-    Set<string>
-  >(new Set())
-  const [anonymousFollowPubkeys, setAnonymousFollowPubkeys] = useState(
-    getDefaultMarketPerspectiveFollowPubkeys
-  )
   const hasAutoPromptedConnect = useRef(false)
   const tagCloudRef = useRef<HTMLDivElement | null>(null)
   const btcUsdRateQuery = useBtcUsdRate()
   const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
   const usesAnonymousPerspective = !search.merchant && status !== "connected"
-
-  // Anonymous Market should paint from the bundled Conduit follow seed
-  // immediately, then refresh that kind-3 list in the background for future visits.
-  const defaultPerspectiveRefreshQuery = useQuery({
-    queryKey: ["default-market-perspective-follow-refresh"],
-    queryFn: () =>
-      getFollowPubkeys({ pubkey: DEFAULT_MARKET_PERSPECTIVE_PUBKEY }),
+  const guestMarket = useGuestMarketDiscovery({
     enabled: usesAnonymousPerspective,
-    staleTime: 6 * 60 * 60_000,
-    refetchOnWindowFocus: false,
   })
-
-  useEffect(() => {
-    const pubkeys = defaultPerspectiveRefreshQuery.data?.data
-    if (!pubkeys || pubkeys.length === 0) return
-    storeDefaultMarketPerspectiveFollowPubkeys(pubkeys)
-    setAnonymousFollowPubkeys(pubkeys)
-  }, [defaultPerspectiveRefreshQuery.data?.data])
 
   const productsQuery = useProgressiveProducts({
     scope: "marketplace",
@@ -193,29 +162,16 @@ function ProductsPage() {
       ? null
       : status === "connected" && pubkey
         ? pubkey
-        : DEFAULT_MARKET_PERSPECTIVE_NPUB,
-    seedAuthorPubkeys: usesAnonymousPerspective
-      ? anonymousFollowPubkeys
-      : undefined,
+        : guestMarket.perspectivePubkey,
+    seedAuthorPubkeys: guestMarket.seedAuthorPubkeys,
     textQuery: search.q,
     tags: search.tag,
     sort: search.sort,
   })
   const productData = useMemo(
-    () =>
-      productsQuery.products.filter(
-        (product) => !invalidImageProductIds.has(product.id)
-      ),
-    [invalidImageProductIds, productsQuery.products]
+    () => productsQuery.products,
+    [productsQuery.products]
   )
-  const markInvalidProductImage = useCallback((productId: string) => {
-    setInvalidImageProductIds((current) => {
-      if (current.has(productId)) return current
-      const next = new Set(current)
-      next.add(productId)
-      return next
-    })
-  }, [])
 
   // Derive all unique tags from the full (unfiltered) product set
   const allTags = useMemo(() => {
@@ -268,7 +224,7 @@ function ProductsPage() {
     [navigate]
   )
 
-  const selectedTags = search.tag ?? []
+  const selectedTags = useMemo(() => search.tag ?? [], [search.tag])
   const selectedTagSet = useMemo(() => new Set(selectedTags), [selectedTags])
 
   const toggleTag = (tag: string) => {
@@ -409,7 +365,10 @@ function ProductsPage() {
     queryKey: ["visible-product-card-profiles", visibleMerchantPubkeys],
     enabled: visibleMerchantPubkeys.length > 0,
     queryFn: async () => {
-      const result = await getProfiles({ pubkeys: visibleMerchantPubkeys })
+      const result = await getProfiles({
+        pubkeys: visibleMerchantPubkeys,
+        priority: "visible",
+      })
       return result.data
     },
     staleTime: 5 * 60_000,
@@ -427,11 +386,21 @@ function ProductsPage() {
         : false
     },
   })
+  const backgroundMerchantPubkeys = useMemo(
+    () =>
+      allMerchants.filter((pubkey) => !visibleMerchantPubkeys.includes(pubkey)),
+    [allMerchants, visibleMerchantPubkeys]
+  )
   const allMerchantProfilesQuery = useQuery({
-    queryKey: ["all-product-store-profiles", allMerchants],
-    enabled: allMerchants.length > 0,
+    queryKey: ["all-product-store-profiles", backgroundMerchantPubkeys],
+    enabled:
+      backgroundMerchantPubkeys.length > 0 &&
+      visibleMerchantProfilesQuery.data !== undefined,
     queryFn: async () => {
-      const result = await getProfiles({ pubkeys: allMerchants })
+      const result = await getProfiles({
+        pubkeys: backgroundMerchantPubkeys,
+        priority: "background",
+      })
       return result.data
     },
     staleTime: 5 * 60_000,
@@ -442,7 +411,9 @@ function ProductsPage() {
     refetchInterval: (query) => {
       const data = query.state.data
       if (!data) return false
-      return allMerchants.some((pubkey) => !getProfileName(data[pubkey]))
+      return backgroundMerchantPubkeys.some(
+        (pubkey) => !getProfileName(data[pubkey])
+      )
         ? 3_000
         : false
     },
@@ -454,11 +425,18 @@ function ProductsPage() {
     }),
     [allMerchantProfilesQuery.data, visibleMerchantProfilesQuery.data]
   )
+  const visibleIdentityReady = visibleMerchantProfilesQuery.data !== undefined
   const getMerchantName = useCallback(
     (merchantPubkey: string) =>
-      getProfileName(merchantProfiles[merchantPubkey]) ??
-      formatPubkey(merchantPubkey, 6),
-    [merchantProfiles]
+      getProfileDisplayLabel(merchantProfiles[merchantPubkey], merchantPubkey, {
+        lookupSettled:
+          !visibleMerchantPubkeys.includes(merchantPubkey) ||
+          visibleIdentityReady,
+        pendingLabel: "Loading store",
+        emptyPrefix: "Store",
+        chars: 6,
+      }),
+    [merchantProfiles, visibleIdentityReady, visibleMerchantPubkeys]
   )
 
   const hasActiveFilters = !!(
@@ -873,8 +851,10 @@ function ProductsPage() {
             <li key={p.id} className="h-full">
               <ProductGridCard
                 product={p}
-                merchantName={getProfileName(merchantProfiles[p.pubkey])}
-                imageLoading={index < 12 ? "eager" : "lazy"}
+                merchantName={getMerchantName(p.pubkey)}
+                imageLoading={
+                  visibleIdentityReady && index < 4 ? "eager" : "lazy"
+                }
                 btcUsdRate={btcUsdRate}
                 cartQuantity={
                   cart.items.find((item) => item.productId === p.id)
@@ -919,7 +899,6 @@ function ProductsPage() {
                   }
                   cart.setQuantity(p.id, existing.quantity - 1)
                 }}
-                onInvalidImage={markInvalidProductImage}
               />
             </li>
           ))}

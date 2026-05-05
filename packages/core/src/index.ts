@@ -23,7 +23,6 @@ export {
 // Database
 export {
   db,
-  ensureCommerceCacheScope,
   pruneCommerceCaches,
   type StoredOrder,
   type StoredMessage,
@@ -47,6 +46,12 @@ export {
   type AuthStatus,
   type AuthContextValue,
 } from "./context/AuthContext"
+export {
+  ConduitSessionProvider,
+  useConduitSession,
+  type ConduitSessionContextValue,
+  type ConduitSessionProviderProps,
+} from "./context/ConduitSessionContext"
 
 // Hooks
 export { useNdkState } from "./hooks/useNdkState"

@@ -370,19 +370,21 @@ describe("commerce gateway", () => {
 
   it("dedupes profile requests and serves cached profiles when relays fail later", async () => {
     __setCommerceTestOverrides({
-      requireNdkConnected: async () =>
-        ({
-          fetchEvents: async () =>
-            new Set([
-              {
-                id: "profile-1",
-                pubkey: "alice",
-                created_at: 10,
-                content: JSON.stringify({ display_name: "Alice" }),
-                tags: [],
-              },
-            ]),
-        }) as never,
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PROFILE)) {
+          return [
+            {
+              id: "profile-1",
+              pubkey: "alice",
+              created_at: 10,
+              content: JSON.stringify({ display_name: "Alice" }),
+              tags: [],
+            } as never,
+          ]
+        }
+
+        return []
+      },
     })
 
     const firstResult = await getProfiles({ pubkeys: ["alice", "alice"] })
@@ -393,7 +395,7 @@ describe("commerce gateway", () => {
     expect(cachedProfiles.get("alice")?.displayName).toBe("Alice")
 
     __setCommerceTestOverrides({
-      requireNdkConnected: async () => {
+      fetchEventsFanout: async () => {
         throw new Error("offline")
       },
     })
@@ -402,5 +404,50 @@ describe("commerce gateway", () => {
 
     expect(secondResult.meta.source).toBe("local_cache")
     expect(secondResult.data.alice?.displayName).toBe("Alice")
+  })
+
+  it("reads visible profiles through explicit planned relay fanout", async () => {
+    let calledRequireNdk = false
+    let seenFilterAuthors: string[] | undefined
+    let seenOptions:
+      | {
+          relayUrls?: string[]
+          connectTimeoutMs?: number
+          fetchTimeoutMs?: number
+        }
+      | undefined
+
+    __setCommerceTestOverrides({
+      requireNdkConnected: async () => {
+        calledRequireNdk = true
+        return { signer: undefined } as never
+      },
+      fetchEventsFanout: async (filter, options) => {
+        seenFilterAuthors = filter.authors
+        seenOptions = options
+        return [
+          {
+            id: "profile-2",
+            pubkey: "bob",
+            created_at: 10,
+            content: JSON.stringify({ name: "Bob" }),
+            tags: [],
+          } as never,
+        ]
+      },
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["bob"],
+      priority: "visible",
+      skipCache: true,
+    })
+
+    expect(result.data.bob?.name).toBe("Bob")
+    expect(calledRequireNdk).toBe(false)
+    expect(seenFilterAuthors).toEqual(["bob"])
+    expect(seenOptions?.relayUrls?.length).toBeGreaterThan(0)
+    expect(seenOptions?.connectTimeoutMs).toBe(1_500)
+    expect(seenOptions?.fetchTimeoutMs).toBe(3_000)
   })
 })

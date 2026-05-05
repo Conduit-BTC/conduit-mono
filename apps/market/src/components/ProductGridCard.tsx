@@ -1,6 +1,6 @@
 import { useNavigate } from "@tanstack/react-router"
 import {
-  formatPubkey,
+  getProfileDisplayLabel,
   getProductImageCandidates,
   useProfile,
   type Product,
@@ -36,14 +36,19 @@ export function ProductGridCard({
   onInvalidImage,
 }: ProductGridCardProps) {
   const navigate = useNavigate()
-  const { data: profile } = useProfile(
-    merchantNameOverride ? undefined : product.pubkey
+  const profileQuery = useProfile(
+    merchantNameOverride ? undefined : product.pubkey,
+    { priority: "visible" }
   )
+  const profile = profileQuery.data
   const merchantName =
     merchantNameOverride ||
-    profile?.displayName ||
-    profile?.name ||
-    formatPubkey(product.pubkey, 6)
+    getProfileDisplayLabel(profile, product.pubkey, {
+      lookupSettled: !profileQuery.isPlaceholderData,
+      pendingLabel: "Loading store",
+      emptyPrefix: "Store",
+      chars: 6,
+    })
   const { primary, secondary } = getProductPriceDisplay(
     product,
     btcUsdRate ?? null

@@ -44,11 +44,12 @@ export function parseProfileEvent(
 
 export async function fetchProfile(
   pubkey: string,
-  opts?: { skipCache?: boolean }
+  opts?: { skipCache?: boolean; priority?: "visible" | "background" }
 ): Promise<Profile> {
   const result = await getProfiles({
     pubkeys: [pubkey],
     skipCache: opts?.skipCache,
+    priority: opts?.priority,
   })
   return result.data[pubkey] ?? { pubkey }
 }
