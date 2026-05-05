@@ -3,6 +3,7 @@ import {
   conversationMessageSchema,
   orderMessageTypeSchema,
   orderSchema,
+  paymentProofMessageSchema,
   paymentRequestMessageSchema,
   receiptMessageSchema,
   shippingUpdateMessageSchema,
@@ -10,6 +11,7 @@ import {
   type ConversationMessageSchema,
   type OrderMessageTypeSchema,
   type OrderSchema,
+  type PaymentProofMessageSchema,
   type PaymentRequestMessageSchema,
   type ReceiptMessageSchema,
   type ShippingUpdateMessageSchema,
@@ -43,7 +45,7 @@ export type ParsedOrderMessage =
   | (ParsedOrderMessageBase & { type: "shipping_update"; payload: ShippingUpdateMessageSchema })
   | (ParsedOrderMessageBase & { type: "receipt"; payload: ReceiptMessageSchema })
   | (ParsedOrderMessageBase & { type: "message"; payload: ConversationMessageSchema })
-  | (ParsedOrderMessageBase & { type: "payment_proof"; payload: Record<string, unknown> })
+  | (ParsedOrderMessageBase & { type: "payment_proof"; payload: PaymentProofMessageSchema })
 
 function getTagValue(tags: string[][] | undefined, name: string): string | null {
   for (const tag of tags ?? []) {
@@ -156,6 +158,17 @@ export function parseOrderMessageRumorEvent(event: OrderRumorEvent): ParsedOrder
   if (type === "message") {
     const payload = conversationMessageSchema.parse({
       note: getString(json?.note) ?? event.content.trim(),
+    })
+    return { ...messageBase(event, type, orderId), payload }
+  }
+
+  if (type === "payment_proof") {
+    const payload = paymentProofMessageSchema.parse({
+      invoice: getString(json?.invoice),
+      preimage: getString(json?.preimage),
+      paymentHash: getString(json?.paymentHash),
+      feeMsats: getNumber(json?.feeMsats),
+      note: getString(json?.note),
     })
     return { ...messageBase(event, type, orderId), payload }
   }

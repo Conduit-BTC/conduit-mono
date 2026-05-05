@@ -175,3 +175,22 @@ export const conversationMessageSchema = z.object({
 })
 
 export type ConversationMessageSchema = z.infer<typeof conversationMessageSchema>
+
+/**
+ * Payment proof message -- sent by the buyer after a successful NWC pay_invoice.
+ * Lets the merchant confirm payment without querying the Lightning node.
+ */
+export const paymentProofMessageSchema = z.object({
+  /** BOLT11 invoice that was paid. */
+  invoice: z.string().min(1),
+  /** Payment preimage (hex) returned by the wallet. */
+  preimage: z.string().min(1),
+  /** Payment hash (hex), if returned by the wallet. */
+  paymentHash: z.string().optional(),
+  /** Fees paid in msats, if returned by the wallet. */
+  feeMsats: z.number().optional(),
+  /** Human-readable note. */
+  note: z.string().max(2000).optional(),
+})
+
+export type PaymentProofMessageSchema = z.infer<typeof paymentProofMessageSchema>
