@@ -1,4 +1,4 @@
-import { SearchX, ShoppingCart, Store } from "lucide-react"
+import { LoaderCircle, SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { formatNpub, getProfileDisplayLabel, useProfile } from "@conduit/core"
 import { useEffect, useMemo, useState } from "react"
@@ -55,8 +55,7 @@ function ProductPage() {
   const selectedImage = images[selectedImageIndex] ?? images[0]
   const merchantName = product
     ? getProfileDisplayLabel(merchantProfile.data, product.pubkey, {
-        lookupSettled: !merchantProfile.isPlaceholderData,
-        pendingLabel: "Loading store",
+        lookupSettled: true,
         emptyPrefix: "Store",
         chars: 8,
       })
@@ -143,28 +142,17 @@ function ProductPage() {
         </div>
       )}
 
-      {product && (
+      {product && (productQuery.isHydrating || productQuery.meta?.stale) && (
         <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
-          <span>
-            {productQuery.isShowingCache
-              ? "Showing cached listing"
-              : productQuery.meta?.source === "commerce"
-                ? "Verified by direct relay lookup"
-                : "Loaded from relay view"}
-          </span>
-          {productQuery.isHydrating && (
-            <>
-              <span aria-hidden="true">/</span>
-              <span className="text-secondary-300">
-                checking latest relay state
-              </span>
-            </>
-          )}
-          {productQuery.meta?.stale && (
-            <>
-              <span aria-hidden="true">/</span>
-              <span>stale-aware</span>
-            </>
+          {productQuery.isHydrating ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-[var(--text-secondary)]">
+              <LoaderCircle className="h-3 w-3 animate-spin text-secondary-300" />
+              Updating listing
+            </span>
+          ) : (
+            <span className="inline-flex items-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-[var(--text-secondary)]">
+              Listing may be out of date
+            </span>
           )}
         </div>
       )}

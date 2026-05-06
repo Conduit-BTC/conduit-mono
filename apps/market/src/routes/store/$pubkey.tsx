@@ -11,6 +11,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -116,6 +117,7 @@ function StorefrontPage() {
   const [searchDirty, setSearchDirty] = useState(false)
   const [showAllTags, setShowAllTags] = useState(false)
   const [tagCloudOverflows, setTagCloudOverflows] = useState(false)
+  const [tagCloudInteracted, setTagCloudInteracted] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
   const tagCloudRef = useRef<HTMLDivElement | null>(null)
@@ -153,8 +155,7 @@ function StorefrontPage() {
   const [followOverride, setFollowOverride] = useState<boolean | null>(null)
 
   const merchantName = getProfileDisplayLabel(profile, pubkey, {
-    lookupSettled: !profileQuery.isPlaceholderData,
-    pendingLabel: "Loading store",
+    lookupSettled: true,
     emptyPrefix: "Store",
     chars: 8,
   })
@@ -240,7 +241,7 @@ function StorefrontPage() {
     }
   }, [canShowPriceSort, search.sort, updateSearch])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = tagCloudRef.current
     if (!element) return
 
@@ -569,7 +570,10 @@ function StorefrontPage() {
                           ? "opacity-100"
                           : "pointer-events-none opacity-0",
                       ].join(" ")}
-                      onClick={() => setShowAllTags(false)}
+                      onClick={() => {
+                        setTagCloudInteracted(true)
+                        setShowAllTags(false)
+                      }}
                     >
                       Collapse
                     </button>
@@ -580,7 +584,10 @@ function StorefrontPage() {
                   <div
                     ref={tagCloudRef}
                     className={[
-                      "overflow-hidden transition-[max-height] duration-300 ease-out xl:max-h-none xl:overflow-visible",
+                      "overflow-hidden xl:max-h-none xl:overflow-visible",
+                      tagCloudInteracted
+                        ? "transition-[max-height] duration-300 ease-out"
+                        : "",
                       showAllTags || !tagCloudOverflows
                         ? "max-h-64"
                         : "max-h-[4.75rem]",
@@ -626,7 +633,10 @@ function StorefrontPage() {
                       <button
                         type="button"
                         className="pointer-events-auto rounded-full bg-[var(--text-primary)] px-3 py-1 text-xs font-medium text-[var(--text-inverse)] shadow-md transition-[opacity,transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-lg"
-                        onClick={() => setShowAllTags(true)}
+                        onClick={() => {
+                          setTagCloudInteracted(true)
+                          setShowAllTags(true)
+                        }}
                       >
                         Expand categories
                       </button>
@@ -701,19 +711,13 @@ function StorefrontPage() {
                   in {search.tag}
                 </span>
               )}
-              <span className="text-xs text-[var(--text-muted)]">
-                {productsQuery.isShowingCache
-                  ? "/ cached catalog"
-                  : productsQuery.meta?.source === "commerce"
-                    ? "/ verified from planned relays"
-                    : "/ relay catalog"}
-              </span>
-              {productsQuery.isHydrating && (
-                <span className="text-xs text-secondary-300">
-                  / hydrating merchant network
-                </span>
-              )}
             </div>
+            {productsQuery.isHydrating && filteredProducts.length > 0 && (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-xs text-[var(--text-secondary)]">
+                <LoaderCircle className="h-3 w-3 animate-spin text-secondary-300" />
+                Updating store
+              </span>
+            )}
             {!canShowPriceSort && (
               <div className="text-xs text-[var(--text-muted)]">
                 Price sorting is available when listings share a currency or a

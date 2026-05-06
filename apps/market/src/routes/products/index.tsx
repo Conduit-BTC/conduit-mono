@@ -438,14 +438,11 @@ function ProductsPage() {
   const getMerchantName = useCallback(
     (merchantPubkey: string) =>
       getProfileDisplayLabel(merchantProfiles[merchantPubkey], merchantPubkey, {
-        lookupSettled:
-          !visibleMerchantPubkeys.includes(merchantPubkey) ||
-          visibleIdentityReady,
-        pendingLabel: "Loading store",
+        lookupSettled: true,
         emptyPrefix: "Store",
         chars: 6,
       }),
-    [merchantProfiles, visibleIdentityReady, visibleMerchantPubkeys]
+    [merchantProfiles]
   )
 
   const hasActiveFilters = !!(
@@ -488,6 +485,9 @@ function ProductsPage() {
   }, [orderedTags, selectedTagSet, showAllTags])
   const isUpdatingListings =
     !productsQuery.isInitialLoading && productsQuery.isHydrating
+  const showCategorySkeleton =
+    productsQuery.isInitialLoading && allTags.length === 0
+  const shouldShowCategories = allTags.length > 0 || showCategorySkeleton
 
   return (
     <div className="space-y-5">
@@ -547,7 +547,7 @@ function ProductsPage() {
         </section>
       )}
 
-      {allTags.length > 0 && (
+      {shouldShowCategories && (
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-3">
             <div className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
@@ -570,52 +570,68 @@ function ProductsPage() {
             )}
           </div>
 
-          <div className="relative">
-            <div
-              ref={tagCloudRef}
-              className={[
-                "overflow-hidden",
-                tagCloudInteracted
-                  ? "transition-[max-height] duration-300 ease-out"
-                  : "",
-                showAllTags || !tagCloudOverflows
-                  ? "max-h-64"
-                  : "max-h-[4.75rem]",
-              ].join(" ")}
-            >
-              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                {orderedTags.map((tag) => (
-                  <button
-                    key={tag}
-                    onClick={() => toggleTag(tag)}
-                    className="rounded-full transition-transform duration-150 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-                  >
-                    <Badge
-                      variant={selectedTagSet.has(tag) ? "default" : "outline"}
-                      className="cursor-pointer capitalize transition-colors hover:border-secondary-400 hover:text-[var(--text-primary)]"
-                    >
-                      {tag}
-                    </Badge>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {!showAllTags && tagCloudOverflows && (
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-12 items-center justify-center bg-gradient-to-b from-transparent via-[var(--background)]/90 to-[var(--background)] transition-opacity duration-200">
-                <button
-                  type="button"
-                  className="pointer-events-auto rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-1 text-xs font-medium text-[var(--text-primary)] shadow-[var(--shadow-sm)] transition-[opacity,transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-[var(--shadow-md)]"
-                  onClick={() => {
-                    setTagCloudInteracted(true)
-                    setShowAllTags(true)
+          {showCategorySkeleton ? (
+            <div className="flex max-h-[4.75rem] flex-wrap items-center gap-1.5 overflow-hidden pt-0.5">
+              {Array.from({ length: 18 }).map((_, index) => (
+                <div
+                  key={index}
+                  className="h-7 animate-pulse rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]"
+                  style={{
+                    width: `${56 + (index % 5) * 18}px`,
                   }}
-                >
-                  Expand categories
-                </button>
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="relative">
+              <div
+                ref={tagCloudRef}
+                className={[
+                  "overflow-hidden",
+                  tagCloudInteracted
+                    ? "transition-[max-height] duration-300 ease-out"
+                    : "",
+                  showAllTags || !tagCloudOverflows
+                    ? "max-h-64"
+                    : "max-h-[4.75rem]",
+                ].join(" ")}
+              >
+                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                  {orderedTags.map((tag) => (
+                    <button
+                      key={tag}
+                      onClick={() => toggleTag(tag)}
+                      className="rounded-full transition-transform duration-150 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                    >
+                      <Badge
+                        variant={
+                          selectedTagSet.has(tag) ? "default" : "outline"
+                        }
+                        className="cursor-pointer capitalize transition-colors hover:border-secondary-400 hover:text-[var(--text-primary)]"
+                      >
+                        {tag}
+                      </Badge>
+                    </button>
+                  ))}
+                </div>
               </div>
-            )}
-          </div>
+
+              {!showAllTags && tagCloudOverflows && (
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-12 items-center justify-center bg-gradient-to-b from-transparent via-[var(--background)]/90 to-[var(--background)] transition-opacity duration-200">
+                  <button
+                    type="button"
+                    className="pointer-events-auto rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-1 text-xs font-medium text-[var(--text-primary)] shadow-[var(--shadow-sm)] transition-[opacity,transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-[var(--shadow-md)]"
+                    onClick={() => {
+                      setTagCloudInteracted(true)
+                      setShowAllTags(true)
+                    }}
+                  >
+                    Expand categories
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </section>
       )}
 
