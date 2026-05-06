@@ -147,37 +147,6 @@ function StatCard({
   )
 }
 
-function getPaymentCapabilityCopy(readiness: MerchantSetupReadiness): {
-  label: string
-  description: string
-  variant: "success" | "warning" | "info"
-} {
-  if (readiness.paymentCapability === "direct_payment") {
-    return {
-      label: "Direct payment ready",
-      description:
-        "Lightning Address is published, so buyers can use direct Lightning payment flows when available.",
-      variant: "success",
-    }
-  }
-
-  if (readiness.paymentCapability === "invoice_only") {
-    return {
-      label: "Invoice/manual flow",
-      description:
-        "Core setup is ready, but no public Lightning Address is published yet.",
-      variant: "info",
-    }
-  }
-
-  return {
-    label: "Setup incomplete",
-    description:
-      "Finish the missing setup items before treating this merchant profile as ready.",
-    variant: "warning",
-  }
-}
-
 function ReadinessRow({
   label,
   complete,
@@ -217,8 +186,6 @@ function MerchantReadinessPanel({
 }: {
   readiness: MerchantSetupReadiness
 }) {
-  const capability = getPaymentCapabilityCopy(readiness)
-
   return (
     <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -263,27 +230,6 @@ function MerchantReadinessPanel({
           to="/network"
           icon={Wifi}
         />
-      </div>
-
-      <div className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-semibold text-[var(--text-primary)]">
-              Payment path
-            </div>
-            <p className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
-              {capability.description}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <StatusPill variant={capability.variant}>
-              {capability.label}
-            </StatusPill>
-            {readiness.hasNwc && (
-              <StatusPill variant="success">NWC invoices</StatusPill>
-            )}
-          </div>
-        </div>
       </div>
     </section>
   )
