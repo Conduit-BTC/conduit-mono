@@ -99,6 +99,11 @@ export function parseProductEvent(
   const summaryTag = getTagValue(event.tags, "summary")
   const locationTag = getTagValue(event.tags, "location")
 
+  // market-spec: ["type", "simple|variable|variation", "digital|physical"]
+  const typeTag = event.tags?.find((t) => t[0] === "type")
+  const format: "physical" | "digital" =
+    typeTag?.[2] === "digital" ? "digital" : "physical"
+
   const images = getTagValues(event.tags, "image")
     .filter((url) => url.startsWith("http://") || url.startsWith("https://"))
     .map((url) => ({ url }))
@@ -114,6 +119,7 @@ export function parseProductEvent(
         summaryTag ?? (fromContent ? fromContent.slice(0, 5000) : undefined),
       price: priceInfo?.price ?? 0,
       currency: priceInfo?.currency ?? "USD",
+      format,
       images,
       tags,
       location: locationTag ?? undefined,
