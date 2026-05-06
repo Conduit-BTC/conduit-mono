@@ -279,7 +279,7 @@ export function MarketHeader() {
             {!isBrowseRoute &&
               searchDirty &&
               normalizedSearchValue.length > 0 && (
-                <div className="pointer-events-none absolute left-1 top-full mt-1 text-[11px] text-[var(--text-muted)]">
+                <div className="pointer-events-none absolute left-2 top-full mt-0.5 text-[10px] leading-none text-[var(--text-muted)]">
                   Press Enter to search
                 </div>
               )}

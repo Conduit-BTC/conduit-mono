@@ -414,11 +414,15 @@ function StorefrontPage() {
 
       <section className="overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)]">
         <div className="relative px-5 py-6 sm:px-6 sm:py-7">
-          <div className="relative">
+          <div className="relative space-y-5">
             <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-              <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-end">
-                <Avatar className="h-24 w-24 shrink-0 border border-[var(--border)] shadow-[var(--shadow-lg)] sm:h-28 sm:w-28">
-                  <AvatarImage src={profile?.picture} alt={merchantName} />
+              <div className="flex min-w-0 items-start gap-4">
+                <Avatar className="h-24 w-24 self-start border border-[var(--border)] shadow-[var(--shadow-lg)] sm:h-28 sm:w-28">
+                  <AvatarImage
+                    src={profile?.picture}
+                    alt={merchantName}
+                    className="object-cover"
+                  />
                   <AvatarFallback>
                     <MerchantAvatarFallback iconClassName="h-8 w-8 sm:h-10 sm:w-10" />
                   </AvatarFallback>
@@ -440,13 +444,6 @@ function StorefrontPage() {
                       Created Apr 2024
                     </span>
                   </div>
-                  <RichProfileText
-                    text={
-                      merchantAbout ||
-                      "Browse this merchant's current listings and add products directly to your cart."
-                    }
-                    className="mt-3 max-w-[56ch] text-sm leading-7 text-[var(--text-secondary)]"
-                  />
                 </div>
               </div>
 
@@ -526,6 +523,16 @@ function StorefrontPage() {
                   </button>
                 </div>
               </div>
+            </div>
+
+            <div className="border-t border-[var(--border)] pt-5">
+              <RichProfileText
+                text={
+                  merchantAbout ||
+                  "Browse this merchant's current listings and add products directly to your cart."
+                }
+                className="max-w-4xl text-sm leading-7 text-[var(--text-secondary)]"
+              />
             </div>
           </div>
         </div>
@@ -700,7 +707,7 @@ function StorefrontPage() {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="relative min-h-[1.625rem] pr-32 sm:pr-36">
             <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
               <span>
                 {filteredProducts.length} product
@@ -712,14 +719,22 @@ function StorefrontPage() {
                 </span>
               )}
             </div>
-            {productsQuery.isHydrating && filteredProducts.length > 0 && (
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-xs text-[var(--text-secondary)]">
-                <LoaderCircle className="h-3 w-3 animate-spin text-secondary-300" />
-                Updating store
-              </span>
-            )}
+            <span
+              aria-hidden={
+                !(productsQuery.isHydrating && filteredProducts.length > 0)
+              }
+              className={[
+                "absolute right-0 top-0 inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-xs text-[var(--text-secondary)] transition-opacity duration-150",
+                productsQuery.isHydrating && filteredProducts.length > 0
+                  ? "opacity-100"
+                  : "pointer-events-none opacity-0",
+              ].join(" ")}
+            >
+              <LoaderCircle className="h-3 w-3 animate-spin text-secondary-300" />
+              Updating store
+            </span>
             {!canShowPriceSort && (
-              <div className="text-xs text-[var(--text-muted)]">
+              <div className="mt-2 text-xs text-[var(--text-muted)]">
                 Price sorting is available when listings share a currency or a
                 BTC/USD display rate exists.
               </div>

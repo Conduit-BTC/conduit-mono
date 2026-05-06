@@ -785,16 +785,22 @@ function ProductsPage() {
         </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-muted)]">
+      <div className="relative flex min-h-[1.625rem] items-center pr-36 text-xs text-[var(--text-muted)]">
         <span>
           {filtered.length} {filtered.length === 1 ? "result" : "results"}
         </span>
-        {isUpdatingListings && (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-[var(--text-secondary)]">
-            <LoaderCircle className="h-3 w-3 animate-spin text-secondary-300" />
-            Updating listings
-          </span>
-        )}
+        <span
+          aria-hidden={!isUpdatingListings}
+          className={[
+            "absolute right-0 top-0 inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-[var(--text-secondary)] transition-opacity duration-150",
+            isUpdatingListings
+              ? "opacity-100"
+              : "pointer-events-none opacity-0",
+          ].join(" ")}
+        >
+          <LoaderCircle className="h-3 w-3 animate-spin text-secondary-300" />
+          Updating listings
+        </span>
       </div>
 
       {/* Loading */}
