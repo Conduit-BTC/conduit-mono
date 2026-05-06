@@ -2,6 +2,7 @@ import { getData } from "country-list"
 import { useCallback, useEffect, useState } from "react"
 import { AlertCircle, Plus, Trash2, X } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
+import { publishShippingOptions } from "@conduit/core"
 import { Button, Input, Label, Badge } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import {
@@ -316,6 +317,10 @@ function ShippingPage() {
     e.preventDefault()
     saveShippingConfig(config)
     setSaved(true)
+    // Publish to Nostr (best-effort -- don't block UI on failure)
+    publishShippingOptions(config, "merchant").catch((err: unknown) => {
+      console.warn("[shipping] Failed to publish kind-30406:", err)
+    })
   }
 
   // Persist on unmount to avoid data loss
