@@ -14,6 +14,8 @@ export type CartItem = {
   }
   image?: string
   tags?: string[]
+  /** Whether the product requires physical shipping. Defaults to "physical". */
+  format?: "physical" | "digital"
   quantity: number
 }
 
