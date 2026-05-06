@@ -3,14 +3,14 @@ import { useAuth, useRelaySettings } from "@conduit/core"
 import { RelaySettingsPanel } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 
-export const Route = createFileRoute("/settings")({
+export const Route = createFileRoute("/network")({
   beforeLoad: () => {
     requireAuth()
   },
-  component: SettingsPage,
+  component: NetworkPage,
 })
 
-function SettingsPage() {
+function NetworkPage() {
   const { pubkey } = useAuth()
   const relaySettings = useRelaySettings(
     pubkey ? `merchant:${pubkey}` : "merchant"

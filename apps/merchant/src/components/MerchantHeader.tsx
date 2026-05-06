@@ -7,6 +7,7 @@ import {
   Search,
   ShoppingBag,
   Truck,
+  UserRound,
   Wifi,
 } from "lucide-react"
 import type { ComponentType } from "react"
@@ -49,9 +50,10 @@ type NavRoute =
   | "/"
   | "/orders"
   | "/products"
+  | "/profile"
   | "/payments"
   | "/shipping"
-  | "/settings"
+  | "/network"
 
 type NavItem = {
   to: NavRoute
@@ -68,9 +70,10 @@ const mainNavItems: NavItem[] = [
 ]
 
 const setupNavItems: NavItem[] = [
+  { to: "/profile", label: "Profile", icon: UserRound, hasReadiness: true },
   { to: "/payments", label: "Payments", icon: Bitcoin, hasReadiness: true },
   { to: "/shipping", label: "Shipping", icon: Truck, hasReadiness: true },
-  { to: "/settings", label: "Network", icon: Wifi, hasReadiness: true },
+  { to: "/network", label: "Network", icon: Wifi, hasReadiness: true },
 ]
 
 // ---------------------------------------------------------------------------
@@ -173,19 +176,22 @@ function MerchantNavLinks({
   onNavigate,
   compact = false,
   paymentsIncomplete,
+  profileIncomplete,
   shippingIncomplete,
   networkIncomplete,
 }: {
   onNavigate?: () => void
   compact?: boolean
+  profileIncomplete: boolean
   paymentsIncomplete: boolean
   shippingIncomplete: boolean
   networkIncomplete: boolean
 }) {
   const setupIncompleteMap: Record<NavRoute, boolean> = {
+    "/profile": profileIncomplete,
     "/payments": paymentsIncomplete,
     "/shipping": shippingIncomplete,
-    "/settings": networkIncomplete,
+    "/network": networkIncomplete,
     "/": false,
     "/orders": false,
     "/products": false,
@@ -252,7 +258,7 @@ function UserMenu() {
       avatarFallback={<MerchantAvatarFallback iconClassName="h-4 w-4" />}
       alertLabel={anyIncomplete ? "Needs completion" : undefined}
       onProfile={() => navigate({ to: "/profile" })}
-      onNetwork={() => navigate({ to: "/settings" })}
+      onNetwork={() => navigate({ to: "/network" })}
       onDisconnect={disconnect}
       className="h-12 min-w-[12.75rem] rounded-[16px] px-3"
     />
@@ -292,6 +298,7 @@ function MobileNav() {
         <div className="mt-6 space-y-6">
           <MerchantNavLinks
             compact
+            profileIncomplete={readiness.profileIncomplete}
             paymentsIncomplete={readiness.paymentsIncomplete}
             shippingIncomplete={readiness.shippingIncomplete}
             networkIncomplete={readiness.networkIncomplete}
@@ -327,8 +334,8 @@ export function MerchantSidebar() {
   const readiness = useReadinessState()
 
   return (
-    <aside className="hidden h-screen flex-col border-r border-[var(--border)] bg-[var(--surface)] lg:flex">
-      <div className="border-b border-[var(--border)] px-5 py-5">
+    <aside className="hidden h-screen min-h-0 flex-col border-r border-[var(--border)] bg-[var(--surface)] lg:flex">
+      <div className="shrink-0 border-b border-[var(--border)] px-5 py-5">
         <Logo />
         {config.lightningNetwork !== "mainnet" && (
           <Badge
@@ -345,8 +352,9 @@ export function MerchantSidebar() {
         )}
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col px-4 py-5">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-5">
         <MerchantNavLinks
+          profileIncomplete={readiness.profileIncomplete}
           paymentsIncomplete={readiness.paymentsIncomplete}
           shippingIncomplete={readiness.shippingIncomplete}
           networkIncomplete={readiness.networkIncomplete}

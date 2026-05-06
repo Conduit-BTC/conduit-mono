@@ -25,12 +25,15 @@ export const Route = createRootRoute({
 
 function RootShell({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-[var(--background)] text-[var(--text-primary)]">
-      <div className="lg:grid lg:grid-cols-[260px_minmax(0,1fr)]">
+    <div className="min-h-screen bg-[var(--background)] text-[var(--text-primary)] lg:h-screen lg:overflow-hidden">
+      <div className="lg:grid lg:h-full lg:grid-cols-[260px_minmax(0,1fr)]">
         <MerchantSidebar />
-        <div className="min-h-screen">
+        <div className="min-h-screen lg:flex lg:min-h-0 lg:flex-col lg:overflow-hidden">
           <MerchantHeader />
-          <main className="px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+          <main
+            data-merchant-main-scroll
+            className="px-4 py-6 sm:px-6 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-8 lg:py-8"
+          >
             <div className="mx-auto w-full max-w-[1280px]">{children}</div>
           </main>
         </div>
@@ -49,6 +52,9 @@ function RootLayout() {
   const relaySettingsScope = pubkey ? `merchant:${pubkey}` : "merchant"
 
   useEffect(() => {
+    document
+      .querySelector<HTMLElement>("[data-merchant-main-scroll]")
+      ?.scrollTo({ top: 0, left: 0, behavior: "auto" })
     window.scrollTo({ top: 0, left: 0, behavior: "auto" })
   }, [pathname])
 
@@ -214,6 +220,6 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/products") return "Products"
   if (pathname === "/orders") return "Orders"
   if (pathname === "/profile") return "Profile"
-  if (pathname === "/settings") return "Relay Settings"
+  if (pathname === "/network") return "Network"
   return "Merchant"
 }

@@ -191,7 +191,7 @@ function ReadinessRow({
 }: {
   label: string
   complete: boolean
-  to: "/" | "/profile" | "/payments" | "/shipping" | "/settings"
+  to: "/" | "/profile" | "/payments" | "/shipping" | "/network"
   icon: ComponentType<{ className?: string }>
 }) {
   return (
@@ -265,7 +265,7 @@ function MerchantReadinessPanel({
         <ReadinessRow
           label="Network"
           complete={readiness.networkComplete}
-          to="/settings"
+          to="/network"
           icon={Wifi}
         />
       </div>
