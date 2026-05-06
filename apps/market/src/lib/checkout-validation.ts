@@ -45,21 +45,30 @@ export function validateShippingFields(
 
   const country = shipping.country.trim().toUpperCase()
   if (!ISO_COUNTRY_RE.test(country)) {
-    errors.push({ field: "country", message: "Enter a 2-letter country code (e.g. US)" })
+    errors.push({
+      field: "country",
+      message: "Enter a 2-letter country code (e.g. US)",
+    })
   }
 
   const firstName = shipping.firstName.trim()
   if (firstName.length === 0) {
     errors.push({ field: "firstName", message: "First name is required" })
   } else if (firstName.length > 50) {
-    errors.push({ field: "firstName", message: "First name must be 50 characters or fewer" })
+    errors.push({
+      field: "firstName",
+      message: "First name must be 50 characters or fewer",
+    })
   }
 
   const lastName = shipping.lastName.trim()
   if (lastName.length === 0) {
     errors.push({ field: "lastName", message: "Last name is required" })
   } else if (lastName.length > 50) {
-    errors.push({ field: "lastName", message: "Last name must be 50 characters or fewer" })
+    errors.push({
+      field: "lastName",
+      message: "Last name must be 50 characters or fewer",
+    })
   }
 
   if (shipping.street.trim().length === 0) {
@@ -122,8 +131,6 @@ export function isFastCheckoutEligible(params: {
   lnurlAllowsNostr: boolean
 }): boolean {
   return (
-    params.walletPayCapable &&
-    !!params.merchantLud16 &&
-    params.lnurlAllowsNostr
+    params.walletPayCapable && !!params.merchantLud16 && params.lnurlAllowsNostr
   )
 }
