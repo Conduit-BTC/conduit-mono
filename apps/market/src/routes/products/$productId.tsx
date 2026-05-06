@@ -187,7 +187,7 @@ function ProductPage() {
       {product && (
         <>
           <div
-            className={`grid items-start gap-5 lg:gap-6 ${hasMultipleImages ? "lg:grid-cols-[88px_minmax(0,1fr)_minmax(320px,420px)]" : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]"}`}
+            className={`grid min-w-0 items-start gap-5 lg:gap-6 ${hasMultipleImages ? "lg:grid-cols-[88px_minmax(0,1fr)_minmax(320px,420px)]" : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]"}`}
           >
             {hasMultipleImages && (
               <div className="hidden max-h-[calc(100vh-11rem)] self-start overflow-y-auto pr-1 lg:flex lg:flex-col lg:gap-3">
@@ -213,16 +213,16 @@ function ProductPage() {
               </div>
             )}
 
-            <div className="self-start overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
-              <div className="flex aspect-[4/3] min-h-[18rem] items-center justify-center bg-[var(--background)] p-4 sm:p-6 lg:max-h-[calc(100vh-11rem)]">
+            <div className="min-w-0 max-w-full self-start overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
+              <div className="flex aspect-square w-full max-w-full items-center justify-center overflow-hidden bg-[var(--background)] p-3 sm:aspect-[4/3] sm:p-6 lg:max-h-[calc(100vh-11rem)]">
                 <img
                   src={selectedImage?.url}
                   alt={selectedImage?.alt ?? product.title}
-                  className="h-full w-full object-contain"
+                  className="h-full max-h-full w-full max-w-full object-contain"
                 />
               </div>
               {hasMultipleImages && (
-                <div className="flex gap-2 overflow-x-auto border-t border-[var(--border)] p-3 lg:hidden">
+                <div className="flex max-w-full gap-2 overflow-x-auto overscroll-x-contain border-t border-[var(--border)] p-3 lg:hidden">
                   {images.map((image, index) => (
                     <button
                       key={`${image.url}-${index}`}
@@ -246,7 +246,7 @@ function ProductPage() {
               )}
             </div>
 
-            <aside className="self-start rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
+            <aside className="min-w-0 self-start rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
               <div className="w-full min-w-0 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
                 <div className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
                   Shop at
