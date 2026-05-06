@@ -83,7 +83,7 @@
   video {
     margin: 0;
     padding: 0;
-    border: 0;
+    border-width: 0;
     font: inherit;
     vertical-align: baseline;
   }
@@ -133,7 +133,7 @@
   button {
     background: transparent;
     color: inherit;
-    border: none;
+    border-width: 0;
     padding: 0;
     font: inherit;
     -webkit-appearance: none;
@@ -141,4 +141,3 @@
     appearance: none;
   }
 }
-

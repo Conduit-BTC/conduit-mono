@@ -9,15 +9,17 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as ShippingRouteImport } from './routes/shipping'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as ProductsRouteImport } from './routes/products'
+import { Route as PaymentsRouteImport } from './routes/payments'
 import { Route as OrdersRouteImport } from './routes/orders'
+import { Route as NetworkRouteImport } from './routes/network'
 import { Route as IndexRouteImport } from './routes/index'
 
-const SettingsRoute = SettingsRouteImport.update({
-  id: '/settings',
-  path: '/settings',
+const ShippingRoute = ShippingRouteImport.update({
+  id: '/shipping',
+  path: '/shipping',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProfileRoute = ProfileRouteImport.update({
@@ -30,9 +32,19 @@ const ProductsRoute = ProductsRouteImport.update({
   path: '/products',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PaymentsRoute = PaymentsRouteImport.update({
+  id: '/payments',
+  path: '/payments',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const OrdersRoute = OrdersRouteImport.update({
   id: '/orders',
   path: '/orders',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const NetworkRoute = NetworkRouteImport.update({
+  id: '/network',
+  path: '/network',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -43,49 +55,79 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
+  '/payments': typeof PaymentsRoute
   '/products': typeof ProductsRoute
   '/profile': typeof ProfileRoute
-  '/settings': typeof SettingsRoute
+  '/shipping': typeof ShippingRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
+  '/payments': typeof PaymentsRoute
   '/products': typeof ProductsRoute
   '/profile': typeof ProfileRoute
-  '/settings': typeof SettingsRoute
+  '/shipping': typeof ShippingRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
+  '/payments': typeof PaymentsRoute
   '/products': typeof ProductsRoute
   '/profile': typeof ProfileRoute
-  '/settings': typeof SettingsRoute
+  '/shipping': typeof ShippingRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/orders' | '/products' | '/profile' | '/settings'
+  fullPaths:
+    | '/'
+    | '/network'
+    | '/orders'
+    | '/payments'
+    | '/products'
+    | '/profile'
+    | '/shipping'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/orders' | '/products' | '/profile' | '/settings'
-  id: '__root__' | '/' | '/orders' | '/products' | '/profile' | '/settings'
+  to:
+    | '/'
+    | '/network'
+    | '/orders'
+    | '/payments'
+    | '/products'
+    | '/profile'
+    | '/shipping'
+  id:
+    | '__root__'
+    | '/'
+    | '/network'
+    | '/orders'
+    | '/payments'
+    | '/products'
+    | '/profile'
+    | '/shipping'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  NetworkRoute: typeof NetworkRoute
   OrdersRoute: typeof OrdersRoute
+  PaymentsRoute: typeof PaymentsRoute
   ProductsRoute: typeof ProductsRoute
   ProfileRoute: typeof ProfileRoute
-  SettingsRoute: typeof SettingsRoute
+  ShippingRoute: typeof ShippingRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/settings': {
-      id: '/settings'
-      path: '/settings'
-      fullPath: '/settings'
-      preLoaderRoute: typeof SettingsRouteImport
+    '/shipping': {
+      id: '/shipping'
+      path: '/shipping'
+      fullPath: '/shipping'
+      preLoaderRoute: typeof ShippingRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/profile': {
@@ -102,11 +144,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProductsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/payments': {
+      id: '/payments'
+      path: '/payments'
+      fullPath: '/payments'
+      preLoaderRoute: typeof PaymentsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/orders': {
       id: '/orders'
       path: '/orders'
       fullPath: '/orders'
       preLoaderRoute: typeof OrdersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/network': {
+      id: '/network'
+      path: '/network'
+      fullPath: '/network'
+      preLoaderRoute: typeof NetworkRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -121,10 +177,12 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  NetworkRoute: NetworkRoute,
   OrdersRoute: OrdersRoute,
+  PaymentsRoute: PaymentsRoute,
   ProductsRoute: ProductsRoute,
   ProfileRoute: ProfileRoute,
-  SettingsRoute: SettingsRoute,
+  ShippingRoute: ShippingRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
