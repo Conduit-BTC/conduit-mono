@@ -10,6 +10,10 @@ import {
 import { Badge, Button, Input, Label } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import { useNwcConnection } from "../hooks/useNwcConnection"
+import {
+  profileFormToUpdatePayload,
+  profileToFormValues,
+} from "../lib/profileForm"
 import { isPaymentsComplete } from "../lib/readiness"
 
 export const Route = createFileRoute("/payments")({
@@ -41,16 +45,10 @@ function PaymentsPage() {
     e.preventDefault()
     if (!profile) return
     updateMutation.mutate(
-      {
-        name: profile.name || undefined,
-        displayName: profile.displayName || undefined,
-        about: profile.about || undefined,
-        picture: profile.picture || undefined,
-        banner: profile.banner || undefined,
-        nip05: profile.nip05 || undefined,
-        lud16: lud16Draft.trim() || undefined,
-        website: profile.website || undefined,
-      },
+      profileFormToUpdatePayload({
+        ...profileToFormValues(profile),
+        lud16: lud16Draft.trim(),
+      }),
       { onSuccess: () => setEditingLud16(false) }
     )
   }

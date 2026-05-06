@@ -18,16 +18,11 @@ import {
   parseProductEvent,
   useAuth,
   useNdkState,
-  useProfile,
-  useRelaySettings,
   type ParsedOrderMessage,
 } from "@conduit/core"
 import { Badge, Button, StatusPill } from "@conduit/ui"
-import {
-  getMerchantSetupReadiness,
-  loadShippingConfig,
-  type MerchantSetupReadiness,
-} from "../lib/readiness"
+import { useMerchantReadiness } from "../hooks/useMerchantReadiness"
+import type { MerchantSetupReadiness } from "../lib/readiness"
 
 export const Route = createFileRoute("/")({
   component: DashboardPage,
@@ -297,10 +292,7 @@ function MerchantReadinessPanel({
 function DashboardPage() {
   const { pubkey, error } = useAuth()
   const ndk = useNdkState()
-  const profileQuery = useProfile(pubkey)
-  const relaySettings = useRelaySettings(
-    pubkey ? `merchant:${pubkey}` : "merchant"
-  )
+  const readiness = useMerchantReadiness()
   const statsQuery = useQuery({
     queryKey: ["merchant-dashboard", pubkey ?? "none"],
     enabled: !!pubkey,
@@ -311,12 +303,6 @@ function DashboardPage() {
     (message): message is Extract<ParsedOrderMessage, { type: "order" }> =>
       message.type === "order"
   )
-  const readiness = getMerchantSetupReadiness({
-    profile: profileQuery.data,
-    shippingConfig: loadShippingConfig(),
-    relaySettings: relaySettings.settings,
-  })
-
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">

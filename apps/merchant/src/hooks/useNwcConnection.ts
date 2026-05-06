@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react"
 import {
   NWC_URI_STORAGE_KEY,
+  notifyMerchantReadinessStorageChange,
   parseStoredNwcConnection,
   type StoredNwcConnection,
 } from "../lib/readiness"
@@ -38,6 +39,7 @@ export function useNwcConnection(): UseNwcConnectionResult {
       if (!trimmed) {
         localStorage.removeItem(NWC_URI_STORAGE_KEY)
         setConnection(null)
+        notifyMerchantReadinessStorageChange()
         return
       }
 
@@ -46,6 +48,7 @@ export function useNwcConnection(): UseNwcConnectionResult {
 
       localStorage.setItem(NWC_URI_STORAGE_KEY, trimmed)
       setConnection(parsed)
+      notifyMerchantReadinessStorageChange()
     } catch (err) {
       setConnection(null)
       setError(err instanceof Error ? err.message : "Invalid NWC URI")
@@ -57,6 +60,7 @@ export function useNwcConnection(): UseNwcConnectionResult {
     setRawUri("")
     setConnection(null)
     setError(null)
+    notifyMerchantReadinessStorageChange()
   }, [])
 
   return { connection, rawUri, error, setUri, disconnect }

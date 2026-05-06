@@ -37,6 +37,8 @@ export function isProfileComplete(
 // ---------------------------------------------------------------------------
 
 export const NWC_URI_STORAGE_KEY = "conduit:merchant:nwc_uri"
+export const MERCHANT_READINESS_STORAGE_EVENT =
+  "conduit:merchant-readiness-storage"
 
 export type StoredNwcConnection = NwcConnection & {
   uri: string
@@ -95,6 +97,11 @@ export function hasNwcConfigured(raw?: string | null): boolean {
   } catch {
     return false
   }
+}
+
+export function notifyMerchantReadinessStorageChange(): void {
+  if (typeof window === "undefined") return
+  window.dispatchEvent(new Event(MERCHANT_READINESS_STORAGE_EVENT))
 }
 
 export function isNetworkComplete(settings: RelaySettingsState): boolean {
@@ -171,7 +178,18 @@ export function loadShippingConfig(): ShippingConfig {
   try {
     if (typeof localStorage === "undefined") return { countries: [] }
     const raw = localStorage.getItem(SHIPPING_STORAGE_KEY)
-    if (!raw) return { countries: [] }
+    return parseShippingConfig(raw)
+  } catch {
+    return { countries: [] }
+  }
+}
+
+export function parseShippingConfig(
+  raw: string | null | undefined
+): ShippingConfig {
+  if (!raw) return { countries: [] }
+
+  try {
     return JSON.parse(raw) as ShippingConfig
   } catch {
     return { countries: [] }
@@ -181,6 +199,7 @@ export function loadShippingConfig(): ShippingConfig {
 export function saveShippingConfig(config: ShippingConfig): void {
   if (typeof localStorage === "undefined") return
   localStorage.setItem(SHIPPING_STORAGE_KEY, JSON.stringify(config))
+  notifyMerchantReadinessStorageChange()
 }
 
 export function isShippingComplete(config: ShippingConfig): boolean {

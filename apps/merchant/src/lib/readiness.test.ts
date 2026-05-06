@@ -6,6 +6,7 @@ import {
 import {
   getMerchantSetupReadiness,
   hasNwcConfigured,
+  parseShippingConfig,
   parseStoredNwcConnection,
 } from "./readiness"
 
@@ -50,6 +51,13 @@ test("validates stored NWC URIs with the shared NIP-47 parser", () => {
   expect(parseStoredNwcConnection(validUri)?.walletPubkey).toBe("a".repeat(64))
   expect(hasNwcConfigured(validUri)).toBe(true)
   expect(hasNwcConfigured("nostr+walletconnect://wallet?relay=x")).toBe(false)
+})
+
+test("parses stored shipping config defensively", () => {
+  expect(parseShippingConfig(JSON.stringify(shippingConfig))).toEqual(
+    shippingConfig
+  )
+  expect(parseShippingConfig("not-json")).toEqual({ countries: [] })
 })
 
 describe("merchant setup readiness", () => {

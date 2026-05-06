@@ -12,13 +12,7 @@ import {
 } from "lucide-react"
 import type { ComponentType } from "react"
 import { Link, useNavigate } from "@tanstack/react-router"
-import {
-  config,
-  formatPubkey,
-  useAuth,
-  useProfile,
-  useRelaySettings,
-} from "@conduit/core"
+import { config, formatPubkey, useAuth, useProfile } from "@conduit/core"
 import {
   Badge,
   Button,
@@ -33,14 +27,7 @@ import {
   cn,
 } from "@conduit/ui"
 import { SignerSwitch } from "./SignerSwitch"
-import {
-  isProfileComplete,
-  isPaymentsComplete,
-  isShippingComplete,
-  loadShippingConfig,
-  isNetworkComplete,
-  hasNwcConfigured,
-} from "../lib/readiness"
+import { useMerchantReadiness } from "../hooks/useMerchantReadiness"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -123,41 +110,6 @@ function Logo({
       </span>
     </Link>
   )
-}
-
-// ---------------------------------------------------------------------------
-// Readiness helpers
-// ---------------------------------------------------------------------------
-
-/** Returns which setup areas are incomplete */
-function useReadinessState() {
-  const { pubkey } = useAuth()
-  const { data: profile } = useProfile(pubkey)
-  const { settings } = useRelaySettings(
-    pubkey ? `merchant:${pubkey}` : "merchant"
-  )
-
-  const shippingConfig = loadShippingConfig()
-
-  const profileIncomplete = !isProfileComplete(profile)
-  const paymentsIncomplete = !isPaymentsComplete(profile)
-  const shippingIncomplete = !isShippingComplete(shippingConfig)
-  const networkIncomplete = !isNetworkComplete(settings)
-
-  const anyIncomplete =
-    profileIncomplete ||
-    paymentsIncomplete ||
-    shippingIncomplete ||
-    networkIncomplete
-
-  return {
-    profileIncomplete,
-    paymentsIncomplete,
-    shippingIncomplete,
-    networkIncomplete,
-    anyIncomplete,
-    hasNwc: hasNwcConfigured(),
-  }
 }
 
 function IncompleteBadge({ className }: { className?: string }) {
@@ -244,7 +196,7 @@ function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
   const navigate = useNavigate()
   const { data: profile } = useProfile(pubkey)
-  const { anyIncomplete } = useReadinessState()
+  const readiness = useMerchantReadiness()
 
   if (!pubkey || status !== "connected") return null
 
@@ -256,7 +208,7 @@ function UserMenu() {
       displayName={displayName}
       avatarUrl={profile?.picture}
       avatarFallback={<MerchantAvatarFallback iconClassName="h-4 w-4" />}
-      alertLabel={anyIncomplete ? "Needs completion" : undefined}
+      alertLabel={readiness.setupComplete ? undefined : "Needs completion"}
       onProfile={() => navigate({ to: "/profile" })}
       onNetwork={() => navigate({ to: "/network" })}
       onDisconnect={disconnect}
@@ -271,7 +223,7 @@ function UserMenu() {
 
 function MobileNav() {
   const { pubkey, status } = useAuth()
-  const readiness = useReadinessState()
+  const readiness = useMerchantReadiness()
 
   return (
     <Sheet>
@@ -298,10 +250,10 @@ function MobileNav() {
         <div className="mt-6 space-y-6">
           <MerchantNavLinks
             compact
-            profileIncomplete={readiness.profileIncomplete}
-            paymentsIncomplete={readiness.paymentsIncomplete}
-            shippingIncomplete={readiness.shippingIncomplete}
-            networkIncomplete={readiness.networkIncomplete}
+            profileIncomplete={!readiness.profileComplete}
+            paymentsIncomplete={!readiness.paymentsComplete}
+            shippingIncomplete={!readiness.shippingComplete}
+            networkIncomplete={!readiness.networkComplete}
           />
 
           <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
@@ -331,7 +283,7 @@ function MobileNav() {
 // ---------------------------------------------------------------------------
 
 export function MerchantSidebar() {
-  const readiness = useReadinessState()
+  const readiness = useMerchantReadiness()
 
   return (
     <aside className="hidden h-screen min-h-0 flex-col border-r border-[var(--border)] bg-[var(--surface)] lg:flex">
@@ -354,10 +306,10 @@ export function MerchantSidebar() {
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-5">
         <MerchantNavLinks
-          profileIncomplete={readiness.profileIncomplete}
-          paymentsIncomplete={readiness.paymentsIncomplete}
-          shippingIncomplete={readiness.shippingIncomplete}
-          networkIncomplete={readiness.networkIncomplete}
+          profileIncomplete={!readiness.profileComplete}
+          paymentsIncomplete={!readiness.paymentsComplete}
+          shippingIncomplete={!readiness.shippingComplete}
+          networkIncomplete={!readiness.networkComplete}
         />
       </div>
     </aside>

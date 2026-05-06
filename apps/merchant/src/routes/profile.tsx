@@ -18,6 +18,11 @@ import {
   cn,
 } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
+import {
+  EMPTY_PROFILE_FORM,
+  profileFormToUpdatePayload,
+  profileToFormValues,
+} from "../lib/profileForm"
 import { isProfileComplete } from "../lib/readiness"
 
 export const Route = createFileRoute("/profile")({
@@ -26,17 +31,6 @@ export const Route = createFileRoute("/profile")({
   },
   component: ProfilePage,
 })
-
-const EMPTY_FORM: ProfileFormValues = {
-  name: "",
-  displayName: "",
-  about: "",
-  picture: "",
-  banner: "",
-  nip05: "",
-  lud16: "",
-  website: "",
-}
 
 /** Fields the merchant must fill in for a complete profile */
 const REQUIRED_FIELDS: (keyof ProfileFormValues)[] = [
@@ -58,20 +52,11 @@ function ProfilePage() {
   const profileQuery = useProfile(pubkey)
   const updateMutation = useUpdateProfile("merchant")
   const [editing, setEditing] = useState(false)
-  const [form, setForm] = useState<ProfileFormValues>(EMPTY_FORM)
+  const [form, setForm] = useState<ProfileFormValues>(EMPTY_PROFILE_FORM)
 
   useEffect(() => {
     if (profileQuery.data) {
-      setForm({
-        name: profileQuery.data.name ?? "",
-        displayName: profileQuery.data.displayName ?? "",
-        about: profileQuery.data.about ?? "",
-        picture: profileQuery.data.picture ?? "",
-        banner: profileQuery.data.banner ?? "",
-        nip05: profileQuery.data.nip05 ?? "",
-        lud16: profileQuery.data.lud16 ?? "",
-        website: profileQuery.data.website ?? "",
-      })
+      setForm(profileToFormValues(profileQuery.data))
     }
   }, [profileQuery.data])
 
@@ -81,21 +66,9 @@ function ProfilePage() {
 
   function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    updateMutation.mutate(
-      {
-        name: form.name || undefined,
-        displayName: form.displayName || undefined,
-        about: form.about || undefined,
-        picture: form.picture || undefined,
-        banner: form.banner || undefined,
-        nip05: form.nip05 || undefined,
-        lud16: form.lud16 || undefined,
-        website: form.website || undefined,
-      },
-      {
-        onSuccess: () => setEditing(false),
-      }
-    )
+    updateMutation.mutate(profileFormToUpdatePayload(form), {
+      onSuccess: () => setEditing(false),
+    })
   }
 
   return (
@@ -299,16 +272,7 @@ function ProfilePage() {
                       onClick={() => {
                         setEditing(false)
                         if (profileQuery.data) {
-                          setForm({
-                            name: profileQuery.data.name ?? "",
-                            displayName: profileQuery.data.displayName ?? "",
-                            about: profileQuery.data.about ?? "",
-                            picture: profileQuery.data.picture ?? "",
-                            banner: profileQuery.data.banner ?? "",
-                            nip05: profileQuery.data.nip05 ?? "",
-                            lud16: profileQuery.data.lud16 ?? "",
-                            website: profileQuery.data.website ?? "",
-                          })
+                          setForm(profileToFormValues(profileQuery.data))
                         }
                       }}
                     >
