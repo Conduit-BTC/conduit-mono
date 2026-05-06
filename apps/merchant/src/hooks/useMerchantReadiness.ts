@@ -1,23 +1,25 @@
-import { useMemo, useSyncExternalStore } from "react"
+import { useCallback, useMemo, useSyncExternalStore } from "react"
 import { useAuth, useProfile, useRelaySettings } from "@conduit/core"
 import {
+  getNwcUriStorageKey,
   getMerchantSetupReadiness,
   hasNwcConfigured,
   MERCHANT_READINESS_STORAGE_EVENT,
-  NWC_URI_STORAGE_KEY,
   parseShippingConfig,
   SHIPPING_STORAGE_KEY,
 } from "../lib/readiness"
 
 const EMPTY_STORAGE_SNAPSHOT = JSON.stringify([null, null])
 
-function getMerchantReadinessStorageSnapshot(): string {
+function getMerchantReadinessStorageSnapshot(
+  nwcStorageKey: string | null
+): string {
   if (typeof window === "undefined") return EMPTY_STORAGE_SNAPSHOT
 
   try {
     return JSON.stringify([
       window.localStorage.getItem(SHIPPING_STORAGE_KEY),
-      window.localStorage.getItem(NWC_URI_STORAGE_KEY),
+      nwcStorageKey ? window.localStorage.getItem(nwcStorageKey) : null,
     ])
   } catch {
     return EMPTY_STORAGE_SNAPSHOT
@@ -41,14 +43,17 @@ function parseMerchantReadinessStorageSnapshot(
   }
 }
 
-function subscribeToMerchantReadinessStorage(onStoreChange: () => void) {
+function subscribeToMerchantReadinessStorage(
+  onStoreChange: () => void,
+  nwcStorageKey: string | null
+) {
   if (typeof window === "undefined") return () => {}
 
   function handleStorageChange(event: StorageEvent): void {
     if (
       event.key &&
       event.key !== SHIPPING_STORAGE_KEY &&
-      event.key !== NWC_URI_STORAGE_KEY
+      event.key !== nwcStorageKey
     ) {
       return
     }
@@ -71,9 +76,19 @@ export function useMerchantReadiness() {
   const { settings } = useRelaySettings(
     pubkey ? `merchant:${pubkey}` : "merchant"
   )
+  const nwcStorageKey = useMemo(() => getNwcUriStorageKey(pubkey), [pubkey])
+  const subscribeToStorage = useCallback(
+    (onStoreChange: () => void) =>
+      subscribeToMerchantReadinessStorage(onStoreChange, nwcStorageKey),
+    [nwcStorageKey]
+  )
+  const getStorageSnapshot = useCallback(
+    () => getMerchantReadinessStorageSnapshot(nwcStorageKey),
+    [nwcStorageKey]
+  )
   const storageSnapshot = useSyncExternalStore(
-    subscribeToMerchantReadinessStorage,
-    getMerchantReadinessStorageSnapshot,
+    subscribeToStorage,
+    getStorageSnapshot,
     () => EMPTY_STORAGE_SNAPSHOT
   )
   const [rawShippingConfig, rawNwcUri] = useMemo(

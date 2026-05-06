@@ -4,6 +4,7 @@ import {
   type RelaySettingsState,
 } from "@conduit/core"
 import {
+  getNwcUriStorageKey,
   getMerchantSetupReadiness,
   hasNwcConfigured,
   parseShippingConfig,
@@ -51,6 +52,14 @@ test("validates stored NWC URIs with the shared NIP-47 parser", () => {
   expect(parseStoredNwcConnection(validUri)?.walletPubkey).toBe("a".repeat(64))
   expect(hasNwcConfigured(validUri)).toBe(true)
   expect(hasNwcConfigured("nostr+walletconnect://wallet?relay=x")).toBe(false)
+})
+
+test("scopes stored NWC URIs to the active merchant pubkey", () => {
+  expect(getNwcUriStorageKey("merchant-pubkey")).toBe(
+    "conduit:merchant:nwc_uri:merchant-pubkey"
+  )
+  expect(getNwcUriStorageKey("")).toBe(null)
+  expect(hasNwcConfigured()).toBe(false)
 })
 
 test("parses stored shipping config defensively", () => {

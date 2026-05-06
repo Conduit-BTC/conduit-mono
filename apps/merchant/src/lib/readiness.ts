@@ -90,13 +90,15 @@ export function parseStoredNwcConnection(
 }
 
 export function hasNwcConfigured(raw?: string | null): boolean {
-  if (raw !== undefined) return !!parseStoredNwcConnection(raw)
+  return !!parseStoredNwcConnection(raw)
+}
 
-  try {
-    return !!parseStoredNwcConnection(localStorage.getItem(NWC_URI_STORAGE_KEY))
-  } catch {
-    return false
-  }
+export function getNwcUriStorageKey(
+  pubkey: string | null | undefined
+): string | null {
+  const normalizedPubkey = pubkey?.trim()
+  if (!normalizedPubkey) return null
+  return `${NWC_URI_STORAGE_KEY}:${normalizedPubkey}`
 }
 
 export function notifyMerchantReadinessStorageChange(): void {
@@ -112,7 +114,7 @@ export function getMerchantSetupReadiness({
   profile,
   shippingConfig,
   relaySettings,
-  hasNwc = hasNwcConfigured(),
+  hasNwc = false,
 }: {
   profile: Profile | null | undefined
   shippingConfig: ShippingConfig
