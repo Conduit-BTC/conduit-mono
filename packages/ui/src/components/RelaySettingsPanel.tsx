@@ -239,12 +239,12 @@ function CapabilityIcon({
         title={label}
         aria-label={label}
         className={cn(
-          "relative inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border",
+          "relative inline-flex h-6 w-6 shrink-0 items-center justify-center",
           warning
-            ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_18%,transparent)] text-[var(--warning)]"
+            ? "text-[var(--warning)]"
             : active
-              ? "border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_18%,transparent)] text-[var(--success)]"
-              : "border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)]"
+              ? "text-[var(--success)]"
+              : "text-[var(--text-secondary)]"
         )}
       >
         <Icon className="h-3 w-3" />
