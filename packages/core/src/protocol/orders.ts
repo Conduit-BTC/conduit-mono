@@ -21,12 +21,17 @@ import {
 /**
  * Parse a Conduit MVP order rumor event (kind 16) from its JSON content.
  */
-export function parseOrderRumorEvent(event: Pick<NDKEvent, "content">): OrderSchema {
+export function parseOrderRumorEvent(
+  event: Pick<NDKEvent, "content">
+): OrderSchema {
   const parsed = JSON.parse(event.content || "{}") as unknown
   return orderSchema.parse(parsed)
 }
 
-type OrderRumorEvent = Pick<NDKEvent, "id" | "created_at" | "content" | "tags" | "pubkey">
+type OrderRumorEvent = Pick<
+  NDKEvent,
+  "id" | "created_at" | "content" | "tags" | "pubkey"
+>
 
 type ParsedOrderMessageBase = {
   id: string
@@ -40,21 +45,45 @@ type ParsedOrderMessageBase = {
 
 export type ParsedOrderMessage =
   | (ParsedOrderMessageBase & { type: "order"; payload: OrderSchema })
-  | (ParsedOrderMessageBase & { type: "payment_request"; payload: PaymentRequestMessageSchema })
-  | (ParsedOrderMessageBase & { type: "status_update"; payload: StatusUpdateMessageSchema })
-  | (ParsedOrderMessageBase & { type: "shipping_update"; payload: ShippingUpdateMessageSchema })
-  | (ParsedOrderMessageBase & { type: "receipt"; payload: ReceiptMessageSchema })
-  | (ParsedOrderMessageBase & { type: "message"; payload: ConversationMessageSchema })
-  | (ParsedOrderMessageBase & { type: "payment_proof"; payload: PaymentProofMessageSchema })
+  | (ParsedOrderMessageBase & {
+      type: "payment_request"
+      payload: PaymentRequestMessageSchema
+    })
+  | (ParsedOrderMessageBase & {
+      type: "status_update"
+      payload: StatusUpdateMessageSchema
+    })
+  | (ParsedOrderMessageBase & {
+      type: "shipping_update"
+      payload: ShippingUpdateMessageSchema
+    })
+  | (ParsedOrderMessageBase & {
+      type: "receipt"
+      payload: ReceiptMessageSchema
+    })
+  | (ParsedOrderMessageBase & {
+      type: "message"
+      payload: ConversationMessageSchema
+    })
+  | (ParsedOrderMessageBase & {
+      type: "payment_proof"
+      payload: PaymentProofMessageSchema
+    })
 
-function getTagValue(tags: string[][] | undefined, name: string): string | null {
+function getTagValue(
+  tags: string[][] | undefined,
+  name: string
+): string | null {
   for (const tag of tags ?? []) {
     if (tag[0] === name && typeof tag[1] === "string") return tag[1]
   }
   return null
 }
 
-function parseNumericTag(tags: string[][] | undefined, name: string): number | undefined {
+function parseNumericTag(
+  tags: string[][] | undefined,
+  name: string
+): number | undefined {
   const value = getTagValue(tags, name)
   if (!value) return undefined
   const parsed = Number(value)
@@ -107,8 +136,12 @@ function messageBase<TType extends OrderMessageTypeSchema>(
  * MVP clients can handle mixed sender implementations while remaining
  * conservative in what we emit.
  */
-export function parseOrderMessageRumorEvent(event: OrderRumorEvent): ParsedOrderMessage {
-  const type = orderMessageTypeSchema.parse(getTagValue(event.tags ?? [], "type") ?? "order")
+export function parseOrderMessageRumorEvent(
+  event: OrderRumorEvent
+): ParsedOrderMessage {
+  const type = orderMessageTypeSchema.parse(
+    getTagValue(event.tags ?? [], "type") ?? "order"
+  )
   const json = parseJsonObject(event.content ?? "")
 
   if (type === "order") {
@@ -118,13 +151,18 @@ export function parseOrderMessageRumorEvent(event: OrderRumorEvent): ParsedOrder
   }
 
   const orderId =
-    getTagValue(event.tags ?? [], "order") ?? getString(json?.orderId) ?? getString(json?.id) ?? event.id
+    getTagValue(event.tags ?? [], "order") ??
+    getString(json?.orderId) ??
+    getString(json?.id) ??
+    event.id
 
   if (type === "payment_request") {
     const payload = paymentRequestMessageSchema.parse({
       invoice: getString(json?.invoice) ?? event.content.trim(),
-      amount: parseNumericTag(event.tags ?? [], "amount") ?? getNumber(json?.amount),
-      currency: getTagValue(event.tags ?? [], "currency") ?? getString(json?.currency),
+      amount:
+        parseNumericTag(event.tags ?? [], "amount") ?? getNumber(json?.amount),
+      currency:
+        getTagValue(event.tags ?? [], "currency") ?? getString(json?.currency),
       note: getString(json?.note),
     })
     return { ...messageBase(event, type, orderId), payload }
@@ -132,7 +170,8 @@ export function parseOrderMessageRumorEvent(event: OrderRumorEvent): ParsedOrder
 
   if (type === "status_update") {
     const payload = statusUpdateMessageSchema.parse({
-      status: getTagValue(event.tags ?? [], "status") ?? getString(json?.status),
+      status:
+        getTagValue(event.tags ?? [], "status") ?? getString(json?.status),
       note: getString(json?.note),
     })
     return { ...messageBase(event, type, orderId), payload }
@@ -140,8 +179,11 @@ export function parseOrderMessageRumorEvent(event: OrderRumorEvent): ParsedOrder
 
   if (type === "shipping_update") {
     const payload = shippingUpdateMessageSchema.parse({
-      carrier: getTagValue(event.tags ?? [], "carrier") ?? getString(json?.carrier),
-      trackingNumber: getTagValue(event.tags ?? [], "tracking") ?? getString(json?.trackingNumber),
+      carrier:
+        getTagValue(event.tags ?? [], "carrier") ?? getString(json?.carrier),
+      trackingNumber:
+        getTagValue(event.tags ?? [], "tracking") ??
+        getString(json?.trackingNumber),
       trackingUrl: getString(json?.trackingUrl),
       note: getString(json?.note),
     })
@@ -150,7 +192,9 @@ export function parseOrderMessageRumorEvent(event: OrderRumorEvent): ParsedOrder
 
   if (type === "receipt") {
     const payload = receiptMessageSchema.parse({
-      note: getString(json?.note) ?? (json ? undefined : event.content.trim() || undefined),
+      note:
+        getString(json?.note) ??
+        (json ? undefined : event.content.trim() || undefined),
     })
     return { ...messageBase(event, type, orderId), payload }
   }

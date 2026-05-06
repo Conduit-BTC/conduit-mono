@@ -16,7 +16,9 @@ import { parseNwcUri } from "../packages/core/src/protocol/nwc"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function validShipping(overrides: Partial<ShippingFormState> = {}): ShippingFormState {
+function validShipping(
+  overrides: Partial<ShippingFormState> = {}
+): ShippingFormState {
   return {
     firstName: "Alice",
     lastName: "Smith",
@@ -46,7 +48,9 @@ describe("validateShippingFields", () => {
   })
 
   it("rejects firstName longer than 50 chars", () => {
-    const errors = validateShippingFields(validShipping({ firstName: "A".repeat(51) }))
+    const errors = validateShippingFields(
+      validShipping({ firstName: "A".repeat(51) })
+    )
     expect(errors.some((e) => e.field === "firstName")).toBe(true)
   })
 
@@ -56,7 +60,9 @@ describe("validateShippingFields", () => {
   })
 
   it("rejects lastName longer than 50 chars", () => {
-    const errors = validateShippingFields(validShipping({ lastName: "B".repeat(51) }))
+    const errors = validateShippingFields(
+      validShipping({ lastName: "B".repeat(51) })
+    )
     expect(errors.some((e) => e.field === "lastName")).toBe(true)
   })
 
@@ -86,12 +92,16 @@ describe("validateShippingFields", () => {
   })
 
   it("rejects malformed email when provided", () => {
-    const errors = validateShippingFields(validShipping({ email: "not-an-email" }))
+    const errors = validateShippingFields(
+      validShipping({ email: "not-an-email" })
+    )
     expect(errors.some((e) => e.field === "email")).toBe(true)
   })
 
   it("accepts valid email", () => {
-    const errors = validateShippingFields(validShipping({ email: "alice@example.com" }))
+    const errors = validateShippingFields(
+      validShipping({ email: "alice@example.com" })
+    )
     expect(errors.some((e) => e.field === "email")).toBe(false)
   })
 
@@ -105,7 +115,9 @@ describe("validateShippingFields", () => {
   })
 
   it("accepts valid phone", () => {
-    const errors = validateShippingFields(validShipping({ phone: "+1 800 555-1234" }))
+    const errors = validateShippingFields(
+      validShipping({ phone: "+1 800 555-1234" })
+    )
     expect(errors.some((e) => e.field === "phone")).toBe(false)
   })
 
@@ -259,7 +271,9 @@ describe("fetchLnurlPayMetadata", () => {
 
   it("throws when tag is not payRequest", async () => {
     mockFetch({ tag: "withdrawRequest" })
-    await expect(fetchLnurlPayMetadata("user@wallet.example")).rejects.toThrow(/LNURL-pay endpoint/)
+    await expect(fetchLnurlPayMetadata("user@wallet.example")).rejects.toThrow(
+      /LNURL-pay endpoint/
+    )
   })
 
   it("throws on HTTP error", async () => {
@@ -268,7 +282,9 @@ describe("fetchLnurlPayMetadata", () => {
   })
 
   it("throws on malformed lud16 (no @)", async () => {
-    await expect(fetchLnurlPayMetadata("invalidemail")).rejects.toThrow(/Invalid lud16/)
+    await expect(fetchLnurlPayMetadata("invalidemail")).rejects.toThrow(
+      /Invalid lud16/
+    )
   })
 
   it("sets allowsNostr false when not declared", async () => {
@@ -317,14 +333,22 @@ describe("fetchZapInvoice", () => {
   it("throws on LNURL ERROR status", async () => {
     mockFetch({ status: "ERROR", reason: "Amount too low" })
     await expect(
-      fetchZapInvoice("https://wallet.example/lnurlp/callback", 1, FAKE_ZAP_REQUEST)
+      fetchZapInvoice(
+        "https://wallet.example/lnurlp/callback",
+        1,
+        FAKE_ZAP_REQUEST
+      )
     ).rejects.toThrow(/Amount too low/)
   })
 
   it("throws when pr field is missing", async () => {
     mockFetch({ status: "OK" })
     await expect(
-      fetchZapInvoice("https://wallet.example/lnurlp/callback", 100_000, FAKE_ZAP_REQUEST)
+      fetchZapInvoice(
+        "https://wallet.example/lnurlp/callback",
+        100_000,
+        FAKE_ZAP_REQUEST
+      )
     ).rejects.toThrow(/BOLT11/)
   })
 
@@ -335,11 +359,7 @@ describe("fetchZapInvoice", () => {
       return { ok: true, status: 200, json: async () => ({ pr: FAKE_INVOICE }) }
     }) as unknown as typeof fetch
 
-    await fetchZapInvoice(
-      "https://wallet.example/cb",
-      50_000,
-      FAKE_ZAP_REQUEST
-    )
+    await fetchZapInvoice("https://wallet.example/cb", 50_000, FAKE_ZAP_REQUEST)
 
     expect(capturedUrl).toContain("amount=50000")
     expect(capturedUrl).toContain("nostr=")

@@ -21,7 +21,9 @@ export interface LnurlPayMetadata {
  * Throws if the address is malformed, the endpoint is unreachable, or the
  * response is not a valid LNURL-pay response.
  */
-export async function fetchLnurlPayMetadata(lud16: string): Promise<LnurlPayMetadata> {
+export async function fetchLnurlPayMetadata(
+  lud16: string
+): Promise<LnurlPayMetadata> {
   const trimmed = lud16.trim().toLowerCase()
   const atIndex = trimmed.indexOf("@")
   if (atIndex <= 0 || atIndex === trimmed.length - 1) {
@@ -47,8 +49,10 @@ export async function fetchLnurlPayMetadata(lud16: string): Promise<LnurlPayMeta
   }
 
   const callback = typeof data.callback === "string" ? data.callback : ""
-  const minSendable = typeof data.minSendable === "number" ? data.minSendable : 0
-  const maxSendable = typeof data.maxSendable === "number" ? data.maxSendable : 0
+  const minSendable =
+    typeof data.minSendable === "number" ? data.minSendable : 0
+  const maxSendable =
+    typeof data.maxSendable === "number" ? data.maxSendable : 0
   if (!callback) throw new Error("LNURL-pay response missing callback")
 
   return {
@@ -57,7 +61,8 @@ export async function fetchLnurlPayMetadata(lud16: string): Promise<LnurlPayMeta
     maxSendable,
     tag: "payRequest",
     allowsNostr: data.allowsNostr === true,
-    nostrPubkey: typeof data.nostrPubkey === "string" ? data.nostrPubkey : undefined,
+    nostrPubkey:
+      typeof data.nostrPubkey === "string" ? data.nostrPubkey : undefined,
     metadata: typeof data.metadata === "string" ? data.metadata : "[]",
   }
 }
@@ -105,7 +110,9 @@ export async function fetchZapInvoice(
 
   let data: Record<string, unknown>
   try {
-    const res = await fetch(url.toString(), { signal: AbortSignal.timeout(15_000) })
+    const res = await fetch(url.toString(), {
+      signal: AbortSignal.timeout(15_000),
+    })
     if (!res.ok) throw new Error(`LNURL callback returned ${res.status}`)
     data = (await res.json()) as Record<string, unknown>
   } catch (e) {
@@ -115,12 +122,14 @@ export async function fetchZapInvoice(
   }
 
   if (data.status === "ERROR") {
-    const reason = typeof data.reason === "string" ? data.reason : "unknown LNURL error"
+    const reason =
+      typeof data.reason === "string" ? data.reason : "unknown LNURL error"
     throw new Error(`LNURL error: ${reason}`)
   }
 
   const invoice = typeof data.pr === "string" ? data.pr : ""
-  if (!invoice) throw new Error("LNURL callback did not return a BOLT11 invoice")
+  if (!invoice)
+    throw new Error("LNURL callback did not return a BOLT11 invoice")
 
   return { invoice }
 }
@@ -141,7 +150,9 @@ export type DecodedLightningInvoiceAmount = {
 const SATS_PER_BTC = 100_000_000
 const MSATS_PER_BTC = 100_000_000_000
 const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-const BECH32_GENERATORS = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
+const BECH32_GENERATORS = [
+  0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3,
+]
 
 function normalizeCurrencyCode(currency: string): string {
   return currency.trim().toUpperCase()
@@ -168,7 +179,8 @@ export function convertCommerceAmountToSats(
   }
 
   if (isUsdCurrency(currency)) {
-    if (!btcUsdRate || !Number.isFinite(btcUsdRate) || btcUsdRate <= 0) return null
+    if (!btcUsdRate || !Number.isFinite(btcUsdRate) || btcUsdRate <= 0)
+      return null
     return Math.round((amount / btcUsdRate) * SATS_PER_BTC)
   }
 
@@ -224,7 +236,9 @@ function isValidBech32Invoice(invoice: string): boolean {
   return bech32Polymod([...bech32HrpExpand(hrp), ...values]) === 1
 }
 
-export function getLightningInvoiceNetwork(invoice: string): LightningInvoiceNetwork {
+export function getLightningInvoiceNetwork(
+  invoice: string
+): LightningInvoiceNetwork {
   const normalized = normalizeLightningInvoice(invoice).toLowerCase()
 
   if (normalized.startsWith("lnbc")) return "mainnet"
@@ -243,13 +257,17 @@ export function getExpectedLightningNetworks(): LightningInvoiceNetwork[] {
   return []
 }
 
-export function isInvoiceCompatibleWithCurrentNetwork(invoice: string): boolean {
+export function isInvoiceCompatibleWithCurrentNetwork(
+  invoice: string
+): boolean {
   const expected = getExpectedLightningNetworks()
   const actual = getLightningInvoiceNetwork(invoice)
   return expected.includes(actual)
 }
 
-export function getLightningNetworkMismatchMessage(invoice: string): string | null {
+export function getLightningNetworkMismatchMessage(
+  invoice: string
+): string | null {
   const actual = getLightningInvoiceNetwork(invoice)
   if (actual === "unknown") {
     return "This invoice format could not be verified against the current Lightning network."
@@ -268,7 +286,9 @@ export function getLightningNetworkMismatchMessage(invoice: string): string | nu
   return `This invoice is for ${actual}, but Conduit is currently running in ${expectedLabel} mode.`
 }
 
-export function decodeLightningInvoiceAmount(invoice: string): DecodedLightningInvoiceAmount {
+export function decodeLightningInvoiceAmount(
+  invoice: string
+): DecodedLightningInvoiceAmount {
   const normalized = normalizeLightningInvoice(invoice).toLowerCase()
   if (!isValidBech32Invoice(normalized)) {
     return { msats: null, sats: null, currency: null }

@@ -160,7 +160,8 @@ export async function nwcMakeInvoice(
   timeoutMs = 30_000,
   clientAppId: ConduitAppId
 ): Promise<NwcMakeInvoiceResult> {
-  const { ndk, signer, walletUser, clientPubkey } = await buildNwcNdk(connection)
+  const { ndk, signer, walletUser, clientPubkey } =
+    await buildNwcNdk(connection)
 
   try {
     const requestPayload = JSON.stringify({
@@ -203,18 +204,23 @@ export async function nwcMakeInvoice(
   }
 }
 
-function parseMakeInvoiceResult(result: Record<string, unknown>): NwcMakeInvoiceResult {
+function parseMakeInvoiceResult(
+  result: Record<string, unknown>
+): NwcMakeInvoiceResult {
   const invoice = typeof result.invoice === "string" ? result.invoice : ""
-  if (!invoice) throw new Error("Invalid NWC make_invoice response: missing invoice")
+  if (!invoice)
+    throw new Error("Invalid NWC make_invoice response: missing invoice")
   return {
     invoice,
-    paymentHash: typeof result.payment_hash === "string" ? result.payment_hash : "",
+    paymentHash:
+      typeof result.payment_hash === "string" ? result.payment_hash : "",
     amount: typeof result.amount === "number" ? result.amount : 0,
     createdAt:
       typeof result.created_at === "number"
         ? result.created_at
         : Math.floor(Date.now() / 1000),
-    expiresAt: typeof result.expires_at === "number" ? result.expires_at : undefined,
+    expiresAt:
+      typeof result.expires_at === "number" ? result.expires_at : undefined,
   }
 }
 
@@ -233,7 +239,8 @@ export async function nwcPayInvoice(
   timeoutMs = 60_000,
   clientAppId: ConduitAppId
 ): Promise<NwcPayInvoiceResult> {
-  const { ndk, signer, walletUser, clientPubkey } = await buildNwcNdk(connection)
+  const { ndk, signer, walletUser, clientPubkey } =
+    await buildNwcNdk(connection)
 
   try {
     const requestPayload = JSON.stringify({
@@ -275,13 +282,18 @@ export async function nwcPayInvoice(
   }
 }
 
-function parsePayInvoiceResult(result: Record<string, unknown>): NwcPayInvoiceResult {
+function parsePayInvoiceResult(
+  result: Record<string, unknown>
+): NwcPayInvoiceResult {
   const preimage = typeof result.preimage === "string" ? result.preimage : ""
-  if (!preimage) throw new Error("Invalid NWC pay_invoice response: missing preimage")
+  if (!preimage)
+    throw new Error("Invalid NWC pay_invoice response: missing preimage")
   return {
     preimage,
-    paymentHash: typeof result.payment_hash === "string" ? result.payment_hash : undefined,
-    feeMsats: typeof result.fees_paid === "number" ? result.fees_paid : undefined,
+    paymentHash:
+      typeof result.payment_hash === "string" ? result.payment_hash : undefined,
+    feeMsats:
+      typeof result.fees_paid === "number" ? result.fees_paid : undefined,
   }
 }
 
@@ -300,7 +312,8 @@ export async function nwcGetInfo(
   timeoutMs = 10_000,
   clientAppId: ConduitAppId
 ): Promise<NwcGetInfoResult> {
-  const { ndk, signer, walletUser, clientPubkey } = await buildNwcNdk(connection)
+  const { ndk, signer, walletUser, clientPubkey } =
+    await buildNwcNdk(connection)
 
   try {
     const requestPayload = JSON.stringify({ method: "get_info", params: {} })
@@ -346,7 +359,8 @@ function parseGetInfoResult(result: Record<string, unknown>): NwcGetInfoResult {
     color: typeof result.color === "string" ? result.color : undefined,
     pubkey: typeof result.pubkey === "string" ? result.pubkey : undefined,
     network: typeof result.network === "string" ? result.network : undefined,
-    blockHeight: typeof result.block_height === "number" ? result.block_height : undefined,
+    blockHeight:
+      typeof result.block_height === "number" ? result.block_height : undefined,
   }
 }
 
@@ -383,7 +397,11 @@ async function waitForNwcResponse<T>(
       sub?.stop()
 
       try {
-        const decrypted = await signer.decrypt(walletUser, event.content, "nip44")
+        const decrypted = await signer.decrypt(
+          walletUser,
+          event.content,
+          "nip44"
+        )
         const response = JSON.parse(decrypted) as {
           result_type: string
           result?: Record<string, unknown>
@@ -392,7 +410,9 @@ async function waitForNwcResponse<T>(
 
         if (response.error) {
           reject(
-            new Error(`NWC error (${response.error.code}): ${response.error.message}`)
+            new Error(
+              `NWC error (${response.error.code}): ${response.error.message}`
+            )
           )
           return
         }
@@ -404,7 +424,9 @@ async function waitForNwcResponse<T>(
 
         resolve(parseResult(response.result))
       } catch (err) {
-        reject(err instanceof Error ? err : new Error("Failed to parse NWC response"))
+        reject(
+          err instanceof Error ? err : new Error("Failed to parse NWC response")
+        )
       }
     })
   })

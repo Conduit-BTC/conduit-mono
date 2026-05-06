@@ -122,7 +122,12 @@ export function useWallet(): UseWalletReturn {
       .catch(() => {
         // Capability probe failed - wallet may still be valid but we cannot
         // confirm pay_invoice support. Mark as connected, not pay-capable.
-        setState((s) => ({ ...s, info: null, error: null, status: "connected" }))
+        setState((s) => ({
+          ...s,
+          info: null,
+          error: null,
+          status: "connected",
+        }))
       })
   }, [])
 
@@ -131,9 +136,10 @@ export function useWallet(): UseWalletReturn {
   const info = state.info
   const error = state.error
 
-  const status = state.status === "connecting"
-    ? "connecting"
-    : deriveStatus(info, error, connection)
+  const status =
+    state.status === "connecting"
+      ? "connecting"
+      : deriveStatus(info, error, connection)
 
   const connect = useCallback(async (uri: string) => {
     setState((s) => ({ ...s, status: "connecting", error: null }))
@@ -157,13 +163,23 @@ export function useWallet(): UseWalletReturn {
     } catch {
       // Capability probe failed but URI parsed - store and mark connected
       writeStoredConnection(conn)
-      setState({ connection: conn, info: null, status: "connected", error: null })
+      setState({
+        connection: conn,
+        info: null,
+        status: "connected",
+        error: null,
+      })
     }
   }, [])
 
   const disconnect = useCallback(() => {
     clearStoredConnection()
-    setState({ status: "disconnected", connection: null, info: null, error: null })
+    setState({
+      status: "disconnected",
+      connection: null,
+      info: null,
+      error: null,
+    })
   }, [])
 
   const unavailableReason = deriveUnavailableReason(status)
