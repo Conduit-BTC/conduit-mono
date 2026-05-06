@@ -83,7 +83,7 @@ function getPageTitle(pathname: string): string {
   if (pathname.startsWith("/store/")) {
     return "Storefront"
   }
-  return "Market"
+  return "Not Found"
 }
 
 function RootErrorComponent({ error }: ErrorComponentProps) {
