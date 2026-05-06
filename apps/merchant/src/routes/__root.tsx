@@ -23,6 +23,8 @@ export const Route = createRootRoute({
   notFoundComponent: RootNotFound,
 })
 
+const AUTH_GATE_GRACE_MS = 650
+
 function RootShell({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen bg-[var(--background)] text-[var(--text-primary)] lg:h-screen lg:overflow-hidden">
@@ -45,13 +47,29 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootLayout() {
   const { pubkey, status } = useAuth()
+  const [authFallbackReady, setAuthFallbackReady] = useState(false)
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
   const signerConnected = status === "connected" && !!pubkey
   const signerRestoring =
     !!pubkey && (status === "restoring" || status === "connecting")
+  const shouldDelayAuthFallback =
+    !!pubkey && !signerConnected && !authFallbackReady
   const relaySettingsScope = pubkey ? `merchant:${pubkey}` : "merchant"
+
+  useEffect(() => {
+    if (!pubkey || signerConnected) {
+      setAuthFallbackReady(false)
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setAuthFallbackReady(true)
+    }, AUTH_GATE_GRACE_MS)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [pubkey, signerConnected])
 
   useEffect(() => {
     document
@@ -71,6 +89,10 @@ function RootLayout() {
     refreshNdkRelaySettings(relaySettingsScope)
   }, [relaySettingsScope])
 
+  if (shouldDelayAuthFallback) {
+    return <AuthGateGrace />
+  }
+
   if (signerRestoring) {
     return (
       <RootShell>
@@ -87,6 +109,14 @@ function RootLayout() {
     <RootShell>
       <Outlet />
     </RootShell>
+  )
+}
+
+function AuthGateGrace() {
+  return (
+    <div className="min-h-screen bg-[var(--background)] text-[var(--text-primary)]">
+      {import.meta.env.DEV && <TanStackRouterDevtools />}
+    </div>
   )
 }
 
