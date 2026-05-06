@@ -37,6 +37,7 @@ import {
   isPaymentsComplete,
   isShippingComplete,
   loadShippingConfig,
+  isNetworkComplete,
   hasNwcConfigured,
 } from "../lib/readiness"
 
@@ -129,14 +130,16 @@ function Logo({
 function useReadinessState() {
   const { pubkey } = useAuth()
   const { data: profile } = useProfile(pubkey)
-  const { settings } = useRelaySettings("merchant")
+  const { settings } = useRelaySettings(
+    pubkey ? `merchant:${pubkey}` : "merchant"
+  )
 
   const shippingConfig = loadShippingConfig()
 
   const profileIncomplete = !isProfileComplete(profile)
   const paymentsIncomplete = !isPaymentsComplete(profile)
   const shippingIncomplete = !isShippingComplete(shippingConfig)
-  const networkIncomplete = settings.entries.length === 0
+  const networkIncomplete = !isNetworkComplete(settings)
 
   const anyIncomplete =
     profileIncomplete ||

@@ -1,70 +1,63 @@
 import { useState, useCallback } from "react"
-
-const STORAGE_KEY_NWC = "conduit:merchant:nwc_uri"
-
-export interface NwcConnection {
-  walletPubkey: string
-  relays: string[]
-  secret: string
-  uri: string
-}
+import {
+  NWC_URI_STORAGE_KEY,
+  parseStoredNwcConnection,
+  type StoredNwcConnection,
+} from "../lib/readiness"
 
 interface UseNwcConnectionResult {
-  connection: NwcConnection | null
+  connection: StoredNwcConnection | null
+  rawUri: string
   error: string | null
   setUri: (uri: string) => void
   disconnect: () => void
 }
 
-function parseNwcUri(uri: string): NwcConnection {
-  const withoutScheme = uri.replace("nostr+walletconnect://", "")
-  const [walletPubkey, rest] = withoutScheme.split("?", 2)
-  const params = new URLSearchParams(rest ?? "")
-  const relay = params.get("relay") ?? ""
-  const secret = params.get("secret") ?? ""
-  return {
-    walletPubkey,
-    relays: relay ? [relay] : [],
-    secret,
-    uri,
-  }
-}
+function readStoredUri(): string {
+  if (typeof localStorage === "undefined") return ""
 
-function loadConnection(): NwcConnection | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_NWC)
-    if (!raw?.startsWith("nostr+walletconnect://")) return null
-    return parseNwcUri(raw)
+    return localStorage.getItem(NWC_URI_STORAGE_KEY) ?? ""
   } catch {
-    return null
+    return ""
   }
 }
 
 export function useNwcConnection(): UseNwcConnectionResult {
-  const [connection, setConnection] = useState<NwcConnection | null>(
-    loadConnection
+  const [rawUri, setRawUri] = useState(readStoredUri)
+  const [connection, setConnection] = useState<StoredNwcConnection | null>(() =>
+    parseStoredNwcConnection(readStoredUri())
   )
   const [error, setError] = useState<string | null>(null)
 
   const setUri = useCallback((uri: string) => {
     setError(null)
+    setRawUri(uri)
     try {
-      if (!uri.startsWith("nostr+walletconnect://")) {
-        throw new Error("Invalid NWC URI format")
+      const trimmed = uri.trim()
+      if (!trimmed) {
+        localStorage.removeItem(NWC_URI_STORAGE_KEY)
+        setConnection(null)
+        return
       }
-      const parsed = parseNwcUri(uri)
-      localStorage.setItem(STORAGE_KEY_NWC, uri)
+
+      const parsed = parseStoredNwcConnection(trimmed)
+      if (!parsed) throw new Error("Invalid NWC URI")
+
+      localStorage.setItem(NWC_URI_STORAGE_KEY, trimmed)
       setConnection(parsed)
     } catch (err) {
+      setConnection(null)
       setError(err instanceof Error ? err.message : "Invalid NWC URI")
     }
   }, [])
 
   const disconnect = useCallback(() => {
-    localStorage.removeItem(STORAGE_KEY_NWC)
+    localStorage.removeItem(NWC_URI_STORAGE_KEY)
+    setRawUri("")
     setConnection(null)
     setError(null)
   }, [])
 
-  return { connection, error, setUri, disconnect }
+  return { connection, rawUri, error, setUri, disconnect }
 }
