@@ -181,6 +181,7 @@ async function publishProduct(
     price,
     currency,
     type: "simple",
+    format: "physical",
     visibility: "public",
     stock: undefined,
     images: [{ url: imageUrl }],
