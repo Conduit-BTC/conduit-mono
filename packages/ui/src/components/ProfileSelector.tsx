@@ -1,4 +1,10 @@
-import { ChevronDown, CircleUserRound, LogOut, Radio } from "lucide-react"
+import {
+  ChevronDown,
+  CircleUserRound,
+  LogOut,
+  Radio,
+  Wallet,
+} from "lucide-react"
 import { useState, type ReactNode } from "react"
 import { Avatar, AvatarFallback, AvatarImage } from "./Avatar"
 import {
@@ -20,6 +26,8 @@ export interface ProfileSelectorProps {
   className?: string
   onProfile?: () => void
   onNetwork?: () => void
+  onWallet?: () => void
+  walletStatusLabel?: string
   onDisconnect: () => void
 }
 
@@ -75,6 +83,8 @@ export function ProfileSelector({
   className,
   onProfile,
   onNetwork,
+  onWallet,
+  walletStatusLabel,
   onDisconnect,
 }: ProfileSelectorProps) {
   const [open, setOpen] = useState(false)
@@ -184,7 +194,25 @@ export function ProfileSelector({
             />
           ) : null}
 
-          {onProfile || onNetwork ? (
+          {onWallet ? (
+            <SelectorItem
+              icon={<Wallet className="h-4 w-4" />}
+              label="Wallet"
+              pill={
+                walletStatusLabel ? (
+                  <span className="text-[10px] text-[var(--text-muted)]">
+                    {walletStatusLabel}
+                  </span>
+                ) : undefined
+              }
+              onSelect={() => {
+                setOpen(false)
+                onWallet()
+              }}
+            />
+          ) : null}
+
+          {onProfile || onNetwork || onWallet ? (
             <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
           ) : null}
 

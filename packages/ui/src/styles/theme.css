@@ -148,6 +148,7 @@
   --surface: var(--card);
   --surface-elevated: var(--popover);
   --surface-dialog: #090314;
+  --surface-overlay: #0d0520; /* floating menus / dropdowns */
 
   /* Border */
   --border: rgba(255, 255, 255, 0.12);
