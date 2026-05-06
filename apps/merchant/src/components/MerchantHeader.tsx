@@ -246,7 +246,7 @@ function UserMenu() {
   const { data: profile } = useProfile(pubkey)
   const { anyIncomplete } = useReadinessState()
 
-  if (!pubkey || status === "disconnected" || status === "error") return null
+  if (!pubkey || status !== "connected") return null
 
   const displayName =
     profile?.displayName ?? profile?.name ?? formatPubkey(pubkey, 6)

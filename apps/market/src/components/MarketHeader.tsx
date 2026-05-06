@@ -64,7 +64,7 @@ function UserMenu() {
   const { data: profile } = useProfile(pubkey)
   const [open, setOpen] = useState(false)
 
-  if (!pubkey || status === "disconnected" || status === "error") return null
+  if (!pubkey || status !== "connected") return null
 
   const displayName = profile?.displayName ?? profile?.name ?? null
 

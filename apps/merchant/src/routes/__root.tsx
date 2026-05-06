@@ -49,6 +49,8 @@ function RootLayout() {
     select: (state) => state.location.pathname,
   })
   const signerConnected = status === "connected" && !!pubkey
+  const signerRestoring =
+    !!pubkey && (status === "restoring" || status === "connecting")
   const relaySettingsScope = pubkey ? `merchant:${pubkey}` : "merchant"
 
   useEffect(() => {
@@ -59,14 +61,23 @@ function RootLayout() {
   }, [pathname])
 
   useEffect(() => {
-    const title = signerConnected ? getPageTitle(pathname) : "Connect"
+    const title =
+      signerConnected || signerRestoring ? getPageTitle(pathname) : "Connect"
     document.title = `${title} | Conduit Merchant`
-  }, [pathname, signerConnected])
+  }, [pathname, signerConnected, signerRestoring])
 
   useEffect(() => {
     if (getActiveRelaySettingsScope() === relaySettingsScope) return
     refreshNdkRelaySettings(relaySettingsScope)
   }, [relaySettingsScope])
+
+  if (signerRestoring) {
+    return (
+      <RootShell>
+        <AuthRestoring />
+      </RootShell>
+    )
+  }
 
   if (!signerConnected) {
     return <ConnectGate />
@@ -76,6 +87,22 @@ function RootLayout() {
     <RootShell>
       <Outlet />
     </RootShell>
+  )
+}
+
+function AuthRestoring() {
+  return (
+    <div className="flex min-h-[50vh] items-center justify-center">
+      <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] px-5 py-4 text-center shadow-sm">
+        <KeyRound className="mx-auto h-5 w-5 animate-pulse text-secondary-300" />
+        <div className="mt-3 text-sm font-semibold text-[var(--text-primary)]">
+          Restoring signer
+        </div>
+        <div className="mt-1 text-sm text-[var(--text-secondary)]">
+          Waiting for your browser extension.
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -97,6 +124,7 @@ function ConnectGate() {
   const { status, connect, error } = useAuth()
   const [isWorking, setIsWorking] = useState(false)
   const extensionAvailable = useNip07Availability()
+  const authPending = status === "connecting" || status === "restoring"
   const isProbablyMobileBrowser = useMemo(() => {
     if (typeof navigator === "undefined") return false
     return /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent)
@@ -105,7 +133,7 @@ function ConnectGate() {
     isProbablyMobileBrowser && !extensionAvailable && status !== "connected"
 
   async function handleConnect(): Promise<void> {
-    if (status === "connecting") return
+    if (authPending) return
     setIsWorking(true)
     try {
       await connect()
@@ -170,15 +198,11 @@ function ConnectGate() {
                 <div className="mt-6">
                   <Button
                     onClick={() => void handleConnect()}
-                    disabled={
-                      isWorking ||
-                      status === "connecting" ||
-                      !extensionAvailable
-                    }
+                    disabled={isWorking || authPending || !extensionAvailable}
                     className="h-12 w-full justify-center gap-2 text-base"
                   >
                     <KeyRound className="h-5 w-5" />
-                    {status === "connecting" || isWorking
+                    {authPending || isWorking
                       ? "Connecting..."
                       : "Connect signer"}
                   </Button>
@@ -188,7 +212,7 @@ function ConnectGate() {
               <div className="mt-5 text-[15px] leading-6 text-[var(--text-primary)]/80">
                 {mobileSignerUnavailable
                   ? "This mobile browser does not expose a supported Nostr signer here yet. Use a desktop browser with a signer extension, or a mobile browser that already exposes one."
-                  : status === "connecting" || isWorking
+                  : authPending || isWorking
                     ? "Waiting for your signer approval..."
                     : extensionAvailable
                       ? "Use your Nostr signer to open the merchant workspace."

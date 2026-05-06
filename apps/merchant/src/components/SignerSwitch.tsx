@@ -56,7 +56,9 @@ function SignerHeader({
       <ConduitLogoLockup className="h-11" />
       <div className="flex items-center gap-2 rounded-full border border-secondary-500/25 bg-secondary-500/10 px-3 py-1.5 text-secondary-200">
         <SignerGlyph className="h-4 w-4" />
-        <span className="text-xs font-medium uppercase tracking-[0.16em]">Signer</span>
+        <span className="text-xs font-medium uppercase tracking-[0.16em]">
+          Signer
+        </span>
       </div>
       <DialogTitle className="mt-4 flex items-center gap-2 text-2xl font-semibold tracking-[-0.02em] text-[var(--text-primary)] sm:text-[2rem]">
         <SignerGlyph className="h-5 w-5 shrink-0 text-secondary-300" />
@@ -87,6 +89,7 @@ export function SignerSwitch({
     isProbablyMobileBrowser && !extensionAvailable && status !== "connected"
   const isControlled = typeof open === "boolean"
   const isOpen = isControlled ? open : internalOpen
+  const authPending = status === "connecting" || status === "restoring"
 
   function setOpen(nextOpen: boolean): void {
     if (!isControlled) {
@@ -96,15 +99,17 @@ export function SignerSwitch({
   }
 
   const triggerLabel = useMemo(() => {
+    if (status === "restoring") return "Restoring..."
     if (status === "connecting") return "Connecting..."
-    if (status === "connected" && pubkey) return `Signer: ${formatPubkey(pubkey)}`
+    if (status === "connected" && pubkey)
+      return `Signer: ${formatPubkey(pubkey)}`
     return "Connect"
   }, [pubkey, status])
 
   const canSwitch = status === "connected" && !isWorking
 
   async function handleConnect(): Promise<void> {
-    if (status === "connecting") return
+    if (authPending) return
     setIsWorking(true)
     try {
       await connect()
@@ -133,7 +138,10 @@ export function SignerSwitch({
     <Dialog open={isOpen} onOpenChange={setOpen}>
       {!hideTrigger && (
         <DialogTrigger asChild>
-          <Button variant={status === "connected" ? "muted" : "primary"} size="sm">
+          <Button
+            variant={status === "connected" ? "muted" : "primary"}
+            size="sm"
+          >
             {triggerLabel}
           </Button>
         </DialogTrigger>
@@ -160,18 +168,23 @@ export function SignerSwitch({
                       >
                         Connected
                       </Badge>
-                      <Badge variant="outline" className="border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]">
+                      <Badge
+                        variant="outline"
+                        className="border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]"
+                      >
                         {formatPubkey(pubkey, 12)}
                       </Badge>
                     </div>
                     <p className="mt-3 text-[15px] leading-6 text-[var(--text-secondary)]">
-                      This signer will be used for listings, orders, and merchant messages.
+                      This signer will be used for listings, orders, and
+                      merchant messages.
                     </p>
                   </div>
 
                   {pendingSwitch && (
                     <div className="rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
-                      Change the active account in your browser extension, then reconnect here.
+                      Change the active account in your browser extension, then
+                      reconnect here.
                     </div>
                   )}
 
@@ -198,7 +211,11 @@ export function SignerSwitch({
             ) : (
               <>
                 <SignerHeader
-                  title={mobileSignerUnavailable ? "Signer unavailable here" : "Connect a signer"}
+                  title={
+                    mobileSignerUnavailable
+                      ? "Signer unavailable here"
+                      : "Connect a signer"
+                  }
                   description={
                     mobileSignerUnavailable
                       ? "This browser does not expose a supported Nostr signer."
@@ -210,11 +227,11 @@ export function SignerSwitch({
                   {!mobileSignerUnavailable && (
                     <Button
                       onClick={handleConnect}
-                      disabled={isWorking || status === "connecting" || !extensionAvailable}
+                      disabled={isWorking || authPending || !extensionAvailable}
                       className="h-12 w-full justify-center gap-2 text-base"
                     >
                       <SignerGlyph />
-                      {status === "connecting" ? "Connecting..." : "Connect signer"}
+                      {authPending ? "Connecting..." : "Connect signer"}
                     </Button>
                   )}
 
@@ -238,7 +255,9 @@ export function SignerSwitch({
                       </li>
                       <li className="flex items-center gap-3">
                         <CheckIcon />
-                        <span>Manage orders and buyer messages in one place.</span>
+                        <span>
+                          Manage orders and buyer messages in one place.
+                        </span>
                       </li>
                     </ul>
                   </div>
@@ -246,7 +265,8 @@ export function SignerSwitch({
 
                 {pendingSwitch && (
                   <div className="mx-auto mt-4 max-w-md rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
-                    Change the active account in your browser extension, then reconnect here.
+                    Change the active account in your browser extension, then
+                    reconnect here.
                   </div>
                 )}
 
@@ -258,7 +278,8 @@ export function SignerSwitch({
 
                 {!extensionAvailable && !mobileSignerUnavailable && (
                   <div className="mx-auto mt-4 max-w-md rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
-                    No signer extension detected. Install a NIP-07 signer such as Alby or nos2x, then refresh and connect.
+                    No signer extension detected. Install a NIP-07 signer such
+                    as Alby or nos2x, then refresh and connect.
                   </div>
                 )}
               </>

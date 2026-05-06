@@ -10,7 +10,12 @@ import {
 import { NDKNip07Signer } from "@nostr-dev-kit/ndk"
 import { setSigner, removeSigner } from "../protocol/ndk"
 
-export type AuthStatus = "disconnected" | "connecting" | "connected" | "error"
+export type AuthStatus =
+  | "disconnected"
+  | "restoring"
+  | "connecting"
+  | "connected"
+  | "error"
 
 export interface AuthContextValue {
   pubkey: string | null
@@ -23,6 +28,36 @@ export interface AuthContextValue {
 const AUTH_STORAGE_KEY = "conduit:auth"
 
 const AuthContext = createContext<AuthContextValue | null>(null)
+
+function readStoredAuth(): string | null {
+  if (typeof window === "undefined") return null
+
+  try {
+    return window.localStorage.getItem(AUTH_STORAGE_KEY)
+  } catch {
+    return null
+  }
+}
+
+function rememberAuth(pubkey: string): void {
+  if (typeof window === "undefined") return
+
+  try {
+    window.localStorage.setItem(AUTH_STORAGE_KEY, pubkey)
+  } catch {
+    // Storage can fail in restricted browser contexts; active signer state still works.
+  }
+}
+
+function forgetAuth(): void {
+  if (typeof window === "undefined") return
+
+  try {
+    window.localStorage.removeItem(AUTH_STORAGE_KEY)
+  } catch {
+    // Best effort only; disconnect still clears in-memory signer state.
+  }
+}
 
 export function hasNip07(): boolean {
   return typeof window !== "undefined" && !!window.nostr
@@ -42,10 +77,10 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [pubkey, setPubkey] = useState<string | null>(
-    () => localStorage.getItem(AUTH_STORAGE_KEY)
+  const [pubkey, setPubkey] = useState<string | null>(() => readStoredAuth())
+  const [status, setStatus] = useState<AuthStatus>(() =>
+    readStoredAuth() ? "restoring" : "disconnected"
   )
-  const [status, setStatus] = useState<AuthStatus>("disconnected")
   const [error, setError] = useState<string | null>(null)
   const connecting = useRef(false)
 
@@ -80,7 +115,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSigner(signer)
       setPubkey(pk)
       setStatus("connected")
-      localStorage.setItem(AUTH_STORAGE_KEY, pk)
+      rememberAuth(pk)
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to connect signer"
       setStatus("error")
@@ -96,38 +131,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setPubkey(null)
     setStatus("disconnected")
     setError(null)
-    localStorage.removeItem(AUTH_STORAGE_KEY)
+    forgetAuth()
   }, [])
 
   useEffect(() => {
-    const stored = localStorage.getItem(AUTH_STORAGE_KEY)
+    const stored = readStoredAuth()
     if (!stored) return
 
     let cancelled = false
 
     async function reconnectIfPossible() {
-      for (let i = 0; i < 5 && !hasNip07(); i++) {
-        await new Promise((resolve) => setTimeout(resolve, 200))
-      }
-
       if (cancelled) return
-
-      if (!hasNip07()) {
-        removeSigner()
-        localStorage.removeItem(AUTH_STORAGE_KEY)
-        setPubkey(null)
-        setStatus("disconnected")
-        setError(null)
-        return
-      }
 
       // Don't crash the app on auto-reconnect failure; surface state via `error`.
       void connect().catch(() => {
         if (cancelled) return
         removeSigner()
-        localStorage.removeItem(AUTH_STORAGE_KEY)
-        setPubkey(null)
-        setStatus("disconnected")
       })
     }
 
