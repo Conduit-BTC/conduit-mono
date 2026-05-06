@@ -88,20 +88,14 @@ function getPageTitle(pathname: string): string {
 
 function RootErrorComponent({ error }: ErrorComponentProps) {
   return (
-    <RootShell>
-      <ErrorPage
-        title="Something went wrong"
-        message={error.message || "An unexpected error occurred."}
-        showReload
-      />
-    </RootShell>
+    <ErrorPage
+      title="Something went wrong"
+      message={error.message || "An unexpected error occurred."}
+      showReload
+    />
   )
 }
 
 function RootNotFound() {
-  return (
-    <RootShell>
-      <NotFoundPage backTo="/" backLabel="Go to marketplace" />
-    </RootShell>
-  )
+  return <NotFoundPage backTo="/" backLabel="Go to marketplace" />
 }
