@@ -100,7 +100,9 @@ export function parseShippingOptionEvent(
 
   // ["country", code1, code2, ...]
   const countryTag = tags.find((t) => t[0] === "country")
-  const countries: string[] = countryTag ? countryTag.slice(1).filter(Boolean) : []
+  const countries: string[] = countryTag
+    ? countryTag.slice(1).filter(Boolean)
+    : []
 
   if (!dTag || countries.length === 0) return null
 
@@ -129,7 +131,9 @@ export async function getShippingOptions(
     authors: [merchantPubkey],
   }
 
-  const relayUrls = [...new Set([...commerceReadRelayUrls(), ...publicReadRelayUrls()])]
+  const relayUrls = [
+    ...new Set([...commerceReadRelayUrls(), ...publicReadRelayUrls()]),
+  ]
 
   const events = (await fetchEventsFanout(filter, { relayUrls })) as NDKEvent[]
 

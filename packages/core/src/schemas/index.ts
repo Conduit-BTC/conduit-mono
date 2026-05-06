@@ -220,4 +220,6 @@ export const paymentProofMessageSchema = z.object({
   note: z.string().max(2000).optional(),
 })
 
-export type PaymentProofMessageSchema = z.infer<typeof paymentProofMessageSchema>
+export type PaymentProofMessageSchema = z.infer<
+  typeof paymentProofMessageSchema
+>
