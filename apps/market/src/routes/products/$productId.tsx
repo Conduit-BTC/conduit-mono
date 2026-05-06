@@ -1,6 +1,11 @@
 import { LoaderCircle, SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
-import { formatNpub, getProfileDisplayLabel, useProfile } from "@conduit/core"
+import {
+  formatNpub,
+  getProfileDisplayLabel,
+  useProfile,
+  type Product,
+} from "@conduit/core"
 import { useEffect, useMemo, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
@@ -20,6 +25,24 @@ import { getProductPriceDisplay } from "../../lib/pricing"
 export const Route = createFileRoute("/products/$productId")({
   component: ProductPage,
 })
+
+const PRODUCT_SUMMARY_FALLBACK =
+  "This listing does not include a merchant-written summary yet. Product pricing, identity, and order flow are still available for checkout."
+
+function getProductDisplaySummary(product: Product): string {
+  let summary = product.summary?.trim() ?? ""
+
+  for (const image of product.images) {
+    summary = summary.split(image.url).join("")
+  }
+
+  return (
+    summary
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim() || PRODUCT_SUMMARY_FALLBACK
+  )
+}
 
 function ProductPage() {
   const cart = useCart()
@@ -75,6 +98,10 @@ function ProductPage() {
         year: "numeric",
       }).format(product.updatedAt)
     : null
+  const displaySummary = useMemo(
+    () => (product ? getProductDisplaySummary(product) : null),
+    [product]
+  )
 
   const visibleTags = useMemo(() => {
     if (!product) return []
@@ -88,9 +115,9 @@ function ProductPage() {
   }, [product?.id])
 
   return (
-    <div className="space-y-8">
+    <div className="min-w-0 max-w-full space-y-8 overflow-x-hidden">
       <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[var(--text-secondary)]">
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Link
             to="/products"
             className="transition-colors hover:text-[var(--text-primary)]"
@@ -110,7 +137,7 @@ function ProductPage() {
               <span>/</span>
             </>
           )}
-          <span className="text-[var(--text-primary)]">
+          <span className="min-w-0 break-words text-[var(--text-primary)]">
             {product?.title ?? "Product"}
           </span>
         </div>
@@ -187,7 +214,7 @@ function ProductPage() {
       {product && (
         <>
           <div
-            className={`grid min-w-0 items-start gap-5 lg:gap-6 ${hasMultipleImages ? "lg:grid-cols-[88px_minmax(0,1fr)_minmax(320px,420px)]" : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]"}`}
+            className={`grid min-w-0 max-w-full items-start gap-5 lg:gap-6 ${hasMultipleImages ? "lg:grid-cols-[88px_minmax(0,1fr)_minmax(320px,420px)]" : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]"}`}
           >
             {hasMultipleImages && (
               <div className="hidden max-h-[calc(100vh-11rem)] self-start overflow-y-auto pr-1 lg:flex lg:flex-col lg:gap-3">
@@ -213,16 +240,16 @@ function ProductPage() {
               </div>
             )}
 
-            <div className="min-w-0 max-w-full self-start overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
+            <div className="w-full min-w-0 max-w-[calc(100vw-2rem)] self-start justify-self-stretch overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] lg:max-w-full">
               <div className="flex aspect-square w-full max-w-full items-center justify-center overflow-hidden bg-[var(--background)] p-3 sm:aspect-[4/3] sm:p-6 lg:max-h-[calc(100vh-11rem)]">
                 <img
                   src={selectedImage?.url}
                   alt={selectedImage?.alt ?? product.title}
-                  className="h-full max-h-full w-full max-w-full object-contain"
+                  className="block h-full max-h-full w-full min-w-0 max-w-full object-contain"
                 />
               </div>
               {hasMultipleImages && (
-                <div className="flex max-w-full gap-2 overflow-x-auto overscroll-x-contain border-t border-[var(--border)] p-3 lg:hidden">
+                <div className="flex w-full max-w-full gap-2 overflow-x-auto overscroll-x-contain border-t border-[var(--border)] p-3 lg:hidden">
                   {images.map((image, index) => (
                     <button
                       key={`${image.url}-${index}`}
@@ -246,7 +273,7 @@ function ProductPage() {
               )}
             </div>
 
-            <aside className="min-w-0 self-start rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
+            <aside className="w-full min-w-0 max-w-full self-start rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
               <div className="w-full min-w-0 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
                 <div className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
                   Shop at
@@ -368,8 +395,8 @@ function ProductPage() {
             </aside>
           </div>
 
-          <section className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(300px,360px)]">
-            <div className="space-y-5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6">
+          <section className="grid min-w-0 max-w-full items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(300px,360px)]">
+            <div className="min-w-0 max-w-full space-y-5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-xl font-semibold text-[var(--text-primary)]">
                   Details
@@ -388,9 +415,8 @@ function ProductPage() {
               </div>
 
               <div className="space-y-5">
-                <p className="text-sm leading-7 text-[var(--text-secondary)]">
-                  {product.summary ??
-                    "This listing does not include a merchant-written summary yet. Product pricing, identity, and order flow are still available for checkout."}
+                <p className="break-words whitespace-pre-line text-sm leading-7 text-[var(--text-secondary)] [overflow-wrap:anywhere]">
+                  {displaySummary}
                 </p>
 
                 {(product.location || updatedLabel) && (
@@ -400,7 +426,7 @@ function ProductPage() {
                         <dt className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
                           Location
                         </dt>
-                        <dd className="mt-2 text-[var(--text-primary)]">
+                        <dd className="mt-2 break-words text-[var(--text-primary)] [overflow-wrap:anywhere]">
                           {product.location}
                         </dd>
                       </div>
@@ -439,7 +465,7 @@ function ProductPage() {
               </div>
             </div>
 
-            <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 text-sm leading-7 text-[var(--text-secondary)]">
+            <div className="min-w-0 max-w-full rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 text-sm leading-7 text-[var(--text-secondary)]">
               <div className="font-medium text-[var(--text-primary)]">
                 Buying with Conduit
               </div>
@@ -450,7 +476,7 @@ function ProductPage() {
             </div>
           </section>
 
-          <section className="space-y-4">
+          <section className="min-w-0 max-w-full space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-2xl font-semibold text-[var(--text-primary)]">
