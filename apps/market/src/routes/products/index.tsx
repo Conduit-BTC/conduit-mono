@@ -1,5 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { LoaderCircle } from "lucide-react"
 import {
   EVENT_KINDS,
   getProfileDisplayLabel,
@@ -144,6 +152,7 @@ function ProductsPage() {
   const [connectOpen, setConnectOpen] = useState(false)
   const [showAllTags, setShowAllTags] = useState(false)
   const [tagCloudOverflows, setTagCloudOverflows] = useState(false)
+  const [tagCloudInteracted, setTagCloudInteracted] = useState(false)
   const [pendingMerchant, setPendingMerchant] = useState<string | null>(null)
   const [merchantTagConflicts, setMerchantTagConflicts] = useState<string[]>([])
   const hasAutoPromptedConnect = useRef(false)
@@ -457,7 +466,7 @@ function ProductsPage() {
     ]
   }, [allTags, selectedTagSet, selectedTags])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = tagCloudRef.current
     if (!element) return
 
@@ -477,6 +486,8 @@ function ProductsPage() {
       window.removeEventListener("resize", measure)
     }
   }, [orderedTags, selectedTagSet, showAllTags])
+  const isUpdatingListings =
+    !productsQuery.isInitialLoading && productsQuery.isHydrating
 
   return (
     <div className="space-y-5">
@@ -549,7 +560,10 @@ function ProductsPage() {
                   "text-xs font-medium text-secondary-400 transition-[opacity,color] duration-200 hover:text-secondary-300",
                   showAllTags ? "opacity-100" : "pointer-events-none opacity-0",
                 ].join(" ")}
-                onClick={() => setShowAllTags((current) => !current)}
+                onClick={() => {
+                  setTagCloudInteracted(true)
+                  setShowAllTags((current) => !current)
+                }}
               >
                 Collapse
               </button>
@@ -560,7 +574,10 @@ function ProductsPage() {
             <div
               ref={tagCloudRef}
               className={[
-                "overflow-hidden transition-[max-height] duration-300 ease-out",
+                "overflow-hidden",
+                tagCloudInteracted
+                  ? "transition-[max-height] duration-300 ease-out"
+                  : "",
                 showAllTags || !tagCloudOverflows
                   ? "max-h-64"
                   : "max-h-[4.75rem]",
@@ -589,7 +606,10 @@ function ProductsPage() {
                 <button
                   type="button"
                   className="pointer-events-auto rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-1 text-xs font-medium text-[var(--text-primary)] shadow-[var(--shadow-sm)] transition-[opacity,transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-[var(--shadow-md)]"
-                  onClick={() => setShowAllTags(true)}
+                  onClick={() => {
+                    setTagCloudInteracted(true)
+                    setShowAllTags(true)
+                  }}
                 >
                   Expand categories
                 </button>
@@ -749,43 +769,15 @@ function ProductsPage() {
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-muted)]">
         <span>
           {filtered.length} {filtered.length === 1 ? "result" : "results"}
         </span>
-        <span aria-hidden="true">/</span>
-        <span>
-          {productsQuery.isShowingCache
-            ? "showing cached listings"
-            : productsQuery.hydrationStage === "resolving_follows"
-              ? status === "connected"
-                ? "reading your follow graph"
-                : "reading Conduit follow graph"
-              : productsQuery.hydrationStage === "first_degree"
-                ? "hydrated from follow feed"
-                : productsQuery.meta?.source === "public"
-                  ? "verified from relays"
-                  : productsQuery.meta?.source === "commerce"
-                    ? "verified from commerce relays"
-                    : "preparing relay view"}
-        </span>
-        {productsQuery.firstDegreeAuthorCount > 0 && (
-          <>
-            <span aria-hidden="true">/</span>
-            <span>{productsQuery.firstDegreeAuthorCount} followed authors</span>
-          </>
-        )}
-        {productsQuery.isHydrating && (
-          <>
-            <span aria-hidden="true">/</span>
-            <span className="text-secondary-300">hydrating cards</span>
-          </>
-        )}
-        {productsQuery.meta?.stale && (
-          <>
-            <span aria-hidden="true">/</span>
-            <span>stale-aware</span>
-          </>
+        {isUpdatingListings && (
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-[var(--text-secondary)]">
+            <LoaderCircle className="h-3 w-3 animate-spin text-secondary-300" />
+            Updating listings
+          </span>
         )}
       </div>
 
