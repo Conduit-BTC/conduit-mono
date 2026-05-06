@@ -65,7 +65,7 @@ function UserMenu() {
   const profile = profileQuery.data
   const navigate = useNavigate()
 
-  if (!pubkey || status === "disconnected" || status === "error") return null
+  if (!pubkey || status !== "connected") return null
 
   const displayName = getProfileDisplayLabel(profile, pubkey, {
     lookupSettled: !profileQuery.isPlaceholderData,

@@ -1,38 +1,76 @@
-import { Bell, Grid2x2, Menu, Package, Search, ShoppingBag } from "lucide-react"
+import {
+  Bell,
+  Bitcoin,
+  Grid2x2,
+  Menu,
+  Package,
+  Search,
+  ShoppingBag,
+  Truck,
+  UserRound,
+  Wifi,
+} from "lucide-react"
 import type { ComponentType } from "react"
 import { Link, useNavigate } from "@tanstack/react-router"
 import {
   config,
-  formatPubkey,
   getProfileDisplayLabel,
   useAuth,
   useProfile,
 } from "@conduit/core"
 import {
-  AccountMenu,
   Badge,
   Button,
   Input,
+  ProfileSelector,
   Sheet,
   SheetContent,
   SheetHeader,
   SheetTitle,
   SheetTrigger,
+  StatusPill,
   cn,
 } from "@conduit/ui"
 import { SignerSwitch } from "./SignerSwitch"
+import { useMerchantReadiness } from "../hooks/useMerchantReadiness"
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+type NavRoute =
+  | "/"
+  | "/orders"
+  | "/products"
+  | "/profile"
+  | "/payments"
+  | "/shipping"
+  | "/network"
 
 type NavItem = {
-  to: "/" | "/orders" | "/products"
+  to: NavRoute
   label: string
   icon: ComponentType<{ className?: string }>
+  /** If true, this nav item has readiness that can be incomplete */
+  hasReadiness?: boolean
 }
 
-const navItems: NavItem[] = [
+const mainNavItems: NavItem[] = [
   { to: "/", label: "Home", icon: Grid2x2 },
   { to: "/orders", label: "Orders", icon: ShoppingBag },
   { to: "/products", label: "Products", icon: Package },
 ]
+
+const setupNavItems: NavItem[] = [
+  { to: "/profile", label: "Profile", icon: UserRound, hasReadiness: true },
+  { to: "/payments", label: "Payments", icon: Bitcoin, hasReadiness: true },
+  { to: "/shipping", label: "Shipping", icon: Truck, hasReadiness: true },
+  { to: "/network", label: "Network", icon: Wifi, hasReadiness: true },
+]
+
+// ---------------------------------------------------------------------------
+// Avatar / logo helpers
+// ---------------------------------------------------------------------------
 
 function MerchantAvatarFallback({
   iconClassName = "h-4 w-4",
@@ -40,7 +78,7 @@ function MerchantAvatarFallback({
   iconClassName?: string
 }) {
   return (
-    <div className="flex h-full w-full items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]">
+    <div className="flex h-full w-full items-center justify-center rounded-full bg-[var(--avatar-bg)]">
       <img
         src="/images/logo/logo-icon.svg"
         alt=""
@@ -72,54 +110,110 @@ function Logo({
       className={cn("flex items-center gap-3 select-none", className)}
     >
       <img src={src} alt="Conduit" className="h-8 w-auto" />
-      <span className="hidden border-l border-[var(--border)] pl-3 font-display text-2xl font-medium tracking-tight text-[var(--text-primary)] md:block">
+      <span className="hidden border-l border-[var(--border)] pl-3 pr-2 font-display text-xl font-medium tracking-tight text-[var(--text-primary)] md:block">
         merchant
       </span>
     </Link>
   )
 }
 
+function IncompleteBadge({ className }: { className?: string }) {
+  return (
+    <StatusPill variant="warning" className={cn("text-[10px]", className)}>
+      Needs completion
+    </StatusPill>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Nav links
+// ---------------------------------------------------------------------------
+
 function MerchantNavLinks({
   onNavigate,
   compact = false,
+  paymentsIncomplete,
+  profileIncomplete,
+  shippingIncomplete,
+  networkIncomplete,
 }: {
   onNavigate?: () => void
   compact?: boolean
+  profileIncomplete: boolean
+  paymentsIncomplete: boolean
+  shippingIncomplete: boolean
+  networkIncomplete: boolean
 }) {
+  const setupIncompleteMap: Record<NavRoute, boolean> = {
+    "/profile": profileIncomplete,
+    "/payments": paymentsIncomplete,
+    "/shipping": shippingIncomplete,
+    "/network": networkIncomplete,
+    "/": false,
+    "/orders": false,
+    "/products": false,
+  }
+
+  function renderItem(item: NavItem) {
+    const Icon = item.icon
+    const incomplete = item.hasReadiness ? setupIncompleteMap[item.to] : false
+
+    return (
+      <Link
+        key={item.to}
+        to={item.to}
+        onClick={onNavigate}
+        className={cn(
+          "group relative flex items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] hover:text-[var(--text-primary)]",
+          compact ? "px-3 py-2" : ""
+        )}
+        activeProps={{
+          className:
+            "border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]",
+        }}
+      >
+        <Icon className="h-4 w-4 shrink-0" />
+        {compact ? (
+          <>
+            <span className="min-w-0 flex-1 truncate text-left">
+              {item.label}
+            </span>
+            {incomplete && <IncompleteBadge className="ml-auto shrink-0" />}
+          </>
+        ) : (
+          <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="whitespace-nowrap">{item.label}</span>
+            {incomplete && <IncompleteBadge className="ml-0" />}
+          </span>
+        )}
+      </Link>
+    )
+  }
+
   return (
     <nav className={cn("grid gap-1.5", compact ? "gap-1" : "gap-1.5")}>
-      {navItems.map((item) => {
-        const Icon = item.icon
-        return (
-          <Link
-            key={item.to}
-            to={item.to}
-            onClick={onNavigate}
-            className={cn(
-              "group flex items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--border)] hover:bg-[var(--surface)] hover:text-[var(--text-primary)]",
-              compact ? "px-3 py-2" : ""
-            )}
-            activeProps={{
-              className:
-                "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]",
-            }}
-          >
-            <Icon className="h-4 w-4 shrink-0" />
-            <span>{item.label}</span>
-          </Link>
-        )
-      })}
+      {mainNavItems.map(renderItem)}
+      <div className="my-1 border-t border-[var(--border)]" />
+      <div className="px-3 pb-0.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-[var(--text-muted)]">
+        Setup
+      </div>
+      {setupNavItems.map(renderItem)}
     </nav>
   )
 }
+
+// ---------------------------------------------------------------------------
+// UserMenu
+// ---------------------------------------------------------------------------
 
 function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
   const navigate = useNavigate()
   const profileQuery = useProfile(pubkey)
   const profile = profileQuery.data
+  const readiness = useMerchantReadiness()
 
-  if (!pubkey || status === "disconnected" || status === "error") return null
+  if (!pubkey || status !== "connected") return null
 
   const displayName = getProfileDisplayLabel(profile, pubkey, {
     lookupSettled: !profileQuery.isPlaceholderData,
@@ -128,21 +222,26 @@ function UserMenu() {
   })
 
   return (
-    <AccountMenu
-      variant="panel"
+    <ProfileSelector
       displayName={displayName}
-      pubkeyLabel={formatPubkey(pubkey, 12)}
       avatarUrl={profile?.picture}
-      fallback={<MerchantAvatarFallback iconClassName="h-4 w-4" />}
+      avatarFallback={<MerchantAvatarFallback iconClassName="h-4 w-4" />}
+      alertLabel={readiness.setupComplete ? undefined : "Needs completion"}
       onProfile={() => navigate({ to: "/profile" })}
-      onNetwork={() => navigate({ to: "/settings" })}
+      onNetwork={() => navigate({ to: "/network" })}
       onDisconnect={disconnect}
+      className="h-12 min-w-[12.75rem] rounded-[16px] px-3"
     />
   )
 }
 
+// ---------------------------------------------------------------------------
+// Mobile nav
+// ---------------------------------------------------------------------------
+
 function MobileNav() {
   const { pubkey, status } = useAuth()
+  const readiness = useMerchantReadiness()
 
   return (
     <Sheet>
@@ -158,7 +257,7 @@ function MobileNav() {
       </SheetTrigger>
       <SheetContent
         side="left"
-        className="w-[320px] border-r border-[var(--border)] bg-[var(--surface)]"
+        className="w-[320px] border-r border-[var(--border)] bg-[var(--surface-dialog)]"
       >
         <SheetHeader>
           <SheetTitle>
@@ -167,17 +266,23 @@ function MobileNav() {
         </SheetHeader>
 
         <div className="mt-6 space-y-6">
-          <MerchantNavLinks compact />
+          <MerchantNavLinks
+            compact
+            profileIncomplete={!readiness.profileComplete}
+            paymentsIncomplete={!readiness.paymentsComplete}
+            shippingIncomplete={!readiness.shippingComplete}
+            networkIncomplete={!readiness.networkComplete}
+          />
 
-          <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
             {config.lightningNetwork !== "mainnet" && (
               <Badge
                 variant="secondary"
                 className={cn(
                   "mb-3 border",
                   config.lightningNetwork === "mock"
-                    ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
-                    : "border-blue-500/30 bg-blue-500/10 text-blue-400"
+                    ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] text-[var(--warning)]"
+                    : "border-[var(--info)] bg-[color-mix(in_srgb,var(--info)_10%,transparent)] text-[var(--info)]"
                 )}
               >
                 {config.lightningNetwork}
@@ -191,10 +296,16 @@ function MobileNav() {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Sidebar
+// ---------------------------------------------------------------------------
+
 export function MerchantSidebar() {
+  const readiness = useMerchantReadiness()
+
   return (
-    <aside className="hidden h-screen flex-col border-r border-[var(--border)] bg-[var(--surface)] lg:flex">
-      <div className="border-b border-[var(--border)] px-5 py-5">
+    <aside className="hidden h-screen min-h-0 flex-col border-r border-[var(--border)] bg-[var(--surface)] lg:flex">
+      <div className="shrink-0 border-b border-[var(--border)] px-5 py-5">
         <Logo />
         {config.lightningNetwork !== "mainnet" && (
           <Badge
@@ -202,8 +313,8 @@ export function MerchantSidebar() {
             className={cn(
               "mt-4 border",
               config.lightningNetwork === "mock"
-                ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
-                : "border-blue-500/30 bg-blue-500/10 text-blue-400"
+                ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] text-[var(--warning)]"
+                : "border-[var(--info)] bg-[color-mix(in_srgb,var(--info)_10%,transparent)] text-[var(--info)]"
             )}
           >
             {config.lightningNetwork}
@@ -211,12 +322,21 @@ export function MerchantSidebar() {
         )}
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col px-4 py-5">
-        <MerchantNavLinks />
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-5">
+        <MerchantNavLinks
+          profileIncomplete={!readiness.profileComplete}
+          paymentsIncomplete={!readiness.paymentsComplete}
+          shippingIncomplete={!readiness.shippingComplete}
+          networkIncomplete={!readiness.networkComplete}
+        />
       </div>
     </aside>
   )
 }
+
+// ---------------------------------------------------------------------------
+// Header
+// ---------------------------------------------------------------------------
 
 export function MerchantHeader() {
   const { pubkey, status } = useAuth()

@@ -405,19 +405,23 @@ jobs:
               body: newBody,
             });
 
-            // --- 2. Per-commit comment (idempotent by commit SHA) ---
+            // --- 2. Sticky PR comment (idempotent by marker) ---
             const commentBody = `${previewCommentBlock}\n\n_Preview links for commit ${shortSha}_`;
 
-            const alreadyPosted = comments.find((comment) =>
-              comment.body?.includes(MARKER_START)
-              && comment.body?.includes(`commit ${shortSha}`)
+            const existingPreviewComment = comments
+              .slice()
+              .reverse()
+              .find((comment) =>
+                comment.user?.login === "github-actions[bot]"
+                && comment.body?.includes(MARKER_START)
+                && comment.body?.includes(MARKER_END)
             );
 
-            if (alreadyPosted) {
+            if (existingPreviewComment) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                comment_id: alreadyPosted.id,
+                comment_id: existingPreviewComment.id,
                 body: commentBody,
               });
               return;

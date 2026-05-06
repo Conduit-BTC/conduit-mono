@@ -18,10 +18,8 @@ import {
   isInvoiceCompatibleWithCurrentNetwork,
   mockMakeInvoice,
   nwcMakeInvoice,
-  parseNwcUri,
   publishWithPlanner,
   weblnMakeInvoice,
-  type NwcConnection,
   type ParsedOrderMessage,
   type StatusUpdateMessageSchema,
   useAuth,
@@ -46,6 +44,7 @@ import { requireAuth } from "../lib/auth"
 import { giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import { CheckCircle2, RotateCw } from "lucide-react"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
+import { useNwcConnection } from "../hooks/useNwcConnection"
 
 export const Route = createFileRoute("/orders")({
   beforeLoad: () => {
@@ -366,56 +365,6 @@ function MessageCard({
   )
 }
 
-const NWC_URI_KEY = "conduit:merchant:nwc_uri"
-
-function useNwcConnection(): {
-  connection: NwcConnection | null
-  rawUri: string
-  setUri: (uri: string) => void
-  disconnect: () => void
-  error: string | null
-} {
-  const [rawUri, setRawUri] = useState(
-    () => localStorage.getItem(NWC_URI_KEY) ?? ""
-  )
-  const [error, setError] = useState<string | null>(null)
-  const [connection, setConnection] = useState<NwcConnection | null>(() => {
-    const stored = localStorage.getItem(NWC_URI_KEY)
-    if (!stored) return null
-    try {
-      return parseNwcUri(stored)
-    } catch {
-      return null
-    }
-  })
-
-  function disconnect() {
-    setRawUri("")
-    localStorage.removeItem(NWC_URI_KEY)
-    setConnection(null)
-    setError(null)
-  }
-
-  function setUri(uri: string) {
-    setRawUri(uri)
-    if (!uri.trim()) {
-      disconnect()
-      return
-    }
-    try {
-      const conn = parseNwcUri(uri.trim())
-      localStorage.setItem(NWC_URI_KEY, uri.trim())
-      setConnection(conn)
-      setError(null)
-    } catch (err) {
-      setConnection(null)
-      setError(err instanceof Error ? err.message : "Invalid NWC URI")
-    }
-  }
-
-  return { connection, rawUri, setUri, disconnect, error }
-}
-
 function OrdersPage() {
   const { pubkey, status } = useAuth()
   const btcUsdRateQuery = useBtcUsdRate()
@@ -437,8 +386,6 @@ function OrdersPage() {
   const [trackingNumber, setTrackingNumber] = useState("")
   const [trackingUrl, setTrackingUrl] = useState("")
   const [shippingNote, setShippingNote] = useState("")
-  const [showNwcSetup, setShowNwcSetup] = useState(false)
-  const [showNwcReplace, setShowNwcReplace] = useState(false)
   const [replyNote, setReplyNote] = useState("")
   const [successFlash, setSuccessFlash] = useState<string | null>(null)
   const [weblnAvailable, setWeblnAvailable] = useState(false)
@@ -873,9 +820,9 @@ function OrdersPage() {
                 <span
                   className={`inline-flex h-4 w-4 items-center justify-center transition-colors duration-200 ${
                     refreshButtonState === "refreshing"
-                      ? "animate-pulse text-amber-300"
+                      ? "animate-pulse text-[var(--secondary-500)]"
                       : refreshButtonState === "done"
-                        ? "text-emerald-400"
+                        ? "text-[var(--success)]"
                         : "text-[var(--text-secondary)]"
                   }`}
                 >
@@ -900,7 +847,7 @@ function OrdersPage() {
                   <span
                     className={`absolute transition-opacity duration-200 ${
                       refreshButtonState === "refreshing"
-                        ? "animate-pulse opacity-100 text-amber-300"
+                        ? "animate-pulse opacity-100 text-[var(--secondary-500)]"
                         : "opacity-0"
                     }`}
                   >
@@ -909,7 +856,7 @@ function OrdersPage() {
                   <span
                     className={`absolute transition-opacity duration-200 ${
                       refreshButtonState === "done"
-                        ? "opacity-100 text-emerald-400"
+                        ? "opacity-100 text-[var(--success)]"
                         : "opacity-0"
                     }`}
                   >
@@ -922,24 +869,23 @@ function OrdersPage() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button
+            asChild
             variant={
               canMockInvoice() || weblnAvailable || nwc.connection
                 ? "outline"
                 : "muted"
             }
             size="sm"
-            onClick={() => {
-              setShowNwcSetup(true)
-              if (!nwc.connection) setShowNwcReplace(false)
-            }}
           >
-            {canMockInvoice()
-              ? "Mock mode"
-              : weblnAvailable
-                ? "Alby detected"
-                : nwc.connection
-                  ? "Wallet settings"
-                  : "Connect wallet"}
+            <Link to="/payments">
+              {canMockInvoice()
+                ? "Mock mode"
+                : weblnAvailable
+                  ? "Alby detected"
+                  : nwc.connection
+                    ? "Wallet connected"
+                    : "Payment settings"}
+            </Link>
           </Button>
           <Button asChild variant="muted">
             <Link to="/">Home</Link>
@@ -973,146 +919,6 @@ function OrdersPage() {
           </div>
         </div>
       </div>
-
-      {showNwcSetup && (
-        <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-          {weblnAvailable && (
-            <div className="mb-3 flex items-center gap-2 text-xs text-green-400">
-              <span className="inline-block h-2 w-2 rounded-full bg-green-400" />
-              Alby extension detected — invoices will be generated via WebLN (no
-              NWC URI needed).
-            </div>
-          )}
-
-          <div className="text-sm font-medium text-[var(--text-primary)]">
-            Nostr Wallet Connect (NIP-47)
-          </div>
-
-          {nwc.connection ? (
-            <div className="mt-3 space-y-3">
-              <div className="flex items-center gap-2 text-xs text-green-400">
-                <span className="inline-block h-2 w-2 rounded-full bg-green-400" />
-                Connected to wallet{" "}
-                <span className="font-mono">
-                  {formatPubkey(nwc.connection.walletPubkey, 8)}
-                </span>{" "}
-                via {nwc.connection.relays[0]}
-              </div>
-              <div className="grid gap-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-xs text-[var(--text-secondary)]">
-                <div>
-                  Wallet pubkey:{" "}
-                  <span className="font-mono text-[var(--text-primary)]">
-                    {nwc.connection.walletPubkey}
-                  </span>
-                </div>
-                <div>
-                  Relay:{" "}
-                  <span className="font-mono text-[var(--text-primary)]">
-                    {nwc.connection.relays[0]}
-                  </span>
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="muted"
-                  size="sm"
-                  onClick={() => setShowNwcReplace((current) => !current)}
-                >
-                  {showNwcReplace ? "Cancel replace" : "Replace connection"}
-                </Button>
-                <Button
-                  variant="muted"
-                  size="sm"
-                  onClick={() => nwc.disconnect()}
-                >
-                  Disconnect wallet
-                </Button>
-              </div>
-              {showNwcReplace && (
-                <div className="grid gap-2">
-                  <Input
-                    value={nwc.rawUri}
-                    onChange={(e) => nwc.setUri(e.target.value)}
-                    placeholder="nostr+walletconnect://..."
-                    type="password"
-                  />
-                  {nwc.error && (
-                    <div className="text-xs text-error">{nwc.error}</div>
-                  )}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="mt-3 space-y-3">
-              <p className="text-xs text-[var(--text-secondary)]">
-                Connect a Lightning wallet to generate invoices with one click.
-                Without NWC, you can still paste BOLT11 invoices manually.
-              </p>
-
-              <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
-                <div className="text-xs font-medium text-[var(--text-primary)]">
-                  How to get a connection URI:
-                </div>
-                <ol className="mt-2 space-y-1.5 text-xs text-[var(--text-secondary)]">
-                  <li>
-                    1. Set up a Lightning wallet that supports NWC (NIP-47)
-                  </li>
-                  <li>
-                    2. Create a new NWC connection with{" "}
-                    <span className="font-medium text-[var(--text-primary)]">
-                      make_invoice
-                    </span>{" "}
-                    permission
-                  </li>
-                  <li>
-                    3. Copy the{" "}
-                    <span className="font-mono">nostr+walletconnect://</span>{" "}
-                    URI and paste below
-                  </li>
-                </ol>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <a
-                    href="https://albyhub.com"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]"
-                  >
-                    Alby Hub
-                  </a>
-                  <a
-                    href="https://lnbits.com"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]"
-                  >
-                    LNbits
-                  </a>
-                  <a
-                    href="https://nwc.dev"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface)]"
-                  >
-                    nwc.dev
-                  </a>
-                </div>
-              </div>
-
-              <div className="grid gap-2">
-                <Input
-                  value={nwc.rawUri}
-                  onChange={(e) => nwc.setUri(e.target.value)}
-                  placeholder="nostr+walletconnect://..."
-                  type="password"
-                />
-                {nwc.error && (
-                  <div className="text-xs text-error">{nwc.error}</div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
 
       {!signerConnected && (
         <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
@@ -1401,7 +1207,7 @@ function OrdersPage() {
                             ? "Invoice via Alby extension."
                             : nwc.connection
                               ? "Invoice via NWC wallet."
-                              : "Install Alby or connect NWC for one-click invoicing."}{" "}
+                              : "Install Alby or configure NWC on Payments for one-click invoicing."}{" "}
                           Conduit shows the parsed amount when the invoice
                           format can be verified.
                         </p>

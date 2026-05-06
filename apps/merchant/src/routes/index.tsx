@@ -9,9 +9,19 @@ import {
   useNdkState,
   type ParsedOrderMessage,
 } from "@conduit/core"
-import { ArrowRight, Package, ShoppingBag, Wallet } from "lucide-react"
+import {
+  ArrowRight,
+  Package,
+  ShoppingBag,
+  Truck,
+  UserRound,
+  Wallet,
+  Wifi,
+} from "lucide-react"
 import type { ComponentType } from "react"
-import { Badge, Button } from "@conduit/ui"
+import { Badge, Button, StatusPill } from "@conduit/ui"
+import { useMerchantReadiness } from "../hooks/useMerchantReadiness"
+import type { MerchantSetupReadiness } from "../lib/readiness"
 
 export const Route = createFileRoute("/")({
   component: DashboardPage,
@@ -138,9 +148,98 @@ function StatCard({
   )
 }
 
+function ReadinessRow({
+  label,
+  complete,
+  to,
+  icon: Icon,
+}: {
+  label: string
+  complete: boolean
+  to: "/" | "/profile" | "/payments" | "/shipping" | "/network"
+  icon: ComponentType<{ className?: string }>
+}) {
+  return (
+    <Link
+      to={to}
+      className="flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-3 transition-colors hover:bg-[var(--surface)]"
+    >
+      <span className="flex min-w-0 items-center gap-3">
+        <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)]">
+          <Icon className="h-4 w-4" />
+        </span>
+        <span className="truncate text-sm font-medium text-[var(--text-primary)]">
+          {label}
+        </span>
+      </span>
+      <StatusPill
+        variant={complete ? "success" : "warning"}
+        className="text-[10px]"
+      >
+        {complete ? "Ready" : "Needs completion"}
+      </StatusPill>
+    </Link>
+  )
+}
+
+function MerchantReadinessPanel({
+  readiness,
+}: {
+  readiness: MerchantSetupReadiness
+}) {
+  return (
+    <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+            Merchant readiness
+          </div>
+          <h2 className="mt-2 text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
+            {readiness.setupComplete ? "Ready to sell" : "Finish setup"}
+          </h2>
+        </div>
+        <StatusPill
+          variant={readiness.setupComplete ? "success" : "warning"}
+          className="mt-0.5"
+        >
+          {readiness.setupComplete ? "Complete" : "Incomplete"}
+        </StatusPill>
+      </div>
+
+      <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <ReadinessRow
+          label="Profile"
+          complete={readiness.profileComplete}
+          to="/profile"
+          icon={UserRound}
+        />
+        <ReadinessRow
+          label="Payments"
+          complete={readiness.paymentsComplete}
+          to="/payments"
+          icon={Wallet}
+        />
+        <ReadinessRow
+          label="Shipping"
+          complete={readiness.shippingComplete}
+          to="/shipping"
+          icon={Truck}
+        />
+        <ReadinessRow
+          label="Network"
+          complete={readiness.networkComplete}
+          to="/network"
+          icon={Wifi}
+        />
+      </div>
+    </section>
+  )
+}
+
 function DashboardPage() {
   const { pubkey, error } = useAuth()
   const ndk = useNdkState()
+  const readiness = useMerchantReadiness()
   const statsQuery = useQuery({
     queryKey: ["merchant-dashboard-live", pubkey ?? "none"],
     enabled: !!pubkey,
@@ -228,6 +327,8 @@ function DashboardPage() {
           icon={ShoppingBag}
         />
       </div>
+
+      {pubkey && <MerchantReadinessPanel readiness={readiness} />}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">
         <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">

@@ -55,6 +55,7 @@ export {
 
 // Hooks
 export { useNdkState } from "./hooks/useNdkState"
+export { useNip07Availability } from "./hooks/useNip07Availability"
 export { useProfile } from "./hooks/useProfile"
 export {
   useRelaySettings,

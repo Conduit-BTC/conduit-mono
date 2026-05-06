@@ -14,6 +14,7 @@ import {
 
 export type SignerSwitchStatus =
   | "disconnected"
+  | "restoring"
   | "connecting"
   | "connected"
   | "error"
@@ -101,6 +102,7 @@ export function SignerSwitch({
   const isControlled = typeof open === "boolean"
   const isOpen = isControlled ? open : internalOpen
   const connected = status === "connected" && !!pubkeyLabel
+  const authPending = status === "connecting" || status === "restoring"
 
   function setOpen(nextOpen: boolean): void {
     if (!isControlled) setInternalOpen(nextOpen)
@@ -108,13 +110,13 @@ export function SignerSwitch({
   }
 
   const triggerLabel = useMemo(() => {
-    if (status === "connecting") return "Connecting..."
+    if (authPending) return "Connecting..."
     if (connected) return `Signer: ${pubkeyLabel}`
     return "Connect"
-  }, [connected, pubkeyLabel, status])
+  }, [authPending, connected, pubkeyLabel])
 
   async function handleConnect(): Promise<void> {
-    if (status === "connecting") return
+    if (authPending) return
     setIsWorking(true)
     try {
       await onConnect()
@@ -236,15 +238,11 @@ export function SignerSwitch({
                     <Button
                       type="button"
                       onClick={() => void handleConnect()}
-                      disabled={
-                        isWorking ||
-                        status === "connecting" ||
-                        !extensionAvailable
-                      }
+                      disabled={isWorking || authPending || !extensionAvailable}
                       className="h-12 w-full justify-center gap-2 text-base"
                     >
                       <SignerGlyph />
-                      {status === "connecting" || isWorking
+                      {authPending || isWorking
                         ? "Connecting..."
                         : "Connect signer"}
                     </Button>
