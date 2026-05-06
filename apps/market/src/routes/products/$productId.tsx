@@ -68,6 +68,13 @@ function ProductPage() {
   const priceDisplay = product
     ? getProductPriceDisplay(product, btcUsdRateQuery.data?.rate ?? null)
     : null
+  const updatedLabel = product
+    ? new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      }).format(product.updatedAt)
+    : null
 
   const visibleTags = useMemo(() => {
     if (!product) return []
@@ -180,98 +187,108 @@ function ProductPage() {
       {product && (
         <>
           <div
-            className={`grid gap-5 lg:gap-6 ${hasMultipleImages ? "lg:grid-cols-[88px_minmax(0,1fr)_minmax(320px,420px)]" : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]"}`}
+            className={`grid items-start gap-5 lg:gap-6 ${hasMultipleImages ? "lg:grid-cols-[88px_minmax(0,1fr)_minmax(320px,420px)]" : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]"}`}
           >
             {hasMultipleImages && (
-              <div className="hidden gap-3 lg:grid">
-                {images.slice(0, 4).map((image, index) => (
+              <div className="hidden max-h-[calc(100vh-11rem)] self-start overflow-y-auto pr-1 lg:flex lg:flex-col lg:gap-3">
+                {images.map((image, index) => (
                   <button
                     key={`${image.url}-${index}`}
                     type="button"
                     onClick={() => setSelectedImageIndex(index)}
-                    className={`overflow-hidden rounded-xl border bg-[var(--surface)] transition-colors ${
+                    className={`h-20 w-20 shrink-0 overflow-hidden rounded-xl border bg-[var(--surface)] transition-colors ${
                       selectedImageIndex === index
                         ? "border-secondary-400 shadow-[var(--shadow-glass-inset)]"
                         : "border-[var(--border)] hover:border-[var(--text-secondary)]"
                     }`}
+                    aria-label={`Show image ${index + 1}`}
                   >
-                    <div className="aspect-square">
-                      <img
-                        src={image.url}
-                        alt={image.alt ?? product.title}
-                        className="h-full w-full object-cover"
-                      />
-                    </div>
+                    <img
+                      src={image.url}
+                      alt={image.alt ?? product.title}
+                      className="h-full w-full object-cover"
+                    />
                   </button>
                 ))}
               </div>
             )}
 
-            <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
-              <div className="flex min-h-[22rem] items-center justify-center bg-[var(--background)] p-4 sm:p-6 lg:min-h-[32rem]">
+            <div className="self-start overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
+              <div className="flex aspect-[4/3] min-h-[18rem] items-center justify-center bg-[var(--background)] p-4 sm:p-6 lg:max-h-[calc(100vh-11rem)]">
                 <img
                   src={selectedImage?.url}
                   alt={selectedImage?.alt ?? product.title}
-                  className="max-h-[60vh] w-auto max-w-full object-contain lg:max-h-[34rem]"
+                  className="h-full w-full object-contain"
                 />
               </div>
+              {hasMultipleImages && (
+                <div className="flex gap-2 overflow-x-auto border-t border-[var(--border)] p-3 lg:hidden">
+                  {images.map((image, index) => (
+                    <button
+                      key={`${image.url}-${index}`}
+                      type="button"
+                      onClick={() => setSelectedImageIndex(index)}
+                      className={`h-16 w-16 shrink-0 overflow-hidden rounded-lg border bg-[var(--surface)] transition-colors ${
+                        selectedImageIndex === index
+                          ? "border-secondary-400 shadow-[var(--shadow-glass-inset)]"
+                          : "border-[var(--border)]"
+                      }`}
+                      aria-label={`Show image ${index + 1}`}
+                    >
+                      <img
+                        src={image.url}
+                        alt={image.alt ?? product.title}
+                        className="h-full w-full object-cover"
+                      />
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
-            <aside className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
-              <div className="flex flex-col gap-4">
-                <div className="w-full min-w-0 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
-                  <div className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
-                    Shop at
-                  </div>
-                  <div className="mt-3 flex items-start gap-3">
-                    <Avatar className="h-11 w-11 shrink-0 border border-[var(--border)]">
-                      <AvatarImage
-                        src={merchantProfile.data?.picture}
-                        alt={merchantName}
-                      />
-                      <AvatarFallback>
-                        <MerchantAvatarFallback />
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="min-w-0 flex-1">
+            <aside className="self-start rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
+              <div className="w-full min-w-0 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
+                <div className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
+                  Shop at
+                </div>
+                <div className="mt-3 flex items-start gap-3">
+                  <Avatar className="h-11 w-11 shrink-0 border border-[var(--border)]">
+                    <AvatarImage
+                      src={merchantProfile.data?.picture}
+                      alt={merchantName}
+                    />
+                    <AvatarFallback>
+                      <MerchantAvatarFallback />
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0 flex-1">
+                    <Link
+                      to="/store/$pubkey"
+                      params={{ pubkey: product.pubkey }}
+                      className="block min-w-0 rounded-md transition-colors hover:text-secondary-300"
+                    >
+                      <div className="truncate text-base font-semibold leading-tight text-[var(--text-primary)]">
+                        {merchantName}
+                      </div>
+                    </Link>
+                    <div className="mt-1 flex min-w-0 items-center gap-2">
                       <Link
                         to="/store/$pubkey"
                         params={{ pubkey: product.pubkey }}
-                        className="block min-w-0 rounded-md transition-colors hover:text-secondary-300"
+                        className="truncate font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
                       >
-                        <div className="truncate text-base font-semibold leading-tight text-[var(--text-primary)]">
-                          {merchantName}
-                        </div>
+                        {formatNpub(product.pubkey, 10)}
                       </Link>
-                      <div className="mt-1 flex min-w-0 items-center gap-2">
-                        <Link
-                          to="/store/$pubkey"
-                          params={{ pubkey: product.pubkey }}
-                          className="truncate font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
-                        >
-                          {formatNpub(product.pubkey, 10)}
-                        </Link>
-                        <CopyButton
-                          value={product.pubkey}
-                          label="Copy pubkey"
-                        />
-                      </div>
+                      <CopyButton value={product.pubkey} label="Copy pubkey" />
                     </div>
                   </div>
                 </div>
               </div>
 
               <div className="mt-5 space-y-5 border-t border-[var(--border)] pt-5">
-                <div>
-                  <h1 className="text-2xl font-semibold leading-tight text-[var(--text-primary)] sm:text-3xl">
-                    {product.title}
-                  </h1>
-                  {product.summary && (
-                    <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
-                      {product.summary}
-                    </p>
-                  )}
-                </div>
+                <h1 className="line-clamp-3 text-2xl font-semibold leading-tight text-[var(--text-primary)] sm:text-3xl">
+                  {product.title}
+                </h1>
 
                 <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                   <div className="text-2xl font-bold text-secondary-400">
@@ -286,6 +303,12 @@ function ProductPage() {
                     Payment and shipping are finalized during checkout.
                   </div>
                 </div>
+
+                {typeof product.stock === "number" && (
+                  <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm text-[var(--text-primary)]">
+                    {product.stock} available
+                  </div>
+                )}
 
                 <div className="flex flex-wrap items-center gap-3">
                   <div className="inline-flex h-10 items-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-elevated)]">
@@ -341,47 +364,12 @@ function ProductPage() {
                     View cart
                   </Link>
                 </Button>
-
-                <div className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm">
-                  {typeof product.stock === "number" && (
-                    <div className="flex items-start justify-between gap-3">
-                      <span className="text-[var(--text-secondary)]">
-                        Stock
-                      </span>
-                      <span className="text-[var(--text-primary)]">
-                        {product.stock} available
-                      </span>
-                    </div>
-                  )}
-                  {product.location && (
-                    <div className="flex items-start justify-between gap-3">
-                      <span className="text-[var(--text-secondary)]">
-                        Location
-                      </span>
-                      <span className="text-right text-[var(--text-primary)]">
-                        {product.location}
-                      </span>
-                    </div>
-                  )}
-                  <div className="flex items-start justify-between gap-3">
-                    <span className="text-[var(--text-secondary)]">
-                      Updated
-                    </span>
-                    <span className="text-right text-[var(--text-primary)]">
-                      {new Intl.DateTimeFormat("en-US", {
-                        month: "short",
-                        day: "numeric",
-                        year: "numeric",
-                      }).format(product.updatedAt)}
-                    </span>
-                  </div>
-                </div>
               </div>
             </aside>
           </div>
 
-          <section className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
-            <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6">
+          <section className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(300px,360px)]">
+            <div className="space-y-5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-xl font-semibold text-[var(--text-primary)]">
                   Details
@@ -399,11 +387,36 @@ function ProductPage() {
                 )}
               </div>
 
-              <div className="mt-4 space-y-5">
+              <div className="space-y-5">
                 <p className="text-sm leading-7 text-[var(--text-secondary)]">
                   {product.summary ??
                     "This listing does not include a merchant-written summary yet. Product pricing, identity, and order flow are still available for checkout."}
                 </p>
+
+                {(product.location || updatedLabel) && (
+                  <dl className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm sm:grid-cols-2">
+                    {product.location && (
+                      <div>
+                        <dt className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                          Location
+                        </dt>
+                        <dd className="mt-2 text-[var(--text-primary)]">
+                          {product.location}
+                        </dd>
+                      </div>
+                    )}
+                    {updatedLabel && (
+                      <div>
+                        <dt className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                          Updated
+                        </dt>
+                        <dd className="mt-2 text-[var(--text-primary)]">
+                          {updatedLabel}
+                        </dd>
+                      </div>
+                    )}
+                  </dl>
+                )}
 
                 {visibleTags.length > 0 && (
                   <div className="space-y-2">
@@ -426,20 +439,14 @@ function ProductPage() {
               </div>
             </div>
 
-            <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6">
-              <h2 className="text-xl font-semibold text-[var(--text-primary)]">
+            <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 text-sm leading-7 text-[var(--text-secondary)]">
+              <div className="font-medium text-[var(--text-primary)]">
                 Buying with Conduit
-              </h2>
-              <div className="mt-4 space-y-4 text-sm text-[var(--text-secondary)]">
-                <p>
-                  Add products to your cart, continue to checkout, and send your
-                  order through Nostr.
-                </p>
-                <p>
-                  Payment requests and order updates appear in your order
-                  conversation after checkout.
-                </p>
               </div>
+              <p className="mt-2">
+                Add products to your cart, send the order through Nostr, and
+                continue payment details in the order conversation.
+              </p>
             </div>
           </section>
 
