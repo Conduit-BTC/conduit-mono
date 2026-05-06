@@ -572,6 +572,7 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     price: row.price,
     currency: row.currency,
     type: row.type ?? "simple",
+    format: (row as { format?: "physical" | "digital" }).format ?? "physical",
     visibility: row.visibility ?? "public",
     stock: row.stock,
     images: row.images ?? [],

@@ -11,6 +11,8 @@ export const productSchema = z.object({
   price: z.number().min(0),
   currency: z.string().default("USD"),
   type: z.enum(["simple", "variable"]).default("simple"),
+  /** Whether the product requires physical shipping. Defaults to "physical". */
+  format: z.enum(["physical", "digital"]).default("physical"),
   visibility: z.enum(["public", "private"]).default("public"),
   stock: z.number().int().min(0).optional(),
   images: z.array(

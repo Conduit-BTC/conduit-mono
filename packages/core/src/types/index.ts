@@ -12,6 +12,8 @@ export interface Product {
   price: number
   currency: string
   type: "simple" | "variable"
+  /** Whether the product requires physical shipping. Defaults to "physical". */
+  format: "physical" | "digital"
   visibility: "public" | "private"
   stock?: number
   images: ProductImage[]
