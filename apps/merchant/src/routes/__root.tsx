@@ -142,13 +142,7 @@ function RootErrorComponent({ error }: ErrorComponentProps) {
 }
 
 function RootNotFound() {
-  const { pubkey, status } = useAuth()
-  const signerConnected = status === "connected" && !!pubkey
-  const notFoundPage = <NotFoundPage backTo="/" backLabel="Go to dashboard" />
-
-  if (!signerConnected) return notFoundPage
-
-  return <RootShell>{notFoundPage}</RootShell>
+  return <NotFoundPage backTo="/" backLabel="Go to dashboard" />
 }
 
 function ConnectGate() {
