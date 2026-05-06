@@ -10,9 +10,9 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WalletRouteImport } from './routes/wallet'
-import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as OrdersRouteImport } from './routes/orders'
+import { Route as NetworkRouteImport } from './routes/network'
 import { Route as MessagesRouteImport } from './routes/messages'
 import { Route as CheckoutRouteImport } from './routes/checkout'
 import { Route as CartRouteImport } from './routes/cart'
@@ -27,11 +27,6 @@ const WalletRoute = WalletRouteImport.update({
   path: '/wallet',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SettingsRoute = SettingsRouteImport.update({
-  id: '/settings',
-  path: '/settings',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const ProfileRoute = ProfileRouteImport.update({
   id: '/profile',
   path: '/profile',
@@ -40,6 +35,11 @@ const ProfileRoute = ProfileRouteImport.update({
 const OrdersRoute = OrdersRouteImport.update({
   id: '/orders',
   path: '/orders',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const NetworkRoute = NetworkRouteImport.update({
+  id: '/network',
+  path: '/network',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MessagesRoute = MessagesRouteImport.update({
@@ -88,9 +88,9 @@ export interface FileRoutesByFullPath {
   '/cart': typeof CartRoute
   '/checkout': typeof CheckoutRoute
   '/messages': typeof MessagesRoute
+  '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
-  '/settings': typeof SettingsRoute
   '/wallet': typeof WalletRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
@@ -102,9 +102,9 @@ export interface FileRoutesByTo {
   '/cart': typeof CartRoute
   '/checkout': typeof CheckoutRoute
   '/messages': typeof MessagesRoute
+  '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
-  '/settings': typeof SettingsRoute
   '/wallet': typeof WalletRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
@@ -117,9 +117,9 @@ export interface FileRoutesById {
   '/cart': typeof CartRoute
   '/checkout': typeof CheckoutRoute
   '/messages': typeof MessagesRoute
+  '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
-  '/settings': typeof SettingsRoute
   '/wallet': typeof WalletRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
@@ -133,9 +133,9 @@ export interface FileRouteTypes {
     | '/cart'
     | '/checkout'
     | '/messages'
+    | '/network'
     | '/orders'
     | '/profile'
-    | '/settings'
     | '/wallet'
     | '/products/$productId'
     | '/store/$pubkey'
@@ -147,9 +147,9 @@ export interface FileRouteTypes {
     | '/cart'
     | '/checkout'
     | '/messages'
+    | '/network'
     | '/orders'
     | '/profile'
-    | '/settings'
     | '/wallet'
     | '/products/$productId'
     | '/store/$pubkey'
@@ -161,9 +161,9 @@ export interface FileRouteTypes {
     | '/cart'
     | '/checkout'
     | '/messages'
+    | '/network'
     | '/orders'
     | '/profile'
-    | '/settings'
     | '/wallet'
     | '/products/$productId'
     | '/store/$pubkey'
@@ -176,9 +176,9 @@ export interface RootRouteChildren {
   CartRoute: typeof CartRoute
   CheckoutRoute: typeof CheckoutRoute
   MessagesRoute: typeof MessagesRoute
+  NetworkRoute: typeof NetworkRoute
   OrdersRoute: typeof OrdersRoute
   ProfileRoute: typeof ProfileRoute
-  SettingsRoute: typeof SettingsRoute
   WalletRoute: typeof WalletRoute
   ProductsProductIdRoute: typeof ProductsProductIdRoute
   StorePubkeyRoute: typeof StorePubkeyRoute
@@ -195,13 +195,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WalletRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/settings': {
-      id: '/settings'
-      path: '/settings'
-      fullPath: '/settings'
-      preLoaderRoute: typeof SettingsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/profile': {
       id: '/profile'
       path: '/profile'
@@ -214,6 +207,13 @@ declare module '@tanstack/react-router' {
       path: '/orders'
       fullPath: '/orders'
       preLoaderRoute: typeof OrdersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/network': {
+      id: '/network'
+      path: '/network'
+      fullPath: '/network'
+      preLoaderRoute: typeof NetworkRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/messages': {
@@ -280,9 +280,9 @@ const rootRouteChildren: RootRouteChildren = {
   CartRoute: CartRoute,
   CheckoutRoute: CheckoutRoute,
   MessagesRoute: MessagesRoute,
+  NetworkRoute: NetworkRoute,
   OrdersRoute: OrdersRoute,
   ProfileRoute: ProfileRoute,
-  SettingsRoute: SettingsRoute,
   WalletRoute: WalletRoute,
   ProductsProductIdRoute: ProductsProductIdRoute,
   StorePubkeyRoute: StorePubkeyRoute,
