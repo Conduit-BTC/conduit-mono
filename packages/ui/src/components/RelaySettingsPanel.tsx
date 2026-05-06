@@ -612,12 +612,12 @@ export function RelaySettingsPanel({
     (entry) => entry.readEnabled || entry.writeEnabled
   ).length
   const publishedLabel = publishedRelayListUpdatedAt
-    ? `Published NIP-65 loaded ${new Date(
+    ? `Published relays loaded ${new Date(
         publishedRelayListUpdatedAt * 1000
       ).toLocaleDateString()}`
     : isLoadingPublishedRelayList
-      ? "Checking published NIP-65"
-      : "Local relay draft"
+      ? "Checking published relays"
+      : "Local relay changes"
 
   async function handleAddRelay(event: FormEvent): Promise<void> {
     event.preventDefault()
@@ -667,9 +667,6 @@ export function RelaySettingsPanel({
           <div className="flex flex-col items-start gap-1 pt-1 sm:items-end">
             <span className="text-[0.65rem] uppercase tracking-[0.18em] text-[var(--text-muted)]">
               {publishedLabel}
-            </span>
-            <span className="text-[0.65rem] uppercase tracking-[0.18em] text-[var(--text-muted)]">
-              Truth-first relay planner
             </span>
           </div>
         </div>
@@ -768,7 +765,7 @@ export function RelaySettingsPanel({
                 <Upload className="h-4 w-4" />
                 {isPublishing || publishingRelayList
                   ? "Publishing..."
-                  : "Publish NIP-65"}
+                  : "Publish relays"}
               </Button>
             ) : null}
           </div>
