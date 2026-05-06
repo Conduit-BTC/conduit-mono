@@ -168,10 +168,19 @@ function MerchantNavLinks({
         }}
       >
         <Icon className="h-4 w-4 shrink-0" />
-        <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="whitespace-nowrap">{item.label}</span>
-          {incomplete && <IncompleteBadge className="ml-0" />}
-        </span>
+        {compact ? (
+          <>
+            <span className="min-w-0 flex-1 truncate text-left">
+              {item.label}
+            </span>
+            {incomplete && <IncompleteBadge className="ml-auto shrink-0" />}
+          </>
+        ) : (
+          <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="whitespace-nowrap">{item.label}</span>
+            {incomplete && <IncompleteBadge className="ml-0" />}
+          </span>
+        )}
       </Link>
     )
   }
@@ -239,7 +248,7 @@ function MobileNav() {
       </SheetTrigger>
       <SheetContent
         side="left"
-        className="w-[320px] border-r border-[var(--border)] bg-[var(--surface-overlay)]"
+        className="w-[320px] border-r border-[var(--border)] bg-[var(--surface-dialog)]"
       >
         <SheetHeader>
           <SheetTitle>
