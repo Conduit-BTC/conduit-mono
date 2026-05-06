@@ -155,7 +155,8 @@ function StorefrontPage() {
   const [followOverride, setFollowOverride] = useState<boolean | null>(null)
 
   const merchantName = getProfileDisplayLabel(profile, pubkey, {
-    lookupSettled: true,
+    lookupSettled: !profileQuery.isPlaceholderData,
+    pendingLabel: "Loading store",
     emptyPrefix: "Store",
     chars: 8,
   })

@@ -438,11 +438,14 @@ function ProductsPage() {
   const getMerchantName = useCallback(
     (merchantPubkey: string) =>
       getProfileDisplayLabel(merchantProfiles[merchantPubkey], merchantPubkey, {
-        lookupSettled: true,
+        lookupSettled:
+          !visibleMerchantPubkeys.includes(merchantPubkey) ||
+          visibleIdentityReady,
+        pendingLabel: "Loading store",
         emptyPrefix: "Store",
         chars: 6,
       }),
-    [merchantProfiles]
+    [merchantProfiles, visibleIdentityReady, visibleMerchantPubkeys]
   )
 
   const hasActiveFilters = !!(

@@ -44,7 +44,8 @@ export function ProductGridCard({
   const merchantName =
     merchantNameOverride ||
     getProfileDisplayLabel(profile, product.pubkey, {
-      lookupSettled: true,
+      lookupSettled: !profileQuery.isPlaceholderData,
+      pendingLabel: "Loading store",
       emptyPrefix: "Store",
       chars: 6,
     })

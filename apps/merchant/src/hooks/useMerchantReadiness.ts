@@ -1,5 +1,10 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react"
-import { useAuth, useProfile, useRelaySettings } from "@conduit/core"
+import {
+  useAuth,
+  useConduitSession,
+  useProfile,
+  useRelaySettings,
+} from "@conduit/core"
 import {
   getNwcUriStorageKey,
   getMerchantSetupReadiness,
@@ -72,10 +77,12 @@ function subscribeToMerchantReadinessStorage(
 
 export function useMerchantReadiness() {
   const { pubkey } = useAuth()
+  const session = useConduitSession()
   const { data: profile } = useProfile(pubkey)
-  const { settings } = useRelaySettings(
-    pubkey ? `merchant:${pubkey}` : "merchant"
-  )
+  const { settings } = useRelaySettings(session.relayScope, {
+    pubkey,
+    bootstrapRelayList: false,
+  })
   const nwcStorageKey = useMemo(() => getNwcUriStorageKey(pubkey), [pubkey])
   const subscribeToStorage = useCallback(
     (onStoreChange: () => void) =>

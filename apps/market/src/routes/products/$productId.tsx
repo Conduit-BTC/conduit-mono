@@ -78,7 +78,8 @@ function ProductPage() {
   const selectedImage = images[selectedImageIndex] ?? images[0]
   const merchantName = product
     ? getProfileDisplayLabel(merchantProfile.data, product.pubkey, {
-        lookupSettled: true,
+        lookupSettled: !merchantProfile.isPlaceholderData,
+        pendingLabel: "Loading store",
         emptyPrefix: "Store",
         chars: 8,
       })
