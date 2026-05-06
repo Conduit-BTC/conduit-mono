@@ -235,23 +235,20 @@ function CapabilityIcon({
 }) {
   return (
     <CapabilityTooltip label={label} description={description}>
-      <span className="inline-flex flex-col items-center gap-1">
-        <span
-          tabIndex={0}
-          title={label}
-          aria-label={label}
-          className={cn(
-            "inline-flex h-8 w-8 items-center justify-center rounded-full border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
-            warning
-              ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_18%,transparent)] text-[var(--warning)]"
-              : active
-                ? "border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_18%,transparent)] text-[var(--success)]"
-                : "border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)]"
-          )}
-        >
-          <Icon className="h-3.5 w-3.5" />
-        </span>
-        <span className="hidden text-[0.56rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)] lg:block">
+      <span
+        title={label}
+        aria-label={label}
+        className={cn(
+          "relative inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border",
+          warning
+            ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_18%,transparent)] text-[var(--warning)]"
+            : active
+              ? "border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_18%,transparent)] text-[var(--success)]"
+              : "border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)]"
+        )}
+      >
+        <Icon className="h-3 w-3" />
+        <span className="pointer-events-none absolute left-1/2 top-full mt-1 hidden -translate-x-1/2 text-[0.56rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)] lg:block">
           {shortLabel}
         </span>
       </span>
@@ -408,7 +405,7 @@ function RelayRow({
 
         <div className="h-5 w-px shrink-0 bg-[var(--border)] lg:hidden" />
 
-        <div className="flex items-center gap-1.5 lg:flex-nowrap lg:justify-center">
+        <div className="flex items-center gap-2.5 lg:flex-nowrap lg:justify-center">
           <CapabilityIcon
             active={entry.capabilities.search}
             icon={Search}
@@ -483,7 +480,10 @@ function RelayRow({
             title="Refresh relay verification"
           >
             <RefreshCw
-              className={cn("h-3.5 w-3.5", scanning && "animate-spin")}
+              className={cn(
+                "h-3.5 w-3.5 hover-spin-once",
+                scanning && "animate-spin"
+              )}
             />
           </button>
           <button
