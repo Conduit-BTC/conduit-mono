@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router"
 import { useAuth, useConduitSession, useRelaySettings } from "@conduit/core"
 import { RelaySettingsPanel } from "@conduit/ui"
 
-export const Route = createFileRoute("/settings")({
+export const Route = createFileRoute("/network")({
   component: SettingsPage,
 })
 
