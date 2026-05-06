@@ -81,22 +81,16 @@ function RootLayout() {
 
 function RootErrorComponent({ error }: ErrorComponentProps) {
   return (
-    <RootShell>
-      <ErrorPage
-        title="Something went wrong"
-        message={error.message || "An unexpected error occurred."}
-        showReload
-      />
-    </RootShell>
+    <ErrorPage
+      title="Something went wrong"
+      message={error.message || "An unexpected error occurred."}
+      showReload
+    />
   )
 }
 
 function RootNotFound() {
-  return (
-    <RootShell>
-      <NotFoundPage backTo="/" backLabel="Go to dashboard" />
-    </RootShell>
-  )
+  return <NotFoundPage backTo="/" backLabel="Go to dashboard" />
 }
 
 function ConnectGate() {
@@ -221,5 +215,5 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/orders") return "Orders"
   if (pathname === "/profile") return "Profile"
   if (pathname === "/network") return "Network"
-  return "Merchant"
+  return "Not Found"
 }
