@@ -97,22 +97,29 @@ function onStorage(e: StorageEvent): void {
 export function useCart() {
   const snap = useSyncExternalStore(subscribe, readSnapshot, readSnapshot)
 
-  const addItem = useCallback((item: Omit<CartItem, "quantity">, quantity = 1) => {
-    const curr = readSnapshot()
-    const existing = curr.items.find((i) => i.productId === item.productId)
-    const nextItems = existing
-      ? curr.items.map((i) =>
-          i.productId === item.productId ? { ...i, quantity: i.quantity + quantity } : i
-        )
-      : [...curr.items, { ...item, quantity }]
-    writeState({ items: nextItems })
-  }, [])
+  const addItem = useCallback(
+    (item: Omit<CartItem, "quantity">, quantity = 1) => {
+      const curr = readSnapshot()
+      const existing = curr.items.find((i) => i.productId === item.productId)
+      const nextItems = existing
+        ? curr.items.map((i) =>
+            i.productId === item.productId
+              ? { ...i, quantity: i.quantity + quantity }
+              : i
+          )
+        : [...curr.items, { ...item, quantity }]
+      writeState({ items: nextItems })
+    },
+    []
+  )
 
   const setQuantity = useCallback((productId: string, quantity: number) => {
     const q = Math.max(1, Math.floor(quantity))
     const curr = readSnapshot()
     writeState({
-      items: curr.items.map((i) => (i.productId === productId ? { ...i, quantity: q } : i)),
+      items: curr.items.map((i) =>
+        i.productId === productId ? { ...i, quantity: q } : i
+      ),
     })
   }, [])
 
