@@ -152,7 +152,6 @@ jobs:
     needs: [build-signet]
     timeout-minutes: 15
     permissions:
-      checks: read
       contents: read
       issues: write
     steps:
@@ -235,16 +234,6 @@ jobs:
               });
             }
 
-            async function listCheckRuns() {
-              const { data } = await github.rest.checks.listForRef({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: headSha,
-                per_page: 100,
-              });
-              return data.check_runs || [];
-            }
-
             function resolveProjectUrls(comments, projectName) {
               const candidates = comments
                 .filter((comment) => {
@@ -282,68 +271,19 @@ jobs:
               },
             };
 
-            let comments = [];
-            const waitUntil = Date.now() + 10 * 60 * 1000;
-            const pollIntervalMs = 20 * 1000;
-            const expectedCfChecks = new Set([
-              "Cloudflare Pages: conduit-market",
-              "Cloudflare Pages: conduit-merchant",
-              "Cloudflare Pages: conduit-market-signet",
-              "Cloudflare Pages: conduit-merchant-signet",
-            ]);
+            const comments = await listIssueComments();
 
-            while (true) {
-              comments = await listIssueComments();
-
-              for (const app of ["market", "merchant"]) {
-                const project = PROJECTS[app];
-                byApp[app].signet = resolveProjectUrls(comments, project.signetProject);
-                byApp[app].mainnet = resolveProjectUrls(comments, project.mainnetProject);
-              }
-
-              const hasAllCommitUrls = ["market", "merchant"].every((app) =>
-                Boolean(byApp[app].signet.commitUrl && byApp[app].mainnet.commitUrl)
-              );
-              const hasAllBranchUrls = ["market", "merchant"].every((app) =>
-                Boolean(byApp[app].signet.branchUrl && byApp[app].mainnet.branchUrl)
-              );
-
-              const checkRuns = await listCheckRuns();
-              const cloudflareRuns = checkRuns.filter((item) => expectedCfChecks.has(item.name));
-              const cloudflareChecksCompleted = cloudflareRuns.length > 0
-                && cloudflareRuns.every((item) => item.status === "completed");
-
-              if ((commitPreviewEnabled && hasAllCommitUrls && hasAllBranchUrls) || (!commitPreviewEnabled && hasAllBranchUrls)) {
-                core.info(
-                  commitPreviewEnabled
-                    ? "Found all Cloudflare commit and branch preview URLs."
-                    : "Found all Cloudflare branch preview URLs (commit preview links hidden by PR setting)."
-                );
-                break;
-              }
-
-              if (cloudflareChecksCompleted) {
-                core.info("All Cloudflare checks are completed; proceeding with available preview URLs.");
-                break;
-              }
-
-              if (Date.now() >= waitUntil) {
-                core.warning("Timed out waiting for complete Cloudflare preview links; using available URLs with fallbacks.");
-                break;
-              }
-
-              const pending = [];
-              for (const app of ["market", "merchant"]) {
-                for (const network of ["signet", "mainnet"]) {
-                  if (commitPreviewEnabled && !byApp[app][network].commitUrl) {
-                    pending.push(`${app}/${network}:commit`);
-                  }
-                  if (!byApp[app][network].branchUrl) pending.push(`${app}/${network}:branch`);
-                }
-              }
-              core.info(`Waiting for Cloudflare preview links/checks: ${pending.join(", ")}`);
-              await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+            for (const app of ["market", "merchant"]) {
+              const project = PROJECTS[app];
+              byApp[app].signet = resolveProjectUrls(comments, project.signetProject);
+              byApp[app].mainnet = resolveProjectUrls(comments, project.mainnetProject);
             }
+
+            core.info(
+              commitPreviewEnabled
+                ? "Posting preview links with available Cloudflare comment URLs; missing commit URLs remain pending."
+                : "Posting deterministic branch preview URLs; commit preview links hidden by PR setting."
+            );
 
             const rows = [];
             for (const app of ["market", "merchant"]) {
