@@ -346,14 +346,23 @@ jobs:
 
             const commentBody = `${previewCommentBlock}\n\n_Preview links for latest commit ${shortSha}_`;
 
-            const existingPreviewComment = comments
-              .slice()
-              .reverse()
-              .find((comment) =>
+            const previewComments = comments
+              .filter((comment) =>
                 comment.user?.login === "github-actions[bot]"
                 && comment.body?.includes(MARKER_START)
                 && comment.body?.includes(MARKER_END)
-            );
+              )
+              .reverse();
+
+            const [existingPreviewComment, ...stalePreviewComments] = previewComments;
+
+            for (const staleComment of stalePreviewComments) {
+              await github.rest.issues.deleteComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: staleComment.id,
+              });
+            }
 
             if (existingPreviewComment) {
               await github.rest.issues.updateComment({
