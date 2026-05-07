@@ -446,16 +446,20 @@ jobs:
             // --- 2. Sticky preview comment (idempotent across commits) ---
             const commentBody = `${previewCommentBlock}\n\n_Preview links for latest commit ${shortSha}_`;
 
-            const alreadyPosted = [...comments].reverse().find((comment) =>
-              comment.user?.login === "github-actions[bot]"
-              && comment.body?.includes(MARKER_START)
+            const existingPreviewComment = comments
+              .slice()
+              .reverse()
+              .find((comment) =>
+                comment.user?.login === "github-actions[bot]"
+                && comment.body?.includes(MARKER_START)
+                && comment.body?.includes(MARKER_END)
             );
 
-            if (alreadyPosted) {
+            if (existingPreviewComment) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                comment_id: alreadyPosted.id,
+                comment_id: existingPreviewComment.id,
                 body: commentBody,
               });
               return;

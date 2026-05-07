@@ -5,6 +5,7 @@ import { EVENT_KINDS } from "./kinds"
 import { getProfiles } from "./commerce"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { requireNdkConnected } from "./ndk"
+import { publishWithPlanner } from "./relay-publish"
 
 interface RawProfileContent {
   name?: string
@@ -43,11 +44,12 @@ export function parseProfileEvent(
 
 export async function fetchProfile(
   pubkey: string,
-  opts?: { skipCache?: boolean }
+  opts?: { skipCache?: boolean; priority?: "visible" | "background" }
 ): Promise<Profile> {
   const result = await getProfiles({
     pubkeys: [pubkey],
     skipCache: opts?.skipCache,
+    priority: opts?.priority,
   })
   return result.data[pubkey] ?? { pubkey }
 }
@@ -61,6 +63,22 @@ export async function publishProfile(
 
   const user = await ndk.signer.user()
   const pubkey = user.pubkey
+  const hasSubmittedContent = [
+    profile.name,
+    profile.displayName,
+    profile.about,
+    profile.picture,
+    profile.banner,
+    profile.nip05,
+    profile.lud16,
+    profile.website,
+  ].some((value) => typeof value === "string" && value.trim().length > 0)
+
+  if (!hasSubmittedContent) {
+    throw new Error(
+      "Refusing to publish an empty profile. Wait for the profile to load or add profile details before saving."
+    )
+  }
 
   // Build NIP-01 snake_case content, omitting empty/undefined fields
   const content: Record<string, string> = {}
@@ -80,7 +98,10 @@ export async function publishProfile(
   event.tags = appendConduitClientTag([], appId)
 
   await event.sign(ndk.signer)
-  await event.publish()
+  await publishWithPlanner(event, {
+    intent: "author_event",
+    authorPubkey: pubkey,
+  })
 
   // Update local cache
   await db.profiles.put({

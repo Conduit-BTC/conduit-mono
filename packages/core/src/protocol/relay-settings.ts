@@ -1,7 +1,7 @@
 import { config, type ConduitConfig } from "../config"
 
 export type RelaySettingsSection = "commerce" | "public"
-export type RelaySettingsSource = "default" | "manual" | "signer"
+export type RelaySettingsSource = "default" | "manual" | "signer" | "published"
 export type RelayCapabilityKey = "nip11" | "search" | "dm" | "auth" | "commerce"
 export type RelayWarningKey =
   | "dmWithoutAuth"
@@ -94,11 +94,6 @@ export const RELAY_SETTINGS_STORAGE_KEY = "conduit:relay-settings:v1"
 export const RELAY_SCAN_STALE_MS = 7 * 24 * 60 * 60 * 1_000
 export const RELAY_SCAN_TIMEOUT_MS = 4_000
 
-const KNOWN_COMMERCE_RELAY_HOSTS = new Set([
-  "relay.conduit.market",
-  "relay.plebeian.market",
-])
-
 const EMPTY_CAPABILITIES: RelayCapabilities = {
   nip11: false,
   search: false,
@@ -115,6 +110,7 @@ const EMPTY_WARNINGS: RelayWarnings = {
 }
 
 let activeRelaySettingsScope: string | null = null
+const relaySettingsListeners = new Set<(scope: string | null) => void>()
 
 function now(): number {
   return Date.now()
@@ -145,30 +141,6 @@ function uniqueRelayUrls(urls: readonly string[]): string[] {
   return normalized
 }
 
-function getConfiguredKnownCommerceRelayUrls(
-  cfg: ConduitConfig = config
-): string[] {
-  return uniqueRelayUrls(cfg.commerceRelayUrls)
-}
-
-function getRelayHost(url: string): string | null {
-  try {
-    return new URL(normalizeRelayUrl(url)).hostname.toLowerCase()
-  } catch {
-    return null
-  }
-}
-
-function isKnownCommerceRelay(
-  url: string,
-  knownCommerceRelayUrls: readonly string[] = getConfiguredKnownCommerceRelayUrls()
-): boolean {
-  const normalized = normalizeRelayUrl(url)
-  const host = getRelayHost(normalized)
-  if (host && KNOWN_COMMERCE_RELAY_HOSTS.has(host)) return true
-  return uniqueRelayUrls(knownCommerceRelayUrls).includes(normalized)
-}
-
 function getSupportedNips(info: RelayInfoDocument | null): number[] {
   const raw = info?.supported_nips
   if (!Array.isArray(raw)) return []
@@ -176,6 +148,35 @@ function getSupportedNips(info: RelayInfoDocument | null): number[] {
   return raw
     .map((value) => Number(value))
     .filter((value) => Number.isInteger(value) && value >= 0)
+}
+
+function hasCommerceCompatibilityEvidence(
+  supportedNips: readonly number[]
+): boolean {
+  const supportsRelayLists = supportedNips.includes(65)
+  const supportsParameterizedReplaceable = supportedNips.includes(33)
+  const supportsMarketSpec = supportedNips.includes(99)
+  const supportsGiftWraps = supportedNips.includes(17)
+  const supportsAuth = supportedNips.includes(42)
+
+  return (
+    supportsRelayLists &&
+    supportsParameterizedReplaceable &&
+    supportsMarketSpec &&
+    supportsGiftWraps &&
+    supportsAuth
+  )
+}
+
+function hasPartialCommerceEvidence(supportedNips: readonly number[]): boolean {
+  return (
+    supportedNips.includes(33) ||
+    supportedNips.includes(42) ||
+    supportedNips.includes(50) ||
+    supportedNips.includes(65) ||
+    supportedNips.includes(99) ||
+    supportedNips.includes(17)
+  )
 }
 
 function getRelayName(info: RelayInfoDocument | null): string | undefined {
@@ -209,13 +210,8 @@ function hasFreshOrSeededRead(entry: RelaySettingsEntry): boolean {
   return entry.readEnabled && !entry.warnings.unreachable
 }
 
-function hasVerifiedWrite(entry: RelaySettingsEntry): boolean {
-  return (
-    entry.writeEnabled &&
-    !entry.warnings.unreachable &&
-    !entry.warnings.staleRelayInfo &&
-    (entry.capabilities.nip11 || entry.capabilities.commerce)
-  )
+function hasUserEnabledWrite(entry: RelaySettingsEntry): boolean {
+  return entry.writeEnabled
 }
 
 function sortByCommercePriority(
@@ -329,6 +325,46 @@ export function serializeNip65RelayTags(
   return tags
 }
 
+export function countActiveNip65RelayTags(
+  relays: readonly Pick<
+    RelaySettingsEntry,
+    "url" | "readEnabled" | "writeEnabled"
+  >[]
+): number {
+  return serializeNip65RelayTags(relays).length
+}
+
+export function countActiveNip65RelayTagsFromTags(
+  tags: readonly string[][]
+): number {
+  return parseNip65RelayTags(tags).filter(
+    (preference) => preference.readEnabled || preference.writeEnabled
+  ).length
+}
+
+export function assertSafeNip65RelayList(
+  relays: readonly Pick<
+    RelaySettingsEntry,
+    "url" | "readEnabled" | "writeEnabled"
+  >[]
+): void {
+  const activeRelayCount = countActiveNip65RelayTags(relays)
+  if (activeRelayCount <= 1) {
+    throw new Error(
+      "Refusing to publish a tiny NIP-65 relay list. Load or add at least two active relays before publishing."
+    )
+  }
+}
+
+export function assertSafeNip65RelayTags(tags: readonly string[][]): void {
+  const activeRelayCount = countActiveNip65RelayTagsFromTags(tags)
+  if (activeRelayCount <= 1) {
+    throw new Error(
+      "Refusing to publish a tiny NIP-65 relay list. Load or add at least two active relays before publishing."
+    )
+  }
+}
+
 export function mergeNip65RelayUrls(list: Nip65RelayUrls): RelayPreference[] {
   return parseNip65RelayTags([
     ...(list.readRelayUrls ?? []).map((url) => ["r", url, "read"]),
@@ -349,9 +385,7 @@ export function deriveRelayScanResult(
   const supportsDm = supportedNips.includes(17)
   const supportsAuth = supportedNips.includes(42) || getAuthRequired(info)
   const hasNip11 = !!info
-  const commerce =
-    hasNip11 &&
-    isKnownCommerceRelay(normalizedUrl, options.knownCommerceRelayUrls)
+  const commerce = hasNip11 && hasCommerceCompatibilityEvidence(supportedNips)
 
   const capabilities: RelayCapabilities = {
     nip11: hasNip11,
@@ -366,7 +400,7 @@ export function deriveRelayScanResult(
     dmWithoutAuth: supportsDm && !supportsAuth,
     staleRelayInfo: hasNip11 && !hasSupportedNips,
     commercePartialSupport:
-      hasNip11 && !commerce && (supportsSearch || supportsDm),
+      hasNip11 && !commerce && hasPartialCommerceEvidence(supportedNips),
   }
 
   return {
@@ -410,21 +444,33 @@ export function createRelaySettingsEntryFromScan(
 export function createUnreachableRelaySettingsEntry(
   relayUrl: string,
   source: RelaySettingsSource = "manual",
-  scannedAt = now()
+  scannedAt = now(),
+  existing?: RelaySettingsEntry
 ): RelaySettingsEntry {
+  const preservePreference = !!existing && existing.source !== "default"
+  const baseCapabilities = preservePreference
+    ? (existing?.capabilities ?? EMPTY_CAPABILITIES)
+    : EMPTY_CAPABILITIES
   return {
     url: normalizeRelayUrl(relayUrl),
-    readEnabled: false,
-    writeEnabled: false,
-    section: "public",
-    capabilities: EMPTY_CAPABILITIES,
+    readEnabled: preservePreference ? (existing?.readEnabled ?? false) : false,
+    writeEnabled: preservePreference
+      ? (existing?.writeEnabled ?? false)
+      : false,
+    section: preservePreference ? (existing?.section ?? "public") : "public",
+    commercePriority: preservePreference
+      ? existing?.commercePriority
+      : undefined,
+    capabilities: baseCapabilities,
     warnings: {
       ...EMPTY_WARNINGS,
+      ...existing?.warnings,
       staleRelayInfo: true,
       unreachable: true,
     },
     source,
     scannedAt,
+    relayName: existing?.relayName,
   }
 }
 
@@ -442,7 +488,8 @@ export async function scanRelaySettingsEntry(
     return createUnreachableRelaySettingsEntry(
       normalizedUrl,
       existing?.source ?? "manual",
-      scannedAt
+      scannedAt,
+      existing
     )
   }
 
@@ -459,7 +506,8 @@ export async function scanRelaySettingsEntry(
       return createUnreachableRelaySettingsEntry(
         normalizedUrl,
         existing?.source ?? "manual",
-        scannedAt
+        scannedAt,
+        existing
       )
     }
 
@@ -468,7 +516,8 @@ export async function scanRelaySettingsEntry(
       return createUnreachableRelaySettingsEntry(
         normalizedUrl,
         existing?.source ?? "manual",
-        scannedAt
+        scannedAt,
+        existing
       )
     }
 
@@ -482,7 +531,8 @@ export async function scanRelaySettingsEntry(
     return createUnreachableRelaySettingsEntry(
       normalizedUrl,
       existing?.source ?? "manual",
-      scannedAt
+      scannedAt,
+      existing
     )
   } finally {
     clearTimeout(timeoutId)
@@ -492,27 +542,19 @@ export async function scanRelaySettingsEntry(
 export function createDefaultRelaySettings(
   cfg: ConduitConfig = config
 ): RelaySettingsState {
-  const knownCommerceRelayUrls = getConfiguredKnownCommerceRelayUrls(cfg)
   const entries: RelaySettingsEntry[] = uniqueRelayUrls(cfg.defaultRelays).map(
-    (url) => {
-      const commerce = isKnownCommerceRelay(url, knownCommerceRelayUrls)
-      return {
-        url,
-        readEnabled: true,
-        writeEnabled: commerce,
-        section: commerce ? "commerce" : "public",
-        commercePriority: commerce ? 0 : undefined,
-        capabilities: {
-          ...EMPTY_CAPABILITIES,
-          commerce,
-        },
-        warnings: {
-          ...EMPTY_WARNINGS,
-          staleRelayInfo: true,
-        },
-        source: "default" as const,
-      }
-    }
+    (url) => ({
+      url,
+      readEnabled: true,
+      writeEnabled: false,
+      section: "public",
+      capabilities: EMPTY_CAPABILITIES,
+      warnings: {
+        ...EMPTY_WARNINGS,
+        staleRelayInfo: true,
+      },
+      source: "default" as const,
+    })
   )
 
   return normalizeRelaySettingsState({
@@ -520,6 +562,25 @@ export function createDefaultRelaySettings(
     entries,
     updatedAt: now(),
   })
+}
+
+export function createRelaySettingsFromPreferences(
+  preferences: readonly RelayPreference[],
+  source: RelaySettingsSource = "published"
+): RelaySettingsState {
+  return mergeRelayPreferencesIntoSettings(
+    {
+      version: RELAY_SETTINGS_STORAGE_VERSION,
+      entries: [],
+      updatedAt: now(),
+    },
+    preferences,
+    source
+  )
+}
+
+export function hasManualRelaySettings(state: RelaySettingsState): boolean {
+  return state.entries.some((entry) => entry.source === "manual")
 }
 
 export function getRelaySettingsStorageKey(scope?: string | null): string {
@@ -535,6 +596,18 @@ export function getActiveRelaySettingsScope(): string | null {
 
 export function setActiveRelaySettingsScope(scope?: string | null): void {
   activeRelaySettingsScope = scope?.trim() || null
+}
+
+export function subscribeRelaySettingsChanges(
+  listener: (scope: string | null) => void
+): () => void {
+  relaySettingsListeners.add(listener)
+  return () => relaySettingsListeners.delete(listener)
+}
+
+function notifyRelaySettingsChanged(scope?: string | null): void {
+  const normalizedScope = scope?.trim() || null
+  relaySettingsListeners.forEach((listener) => listener(normalizedScope))
 }
 
 export function normalizeRelaySettingsState(
@@ -628,6 +701,8 @@ export function saveRelaySettings(
     )
   }
 
+  notifyRelaySettingsChanged(scope)
+
   return normalized
 }
 
@@ -664,7 +739,9 @@ export function removeRelaySettingsEntry(
 export function updateRelaySettingsEntry(
   state: RelaySettingsState,
   relayUrl: string,
-  updates: Partial<Pick<RelaySettingsEntry, "readEnabled" | "writeEnabled">>
+  updates: Partial<
+    Pick<RelaySettingsEntry, "readEnabled" | "writeEnabled" | "source">
+  >
 ): RelaySettingsState {
   const normalizedUrl = normalizeRelayUrl(relayUrl)
   return normalizeRelaySettingsState({
@@ -707,7 +784,11 @@ export function reorderCommerceRelay(
     ...state,
     entries: state.entries.map((entry) =>
       entry.section === "commerce"
-        ? { ...entry, commercePriority: priorityByUrl.get(entry.url) ?? 0 }
+        ? {
+            ...entry,
+            commercePriority: priorityByUrl.get(entry.url) ?? 0,
+            source: "manual" as const,
+          }
         : entry
     ),
   })
@@ -719,20 +800,16 @@ export function mergeRelayPreferencesIntoSettings(
   source: RelaySettingsSource = "signer"
 ): RelaySettingsState {
   let next = state
-  const knownCommerceRelayUrls = getConfiguredKnownCommerceRelayUrls()
 
   for (const preference of preferences) {
     const normalizedUrl = normalizeRelayUrl(preference.url)
     const existing = next.entries.find((entry) => entry.url === normalizedUrl)
-    const commerce = isKnownCommerceRelay(normalizedUrl, knownCommerceRelayUrls)
     const capabilities: RelayCapabilities = existing?.capabilities
       ? {
           ...existing.capabilities,
-          commerce: existing.capabilities.commerce || commerce,
         }
       : {
           ...EMPTY_CAPABILITIES,
-          commerce,
         }
     const warnings: RelayWarnings = existing?.warnings ?? {
       ...EMPTY_WARNINGS,
@@ -741,10 +818,17 @@ export function mergeRelayPreferencesIntoSettings(
     const section: RelaySettingsSection = capabilities.commerce
       ? "commerce"
       : "public"
+    const preserveLocalControls = existing?.source === "manual"
+    const preferPublishedControls =
+      source === "published" && !preserveLocalControls
     const entry: RelaySettingsEntry = {
       url: normalizedUrl,
-      readEnabled: existing?.readEnabled ?? preference.readEnabled,
-      writeEnabled: existing?.writeEnabled ?? preference.writeEnabled,
+      readEnabled: preferPublishedControls
+        ? preference.readEnabled
+        : (existing?.readEnabled ?? preference.readEnabled),
+      writeEnabled: preferPublishedControls
+        ? preference.writeEnabled
+        : (existing?.writeEnabled ?? preference.writeEnabled),
       section,
       commercePriority:
         section === "commerce" && existing?.commercePriority !== undefined
@@ -752,7 +836,7 @@ export function mergeRelayPreferencesIntoSettings(
           : undefined,
       capabilities,
       warnings,
-      source: existing?.source ?? source,
+      source: preserveLocalControls ? existing.source : source,
       scannedAt: existing?.scannedAt,
       relayName: existing?.relayName,
     }
@@ -799,7 +883,7 @@ export function getGeneralWriteRelayUrls(
   const settings = getSettingsForPlan(options)
   return uniqueRelayUrls(
     settings.entries
-      .filter((entry) => hasVerifiedWrite(entry))
+      .filter((entry) => hasUserEnabledWrite(entry))
       .map((entry) => entry.url)
   )
 }
@@ -808,9 +892,8 @@ export function getCommerceReadRelayUrls(
   options: RelayPlanOptions = {}
 ): string[] {
   const settings = getSettingsForPlan(options)
-  const commerceUrls = sortByCommercePriority(
-    settings.entries.filter((entry) => entry.section === "commerce")
-  )
+  const commerceUrls = settings.entries
+    .filter((entry) => entry.section === "commerce")
     .filter((entry) => hasFreshOrSeededRead(entry))
     .map((entry) => entry.url)
 
@@ -833,10 +916,9 @@ export function getCommerceWriteRelayUrls(
   options: RelayPlanOptions = {}
 ): string[] {
   const settings = getSettingsForPlan(options)
-  const commerceUrls = sortByCommercePriority(
-    settings.entries.filter((entry) => entry.section === "commerce")
-  )
-    .filter((entry) => hasVerifiedWrite(entry))
+  const commerceUrls = settings.entries
+    .filter((entry) => entry.section === "commerce")
+    .filter((entry) => hasUserEnabledWrite(entry))
     .map((entry) => entry.url)
 
   const publicUrls =
@@ -844,7 +926,7 @@ export function getCommerceWriteRelayUrls(
       ? []
       : settings.entries
           .filter(
-            (entry) => entry.section === "public" && hasVerifiedWrite(entry)
+            (entry) => entry.section === "public" && hasUserEnabledWrite(entry)
           )
           .map((entry) => entry.url)
 

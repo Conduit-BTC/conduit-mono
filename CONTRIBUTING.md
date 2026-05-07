@@ -133,19 +133,21 @@ bun test            # Must pass
 
 ### Required checks before merge
 
-Branch protection on `main` expects:
+Branch protection on `main` expects GitHub-owned CI gates to pass:
 
 - `format`
+- `pr-title`
 - `lint`
 - `typecheck`
 - `test`
 - `color-policy`
 - `build-signet`
 - `preview-links`
-- `Cloudflare Pages: conduit-market`
-- `Cloudflare Pages: conduit-merchant`
-- `Cloudflare Pages: conduit-market-signet`
-- `Cloudflare Pages: conduit-merchant-signet`
+
+Direct Cloudflare Pages checks are useful preview signals, but they are not
+required branch-protection gates because fork PRs cannot reliably produce them.
+The `preview-links` job posts branch preview links for same-repository PRs and
+skips preview comments for fork PRs with an explicit log message.
 
 ## Code Conventions
 

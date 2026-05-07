@@ -8,7 +8,15 @@ import {
   UserMinus,
   UserPlus,
 } from "lucide-react"
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
@@ -25,6 +33,9 @@ import {
 import {
   appendConduitClientTag,
   formatNpub,
+  getProfileDisplayLabel,
+  getProfileName,
+  publishWithPlanner,
   requireNdkConnected,
   useAuth,
   useProfile,
@@ -38,14 +49,11 @@ import {
   ProductGridCardSkeleton,
 } from "../../components/ProductGridCard"
 import { CopyButton } from "../../components/CopyButton"
-import {
-  MerchantAvatarFallback,
-  getMerchantDisplayName,
-} from "../../components/MerchantIdentity"
+import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
 import { getComparablePriceValue } from "../../lib/pricing"
-import { fetchStoreProducts } from "../../lib/storeProducts"
+import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
 
 type SortOption = "newest" | "price_asc" | "price_desc"
 
@@ -102,21 +110,26 @@ function StorefrontPage() {
   const queryClient = useQueryClient()
   const cart = useCart()
   const { pubkey: viewerPubkey, status } = useAuth()
-  const { data: profile } = useProfile(pubkey)
+  const profileQuery = useProfile(pubkey)
+  const profile = profileQuery.data
   const btcUsdRateQuery = useBtcUsdRate()
   const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
   const [searchDirty, setSearchDirty] = useState(false)
   const [showAllTags, setShowAllTags] = useState(false)
   const [tagCloudOverflows, setTagCloudOverflows] = useState(false)
+  const [tagCloudInteracted, setTagCloudInteracted] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
   const tagCloudRef = useRef<HTMLDivElement | null>(null)
-  const productsQuery = useQuery({
-    queryKey: ["store-products", pubkey],
-    queryFn: () => fetchStoreProducts(pubkey),
+  const productsQuery = useProgressiveProducts({
+    scope: "storefront",
+    merchantPubkey: pubkey,
+    textQuery: search.q,
+    tag: search.tag,
+    sort: search.sort,
   })
-  const storeProducts = productsQuery.data?.data ?? []
+  const storeProducts = productsQuery.products
   const followQuery = useQuery({
     queryKey: ["following-store", viewerPubkey ?? "none", pubkey],
     enabled:
@@ -142,7 +155,19 @@ function StorefrontPage() {
   >("idle")
   const [followOverride, setFollowOverride] = useState<boolean | null>(null)
 
-  const merchantName = getMerchantDisplayName(profile, pubkey)
+  const merchantProfileName = getProfileName(profile)
+  const merchantIdentityPending =
+    !merchantProfileName && profileQuery.isPlaceholderData
+  const merchantName =
+    merchantProfileName ||
+    (merchantIdentityPending
+      ? "Store"
+      : getProfileDisplayLabel(profile, pubkey, {
+          lookupSettled: true,
+          emptyPrefix: "Store",
+          chars: 8,
+        }))
+  const identityReady = !profileQuery.isPlaceholderData
   const merchantAbout = profile?.about?.trim()
   const allTags = useMemo(() => {
     const tagSet = new Set<string>()
@@ -152,21 +177,24 @@ function StorefrontPage() {
     return Array.from(tagSet).sort()
   }, [storeProducts])
 
-  const updateSearch = (updates: Partial<StoreSearch>) => {
-    navigate({
-      search: (prev) => {
-        const next = { ...prev, ...updates }
-        for (const key of Object.keys(next) as (keyof StoreSearch)[]) {
-          const value = next[key]
-          if (value === undefined || value === "") {
-            delete next[key]
+  const updateSearch = useCallback(
+    (updates: Partial<StoreSearch>) => {
+      navigate({
+        search: (prev) => {
+          const next = { ...prev, ...updates }
+          for (const key of Object.keys(next) as (keyof StoreSearch)[]) {
+            const value = next[key]
+            if (value === undefined || value === "") {
+              delete next[key]
+            }
           }
-        }
-        return next
-      },
-      replace: true,
-    })
-  }
+          return next
+        },
+        replace: true,
+      })
+    },
+    [navigate]
+  )
 
   const productCount = storeProducts.length
   const isFollowing = followOverride ?? followQuery.data === true
@@ -221,7 +249,7 @@ function StorefrontPage() {
     }
   }, [canShowPriceSort, search.sort, updateSearch])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = tagCloudRef.current
     if (!element) return
 
@@ -262,7 +290,7 @@ function StorefrontPage() {
     }, 260)
 
     return () => window.clearTimeout(timeoutId)
-  }, [normalizedSearch, searchDirty])
+  }, [normalizedSearch, searchDirty, updateSearch])
 
   function submitSearch(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault()
@@ -330,7 +358,10 @@ function StorefrontPage() {
       event.tags = appendConduitClientTag(nextTags, "market")
 
       await event.sign(ndk.signer)
-      await event.publish()
+      await publishWithPlanner(event, {
+        intent: "author_event",
+        authorPubkey: viewerPubkey,
+      })
 
       setFollowOverride(nextShouldFollow)
       await queryClient.invalidateQueries({
@@ -386,16 +417,29 @@ function StorefrontPage() {
           Shop
         </Link>
         <span>/</span>
-        <span className="text-[var(--text-primary)]">{merchantName}</span>
+        <span className="text-[var(--text-primary)]">
+          {merchantIdentityPending ? (
+            <span
+              aria-hidden="true"
+              className="inline-block h-3 w-24 animate-pulse rounded bg-[var(--surface-elevated)] align-middle"
+            />
+          ) : (
+            merchantName
+          )}
+        </span>
       </div>
 
       <section className="overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)]">
         <div className="relative px-5 py-6 sm:px-6 sm:py-7">
-          <div className="relative">
+          <div className="relative space-y-5">
             <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-              <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-end">
-                <Avatar className="h-24 w-24 shrink-0 border border-[var(--border)] shadow-[var(--shadow-lg)] sm:h-28 sm:w-28">
-                  <AvatarImage src={profile?.picture} alt={merchantName} />
+              <div className="flex min-w-0 items-start gap-4">
+                <Avatar className="h-24 w-24 self-start border border-[var(--border)] shadow-[var(--shadow-lg)] sm:h-28 sm:w-28">
+                  <AvatarImage
+                    src={profile?.picture}
+                    alt={merchantIdentityPending ? "Store" : merchantName}
+                    className="object-cover"
+                  />
                   <AvatarFallback>
                     <MerchantAvatarFallback iconClassName="h-8 w-8 sm:h-10 sm:w-10" />
                   </AvatarFallback>
@@ -405,9 +449,16 @@ function StorefrontPage() {
                   <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
                     Store
                   </div>
-                  <h1 className="mt-2 truncate text-3xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
-                    {merchantName}
-                  </h1>
+                  {merchantIdentityPending ? (
+                    <div
+                      aria-hidden="true"
+                      className="mt-4 h-8 w-48 animate-pulse rounded bg-[var(--surface-elevated)] sm:h-10 sm:w-64"
+                    />
+                  ) : (
+                    <h1 className="mt-2 truncate text-3xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
+                      {merchantName}
+                    </h1>
+                  )}
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-[var(--text-secondary)]">
                     <span className="inline-flex items-center gap-1 font-medium text-[var(--text-primary)]">
                       {profile?.nip05 || formatNpub(pubkey, 8)}
@@ -417,13 +468,6 @@ function StorefrontPage() {
                       Created Apr 2024
                     </span>
                   </div>
-                  <RichProfileText
-                    text={
-                      merchantAbout ||
-                      "Browse this merchant's current listings and add products directly to your cart."
-                    }
-                    className="mt-3 max-w-[56ch] text-sm leading-7 text-[var(--text-secondary)]"
-                  />
                 </div>
               </div>
 
@@ -504,6 +548,16 @@ function StorefrontPage() {
                 </div>
               </div>
             </div>
+
+            <div className="border-t border-[var(--border)] pt-5">
+              <RichProfileText
+                text={
+                  merchantAbout ||
+                  "Browse this merchant's current listings and add products directly to your cart."
+                }
+                className="max-w-4xl text-sm leading-7 text-[var(--text-secondary)]"
+              />
+            </div>
           </div>
         </div>
       </section>
@@ -547,7 +601,10 @@ function StorefrontPage() {
                           ? "opacity-100"
                           : "pointer-events-none opacity-0",
                       ].join(" ")}
-                      onClick={() => setShowAllTags(false)}
+                      onClick={() => {
+                        setTagCloudInteracted(true)
+                        setShowAllTags(false)
+                      }}
                     >
                       Collapse
                     </button>
@@ -558,7 +615,10 @@ function StorefrontPage() {
                   <div
                     ref={tagCloudRef}
                     className={[
-                      "overflow-hidden transition-[max-height] duration-300 ease-out xl:max-h-none xl:overflow-visible",
+                      "overflow-hidden xl:max-h-none xl:overflow-visible",
+                      tagCloudInteracted
+                        ? "transition-[max-height] duration-300 ease-out"
+                        : "",
                       showAllTags || !tagCloudOverflows
                         ? "max-h-64"
                         : "max-h-[4.75rem]",
@@ -604,7 +664,10 @@ function StorefrontPage() {
                       <button
                         type="button"
                         className="pointer-events-auto rounded-full bg-[var(--text-primary)] px-3 py-1 text-xs font-medium text-[var(--text-inverse)] shadow-md transition-[opacity,transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-lg"
-                        onClick={() => setShowAllTags(true)}
+                        onClick={() => {
+                          setTagCloudInteracted(true)
+                          setShowAllTags(true)
+                        }}
                       >
                         Expand categories
                       </button>
@@ -668,25 +731,41 @@ function StorefrontPage() {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-sm text-[var(--text-secondary)]">
-              {filteredProducts.length} product
-              {filteredProducts.length === 1 ? "" : "s"}
+          <div className="relative min-h-[1.625rem] pr-32 sm:pr-36">
+            <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
+              <span>
+                {filteredProducts.length} product
+                {filteredProducts.length === 1 ? "" : "s"}
+              </span>
               {search.tag && (
-                <span className="ml-2 text-[var(--text-muted)]">
+                <span className="text-[var(--text-muted)]">
                   in {search.tag}
                 </span>
               )}
             </div>
+            <span
+              aria-hidden={
+                !(productsQuery.isHydrating && filteredProducts.length > 0)
+              }
+              className={[
+                "absolute right-0 top-0 inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 text-xs text-[var(--text-secondary)] transition-opacity duration-150",
+                productsQuery.isHydrating && filteredProducts.length > 0
+                  ? "opacity-100"
+                  : "pointer-events-none opacity-0",
+              ].join(" ")}
+            >
+              <LoaderCircle className="h-3 w-3 animate-spin text-secondary-300" />
+              Updating store
+            </span>
             {!canShowPriceSort && (
-              <div className="text-xs text-[var(--text-muted)]">
+              <div className="mt-2 text-xs text-[var(--text-muted)]">
                 Price sorting is available when listings share a currency or a
                 BTC/USD display rate exists.
               </div>
             )}
           </div>
 
-          {productsQuery.isLoading && (
+          {productsQuery.isInitialLoading && (
             <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
               {Array.from({ length: 6 }).map((_, index) => (
                 <li key={index} className="h-full">
@@ -696,13 +775,13 @@ function StorefrontPage() {
             </ul>
           )}
 
-          {productsQuery.error && (
+          {!!productsQuery.error && (
             <div className="rounded-xl border border-error/20 bg-error/10 p-4 text-sm text-error">
               Failed to load this storefront.
             </div>
           )}
 
-          {!productsQuery.isLoading &&
+          {!productsQuery.isInitialLoading &&
             storeProducts.length > 0 &&
             filteredProducts.length === 0 && (
               <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6">
@@ -733,10 +812,13 @@ function StorefrontPage() {
 
           {filteredProducts.length > 0 && (
             <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
-              {filteredProducts.map((product) => (
+              {filteredProducts.map((product, index) => (
                 <li key={product.id} className="h-full">
                   <ProductGridCard
                     product={product}
+                    merchantName={merchantName}
+                    merchantNamePending={merchantIdentityPending}
+                    imageLoading={identityReady && index < 4 ? "eager" : "lazy"}
                     btcUsdRate={btcUsdRate}
                     cartQuantity={
                       cart.items.find((item) => item.productId === product.id)

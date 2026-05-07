@@ -2,15 +2,15 @@ import { RefreshCw, ShoppingCart, Store, Trash2, Zap } from "lucide-react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
-  EVENT_KINDS,
-  fetchEventsFanout,
   formatPubkey,
-  parseProductEvent,
+  getCachedMarketplaceProducts,
+  getCachedMerchantStorefront,
+  getMarketplaceProducts,
+  getMerchantStorefront,
   useAuth,
   useProfile,
   type Product,
 } from "@conduit/core"
-import { type NDKEvent } from "@nostr-dev-kit/ndk"
 import { Avatar, AvatarFallback, AvatarImage, Button } from "@conduit/ui"
 import {
   Dialog,
@@ -20,8 +20,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@conduit/ui"
-import { useEffect, useMemo, useState } from "react"
-import { MerchantAvatarFallback, getMerchantDisplayName } from "../components/MerchantIdentity"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import {
+  MerchantAvatarFallback,
+  getMerchantDisplayName,
+} from "../components/MerchantIdentity"
 import { SignerSwitch } from "../components/SignerSwitch"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
@@ -82,7 +85,9 @@ function sumCartItems(items: CartItem[]): number {
 }
 
 function getCartSummaryPrice(items: CartItem[], btcUsdRate: number | null) {
-  const currencies = Array.from(new Set(items.map((item) => item.currency).filter(Boolean)))
+  const currencies = Array.from(
+    new Set(items.map((item) => item.currency).filter(Boolean))
+  )
   const totalItems = items.reduce((sum, item) => sum + item.quantity, 0)
   if (currencies.length !== 1) {
     return {
@@ -100,19 +105,16 @@ function getCartSummaryPrice(items: CartItem[], btcUsdRate: number | null) {
 async function fetchSuggestedProducts(
   merchantPubkey: string | undefined,
   excludedIds: string[],
-  preferredTags: string[]
+  preferredTags: string[],
+  source: "cache" | "live" = "live"
 ): Promise<Product[]> {
-  const events = await fetchEventsFanout(
-    {
-      kinds: [EVENT_KINDS.PRODUCT],
-      ...(merchantPubkey ? { authors: [merchantPubkey] } : {}),
-      limit: merchantPubkey ? 18 : 30,
-    },
-    {
-      connectTimeoutMs: 4_000,
-      fetchTimeoutMs: 8_000,
-    }
-  ) as NDKEvent[]
+  const result = merchantPubkey
+    ? source === "cache"
+      ? await getCachedMerchantStorefront({ merchantPubkey, limit: 48 })
+      : await getMerchantStorefront({ merchantPubkey, limit: 48 })
+    : source === "cache"
+      ? await getCachedMarketplaceProducts({ limit: 120 })
+      : await getMarketplaceProducts({ limit: 120 })
 
   const excludedSet = new Set(excludedIds)
   const preferredTagSet = new Set(
@@ -120,15 +122,8 @@ async function fetchSuggestedProducts(
   )
   const seen = new Set<string>()
 
-  return events
-    .map((event) => {
-      try {
-        return parseProductEvent(event)
-      } catch {
-        return null
-      }
-    })
-    .filter(Boolean)
+  return result.data
+    .map((record) => record.product)
     .filter((product): product is Product => {
       if (!product) return false
       if (excludedSet.has(product.id)) return false
@@ -173,16 +168,17 @@ function MerchantIdentity({
   className?: string
 }) {
   const { data: profile } = useProfile(merchantPubkey)
-  const merchantName = getMerchantDisplayName(profile, merchantPubkey) || fallbackLabel
+  const merchantName =
+    getMerchantDisplayName(profile, merchantPubkey) || fallbackLabel
 
   return (
     <div className={`flex min-w-0 items-center gap-3 ${className}`}>
-        <Avatar className="h-12 w-12 shrink-0 border border-[var(--border)]">
-          <AvatarImage src={profile?.picture} alt={merchantName} />
-          <AvatarFallback>
-            <MerchantAvatarFallback />
-          </AvatarFallback>
-        </Avatar>
+      <Avatar className="h-12 w-12 shrink-0 border border-[var(--border)]">
+        <AvatarImage src={profile?.picture} alt={merchantName} />
+        <AvatarFallback>
+          <MerchantAvatarFallback />
+        </AvatarFallback>
+      </Avatar>
       <div className="min-w-0">
         {eyebrow && (
           <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
@@ -228,13 +224,20 @@ function MerchantOverviewCard({
           <div className="text-sm text-[var(--text-secondary)]">
             {group.totalItems} item{group.totalItems === 1 ? "" : "s"}
             <span className="mx-2 text-[var(--text-muted)]">/</span>
-            <span className="font-semibold text-[var(--text-primary)]">{summary.primary}</span>
+            <span className="font-semibold text-[var(--text-primary)]">
+              {summary.primary}
+            </span>
             {summary.secondary && (
-              <span className="ml-2 text-[var(--text-muted)]">{summary.secondary}</span>
+              <span className="ml-2 text-[var(--text-muted)]">
+                {summary.secondary}
+              </span>
             )}
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button className="min-w-[10rem]" onClick={() => onCheckout(group.merchantPubkey)}>
+            <Button
+              className="min-w-[10rem]"
+              onClick={() => onCheckout(group.merchantPubkey)}
+            >
               <span className="inline-flex items-center gap-2">
                 <LightningIcon className="h-4 w-4" />
                 Zap out
@@ -264,10 +267,13 @@ function RelatedProductRow({
   cartQuantity: number
   onAdd: () => void
 }) {
-  const imageUrl = product.images[0]?.url ?? "/images/placeholders/product.png"
+  const [imageFailed, setImageFailed] = useState(false)
+  const imageUrl = product.images[0]?.url
   const price = getProductPriceDisplay(product, btcUsdRate)
   const { data: profile } = useProfile(product.pubkey)
   const merchantLabel = getMerchantDisplayName(profile, product.pubkey)
+
+  if (!imageUrl || imageFailed) return null
 
   return (
     <div className="grid min-h-[9.5rem] grid-cols-[80px_minmax(0,1fr)] items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
@@ -283,9 +289,7 @@ function RelatedProductRow({
           width={80}
           height={80}
           loading="lazy"
-          onError={(e) => {
-            ;(e.currentTarget as HTMLImageElement).src = "/images/placeholders/product.png"
-          }}
+          onError={() => setImageFailed(true)}
         />
       </Link>
 
@@ -300,9 +304,13 @@ function RelatedProductRow({
         <div className="mt-1 truncate text-xs text-[var(--text-muted)]">
           {merchantLabel} / {formatPubkey(product.pubkey, 6)}
         </div>
-        <div className="mt-2 text-sm font-semibold text-secondary-400">{price.primary}</div>
+        <div className="mt-2 text-sm font-semibold text-secondary-400">
+          {price.primary}
+        </div>
         {price.secondary && (
-          <div className="mt-1 text-xs text-[var(--text-muted)]">{price.secondary}</div>
+          <div className="mt-1 text-xs text-[var(--text-muted)]">
+            {price.secondary}
+          </div>
         )}
         <Button
           size="sm"
@@ -343,15 +351,17 @@ function CartLineItem({
   return (
     <div className="grid gap-4 py-5 md:grid-cols-[132px_minmax(0,1fr)_auto] md:items-start">
       <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--background)]">
-        <img
-          src={item.image ?? "/images/placeholders/product.png"}
-          alt={item.title}
-          className="aspect-square h-full w-full object-cover"
-          loading="lazy"
-          onError={(e) => {
-            ;(e.currentTarget as HTMLImageElement).src = "/images/placeholders/product.png"
-          }}
-        />
+        {item.image && (
+          <img
+            src={item.image}
+            alt={item.title}
+            className="aspect-square h-full w-full object-cover"
+            loading="lazy"
+            onError={(event) => {
+              event.currentTarget.style.display = "none"
+            }}
+          />
+        )}
       </div>
 
       <div className="min-w-0">
@@ -401,9 +411,13 @@ function CartLineItem({
       </div>
 
       <div className="md:min-w-[10rem] md:text-right">
-        <div className="text-2xl font-semibold text-[var(--text-primary)]">{linePrice.primary}</div>
+        <div className="text-2xl font-semibold text-[var(--text-primary)]">
+          {linePrice.primary}
+        </div>
         <div className="mt-1 text-sm text-[var(--text-muted)]">
-          {item.quantity > 1 ? `${unitPrice.primary} each` : unitPrice.secondary ?? "\u00a0"}
+          {item.quantity > 1
+            ? `${unitPrice.primary} each`
+            : (unitPrice.secondary ?? "\u00a0")}
         </div>
       </div>
     </div>
@@ -416,10 +430,14 @@ function CartPage() {
   const search = Route.useSearch()
   const navigate = useNavigate()
   const btcUsdRateQuery = useBtcUsdRate()
-  const [confirmClearTarget, setConfirmClearTarget] = useState<"all" | string | null>(null)
+  const [confirmClearTarget, setConfirmClearTarget] = useState<
+    "all" | string | null
+  >(null)
   const [forceOverview, setForceOverview] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
-  const [pendingCheckoutMerchant, setPendingCheckoutMerchant] = useState<string | null>(null)
+  const [pendingCheckoutMerchant, setPendingCheckoutMerchant] = useState<
+    string | null
+  >(null)
 
   const merchantGroups = useMemo(() => groupCartItems(cart.items), [cart.items])
 
@@ -435,7 +453,10 @@ function CartPage() {
   }, [merchantGroups.length, search.merchant])
 
   const selectedMerchant = useMemo(() => {
-    if (search.merchant && merchantGroups.some((group) => group.merchantPubkey === search.merchant)) {
+    if (
+      search.merchant &&
+      merchantGroups.some((group) => group.merchantPubkey === search.merchant)
+    ) {
       return search.merchant
     }
 
@@ -448,11 +469,16 @@ function CartPage() {
     }
 
     return undefined
-  }, [merchantGroups, search.merchant])
+  }, [forceOverview, merchantGroups, search.merchant])
 
-  const selectedGroup = merchantGroups.find((group) => group.merchantPubkey === selectedMerchant)
+  const selectedGroup = merchantGroups.find(
+    (group) => group.merchantPubkey === selectedMerchant
+  )
   const selectedSummary = selectedGroup
-    ? getCartSummaryPrice(selectedGroup.items, btcUsdRateQuery.data?.rate ?? null)
+    ? getCartSummaryPrice(
+        selectedGroup.items,
+        btcUsdRateQuery.data?.rate ?? null
+      )
     : null
   const preferredTags = useMemo(() => {
     const sourceItems = selectedGroup ? selectedGroup.items : cart.items
@@ -461,12 +487,15 @@ function CartPage() {
 
   const signerConnected = status === "connected" && !!pubkey
 
-  function continueToCheckout(merchant: string): void {
-    navigate({
-      to: "/checkout",
-      search: { merchant },
-    })
-  }
+  const continueToCheckout = useCallback(
+    (merchant: string): void => {
+      navigate({
+        to: "/checkout",
+        search: { merchant },
+      })
+    },
+    [navigate]
+  )
 
   function handleCheckout(merchant: string): void {
     if (signerConnected) {
@@ -485,7 +514,7 @@ function CartPage() {
       setConnectOpen(false)
       continueToCheckout(merchant)
     }
-  }, [pendingCheckoutMerchant, signerConnected])
+  }, [continueToCheckout, pendingCheckoutMerchant, signerConnected])
 
   function handleConfirmClear(): void {
     if (!confirmClearTarget) return
@@ -513,13 +542,33 @@ function CartPage() {
     setConfirmClearTarget(null)
   }
 
+  const relatedProductsQueryKey = [
+    "cart-related-products",
+    selectedMerchant ?? "all",
+    cart.items
+      .map((item) => item.productId)
+      .sort()
+      .join(":"),
+    preferredTags.slice().sort().join(":"),
+  ] as const
+
+  const cachedRelatedProductsQuery = useQuery({
+    queryKey: ["cache", ...relatedProductsQueryKey],
+    enabled: cart.items.length > 0,
+    queryFn: () =>
+      fetchSuggestedProducts(
+        selectedMerchant,
+        selectedGroup
+          ? selectedGroup.items.map((item) => item.productId)
+          : cart.items.map((item) => item.productId),
+        preferredTags,
+        "cache"
+      ),
+    staleTime: 15_000,
+  })
+
   const relatedProductsQuery = useQuery({
-    queryKey: [
-      "cart-related-products",
-      selectedMerchant ?? "all",
-      cart.items.map((item) => item.productId).sort().join(":"),
-      preferredTags.slice().sort().join(":"),
-    ],
+    queryKey: ["live", ...relatedProductsQueryKey],
     enabled: cart.items.length > 0,
     placeholderData: (previousData) => previousData,
     queryFn: () =>
@@ -528,15 +577,27 @@ function CartPage() {
         selectedGroup
           ? selectedGroup.items.map((item) => item.productId)
           : cart.items.map((item) => item.productId),
-        preferredTags
+        preferredTags,
+        "live"
       ),
   })
+  const relatedProducts =
+    relatedProductsQuery.data && relatedProductsQuery.data.length > 0
+      ? relatedProductsQuery.data
+      : (cachedRelatedProductsQuery.data ?? [])
+  const isRelatedProductsInitialLoading =
+    relatedProducts.length === 0 &&
+    relatedProductsQuery.isLoading &&
+    cachedRelatedProductsQuery.isLoading
 
   if (cart.items.length === 0) {
     return (
       <div className="space-y-6">
         <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
-          <Link to="/products" className="transition-colors hover:text-[var(--text-primary)]">
+          <Link
+            to="/products"
+            className="transition-colors hover:text-[var(--text-primary)]"
+          >
             Shop
           </Link>
           <span>/</span>
@@ -548,9 +609,12 @@ function CartPage() {
             <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-400">
               <CartIcon className="h-6 w-6" />
             </div>
-            <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">Your cart is empty</h1>
+            <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+              Your cart is empty
+            </h1>
             <p className="text-sm leading-7 text-[var(--text-secondary)]">
-              Add products from the marketplace to start an order. Merchant carts stay separate so you can review each checkout independently.
+              Add products from the marketplace to start an order. Merchant
+              carts stay separate so you can review each checkout independently.
             </p>
             <div className="flex flex-wrap gap-3 pt-2">
               <Button asChild className="h-11 px-4 text-sm">
@@ -570,7 +634,10 @@ function CartPage() {
     return (
       <div className="space-y-6">
         <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
-          <Link to="/products" className="transition-colors hover:text-[var(--text-primary)]">
+          <Link
+            to="/products"
+            className="transition-colors hover:text-[var(--text-primary)]"
+          >
             Shop
           </Link>
           <span>/</span>
@@ -581,13 +648,16 @@ function CartPage() {
           <section className="space-y-4">
             <div className="flex flex-wrap items-end justify-between gap-4">
               <div>
-                <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">Carts per store</h1>
+                <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+                  Carts per store
+                </h1>
                 <p className="mt-2 text-sm text-[var(--text-secondary)]">
                   Choose a store cart to review before continuing to checkout.
                 </p>
               </div>
               <div className="text-sm text-[var(--text-secondary)]">
-                {merchantGroups.length} store{merchantGroups.length === 1 ? "" : "s"}
+                {merchantGroups.length} store
+                {merchantGroups.length === 1 ? "" : "s"}
                 <span className="mx-2 text-[var(--text-muted)]">/</span>
                 {cart.totals.count} item{cart.totals.count === 1 ? "" : "s"}
               </div>
@@ -605,10 +675,15 @@ function CartPage() {
 
           <aside className="space-y-4">
             <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
-              <div className="text-sm font-medium text-[var(--text-primary)]">All carts</div>
-              <div className="mt-3 text-3xl font-semibold text-secondary-400">{cart.totals.count}</div>
+              <div className="text-sm font-medium text-[var(--text-primary)]">
+                All carts
+              </div>
+              <div className="mt-3 text-3xl font-semibold text-secondary-400">
+                {cart.totals.count}
+              </div>
               <div className="mt-1 text-sm text-[var(--text-secondary)]">
-                Items waiting across {merchantGroups.length} merchant cart{merchantGroups.length === 1 ? "" : "s"}.
+                Items waiting across {merchantGroups.length} merchant cart
+                {merchantGroups.length === 1 ? "" : "s"}.
               </div>
               <Button
                 variant="outline"
@@ -622,7 +697,9 @@ function CartPage() {
             <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <h2 className="text-xl font-semibold text-[var(--text-primary)]">Related products</h2>
+                  <h2 className="text-xl font-semibold text-[var(--text-primary)]">
+                    Related products
+                  </h2>
                   <div className="mt-1 min-h-5 text-xs text-[var(--text-muted)]">
                     {relatedProductsQuery.isFetching ? (
                       <span className="inline-flex items-center gap-1.5">
@@ -636,18 +713,16 @@ function CartPage() {
                 </div>
               </div>
               <div className="mt-4 space-y-3">
-                {!relatedProductsQuery.data &&
-                  relatedProductsQuery.isLoading &&
-                  Array.from({ length: 4 }).map((_, index) => (
-                    <div
-                      key={index}
-                      className="h-[9.5rem] animate-pulse rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]"
-                    />
-                  ))}
+                {isRelatedProductsInitialLoading && (
+                  <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+                    Checking cached suggestions and nearby relay results.
+                  </div>
+                )}
 
-                {relatedProductsQuery.data?.map((product) => {
+                {relatedProducts.map((product) => {
                   const cartQuantity =
-                    cart.items.find((item) => item.productId === product.id)?.quantity ?? 0
+                    cart.items.find((item) => item.productId === product.id)
+                      ?.quantity ?? 0
 
                   return (
                     <RelatedProductRow
@@ -670,11 +745,12 @@ function CartPage() {
                   )
                 })}
 
-                {relatedProductsQuery.data && relatedProductsQuery.data.length === 0 && (
-                  <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-                    No additional products to suggest yet.
-                  </div>
-                )}
+                {!isRelatedProductsInitialLoading &&
+                  relatedProducts.length === 0 && (
+                    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+                      No additional products to suggest yet.
+                    </div>
+                  )}
               </div>
             </div>
           </aside>
@@ -699,13 +775,19 @@ function CartPage() {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
-        <Link to="/products" className="transition-colors hover:text-[var(--text-primary)]">
+        <Link
+          to="/products"
+          className="transition-colors hover:text-[var(--text-primary)]"
+        >
           Shop
         </Link>
         <span>/</span>
         {merchantGroups.length > 1 && (
           <>
-            <Link to="/cart" className="transition-colors hover:text-[var(--text-primary)]">
+            <Link
+              to="/cart"
+              className="transition-colors hover:text-[var(--text-primary)]"
+            >
               Multicart
             </Link>
             <span>/</span>
@@ -719,22 +801,38 @@ function CartPage() {
           <div className="flex flex-col gap-5 border-b border-[var(--border)] pb-5">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">Cart</h1>
+                <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+                  Cart
+                </h1>
                 <p className="mt-2 text-sm text-[var(--text-secondary)]">
                   Review this merchant cart before heading into checkout.
                 </p>
               </div>
               {merchantGroups.length > 1 && (
-                <Button asChild variant="ghost" className="h-10 px-3 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
+                <Button
+                  asChild
+                  variant="ghost"
+                  className="h-10 px-3 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                >
                   <Link to="/cart">Back to all carts</Link>
                 </Button>
               )}
             </div>
 
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-              <MerchantIdentity merchantPubkey={selectedGroup.merchantPubkey} eyebrow="Shop at" />
-              <Button asChild variant="outline" className="h-11 self-start px-4 text-sm lg:self-center">
-                <Link to="/store/$pubkey" params={{ pubkey: selectedGroup.merchantPubkey }}>
+              <MerchantIdentity
+                merchantPubkey={selectedGroup.merchantPubkey}
+                eyebrow="Shop at"
+              />
+              <Button
+                asChild
+                variant="outline"
+                className="h-11 self-start px-4 text-sm lg:self-center"
+              >
+                <Link
+                  to="/store/$pubkey"
+                  params={{ pubkey: selectedGroup.merchantPubkey }}
+                >
                   <Store className="h-4 w-4" />
                   Visit store
                 </Link>
@@ -776,13 +874,16 @@ function CartPage() {
           <div className="mt-6 flex flex-col gap-4 border-t border-[var(--border)] pt-5 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="text-sm text-[var(--text-secondary)]">
-                Subtotal ({selectedGroup.totalItems} item{selectedGroup.totalItems === 1 ? "" : "s"})
+                Subtotal ({selectedGroup.totalItems} item
+                {selectedGroup.totalItems === 1 ? "" : "s"})
               </div>
               <div className="mt-1 text-2xl font-semibold text-secondary-400">
                 {selectedSummary?.primary}
               </div>
               {selectedSummary?.secondary && (
-                <div className="mt-1 text-sm text-[var(--text-muted)]">{selectedSummary.secondary}</div>
+                <div className="mt-1 text-sm text-[var(--text-muted)]">
+                  {selectedSummary.secondary}
+                </div>
               )}
             </div>
 
@@ -790,11 +891,16 @@ function CartPage() {
               <Button
                 variant="outline"
                 className="h-11 px-4 text-sm"
-                onClick={() => setConfirmClearTarget(selectedGroup.merchantPubkey)}
+                onClick={() =>
+                  setConfirmClearTarget(selectedGroup.merchantPubkey)
+                }
               >
                 Clear cart
               </Button>
-              <Button className="h-11 px-5 text-sm" onClick={() => handleCheckout(selectedGroup.merchantPubkey)}>
+              <Button
+                className="h-11 px-5 text-sm"
+                onClick={() => handleCheckout(selectedGroup.merchantPubkey)}
+              >
                 <span className="inline-flex items-center gap-2">
                   <LightningIcon className="h-4 w-4" />
                   Zap out
@@ -807,13 +913,21 @@ function CartPage() {
         <aside className="space-y-4">
           <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
             <div className="text-sm font-medium text-[var(--text-primary)]">
-              Subtotal ({selectedGroup.totalItems} item{selectedGroup.totalItems === 1 ? "" : "s"})
+              Subtotal ({selectedGroup.totalItems} item
+              {selectedGroup.totalItems === 1 ? "" : "s"})
             </div>
-            <div className="mt-3 text-3xl font-semibold text-secondary-400">{selectedSummary?.primary}</div>
+            <div className="mt-3 text-3xl font-semibold text-secondary-400">
+              {selectedSummary?.primary}
+            </div>
             {selectedSummary?.secondary && (
-              <div className="mt-1 text-sm text-[var(--text-muted)]">{selectedSummary.secondary}</div>
+              <div className="mt-1 text-sm text-[var(--text-muted)]">
+                {selectedSummary.secondary}
+              </div>
             )}
-            <Button className="mt-5 w-full" onClick={() => handleCheckout(selectedGroup.merchantPubkey)}>
+            <Button
+              className="mt-5 w-full"
+              onClick={() => handleCheckout(selectedGroup.merchantPubkey)}
+            >
               <span className="inline-flex items-center gap-2">
                 <LightningIcon className="h-4 w-4" />
                 Zap out
@@ -824,7 +938,9 @@ function CartPage() {
           <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h2 className="text-xl font-semibold text-[var(--text-primary)]">Related products</h2>
+                <h2 className="text-xl font-semibold text-[var(--text-primary)]">
+                  Related products
+                </h2>
                 <div className="mt-1 min-h-5 text-xs text-[var(--text-muted)]">
                   {relatedProductsQuery.isFetching ? (
                     <span className="inline-flex items-center gap-1.5">
@@ -838,18 +954,16 @@ function CartPage() {
               </div>
             </div>
             <div className="mt-4 space-y-3">
-              {!relatedProductsQuery.data &&
-                relatedProductsQuery.isLoading &&
-                Array.from({ length: 4 }).map((_, index) => (
-                  <div
-                    key={index}
-                    className="h-[9.5rem] animate-pulse rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]"
-                  />
-                ))}
+              {isRelatedProductsInitialLoading && (
+                <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+                  Checking cached suggestions and nearby relay results.
+                </div>
+              )}
 
-              {relatedProductsQuery.data?.map((product) => {
+              {relatedProducts.map((product) => {
                 const cartQuantity =
-                  cart.items.find((item) => item.productId === product.id)?.quantity ?? 0
+                  cart.items.find((item) => item.productId === product.id)
+                    ?.quantity ?? 0
 
                 return (
                   <RelatedProductRow
@@ -872,21 +986,27 @@ function CartPage() {
                 )
               })}
 
-              {relatedProductsQuery.data && relatedProductsQuery.data.length === 0 && (
-                <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-                  No additional products to suggest yet.
-                </div>
-              )}
+              {!isRelatedProductsInitialLoading &&
+                relatedProducts.length === 0 && (
+                  <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+                    No additional products to suggest yet.
+                  </div>
+                )}
             </div>
           </div>
         </aside>
       </div>
 
-      <Dialog open={confirmClearTarget !== null} onOpenChange={(open) => !open && setConfirmClearTarget(null)}>
+      <Dialog
+        open={confirmClearTarget !== null}
+        onOpenChange={(open) => !open && setConfirmClearTarget(null)}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {confirmClearTarget === "all" ? "Clear all carts?" : "Clear this cart?"}
+              {confirmClearTarget === "all"
+                ? "Clear all carts?"
+                : "Clear this cart?"}
             </DialogTitle>
             <DialogDescription className="text-[var(--text-secondary)]">
               {confirmClearTarget === "all"
@@ -895,12 +1015,13 @@ function CartPage() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmClearTarget(null)}>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmClearTarget(null)}
+            >
               Cancel
             </Button>
-            <Button onClick={handleConfirmClear}>
-              Clear cart
-            </Button>
+            <Button onClick={handleConfirmClear}>Clear cart</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

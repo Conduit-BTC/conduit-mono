@@ -3,21 +3,20 @@ import {
   MessagesSquare,
   ReceiptText,
   Search,
-  Settings,
   ShoppingCart,
-  Store,
 } from "lucide-react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
-import { config, formatPubkey, useAuth, useProfile } from "@conduit/core"
 import {
+  config,
+  formatPubkey,
+  getProfileDisplayLabel,
+  useAuth,
+  useProfile,
+} from "@conduit/core"
+import {
+  AccountMenu,
   Badge,
   Button,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -61,61 +60,27 @@ function Logo({
 
 function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
-  const { data: profile } = useProfile(pubkey)
-  const [open, setOpen] = useState(false)
+  const profileQuery = useProfile(pubkey)
+  const profile = profileQuery.data
+  const navigate = useNavigate()
 
-  if (!pubkey || status === "disconnected" || status === "error") return null
+  if (!pubkey || status !== "connected") return null
 
-  const displayName = profile?.displayName ?? profile?.name ?? null
+  const displayName = getProfileDisplayLabel(profile, pubkey, {
+    lookupSettled: !profileQuery.isPlaceholderData,
+    pendingLabel: "Loading profile",
+    chars: 4,
+  })
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <Button
-        variant="primary"
-        size="sm"
-        className="text-xs"
-        onClick={() => setOpen(true)}
-      >
-        {profile?.picture && (
-          <img
-            src={profile.picture}
-            alt=""
-            className="h-5 w-5 rounded-full object-cover"
-          />
-        )}
-        {displayName ?? formatPubkey(pubkey, 4)}
-      </Button>
-      <DialogContent className="max-w-sm border-[var(--border)] bg-[var(--surface-dialog)] text-[var(--text-primary)] shadow-[var(--shadow-dialog)]">
-        <DialogHeader>
-          <DialogTitle>Disconnect signer?</DialogTitle>
-          <DialogDescription className="text-sm leading-7 text-[var(--text-secondary)]">
-            You can reconnect later, but checkout, orders, and merchant
-            follow-up will require signing in again.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
-          {displayName && (
-            <div className="font-medium text-[var(--text-primary)]">
-              {displayName}
-            </div>
-          )}
-          <div className="font-mono">{formatPubkey(pubkey, 12)}</div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>
-            Cancel
-          </Button>
-          <Button
-            onClick={() => {
-              disconnect()
-              setOpen(false)
-            }}
-          >
-            Disconnect
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <AccountMenu
+      displayName={displayName}
+      pubkeyLabel={formatPubkey(pubkey, 12)}
+      avatarUrl={profile?.picture}
+      onProfile={() => navigate({ to: "/profile" })}
+      onNetwork={() => navigate({ to: "/settings" })}
+      onDisconnect={disconnect}
+    />
   )
 }
 
@@ -281,27 +246,6 @@ export function MarketHeader() {
           </Badge>
         )}
 
-        <nav className="hidden items-center gap-1 text-sm text-[var(--text-secondary)] lg:flex">
-          <Button asChild variant="ghost" className="h-10 px-3">
-            <Link
-              to="/products"
-              activeProps={{ className: "text-[var(--text-primary)]" }}
-            >
-              <Store className="h-4 w-4" />
-              Shop
-            </Link>
-          </Button>
-          <Button asChild variant="ghost" className="h-10 px-3">
-            <Link
-              to="/settings"
-              activeProps={{ className: "text-[var(--text-primary)]" }}
-            >
-              <Settings className="h-4 w-4" />
-              Relays
-            </Link>
-          </Button>
-        </nav>
-
         <div className="order-last w-full pb-5 lg:order-none lg:ml-2 lg:flex-1 lg:pb-0">
           <form
             className="relative"
@@ -335,7 +279,7 @@ export function MarketHeader() {
             {!isBrowseRoute &&
               searchDirty &&
               normalizedSearchValue.length > 0 && (
-                <div className="pointer-events-none absolute left-1 top-full mt-1 text-[11px] text-[var(--text-muted)]">
+                <div className="pointer-events-none absolute left-2 top-full mt-0.5 text-[10px] leading-none text-[var(--text-muted)]">
                   Press Enter to search
                 </div>
               )}
@@ -436,21 +380,9 @@ export function MarketHeader() {
 
                 <div className="mt-6 grid gap-2">
                   <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/products" onClick={() => setMenuOpen(false)}>
-                      <Store className="h-4 w-4" />
-                      Shop
-                    </Link>
-                  </Button>
-                  <Button asChild variant="ghost" className="justify-start">
                     <Link to="/cart" onClick={() => setMenuOpen(false)}>
                       <ShoppingCart className="h-4 w-4" />
                       Cart ({cart.totals.count})
-                    </Link>
-                  </Button>
-                  <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/settings" onClick={() => setMenuOpen(false)}>
-                      <Settings className="h-4 w-4" />
-                      Relays
                     </Link>
                   </Button>
                   {status === "connected" && (
@@ -466,13 +398,6 @@ export function MarketHeader() {
                       <Link to="/orders" onClick={() => setMenuOpen(false)}>
                         <ReceiptText className="h-4 w-4" />
                         Orders
-                      </Link>
-                    </Button>
-                  )}
-                  {status === "connected" && (
-                    <Button asChild variant="ghost" className="justify-start">
-                      <Link to="/profile" onClick={() => setMenuOpen(false)}>
-                        Profile
                       </Link>
                     </Button>
                   )}

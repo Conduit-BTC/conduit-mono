@@ -8,12 +8,7 @@ import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { KeyRound, ShieldCheck, Store } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
-import {
-  getActiveRelaySettingsScope,
-  hasNip07,
-  refreshNdkRelaySettings,
-  useAuth,
-} from "@conduit/core"
+import { useAuth, useNip07Availability } from "@conduit/core"
 import { Button, ErrorPage, NotFoundPage } from "@conduit/ui"
 import { MerchantHeader, MerchantSidebar } from "../components/MerchantHeader"
 
@@ -23,14 +18,19 @@ export const Route = createRootRoute({
   notFoundComponent: RootNotFound,
 })
 
+const AUTH_GATE_GRACE_MS = 650
+
 function RootShell({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-[var(--background)] text-[var(--text-primary)]">
-      <div className="lg:grid lg:grid-cols-[260px_minmax(0,1fr)]">
+    <div className="min-h-screen bg-[var(--background)] text-[var(--text-primary)] lg:h-screen lg:overflow-hidden">
+      <div className="lg:grid lg:h-full lg:grid-cols-[260px_minmax(0,1fr)]">
         <MerchantSidebar />
-        <div className="min-h-screen">
+        <div className="min-h-screen lg:flex lg:min-h-0 lg:flex-col lg:overflow-hidden">
           <MerchantHeader />
-          <main className="px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+          <main
+            data-merchant-main-scroll
+            className="px-4 py-6 sm:px-6 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-8 lg:py-8"
+          >
             <div className="mx-auto w-full max-w-[1280px]">{children}</div>
           </main>
         </div>
@@ -42,25 +42,53 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootLayout() {
   const { pubkey, status } = useAuth()
+  const [authFallbackReady, setAuthFallbackReady] = useState(false)
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
   const signerConnected = status === "connected" && !!pubkey
-  const relaySettingsScope = pubkey ? `merchant:${pubkey}` : "merchant"
+  const signerRestoring =
+    !!pubkey && (status === "restoring" || status === "connecting")
+  const shouldDelayAuthFallback =
+    !!pubkey && !signerConnected && !authFallbackReady
 
   useEffect(() => {
+    if (!pubkey || signerConnected) {
+      setAuthFallbackReady(false)
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setAuthFallbackReady(true)
+    }, AUTH_GATE_GRACE_MS)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [pubkey, signerConnected])
+
+  useEffect(() => {
+    document
+      .querySelector<HTMLElement>("[data-merchant-main-scroll]")
+      ?.scrollTo({ top: 0, left: 0, behavior: "auto" })
     window.scrollTo({ top: 0, left: 0, behavior: "auto" })
   }, [pathname])
 
   useEffect(() => {
-    const title = signerConnected ? getPageTitle(pathname) : "Connect"
+    const title =
+      signerConnected || signerRestoring ? getPageTitle(pathname) : "Connect"
     document.title = `${title} | Conduit Merchant`
-  }, [pathname, signerConnected])
+  }, [pathname, signerConnected, signerRestoring])
 
-  useEffect(() => {
-    if (getActiveRelaySettingsScope() === relaySettingsScope) return
-    refreshNdkRelaySettings(relaySettingsScope)
-  }, [relaySettingsScope])
+  if (shouldDelayAuthFallback) {
+    return <AuthGateGrace />
+  }
+
+  if (signerRestoring) {
+    return (
+      <RootShell>
+        <AuthRestoring />
+      </RootShell>
+    )
+  }
 
   if (!signerConnected) {
     return <ConnectGate />
@@ -73,30 +101,55 @@ function RootLayout() {
   )
 }
 
-function RootErrorComponent({ error }: ErrorComponentProps) {
+function AuthGateGrace() {
   return (
-    <RootShell>
-      <ErrorPage
-        title="Something went wrong"
-        message={error.message || "An unexpected error occurred."}
-        showReload
-      />
-    </RootShell>
+    <div className="min-h-screen bg-[var(--background)] text-[var(--text-primary)]">
+      {import.meta.env.DEV && <TanStackRouterDevtools />}
+    </div>
   )
 }
 
-function RootNotFound() {
+function AuthRestoring() {
   return (
-    <RootShell>
-      <NotFoundPage backTo="/" backLabel="Go to dashboard" />
-    </RootShell>
+    <div className="flex min-h-[50vh] items-center justify-center">
+      <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] px-5 py-4 text-center shadow-sm">
+        <KeyRound className="mx-auto h-5 w-5 animate-pulse text-secondary-300" />
+        <div className="mt-3 text-sm font-semibold text-[var(--text-primary)]">
+          Restoring signer
+        </div>
+        <div className="mt-1 text-sm text-[var(--text-secondary)]">
+          Waiting for your browser extension.
+        </div>
+      </div>
+    </div>
   )
+}
+
+function RootErrorComponent({ error }: ErrorComponentProps) {
+  const { pubkey, status } = useAuth()
+  const signerConnected = status === "connected" && !!pubkey
+  const errorPage = (
+    <ErrorPage
+      title="Something went wrong"
+      message={error.message || "An unexpected error occurred."}
+      showReload
+    />
+  )
+
+  if (!signerConnected) return errorPage
+
+  return <RootShell>{errorPage}</RootShell>
+}
+
+function RootNotFound() {
+  return <NotFoundPage backTo="/" backLabel="Go to dashboard" />
 }
 
 function ConnectGate() {
   const { status, connect, error } = useAuth()
   const [isWorking, setIsWorking] = useState(false)
-  const extensionAvailable = hasNip07()
+  const extensionAvailable = useNip07Availability()
+  const authPending = status === "connecting" || status === "restoring"
   const isProbablyMobileBrowser = useMemo(() => {
     if (typeof navigator === "undefined") return false
     return /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent)
@@ -105,7 +158,7 @@ function ConnectGate() {
     isProbablyMobileBrowser && !extensionAvailable && status !== "connected"
 
   async function handleConnect(): Promise<void> {
-    if (status === "connecting") return
+    if (authPending) return
     setIsWorking(true)
     try {
       await connect()
@@ -170,15 +223,11 @@ function ConnectGate() {
                 <div className="mt-6">
                   <Button
                     onClick={() => void handleConnect()}
-                    disabled={
-                      isWorking ||
-                      status === "connecting" ||
-                      !extensionAvailable
-                    }
+                    disabled={isWorking || authPending || !extensionAvailable}
                     className="h-12 w-full justify-center gap-2 text-base"
                   >
                     <KeyRound className="h-5 w-5" />
-                    {status === "connecting" || isWorking
+                    {authPending || isWorking
                       ? "Connecting..."
                       : "Connect signer"}
                   </Button>
@@ -188,7 +237,7 @@ function ConnectGate() {
               <div className="mt-5 text-[15px] leading-6 text-[var(--text-primary)]/80">
                 {mobileSignerUnavailable
                   ? "This mobile browser does not expose a supported Nostr signer here yet. Use a desktop browser with a signer extension, or a mobile browser that already exposes one."
-                  : status === "connecting" || isWorking
+                  : authPending || isWorking
                     ? "Waiting for your signer approval..."
                     : extensionAvailable
                       ? "Use your Nostr signer to open the merchant workspace."
@@ -214,6 +263,6 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/products") return "Products"
   if (pathname === "/orders") return "Orders"
   if (pathname === "/profile") return "Profile"
-  if (pathname === "/settings") return "Relay Settings"
-  return "Merchant"
+  if (pathname === "/network") return "Network"
+  return "Not Found"
 }

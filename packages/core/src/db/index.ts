@@ -1,4 +1,4 @@
-import Dexie, { type EntityTable } from "dexie"
+import Dexie, { type EntityTable, type Table } from "dexie"
 import { config } from "../config"
 
 export interface StoredOrder {
@@ -79,12 +79,64 @@ export interface CachedOrderMessage {
   cachedAt: number
 }
 
+/**
+ * NIP-65 relay list cache entry for an arbitrary pubkey.
+ *
+ * Used by the relay planner to route reads at an author's write relays
+ * and writes at a recipient's read/inbox relays. Distinct from the
+ * local user's relay-settings preferences (`RelaySettingsState`), which
+ * describe what the user has configured rather than what is observed
+ * for other pubkeys.
+ */
+export interface CachedRelayList {
+  pubkey: string
+  /** Relays the pubkey reads from (NIP-65 marker `read` or unmarked). */
+  readRelayUrls: string[]
+  /** Relays the pubkey writes to (NIP-65 marker `write` or unmarked). */
+  writeRelayUrls: string[]
+  /** `created_at` of the kind-10002 event in seconds. */
+  eventCreatedAt: number
+  /** Relays the kind-10002 event was observed on, if known. */
+  sourceRelayUrls?: string[]
+  /** Local cache time in milliseconds. */
+  cachedAt: number
+}
+
+/**
+ * Aggregate social signals for a product, keyed by the product's
+ * coordinate (NIP-33 `kind:pubkey:d-tag`) or event id when available.
+ *
+ * This is a scaffold cache: counters are filled in by the social
+ * hydrator over time and consumed by product card surfaces. UI must
+ * treat any field as optional/stale until `cachedAt` is recent.
+ */
+export interface CachedProductSocialSummary {
+  /** `kind:pubkey:d-tag` coordinate or event id. */
+  key: string
+  /** Number of distinct reaction (kind 7) events seen. */
+  reactionCount?: number
+  /** Number of distinct zap receipts (kind 9735) seen. */
+  zapCount?: number
+  /** Sum of zap receipts in millisats, when payable. */
+  zapAmountMsats?: number
+  /** Number of distinct comment (kind 1111) events seen. */
+  commentCount?: number
+  /** Number of distinct reviews (NIP-25 / merchant feedback) seen. */
+  reviewCount?: number
+  /** Local cache time in ms. */
+  cachedAt: number
+  /** Last verified-fresh timestamp in ms. */
+  verifiedAt?: number
+}
+
 class ConduitDB extends Dexie {
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
   products!: EntityTable<CachedProduct, "id">
   profiles!: EntityTable<CachedProfile, "pubkey">
   orderMessages!: EntityTable<CachedOrderMessage, "id">
+  relayLists!: EntityTable<CachedRelayList, "pubkey">
+  productSocialSummaries!: EntityTable<CachedProductSocialSummary, "key">
 
   constructor() {
     super("conduit")
@@ -104,12 +156,37 @@ class ConduitDB extends Dexie {
       orderMessages:
         "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
     })
+
+    this.version(3).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
+    })
+
+    this.version(4).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
+      productSocialSummaries: "key, cachedAt",
+    })
   }
 }
 
 export const db = new ConduitDB()
 
 const CACHE_SCOPE_KEY = "conduit:commerce-cache-scope:v1"
+const FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES = 35 * 1024 * 1024
+const FALLBACK_CACHE_PRUNE_TARGET_BYTES = 24 * 1024 * 1024
+const CACHE_PRUNE_FRESH_MS = 24 * 60 * 60 * 1_000
+const STORAGE_PRESSURE_HIGH_WATER_RATIO = 0.7
 
 function getCommerceCacheScope(): string {
   return JSON.stringify({
@@ -133,7 +210,85 @@ export async function ensureCommerceCacheScope(): Promise<void> {
     db.products.clear(),
     db.profiles.clear(),
     db.orderMessages.clear(),
+    db.relayLists.clear(),
+    db.productSocialSummaries.clear(),
   ])
 
   window.localStorage.setItem(CACHE_SCOPE_KEY, nextScope)
+}
+
+async function pruneTableByCachedAt(
+  table: Table,
+  options: {
+    estimatedRowBytes: number
+    highWaterBytes: number
+    targetBytes: number
+    freshMs: number
+  }
+): Promise<void> {
+  const count = await table.count()
+  const estimatedBytes = count * options.estimatedRowBytes
+  if (estimatedBytes <= options.highWaterBytes) return
+
+  const targetRowCount = Math.ceil(
+    options.targetBytes / options.estimatedRowBytes
+  )
+  const deleteCount = Math.max(0, count - targetRowCount)
+  if (deleteCount === 0) return
+
+  const staleBefore = Date.now() - options.freshMs
+  const staleRows = await table
+    .orderBy("cachedAt")
+    .filter((row) => {
+      const cachedAt = (row as { cachedAt?: unknown }).cachedAt
+      return typeof cachedAt === "number" && cachedAt < staleBefore
+    })
+    .limit(deleteCount)
+    .primaryKeys()
+  if (staleRows.length === 0) return
+  await table.bulkDelete(staleRows)
+}
+
+export async function pruneCommerceCaches(): Promise<void> {
+  if (typeof window === "undefined") return
+
+  const storageEstimate =
+    typeof navigator !== "undefined" && navigator.storage?.estimate
+      ? await navigator.storage.estimate()
+      : undefined
+  const storageUsage = storageEstimate?.usage
+  const storageQuota = storageEstimate?.quota
+
+  // Product cache pruning should protect the browser, not define catalog truth.
+  // When the browser exposes quota telemetry, only prune under real storage
+  // pressure; otherwise fall back to a conservative per-table byte estimate.
+  if (
+    typeof storageUsage === "number" &&
+    typeof storageQuota === "number" &&
+    storageQuota > 0 &&
+    storageUsage / storageQuota < STORAGE_PRESSURE_HIGH_WATER_RATIO
+  ) {
+    return
+  }
+
+  await Promise.all([
+    pruneTableByCachedAt(db.products, {
+      estimatedRowBytes: 2_500,
+      highWaterBytes: FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES,
+      targetBytes: FALLBACK_CACHE_PRUNE_TARGET_BYTES,
+      freshMs: CACHE_PRUNE_FRESH_MS,
+    }),
+    pruneTableByCachedAt(db.relayLists, {
+      estimatedRowBytes: 900,
+      highWaterBytes: FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES,
+      targetBytes: FALLBACK_CACHE_PRUNE_TARGET_BYTES,
+      freshMs: CACHE_PRUNE_FRESH_MS,
+    }),
+    pruneTableByCachedAt(db.productSocialSummaries, {
+      estimatedRowBytes: 500,
+      highWaterBytes: FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES,
+      targetBytes: FALLBACK_CACHE_PRUNE_TARGET_BYTES,
+      freshMs: CACHE_PRUNE_FRESH_MS,
+    }),
+  ])
 }

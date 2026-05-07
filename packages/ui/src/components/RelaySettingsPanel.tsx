@@ -7,11 +7,13 @@ import {
   Search,
   Send,
   Trash2,
+  Upload,
   WifiOff,
 } from "lucide-react"
 import { type DragEvent, type FormEvent, type ReactNode, useState } from "react"
 import { Button } from "./Button"
 import { Input } from "./Input"
+import { StatusPill } from "./StatusPill"
 import { cn } from "../utils"
 
 type RelaySettingsSection = "commerce" | "public"
@@ -36,6 +38,7 @@ export interface RelaySettingsPanelEntry {
   readEnabled: boolean
   writeEnabled: boolean
   section: RelaySettingsSection
+  source?: "default" | "manual" | "signer" | "published"
   commercePriority?: number
   capabilities: RelayCapabilities
   warnings: RelayWarnings
@@ -51,13 +54,18 @@ export interface RelaySettingsPanelProps {
   settings: RelaySettingsPanelState
   scanningUrls?: readonly string[]
   error?: string | null
+  isLoadingPublishedRelayList?: boolean
+  publishedRelayListUpdatedAt?: number | null
+  publishingRelayList?: boolean
+  publishError?: string | null
   onAddRelay: (url: string) => void | Promise<void>
   onRefreshRelay: (url: string) => void | Promise<void>
   onRemoveRelay: (url: string) => void
   onToggleRead: (url: string, enabled: boolean) => void
   onToggleWrite: (url: string, enabled: boolean) => void
-  onReorderCommerceRelay: (sourceUrl: string, targetUrl: string) => void
+  onReorderCommerceRelay?: (sourceUrl: string, targetUrl: string) => void
   onReset?: () => void
+  onPublishRelayList?: () => void | Promise<void>
   className?: string
 }
 
@@ -76,10 +84,10 @@ const sectionMeta: Record<
     label: "Commerce Enabled Relays",
     description:
       "Relays that Conduit can use for commerce events like products, stock updates, orders, and merchant messages.",
-    labelClassName: "text-primary-300",
+    labelClassName: "text-[var(--primary-500)]",
     dotClassName: "bg-primary-400",
     surfaceClassName:
-      "bg-[radial-gradient(circle_at_top_left,color-mix(in_srgb,var(--primary-500)_16%,transparent),transparent_38%),color-mix(in_srgb,var(--surface)_88%,var(--background)_12%)]",
+      "bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)]",
     empty:
       "No verified commerce relays yet. Add a relay and Conduit will verify whether it belongs here.",
   },
@@ -87,10 +95,10 @@ const sectionMeta: Record<
     label: "Other Public Relays",
     description:
       "General Nostr relays used for broader network reading, publishing, and discovery.",
-    labelClassName: "text-accent-300",
+    labelClassName: "text-[var(--accent-500)]",
     dotClassName: "bg-accent-400",
     surfaceClassName:
-      "bg-[radial-gradient(circle_at_top_left,color-mix(in_srgb,var(--accent-500)_13%,transparent),transparent_38%),color-mix(in_srgb,var(--surface)_88%,var(--background)_12%)]",
+      "bg-[color-mix(in_srgb,var(--accent-500)_1%,transparent)]",
     empty:
       "No public relays configured yet. Reachable non-commerce relays will appear here.",
   },
@@ -201,8 +209,8 @@ function PreferenceToggle({
       className={cn(
         "inline-flex h-9 w-9 items-center justify-center rounded-full border text-[0.68rem] font-semibold tracking-[0.12em] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-40",
         active
-          ? "border-primary-400/60 bg-primary-500/20 text-primary-100"
-          : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+          ? "border-primary-400 bg-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] text-[var(--primary-500)]"
+          : "border-[var(--border-overlay)] bg-transparent text-[var(--text-secondary)] hover:border-[var(--text-muted)] hover:text-[var(--text-primary)]"
       )}
     >
       {label}
@@ -235,15 +243,15 @@ function CapabilityIcon({
           className={cn(
             "inline-flex h-8 w-8 items-center justify-center rounded-full border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
             warning
-              ? "border-warning/35 bg-warning/10 text-warning"
+              ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_18%,transparent)] text-[var(--warning)]"
               : active
-                ? "border-success/35 bg-success/10 text-success"
-                : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)]"
+                ? "border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_18%,transparent)] text-[var(--success)]"
+                : "border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)]"
           )}
         >
           <Icon className="h-3.5 w-3.5" />
         </span>
-        <span className="text-[0.56rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+        <span className="hidden text-[0.56rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)] lg:block">
           {shortLabel}
         </span>
       </span>
@@ -270,7 +278,7 @@ function RelayRow({
   draggedUrl: string | null
   onDragStart: (url: string) => void
   onDragEnd: () => void
-  onDropRelay: (sourceUrl: string, targetUrl: string) => void
+  onDropRelay?: (sourceUrl: string, targetUrl: string) => void
   onRefreshRelay: (url: string) => void
   onRemoveRelay: (url: string) => void
   onToggleRead: (url: string, enabled: boolean) => void
@@ -279,7 +287,7 @@ function RelayRow({
   const warningText = getRelayWarningText(entry)
   const compatibilityText = getRelayCompatibilityText(entry)
   const isDisabled = entry.warnings.unreachable || scanning
-  const draggable = section === "commerce"
+  const draggable = section === "commerce" && !!onDropRelay
 
   function handleDragStart(event: DragEvent<HTMLDivElement>): void {
     if (!draggable) return
@@ -293,7 +301,7 @@ function RelayRow({
     event.preventDefault()
     const sourceUrl = event.dataTransfer.getData("text/plain") || draggedUrl
     if (!sourceUrl) return
-    onDropRelay(sourceUrl, entry.url)
+    onDropRelay?.(sourceUrl, entry.url)
   }
 
   return (
@@ -306,7 +314,7 @@ function RelayRow({
       }}
       onDrop={handleDrop}
       className={cn(
-        "group grid min-w-0 gap-3 border-b border-[var(--border)] py-4 last:border-b-0 lg:grid-cols-[2rem_minmax(0,1fr)_7.25rem_10rem_5.75rem] lg:items-center",
+        "group flex flex-col gap-3 border-b border-[var(--border)] py-4 last:border-b-0 sm:flex-row sm:items-center lg:grid lg:grid-cols-[2rem_minmax(0,1fr)_7.25rem_10rem_5.75rem] lg:items-center",
         draggedUrl === entry.url && "opacity-55"
       )}
     >
@@ -319,7 +327,7 @@ function RelayRow({
         ) : null}
       </div>
 
-      <div className="min-w-0 rounded-2xl bg-[color-mix(in_srgb,var(--surface)_60%,transparent)] p-3 lg:bg-transparent lg:p-0">
+      <div className="min-w-0 flex-1 rounded-2xl bg-[color-mix(in_srgb,var(--surface)_60%,transparent)] p-3 sm:bg-transparent sm:p-0 lg:bg-transparent lg:p-0">
         <div className="flex min-w-0 items-center gap-3">
           <span
             className={cn(
@@ -341,16 +349,34 @@ function RelayRow({
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
               <span>{getRelayStatusLabel(entry)}</span>
-              <span
-                className="rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2 py-0.5"
-                title={compatibilityText}
+              <CapabilityTooltip
+                label={
+                  entry.capabilities.commerce
+                    ? "Commerce compatible"
+                    : entry.warnings.commercePartialSupport
+                      ? "Partial commerce"
+                      : "Public relay"
+                }
+                description={compatibilityText}
               >
-                {entry.capabilities.commerce
-                  ? "Commerce compatible"
-                  : entry.warnings.commercePartialSupport
-                    ? "Partial commerce"
-                    : "Public relay"}
-              </span>
+                <StatusPill
+                  variant={
+                    entry.capabilities.commerce
+                      ? "success"
+                      : entry.warnings.commercePartialSupport
+                        ? "warning"
+                        : "neutral"
+                  }
+                  noIcon
+                  className="cursor-default py-0.5 text-[0.68rem]"
+                >
+                  {entry.capabilities.commerce
+                    ? "Commerce compatible"
+                    : entry.warnings.commercePartialSupport
+                      ? "Partial commerce"
+                      : "Public relay"}
+                </StatusPill>
+              </CapabilityTooltip>
               {entry.relayName ? <span>{entry.relayName}</span> : null}
               {warningText ? (
                 <span className="text-warning" title={warningText}>
@@ -362,117 +388,114 @@ function RelayRow({
         </div>
       </div>
 
-      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:justify-center">
-        <div className="mr-1 text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)] lg:hidden">
-          Use
+      <div className="flex items-center justify-center gap-2 sm:shrink-0 sm:justify-end lg:[display:contents]">
+        <div className="flex items-center gap-1.5 lg:justify-center">
+          <PreferenceToggle
+            label="OUT"
+            active={entry.writeEnabled}
+            disabled={isDisabled}
+            tooltip="Publish events to this relay."
+            onToggle={() => onToggleWrite(entry.url, !entry.writeEnabled)}
+          />
+          <PreferenceToggle
+            label="IN"
+            active={entry.readEnabled}
+            disabled={isDisabled}
+            tooltip="Read events from this relay."
+            onToggle={() => onToggleRead(entry.url, !entry.readEnabled)}
+          />
         </div>
-        <PreferenceToggle
-          label="OUT"
-          active={entry.writeEnabled}
-          disabled={isDisabled}
-          tooltip="Publish events to this relay."
-          onToggle={() => onToggleWrite(entry.url, !entry.writeEnabled)}
-        />
-        <PreferenceToggle
-          label="IN"
-          active={entry.readEnabled}
-          disabled={isDisabled}
-          tooltip="Read events from this relay."
-          onToggle={() => onToggleRead(entry.url, !entry.readEnabled)}
-        />
-      </div>
 
-      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-nowrap lg:justify-center">
-        <div className="mr-1 text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)] lg:hidden">
-          Signals
-        </div>
-        <CapabilityIcon
-          active={entry.capabilities.search}
-          icon={Search}
-          shortLabel="Search"
-          label={
-            entry.capabilities.search
-              ? "Search supported"
-              : "Search not advertised"
-          }
-          description={
-            entry.capabilities.search
-              ? `This relay advertises NIP-50 search. Conduit can use it for discovery and lookup when a route needs search behavior. ${compatibilityText}`
-              : `This relay does not advertise NIP-50 search. Conduit can still read ordinary events here, but should not rely on it for product search or discovery. ${compatibilityText}`
-          }
-        />
-        <CapabilityIcon
-          active={entry.capabilities.dm}
-          icon={Send}
-          shortLabel="DM"
-          label={
-            entry.capabilities.dm
-              ? "DM support detected"
-              : "DM support not advertised"
-          }
-          description={
-            entry.capabilities.dm
-              ? `This relay advertises NIP-17 support. Conduit can consider it for modern encrypted buyer and merchant message delivery. ${compatibilityText}`
-              : `This relay does not advertise NIP-17 support. Conduit should avoid depending on it for buyer and merchant message delivery. ${compatibilityText}`
-          }
-        />
-        <CapabilityIcon
-          active={entry.capabilities.auth || entry.warnings.dmWithoutAuth}
-          icon={LockKeyhole}
-          shortLabel="Auth"
-          label={
-            entry.warnings.dmWithoutAuth
-              ? "DM relay without auth"
-              : "Auth supported"
-          }
-          description={
-            entry.warnings.dmWithoutAuth
-              ? `This relay advertises NIP-17 DMs but not NIP-42 auth. Message content remains encrypted, but relay access controls may be weaker, so Conduit may limit protected messaging use here. ${compatibilityText}`
-              : entry.capabilities.auth
-                ? `This relay advertises or requires NIP-42 authentication. Conduit can authenticate when a relay requires signed access for protected reads or writes. ${compatibilityText}`
-                : `This relay does not advertise NIP-42 authentication. Conduit can still use it for public reads or writes, but should avoid it for protected messaging paths. ${compatibilityText}`
-          }
-          warning={entry.warnings.dmWithoutAuth}
-        />
-        {(entry.warnings.unreachable ||
-          entry.warnings.commercePartialSupport ||
-          entry.warnings.staleRelayInfo) && (
+        <div className="h-5 w-px shrink-0 bg-[var(--border)] lg:hidden" />
+
+        <div className="flex items-center gap-1.5 lg:flex-nowrap lg:justify-center">
           <CapabilityIcon
-            active
-            icon={entry.warnings.unreachable ? WifiOff : AlertTriangle}
-            shortLabel="Warn"
-            label={warningText ?? "Relay warning"}
-            description={`${warningText ?? "Conduit detected a relay warning."} ${compatibilityText}`}
-            warning
+            active={entry.capabilities.search}
+            icon={Search}
+            shortLabel="Search"
+            label={
+              entry.capabilities.search
+                ? "Search supported"
+                : "Search not advertised"
+            }
+            description={
+              entry.capabilities.search
+                ? `This relay advertises NIP-50 search. Conduit can use it for discovery and lookup when a route needs search behavior. ${compatibilityText}`
+                : `This relay does not advertise NIP-50 search. Conduit can still read ordinary events here, but should not rely on it for product search or discovery. ${compatibilityText}`
+            }
           />
-        )}
-      </div>
-
-      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">
-        <div className="mr-1 text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)] lg:hidden">
-          Manage
+          <CapabilityIcon
+            active={entry.capabilities.dm}
+            icon={Send}
+            shortLabel="DM"
+            label={
+              entry.capabilities.dm
+                ? "DM support detected"
+                : "DM support not advertised"
+            }
+            description={
+              entry.capabilities.dm
+                ? `This relay advertises NIP-17 support. Conduit can consider it for modern encrypted buyer and merchant message delivery. ${compatibilityText}`
+                : `This relay does not advertise NIP-17 support. Conduit should avoid depending on it for buyer and merchant message delivery. ${compatibilityText}`
+            }
+          />
+          <CapabilityIcon
+            active={entry.capabilities.auth || entry.warnings.dmWithoutAuth}
+            icon={LockKeyhole}
+            shortLabel="Auth"
+            label={
+              entry.warnings.dmWithoutAuth
+                ? "DM relay without auth"
+                : "Auth supported"
+            }
+            description={
+              entry.warnings.dmWithoutAuth
+                ? `This relay advertises NIP-17 DMs but not NIP-42 auth. Message content remains encrypted, but relay access controls may be weaker, so Conduit may limit protected messaging use here. ${compatibilityText}`
+                : entry.capabilities.auth
+                  ? `This relay advertises or requires NIP-42 authentication. Conduit can authenticate when a relay requires signed access for protected reads or writes. ${compatibilityText}`
+                  : `This relay does not advertise NIP-42 authentication. Conduit can still use it for public reads or writes, but should avoid it for protected messaging paths. ${compatibilityText}`
+            }
+            warning={entry.warnings.dmWithoutAuth}
+          />
+          {(entry.warnings.unreachable ||
+            entry.warnings.commercePartialSupport ||
+            entry.warnings.staleRelayInfo) && (
+            <CapabilityIcon
+              active
+              icon={entry.warnings.unreachable ? WifiOff : AlertTriangle}
+              shortLabel="Warn"
+              label={warningText ?? "Relay warning"}
+              description={`${warningText ?? "Conduit detected a relay warning."} ${compatibilityText}`}
+              warning
+            />
+          )}
         </div>
-        <button
-          type="button"
-          onClick={() => onRefreshRelay(entry.url)}
-          disabled={scanning}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-wait disabled:opacity-50"
-          aria-label={`Refresh ${entry.url}`}
-          title="Refresh relay verification"
-        >
-          <RefreshCw
-            className={cn("h-3.5 w-3.5", scanning && "animate-spin")}
-          />
-        </button>
-        <button
-          type="button"
-          onClick={() => onRemoveRelay(entry.url)}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] opacity-100 transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 lg:opacity-0 lg:group-hover:opacity-100"
-          aria-label={`Remove ${entry.url}`}
-          title="Remove relay"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
+
+        <div className="h-5 w-px shrink-0 bg-[var(--border)] lg:hidden" />
+
+        <div className="flex items-center gap-1.5 lg:justify-end">
+          <button
+            type="button"
+            onClick={() => onRefreshRelay(entry.url)}
+            disabled={scanning}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-wait disabled:opacity-50"
+            aria-label={`Refresh ${entry.url}`}
+            title="Refresh relay verification"
+          >
+            <RefreshCw
+              className={cn("h-3.5 w-3.5", scanning && "animate-spin")}
+            />
+          </button>
+          <button
+            type="button"
+            onClick={() => onRemoveRelay(entry.url)}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)] opacity-100 transition-colors hover:border-[var(--error)] hover:bg-[color-mix(in_srgb,var(--error)_12%,transparent)] hover:text-[var(--error)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 lg:opacity-0 lg:group-hover:opacity-100"
+            aria-label={`Remove ${entry.url}`}
+            title="Remove relay"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -497,7 +520,7 @@ function RelaySection({
   draggedUrl: string | null
   onDragStart: (url: string) => void
   onDragEnd: () => void
-  onDropRelay: (sourceUrl: string, targetUrl: string) => void
+  onDropRelay?: (sourceUrl: string, targetUrl: string) => void
   onRefreshRelay: (url: string) => void
   onRemoveRelay: (url: string) => void
   onToggleRead: (url: string, enabled: boolean) => void
@@ -521,7 +544,7 @@ function RelaySection({
             {meta.description}
           </p>
         </div>
-        {section === "commerce" && entries.length > 1 ? (
+        {section === "commerce" && entries.length > 1 && onDropRelay ? (
           <div className="text-xs text-[var(--text-muted)]">
             Drag to change Conduit's commerce priority.
           </div>
@@ -530,7 +553,7 @@ function RelaySection({
 
       <div
         className={cn(
-          "overflow-hidden rounded-[1.75rem] border border-[var(--border)] px-4 py-2 shadow-[var(--shadow-glass-inset)] sm:px-5",
+          "rounded-[1.75rem] border border-[var(--border)] px-4 py-2 shadow-[var(--shadow-glass-inset)] sm:px-5",
           meta.surfaceClassName
         )}
       >
@@ -565,6 +588,10 @@ export function RelaySettingsPanel({
   settings,
   scanningUrls = [],
   error,
+  isLoadingPublishedRelayList = false,
+  publishedRelayListUpdatedAt = null,
+  publishingRelayList = false,
+  publishError = null,
   onAddRelay,
   onRefreshRelay,
   onRemoveRelay,
@@ -572,13 +599,25 @@ export function RelaySettingsPanel({
   onToggleWrite,
   onReorderCommerceRelay,
   onReset,
+  onPublishRelayList,
   className,
 }: RelaySettingsPanelProps) {
   const [newRelayUrl, setNewRelayUrl] = useState("")
   const [isAdding, setIsAdding] = useState(false)
+  const [isPublishing, setIsPublishing] = useState(false)
   const [draggedUrl, setDraggedUrl] = useState<string | null>(null)
   const commerceEntries = sortSectionEntries(settings.entries, "commerce")
   const publicEntries = sortSectionEntries(settings.entries, "public")
+  const activeRelayCount = settings.entries.filter(
+    (entry) => entry.readEnabled || entry.writeEnabled
+  ).length
+  const publishedLabel = publishedRelayListUpdatedAt
+    ? `Published relays loaded ${new Date(
+        publishedRelayListUpdatedAt * 1000
+      ).toLocaleDateString()}`
+    : isLoadingPublishedRelayList
+      ? "Checking published relays"
+      : "Local relay changes"
 
   async function handleAddRelay(event: FormEvent): Promise<void> {
     event.preventDefault()
@@ -594,24 +633,42 @@ export function RelaySettingsPanel({
     }
   }
 
+  async function handlePublishRelayList(): Promise<void> {
+    if (!onPublishRelayList || isPublishing || publishingRelayList) return
+
+    setIsPublishing(true)
+    try {
+      await onPublishRelayList()
+    } finally {
+      setIsPublishing(false)
+    }
+  }
+
   return (
     <section
       className={cn(
-        "rounded-[2.25rem] border border-[var(--border)] bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--primary-500)_14%,transparent),transparent_35%),linear-gradient(180deg,color-mix(in_srgb,var(--surface)_92%,var(--background)_8%),var(--background))] p-5 shadow-[var(--shadow-dialog)] sm:p-8",
+        "rounded-[2.25rem] border border-[var(--border)] bg-[color:var(--surface-elevated)] bg-[image:radial-gradient(circle_at_top,color-mix(in_srgb,var(--primary-500)_14%,transparent),transparent_35%)] p-5 shadow-[var(--shadow-dialog)] sm:p-8",
         className
       )}
     >
       <div className="space-y-8">
-        <div>
-          <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
-            Network
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
+              Network
+            </div>
+            <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
+              Relay Settings
+            </h1>
+            <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
+              Relays store and deliver data across the Nostr network.
+            </p>
           </div>
-          <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
-            Relay Settings
-          </h1>
-          <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
-            Relays store and deliver data across the Nostr network.
-          </p>
+          <div className="flex flex-col items-start gap-1 pt-1 sm:items-end">
+            <span className="text-[0.65rem] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+              {publishedLabel}
+            </span>
+          </div>
         </div>
 
         <RelaySection
@@ -621,10 +678,14 @@ export function RelaySettingsPanel({
           draggedUrl={draggedUrl}
           onDragStart={setDraggedUrl}
           onDragEnd={() => setDraggedUrl(null)}
-          onDropRelay={(sourceUrl, targetUrl) => {
-            setDraggedUrl(null)
-            onReorderCommerceRelay(sourceUrl, targetUrl)
-          }}
+          onDropRelay={
+            onReorderCommerceRelay
+              ? (sourceUrl, targetUrl) => {
+                  setDraggedUrl(null)
+                  onReorderCommerceRelay(sourceUrl, targetUrl)
+                }
+              : undefined
+          }
           onRefreshRelay={(url) => void onRefreshRelay(url)}
           onRemoveRelay={onRemoveRelay}
           onToggleRead={onToggleRead}
@@ -638,10 +699,7 @@ export function RelaySettingsPanel({
           draggedUrl={draggedUrl}
           onDragStart={setDraggedUrl}
           onDragEnd={() => setDraggedUrl(null)}
-          onDropRelay={(sourceUrl, targetUrl) => {
-            setDraggedUrl(null)
-            onReorderCommerceRelay(sourceUrl, targetUrl)
-          }}
+          onDropRelay={undefined}
           onRefreshRelay={(url) => void onRefreshRelay(url)}
           onRemoveRelay={onRemoveRelay}
           onToggleRead={onToggleRead}
@@ -685,11 +743,36 @@ export function RelaySettingsPanel({
           ) : null}
         </form>
 
-        {onReset ? (
-          <div className="flex justify-end">
-            <Button type="button" variant="ghost" onClick={onReset}>
-              Reset to defaults
-            </Button>
+        {onReset || onPublishRelayList ? (
+          <div className="flex flex-wrap justify-end gap-2">
+            {onReset ? (
+              <Button type="button" variant="ghost" onClick={onReset}>
+                {onPublishRelayList ? "Reset local draft" : "Reset to defaults"}
+              </Button>
+            ) : null}
+            {onPublishRelayList ? (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={
+                  activeRelayCount <= 1 ||
+                  isLoadingPublishedRelayList ||
+                  isPublishing ||
+                  publishingRelayList
+                }
+                onClick={() => void handlePublishRelayList()}
+              >
+                <Upload className="h-4 w-4" />
+                {isPublishing || publishingRelayList
+                  ? "Publishing..."
+                  : "Publish relays"}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        {publishError ? (
+          <div className="rounded-xl border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
+            {publishError}
           </div>
         ) : null}
       </div>
