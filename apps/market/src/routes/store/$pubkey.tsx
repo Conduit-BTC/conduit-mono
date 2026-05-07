@@ -34,6 +34,7 @@ import {
   appendConduitClientTag,
   formatNpub,
   getProfileDisplayLabel,
+  getProfileName,
   publishWithPlanner,
   requireNdkConnected,
   useAuth,
@@ -154,12 +155,18 @@ function StorefrontPage() {
   >("idle")
   const [followOverride, setFollowOverride] = useState<boolean | null>(null)
 
-  const merchantName = getProfileDisplayLabel(profile, pubkey, {
-    lookupSettled: !profileQuery.isPlaceholderData,
-    pendingLabel: "Loading store",
-    emptyPrefix: "Store",
-    chars: 8,
-  })
+  const merchantProfileName = getProfileName(profile)
+  const merchantIdentityPending =
+    !merchantProfileName && profileQuery.isPlaceholderData
+  const merchantName =
+    merchantProfileName ||
+    (merchantIdentityPending
+      ? "Store"
+      : getProfileDisplayLabel(profile, pubkey, {
+          lookupSettled: true,
+          emptyPrefix: "Store",
+          chars: 8,
+        }))
   const identityReady = !profileQuery.isPlaceholderData
   const merchantAbout = profile?.about?.trim()
   const allTags = useMemo(() => {
@@ -410,7 +417,16 @@ function StorefrontPage() {
           Shop
         </Link>
         <span>/</span>
-        <span className="text-[var(--text-primary)]">{merchantName}</span>
+        <span className="text-[var(--text-primary)]">
+          {merchantIdentityPending ? (
+            <span
+              aria-hidden="true"
+              className="inline-block h-3 w-24 animate-pulse rounded bg-[var(--surface-elevated)] align-middle"
+            />
+          ) : (
+            merchantName
+          )}
+        </span>
       </div>
 
       <section className="overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)]">
@@ -421,7 +437,7 @@ function StorefrontPage() {
                 <Avatar className="h-24 w-24 self-start border border-[var(--border)] shadow-[var(--shadow-lg)] sm:h-28 sm:w-28">
                   <AvatarImage
                     src={profile?.picture}
-                    alt={merchantName}
+                    alt={merchantIdentityPending ? "Store" : merchantName}
                     className="object-cover"
                   />
                   <AvatarFallback>
@@ -433,9 +449,16 @@ function StorefrontPage() {
                   <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
                     Store
                   </div>
-                  <h1 className="mt-2 truncate text-3xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
-                    {merchantName}
-                  </h1>
+                  {merchantIdentityPending ? (
+                    <div
+                      aria-hidden="true"
+                      className="mt-4 h-8 w-48 animate-pulse rounded bg-[var(--surface-elevated)] sm:h-10 sm:w-64"
+                    />
+                  ) : (
+                    <h1 className="mt-2 truncate text-3xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
+                      {merchantName}
+                    </h1>
+                  )}
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-[var(--text-secondary)]">
                     <span className="inline-flex items-center gap-1 font-medium text-[var(--text-primary)]">
                       {profile?.nip05 || formatNpub(pubkey, 8)}
@@ -794,6 +817,7 @@ function StorefrontPage() {
                   <ProductGridCard
                     product={product}
                     merchantName={merchantName}
+                    merchantNamePending={merchantIdentityPending}
                     imageLoading={identityReady && index < 4 ? "eager" : "lazy"}
                     btcUsdRate={btcUsdRate}
                     cartQuantity={

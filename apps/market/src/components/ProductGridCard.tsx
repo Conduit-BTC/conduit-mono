@@ -1,6 +1,7 @@
 import { useNavigate } from "@tanstack/react-router"
 import {
   getProfileDisplayLabel,
+  getProfileName,
   getProductImageCandidates,
   useProfile,
   type Product,
@@ -15,6 +16,7 @@ import { getProductPriceDisplay } from "../lib/pricing"
 type ProductGridCardProps = {
   product: Product
   merchantName?: string
+  merchantNamePending?: boolean
   imageLoading?: "eager" | "lazy"
   onAddToCart?: () => void
   btcUsdRate?: number | null
@@ -27,6 +29,7 @@ type ProductGridCardProps = {
 export function ProductGridCard({
   product,
   merchantName: merchantNameOverride,
+  merchantNamePending: merchantNamePendingOverride,
   imageLoading = "lazy",
   onAddToCart,
   btcUsdRate,
@@ -41,14 +44,20 @@ export function ProductGridCard({
     { priority: "visible" }
   )
   const profile = profileQuery.data
+  const profileName = getProfileName(profile)
+  const merchantNamePending =
+    merchantNamePendingOverride ??
+    (!profileName && profileQuery.isPlaceholderData)
   const merchantName =
     merchantNameOverride ||
-    getProfileDisplayLabel(profile, product.pubkey, {
-      lookupSettled: !profileQuery.isPlaceholderData,
-      pendingLabel: "Loading store",
-      emptyPrefix: "Store",
-      chars: 6,
-    })
+    profileName ||
+    (merchantNamePending
+      ? "Store"
+      : getProfileDisplayLabel(profile, product.pubkey, {
+          lookupSettled: true,
+          emptyPrefix: "Store",
+          chars: 6,
+        }))
   const { primary, secondary } = getProductPriceDisplay(
     product,
     btcUsdRate ?? null
@@ -58,6 +67,7 @@ export function ProductGridCard({
     <ProductCard
       title={product.title}
       merchantName={merchantName}
+      merchantNamePending={merchantNamePending}
       images={getProductImageCandidates(product)}
       primaryPrice={primary}
       secondaryPrice={secondary}

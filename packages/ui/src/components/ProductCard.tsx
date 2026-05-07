@@ -11,6 +11,7 @@ export type ProductCardImage = {
 export interface ProductCardProps {
   title: string
   merchantName: string
+  merchantNamePending?: boolean
   images: readonly ProductCardImage[]
   primaryPrice: string
   secondaryPrice?: string | null
@@ -26,6 +27,7 @@ export interface ProductCardProps {
 export function ProductCard({
   title,
   merchantName,
+  merchantNamePending = false,
   images,
   primaryPrice,
   secondaryPrice,
@@ -46,6 +48,15 @@ export function ProductCard({
     setImageFailed(false)
     setImageIndex(0)
   }, [imageKey, title])
+
+  const merchantNameContent = merchantNamePending ? (
+    <span
+      aria-hidden="true"
+      className="block h-3 w-24 animate-pulse rounded bg-[var(--surface-elevated)]"
+    />
+  ) : (
+    merchantName
+  )
 
   return (
     <div
@@ -97,17 +108,18 @@ export function ProductCard({
             <button
               type="button"
               className="truncate text-left text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+              aria-label={merchantNamePending ? "Open store" : undefined}
               onClick={(event) => {
                 event.preventDefault()
                 event.stopPropagation()
                 onMerchantActivate()
               }}
             >
-              {merchantName}
+              {merchantNameContent}
             </button>
           ) : (
             <div className="truncate text-left text-xs text-[var(--text-muted)]">
-              {merchantName}
+              {merchantNameContent}
             </div>
           )}
         </div>

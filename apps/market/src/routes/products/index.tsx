@@ -434,18 +434,36 @@ function ProductsPage() {
     }),
     [allMerchantProfilesQuery.data, visibleMerchantProfilesQuery.data]
   )
-  const visibleIdentityReady = visibleMerchantProfilesQuery.data !== undefined
-  const getMerchantName = useCallback(
-    (merchantPubkey: string) =>
-      getProfileDisplayLabel(merchantProfiles[merchantPubkey], merchantPubkey, {
-        lookupSettled:
-          !visibleMerchantPubkeys.includes(merchantPubkey) ||
-          visibleIdentityReady,
-        pendingLabel: "Loading store",
-        emptyPrefix: "Store",
-        chars: 6,
-      }),
+  const visibleIdentityReady =
+    visibleMerchantProfilesQuery.data !== undefined &&
+    !visibleMerchantProfilesQuery.isPlaceholderData
+  const getMerchantIdentity = useCallback(
+    (merchantPubkey: string) => {
+      const profile = merchantProfiles[merchantPubkey]
+      const name = getProfileName(profile)
+      const pending =
+        !name &&
+        visibleMerchantPubkeys.includes(merchantPubkey) &&
+        !visibleIdentityReady
+
+      return {
+        name:
+          name ||
+          (pending
+            ? "Store"
+            : getProfileDisplayLabel(profile, merchantPubkey, {
+                lookupSettled: true,
+                emptyPrefix: "Store",
+                chars: 6,
+              })),
+        pending,
+      }
+    },
     [merchantProfiles, visibleIdentityReady, visibleMerchantPubkeys]
+  )
+  const getMerchantName = useCallback(
+    (merchantPubkey: string) => getMerchantIdentity(merchantPubkey).name,
+    [getMerchantIdentity]
   )
 
   const hasActiveFilters = !!(
@@ -864,61 +882,66 @@ function ProductsPage() {
       {/* Product grid */}
       {visible.length > 0 && (
         <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
-          {visible.map((p, index) => (
-            <li key={p.id} className="h-full">
-              <ProductGridCard
-                product={p}
-                merchantName={getMerchantName(p.pubkey)}
-                imageLoading={
-                  visibleIdentityReady && index < 4 ? "eager" : "lazy"
-                }
-                btcUsdRate={btcUsdRate}
-                cartQuantity={
-                  cart.items.find((item) => item.productId === p.id)
-                    ?.quantity ?? 0
-                }
-                onAddToCart={() =>
-                  cart.addItem(
-                    {
-                      productId: p.id,
-                      merchantPubkey: p.pubkey,
-                      title: p.title,
-                      price: p.price,
-                      currency: p.currency,
-                      image: p.images[0]?.url,
-                      tags: p.tags,
-                    },
-                    1
-                  )
-                }
-                onIncrement={() =>
-                  cart.addItem(
-                    {
-                      productId: p.id,
-                      merchantPubkey: p.pubkey,
-                      title: p.title,
-                      price: p.price,
-                      currency: p.currency,
-                      image: p.images[0]?.url,
-                      tags: p.tags,
-                    },
-                    1
-                  )
-                }
-                onDecrement={() => {
-                  const existing = cart.items.find(
-                    (item) => item.productId === p.id
-                  )
-                  if (!existing) return
-                  if (existing.quantity <= 1) {
-                    cart.removeItem(p.id)
-                    return
+          {visible.map((p, index) => {
+            const merchantIdentity = getMerchantIdentity(p.pubkey)
+
+            return (
+              <li key={p.id} className="h-full">
+                <ProductGridCard
+                  product={p}
+                  merchantName={merchantIdentity.name}
+                  merchantNamePending={merchantIdentity.pending}
+                  imageLoading={
+                    visibleIdentityReady && index < 4 ? "eager" : "lazy"
                   }
-                  cart.setQuantity(p.id, existing.quantity - 1)
-                }}
-              />
-            </li>
-          ))}
+                  btcUsdRate={btcUsdRate}
+                  cartQuantity={
+                    cart.items.find((item) => item.productId === p.id)
+                      ?.quantity ?? 0
+                  }
+                  onAddToCart={() =>
+                    cart.addItem(
+                      {
+                        productId: p.id,
+                        merchantPubkey: p.pubkey,
+                        title: p.title,
+                        price: p.price,
+                        currency: p.currency,
+                        image: p.images[0]?.url,
+                        tags: p.tags,
+                      },
+                      1
+                    )
+                  }
+                  onIncrement={() =>
+                    cart.addItem(
+                      {
+                        productId: p.id,
+                        merchantPubkey: p.pubkey,
+                        title: p.title,
+                        price: p.price,
+                        currency: p.currency,
+                        image: p.images[0]?.url,
+                        tags: p.tags,
+                      },
+                      1
+                    )
+                  }
+                  onDecrement={() => {
+                    const existing = cart.items.find(
+                      (item) => item.productId === p.id
+                    )
+                    if (!existing) return
+                    if (existing.quantity <= 1) {
+                      cart.removeItem(p.id)
+                      return
+                    }
+                    cart.setQuantity(p.id, existing.quantity - 1)
+                  }}
+                />
+              </li>
+            )
+          })}
         </ul>
       )}
 

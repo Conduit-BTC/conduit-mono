@@ -3,6 +3,7 @@ import { createFileRoute, Link } from "@tanstack/react-router"
 import {
   formatNpub,
   getProfileDisplayLabel,
+  getProfileName,
   useProfile,
   type Product,
 } from "@conduit/core"
@@ -76,13 +77,18 @@ function ProductPage() {
   const images = product?.images ?? []
   const hasMultipleImages = images.length > 1
   const selectedImage = images[selectedImageIndex] ?? images[0]
+  const merchantProfileName = getProfileName(merchantProfile.data)
+  const merchantIdentityPending =
+    !!product && !merchantProfileName && merchantProfile.isPlaceholderData
   const merchantName = product
-    ? getProfileDisplayLabel(merchantProfile.data, product.pubkey, {
-        lookupSettled: !merchantProfile.isPlaceholderData,
-        pendingLabel: "Loading store",
-        emptyPrefix: "Store",
-        chars: 8,
-      })
+    ? merchantProfileName ||
+      (merchantIdentityPending
+        ? "Store"
+        : getProfileDisplayLabel(merchantProfile.data, product.pubkey, {
+            lookupSettled: true,
+            emptyPrefix: "Store",
+            chars: 8,
+          }))
     : ""
   const merchantIdentityReady = !merchantProfile.isPlaceholderData
   const cartItem = product
@@ -133,7 +139,14 @@ function ProductPage() {
                 params={{ pubkey: product.pubkey }}
                 className="transition-colors hover:text-[var(--text-primary)]"
               >
-                {merchantName}
+                {merchantIdentityPending ? (
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-3 w-24 animate-pulse rounded bg-[var(--surface-elevated)] align-middle"
+                  />
+                ) : (
+                  merchantName
+                )}
               </Link>
               <span>/</span>
             </>
@@ -283,7 +296,7 @@ function ProductPage() {
                   <Avatar className="h-11 w-11 shrink-0 border border-[var(--border)]">
                     <AvatarImage
                       src={merchantProfile.data?.picture}
-                      alt={merchantName}
+                      alt={merchantIdentityPending ? "Store" : merchantName}
                     />
                     <AvatarFallback>
                       <MerchantAvatarFallback />
@@ -295,9 +308,16 @@ function ProductPage() {
                       params={{ pubkey: product.pubkey }}
                       className="block min-w-0 rounded-md transition-colors hover:text-secondary-300"
                     >
-                      <div className="truncate text-base font-semibold leading-tight text-[var(--text-primary)]">
-                        {merchantName}
-                      </div>
+                      {merchantIdentityPending ? (
+                        <div
+                          aria-hidden="true"
+                          className="mt-1 h-4 w-32 animate-pulse rounded bg-[var(--surface)]"
+                        />
+                      ) : (
+                        <div className="truncate text-base font-semibold leading-tight text-[var(--text-primary)]">
+                          {merchantName}
+                        </div>
+                      )}
                     </Link>
                     <div className="mt-1 flex min-w-0 items-center gap-2">
                       <Link
@@ -527,6 +547,7 @@ function ProductPage() {
                       <ProductGridCard
                         product={relatedProduct}
                         merchantName={merchantName}
+                        merchantNamePending={merchantIdentityPending}
                         imageLoading={
                           merchantIdentityReady && index < 4 ? "eager" : "lazy"
                         }

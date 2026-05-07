@@ -2,24 +2,25 @@ import { describe, expect, it } from "bun:test"
 import { readFile } from "node:fs/promises"
 
 describe("identity surface contracts", () => {
-  it("keeps Market store labels pending while profile lookups are unresolved", async () => {
+  it("keeps Market store labels skeletal while profile lookups are unresolved", async () => {
     const expectations = {
       "apps/market/src/components/ProductGridCard.tsx": [
-        "lookupSettled: !profileQuery.isPlaceholderData",
-        'pendingLabel: "Loading store"',
+        "merchantNamePending",
+        "profileQuery.isPlaceholderData",
       ],
       "apps/market/src/routes/products/$productId.tsx": [
-        "lookupSettled: !merchantProfile.isPlaceholderData",
-        'pendingLabel: "Loading store"',
+        "merchantIdentityPending",
+        "merchantProfile.isPlaceholderData",
       ],
       "apps/market/src/routes/products/index.tsx": [
-        "!visibleMerchantPubkeys.includes(merchantPubkey)",
+        "getMerchantIdentity",
+        "visibleMerchantPubkeys.includes(merchantPubkey)",
         "visibleIdentityReady",
-        'pendingLabel: "Loading store"',
+        "!visibleMerchantProfilesQuery.isPlaceholderData",
       ],
       "apps/market/src/routes/store/$pubkey.tsx": [
-        "lookupSettled: !profileQuery.isPlaceholderData",
-        'pendingLabel: "Loading store"',
+        "merchantIdentityPending",
+        "profileQuery.isPlaceholderData",
       ],
     }
 
@@ -28,7 +29,7 @@ describe("identity surface contracts", () => {
       for (const snippet of snippets) {
         expect(content).toContain(snippet)
       }
-      expect(content).not.toContain("lookupSettled: true")
+      expect(content).not.toContain('pendingLabel: "Loading store"')
     }
   })
 
