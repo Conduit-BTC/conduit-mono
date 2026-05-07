@@ -83,10 +83,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
   const [error, setError] = useState<string | null>(null)
   const connecting = useRef(false)
+  const authEpoch = useRef(0)
 
   const connect = useCallback(async () => {
     if (connecting.current) return
     connecting.current = true
+    const epoch = authEpoch.current
 
     setStatus("connecting")
     setError(null)
@@ -111,6 +113,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         "Signer connection timed out. Unlock/approve your NIP-07 extension (e.g., Alby) and retry."
       )
       const pk = user.pubkey
+      if (epoch !== authEpoch.current) return
 
       setSigner(signer)
       setPubkey(pk)
@@ -127,6 +130,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const disconnect = useCallback(() => {
+    authEpoch.current += 1
+    connecting.current = false
     removeSigner()
     setPubkey(null)
     setStatus("disconnected")

@@ -1,7 +1,26 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import { productSchema, type ProductSchema } from "../schemas"
 
-function getTagValue(tags: string[][] | undefined, name: string): string | null {
+const PRODUCT_IMAGE_URL_PATTERN = /^https?:\/\//i
+
+export function getProductImageCandidates(
+  product: Pick<ProductSchema, "images">
+): Array<{ url: string; alt?: string }> {
+  return product.images.filter((image) =>
+    PRODUCT_IMAGE_URL_PATTERN.test(image.url)
+  )
+}
+
+export function hasMarketVisibleProductImage(
+  product: Pick<ProductSchema, "images">
+): boolean {
+  return getProductImageCandidates(product).length > 0
+}
+
+function getTagValue(
+  tags: string[][] | undefined,
+  name: string
+): string | null {
   if (!tags) return null
   for (const t of tags) {
     if (t[0] === name && typeof t[1] === "string") return t[1]
@@ -16,7 +35,9 @@ function getTagValues(tags: string[][] | undefined, name: string): string[] {
     .map((t) => t[1] as string)
 }
 
-function parsePriceTag(tags: string[][] | undefined): { price: number; currency: string } | null {
+function parsePriceTag(
+  tags: string[][] | undefined
+): { price: number; currency: string } | null {
   if (!tags) return null
   for (const t of tags) {
     if (t[0] !== "price") continue
@@ -36,7 +57,9 @@ function parsePriceTag(tags: string[][] | undefined): { price: number; currency:
  * - We first try JSON content matching our `productSchema`.
  * - If content isn't JSON, we fall back to minimal fields from tags/content.
  */
-export function parseProductEvent(event: Pick<NDKEvent, "content" | "pubkey" | "created_at" | "tags" | "id">): ProductSchema {
+export function parseProductEvent(
+  event: Pick<NDKEvent, "content" | "pubkey" | "created_at" | "tags" | "id">
+): ProductSchema {
   const createdAtMs = (event.created_at ?? 0) * 1000
   const dTag = getTagValue(event.tags, "d")
 
@@ -59,7 +82,10 @@ export function parseProductEvent(event: Pick<NDKEvent, "content" | "pubkey" | "
 
   // Fallback: market-spec/NIP-99 style tags + markdown content.
   const fromContent = (event.content || "").trim()
-  const title = getTagValue(event.tags, "title") ?? fromContent.split("\n")[0]?.slice(0, 200) ?? "Untitled"
+  const title =
+    getTagValue(event.tags, "title") ??
+    fromContent.split("\n")[0]?.slice(0, 200) ??
+    "Untitled"
 
   const priceInfo = parsePriceTag(event.tags)
   const summaryTag = getTagValue(event.tags, "summary")
@@ -75,7 +101,8 @@ export function parseProductEvent(event: Pick<NDKEvent, "content" | "pubkey" | "
     id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
     pubkey: event.pubkey,
     title,
-    summary: summaryTag ?? (fromContent ? fromContent.slice(0, 5000) : undefined),
+    summary:
+      summaryTag ?? (fromContent ? fromContent.slice(0, 5000) : undefined),
     price: priceInfo?.price ?? 0,
     currency: priceInfo?.currency ?? "USD",
     images,

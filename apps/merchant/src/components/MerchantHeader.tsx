@@ -12,7 +12,12 @@ import {
 } from "lucide-react"
 import type { ComponentType } from "react"
 import { Link, useNavigate } from "@tanstack/react-router"
-import { config, formatPubkey, useAuth, useProfile } from "@conduit/core"
+import {
+  config,
+  getProfileDisplayLabel,
+  useAuth,
+  useProfile,
+} from "@conduit/core"
 import {
   Badge,
   Button,
@@ -204,13 +209,17 @@ function MerchantNavLinks({
 function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
   const navigate = useNavigate()
-  const { data: profile } = useProfile(pubkey)
+  const profileQuery = useProfile(pubkey)
+  const profile = profileQuery.data
   const readiness = useMerchantReadiness()
 
   if (!pubkey || status !== "connected") return null
 
-  const displayName =
-    profile?.displayName ?? profile?.name ?? formatPubkey(pubkey, 6)
+  const displayName = getProfileDisplayLabel(profile, pubkey, {
+    lookupSettled: !profileQuery.isPlaceholderData,
+    pendingLabel: "Loading profile",
+    chars: 6,
+  })
 
   return (
     <ProfileSelector

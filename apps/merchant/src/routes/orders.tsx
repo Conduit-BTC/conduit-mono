@@ -9,6 +9,7 @@ import {
   appendConduitClientTag,
   extractOrderSummary,
   formatPubkey,
+  getCachedMerchantConversationList,
   getNdk,
   getProfiles,
   getLightningNetworkMismatchMessage,
@@ -17,6 +18,7 @@ import {
   isInvoiceCompatibleWithCurrentNetwork,
   mockMakeInvoice,
   nwcMakeInvoice,
+  publishWithPlanner,
   weblnMakeInvoice,
   type ParsedOrderMessage,
   type StatusUpdateMessageSchema,
@@ -165,7 +167,20 @@ async function publishOrderConversationMessage(params: {
     rumorKind: EVENT_KINDS.ORDER,
   })
 
-  await Promise.all([wrappedToBuyer.publish(), wrappedToMerchant.publish()])
+  await Promise.all([
+    publishWithPlanner(wrappedToBuyer, {
+      intent: "recipient_event",
+      authorPubkey: params.merchantPubkey,
+      recipientPubkeys: [params.buyerPubkey],
+      refreshRelayLists: true,
+    }),
+    publishWithPlanner(wrappedToMerchant, {
+      intent: "recipient_event",
+      authorPubkey: params.merchantPubkey,
+      recipientPubkeys: [params.merchantPubkey],
+      refreshRelayLists: true,
+    }),
+  ])
 }
 
 function MessageCard({
@@ -377,6 +392,7 @@ function OrdersPage() {
   const [refreshButtonState, setRefreshButtonState] = useState<
     "idle" | "refreshing" | "done"
   >("idle")
+  const selectedOrderResetRef = useRef<string | null>(null)
   const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   )
@@ -414,13 +430,19 @@ function OrdersPage() {
   const nwc = useNwcConnection()
 
   const ordersQuery = useQuery({
-    queryKey: ["merchant-order-messages", pubkey ?? "none"],
+    queryKey: ["merchant-order-messages-live", pubkey ?? "none"],
     enabled: signerConnected,
-    queryFn: () =>
-      getMerchantConversationList({ principalPubkey: pubkey!, limit: 200 }),
+    queryFn: () => getMerchantConversationList({ principalPubkey: pubkey! }),
     staleTime: 30_000,
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
+  })
+  const cachedOrdersQuery = useQuery({
+    queryKey: ["merchant-order-messages", pubkey ?? "none"],
+    enabled: signerConnected,
+    queryFn: () =>
+      getCachedMerchantConversationList({ principalPubkey: pubkey! }),
+    staleTime: 5_000,
   })
   const isOrdersFetching = ordersQuery.isFetching
   const refetchOrders = ordersQuery.refetch
@@ -462,8 +484,8 @@ function OrdersPage() {
   }, [refetchOrders, signerConnected])
 
   const conversations = useMemo(
-    () => ordersQuery.data?.data ?? [],
-    [ordersQuery.data]
+    () => ordersQuery.data?.data ?? cachedOrdersQuery.data?.data ?? [],
+    [cachedOrdersQuery.data, ordersQuery.data]
   )
   const buyerPubkeys = useMemo(
     () =>
@@ -483,6 +505,9 @@ function OrdersPage() {
       const result = await getProfiles({ pubkeys: buyerPubkeys })
       return result.data
     },
+    retry: 3,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   })
 
   useEffect(() => {
@@ -516,6 +541,10 @@ function OrdersPage() {
     normalizeInvoiceCurrencyChoice(selectedOrderCurrency) === ""
 
   useEffect(() => {
+    const selectedId = selected?.id ?? null
+    if (selectedOrderResetRef.current === selectedId) return
+    selectedOrderResetRef.current = selectedId
+
     setSuccessFlash(null)
     setActiveTab("details")
     setOrderStatus("")
@@ -528,7 +557,7 @@ function OrdersPage() {
     setInvoiceCurrency(
       normalizeInvoiceCurrencyChoice(firstOrder.payload.currency)
     )
-  }, [selected?.id])
+  }, [selected])
 
   const orderSummary = useMemo(
     () => (selected ? extractOrderSummary(selected.messages ?? []) : null),
@@ -560,6 +589,17 @@ function OrdersPage() {
       ).length,
     [conversations]
   )
+
+  const invalidateOrderQueries = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: ["merchant-order-messages", pubkey ?? "none"],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["merchant-order-messages-live", pubkey ?? "none"],
+      }),
+    ])
+  }, [pubkey, queryClient])
 
   // Generate invoice via WebLN (Alby) or NWC, then auto-send as payment_request DM
   const generateInvoiceMutation = useMutation({
@@ -635,9 +675,7 @@ function OrdersPage() {
       setInvoice("")
       setInvoiceNote("")
       flash("Invoice generated and sent to buyer")
-      await queryClient.invalidateQueries({
-        queryKey: ["merchant-order-messages", pubkey ?? "none"],
-      })
+      await invalidateOrderQueries()
     },
   })
 
@@ -677,9 +715,7 @@ function OrdersPage() {
       setInvoice("")
       setInvoiceNote("")
       flash("Invoice sent to buyer")
-      await queryClient.invalidateQueries({
-        queryKey: ["merchant-order-messages", pubkey ?? "none"],
-      })
+      await invalidateOrderQueries()
     },
   })
 
@@ -701,9 +737,7 @@ function OrdersPage() {
     onSuccess: async () => {
       setStatusNote("")
       flash("Status update sent to buyer")
-      await queryClient.invalidateQueries({
-        queryKey: ["merchant-order-messages", pubkey ?? "none"],
-      })
+      await invalidateOrderQueries()
     },
   })
 
@@ -736,9 +770,7 @@ function OrdersPage() {
       setTrackingUrl("")
       setShippingNote("")
       flash("Shipping update sent to buyer")
-      await queryClient.invalidateQueries({
-        queryKey: ["merchant-order-messages", pubkey ?? "none"],
-      })
+      await invalidateOrderQueries()
     },
   })
 
@@ -759,9 +791,7 @@ function OrdersPage() {
     onSuccess: async () => {
       setReplyNote("")
       flash("Message sent to buyer")
-      await queryClient.invalidateQueries({
-        queryKey: ["merchant-order-messages", pubkey ?? "none"],
-      })
+      await invalidateOrderQueries()
     },
   })
 
@@ -896,8 +926,10 @@ function OrdersPage() {
         </div>
       )}
 
-      {signerConnected && ordersQuery.isLoading && (
-        <div className="text-sm text-[var(--text-secondary)]">Loading…</div>
+      {signerConnected && isOrdersFetching && (
+        <div className="text-sm text-[var(--text-secondary)]">
+          Checking latest order messages…
+        </div>
       )}
 
       {signerConnected && ordersQuery.error && (
@@ -910,7 +942,7 @@ function OrdersPage() {
       )}
 
       {signerConnected &&
-        !ordersQuery.isLoading &&
+        !cachedOrdersQuery.isLoading &&
         conversations.length === 0 && (
           <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
             No orders yet. Place an order from the Market app targeting this

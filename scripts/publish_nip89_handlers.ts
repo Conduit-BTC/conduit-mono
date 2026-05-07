@@ -17,7 +17,7 @@ type CliOptions = {
 const HELP_TEXT = [
   "Usage:",
   "  bun scripts/publish_nip89_handlers.ts --app market --nsec <nsec>",
-  "  bun scripts/publish_nip89_handlers.ts --app merchant --nsec <nsec> --relay wss://relay.conduit.market",
+  "  bun scripts/publish_nip89_handlers.ts --app merchant --nsec <nsec> --relay wss://conduitl2.fly.dev",
   "  bun run nip89:publish-handler -- --app market --nsec <nsec> --dry-run",
   "",
   "Local-only helper for publishing the Conduit NIP-89 kind 31990 handler event.",

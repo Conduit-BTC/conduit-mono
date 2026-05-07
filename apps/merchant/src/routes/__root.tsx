@@ -8,12 +8,7 @@ import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { KeyRound, ShieldCheck, Store } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
-import {
-  getActiveRelaySettingsScope,
-  refreshNdkRelaySettings,
-  useAuth,
-  useNip07Availability,
-} from "@conduit/core"
+import { useAuth, useNip07Availability } from "@conduit/core"
 import { Button, ErrorPage, NotFoundPage } from "@conduit/ui"
 import { MerchantHeader, MerchantSidebar } from "../components/MerchantHeader"
 
@@ -56,7 +51,6 @@ function RootLayout() {
     !!pubkey && (status === "restoring" || status === "connecting")
   const shouldDelayAuthFallback =
     !!pubkey && !signerConnected && !authFallbackReady
-  const relaySettingsScope = pubkey ? `merchant:${pubkey}` : "merchant"
 
   useEffect(() => {
     if (!pubkey || signerConnected) {
@@ -83,11 +77,6 @@ function RootLayout() {
       signerConnected || signerRestoring ? getPageTitle(pathname) : "Connect"
     document.title = `${title} | Conduit Merchant`
   }, [pathname, signerConnected, signerRestoring])
-
-  useEffect(() => {
-    if (getActiveRelaySettingsScope() === relaySettingsScope) return
-    refreshNdkRelaySettings(relaySettingsScope)
-  }, [relaySettingsScope])
 
   if (shouldDelayAuthFallback) {
     return <AuthGateGrace />
@@ -137,13 +126,19 @@ function AuthRestoring() {
 }
 
 function RootErrorComponent({ error }: ErrorComponentProps) {
-  return (
+  const { pubkey, status } = useAuth()
+  const signerConnected = status === "connected" && !!pubkey
+  const errorPage = (
     <ErrorPage
       title="Something went wrong"
       message={error.message || "An unexpected error occurred."}
       showReload
     />
   )
+
+  if (!signerConnected) return errorPage
+
+  return <RootShell>{errorPage}</RootShell>
 }
 
 function RootNotFound() {

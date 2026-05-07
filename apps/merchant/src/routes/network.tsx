@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { useAuth, useRelaySettings } from "@conduit/core"
+import { useAuth, useConduitSession, useRelaySettings } from "@conduit/core"
 import { RelaySettingsPanel } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 
@@ -12,9 +12,11 @@ export const Route = createFileRoute("/network")({
 
 function NetworkPage() {
   const { pubkey } = useAuth()
-  const relaySettings = useRelaySettings(
-    pubkey ? `merchant:${pubkey}` : "merchant"
-  )
+  const session = useConduitSession()
+  const relaySettings = useRelaySettings(session.relayScope, {
+    pubkey,
+    bootstrapRelayList: false,
+  })
 
   return (
     <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
@@ -23,6 +25,14 @@ function NetworkPage() {
           settings={relaySettings.settings}
           scanningUrls={relaySettings.scanningUrls}
           error={relaySettings.error}
+          isLoadingPublishedRelayList={
+            relaySettings.isLoadingPublishedRelayList
+          }
+          publishedRelayListUpdatedAt={
+            relaySettings.publishedRelayListUpdatedAt
+          }
+          publishingRelayList={relaySettings.publishingRelayList}
+          publishError={relaySettings.publishError}
           onAddRelay={relaySettings.addRelay}
           onRefreshRelay={relaySettings.refreshRelay}
           onRemoveRelay={relaySettings.removeRelay}
@@ -30,6 +40,9 @@ function NetworkPage() {
           onToggleWrite={relaySettings.toggleRelayWrite}
           onReorderCommerceRelay={relaySettings.reorderRelay}
           onReset={relaySettings.resetRelaySettings}
+          onPublishRelayList={
+            pubkey ? relaySettings.publishRelayList : undefined
+          }
         />
       </div>
     </div>

@@ -14,6 +14,7 @@ import {
   appendConduitClientTag,
   formatPubkey,
   getNdk,
+  publishWithPlanner,
   useAuth,
   useProfile,
   type ShippingAddressSchema,
@@ -245,16 +246,17 @@ function OrderSummary({
               className="grid grid-cols-[72px_minmax(0,1fr)_auto] gap-3 border-b border-[var(--border)] pb-4 last:border-b-0 last:pb-0"
             >
               <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--background)]">
-                <img
-                  src={item.image ?? "/images/placeholders/product.png"}
-                  alt={item.title}
-                  className="aspect-square h-full w-full object-cover"
-                  loading="lazy"
-                  onError={(e) => {
-                    ;(e.currentTarget as HTMLImageElement).src =
-                      "/images/placeholders/product.png"
-                  }}
-                />
+                {item.image && (
+                  <img
+                    src={item.image}
+                    alt={item.title}
+                    className="aspect-square h-full w-full object-cover"
+                    loading="lazy"
+                    onError={(event) => {
+                      event.currentTarget.style.display = "none"
+                    }}
+                  />
+                )}
               </div>
 
               <div className="min-w-0">
@@ -475,8 +477,16 @@ function CheckoutPage() {
       setStep("sending")
 
       await Promise.all([
-        wrappedToMerchant.publish(),
-        wrappedToSelf.publish(),
+        publishWithPlanner(wrappedToMerchant, {
+          intent: "recipient_event",
+          authorPubkey: pubkey,
+          recipientPubkeys: [selectedMerchant],
+        }),
+        publishWithPlanner(wrappedToSelf, {
+          intent: "recipient_event",
+          authorPubkey: pubkey,
+          recipientPubkeys: [pubkey],
+        }),
         new Promise((resolve) => window.setTimeout(resolve, 900)),
       ])
 

@@ -7,6 +7,7 @@ import {
   Search,
   Send,
   Trash2,
+  Upload,
   WifiOff,
 } from "lucide-react"
 import { type DragEvent, type FormEvent, type ReactNode, useState } from "react"
@@ -37,6 +38,7 @@ export interface RelaySettingsPanelEntry {
   readEnabled: boolean
   writeEnabled: boolean
   section: RelaySettingsSection
+  source?: "default" | "manual" | "signer" | "published"
   commercePriority?: number
   capabilities: RelayCapabilities
   warnings: RelayWarnings
@@ -52,13 +54,18 @@ export interface RelaySettingsPanelProps {
   settings: RelaySettingsPanelState
   scanningUrls?: readonly string[]
   error?: string | null
+  isLoadingPublishedRelayList?: boolean
+  publishedRelayListUpdatedAt?: number | null
+  publishingRelayList?: boolean
+  publishError?: string | null
   onAddRelay: (url: string) => void | Promise<void>
   onRefreshRelay: (url: string) => void | Promise<void>
   onRemoveRelay: (url: string) => void
   onToggleRead: (url: string, enabled: boolean) => void
   onToggleWrite: (url: string, enabled: boolean) => void
-  onReorderCommerceRelay: (sourceUrl: string, targetUrl: string) => void
+  onReorderCommerceRelay?: (sourceUrl: string, targetUrl: string) => void
   onReset?: () => void
+  onPublishRelayList?: () => void | Promise<void>
   className?: string
 }
 
@@ -271,7 +278,7 @@ function RelayRow({
   draggedUrl: string | null
   onDragStart: (url: string) => void
   onDragEnd: () => void
-  onDropRelay: (sourceUrl: string, targetUrl: string) => void
+  onDropRelay?: (sourceUrl: string, targetUrl: string) => void
   onRefreshRelay: (url: string) => void
   onRemoveRelay: (url: string) => void
   onToggleRead: (url: string, enabled: boolean) => void
@@ -280,7 +287,7 @@ function RelayRow({
   const warningText = getRelayWarningText(entry)
   const compatibilityText = getRelayCompatibilityText(entry)
   const isDisabled = entry.warnings.unreachable || scanning
-  const draggable = section === "commerce"
+  const draggable = section === "commerce" && !!onDropRelay
 
   function handleDragStart(event: DragEvent<HTMLDivElement>): void {
     if (!draggable) return
@@ -294,7 +301,7 @@ function RelayRow({
     event.preventDefault()
     const sourceUrl = event.dataTransfer.getData("text/plain") || draggedUrl
     if (!sourceUrl) return
-    onDropRelay(sourceUrl, entry.url)
+    onDropRelay?.(sourceUrl, entry.url)
   }
 
   return (
@@ -513,7 +520,7 @@ function RelaySection({
   draggedUrl: string | null
   onDragStart: (url: string) => void
   onDragEnd: () => void
-  onDropRelay: (sourceUrl: string, targetUrl: string) => void
+  onDropRelay?: (sourceUrl: string, targetUrl: string) => void
   onRefreshRelay: (url: string) => void
   onRemoveRelay: (url: string) => void
   onToggleRead: (url: string, enabled: boolean) => void
@@ -537,7 +544,7 @@ function RelaySection({
             {meta.description}
           </p>
         </div>
-        {section === "commerce" && entries.length > 1 ? (
+        {section === "commerce" && entries.length > 1 && onDropRelay ? (
           <div className="text-xs text-[var(--text-muted)]">
             Drag to change Conduit's commerce priority.
           </div>
@@ -581,6 +588,10 @@ export function RelaySettingsPanel({
   settings,
   scanningUrls = [],
   error,
+  isLoadingPublishedRelayList = false,
+  publishedRelayListUpdatedAt = null,
+  publishingRelayList = false,
+  publishError = null,
   onAddRelay,
   onRefreshRelay,
   onRemoveRelay,
@@ -588,13 +599,25 @@ export function RelaySettingsPanel({
   onToggleWrite,
   onReorderCommerceRelay,
   onReset,
+  onPublishRelayList,
   className,
 }: RelaySettingsPanelProps) {
   const [newRelayUrl, setNewRelayUrl] = useState("")
   const [isAdding, setIsAdding] = useState(false)
+  const [isPublishing, setIsPublishing] = useState(false)
   const [draggedUrl, setDraggedUrl] = useState<string | null>(null)
   const commerceEntries = sortSectionEntries(settings.entries, "commerce")
   const publicEntries = sortSectionEntries(settings.entries, "public")
+  const activeRelayCount = settings.entries.filter(
+    (entry) => entry.readEnabled || entry.writeEnabled
+  ).length
+  const publishedLabel = publishedRelayListUpdatedAt
+    ? `Published relays loaded ${new Date(
+        publishedRelayListUpdatedAt * 1000
+      ).toLocaleDateString()}`
+    : isLoadingPublishedRelayList
+      ? "Checking published relays"
+      : "Local relay changes"
 
   async function handleAddRelay(event: FormEvent): Promise<void> {
     event.preventDefault()
@@ -610,6 +633,17 @@ export function RelaySettingsPanel({
     }
   }
 
+  async function handlePublishRelayList(): Promise<void> {
+    if (!onPublishRelayList || isPublishing || publishingRelayList) return
+
+    setIsPublishing(true)
+    try {
+      await onPublishRelayList()
+    } finally {
+      setIsPublishing(false)
+    }
+  }
+
   return (
     <section
       className={cn(
@@ -618,16 +652,23 @@ export function RelaySettingsPanel({
       )}
     >
       <div className="space-y-8">
-        <div>
-          <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
-            Network
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
+              Network
+            </div>
+            <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
+              Relay Settings
+            </h1>
+            <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
+              Relays store and deliver data across the Nostr network.
+            </p>
           </div>
-          <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
-            Relay Settings
-          </h1>
-          <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
-            Relays store and deliver data across the Nostr network.
-          </p>
+          <div className="flex flex-col items-start gap-1 pt-1 sm:items-end">
+            <span className="text-[0.65rem] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+              {publishedLabel}
+            </span>
+          </div>
         </div>
 
         <RelaySection
@@ -637,10 +678,14 @@ export function RelaySettingsPanel({
           draggedUrl={draggedUrl}
           onDragStart={setDraggedUrl}
           onDragEnd={() => setDraggedUrl(null)}
-          onDropRelay={(sourceUrl, targetUrl) => {
-            setDraggedUrl(null)
-            onReorderCommerceRelay(sourceUrl, targetUrl)
-          }}
+          onDropRelay={
+            onReorderCommerceRelay
+              ? (sourceUrl, targetUrl) => {
+                  setDraggedUrl(null)
+                  onReorderCommerceRelay(sourceUrl, targetUrl)
+                }
+              : undefined
+          }
           onRefreshRelay={(url) => void onRefreshRelay(url)}
           onRemoveRelay={onRemoveRelay}
           onToggleRead={onToggleRead}
@@ -654,10 +699,7 @@ export function RelaySettingsPanel({
           draggedUrl={draggedUrl}
           onDragStart={setDraggedUrl}
           onDragEnd={() => setDraggedUrl(null)}
-          onDropRelay={(sourceUrl, targetUrl) => {
-            setDraggedUrl(null)
-            onReorderCommerceRelay(sourceUrl, targetUrl)
-          }}
+          onDropRelay={undefined}
           onRefreshRelay={(url) => void onRefreshRelay(url)}
           onRemoveRelay={onRemoveRelay}
           onToggleRead={onToggleRead}
@@ -701,11 +743,36 @@ export function RelaySettingsPanel({
           ) : null}
         </form>
 
-        {onReset ? (
-          <div className="flex justify-end">
-            <Button type="button" variant="ghost" onClick={onReset}>
-              Reset to defaults
-            </Button>
+        {onReset || onPublishRelayList ? (
+          <div className="flex flex-wrap justify-end gap-2">
+            {onReset ? (
+              <Button type="button" variant="ghost" onClick={onReset}>
+                {onPublishRelayList ? "Reset local draft" : "Reset to defaults"}
+              </Button>
+            ) : null}
+            {onPublishRelayList ? (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={
+                  activeRelayCount <= 1 ||
+                  isLoadingPublishedRelayList ||
+                  isPublishing ||
+                  publishingRelayList
+                }
+                onClick={() => void handlePublishRelayList()}
+              >
+                <Upload className="h-4 w-4" />
+                {isPublishing || publishingRelayList
+                  ? "Publishing..."
+                  : "Publish relays"}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        {publishError ? (
+          <div className="rounded-xl border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
+            {publishError}
           </div>
         ) : null}
       </div>

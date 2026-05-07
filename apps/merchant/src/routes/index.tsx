@@ -1,6 +1,15 @@
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
+  db,
+  formatPubkey,
+  getCachedMerchantStorefront,
+  getMerchantStorefront,
+  useAuth,
+  useNdkState,
+  type ParsedOrderMessage,
+} from "@conduit/core"
+import {
   ArrowRight,
   Package,
   ShoppingBag,
@@ -10,16 +19,6 @@ import {
   Wifi,
 } from "lucide-react"
 import type { ComponentType } from "react"
-import {
-  db,
-  EVENT_KINDS,
-  fetchEventsFanout,
-  formatPubkey,
-  parseProductEvent,
-  useAuth,
-  useNdkState,
-  type ParsedOrderMessage,
-} from "@conduit/core"
 import { Badge, Button, StatusPill } from "@conduit/ui"
 import { useMerchantReadiness } from "../hooks/useMerchantReadiness"
 import type { MerchantSetupReadiness } from "../lib/readiness"
@@ -39,28 +38,30 @@ type MerchantDashboardStats = {
 async function fetchDashboardStats(
   pubkey: string
 ): Promise<MerchantDashboardStats> {
-  const listingEvents = await fetchEventsFanout(
-    {
-      kinds: [EVENT_KINDS.PRODUCT],
-      authors: [pubkey],
-      limit: 200,
-    },
-    {
-      connectTimeoutMs: 4_000,
-      fetchTimeoutMs: 10_000,
-    }
-  )
+  const storefront = await getMerchantStorefront({
+    merchantPubkey: pubkey,
+    sort: "updated_at_desc",
+    includeMarketHidden: true,
+  })
+  const base = await fetchDashboardStatsFromCacheOnly(pubkey)
+  return { ...base, listings: storefront.data.length }
+}
 
-  const listingIds = new Set<string>()
-  for (const event of listingEvents) {
-    try {
-      const product = parseProductEvent(event)
-      listingIds.add(product.id)
-    } catch {
-      // ignore malformed listings
-    }
-  }
+async function fetchCachedDashboardStats(
+  pubkey: string
+): Promise<MerchantDashboardStats> {
+  const storefront = await getCachedMerchantStorefront({
+    merchantPubkey: pubkey,
+    sort: "updated_at_desc",
+    includeMarketHidden: true,
+  })
+  const base = await fetchDashboardStatsFromCacheOnly(pubkey)
+  return { ...base, listings: storefront.data.length }
+}
 
+async function fetchDashboardStatsFromCacheOnly(
+  pubkey: string
+): Promise<Omit<MerchantDashboardStats, "listings"> & { listings: number }> {
   const cachedMessages = await db.orderMessages
     .where("recipientPubkey")
     .equals(pubkey)
@@ -111,7 +112,7 @@ async function fetchDashboardStats(
     .slice(0, 5)
 
   return {
-    listings: listingIds.size,
+    listings: 0,
     openOrders: byOrder.size,
     awaitingPayment,
     awaitingFulfillment,
@@ -240,15 +241,23 @@ function DashboardPage() {
   const ndk = useNdkState()
   const readiness = useMerchantReadiness()
   const statsQuery = useQuery({
-    queryKey: ["merchant-dashboard", pubkey ?? "none"],
+    queryKey: ["merchant-dashboard-live", pubkey ?? "none"],
     enabled: !!pubkey,
     queryFn: () => fetchDashboardStats(pubkey!),
     refetchInterval: 30_000,
   })
-  const latestOrders = (statsQuery.data?.latestOrders ?? []).filter(
+  const cachedStatsQuery = useQuery({
+    queryKey: ["merchant-dashboard", pubkey ?? "none"],
+    enabled: !!pubkey,
+    queryFn: () => fetchCachedDashboardStats(pubkey!),
+    staleTime: 5_000,
+  })
+  const stats = statsQuery.data ?? cachedStatsQuery.data
+  const latestOrders = (stats?.latestOrders ?? []).filter(
     (message): message is Extract<ParsedOrderMessage, { type: "order" }> =>
       message.type === "order"
   )
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -299,22 +308,22 @@ function DashboardPage() {
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatCard
           label="Listings"
-          value={statsQuery.data?.listings ?? 0}
+          value={stats?.listings ?? 0}
           icon={Package}
         />
         <StatCard
           label="Open orders"
-          value={statsQuery.data?.openOrders ?? 0}
+          value={stats?.openOrders ?? 0}
           icon={ShoppingBag}
         />
         <StatCard
           label="Awaiting payment"
-          value={statsQuery.data?.awaitingPayment ?? 0}
+          value={stats?.awaitingPayment ?? 0}
           icon={Wallet}
         />
         <StatCard
           label="Awaiting fulfillment"
-          value={statsQuery.data?.awaitingFulfillment ?? 0}
+          value={stats?.awaitingFulfillment ?? 0}
           icon={ShoppingBag}
         />
       </div>
@@ -387,13 +396,13 @@ function DashboardPage() {
           </div>
 
           <div className="mt-4 space-y-3">
-            {statsQuery.isLoading && (
+            {statsQuery.isLoading && cachedStatsQuery.isLoading && (
               <div className="text-sm text-[var(--text-secondary)]">
-                Loading dashboard…
+                Checking cached dashboard state…
               </div>
             )}
 
-            {!statsQuery.isLoading && latestOrders.length === 0 && (
+            {!cachedStatsQuery.isLoading && latestOrders.length === 0 && (
               <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--text-secondary)]">
                 No buyer orders cached yet. Once Market sends an order to this
                 merchant, it will appear here and in Orders.

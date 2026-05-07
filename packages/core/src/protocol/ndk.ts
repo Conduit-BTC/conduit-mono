@@ -9,6 +9,11 @@ import {
   getGeneralReadRelayUrls,
   setActiveRelaySettingsScope,
 } from "./relay-settings"
+import {
+  partitionByHealth,
+  recordRelayFailure,
+  recordRelaySuccess,
+} from "./relay-health"
 
 export type NdkConnectionState = "idle" | "connecting" | "connected" | "error"
 
@@ -22,6 +27,13 @@ export interface FetchEventsFanoutOptions {
   relayUrls?: string[]
   connectTimeoutMs?: number
   fetchTimeoutMs?: number
+  skipHealthFilter?: boolean
+}
+
+export interface FetchEventsFanoutProgress {
+  relayUrl: string
+  events: NDKEvent[]
+  mergedEvents: NDKEvent[]
 }
 
 type Listener = () => void
@@ -72,6 +84,8 @@ function sleep<T>(ms: number, value: T): Promise<T> {
   return new Promise((resolve) => setTimeout(() => resolve(value), ms))
 }
 
+const FETCH_TIMEOUT = Symbol("fetch-timeout")
+
 async function fetchEventsFromRelay(
   relayUrl: string,
   filter: NDKFilter,
@@ -91,15 +105,25 @@ async function fetchEventsFromRelay(
       sleep(connectTimeoutMs + 250, false),
     ])
 
-    if (!connected) return []
+    if (!connected) {
+      recordRelayFailure(relayUrl)
+      return []
+    }
 
     const events = await Promise.race([
       ndk.fetchEvents(filter),
-      sleep(fetchTimeoutMs, new Set<NDKEvent>()),
+      sleep(fetchTimeoutMs, FETCH_TIMEOUT),
     ])
 
+    if (events === FETCH_TIMEOUT) {
+      recordRelayFailure(relayUrl)
+      return []
+    }
+
+    recordRelaySuccess(relayUrl)
     return Array.from(events) as NDKEvent[]
   } catch {
+    recordRelayFailure(relayUrl)
     return []
   } finally {
     for (const [, relay] of ndk.pool?.relays?.entries() ?? []) {
@@ -108,11 +132,8 @@ async function fetchEventsFromRelay(
   }
 }
 
-export async function fetchEventsFanout(
-  filter: NDKFilter,
-  options: FetchEventsFanoutOptions = {}
-): Promise<NDKEvent[]> {
-  const relayUrls = (
+function resolveFanoutRelayUrls(options: FetchEventsFanoutOptions): string[] {
+  const dedupedUrls = (
     options.relayUrls && options.relayUrls.length > 0
       ? options.relayUrls
       : getGeneralReadRelayUrls({ fallbackRelayUrls: config.defaultRelays })
@@ -120,6 +141,36 @@ export async function fetchEventsFanout(
     .map((url) => url.trim())
     .filter(Boolean)
     .filter((url, index, all) => all.indexOf(url) === index)
+
+  return options.skipHealthFilter
+    ? dedupedUrls
+    : (() => {
+        const { healthy, parked } = partitionByHealth(dedupedUrls)
+        // If health filter would leave no relays, fall back to the full set
+        // so a transient cooldown does not silently break reads.
+        return healthy.length > 0
+          ? healthy
+          : parked.length > 0
+            ? dedupedUrls
+            : []
+      })()
+}
+
+function mergeEventsInto(
+  merged: Map<string, NDKEvent>,
+  events: NDKEvent[]
+): void {
+  for (const event of events) {
+    const fallbackId = `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
+    merged.set(event.id || fallbackId, event)
+  }
+}
+
+export async function fetchEventsFanout(
+  filter: NDKFilter,
+  options: FetchEventsFanoutOptions = {}
+): Promise<NDKEvent[]> {
+  const relayUrls = resolveFanoutRelayUrls(options)
 
   if (relayUrls.length === 0) return []
 
@@ -134,11 +185,40 @@ export async function fetchEventsFanout(
 
   const merged = new Map<string, NDKEvent>()
   for (const events of perRelayResults) {
-    for (const event of events) {
-      const fallbackId = `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
-      merged.set(event.id || fallbackId, event)
-    }
+    mergeEventsInto(merged, events)
   }
+
+  return Array.from(merged.values())
+}
+
+export async function fetchEventsFanoutProgressive(
+  filter: NDKFilter,
+  options: FetchEventsFanoutOptions = {},
+  onProgress: (progress: FetchEventsFanoutProgress) => void | Promise<void>
+): Promise<NDKEvent[]> {
+  const relayUrls = resolveFanoutRelayUrls(options)
+  if (relayUrls.length === 0) return []
+
+  const connectTimeoutMs = options.connectTimeoutMs ?? 4_000
+  const fetchTimeoutMs = options.fetchTimeoutMs ?? 8_000
+  const merged = new Map<string, NDKEvent>()
+
+  await Promise.all(
+    relayUrls.map(async (relayUrl) => {
+      const events = await fetchEventsFromRelay(
+        relayUrl,
+        filter,
+        connectTimeoutMs,
+        fetchTimeoutMs
+      )
+      mergeEventsInto(merged, events)
+      await onProgress({
+        relayUrl,
+        events,
+        mergedEvents: Array.from(merged.values()),
+      })
+    })
+  )
 
   return Array.from(merged.values())
 }

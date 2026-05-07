@@ -9,6 +9,9 @@ export const EVENT_KINDS = {
   /** NIP-09: Event deletion */
   DELETION: 5,
 
+  /** NIP-02: Contact list / follow graph */
+  CONTACT_LIST: 3,
+
   /** NIP-17: Private direct messages */
   DIRECT_MESSAGE: 14,
 
