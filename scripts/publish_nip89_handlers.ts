@@ -127,14 +127,26 @@ function buildHandlerAddress(appId: ConduitAppId, pubkey: string): string {
   return `${EVENT_KINDS.APPLICATION_HANDLER}:${pubkey}:${app.dTag}`
 }
 
+async function getHandlerSigner(appId: ConduitAppId, nsec: string) {
+  const app = getConduitNip89AppDefinition(appId)
+  const signer = new NDKPrivateKeySigner(nsec)
+  const signerUser = await signer.user()
+
+  if (app.pubkey && app.pubkey !== signerUser.pubkey) {
+    throw new Error(
+      `Configured pubkey for ${appId} does not match the provided NSEC`
+    )
+  }
+
+  return { app, signer, signerUser }
+}
+
 async function printDryRun(
   appId: ConduitAppId,
   nsec: string,
   relayUrls?: string[]
 ): Promise<void> {
-  const app = getConduitNip89AppDefinition(appId)
-  const signer = new NDKPrivateKeySigner(nsec)
-  const signerUser = await signer.user()
+  const { app, signerUser } = await getHandlerSigner(appId, nsec)
   const payload = {
     appId,
     relayUrls: relayUrls ?? [app.relayHint],
@@ -155,15 +167,7 @@ async function publishHandler(
   nsec: string,
   relayUrls?: string[]
 ): Promise<{ eventId: string; address: string }> {
-  const app = getConduitNip89AppDefinition(appId)
-  const signer = new NDKPrivateKeySigner(nsec)
-  const signerUser = await signer.user()
-
-  if (app.pubkey && app.pubkey !== signerUser.pubkey) {
-    throw new Error(
-      `Configured pubkey for ${appId} does not match the provided NSEC`
-    )
-  }
+  const { app, signer, signerUser } = await getHandlerSigner(appId, nsec)
 
   const ndk = new NDK({
     explicitRelayUrls:

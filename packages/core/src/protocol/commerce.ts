@@ -3,6 +3,7 @@ import {
   type NDKEvent,
   type NDKFilter,
   type NDKSigner,
+  nip19,
 } from "@nostr-dev-kit/ndk"
 import {
   db,
@@ -1521,6 +1522,30 @@ function parseAddress(
   productId: string
 ): { kind: number; pubkey: string; d: string } | null {
   const decoded = decodeURIComponent(productId)
+  if (/^naddr1/i.test(decoded)) {
+    try {
+      const result = nip19.decode(decoded)
+      if (
+        result.type === "naddr" &&
+        result.data &&
+        typeof result.data === "object" &&
+        "kind" in result.data &&
+        "pubkey" in result.data &&
+        "identifier" in result.data &&
+        typeof result.data.kind === "number" &&
+        typeof result.data.pubkey === "string" &&
+        typeof result.data.identifier === "string"
+      ) {
+        return {
+          kind: result.data.kind,
+          pubkey: result.data.pubkey,
+          d: result.data.identifier,
+        }
+      }
+    } catch {
+      return null
+    }
+  }
   const [kindStr, pubkey, ...dParts] = decoded.split(":")
   const d = dParts.join(":")
   const kind = Number(kindStr)
@@ -1528,20 +1553,32 @@ function parseAddress(
   return { kind, pubkey, d }
 }
 
+function getProductLookupIds(productId: string): {
+  decodedId: string
+  addressId: string | null
+  address: { kind: number; pubkey: string; d: string } | null
+} {
+  const decodedId = decodeURIComponent(productId)
+  const address = parseAddress(productId)
+  const addressId = address
+    ? `${address.kind}:${address.pubkey}:${address.d}`
+    : null
+  return { decodedId, addressId, address }
+}
+
 export async function getProductDetail(
   query: ProductDetailQuery
 ): Promise<CommerceResult<CommerceProductRecord | null>> {
-  const addr = parseAddress(query.productId)
-  const decodedId = decodeURIComponent(query.productId)
+  const { decodedId, addressId, address } = getProductLookupIds(query.productId)
 
   try {
-    if (addr && addr.kind === EVENT_KINDS.PRODUCT) {
+    if (address && addressId && address.kind === EVENT_KINDS.PRODUCT) {
       const direct = await fetchPublicProductRecords({
-        authors: [addr.pubkey],
-        dTags: [addr.d],
+        authors: [address.pubkey],
+        dTags: [address.d],
         limit: 10,
       })
-      const record = direct.find((item) => item.addressId === decodedId) ?? null
+      const record = direct.find((item) => item.addressId === addressId) ?? null
       if (record) {
         await cacheProductRecords([record])
         return {
@@ -1551,10 +1588,10 @@ export async function getProductDetail(
       }
 
       const storefront = await getMerchantStorefront({
-        merchantPubkey: addr.pubkey,
+        merchantPubkey: address.pubkey,
       })
       const fallbackRecord =
-        storefront.data.find((item) => item.addressId === decodedId) ?? null
+        storefront.data.find((item) => item.addressId === addressId) ?? null
       return {
         data: fallbackRecord,
         meta: { ...storefront.meta, fetchedAt: now() },
@@ -1577,9 +1614,12 @@ export async function getProductDetail(
     }
   } catch (error) {
     const cached = await getCachedProductRecords()
+    const lookupIds = [decodedId, addressId].filter(Boolean)
     const record =
       cached.find(
-        (item) => item.product.id === decodedId || item.addressId === decodedId
+        (item) =>
+          lookupIds.includes(item.product.id) ||
+          lookupIds.includes(item.addressId)
       ) ?? null
     if (record) {
       return {
@@ -1596,9 +1636,12 @@ export async function getProductDetail(
   }
 
   const cached = await getCachedProductRecords()
+  const lookupIds = [decodedId, addressId].filter(Boolean)
   const record =
     cached.find(
-      (item) => item.product.id === decodedId || item.addressId === decodedId
+      (item) =>
+        lookupIds.includes(item.product.id) ||
+        lookupIds.includes(item.addressId)
     ) ?? null
   return {
     data: record,
@@ -1615,11 +1658,14 @@ export async function getCachedProductDetail(
   query: ProductDetailQuery,
   options: CachedProductReadOptions = { includeStale: true }
 ): Promise<CommerceResult<CommerceProductRecord | null>> {
-  const decodedId = decodeURIComponent(query.productId)
+  const { decodedId, addressId } = getProductLookupIds(query.productId)
   const cached = await getCachedProductRecords(undefined, options)
+  const lookupIds = [decodedId, addressId].filter(Boolean)
   const record =
     cached.find(
-      (item) => item.product.id === decodedId || item.addressId === decodedId
+      (item) =>
+        lookupIds.includes(item.product.id) ||
+        lookupIds.includes(item.addressId)
     ) ?? null
 
   return {
