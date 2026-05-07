@@ -155,7 +155,6 @@ jobs:
       checks: read
       contents: read
       issues: write
-      pull-requests: write
     steps:
       - name: Skip preview links for fork PRs
         if: github.event.pull_request.head.repo.full_name != github.repository
@@ -177,7 +176,6 @@ jobs:
             const commitPreviewEnabled = markerPattern.test(prBody) || preferredPattern.test(prBody) || legacyPattern.test(prBody);
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const updatedAt = new Date().toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
-            const stateLabel = commitPreviewEnabled ? "enabled" : "disabled";
 
             // Cloudflare branch slug: lowercase, non-alnum to dash, collapse, trim, max 28 chars
             const slug = branch
@@ -390,17 +388,6 @@ jobs:
 
             const MARKER_START = "<!-- conduit:preview_links -->";
             const MARKER_END = "<!-- /conduit:preview_links -->";
-            const previewBodyBlock = [
-              MARKER_START,
-              "## Preview Deploys (Branch URLs)",
-              "",
-              `- Show commit preview links setting applied: **${stateLabel}**`,
-              `- Last applied: ${updatedAt}`,
-              `- Workflow run: ${runUrl}`,
-              "",
-              branchTable,
-              MARKER_END,
-            ].join("\n");
             const previewCommentBlock = [
               MARKER_START,
               "## Preview Deploys",
@@ -417,33 +404,6 @@ jobs:
               MARKER_END,
             ].join("\n");
 
-            // --- 1. Prepend to PR description (idempotent) ---
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number,
-            });
-
-            const existing = pr.body || "";
-            const markerRegex = new RegExp(
-              `${MARKER_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${MARKER_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n*`
-            );
-
-            let newBody;
-            if (markerRegex.test(existing)) {
-              newBody = existing.replace(markerRegex, previewBodyBlock + "\n\n");
-            } else {
-              newBody = previewBodyBlock + "\n\n" + existing;
-            }
-
-            await github.rest.pulls.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number,
-              body: newBody,
-            });
-
-            // --- 2. Sticky preview comment (idempotent across commits) ---
             const commentBody = `${previewCommentBlock}\n\n_Preview links for latest commit ${shortSha}_`;
 
             const existingPreviewComment = comments
