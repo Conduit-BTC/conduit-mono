@@ -101,16 +101,19 @@ bun run dev:merchant:mainnet
 
 `.env.local` should remain for personal overrides only. Keep mode files minimal and let the shared core relay defaults handle the broader fallback strategy unless a mode truly needs different values.
 
-| Variable                    | Default (dev) | Description                                              |
-| --------------------------- | ------------- | -------------------------------------------------------- |
-| `VITE_RELAY_URL`            | —             | Optional single relay hint also added to fallback relays |
-| `VITE_DEFAULT_RELAY_URL`    | —             | Optional single relay added to fallback relay discovery  |
-| `VITE_DEFAULT_RELAYS`       | —             | Optional comma-separated relays added to fallback reads  |
-| `VITE_APP_WRITE_RELAY_URLS` | —             | Optional comma-separated app write relay additions       |
-| `VITE_PUBLIC_RELAY_URLS`    | —             | Optional comma-separated public relay override/additions |
-| `VITE_COMMERCE_RELAY_URLS`  | —             | Optional comma-separated commerce relay additions        |
-| `VITE_LIGHTNING_NETWORK`    | `mock`        | `mock`, `signet`, or `mainnet`                           |
-| `VITE_BLOSSOM_SERVER_URL`   | —             | Blossom media server for product images                  |
+| Variable                     | Default (dev) | Description                                              |
+| ---------------------------- | ------------- | -------------------------------------------------------- |
+| `VITE_RELAY_URL`             | —             | Optional single relay hint also added to fallback relays |
+| `VITE_DEFAULT_RELAY_URL`     | —             | Optional single relay added to fallback relay discovery  |
+| `VITE_DEFAULT_RELAYS`        | —             | Optional comma-separated relays added to fallback reads  |
+| `VITE_APP_WRITE_RELAY_URLS`  | —             | Optional comma-separated app write relay additions       |
+| `VITE_PUBLIC_RELAY_URLS`     | —             | Optional comma-separated public relay override/additions |
+| `VITE_COMMERCE_RELAY_URLS`   | —             | Optional comma-separated commerce relay additions        |
+| `VITE_LIGHTNING_NETWORK`     | `mock`        | `mock`, `signet`, or `mainnet`                           |
+| `VITE_BLOSSOM_SERVER_URL`    | —             | Blossom media server for product images                  |
+| `VITE_NIP89_RELAY_HINT`      | `VITE_RELAY_URL` | Relay hint for Conduit NIP-89 handler metadata        |
+| `VITE_NIP89_MARKET_PUBKEY`   | —             | Official Conduit Market handler pubkey                   |
+| `VITE_NIP89_MERCHANT_PUBKEY` | —             | Official Conduit Merchant Portal handler pubkey          |
 
 The canonical fallback/reset relay list is code-owned in `packages/core/src/config.ts` and currently starts from:
 
@@ -145,7 +148,29 @@ Generate a throwaway nsec for seeding:
 bun run seed:nsec
 ```
 
-### 4. Test a Purchase Flow
+### 4. Publish NIP-89 Handler Metadata
+
+Conduit uses NIP-89 `kind:31990` handler metadata plus outbound `client` tags
+for app provenance. Official client/source names are:
+
+- Market: `Conduit Market`
+- Merchant: `Conduit Merchant Portal`
+
+Set the matching `VITE_NIP89_*_PUBKEY` values in deploy env before relying on
+outbound client tags. The publish helper should be run with dedicated
+Conduit-controlled app keys, never a user or merchant signer.
+
+Dry-run first:
+
+```bash
+NIP89_APP=market NIP89_NSEC=<market-nsec> NIP89_RELAY_URLS=wss://conduitl2.fly.dev bun run nip89:publish-handler -- --dry-run
+NIP89_APP=merchant NIP89_NSEC=<merchant-nsec> NIP89_RELAY_URLS=wss://conduitl2.fly.dev bun run nip89:publish-handler -- --dry-run
+```
+
+Then publish without `--dry-run` and verify the resulting `31990` events on the
+target relay(s): pubkey, `d`, `k`, `web`, and replaceable-event address.
+
+### 5. Test a Purchase Flow
 
 1. Open **Market** (http://localhost:3000) — connect signer as buyer
 2. Open **Merchant Portal** (http://localhost:3001) in a different browser profile — connect a different signer as merchant
