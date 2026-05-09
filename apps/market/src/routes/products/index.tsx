@@ -10,13 +10,12 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { LoaderCircle } from "lucide-react"
 import {
   EVENT_KINDS,
-  getProfileDisplayLabel,
   getProfileName,
-  getProfiles,
+  mergeRicherProfiles,
   useAuth,
+  useProfiles,
   type Product,
 } from "@conduit/core"
-import { useQuery } from "@tanstack/react-query"
 import {
   Badge,
   Button,
@@ -37,11 +36,13 @@ import {
   ProductGridCard,
   ProductGridCardSkeleton,
 } from "../../components/ProductGridCard"
+import { getPendingMerchantDisplayName } from "../../components/MerchantIdentity"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
 import { useGuestMarketDiscovery } from "../../hooks/useGuestMarketDiscovery"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
 import { getComparablePriceValue } from "../../lib/pricing"
+import { diversifyMerchantProductOrder } from "../../lib/productFeedDiversity"
 
 const PAGE_SIZE = 12
 
@@ -139,7 +140,9 @@ function sortProducts(
       )
     case "newest":
     default:
-      return [...products].sort((a, b) => b.createdAt - a.createdAt)
+      return diversifyMerchantProductOrder(
+        [...products].sort((a, b) => b.createdAt - a.createdAt)
+      )
   }
 }
 
@@ -370,96 +373,42 @@ function ProductsPage() {
     () => Array.from(new Set(visible.map((product) => product.pubkey))),
     [visible]
   )
-  const visibleMerchantProfilesQuery = useQuery({
-    queryKey: ["visible-product-card-profiles", visibleMerchantPubkeys],
-    enabled: visibleMerchantPubkeys.length > 0,
-    queryFn: async () => {
-      const result = await getProfiles({
-        pubkeys: visibleMerchantPubkeys,
-        priority: "visible",
-      })
-      return result.data
-    },
-    staleTime: 5 * 60_000,
-    placeholderData: (previousData) => previousData,
-    retry: 2,
-    refetchOnWindowFocus: true,
-    refetchIntervalInBackground: true,
-    refetchInterval: (query) => {
-      const data = query.state.data
-      if (!data) return false
-      return visibleMerchantPubkeys.some(
-        (pubkey) => !getProfileName(data[pubkey])
-      )
-        ? 2_000
-        : false
-    },
+  const visibleMerchantProfiles = useProfiles(visibleMerchantPubkeys, {
+    priority: "visible",
+    relayHintsByPubkey: productsQuery.profileRelayHintsByPubkey,
+    refetchUnresolvedMs: 5_000,
   })
   const backgroundMerchantPubkeys = useMemo(
     () =>
       allMerchants.filter((pubkey) => !visibleMerchantPubkeys.includes(pubkey)),
     [allMerchants, visibleMerchantPubkeys]
   )
-  const allMerchantProfilesQuery = useQuery({
-    queryKey: ["all-product-store-profiles", backgroundMerchantPubkeys],
-    enabled:
-      backgroundMerchantPubkeys.length > 0 &&
-      visibleMerchantProfilesQuery.data !== undefined,
-    queryFn: async () => {
-      const result = await getProfiles({
-        pubkeys: backgroundMerchantPubkeys,
-        priority: "background",
-      })
-      return result.data
-    },
-    staleTime: 5 * 60_000,
-    placeholderData: (previousData) => previousData,
-    retry: 2,
-    refetchOnWindowFocus: true,
-    refetchIntervalInBackground: true,
-    refetchInterval: (query) => {
-      const data = query.state.data
-      if (!data) return false
-      return backgroundMerchantPubkeys.some(
-        (pubkey) => !getProfileName(data[pubkey])
-      )
-        ? 3_000
-        : false
-    },
+  const backgroundMerchantProfiles = useProfiles(backgroundMerchantPubkeys, {
+    priority: "background",
+    relayHintsByPubkey: productsQuery.profileRelayHintsByPubkey,
+    refetchUnresolvedMs: 12_000,
   })
   const merchantProfiles = useMemo(
-    () => ({
-      ...(allMerchantProfilesQuery.data ?? {}),
-      ...(visibleMerchantProfilesQuery.data ?? {}),
-    }),
-    [allMerchantProfilesQuery.data, visibleMerchantProfilesQuery.data]
+    () =>
+      mergeRicherProfiles(
+        backgroundMerchantProfiles.data,
+        visibleMerchantProfiles.data
+      ),
+    [backgroundMerchantProfiles.data, visibleMerchantProfiles.data]
   )
-  const visibleIdentityReady =
-    visibleMerchantProfilesQuery.data !== undefined &&
-    !visibleMerchantProfilesQuery.isPlaceholderData
   const getMerchantIdentity = useCallback(
     (merchantPubkey: string) => {
       const profile = merchantProfiles[merchantPubkey]
       const name = getProfileName(profile)
-      const pending =
-        !name &&
-        visibleMerchantPubkeys.includes(merchantPubkey) &&
-        !visibleIdentityReady
+      const pending = !name
 
       return {
         name:
-          name ||
-          (pending
-            ? "Store"
-            : getProfileDisplayLabel(profile, merchantPubkey, {
-                lookupSettled: true,
-                emptyPrefix: "Store",
-                chars: 6,
-              })),
+          name || getPendingMerchantDisplayName(merchantPubkey, { chars: 6 }),
         pending,
       }
     },
-    [merchantProfiles, visibleIdentityReady, visibleMerchantPubkeys]
+    [merchantProfiles]
   )
   const getMerchantName = useCallback(
     (merchantPubkey: string) => getMerchantIdentity(merchantPubkey).name,
@@ -686,7 +635,13 @@ function ProductsPage() {
                 <SelectItem value="__all">All stores</SelectItem>
                 {allMerchants.map((pk) => (
                   <SelectItem key={pk} value={pk}>
-                    {getMerchantName(pk)}
+                    <span
+                      className={
+                        getMerchantIdentity(pk).pending ? "animate-pulse" : ""
+                      }
+                    >
+                      {getMerchantName(pk)}
+                    </span>
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -891,9 +846,7 @@ function ProductsPage() {
                   product={p}
                   merchantName={merchantIdentity.name}
                   merchantNamePending={merchantIdentity.pending}
-                  imageLoading={
-                    visibleIdentityReady && index < 4 ? "eager" : "lazy"
-                  }
+                  imageLoading={index < 4 ? "eager" : "lazy"}
                   btcUsdRate={btcUsdRate}
                   cartQuantity={
                     cart.items.find((item) => item.productId === p.id)

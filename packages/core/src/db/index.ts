@@ -52,6 +52,7 @@ export interface CachedProduct {
   location?: string
   createdAt?: number
   updatedAt?: number
+  sourceRelayUrls?: string[]
   cachedAt: number
 }
 
@@ -65,6 +66,7 @@ export interface CachedProfile {
   nip05?: string
   lud16?: string
   website?: string
+  sourceRelayUrls?: string[]
   cachedAt: number
 }
 

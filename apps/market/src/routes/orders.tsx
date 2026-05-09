@@ -4,10 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   extractOrderSummary,
   formatNpub,
-  getProfiles,
   formatPubkey,
   useAuth,
   useProfile,
+  useProfiles,
 } from "@conduit/core"
 import { Badge, Button } from "@conduit/ui"
 import {
@@ -333,13 +333,10 @@ function OrdersPage() {
       ),
     [conversations]
   )
-  const merchantProfilesQuery = useQuery({
-    queryKey: ["buyer-order-profiles", merchantPubkeys],
+  const merchantProfilesQuery = useProfiles(merchantPubkeys, {
     enabled: signerConnected && merchantPubkeys.length > 0,
-    queryFn: async () => {
-      const result = await getProfiles({ pubkeys: merchantPubkeys })
-      return result.data
-    },
+    priority: "background",
+    refetchUnresolvedMs: 12_000,
   })
 
   const filteredConversations = useMemo(() => {

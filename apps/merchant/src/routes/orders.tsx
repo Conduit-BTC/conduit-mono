@@ -11,7 +11,7 @@ import {
   formatPubkey,
   getCachedMerchantConversationList,
   getNdk,
-  getProfiles,
+  getProfileName,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
   hasWebLN,
@@ -21,8 +21,10 @@ import {
   publishWithPlanner,
   weblnMakeInvoice,
   type ParsedOrderMessage,
+  type Profile,
   type StatusUpdateMessageSchema,
   useAuth,
+  useProfiles,
 } from "@conduit/core"
 import {
   Badge,
@@ -82,11 +84,8 @@ function normalizeTrackingUrl(raw: string): string | undefined {
   return parsed.toString()
 }
 
-function getDisplayName(
-  profile: { displayName?: string; name?: string } | undefined,
-  pubkey: string
-): string {
-  return profile?.displayName || profile?.name || formatPubkey(pubkey, 8)
+function getDisplayName(profile: Profile | undefined, pubkey: string): string {
+  return getProfileName(profile) || formatPubkey(pubkey, 8)
 }
 
 const MESSAGE_TYPE_LABELS: Record<string, string> = {
@@ -498,16 +497,10 @@ function OrdersPage() {
       ),
     [conversations]
   )
-  const buyerProfilesQuery = useQuery({
-    queryKey: ["merchant-order-buyer-profiles", buyerPubkeys],
+  const buyerProfilesQuery = useProfiles(buyerPubkeys, {
     enabled: signerConnected && buyerPubkeys.length > 0,
-    queryFn: async () => {
-      const result = await getProfiles({ pubkeys: buyerPubkeys })
-      return result.data
-    },
-    retry: 3,
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
+    priority: "background",
+    refetchUnresolvedMs: 12_000,
   })
 
   useEffect(() => {

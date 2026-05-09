@@ -51,6 +51,7 @@ type ProgressiveListQuery =
 export interface ProgressiveProductsResult {
   products: Product[]
   meta: CommerceQueryMeta | null
+  profileRelayHintsByPubkey: Record<string, string[]>
   cachedCount: number
   networkCount: number
   firstDegreeAuthorCount: number
@@ -65,6 +66,29 @@ function toProducts(
   result: CommerceResult<CommerceProductRecord[]> | undefined
 ): Product[] {
   return result?.data.map((record) => record.product) ?? []
+}
+
+function mergeProfileRelayHints(
+  ...results: Array<CommerceResult<CommerceProductRecord[]> | undefined>
+): Record<string, string[]> {
+  const byPubkey = new Map<string, Set<string>>()
+  for (const result of results) {
+    for (const record of result?.data ?? []) {
+      if (!record.sourceRelayUrls?.length) continue
+      const current = byPubkey.get(record.product.pubkey) ?? new Set<string>()
+      for (const relayUrl of record.sourceRelayUrls) {
+        current.add(relayUrl)
+      }
+      byPubkey.set(record.product.pubkey, current)
+    }
+  }
+
+  return Object.fromEntries(
+    Array.from(byPubkey.entries()).map(([pubkey, relayUrls]) => [
+      pubkey,
+      Array.from(relayUrls),
+    ])
+  )
 }
 
 function dedupeProducts(products: Product[]): Product[] {
@@ -244,6 +268,7 @@ export function useProgressiveProducts(
     count: number
     meta: CommerceQueryMeta | null
     error: unknown
+    latestResult?: CommerceResult<CommerceProductRecord[]>
   }>({
     key: discoveryKey,
     isFetching: false,
@@ -340,6 +365,7 @@ export function useProgressiveProducts(
       count: 0,
       meta: null,
       error: null,
+      latestResult: undefined,
     })
   }, [discoveryKey])
 
@@ -408,6 +434,7 @@ export function useProgressiveProducts(
           count: result.data.length,
           meta: result.meta,
           error: null,
+          latestResult: result,
         })
       }
     )
@@ -419,6 +446,7 @@ export function useProgressiveProducts(
           count: result.data.length,
           meta: result.meta,
           error: null,
+          latestResult: result,
         })
       })
       .catch((error) => {
@@ -429,6 +457,8 @@ export function useProgressiveProducts(
           count: current.key === discoveryKey ? current.count : 0,
           meta: current.key === discoveryKey ? current.meta : null,
           error,
+          latestResult:
+            current.key === discoveryKey ? current.latestResult : undefined,
         }))
       })
 
@@ -450,6 +480,19 @@ export function useProgressiveProducts(
       ? Math.max(progressiveRead.count, mergedNetworkProducts.length)
       : mergedNetworkProducts.length
   const networkCount = Math.max(liveNetworkCount, accumulatedProducts.length)
+  const activeProgressiveResult =
+    progressiveRead.key === discoveryKey
+      ? progressiveRead.latestResult
+      : undefined
+  const profileRelayHintsByPubkey = useMemo(
+    () =>
+      mergeProfileRelayHints(
+        cachedQuery.data,
+        firstNetworkQuery.data,
+        activeProgressiveResult
+      ),
+    [activeProgressiveResult, cachedQuery.data, firstNetworkQuery.data]
+  )
   const hydrationStage = isResolvingPerspectiveGraph
     ? "resolving_follows"
     : progressiveRead.count > 0 || firstNetworkQuery.data
@@ -463,6 +506,7 @@ export function useProgressiveProducts(
       firstNetworkQuery.data?.meta ??
       cachedQuery.data?.meta ??
       null,
+    profileRelayHintsByPubkey,
     cachedCount,
     networkCount,
     firstDegreeAuthorCount: firstDegreeAuthors?.length ?? 0,
@@ -492,6 +536,7 @@ export function useProgressiveProducts(
 export function useProgressiveProductDetail(productId: string): {
   product: Product | null
   meta: CommerceQueryMeta | null
+  profileRelayHintsByPubkey: Record<string, string[]>
   isInitialLoading: boolean
   isHydrating: boolean
   isShowingCache: boolean
@@ -515,10 +560,15 @@ export function useProgressiveProductDetail(productId: string): {
   const active =
     hasNetworkResult || !cachedQuery.data ? networkQuery.data : cachedQuery.data
   const product = active?.data?.product ?? null
+  const profileRelayHintsByPubkey =
+    product && active?.data?.sourceRelayUrls?.length
+      ? { [product.pubkey]: active.data.sourceRelayUrls }
+      : {}
 
   return {
     product,
     meta: active?.meta ?? null,
+    profileRelayHintsByPubkey,
     isInitialLoading:
       !product && cachedQuery.isLoading && networkQuery.isLoading,
     isHydrating: networkQuery.isFetching,

@@ -6,21 +6,31 @@ describe("identity surface contracts", () => {
     const expectations = {
       "apps/market/src/components/ProductGridCard.tsx": [
         "merchantNamePending",
-        "profileQuery.isPlaceholderData",
+        "getProfileName(profile)",
+        "getPendingMerchantDisplayName",
       ],
       "apps/market/src/routes/products/$productId.tsx": [
         "merchantIdentityPending",
-        "merchantProfile.isPlaceholderData",
+        "getPendingMerchantDisplayName",
+        "relayHints:",
       ],
       "apps/market/src/routes/products/index.tsx": [
         "getMerchantIdentity",
-        "visibleMerchantPubkeys.includes(merchantPubkey)",
-        "visibleIdentityReady",
-        "!visibleMerchantProfilesQuery.isPlaceholderData",
+        "visibleMerchantPubkeys.includes(pubkey)",
+        "useProfiles(visibleMerchantPubkeys",
+        "useProfiles(backgroundMerchantPubkeys",
+        "getPendingMerchantDisplayName",
+        "merchantIdentity.pending",
       ],
       "apps/market/src/routes/store/$pubkey.tsx": [
         "merchantIdentityPending",
-        "profileQuery.isPlaceholderData",
+        "useProfile(pubkey",
+        "relayHints:",
+        "getProfileName(profile)",
+      ],
+      "apps/merchant/src/routes/orders.tsx": [
+        "useProfiles(buyerPubkeys",
+        "refetchUnresolvedMs: 12_000",
       ],
     }
 

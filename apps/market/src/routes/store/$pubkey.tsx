@@ -110,8 +110,6 @@ function StorefrontPage() {
   const queryClient = useQueryClient()
   const cart = useCart()
   const { pubkey: viewerPubkey, status } = useAuth()
-  const profileQuery = useProfile(pubkey)
-  const profile = profileQuery.data
   const btcUsdRateQuery = useBtcUsdRate()
   const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
@@ -129,6 +127,10 @@ function StorefrontPage() {
     tag: search.tag,
     sort: search.sort,
   })
+  const profileQuery = useProfile(pubkey, {
+    relayHints: productsQuery.profileRelayHintsByPubkey[pubkey],
+  })
+  const profile = profileQuery.data
   const storeProducts = productsQuery.products
   const followQuery = useQuery({
     queryKey: ["following-store", viewerPubkey ?? "none", pubkey],
@@ -156,18 +158,14 @@ function StorefrontPage() {
   const [followOverride, setFollowOverride] = useState<boolean | null>(null)
 
   const merchantProfileName = getProfileName(profile)
-  const merchantIdentityPending =
-    !merchantProfileName && profileQuery.isPlaceholderData
+  const merchantIdentityPending = !merchantProfileName
   const merchantName =
     merchantProfileName ||
-    (merchantIdentityPending
-      ? "Store"
-      : getProfileDisplayLabel(profile, pubkey, {
-          lookupSettled: true,
-          emptyPrefix: "Store",
-          chars: 8,
-        }))
-  const identityReady = !profileQuery.isPlaceholderData
+    getProfileDisplayLabel(profile, pubkey, {
+      lookupSettled: false,
+      pendingLabel: `Store ${formatNpub(pubkey, 8)}`,
+      chars: 8,
+    })
   const merchantAbout = profile?.about?.trim()
   const allTags = useMemo(() => {
     const tagSet = new Set<string>()
@@ -419,10 +417,9 @@ function StorefrontPage() {
         <span>/</span>
         <span className="text-[var(--text-primary)]">
           {merchantIdentityPending ? (
-            <span
-              aria-hidden="true"
-              className="inline-block h-3 w-24 animate-pulse rounded bg-[var(--surface-elevated)] align-middle"
-            />
+            <span className="inline-block max-w-full animate-pulse truncate align-middle">
+              {merchantName}
+            </span>
           ) : (
             merchantName
           )}
@@ -437,7 +434,7 @@ function StorefrontPage() {
                 <Avatar className="h-24 w-24 self-start border border-[var(--border)] shadow-[var(--shadow-lg)] sm:h-28 sm:w-28">
                   <AvatarImage
                     src={profile?.picture}
-                    alt={merchantIdentityPending ? "Store" : merchantName}
+                    alt={merchantName}
                     className="object-cover"
                   />
                   <AvatarFallback>
@@ -450,10 +447,11 @@ function StorefrontPage() {
                     Store
                   </div>
                   {merchantIdentityPending ? (
-                    <div
-                      aria-hidden="true"
-                      className="mt-4 h-8 w-48 animate-pulse rounded bg-[var(--surface-elevated)] sm:h-10 sm:w-64"
-                    />
+                    <h1 className="mt-2 truncate text-3xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
+                      <span className="inline-block max-w-full animate-pulse truncate">
+                        {merchantName}
+                      </span>
+                    </h1>
                   ) : (
                     <h1 className="mt-2 truncate text-3xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
                       {merchantName}
@@ -818,7 +816,7 @@ function StorefrontPage() {
                     product={product}
                     merchantName={merchantName}
                     merchantNamePending={merchantIdentityPending}
-                    imageLoading={identityReady && index < 4 ? "eager" : "lazy"}
+                    imageLoading={index < 4 ? "eager" : "lazy"}
                     btcUsdRate={btcUsdRate}
                     cartQuantity={
                       cart.items.find((item) => item.productId === product.id)

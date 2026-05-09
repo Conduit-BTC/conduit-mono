@@ -2,7 +2,6 @@ import { LoaderCircle, SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import {
   formatNpub,
-  getProfileDisplayLabel,
   getProfileName,
   useProfile,
   type Product,
@@ -10,7 +9,10 @@ import {
 import { useEffect, useMemo, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
-import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
+import {
+  MerchantAvatarFallback,
+  getPendingMerchantDisplayName,
+} from "../../components/MerchantIdentity"
 import {
   ProductGridCard,
   ProductGridCardSkeleton,
@@ -56,7 +58,11 @@ function ProductPage() {
   const productQuery = useProgressiveProductDetail(productId)
   const product = productQuery.product
 
-  const merchantProfile = useProfile(product?.pubkey)
+  const merchantProfile = useProfile(product?.pubkey, {
+    relayHints: product
+      ? productQuery.profileRelayHintsByPubkey[product.pubkey]
+      : undefined,
+  })
 
   const relatedProductsQuery = useProgressiveProducts({
     scope: "marketplace",
@@ -78,19 +84,11 @@ function ProductPage() {
   const hasMultipleImages = images.length > 1
   const selectedImage = images[selectedImageIndex] ?? images[0]
   const merchantProfileName = getProfileName(merchantProfile.data)
-  const merchantIdentityPending =
-    !!product && !merchantProfileName && merchantProfile.isPlaceholderData
+  const merchantIdentityPending = !!product && !merchantProfileName
   const merchantName = product
     ? merchantProfileName ||
-      (merchantIdentityPending
-        ? "Store"
-        : getProfileDisplayLabel(merchantProfile.data, product.pubkey, {
-            lookupSettled: true,
-            emptyPrefix: "Store",
-            chars: 8,
-          }))
+      getPendingMerchantDisplayName(product.pubkey, { chars: 8 })
     : ""
-  const merchantIdentityReady = !merchantProfile.isPlaceholderData
   const cartItem = product
     ? cart.items.find((item) => item.productId === product.id)
     : null
@@ -140,10 +138,9 @@ function ProductPage() {
                 className="transition-colors hover:text-[var(--text-primary)]"
               >
                 {merchantIdentityPending ? (
-                  <span
-                    aria-hidden="true"
-                    className="inline-block h-3 w-24 animate-pulse rounded bg-[var(--surface-elevated)] align-middle"
-                  />
+                  <span className="inline-block max-w-full animate-pulse truncate align-middle">
+                    {merchantName}
+                  </span>
                 ) : (
                   merchantName
                 )}
@@ -296,7 +293,7 @@ function ProductPage() {
                   <Avatar className="h-11 w-11 shrink-0 border border-[var(--border)]">
                     <AvatarImage
                       src={merchantProfile.data?.picture}
-                      alt={merchantIdentityPending ? "Store" : merchantName}
+                      alt={merchantName}
                     />
                     <AvatarFallback>
                       <MerchantAvatarFallback />
@@ -309,10 +306,11 @@ function ProductPage() {
                       className="block min-w-0 rounded-md transition-colors hover:text-secondary-300"
                     >
                       {merchantIdentityPending ? (
-                        <div
-                          aria-hidden="true"
-                          className="mt-1 h-4 w-32 animate-pulse rounded bg-[var(--surface)]"
-                        />
+                        <div className="truncate text-base font-semibold leading-tight text-[var(--text-primary)]">
+                          <span className="inline-block max-w-full animate-pulse truncate">
+                            {merchantName}
+                          </span>
+                        </div>
                       ) : (
                         <div className="truncate text-base font-semibold leading-tight text-[var(--text-primary)]">
                           {merchantName}
@@ -548,9 +546,7 @@ function ProductPage() {
                         product={relatedProduct}
                         merchantName={merchantName}
                         merchantNamePending={merchantIdentityPending}
-                        imageLoading={
-                          merchantIdentityReady && index < 4 ? "eager" : "lazy"
-                        }
+                        imageLoading={index < 4 ? "eager" : "lazy"}
                         btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
                         cartQuantity={relatedCartQuantity}
                         onAddToCart={() =>

@@ -18,11 +18,11 @@ describe("ProductCard", () => {
     expect(html).toContain("Image unavailable")
   })
 
-  it("renders an in-place merchant skeleton while identity is pending", () => {
+  it("renders an in-place merchant label shimmer while identity is pending", () => {
     const html = renderToStaticMarkup(
       <ProductCard
         title="Pending Store Product"
-        merchantName="Store"
+        merchantName="Store npub1abc...xyz"
         merchantNamePending
         images={[]}
         primaryPrice="25 sats"
@@ -30,6 +30,6 @@ describe("ProductCard", () => {
     )
 
     expect(html).toContain("animate-pulse")
-    expect(html).not.toContain(">Store<")
+    expect(html).toContain(">Store npub1abc...xyz<")
   })
 })

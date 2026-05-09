@@ -16,6 +16,7 @@ import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanout,
   fetchEventsFanoutProgressive,
+  getEventSourceRelayUrls,
   requireNdkConnected,
 } from "./ndk"
 import { extractOrderSummary } from "./order-summary"
@@ -79,6 +80,7 @@ export interface CommerceProductRecord {
   addressId: string
   dTag: string | null
   eventCreatedAt: number
+  sourceRelayUrls?: string[]
 }
 
 export interface MarketplaceProductsQuery {
@@ -112,6 +114,7 @@ export interface ProfileBatchQuery {
   skipCache?: boolean
   priority?: "visible" | "background"
   readPolicy?: CommerceReadPolicy
+  relayHintsByPubkey?: Record<string, string[] | undefined>
 }
 
 export interface FollowListQuery {
@@ -264,6 +267,7 @@ async function planCommerceReadRelays(input: {
   recipients?: readonly string[]
   maxRelays?: number
   relayHintMode?: "auto" | "skip" | "force"
+  extraRelayUrls?: readonly string[]
 }): Promise<string[]> {
   const hintPubkeys = Array.from(
     new Set(
@@ -308,8 +312,16 @@ async function planCommerceReadRelays(input: {
     input.intent === "commerce_products" ||
     (input.intent === "author_products" && (input.authors?.length ?? 0) > 1)
   const plannedRelayUrls = preferFallbackFirst
-    ? uniqueStrings([...fallbackRelayUrls, ...plan.relayUrls])
-    : uniqueStrings([...plan.relayUrls, ...fallbackRelayUrls])
+    ? uniqueStrings([
+        ...fallbackRelayUrls,
+        ...(input.extraRelayUrls ?? []),
+        ...plan.relayUrls,
+      ])
+    : uniqueStrings([
+        ...(input.extraRelayUrls ?? []),
+        ...plan.relayUrls,
+        ...fallbackRelayUrls,
+      ])
   const expandedRelayUrls =
     input.maxRelays === undefined
       ? plannedRelayUrls
@@ -559,6 +571,7 @@ function toCachedProduct(record: CommerceProductRecord) {
     location: product.location,
     createdAt: product.createdAt,
     updatedAt: product.updatedAt,
+    sourceRelayUrls: record.sourceRelayUrls,
     cachedAt: now(),
   }
 }
@@ -590,7 +603,28 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     addressId: product.id,
     dTag,
     eventCreatedAt: Math.floor(product.createdAt / 1000),
+    sourceRelayUrls: row.sourceRelayUrls,
   }
+}
+
+async function loadProductSourceRelayHints(
+  pubkeys: readonly string[]
+): Promise<string[]> {
+  const uniquePubkeys = uniqueStrings(pubkeys)
+  if (uniquePubkeys.length === 0) return []
+
+  const rows = (
+    await Promise.all(uniquePubkeys.map((pubkey) => loadCachedProducts(pubkey)))
+  ).flat()
+
+  return uniqueStrings(rows.flatMap((row) => row.sourceRelayUrls ?? []))
+}
+
+function getProfileQueryRelayHints(query: ProfileBatchQuery): string[] {
+  if (!query.relayHintsByPubkey) return []
+  return uniqueStrings(
+    query.pubkeys.flatMap((pubkey) => query.relayHintsByPubkey?.[pubkey] ?? [])
+  )
 }
 
 async function loadCachedProducts(
@@ -688,6 +722,63 @@ function hasProfileContent(
     profile.lud16,
     profile.website,
   ].some((value) => typeof value === "string" && value.trim().length > 0)
+}
+
+function cachedProfileToProfile(row: CachedProfile): Profile {
+  return {
+    pubkey: row.pubkey,
+    name: row.name,
+    displayName: row.displayName,
+    about: row.about,
+    picture: row.picture,
+    banner: row.banner,
+    nip05: row.nip05,
+    lud16: row.lud16,
+    website: row.website,
+  }
+}
+
+function mergeProfileField(
+  current: string | undefined,
+  incoming: string | undefined
+): string | undefined {
+  return typeof incoming === "string" && incoming.trim().length > 0
+    ? incoming
+    : current
+}
+
+function mergeProfileData(
+  current: Profile | undefined,
+  incoming: Profile | undefined
+): Profile | undefined {
+  if (!incoming) return current
+  if (!current) return incoming
+  if (!hasProfileContent(incoming)) {
+    return hasProfileContent(current) ? current : incoming
+  }
+  if (!hasProfileContent(current)) return incoming
+
+  return {
+    pubkey: incoming.pubkey || current.pubkey,
+    name: mergeProfileField(current.name, incoming.name),
+    displayName: mergeProfileField(current.displayName, incoming.displayName),
+    about: mergeProfileField(current.about, incoming.about),
+    picture: mergeProfileField(current.picture, incoming.picture),
+    banner: mergeProfileField(current.banner, incoming.banner),
+    nip05: mergeProfileField(current.nip05, incoming.nip05),
+    lud16: mergeProfileField(current.lud16, incoming.lud16),
+    website: mergeProfileField(current.website, incoming.website),
+  }
+}
+
+function pickLatestProfileEventWithContent(
+  events: readonly NDKEvent[],
+  pubkey: string
+): NDKEvent | undefined {
+  return events
+    .filter((event) => event.pubkey === pubkey)
+    .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
+    .find((event) => hasProfileContent(parseProfileEvent(event)))
 }
 
 async function loadCachedOrderMessages(
@@ -856,6 +947,7 @@ function dedupeProductEvents(
         addressId,
         dTag,
         eventCreatedAt: toEventCreatedAtSeconds(event),
+        sourceRelayUrls: getEventSourceRelayUrls(event),
       }
 
       const dedupeKey = dTag ?? parsed.id
@@ -1517,18 +1609,11 @@ export async function getProfiles(
       hasProfileContent(cached) &&
       now() - cached.cachedAt < PROFILE_CACHE_TTL_MS
     ) {
-      result[pubkey] = {
-        pubkey: cached.pubkey,
-        name: cached.name,
-        displayName: cached.displayName,
-        about: cached.about,
-        picture: cached.picture,
-        banner: cached.banner,
-        nip05: cached.nip05,
-        lud16: cached.lud16,
-        website: cached.website,
-      }
+      result[pubkey] = cachedProfileToProfile(cached)
     } else {
+      if (cached && hasProfileContent(cached)) {
+        result[pubkey] = cachedProfileToProfile(cached)
+      }
       missing.push(pubkey)
     }
   })
@@ -1544,10 +1629,15 @@ export async function getProfiles(
 
   try {
     const visible = query.priority !== "background"
+    const sourceRelayHints = uniqueStrings([
+      ...getProfileQueryRelayHints({ ...query, pubkeys: missing }),
+      ...(await loadProductSourceRelayHints(missing)),
+    ])
     const relayUrls = await planCommerceReadRelays({
       intent: "profiles",
       authors: missing,
       maxRelays: query.readPolicy?.maxRelays ?? (visible ? 8 : 4),
+      extraRelayUrls: sourceRelayHints,
     })
     const events = await runFetchEventsFanout(
       {
@@ -1564,14 +1654,6 @@ export async function getProfiles(
       }
     )
 
-    const latestByPubkey = new Map<string, NDKEvent>()
-    for (const event of events) {
-      const existing = latestByPubkey.get(event.pubkey)
-      if (!existing || (event.created_at ?? 0) > (existing.created_at ?? 0)) {
-        latestByPubkey.set(event.pubkey, event)
-      }
-    }
-
     const rowsToCache: Array<{
       pubkey: string
       name?: string
@@ -1582,14 +1664,19 @@ export async function getProfiles(
       nip05?: string
       lud16?: string
       website?: string
+      sourceRelayUrls?: string[]
       cachedAt: number
     }> = []
 
     for (const pubkey of missing) {
-      const event = latestByPubkey.get(pubkey)
-      const profile = event ? parseProfileEvent(event) : { pubkey }
-      result[pubkey] = profile
-      if (hasProfileContent(profile)) {
+      const event = pickLatestProfileEventWithContent(events, pubkey)
+      const profile = mergeProfileData(
+        result[pubkey],
+        event ? parseProfileEvent(event) : { pubkey }
+      )
+      const sourceRelayUrls = event ? getEventSourceRelayUrls(event) : undefined
+      result[pubkey] = profile ?? { pubkey }
+      if (profile && hasProfileContent(profile)) {
         rowsToCache.push({
           pubkey: profile.pubkey,
           name: profile.name,
@@ -1600,6 +1687,7 @@ export async function getProfiles(
           nip05: profile.nip05,
           lud16: profile.lud16,
           website: profile.website,
+          sourceRelayUrls,
           cachedAt: now(),
         })
       }

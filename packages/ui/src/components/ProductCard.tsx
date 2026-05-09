@@ -50,10 +50,9 @@ export function ProductCard({
   }, [imageKey, title])
 
   const merchantNameContent = merchantNamePending ? (
-    <span
-      aria-hidden="true"
-      className="block h-3 w-24 animate-pulse rounded bg-[var(--surface-elevated)]"
-    />
+    <span className="inline-block max-w-full animate-pulse truncate">
+      {merchantName}
+    </span>
   ) : (
     merchantName
   )

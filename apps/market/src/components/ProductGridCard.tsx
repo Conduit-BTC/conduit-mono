@@ -1,6 +1,5 @@
 import { useNavigate } from "@tanstack/react-router"
 import {
-  getProfileDisplayLabel,
   getProfileName,
   getProductImageCandidates,
   useProfile,
@@ -11,6 +10,7 @@ import {
   ProductCardSkeleton,
   ProductCartAction,
 } from "@conduit/ui"
+import { getPendingMerchantDisplayName } from "./MerchantIdentity"
 import { getProductPriceDisplay } from "../lib/pricing"
 
 type ProductGridCardProps = {
@@ -46,18 +46,11 @@ export function ProductGridCard({
   const profile = profileQuery.data
   const profileName = getProfileName(profile)
   const merchantNamePending =
-    merchantNamePendingOverride ??
-    (!profileName && profileQuery.isPlaceholderData)
+    merchantNamePendingOverride ?? (!profileName && !!product.pubkey)
   const merchantName =
     merchantNameOverride ||
     profileName ||
-    (merchantNamePending
-      ? "Store"
-      : getProfileDisplayLabel(profile, product.pubkey, {
-          lookupSettled: true,
-          emptyPrefix: "Store",
-          chars: 6,
-        }))
+    getPendingMerchantDisplayName(product.pubkey, { chars: 6 })
   const { primary, secondary } = getProductPriceDisplay(
     product,
     btcUsdRate ?? null

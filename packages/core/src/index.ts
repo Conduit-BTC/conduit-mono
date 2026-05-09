@@ -56,7 +56,16 @@ export {
 // Hooks
 export { useNdkState } from "./hooks/useNdkState"
 export { useNip07Availability } from "./hooks/useNip07Availability"
-export { useProfile } from "./hooks/useProfile"
+export {
+  useProfile,
+  type UseProfileOptions,
+  type UseProfileResult,
+} from "./hooks/useProfile"
+export {
+  useProfiles,
+  type UseProfilesOptions,
+  type UseProfilesResult,
+} from "./hooks/useProfiles"
 export {
   useRelaySettings,
   type UseRelaySettingsResult,
