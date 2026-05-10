@@ -14,6 +14,7 @@ import {
   mergeRicherProfiles,
   useAuth,
   useProfiles,
+  type PricingRateInput,
   type Product,
 } from "@conduit/core"
 import {
@@ -117,7 +118,7 @@ function sortProducts(
   sort: SortOption | undefined,
   canSortByPrice: boolean,
   hasSingleCurrency: boolean,
-  btcUsdRate: number | null
+  btcUsdRate: PricingRateInput
 ): Product[] {
   switch (sort) {
     case "price_asc":
@@ -161,7 +162,7 @@ function ProductsPage() {
   const hasAutoPromptedConnect = useRef(false)
   const tagCloudRef = useRef<HTMLDivElement | null>(null)
   const btcUsdRateQuery = useBtcUsdRate()
-  const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
+  const btcUsdRate = btcUsdRateQuery.data ?? null
   const usesAnonymousPerspective = !search.merchant && status !== "connected"
   const guestMarket = useGuestMarketDiscovery({
     enabled: usesAnonymousPerspective,

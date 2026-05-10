@@ -18,6 +18,7 @@ import {
   publishWithPlanner,
   useAuth,
   useProfile,
+  type PricingRateInput,
   type ShippingAddressSchema,
 } from "@conduit/core"
 import { Button, Input, Label } from "@conduit/ui"
@@ -200,7 +201,7 @@ function OrderSummary({
   items: CartItem[]
   merchantPubkey: string
   step: Exclude<CheckoutStep, "signing" | "sending" | "sent">
-  btcUsdRate: number | null
+  btcUsdRate: PricingRateInput
 }) {
   const { data: merchantProfile } = useProfile(merchantPubkey)
   const merchantName =
@@ -353,7 +354,7 @@ function CheckoutPage() {
   const [shippingAttempted, setShippingAttempted] = useState(false)
   const [sentOrderId, setSentOrderId] = useState<string | null>(null)
   const [showSentGlow, setShowSentGlow] = useState(false)
-  const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
+  const btcUsdRate = btcUsdRateQuery.data ?? null
 
   const selectedMerchant =
     search.merchant ??

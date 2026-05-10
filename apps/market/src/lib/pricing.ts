@@ -1,28 +1,29 @@
 import {
   getComparablePriceValue as getCoreComparablePriceValue,
-  getConfiguredBtcUsdRate,
+  getConfiguredPricingRateQuote,
   getProductPriceDisplay as getCoreProductPriceDisplay,
   isSatsLikeCurrency,
   isUsdCurrencyCode,
   type CommercePriceLike,
+  type PricingRateInput,
 } from "@conduit/core"
 
 export {
-  getConfiguredBtcUsdRate,
+  getConfiguredPricingRateQuote,
   isSatsLikeCurrency as isSatsCurrency,
   isUsdCurrencyCode as isUsdCurrency,
 }
 
 export function getProductPriceDisplay(
   product: CommercePriceLike,
-  btcUsdRate: number | null = getConfiguredBtcUsdRate()
+  btcUsdRate: PricingRateInput = getConfiguredPricingRateQuote()
 ): { primary: string; secondary: string | null } {
   return getCoreProductPriceDisplay(product, btcUsdRate)
 }
 
 export function getComparablePriceValue(
   product: CommercePriceLike,
-  btcUsdRate: number | null = getConfiguredBtcUsdRate()
+  btcUsdRate: PricingRateInput = getConfiguredPricingRateQuote()
 ): number | null {
   return getCoreComparablePriceValue(product, btcUsdRate)
 }

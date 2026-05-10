@@ -40,7 +40,7 @@ export type OrderDetailCardProps = {
   trackingCarrier: string | null
   trackingNumber: string | null
   trackingUrl: string | null
-  btcUsdRate?: number | null
+  btcUsdRate?: unknown
 }
 
 function formatOrderAmount(amount: number, currency: string): string {

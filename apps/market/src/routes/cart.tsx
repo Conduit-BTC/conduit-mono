@@ -10,6 +10,7 @@ import {
   getMerchantStorefront,
   useAuth,
   useProfile,
+  type PricingRateInput,
   type Product,
 } from "@conduit/core"
 import { Avatar, AvatarFallback, AvatarImage, Button } from "@conduit/ui"
@@ -81,7 +82,7 @@ function groupCartItems(items: CartItem[]): MerchantCartGroup[] {
     .sort((a, b) => b.totalItems - a.totalItems)
 }
 
-function getCartSummaryPrice(items: CartItem[], btcUsdRate: number | null) {
+function getCartSummaryPrice(items: CartItem[], btcUsdRate: PricingRateInput) {
   const totalItems = items.reduce((sum, item) => sum + item.quantity, 0)
   const totalSats = items.reduce((sum, item) => {
     const sats = getPriceSats(item, btcUsdRate)
@@ -210,7 +211,7 @@ function MerchantOverviewCard({
   onCheckout,
 }: {
   group: MerchantCartGroup
-  btcUsdRate: number | null
+  btcUsdRate: PricingRateInput
   onCheckout: (merchantPubkey: string) => void
 }) {
   const summary = getCartSummaryPrice(group.items, btcUsdRate)
@@ -263,7 +264,7 @@ function RelatedProductRow({
   onAdd,
 }: {
   product: Product
-  btcUsdRate: number | null
+  btcUsdRate: PricingRateInput
   cartQuantity: number
   onAdd: () => void
 }) {
@@ -334,7 +335,7 @@ function CartLineItem({
   onRemove,
 }: {
   item: CartItem
-  btcUsdRate: number | null
+  btcUsdRate: PricingRateInput
   onIncrement: () => void
   onDecrement: () => void
   onRemove: () => void
@@ -485,10 +486,7 @@ function CartPage() {
     (group) => group.merchantPubkey === selectedMerchant
   )
   const selectedSummary = selectedGroup
-    ? getCartSummaryPrice(
-        selectedGroup.items,
-        btcUsdRateQuery.data?.rate ?? null
-      )
+    ? getCartSummaryPrice(selectedGroup.items, btcUsdRateQuery.data ?? null)
     : null
   const preferredTags = useMemo(() => {
     const sourceItems = selectedGroup ? selectedGroup.items : cart.items
@@ -677,7 +675,7 @@ function CartPage() {
               <MerchantOverviewCard
                 key={group.merchantPubkey}
                 group={group}
-                btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+                btcUsdRate={btcUsdRateQuery.data ?? null}
                 onCheckout={handleCheckout}
               />
             ))}
@@ -738,7 +736,7 @@ function CartPage() {
                     <RelatedProductRow
                       key={product.id}
                       product={product}
-                      btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+                      btcUsdRate={btcUsdRateQuery.data ?? null}
                       cartQuantity={cartQuantity}
                       onAdd={() =>
                         cart.addItem({
@@ -857,7 +855,7 @@ function CartPage() {
               <CartLineItem
                 key={item.productId}
                 item={item}
-                btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+                btcUsdRate={btcUsdRateQuery.data ?? null}
                 onIncrement={() =>
                   cart.addItem(
                     {
@@ -984,7 +982,7 @@ function CartPage() {
                   <RelatedProductRow
                     key={product.id}
                     product={product}
-                    btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+                    btcUsdRate={btcUsdRateQuery.data ?? null}
                     cartQuantity={cartQuantity}
                     onAdd={() =>
                       cart.addItem({

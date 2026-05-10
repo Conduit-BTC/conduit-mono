@@ -94,7 +94,7 @@ function ProductPage() {
     : null
   const cartQuantity = cartItem?.quantity ?? 0
   const priceDisplay = product
-    ? getProductPriceDisplay(product, btcUsdRateQuery.data?.rate ?? null)
+    ? getProductPriceDisplay(product, btcUsdRateQuery.data ?? null)
     : null
   const updatedLabel = product
     ? new Intl.DateTimeFormat("en-US", {
@@ -549,7 +549,7 @@ function ProductPage() {
                         merchantName={merchantName}
                         merchantNamePending={merchantIdentityPending}
                         imageLoading={index < 4 ? "eager" : "lazy"}
-                        btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+                        btcUsdRate={btcUsdRateQuery.data ?? null}
                         cartQuantity={relatedCartQuantity}
                         onAddToCart={() =>
                           cart.addItem(

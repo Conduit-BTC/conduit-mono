@@ -11,7 +11,11 @@ export type BtcUsdRateQuote = {
   rate: number
   fetchedAt: number
   source: "env" | "mempool" | "coinbase"
+  fiatUsdRates?: Record<string, number>
+  fiatSource?: "frankfurter" | "exchange-rate-api" | "env" | "mempool"
 }
+
+export type PricingRateInput = number | BtcUsdRateQuote | null
 
 export type CommercePriceNormalization =
   | {
@@ -58,6 +62,16 @@ export function isUsdCurrencyCode(currency: string): boolean {
   return normalizeCurrencyCode(currency) === "USD"
 }
 
+export function isFiatCurrencyCode(currency: string): boolean {
+  const normalized = normalizeCurrencyCode(currency)
+  return (
+    /^[A-Z]{3}$/.test(normalized) &&
+    !isSatsLikeCurrency(normalized) &&
+    !isMsatsLikeCurrency(normalized) &&
+    !isBtcLikeCurrency(normalized)
+  )
+}
+
 function sourceQuote(amount: number, currency: string): SourcePriceQuote {
   return {
     amount,
@@ -80,6 +94,34 @@ function invalidPrice(
   }
 }
 
+function getBtcUsdRate(rateInput: PricingRateInput): number | null {
+  if (typeof rateInput === "number") {
+    return Number.isFinite(rateInput) && rateInput > 0 ? rateInput : null
+  }
+
+  if (!rateInput) return null
+  return Number.isFinite(rateInput.rate) && rateInput.rate > 0
+    ? rateInput.rate
+    : null
+}
+
+function getUsdPerUnitRate(
+  currency: string,
+  rateInput: PricingRateInput
+): number | null {
+  const normalized = normalizeCurrencyCode(currency)
+  if (normalized === "USD") return 1
+
+  if (!rateInput || typeof rateInput === "number") return null
+
+  const usdPerUnit = rateInput.fiatUsdRates?.[normalized]
+  return typeof usdPerUnit === "number" &&
+    Number.isFinite(usdPerUnit) &&
+    usdPerUnit > 0
+    ? usdPerUnit
+    : null
+}
+
 function toSafeIntegerSats(value: number): number | null {
   if (!Number.isFinite(value) || value < 0) return null
   const rounded = Math.round(value)
@@ -91,9 +133,10 @@ function toSafeIntegerSats(value: number): number | null {
 export function normalizeCommercePrice(
   amount: number,
   currency: string,
-  btcUsdRate: number | null = null
+  rateInput: PricingRateInput = null
 ): CommercePriceNormalization {
   const source = sourceQuote(amount, currency)
+  const btcUsdRate = getBtcUsdRate(rateInput)
 
   if (!Number.isFinite(amount) || amount < 0) {
     return invalidPrice(amount, currency, "Price must be a non-negative number")
@@ -135,20 +178,31 @@ export function normalizeCommercePrice(
     return { status: "ok", sats, source, approximate: false }
   }
 
-  if (isUsdCurrencyCode(source.normalizedCurrency)) {
+  if (isFiatCurrencyCode(source.normalizedCurrency)) {
     if (!btcUsdRate || !Number.isFinite(btcUsdRate) || btcUsdRate <= 0) {
       return {
         status: "rate_required",
         sats: null,
         source,
         approximate: false,
-        reason: "BTC/USD rate is required to convert USD prices",
+        reason: "BTC/USD rate is required to convert fiat prices",
       }
     }
 
-    const sats = Math.round((amount / btcUsdRate) * SATS_PER_BTC)
+    const usdPerUnit = getUsdPerUnitRate(source.normalizedCurrency, rateInput)
+    if (!usdPerUnit) {
+      return {
+        status: "rate_required",
+        sats: null,
+        source,
+        approximate: false,
+        reason: `${source.normalizedCurrency}/USD rate is required to convert fiat prices`,
+      }
+    }
+
+    const sats = Math.round(((amount * usdPerUnit) / btcUsdRate) * SATS_PER_BTC)
     if (!Number.isSafeInteger(sats) || sats < 0) {
-      return invalidPrice(amount, currency, "USD price conversion overflowed")
+      return invalidPrice(amount, currency, "Fiat price conversion overflowed")
     }
     return { status: "ok", sats, source, approximate: true }
   }
@@ -164,12 +218,12 @@ export function normalizeCommercePrice(
 
 export function canonicalizeProductPrice<T extends CommercePriceLike>(
   product: T,
-  btcUsdRate: number | null = null
+  rateInput: PricingRateInput = null
 ): T {
   const normalized = normalizeCommercePrice(
     product.price,
     product.currency,
-    btcUsdRate
+    rateInput
   )
 
   const sourcePrice = product.sourcePrice ?? normalized.source
@@ -201,7 +255,7 @@ export function canonicalizeProductPrice<T extends CommercePriceLike>(
 
 export function getPriceSats(
   price: CommercePriceLike,
-  btcUsdRate: number | null = null
+  rateInput: PricingRateInput = null
 ): { sats: number; approximate: boolean } | null {
   if (
     typeof price.priceSats === "number" &&
@@ -212,14 +266,14 @@ export function getPriceSats(
       price.sourcePrice?.normalizedCurrency ?? price.currency
     return {
       sats: price.priceSats,
-      approximate: isUsdCurrencyCode(sourceCurrency),
+      approximate: isFiatCurrencyCode(sourceCurrency),
     }
   }
 
   const normalized = normalizeCommercePrice(
     price.price,
     price.currency,
-    btcUsdRate
+    rateInput
   )
   if (normalized.status !== "ok") return null
   return { sats: normalized.sats, approximate: normalized.approximate }
@@ -242,16 +296,23 @@ export function formatSats(sats: number): string {
 
 export function formatApproxUsdFromSats(
   sats: number,
-  btcUsdRate: number
+  rateInput: PricingRateInput
 ): string {
+  const btcUsdRate = getBtcUsdRate(rateInput)
+  if (!btcUsdRate) return "~USD unavailable"
+
   const usd = (sats / SATS_PER_BTC) * btcUsdRate
   if (usd > 0 && usd < 0.01) return "~$0.01"
   return `~${formatFiatPrice(usd, "USD")}`
 }
 
 function formatSourcePrice(source: SourcePriceQuote): string {
-  if (isUsdCurrencyCode(source.normalizedCurrency)) {
-    return formatFiatPrice(source.amount, "USD")
+  if (isFiatCurrencyCode(source.normalizedCurrency)) {
+    try {
+      return formatFiatPrice(source.amount, source.normalizedCurrency)
+    } catch {
+      return `${source.amount.toLocaleString()} ${source.normalizedCurrency}`
+    }
   }
 
   if (isSatsLikeCurrency(source.normalizedCurrency)) {
@@ -263,9 +324,9 @@ function formatSourcePrice(source: SourcePriceQuote): string {
 
 export function getProductPriceDisplay(
   product: CommercePriceLike,
-  btcUsdRate: number | null = null
+  rateInput: PricingRateInput = null
 ): { primary: string; secondary: string | null } {
-  const sats = getPriceSats(product, btcUsdRate)
+  const sats = getPriceSats(product, rateInput)
   const source = product.sourcePrice
 
   if (!sats) {
@@ -283,10 +344,10 @@ export function getProductPriceDisplay(
     return { primary, secondary: `${formatSourcePrice(source)} source quote` }
   }
 
-  if (btcUsdRate && Number.isFinite(btcUsdRate) && btcUsdRate > 0) {
+  if (getBtcUsdRate(rateInput)) {
     return {
       primary,
-      secondary: formatApproxUsdFromSats(sats.sats, btcUsdRate),
+      secondary: formatApproxUsdFromSats(sats.sats, rateInput),
     }
   }
 
@@ -295,7 +356,7 @@ export function getProductPriceDisplay(
 
 export function getComparablePriceValue(
   product: CommercePriceLike,
-  btcUsdRate: number | null = null
+  rateInput: PricingRateInput = null
 ): number | null {
-  return getPriceSats(product, btcUsdRate)?.sats ?? null
+  return getPriceSats(product, rateInput)?.sats ?? null
 }

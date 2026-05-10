@@ -3,6 +3,7 @@ import {
   getProfileName,
   getProductImageCandidates,
   useProfile,
+  type PricingRateInput,
   type Product,
 } from "@conduit/core"
 import {
@@ -19,7 +20,7 @@ type ProductGridCardProps = {
   merchantNamePending?: boolean
   imageLoading?: "eager" | "lazy"
   onAddToCart?: () => void
-  btcUsdRate?: number | null
+  btcUsdRate?: PricingRateInput
   cartQuantity?: number
   onIncrement?: () => void
   onDecrement?: () => void

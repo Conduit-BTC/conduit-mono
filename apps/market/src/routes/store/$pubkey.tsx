@@ -39,6 +39,7 @@ import {
   requireNdkConnected,
   useAuth,
   useProfile,
+  type PricingRateInput,
   type Product,
 } from "@conduit/core"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
@@ -82,7 +83,7 @@ export const Route = createFileRoute("/store/$pubkey")({
 function sortProducts(
   products: Product[],
   sort: SortOption | undefined,
-  btcUsdRate: number | null
+  btcUsdRate: PricingRateInput
 ): Product[] {
   switch (sort) {
     case "price_asc":
@@ -111,7 +112,7 @@ function StorefrontPage() {
   const cart = useCart()
   const { pubkey: viewerPubkey, status } = useAuth()
   const btcUsdRateQuery = useBtcUsdRate()
-  const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
+  const btcUsdRate = btcUsdRateQuery.data ?? null
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
   const [searchDirty, setSearchDirty] = useState(false)
   const [showAllTags, setShowAllTags] = useState(false)

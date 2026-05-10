@@ -135,7 +135,7 @@ function OrderHero({ conversation }: { conversation: BuyerConversation }) {
       currency: summary.currency,
       priceSats: summary.currency === "SATS" ? summary.subtotal : undefined,
     },
-    btcUsdRateQuery.data?.rate ?? null
+    btcUsdRateQuery.data ?? null
   )
 
   return (
@@ -582,7 +582,7 @@ function OrdersPage() {
                                   : undefined,
                               sourcePrice: item.sourcePrice,
                             },
-                            btcUsdRateQuery.data?.rate ?? null
+                            btcUsdRateQuery.data ?? null
                           )
                           return (
                             <div
@@ -646,7 +646,7 @@ function OrdersPage() {
                                       ? orderSummary.subtotal
                                       : undefined,
                                 },
-                                btcUsdRateQuery.data?.rate ?? null
+                                btcUsdRateQuery.data ?? null
                               ).primary
                             }
                           </span>

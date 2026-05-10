@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import {
+  type BtcUsdRateQuote,
   getProductPriceDisplay,
   normalizeCommercePrice,
   orderSchema,
@@ -12,6 +13,17 @@ function expectSats(amount: number, currency: string, sats: number) {
   if (normalized.status === "ok") {
     expect(normalized.sats).toBe(sats)
   }
+}
+
+const testRates: BtcUsdRateQuote = {
+  rate: 100_000,
+  fetchedAt: 1_700_000_000_000,
+  source: "env",
+  fiatUsdRates: {
+    EUR: 1.2,
+    GBP: 1.25,
+  },
+  fiatSource: "env",
 }
 
 describe("commerce pricing", () => {
@@ -28,16 +40,33 @@ describe("commerce pricing", () => {
     expect(normalizeCommercePrice(1.5, "SAT").status).toBe("invalid")
     expect(normalizeCommercePrice(-1, "SATS").status).toBe("invalid")
     expect(normalizeCommercePrice(Number.NaN, "BTC").status).toBe("invalid")
-    expect(normalizeCommercePrice(10, "EUR").status).toBe("unsupported")
+    expect(normalizeCommercePrice(10, "EUR").status).toBe("rate_required")
     expect(normalizeCommercePrice(10, "USD").status).toBe("rate_required")
+    expect(normalizeCommercePrice(10, "EUR", 100_000).status).toBe(
+      "rate_required"
+    )
   })
 
-  it("converts USD only when a reliable BTC/USD rate is supplied", () => {
+  it("converts fiat only when reliable fiat and BTC/USD rates are supplied", () => {
     const normalized = normalizeCommercePrice(25, "USD", 100_000)
     expect(normalized.status).toBe("ok")
     if (normalized.status === "ok") {
       expect(normalized.sats).toBe(25_000)
       expect(normalized.approximate).toBe(true)
+    }
+
+    const eur = normalizeCommercePrice(10, "EUR", testRates)
+    expect(eur.status).toBe("ok")
+    if (eur.status === "ok") {
+      expect(eur.sats).toBe(12_000)
+      expect(eur.approximate).toBe(true)
+    }
+
+    const gbp = normalizeCommercePrice(20, "GBP", testRates)
+    expect(gbp.status).toBe("ok")
+    if (gbp.status === "ok") {
+      expect(gbp.sats).toBe(25_000)
+      expect(gbp.approximate).toBe(true)
     }
   })
 
@@ -85,6 +114,34 @@ describe("commerce pricing", () => {
     expect(getProductPriceDisplay(product, 100_000)).toEqual({
       primary: "250,000 sats",
       secondary: "~$250.00",
+    })
+  })
+
+  it("preserves fiat source quotes and displays rate-backed sats", () => {
+    const product = parseProductEvent({
+      id: "event-3",
+      pubkey: "merchant",
+      created_at: 1_700_000_000,
+      content: "Euro listing",
+      tags: [
+        ["d", "euro-listing"],
+        ["title", "Euro Listing"],
+        ["price", "10", "EUR"],
+      ],
+    })
+
+    expect(product.price).toBe(10)
+    expect(product.currency).toBe("EUR")
+    expect(product.priceSats).toBeUndefined()
+    expect(product.sourcePrice).toEqual({
+      amount: 10,
+      currency: "EUR",
+      normalizedCurrency: "EUR",
+    })
+
+    expect(getProductPriceDisplay(product, testRates)).toEqual({
+      primary: "~12,000 sats",
+      secondary: "€10.00 source quote",
     })
   })
 

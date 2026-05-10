@@ -3,6 +3,7 @@ import {
   isSatsLikeCurrency,
   isUsdCurrencyCode,
   normalizeCommercePrice,
+  type PricingRateInput,
 } from "../pricing"
 
 export type LightningInvoiceNetwork =
@@ -35,9 +36,9 @@ export function isUsdCurrency(currency: string): boolean {
 export function convertCommerceAmountToSats(
   amount: number,
   currency: string,
-  btcUsdRate: number | null
+  rateInput: PricingRateInput
 ): number | null {
-  const normalized = normalizeCommercePrice(amount, currency, btcUsdRate)
+  const normalized = normalizeCommercePrice(amount, currency, rateInput)
   return normalized.status === "ok" ? normalized.sats : null
 }
 

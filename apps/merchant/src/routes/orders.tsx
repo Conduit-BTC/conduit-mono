@@ -22,6 +22,7 @@ import {
   publishWithPlanner,
   weblnMakeInvoice,
   type ParsedOrderMessage,
+  type PricingRateInput,
   type Profile,
   type StatusUpdateMessageSchema,
   useAuth,
@@ -190,7 +191,7 @@ function MessageCard({
 }: {
   message: ParsedOrderMessage
   mine: boolean
-  btcUsdRate: number | null
+  btcUsdRate: PricingRateInput
 }) {
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
@@ -393,7 +394,7 @@ function MessageCard({
 function OrdersPage() {
   const { pubkey, status } = useAuth()
   const btcUsdRateQuery = useBtcUsdRate()
-  const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
+  const btcUsdRate = btcUsdRateQuery.data ?? null
   const queryClient = useQueryClient()
   const [selectedConversationId, setSelectedConversationId] = useState<
     string | null
@@ -1055,7 +1056,7 @@ function OrdersPage() {
                     trackingCarrier={orderSummary.trackingCarrier}
                     trackingNumber={orderSummary.trackingNumber}
                     trackingUrl={orderSummary.trackingUrl}
-                    btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+                    btcUsdRate={btcUsdRateQuery.data ?? null}
                   />
                 </TabsContent>
 
@@ -1359,7 +1360,7 @@ function OrdersPage() {
                           key={message.id}
                           message={message}
                           mine={message.senderPubkey === pubkey}
-                          btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+                          btcUsdRate={btcUsdRateQuery.data ?? null}
                         />
                       ))}
                     </div>

@@ -524,7 +524,7 @@ function ProductsPage() {
             {merchantProducts.map((item) => {
               const { primary, secondary } = getProductPriceDisplay(
                 item.product,
-                btcUsdRateQuery.data?.rate ?? null
+                btcUsdRateQuery.data ?? null
               )
               const marketVisible = hasMarketVisibleProductImage(item.product)
 

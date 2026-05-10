@@ -28,12 +28,14 @@ export {
 export {
   fetchBtcUsdRate,
   getConfiguredBtcUsdRate,
+  getConfiguredPricingRateQuote,
   useBtcUsdRate,
 } from "./pricing/rates"
 export type {
   BtcUsdRateQuote,
   CommercePriceLike,
   CommercePriceNormalization,
+  PricingRateInput,
   SourcePriceQuote,
 } from "./pricing"
 
