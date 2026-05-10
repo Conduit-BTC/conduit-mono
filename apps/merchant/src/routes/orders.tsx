@@ -11,6 +11,7 @@ import {
   formatPubkey,
   getCachedMerchantConversationList,
   getNdk,
+  getProductPriceDisplay,
   getProfileName,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
@@ -185,9 +186,11 @@ async function publishOrderConversationMessage(params: {
 function MessageCard({
   message,
   mine,
+  btcUsdRate,
 }: {
   message: ParsedOrderMessage
   mine: boolean
+  btcUsdRate: number | null
 }) {
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
@@ -210,10 +213,33 @@ function MessageCard({
         {message.type === "order" && (
           <div className="space-y-1.5">
             <div className="text-[var(--text-primary)]">
-              Total: {message.payload.subtotal} {message.payload.currency}
+              Total:{" "}
+              {
+                getProductPriceDisplay(
+                  {
+                    price: message.payload.subtotal,
+                    currency: message.payload.currency,
+                    priceSats:
+                      message.payload.currency === "SATS"
+                        ? message.payload.subtotal
+                        : undefined,
+                  },
+                  btcUsdRate
+                ).primary
+              }
             </div>
             {message.payload.items.map((item) => {
               const product = formatProductReference(item.productId)
+              const itemPrice = getProductPriceDisplay(
+                {
+                  price: item.priceAtPurchase,
+                  currency: item.currency,
+                  priceSats:
+                    item.currency === "SATS" ? item.priceAtPurchase : undefined,
+                  sourcePrice: item.sourcePrice,
+                },
+                btcUsdRate
+              )
               return (
                 <div
                   key={`${message.id}-${item.productId}`}
@@ -223,7 +249,7 @@ function MessageCard({
                     {product.title}
                   </div>
                   <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                    Qty {item.quantity} · {item.priceAtPurchase} {item.currency}
+                    Qty {item.quantity} · {itemPrice.primary}
                   </div>
                 </div>
               )
@@ -1029,6 +1055,7 @@ function OrdersPage() {
                     trackingCarrier={orderSummary.trackingCarrier}
                     trackingNumber={orderSummary.trackingNumber}
                     trackingUrl={orderSummary.trackingUrl}
+                    btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
                   />
                 </TabsContent>
 
@@ -1332,6 +1359,7 @@ function OrdersPage() {
                           key={message.id}
                           message={message}
                           mine={message.senderPubkey === pubkey}
+                          btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
                         />
                       ))}
                     </div>

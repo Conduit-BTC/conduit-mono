@@ -5,6 +5,7 @@ import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   EVENT_KINDS,
   appendConduitClientTag,
+  canonicalizeProductPrice,
   getCachedMerchantStorefront,
   getMerchantStorefront,
   getProductImageCandidates,
@@ -28,6 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@conduit/ui"
+import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { requireAuth } from "../lib/auth"
 
 export const Route = createFileRoute("/products")({
@@ -76,11 +78,12 @@ function randomSuffix(): string {
 }
 
 function productToForm(product: ProductSchema): ProductFormState {
+  const source = product.sourcePrice
   return {
     title: product.title,
     summary: product.summary ?? "",
-    price: String(product.price),
-    currency: product.currency,
+    price: String(source?.amount ?? product.price),
+    currency: source?.normalizedCurrency ?? product.currency,
     imageUrl: product.images[0]?.url ?? "",
     tags: product.tags.join(", "),
   }
@@ -167,7 +170,7 @@ async function publishProduct(
   const now = Date.now()
   const tags = parseTags(form.tags)
 
-  const product: ProductSchema = {
+  const product: ProductSchema = canonicalizeProductPrice({
     id: `30402:${signerPubkey}:${dTag}`,
     pubkey: signerPubkey,
     title,
@@ -182,7 +185,7 @@ async function publishProduct(
     location: undefined,
     createdAt: existing?.product.createdAt ?? now,
     updatedAt: now,
-  }
+  })
 
   const event = new NDKEvent(ndk)
   event.kind = EVENT_KINDS.PRODUCT
@@ -191,7 +194,7 @@ async function publishProduct(
   event.tags = [
     ["d", dTag],
     ["title", product.title],
-    ["price", String(product.price), product.currency],
+    ["price", String(price), currency],
   ]
 
   if (product.summary) event.tags.push(["summary", product.summary])
@@ -242,6 +245,7 @@ async function deleteProduct(
 function ProductsPage() {
   const { pubkey } = useAuth()
   const queryClient = useQueryClient()
+  const btcUsdRateQuery = useBtcUsdRate()
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM)
   const [editing, setEditing] = useState<MerchantProduct | null>(null)
 
@@ -424,6 +428,8 @@ function ProductsPage() {
                     <SelectContent>
                       <SelectItem value="USD">USD</SelectItem>
                       <SelectItem value="SAT">SAT</SelectItem>
+                      <SelectItem value="SATS">SATS</SelectItem>
+                      <SelectItem value="BTC">BTC</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -517,7 +523,8 @@ function ProductsPage() {
           <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
             {merchantProducts.map((item) => {
               const { primary, secondary } = getProductPriceDisplay(
-                item.product
+                item.product,
+                btcUsdRateQuery.data?.rate ?? null
               )
               const marketVisible = hasMarketVisibleProductImage(item.product)
 

@@ -13,6 +13,7 @@ import {
   EVENT_KINDS,
   appendConduitClientTag,
   formatPubkey,
+  getPriceSats,
   getNdk,
   publishWithPlanner,
   useAuth,
@@ -206,11 +207,15 @@ function OrderSummary({
     merchantProfile?.displayName ||
     merchantProfile?.name ||
     formatPubkey(merchantPubkey, 8)
+  const totalSats = items.reduce((sum, item) => {
+    const sats = getPriceSats(item, btcUsdRate)
+    return sats ? sum + sats.sats * item.quantity : sum
+  }, 0)
+  const allItemsPriced = items.every((item) => getPriceSats(item, btcUsdRate))
   const totalPrice = getProductPriceDisplay(
-    {
-      price: items.reduce((sum, item) => sum + item.price * item.quantity, 0),
-      currency: items[0]?.currency ?? "USD",
-    },
+    allItemsPriced
+      ? { price: totalSats, currency: "SATS", priceSats: totalSats }
+      : { price: 0, currency: "UNSUPPORTED" },
     btcUsdRate
   )
 
@@ -236,7 +241,20 @@ function OrderSummary({
       <div className="mt-4 space-y-4">
         {items.map((item) => {
           const linePrice = getProductPriceDisplay(
-            { price: item.price * item.quantity, currency: item.currency },
+            {
+              price: item.price * item.quantity,
+              currency: item.currency,
+              priceSats:
+                typeof item.priceSats === "number"
+                  ? item.priceSats * item.quantity
+                  : undefined,
+              sourcePrice: item.sourcePrice
+                ? {
+                    ...item.sourcePrice,
+                    amount: item.sourcePrice.amount * item.quantity,
+                  }
+                : undefined,
+            },
             btcUsdRate
           )
 
@@ -335,6 +353,7 @@ function CheckoutPage() {
   const [shippingAttempted, setShippingAttempted] = useState(false)
   const [sentOrderId, setSentOrderId] = useState<string | null>(null)
   const [showSentGlow, setShowSentGlow] = useState(false)
+  const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
 
   const selectedMerchant =
     search.merchant ??
@@ -350,8 +369,15 @@ function CheckoutPage() {
 
   const total = useMemo(
     () =>
-      checkoutItems.reduce((sum, item) => sum + item.price * item.quantity, 0),
-    [checkoutItems]
+      checkoutItems.reduce((sum, item) => {
+        const sats = getPriceSats(item, btcUsdRate)
+        return sats ? sum + sats.sats * item.quantity : sum
+      }, 0),
+    [btcUsdRate, checkoutItems]
+  )
+  const hasUnpricedCheckoutItems = useMemo(
+    () => checkoutItems.some((item) => !getPriceSats(item, btcUsdRate)),
+    [btcUsdRate, checkoutItems]
   )
 
   const missingShippingFields = useMemo(
@@ -375,6 +401,12 @@ function CheckoutPage() {
 
   function continueToPayment(): void {
     setShippingAttempted(true)
+    if (hasUnpricedCheckoutItems) {
+      setError(
+        "One or more items cannot be converted to sats right now. Refresh prices before checkout."
+      )
+      return
+    }
     if (!shippingValid) {
       setError("Fill in the required shipping fields to continue.")
       return
@@ -407,13 +439,20 @@ function CheckoutPage() {
     setStep("signing")
 
     try {
+      if (hasUnpricedCheckoutItems) {
+        throw new Error(
+          "One or more items cannot be converted to sats right now. Refresh prices before checkout."
+        )
+      }
+
       const orderId = crypto.randomUUID()
-      const currency = checkoutItems[0]?.currency ?? "USD"
+      const currency = "SATS"
       const items = checkoutItems.map((item) => ({
         productId: item.productId,
         quantity: item.quantity,
-        priceAtPurchase: item.price,
-        currency: item.currency,
+        priceAtPurchase: getPriceSats(item, btcUsdRate)?.sats ?? 0,
+        currency,
+        sourcePrice: item.sourcePrice,
       }))
 
       const contactLines = [
@@ -455,6 +494,8 @@ function CheckoutPage() {
         ["p", selectedMerchant],
         ["type", "order"],
         ["order", orderId],
+        ["amount", String(total)],
+        ["currency", currency],
       ]
       rumor.tags = appendConduitClientTag(rumor.tags, "market")
       rumor.content = JSON.stringify(payload)
@@ -1059,7 +1100,11 @@ function CheckoutPage() {
                   >
                     Back to shipping
                   </Button>
-                  <Button className="h-11 px-5 text-sm" onClick={placeOrder}>
+                  <Button
+                    className="h-11 px-5 text-sm"
+                    onClick={placeOrder}
+                    disabled={hasUnpricedCheckoutItems}
+                  >
                     <LightningIcon className="h-4 w-4" />
                     Send order
                   </Button>
@@ -1073,7 +1118,7 @@ function CheckoutPage() {
           items={checkoutItems}
           merchantPubkey={selectedMerchant!}
           step={summaryStep}
-          btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+          btcUsdRate={btcUsdRate}
         />
       </div>
     </div>

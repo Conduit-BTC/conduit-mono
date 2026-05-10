@@ -10,6 +10,33 @@ export * from "./schemas"
 // Utils
 export * from "./utils"
 
+// Pricing
+export {
+  MSATS_PER_SAT,
+  SATS_PER_BTC,
+  canonicalizeProductPrice,
+  formatApproxUsdFromSats,
+  formatFiatPrice,
+  getPriceSats,
+  isBtcLikeCurrency,
+  isMsatsLikeCurrency,
+  isSatsLikeCurrency,
+  isUsdCurrencyCode,
+  normalizeCommercePrice,
+  normalizeCurrencyCode,
+} from "./pricing"
+export {
+  fetchBtcUsdRate,
+  getConfiguredBtcUsdRate,
+  useBtcUsdRate,
+} from "./pricing/rates"
+export type {
+  BtcUsdRateQuote,
+  CommercePriceLike,
+  CommercePriceNormalization,
+  SourcePriceQuote,
+} from "./pricing"
+
 // Config
 export {
   config,

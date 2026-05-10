@@ -11,6 +11,7 @@ import {
   type CachedProfile,
 } from "../db"
 import { config } from "../config"
+import { getComparablePriceValue } from "../pricing"
 import type { Product, Profile } from "../types"
 import { EVENT_KINDS } from "./kinds"
 import {
@@ -513,13 +514,15 @@ function sortProducts(
     case "price_asc":
       return items.sort(
         (a, b) =>
-          a.product.price - b.product.price ||
+          (getComparablePriceValue(a.product) ?? Number.MAX_SAFE_INTEGER) -
+            (getComparablePriceValue(b.product) ?? Number.MAX_SAFE_INTEGER) ||
           b.product.updatedAt - a.product.updatedAt
       )
     case "price_desc":
       return items.sort(
         (a, b) =>
-          b.product.price - a.product.price ||
+          (getComparablePriceValue(b.product) ?? -1) -
+            (getComparablePriceValue(a.product) ?? -1) ||
           b.product.updatedAt - a.product.updatedAt
       )
     case "updated_at_desc":
@@ -563,6 +566,8 @@ function toCachedProduct(record: CommerceProductRecord) {
     summary: product.summary,
     price: product.price,
     currency: product.currency,
+    priceSats: product.priceSats,
+    sourcePrice: product.sourcePrice,
     type: product.type,
     visibility: product.visibility,
     stock: product.stock,
@@ -584,6 +589,8 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     summary: row.summary,
     price: row.price,
     currency: row.currency,
+    priceSats: row.priceSats,
+    sourcePrice: row.sourcePrice,
     type: row.type ?? "simple",
     visibility: row.visibility ?? "public",
     stock: row.stock,

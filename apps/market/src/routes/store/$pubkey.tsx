@@ -829,6 +829,8 @@ function StorefrontPage() {
                         title: product.title,
                         price: product.price,
                         currency: product.currency,
+                        priceSats: product.priceSats,
+                        sourcePrice: product.sourcePrice,
                         image: product.images[0]?.url,
                         tags: product.tags,
                       })
@@ -840,6 +842,8 @@ function StorefrontPage() {
                         title: product.title,
                         price: product.price,
                         currency: product.currency,
+                        priceSats: product.priceSats,
+                        sourcePrice: product.sourcePrice,
                         image: product.images[0]?.url,
                         tags: product.tags,
                       })

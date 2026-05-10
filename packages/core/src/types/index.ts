@@ -11,6 +11,12 @@ export interface Product {
   summary?: string
   price: number
   currency: string
+  priceSats?: number
+  sourcePrice?: {
+    amount: number
+    currency: string
+    normalizedCurrency: string
+  }
   type: "simple" | "variable"
   visibility: "public" | "private"
   stock?: number
@@ -67,6 +73,11 @@ export interface OrderItem {
   quantity: number
   priceAtPurchase: number
   currency: string
+  sourcePrice?: {
+    amount: number
+    currency: string
+    normalizedCurrency: string
+  }
 }
 
 export interface ShippingAddress {

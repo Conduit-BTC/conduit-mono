@@ -10,6 +10,11 @@ export interface StoredOrder {
     quantity: number
     priceAtPurchase: number
     currency: string
+    sourcePrice?: {
+      amount: number
+      currency: string
+      normalizedCurrency: string
+    }
   }>
   status: string
   shippingAddress?: {
@@ -44,6 +49,12 @@ export interface CachedProduct {
   summary?: string
   price: number
   currency: string
+  priceSats?: number
+  sourcePrice?: {
+    amount: number
+    currency: string
+    normalizedCurrency: string
+  }
   type?: "simple" | "variable"
   visibility?: "public" | "private"
   stock?: number
