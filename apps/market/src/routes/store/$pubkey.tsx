@@ -58,6 +58,11 @@ import {
   getComparablePriceValue,
 } from "../../lib/pricing"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
+import {
+  filterProductsByFacets,
+  getCategoryFacetOptions,
+  normalizeFacetValues,
+} from "../../lib/facets"
 
 type SortOption = "newest" | "price_asc" | "price_desc"
 
@@ -68,23 +73,24 @@ function isPriceSort(sort: SortOption | undefined): boolean {
 type StoreSearch = {
   q?: string
   sort?: SortOption
-  tag?: string
+  tag?: string[]
 }
 
 export const Route = createFileRoute("/store/$pubkey")({
   component: StorefrontPage,
-  validateSearch: (raw: Record<string, unknown>): StoreSearch => ({
-    q: typeof raw.q === "string" ? raw.q : undefined,
-    sort: (["newest", "price_asc", "price_desc"] as const).includes(
-      raw.sort as SortOption
-    )
-      ? (raw.sort as SortOption)
-      : undefined,
-    tag:
-      typeof raw.tag === "string" && raw.tag.trim() !== ""
-        ? raw.tag.trim().toLowerCase()
+  validateSearch: (raw: Record<string, unknown>): StoreSearch => {
+    const tags = normalizeFacetValues(raw.tag).map((tag) => tag.toLowerCase())
+
+    return {
+      q: typeof raw.q === "string" ? raw.q : undefined,
+      sort: (["newest", "price_asc", "price_desc"] as const).includes(
+        raw.sort as SortOption
+      )
+        ? (raw.sort as SortOption)
         : undefined,
-  }),
+      tag: tags.length > 0 ? Array.from(new Set(tags)) : undefined,
+    }
+  },
 })
 
 function sortProducts(
@@ -128,19 +134,18 @@ function StorefrontPage() {
   const [connectOpen, setConnectOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
   const tagCloudRef = useRef<HTMLDivElement | null>(null)
-  const remoteSort = isPriceSort(search.sort) ? undefined : search.sort
   const productsQuery = useProgressiveProducts({
     scope: "storefront",
     merchantPubkey: pubkey,
     textQuery: search.q,
-    tag: search.tag,
-    sort: remoteSort,
   })
   const profileQuery = useProfile(pubkey, {
     relayHints: productsQuery.profileRelayHintsByPubkey[pubkey],
   })
   const profile = profileQuery.data
   const storeProducts = productsQuery.products
+  const selectedTags = useMemo(() => search.tag ?? [], [search.tag])
+  const selectedTagSet = useMemo(() => new Set(selectedTags), [selectedTags])
   const followQuery = useQuery({
     queryKey: ["following-store", viewerPubkey ?? "none", pubkey],
     enabled:
@@ -176,13 +181,14 @@ function StorefrontPage() {
       chars: 8,
     })
   const merchantAbout = profile?.about?.trim()
-  const allTags = useMemo(() => {
-    const tagSet = new Set<string>()
-    for (const product of storeProducts) {
-      for (const tag of product.tags) tagSet.add(tag.toLowerCase())
-    }
-    return Array.from(tagSet).sort()
-  }, [storeProducts])
+  const categoryFacetOptions = useMemo(
+    () =>
+      getCategoryFacetOptions(storeProducts, {
+        q: search.q,
+        tags: selectedTags,
+      }),
+    [search.q, selectedTags, storeProducts]
+  )
 
   const updateSearch = useCallback(
     (updates: Partial<StoreSearch>) => {
@@ -191,7 +197,11 @@ function StorefrontPage() {
           const next = { ...prev, ...updates }
           for (const key of Object.keys(next) as (keyof StoreSearch)[]) {
             const value = next[key]
-            if (value === undefined || value === "") {
+            if (
+              value === undefined ||
+              value === "" ||
+              (Array.isArray(value) && value.length === 0)
+            ) {
               delete next[key]
             }
           }
@@ -207,26 +217,23 @@ function StorefrontPage() {
   const isFollowing = followOverride ?? followQuery.data === true
   const isFollowBusy = followState !== "idle"
 
+  const toggleTag = (tag: string) => {
+    if (selectedTagSet.has(tag)) {
+      updateSearch({
+        tag: selectedTags.filter((selectedTag) => selectedTag !== tag),
+      })
+      return
+    }
+
+    updateSearch({ tag: [...selectedTags, tag] })
+  }
+
   const matchingProducts = useMemo(() => {
-    let result = storeProducts
-
-    if (search.q) {
-      const query = search.q.toLowerCase()
-      result = result.filter(
-        (product) =>
-          product.title.toLowerCase().includes(query) ||
-          (product.summary?.toLowerCase().includes(query) ?? false)
-      )
-    }
-
-    if (search.tag) {
-      result = result.filter((product) =>
-        product.tags.some((tag) => tag.toLowerCase() === search.tag)
-      )
-    }
-
-    return result
-  }, [search.q, search.tag, storeProducts])
+    return filterProductsByFacets(storeProducts, {
+      q: search.q,
+      tags: selectedTags,
+    })
+  }, [search.q, selectedTags, storeProducts])
 
   const hasUnavailablePriceForSort = useMemo(() => {
     if (!isPriceSort(search.sort)) return false
@@ -245,7 +252,7 @@ function StorefrontPage() {
     if (!element) return
 
     const measure = () => {
-      setTagCloudOverflows(element.scrollHeight > 76)
+      setTagCloudOverflows(element.scrollHeight > element.clientHeight + 1)
     }
 
     measure()
@@ -259,7 +266,7 @@ function StorefrontPage() {
       resizeObserver?.disconnect()
       window.removeEventListener("resize", measure)
     }
-  }, [allTags, search.tag, showAllTags])
+  }, [categoryFacetOptions, showAllTags])
 
   useEffect(() => {
     setLocalSearch(search.q ?? "")
@@ -560,7 +567,7 @@ function StorefrontPage() {
                 <div className="text-sm font-medium text-[var(--text-primary)]">
                   Filters
                 </div>
-                {(search.tag || search.q || search.sort) && (
+                {(selectedTags.length > 0 || search.q || search.sort) && (
                   <button
                     type="button"
                     className="text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
@@ -586,18 +593,13 @@ function StorefrontPage() {
                   {tagCloudOverflows && (
                     <button
                       type="button"
-                      className={[
-                        "text-xs font-medium text-secondary-400 transition-[opacity,color] duration-200 hover:text-secondary-300 xl:hidden",
-                        showAllTags
-                          ? "opacity-100"
-                          : "pointer-events-none opacity-0",
-                      ].join(" ")}
+                      className="text-xs font-medium text-secondary-400 transition-colors duration-150 hover:text-secondary-300"
                       onClick={() => {
                         setTagCloudInteracted(true)
-                        setShowAllTags(false)
+                        setShowAllTags((current) => !current)
                       }}
                     >
-                      Collapse
+                      {showAllTags ? "Collapse" : "Expand"}
                     </button>
                   )}
                 </div>
@@ -606,12 +608,12 @@ function StorefrontPage() {
                   <div
                     ref={tagCloudRef}
                     className={[
-                      "overflow-hidden xl:max-h-none xl:overflow-visible",
+                      "overflow-y-scroll pr-1 [scrollbar-gutter:stable]",
                       tagCloudInteracted
-                        ? "transition-[max-height] duration-300 ease-out"
+                        ? "transition-[max-height] duration-150 ease-out"
                         : "",
                       showAllTags || !tagCloudOverflows
-                        ? "max-h-64"
+                        ? "max-h-96"
                         : "max-h-[4.75rem]",
                     ].join(" ")}
                   >
@@ -621,49 +623,34 @@ function StorefrontPage() {
                         onClick={() => updateSearch({ tag: undefined })}
                         className={[
                           "rounded-full border px-3 py-2 text-left text-sm transition-colors xl:rounded-xl",
-                          !search.tag
-                            ? "border-primary-500/70 bg-primary-500 font-semibold text-white shadow-[0_12px_28px_color-mix(in_srgb,var(--primary-500)_24%,transparent)]"
-                            : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+                          selectedTags.length > 0
+                            ? "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                            : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)]",
                         ].join(" ")}
                       >
-                        All products
+                        Clear categories
                       </button>
-                      {allTags.map((tag) => (
+                      {categoryFacetOptions.map((option) => (
                         <button
-                          key={tag}
+                          key={option.value}
                           type="button"
-                          onClick={() =>
-                            updateSearch({
-                              tag: search.tag === tag ? undefined : tag,
-                            })
-                          }
+                          onClick={() => toggleTag(option.value)}
+                          aria-pressed={option.selected}
                           className={[
-                            "rounded-full border px-3 py-2 text-left text-sm font-medium capitalize transition-colors xl:rounded-xl",
-                            search.tag === tag
+                            "inline-flex items-center rounded-full border px-3 py-2 text-left text-sm font-medium capitalize transition-colors xl:rounded-xl",
+                            option.selected
                               ? "border-primary-500/70 bg-primary-500 font-semibold text-white shadow-[0_12px_28px_color-mix(in_srgb,var(--primary-500)_24%,transparent)]"
                               : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
                           ].join(" ")}
                         >
-                          {tag}
+                          <span>{option.label}</span>
+                          <span className="ml-1.5 self-center text-[0.82em] font-medium leading-none tabular-nums text-[var(--text-muted)]">
+                            [{option.count}]
+                          </span>
                         </button>
                       ))}
                     </div>
                   </div>
-
-                  {!showAllTags && tagCloudOverflows && (
-                    <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-12 items-center justify-center bg-gradient-to-b from-transparent via-[var(--background)]/90 to-[var(--background)] transition-opacity duration-200 xl:hidden">
-                      <button
-                        type="button"
-                        className="pointer-events-auto rounded-full bg-[var(--text-primary)] px-3 py-1 text-xs font-medium text-[var(--text-inverse)] shadow-md transition-[opacity,transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-lg"
-                        onClick={() => {
-                          setTagCloudInteracted(true)
-                          setShowAllTags(true)
-                        }}
-                      >
-                        Expand categories
-                      </button>
-                    </div>
-                  )}
                 </div>
               </div>
             </div>
@@ -724,9 +711,9 @@ function StorefrontPage() {
                 {filteredProducts.length} product
                 {filteredProducts.length === 1 ? "" : "s"}
               </span>
-              {search.tag && (
+              {selectedTags.length > 0 && (
                 <span className="text-[var(--text-muted)]">
-                  in {search.tag}
+                  in {selectedTags.join(", ")}
                 </span>
               )}
             </div>

@@ -177,9 +177,11 @@ async function fetchCachedList(
   authorPubkeys?: string[]
 ) {
   if (input.scope === "marketplace") {
+    const cacheAuthorPubkeys = input.merchantPubkey ? authorPubkeys : undefined
+
     return await getCachedMarketplaceProducts({
       merchantPubkey: input.merchantPubkey,
-      authorPubkeys,
+      authorPubkeys: cacheAuthorPubkeys,
       textQuery: input.textQuery,
       tags: input.tags,
       sort: input.sort,
@@ -318,13 +320,17 @@ export function useProgressiveProducts(
     writeCachedPerspectiveFollows(perspectivePubkey, firstDegreeAuthors)
   }, [firstDegreeAuthors, perspectivePubkey])
 
+  const canReadCache =
+    queryEnabled &&
+    (graphReady || (input.scope === "marketplace" && !input.merchantPubkey))
+
   const cachedQuery = useQuery({
     queryKey: [
       ...getListQueryKey(input, "cache"),
       firstDegreeAuthors?.join(",") ?? "no-graph",
     ],
     queryFn: () => fetchCachedList(input, firstDegreeAuthors),
-    enabled: queryEnabled && graphReady,
+    enabled: canReadCache,
     staleTime: 15_000,
   })
 

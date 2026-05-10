@@ -7,7 +7,7 @@ import {
   useState,
 } from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { LoaderCircle } from "lucide-react"
+import { ChevronDown, LoaderCircle } from "lucide-react"
 import {
   EVENT_KINDS,
   getProfileName,
@@ -20,12 +20,10 @@ import {
 import {
   Badge,
   Button,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
   Select,
   SelectContent,
   SelectItem,
@@ -47,6 +45,12 @@ import {
   getComparablePriceValue,
 } from "../../lib/pricing"
 import { diversifyMerchantProductOrder } from "../../lib/productFeedDiversity"
+import {
+  filterProductsByFacets,
+  getCategoryFacetOptions,
+  getStoreFacetOptions,
+  normalizeFacetValues,
+} from "../../lib/facets"
 
 const PAGE_SIZE = 12
 
@@ -57,7 +61,7 @@ function isPriceSort(sort: SortOption | undefined): boolean {
 }
 
 export interface ProductSearch {
-  merchant?: string
+  merchant?: string[]
   q?: string
   sort?: SortOption
   tag?: string[]
@@ -67,28 +71,18 @@ export interface ProductSearch {
 export const Route = createFileRoute("/products/")({
   component: ProductsPage,
   validateSearch: (raw: Record<string, unknown>): ProductSearch => {
-    const rawTag = raw.tag
-    const tags = Array.isArray(rawTag)
-      ? rawTag.filter(
-          (value): value is string =>
-            typeof value === "string" && value.trim() !== ""
-        )
-      : typeof rawTag === "string" && rawTag.trim() !== ""
-        ? rawTag
-            .split(",")
-            .map((value) => value.trim())
-            .filter(Boolean)
-        : undefined
+    const merchants = normalizeFacetValues(raw.merchant)
+    const tags = normalizeFacetValues(raw.tag).map((tag) => tag.toLowerCase())
 
     return {
-      merchant: typeof raw.merchant === "string" ? raw.merchant : undefined,
+      merchant: merchants.length > 0 ? merchants : undefined,
       q: typeof raw.q === "string" ? raw.q : undefined,
       sort: (["newest", "price_asc", "price_desc"] as const).includes(
         raw.sort as SortOption
       )
         ? (raw.sort as SortOption)
         : undefined,
-      tag: tags && tags.length > 0 ? Array.from(new Set(tags)) : undefined,
+      tag: tags.length > 0 ? Array.from(new Set(tags)) : undefined,
       authRequired:
         raw.authRequired === true ||
         raw.authRequired === "true" ||
@@ -97,28 +91,6 @@ export const Route = createFileRoute("/products/")({
     }
   },
 })
-
-function filterProducts(products: Product[], search: ProductSearch): Product[] {
-  let result = products
-
-  if (search.q) {
-    const q = search.q.toLowerCase()
-    result = result.filter(
-      (p) =>
-        p.title.toLowerCase().includes(q) ||
-        (p.summary && p.summary.toLowerCase().includes(q))
-    )
-  }
-
-  if (search.tag && search.tag.length > 0) {
-    const tagSet = new Set(search.tag.map((tag) => tag.toLowerCase()))
-    result = result.filter((p) =>
-      p.tags.some((t) => tagSet.has(t.toLowerCase()))
-    )
-  }
-
-  return result
-}
 
 function sortProducts(
   products: Product[],
@@ -156,61 +128,41 @@ function ProductsPage() {
   const [showAllTags, setShowAllTags] = useState(false)
   const [tagCloudOverflows, setTagCloudOverflows] = useState(false)
   const [tagCloudInteracted, setTagCloudInteracted] = useState(false)
-  const [pendingMerchant, setPendingMerchant] = useState<string | null>(null)
-  const [merchantTagConflicts, setMerchantTagConflicts] = useState<string[]>([])
+  const [storeMenuOpen, setStoreMenuOpen] = useState(false)
   const hasAutoPromptedConnect = useRef(false)
   const tagCloudRef = useRef<HTMLDivElement | null>(null)
   const btcUsdRateQuery = useBtcUsdRate()
   const btcUsdRate = btcUsdRateQuery.data ?? null
-  const usesAnonymousPerspective = !search.merchant && status !== "connected"
+  const selectedMerchants = useMemo(
+    () => search.merchant ?? [],
+    [search.merchant]
+  )
+  const selectedMerchantSet = useMemo(
+    () => new Set(selectedMerchants),
+    [selectedMerchants]
+  )
+  const usesAnonymousPerspective = status !== "connected"
   const guestMarket = useGuestMarketDiscovery({
     enabled: usesAnonymousPerspective,
   })
-  const remoteSort = isPriceSort(search.sort) ? undefined : search.sort
-
   const productsQuery = useProgressiveProducts({
     scope: "marketplace",
-    merchantPubkey: search.merchant,
-    perspectivePubkey: search.merchant
-      ? null
-      : status === "connected" && pubkey
-        ? pubkey
-        : guestMarket.perspectivePubkey,
+    perspectivePubkey:
+      status === "connected" && pubkey ? pubkey : guestMarket.perspectivePubkey,
     seedAuthorPubkeys: guestMarket.seedAuthorPubkeys,
     textQuery: search.q,
-    tags: search.tag,
-    sort: remoteSort,
+    sort: "newest",
   })
   const productData = useMemo(
     () => productsQuery.products,
     [productsQuery.products]
   )
 
-  // Derive all unique tags from the full (unfiltered) product set
-  const allTags = useMemo(() => {
-    if (productData.length === 0) return []
-    const tagSet = new Set<string>()
-    for (const p of productData) {
-      for (const t of p.tags) tagSet.add(t.toLowerCase())
-    }
-    return Array.from(tagSet).sort()
-  }, [productData])
-
   const allMerchants = useMemo(() => {
     if (productData.length === 0) return []
     const set = new Set<string>()
     for (const p of productData) set.add(p.pubkey)
     return Array.from(set).sort()
-  }, [productData])
-
-  const merchantTagMap = useMemo(() => {
-    const byMerchant = new Map<string, Set<string>>()
-    for (const product of productData) {
-      const current = byMerchant.get(product.pubkey) ?? new Set<string>()
-      for (const tag of product.tags) current.add(tag.toLowerCase())
-      byMerchant.set(product.pubkey, current)
-    }
-    return byMerchant
   }, [productData])
 
   const updateSearch = useCallback(
@@ -251,49 +203,26 @@ function ProductsPage() {
     updateSearch({ tag: [...selectedTags, tag] })
   }
 
-  const applyMerchantSelection = (merchant: string | undefined) => {
-    updateSearch({ merchant, tag: selectedTags })
-  }
-
-  const handleMerchantSelection = (merchant: string | undefined) => {
-    if (!merchant) {
-      applyMerchantSelection(undefined)
+  const toggleMerchant = (merchant: string) => {
+    if (selectedMerchantSet.has(merchant)) {
+      updateSearch({
+        merchant: selectedMerchants.filter(
+          (selectedMerchant) => selectedMerchant !== merchant
+        ),
+      })
       return
     }
 
-    if (selectedTags.length === 0) {
-      applyMerchantSelection(merchant)
-      return
-    }
-
-    const supportedTags = merchantTagMap.get(merchant) ?? new Set<string>()
-    const incompatibleTags = selectedTags.filter(
-      (tag) => !supportedTags.has(tag)
-    )
-
-    if (incompatibleTags.length === 0) {
-      applyMerchantSelection(merchant)
-      return
-    }
-
-    setPendingMerchant(merchant)
-    setMerchantTagConflicts(incompatibleTags)
-  }
-
-  const confirmMerchantSelection = () => {
-    if (!pendingMerchant) return
-    const conflictSet = new Set(merchantTagConflicts)
-    updateSearch({
-      merchant: pendingMerchant,
-      tag: selectedTags.filter((tag) => !conflictSet.has(tag)),
-    })
-    setPendingMerchant(null)
-    setMerchantTagConflicts([])
+    updateSearch({ merchant: [...selectedMerchants, merchant] })
   }
 
   const filteredProducts = useMemo(() => {
-    return filterProducts(productData, search)
-  }, [productData, search])
+    return filterProductsByFacets(productData, {
+      q: search.q,
+      merchants: selectedMerchants,
+      tags: selectedTags,
+    })
+  }, [productData, search.q, selectedMerchants, selectedTags])
 
   const hasUnavailablePriceForSort = useMemo(() => {
     if (!isPriceSort(search.sort)) return false
@@ -307,7 +236,7 @@ function ProductsPage() {
     [btcUsdRate, filteredProducts, search.sort]
   )
 
-  const searchKey = `${search.q}-${selectedTags.slice().sort().join(",")}-${search.sort}-${search.merchant}`
+  const searchKey = `${search.q}-${selectedTags.slice().sort().join(",")}-${search.sort}-${selectedMerchants.slice().sort().join(",")}`
   useEffect(() => {
     setVisibleCount(PAGE_SIZE)
   }, [searchKey])
@@ -386,26 +315,51 @@ function ProductsPage() {
     search.q ||
     selectedTags.length > 0 ||
     search.sort ||
-    search.merchant
+    selectedMerchants.length > 0
   )
-  const orderedTags = useMemo(() => {
-    if (selectedTags.length === 0) {
-      return allTags
-    }
-
-    const selectedFirst = selectedTags.filter((tag) => allTags.includes(tag))
-    return [
-      ...selectedFirst,
-      ...allTags.filter((tag) => !selectedTagSet.has(tag)),
-    ]
-  }, [allTags, selectedTagSet, selectedTags])
+  const categoryFacetOptions = useMemo(
+    () =>
+      getCategoryFacetOptions(productData, {
+        q: search.q,
+        merchants: selectedMerchants,
+        tags: selectedTags,
+      }),
+    [productData, search.q, selectedMerchants, selectedTags]
+  )
+  const storeFacetOptions = useMemo(
+    () =>
+      getStoreFacetOptions(
+        productData,
+        {
+          q: search.q,
+          merchants: selectedMerchants,
+          tags: selectedTags,
+        },
+        getMerchantName
+      ),
+    [getMerchantName, productData, search.q, selectedMerchants, selectedTags]
+  )
+  const storeFacetTotal = useMemo(
+    () =>
+      filterProductsByFacets(productData, {
+        q: search.q,
+        tags: selectedTags,
+      }).length,
+    [productData, search.q, selectedTags]
+  )
+  const storeTriggerLabel =
+    selectedMerchants.length === 0
+      ? "All stores"
+      : selectedMerchants.length === 1
+        ? "1 store"
+        : `${selectedMerchants.length} stores`
 
   useLayoutEffect(() => {
     const element = tagCloudRef.current
     if (!element) return
 
     const measure = () => {
-      setTagCloudOverflows(element.scrollHeight > 76)
+      setTagCloudOverflows(element.scrollHeight > element.clientHeight + 1)
     }
 
     measure()
@@ -419,12 +373,13 @@ function ProductsPage() {
       resizeObserver?.disconnect()
       window.removeEventListener("resize", measure)
     }
-  }, [orderedTags, selectedTagSet, showAllTags])
+  }, [categoryFacetOptions, showAllTags])
   const isUpdatingListings =
     !productsQuery.isInitialLoading && productsQuery.isHydrating
   const showCategorySkeleton =
-    productsQuery.isInitialLoading && allTags.length === 0
-  const shouldShowCategories = allTags.length > 0 || showCategorySkeleton
+    productsQuery.isInitialLoading && categoryFacetOptions.length === 0
+  const shouldShowCategories =
+    categoryFacetOptions.length > 0 || showCategorySkeleton
 
   return (
     <div className="space-y-5">
@@ -493,16 +448,13 @@ function ProductsPage() {
             {tagCloudOverflows && (
               <button
                 type="button"
-                className={[
-                  "text-xs font-medium text-secondary-400 transition-[opacity,color] duration-200 hover:text-secondary-300",
-                  showAllTags ? "opacity-100" : "pointer-events-none opacity-0",
-                ].join(" ")}
+                className="text-xs font-medium text-secondary-400 transition-colors duration-150 hover:text-secondary-300"
                 onClick={() => {
                   setTagCloudInteracted(true)
                   setShowAllTags((current) => !current)
                 }}
               >
-                Collapse
+                {showAllTags ? "Collapse" : "Expand categories"}
               </button>
             )}
           </div>
@@ -524,49 +476,36 @@ function ProductsPage() {
               <div
                 ref={tagCloudRef}
                 className={[
-                  "overflow-hidden",
+                  "overflow-y-scroll pr-1 [scrollbar-gutter:stable]",
                   tagCloudInteracted
-                    ? "transition-[max-height] duration-300 ease-out"
+                    ? "transition-[max-height] duration-150 ease-out"
                     : "",
                   showAllTags || !tagCloudOverflows
-                    ? "max-h-64"
+                    ? "max-h-72"
                     : "max-h-[4.75rem]",
                 ].join(" ")}
               >
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                  {orderedTags.map((tag) => (
+                  {categoryFacetOptions.map((option) => (
                     <button
-                      key={tag}
-                      onClick={() => toggleTag(tag)}
+                      key={option.value}
+                      onClick={() => toggleTag(option.value)}
+                      aria-pressed={option.selected}
                       className="rounded-full transition-transform duration-150 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                     >
                       <Badge
-                        variant={
-                          selectedTagSet.has(tag) ? "default" : "outline"
-                        }
-                        className="cursor-pointer capitalize transition-colors hover:border-secondary-400 hover:text-[var(--text-primary)]"
+                        variant={option.selected ? "default" : "outline"}
+                        className="gap-1.5 cursor-pointer capitalize transition-colors hover:border-secondary-400 hover:text-[var(--text-primary)]"
                       >
-                        {tag}
+                        <span>{option.label}</span>
+                        <span className="self-center text-[0.82em] font-medium leading-none tabular-nums text-[var(--text-muted)]">
+                          [{option.count}]
+                        </span>
                       </Badge>
                     </button>
                   ))}
                 </div>
               </div>
-
-              {!showAllTags && tagCloudOverflows && (
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-12 items-center justify-center bg-gradient-to-b from-transparent via-[var(--background)]/90 to-[var(--background)] transition-opacity duration-200">
-                  <button
-                    type="button"
-                    className="pointer-events-auto rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-1 text-xs font-medium text-[var(--text-primary)] shadow-[var(--shadow-sm)] transition-[opacity,transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-[var(--shadow-md)]"
-                    onClick={() => {
-                      setTagCloudInteracted(true)
-                      setShowAllTags(true)
-                    }}
-                  >
-                    Expand categories
-                  </button>
-                </div>
-              )}
             </div>
           )}
         </section>
@@ -577,43 +516,54 @@ function ProductsPage() {
           <span className="min-w-12 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] sm:min-w-0">
             Store
           </span>
-          {search.merchant ? (
-            <Badge variant="secondary" className="h-8 max-w-full gap-1.5 px-3">
-              {getMerchantName(search.merchant)}
-              <button
-                onClick={() => updateSearch({ merchant: undefined })}
-                className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
-                aria-label="Remove store filter"
+          <DropdownMenu open={storeMenuOpen} onOpenChange={setStoreMenuOpen}>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="min-w-0 flex-1 justify-between text-xs sm:w-auto sm:min-w-[150px] sm:flex-none"
               >
-                &times;
-              </button>
-            </Badge>
-          ) : (
-            <Select
-              value="__all"
-              onValueChange={(v) =>
-                handleMerchantSelection(v === "__all" ? undefined : v)
-              }
-            >
-              <SelectTrigger className="h-8 min-w-0 flex-1 text-xs sm:w-auto sm:min-w-[140px] sm:flex-none">
-                <SelectValue placeholder="All stores" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__all">All stores</SelectItem>
-                {allMerchants.map((pk) => (
-                  <SelectItem key={pk} value={pk}>
-                    <span
-                      className={
-                        getMerchantIdentity(pk).pending ? "animate-pulse" : ""
-                      }
-                    >
-                      {getMerchantName(pk)}
-                    </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
+                {storeTriggerLabel}
+                <ChevronDown className="h-4 w-4 opacity-60" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent className="max-h-80 w-72 overflow-y-scroll [scrollbar-gutter:stable]">
+              <DropdownMenuCheckboxItem
+                checked={selectedMerchants.length === 0}
+                onSelect={(event) => event.preventDefault()}
+                onCheckedChange={() => updateSearch({ merchant: undefined })}
+                className="justify-between gap-3"
+              >
+                <span>All stores</span>
+                <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
+                  [{storeFacetTotal}]
+                </span>
+              </DropdownMenuCheckboxItem>
+              {storeFacetOptions.map((option) => (
+                <DropdownMenuCheckboxItem
+                  key={option.value}
+                  checked={option.selected}
+                  onSelect={(event) => event.preventDefault()}
+                  onCheckedChange={() => toggleMerchant(option.value)}
+                  className="gap-3"
+                >
+                  <span
+                    className={[
+                      "min-w-0 flex-1 truncate",
+                      getMerchantIdentity(option.value).pending
+                        ? "animate-pulse"
+                        : "",
+                    ].join(" ")}
+                  >
+                    {option.label}
+                  </span>
+                  <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
+                    [{option.count}]
+                  </span>
+                </DropdownMenuCheckboxItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         <div className="flex w-full items-center gap-2 sm:ml-auto sm:w-auto">
@@ -664,45 +614,35 @@ function ProductsPage() {
         </p>
       )}
 
-      {(search.q ||
-        (search.merchant && !allMerchants.includes(search.merchant))) && (
+      {search.q && (
         <div className="flex flex-wrap items-center gap-2">
-          {search.q && (
-            <Badge variant="secondary" className="gap-1">
-              &ldquo;{search.q}&rdquo;
+          <Badge variant="secondary" className="gap-1">
+            &ldquo;{search.q}&rdquo;
+            <button
+              onClick={() => updateSearch({ q: undefined })}
+              className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
+              aria-label="Remove search filter"
+            >
+              &times;
+            </button>
+          </Badge>
+        </div>
+      )}
+
+      {selectedMerchants.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          {selectedMerchants.map((merchant) => (
+            <Badge key={merchant} variant="secondary" className="gap-1">
+              {getMerchantName(merchant)}
               <button
-                onClick={() => updateSearch({ q: undefined })}
+                onClick={() => toggleMerchant(merchant)}
                 className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
-                aria-label="Remove search filter"
+                aria-label={`Remove ${getMerchantName(merchant)} store filter`}
               >
                 &times;
               </button>
             </Badge>
-          )}
-          {search.tag && (
-            <Badge variant="secondary" className="gap-1 capitalize">
-              {search.tag}
-              <button
-                onClick={() => updateSearch({ tag: undefined })}
-                className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
-                aria-label="Remove tag filter"
-              >
-                &times;
-              </button>
-            </Badge>
-          )}
-          {search.merchant && !allMerchants.includes(search.merchant) && (
-            <Badge variant="secondary" className="gap-1">
-              {getMerchantName(search.merchant)}
-              <button
-                onClick={() => updateSearch({ merchant: undefined })}
-                className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
-                aria-label="Remove store filter"
-              >
-                &times;
-              </button>
-            </Badge>
-          )}
+          ))}
         </div>
       )}
 
@@ -875,47 +815,6 @@ function ProductsPage() {
           </Button>
         </div>
       )}
-
-      <Dialog
-        open={pendingMerchant !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setPendingMerchant(null)
-            setMerchantTagConflicts([])
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Update store filter?</DialogTitle>
-            <DialogDescription className="text-[var(--text-secondary)]">
-              The selected store does not include some of your current category
-              filters. Those filters will be removed if you continue.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="flex flex-wrap gap-2">
-            {merchantTagConflicts.map((tag) => (
-              <Badge key={tag} variant="secondary" className="capitalize">
-                {tag}
-              </Badge>
-            ))}
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setPendingMerchant(null)
-                setMerchantTagConflicts([])
-              }}
-            >
-              Cancel
-            </Button>
-            <Button onClick={confirmMerchantSelection}>Continue</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }
