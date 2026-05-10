@@ -39,6 +39,8 @@ export type CommercePriceLike = {
   sourcePrice?: SourcePriceQuote
 }
 
+export type CommercePriceSortDirection = "asc" | "desc"
+
 export function normalizeCurrencyCode(currency: string): string {
   return currency.trim().toUpperCase()
 }
@@ -365,4 +367,20 @@ export function getComparablePriceValue(
   rateInput: PricingRateInput = null
 ): number | null {
   return getPriceSats(product, rateInput)?.sats ?? null
+}
+
+export function compareCommercePrices(
+  a: CommercePriceLike,
+  b: CommercePriceLike,
+  rateInput: PricingRateInput = null,
+  direction: CommercePriceSortDirection = "asc"
+): number {
+  const aSats = getComparablePriceValue(a, rateInput)
+  const bSats = getComparablePriceValue(b, rateInput)
+
+  if (aSats === null && bSats === null) return 0
+  if (aSats === null) return 1
+  if (bSats === null) return -1
+
+  return direction === "asc" ? aSats - bSats : bSats - aSats
 }

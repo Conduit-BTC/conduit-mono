@@ -15,6 +15,7 @@ export {
   MSATS_PER_SAT,
   SATS_PER_BTC,
   canonicalizeProductPrice,
+  compareCommercePrices,
   formatApproxUsdFromSats,
   formatFiatPrice,
   getPriceSats,
@@ -33,6 +34,7 @@ export {
 } from "./pricing/rates"
 export type {
   BtcUsdRateQuote,
+  CommercePriceSortDirection,
   CommercePriceLike,
   CommercePriceNormalization,
   PricingRateInput,

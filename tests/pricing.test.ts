@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import {
   type BtcUsdRateQuote,
+  compareCommercePrices,
   getProductPriceDisplay,
   normalizeCommercePrice,
   orderSchema,
@@ -195,6 +196,26 @@ describe("commerce pricing", () => {
       primary: "≈ 20,000 sats",
       secondary: "$20.00 USD source quote",
     })
+  })
+
+  it("sorts commerce prices by sats and keeps unavailable prices last", () => {
+    const exactSats = { price: 10_000, currency: "SATS", priceSats: 10_000 }
+    const btc = { price: 0.0002, currency: "BTC" }
+    const fiat = { price: 15, currency: "USD" }
+    const unavailable = { price: 20, currency: "CHF" }
+    const prices = [unavailable, btc, fiat, exactSats]
+
+    expect(
+      [...prices]
+        .sort((a, b) => compareCommercePrices(a, b, testRates, "asc"))
+        .map((price) => price.currency)
+    ).toEqual(["SATS", "USD", "BTC", "CHF"])
+
+    expect(
+      [...prices]
+        .sort((a, b) => compareCommercePrices(a, b, testRates, "desc"))
+        .map((price) => price.currency)
+    ).toEqual(["BTC", "USD", "SATS", "CHF"])
   })
 
   it("keeps 0.025 BTC distinct from 250000 sats", () => {

@@ -42,12 +42,19 @@ import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
 import { useGuestMarketDiscovery } from "../../hooks/useGuestMarketDiscovery"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
-import { getComparablePriceValue } from "../../lib/pricing"
+import {
+  compareCommercePrices,
+  getComparablePriceValue,
+} from "../../lib/pricing"
 import { diversifyMerchantProductOrder } from "../../lib/productFeedDiversity"
 
 const PAGE_SIZE = 12
 
 type SortOption = "newest" | "price_asc" | "price_desc"
+
+function isPriceSort(sort: SortOption | undefined): boolean {
+  return sort === "price_asc" || sort === "price_desc"
+}
 
 export interface ProductSearch {
   merchant?: string
@@ -116,28 +123,20 @@ function filterProducts(products: Product[], search: ProductSearch): Product[] {
 function sortProducts(
   products: Product[],
   sort: SortOption | undefined,
-  canSortByPrice: boolean,
-  hasSingleCurrency: boolean,
   btcUsdRate: PricingRateInput
 ): Product[] {
   switch (sort) {
     case "price_asc":
-      if (!canSortByPrice) return [...products]
       return [...products].sort(
         (a, b) =>
-          (getComparablePriceValue(a, btcUsdRate) ??
-            (hasSingleCurrency ? a.price : 0)) -
-          (getComparablePriceValue(b, btcUsdRate) ??
-            (hasSingleCurrency ? b.price : 0))
+          compareCommercePrices(a, b, btcUsdRate, "asc") ||
+          b.createdAt - a.createdAt
       )
     case "price_desc":
-      if (!canSortByPrice) return [...products]
       return [...products].sort(
         (a, b) =>
-          (getComparablePriceValue(b, btcUsdRate) ??
-            (hasSingleCurrency ? b.price : 0)) -
-          (getComparablePriceValue(a, btcUsdRate) ??
-            (hasSingleCurrency ? a.price : 0))
+          compareCommercePrices(a, b, btcUsdRate, "desc") ||
+          b.createdAt - a.createdAt
       )
     case "newest":
     default:
@@ -167,6 +166,7 @@ function ProductsPage() {
   const guestMarket = useGuestMarketDiscovery({
     enabled: usesAnonymousPerspective,
   })
+  const remoteSort = isPriceSort(search.sort) ? undefined : search.sort
 
   const productsQuery = useProgressiveProducts({
     scope: "marketplace",
@@ -179,7 +179,7 @@ function ProductsPage() {
     seedAuthorPubkeys: guestMarket.seedAuthorPubkeys,
     textQuery: search.q,
     tags: search.tag,
-    sort: search.sort,
+    sort: remoteSort,
   })
   const productData = useMemo(
     () => productsQuery.products,
@@ -295,56 +295,22 @@ function ProductsPage() {
     return filterProducts(productData, search)
   }, [productData, search])
 
-  const hasSingleCurrency = useMemo(() => {
-    const currencies = new Set(
-      filteredProducts.map((product) => product.currency.trim().toUpperCase())
+  const hasUnavailablePriceForSort = useMemo(() => {
+    if (!isPriceSort(search.sort)) return false
+    return filteredProducts.some(
+      (product) => getComparablePriceValue(product, btcUsdRate) === null
     )
-    return currencies.size <= 1
-  }, [filteredProducts])
-
-  const canSortByPrice = useMemo(() => {
-    if (filteredProducts.length <= 1) return true
-    if (hasSingleCurrency) return true
-
-    const comparableValues = filteredProducts.map((product) =>
-      getComparablePriceValue(product, btcUsdRate)
-    )
-    return comparableValues.every((value) => value !== null)
-  }, [btcUsdRate, filteredProducts, hasSingleCurrency])
-
-  const effectiveSort = canSortByPrice ? search.sort : undefined
+  }, [btcUsdRate, filteredProducts, search.sort])
 
   const filtered = useMemo(
-    () =>
-      sortProducts(
-        filteredProducts,
-        effectiveSort,
-        canSortByPrice,
-        hasSingleCurrency,
-        btcUsdRate
-      ),
-    [
-      btcUsdRate,
-      canSortByPrice,
-      effectiveSort,
-      filteredProducts,
-      hasSingleCurrency,
-    ]
+    () => sortProducts(filteredProducts, search.sort, btcUsdRate),
+    [btcUsdRate, filteredProducts, search.sort]
   )
 
   const searchKey = `${search.q}-${selectedTags.slice().sort().join(",")}-${search.sort}-${search.merchant}`
   useEffect(() => {
     setVisibleCount(PAGE_SIZE)
   }, [searchKey])
-
-  useEffect(() => {
-    if (
-      !canSortByPrice &&
-      (search.sort === "price_asc" || search.sort === "price_desc")
-    ) {
-      updateSearch({ sort: undefined })
-    }
-  }, [canSortByPrice, search.sort, updateSearch])
 
   useEffect(() => {
     if (
@@ -655,7 +621,7 @@ function ProductsPage() {
             Sort
           </span>
           <Select
-            value={effectiveSort ?? "newest"}
+            value={search.sort ?? "newest"}
             onValueChange={(v) =>
               updateSearch({
                 sort: v === "newest" ? undefined : (v as SortOption),
@@ -667,12 +633,8 @@ function ProductsPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="newest">Newest</SelectItem>
-              <SelectItem value="price_asc" disabled={!canSortByPrice}>
-                Price: Low to High
-              </SelectItem>
-              <SelectItem value="price_desc" disabled={!canSortByPrice}>
-                Price: High to Low
-              </SelectItem>
+              <SelectItem value="price_asc">Price: Low to High</SelectItem>
+              <SelectItem value="price_desc">Price: High to Low</SelectItem>
             </SelectContent>
           </Select>
 
@@ -696,10 +658,9 @@ function ProductsPage() {
         </div>
       </div>
 
-      {!canSortByPrice && filteredProducts.length > 1 && (
+      {hasUnavailablePriceForSort && (
         <p className="text-xs text-[var(--text-muted)]">
-          Price sorting is available when listings share a currency or when a
-          BTC/USD display rate is configured.
+          Listings without a rate-backed sats price are shown last.
         </p>
       )}
 

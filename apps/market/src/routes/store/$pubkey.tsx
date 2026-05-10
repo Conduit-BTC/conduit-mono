@@ -53,10 +53,17 @@ import { CopyButton } from "../../components/CopyButton"
 import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
-import { getComparablePriceValue } from "../../lib/pricing"
+import {
+  compareCommercePrices,
+  getComparablePriceValue,
+} from "../../lib/pricing"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
 
 type SortOption = "newest" | "price_asc" | "price_desc"
+
+function isPriceSort(sort: SortOption | undefined): boolean {
+  return sort === "price_asc" || sort === "price_desc"
+}
 
 type StoreSearch = {
   q?: string
@@ -89,14 +96,14 @@ function sortProducts(
     case "price_asc":
       return [...products].sort(
         (a, b) =>
-          (getComparablePriceValue(a, btcUsdRate) ?? a.price) -
-          (getComparablePriceValue(b, btcUsdRate) ?? b.price)
+          compareCommercePrices(a, b, btcUsdRate, "asc") ||
+          b.createdAt - a.createdAt
       )
     case "price_desc":
       return [...products].sort(
         (a, b) =>
-          (getComparablePriceValue(b, btcUsdRate) ?? b.price) -
-          (getComparablePriceValue(a, btcUsdRate) ?? a.price)
+          compareCommercePrices(a, b, btcUsdRate, "desc") ||
+          b.createdAt - a.createdAt
       )
     case "newest":
     default:
@@ -121,12 +128,13 @@ function StorefrontPage() {
   const [connectOpen, setConnectOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
   const tagCloudRef = useRef<HTMLDivElement | null>(null)
+  const remoteSort = isPriceSort(search.sort) ? undefined : search.sort
   const productsQuery = useProgressiveProducts({
     scope: "storefront",
     merchantPubkey: pubkey,
     textQuery: search.q,
     tag: search.tag,
-    sort: search.sort,
+    sort: remoteSort,
   })
   const profileQuery = useProfile(pubkey, {
     relayHints: productsQuery.profileRelayHintsByPubkey[pubkey],
@@ -198,19 +206,8 @@ function StorefrontPage() {
   const productCount = storeProducts.length
   const isFollowing = followOverride ?? followQuery.data === true
   const isFollowBusy = followState !== "idle"
-  const canShowPriceSort = useMemo(() => {
-    const products = storeProducts
-    if (products.length <= 1) return true
-    const currencies = new Set(
-      products.map((product) => product.currency.trim().toUpperCase())
-    )
-    if (currencies.size <= 1) return true
-    return products.every(
-      (product) => getComparablePriceValue(product, btcUsdRate) !== null
-    )
-  }, [btcUsdRate, storeProducts])
 
-  const filteredProducts = useMemo(() => {
+  const matchingProducts = useMemo(() => {
     let result = storeProducts
 
     if (search.q) {
@@ -228,25 +225,20 @@ function StorefrontPage() {
       )
     }
 
-    const effectiveSort = canShowPriceSort ? search.sort : undefined
-    return sortProducts(result, effectiveSort, btcUsdRate)
-  }, [
-    btcUsdRate,
-    canShowPriceSort,
-    search.q,
-    search.sort,
-    search.tag,
-    storeProducts,
-  ])
+    return result
+  }, [search.q, search.tag, storeProducts])
 
-  useEffect(() => {
-    if (
-      !canShowPriceSort &&
-      (search.sort === "price_asc" || search.sort === "price_desc")
-    ) {
-      updateSearch({ sort: undefined })
-    }
-  }, [canShowPriceSort, search.sort, updateSearch])
+  const hasUnavailablePriceForSort = useMemo(() => {
+    if (!isPriceSort(search.sort)) return false
+    return matchingProducts.some(
+      (product) => getComparablePriceValue(product, btcUsdRate) === null
+    )
+  }, [btcUsdRate, matchingProducts, search.sort])
+
+  const filteredProducts = useMemo(
+    () => sortProducts(matchingProducts, search.sort, btcUsdRate),
+    [btcUsdRate, matchingProducts, search.sort]
+  )
 
   useLayoutEffect(() => {
     const element = tagCloudRef.current
@@ -719,12 +711,8 @@ function StorefrontPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="newest">Newest</SelectItem>
-                  <SelectItem value="price_asc" disabled={!canShowPriceSort}>
-                    Price: Low to High
-                  </SelectItem>
-                  <SelectItem value="price_desc" disabled={!canShowPriceSort}>
-                    Price: High to Low
-                  </SelectItem>
+                  <SelectItem value="price_asc">Price: Low to High</SelectItem>
+                  <SelectItem value="price_desc">Price: High to Low</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -756,10 +744,9 @@ function StorefrontPage() {
               <LoaderCircle className="h-3 w-3 animate-spin text-secondary-300" />
               Updating store
             </span>
-            {!canShowPriceSort && (
+            {hasUnavailablePriceForSort && (
               <div className="mt-2 text-xs text-[var(--text-muted)]">
-                Price sorting is available when listings share a currency or a
-                BTC/USD display rate exists.
+                Listings without a rate-backed sats price are shown last.
               </div>
             )}
           </div>

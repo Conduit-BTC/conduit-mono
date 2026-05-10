@@ -11,7 +11,7 @@ import {
   type CachedProfile,
 } from "../db"
 import { config } from "../config"
-import { getComparablePriceValue } from "../pricing"
+import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
 import { EVENT_KINDS } from "./kinds"
 import {
@@ -514,15 +514,13 @@ function sortProducts(
     case "price_asc":
       return items.sort(
         (a, b) =>
-          (getComparablePriceValue(a.product) ?? Number.MAX_SAFE_INTEGER) -
-            (getComparablePriceValue(b.product) ?? Number.MAX_SAFE_INTEGER) ||
+          compareCommercePrices(a.product, b.product, null, "asc") ||
           b.product.updatedAt - a.product.updatedAt
       )
     case "price_desc":
       return items.sort(
         (a, b) =>
-          (getComparablePriceValue(b.product) ?? -1) -
-            (getComparablePriceValue(a.product) ?? -1) ||
+          compareCommercePrices(a.product, b.product, null, "desc") ||
           b.product.updatedAt - a.product.updatedAt
       )
     case "updated_at_desc":
