@@ -299,17 +299,19 @@ export function formatApproxUsdFromSats(
   rateInput: PricingRateInput
 ): string {
   const btcUsdRate = getBtcUsdRate(rateInput)
-  if (!btcUsdRate) return "~USD unavailable"
+  if (!btcUsdRate) return "USD unavailable"
 
   const usd = (sats / SATS_PER_BTC) * btcUsdRate
-  if (usd > 0 && usd < 0.01) return "~$0.01"
-  return `~${formatFiatPrice(usd, "USD")}`
+  if (usd > 0 && usd < 0.01) return "about $0.01 USD"
+  return `about ${formatFiatPrice(usd, "USD")} USD`
 }
 
 function formatSourcePrice(source: SourcePriceQuote): string {
   if (isFiatCurrencyCode(source.normalizedCurrency)) {
     try {
-      return formatFiatPrice(source.amount, source.normalizedCurrency)
+      return `${formatFiatPrice(source.amount, source.normalizedCurrency)} ${
+        source.normalizedCurrency
+      }`
     } catch {
       return `${source.amount.toLocaleString()} ${source.normalizedCurrency}`
     }
@@ -327,7 +329,11 @@ export function getProductPriceDisplay(
   rateInput: PricingRateInput = null
 ): { primary: string; secondary: string | null } {
   const sats = getPriceSats(product, rateInput)
-  const source = product.sourcePrice
+  const source =
+    product.sourcePrice ??
+    (isFiatCurrencyCode(product.currency)
+      ? sourceQuote(product.price, product.currency)
+      : undefined)
 
   if (!sats) {
     return {
@@ -338,7 +344,7 @@ export function getProductPriceDisplay(
     }
   }
 
-  const primary = `${sats.approximate ? "~" : ""}${formatSats(sats.sats)}`
+  const primary = `${sats.approximate ? "≈ " : ""}${formatSats(sats.sats)}`
 
   if (sats.approximate && source) {
     return { primary, secondary: `${formatSourcePrice(source)} source quote` }

@@ -20,6 +20,7 @@ const testRates: BtcUsdRateQuote = {
   fetchedAt: 1_700_000_000_000,
   source: "env",
   fiatUsdRates: {
+    CAD: 0.75,
     EUR: 1.2,
     GBP: 1.25,
   },
@@ -113,7 +114,7 @@ describe("commerce pricing", () => {
     expect(product.priceSats).toBe(250_000)
     expect(getProductPriceDisplay(product, 100_000)).toEqual({
       primary: "250,000 sats",
-      secondary: "~$250.00",
+      secondary: "about $250.00 USD",
     })
   })
 
@@ -140,8 +141,59 @@ describe("commerce pricing", () => {
     })
 
     expect(getProductPriceDisplay(product, testRates)).toEqual({
-      primary: "~12,000 sats",
-      secondary: "€10.00 source quote",
+      primary: "≈ 12,000 sats",
+      secondary: "€10.00 EUR source quote",
+    })
+  })
+
+  it("labels fiat source quote currencies without double-estimating USD", () => {
+    expect(
+      getProductPriceDisplay(
+        {
+          price: 20,
+          currency: "USD",
+          sourcePrice: {
+            amount: 20,
+            currency: "USD",
+            normalizedCurrency: "USD",
+          },
+        },
+        testRates
+      )
+    ).toEqual({
+      primary: "≈ 20,000 sats",
+      secondary: "$20.00 USD source quote",
+    })
+
+    expect(
+      getProductPriceDisplay(
+        {
+          price: 20,
+          currency: "CAD",
+          sourcePrice: {
+            amount: 20,
+            currency: "CAD",
+            normalizedCurrency: "CAD",
+          },
+        },
+        testRates
+      )
+    ).toEqual({
+      primary: "≈ 15,000 sats",
+      secondary: "CA$20.00 CAD source quote",
+    })
+
+    expect(
+      getProductPriceDisplay(
+        {
+          price: 20,
+          currency: "USD",
+        },
+        testRates
+      )
+    ).toEqual({
+      primary: "≈ 20,000 sats",
+      secondary: "$20.00 USD source quote",
     })
   })
 

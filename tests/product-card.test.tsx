@@ -50,6 +50,6 @@ describe("ProductCard", () => {
     )
 
     expect(html).toContain("40,000 sats")
-    expect(html).toContain("~$32.28")
+    expect(html).toContain("about $32.28 USD")
   })
 })
