@@ -39,6 +39,9 @@ describe("commerce pricing", () => {
   })
 
   it("rejects ambiguous or unsupported prices instead of guessing", () => {
+    expect(normalizeCommercePrice(0, "SAT").status).toBe("invalid")
+    expect(normalizeCommercePrice(999, "MSATS").status).toBe("invalid")
+    expect(normalizeCommercePrice(0, "USD", testRates).status).toBe("invalid")
     expect(normalizeCommercePrice(1.5, "SAT").status).toBe("invalid")
     expect(normalizeCommercePrice(-1, "SATS").status).toBe("invalid")
     expect(normalizeCommercePrice(Number.NaN, "BTC").status).toBe("invalid")
@@ -202,20 +205,62 @@ describe("commerce pricing", () => {
     const exactSats = { price: 10_000, currency: "SATS", priceSats: 10_000 }
     const btc = { price: 0.0002, currency: "BTC" }
     const fiat = { price: 15, currency: "USD" }
+    const zero = { price: 0, currency: "USD" }
     const unavailable = { price: 20, currency: "CHF" }
-    const prices = [unavailable, btc, fiat, exactSats]
+    const prices = [
+      { label: "unavailable", price: unavailable },
+      { label: "btc", price: btc },
+      { label: "zero", price: zero },
+      { label: "fiat", price: fiat },
+      { label: "exactSats", price: exactSats },
+    ]
 
     expect(
       [...prices]
-        .sort((a, b) => compareCommercePrices(a, b, testRates, "asc"))
-        .map((price) => price.currency)
-    ).toEqual(["SATS", "USD", "BTC", "CHF"])
+        .sort((a, b) =>
+          compareCommercePrices(a.price, b.price, testRates, "asc")
+        )
+        .map((item) => item.label)
+    ).toEqual(["exactSats", "fiat", "btc", "unavailable", "zero"])
 
     expect(
       [...prices]
-        .sort((a, b) => compareCommercePrices(a, b, testRates, "desc"))
-        .map((price) => price.currency)
-    ).toEqual(["BTC", "USD", "SATS", "CHF"])
+        .sort((a, b) =>
+          compareCommercePrices(a.price, b.price, testRates, "desc")
+        )
+        .map((item) => item.label)
+    ).toEqual(["btc", "fiat", "exactSats", "unavailable", "zero"])
+  })
+
+  it("does not display zero-value source prices as 0 sats", () => {
+    expect(
+      getProductPriceDisplay(
+        {
+          price: 0,
+          currency: "USD",
+          sourcePrice: {
+            amount: 0,
+            currency: "USD",
+            normalizedCurrency: "USD",
+          },
+        },
+        testRates
+      )
+    ).toEqual({
+      primary: "Price unavailable",
+      secondary: "$0.00 USD source quote",
+    })
+
+    expect(
+      getProductPriceDisplay(
+        {
+          price: 0,
+          currency: "SATS",
+          priceSats: 0,
+        },
+        testRates
+      ).primary
+    ).toBe("Price unavailable")
   })
 
   it("keeps 0.025 BTC distinct from 250000 sats", () => {

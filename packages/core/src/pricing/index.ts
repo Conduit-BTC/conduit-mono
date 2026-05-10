@@ -124,11 +124,12 @@ function getUsdPerUnitRate(
     : null
 }
 
-function toSafeIntegerSats(value: number): number | null {
-  if (!Number.isFinite(value) || value < 0) return null
+function toSafeIntegerSats(value: number, minimum = 1): number | null {
+  if (!Number.isFinite(value) || value < minimum) return null
   const rounded = Math.round(value)
   if (Math.abs(value - rounded) > Number.EPSILON) return null
   if (!Number.isSafeInteger(rounded)) return null
+  if (rounded < minimum) return null
   return rounded
 }
 
@@ -141,7 +142,7 @@ export function normalizeCommercePrice(
   const btcUsdRate = getBtcUsdRate(rateInput)
 
   if (!Number.isFinite(amount) || amount < 0) {
-    return invalidPrice(amount, currency, "Price must be a non-negative number")
+    return invalidPrice(amount, currency, "Price must be a positive number")
   }
 
   if (!source.normalizedCurrency) {
@@ -151,7 +152,11 @@ export function normalizeCommercePrice(
   if (isSatsLikeCurrency(source.normalizedCurrency)) {
     const sats = toSafeIntegerSats(amount)
     if (sats === null) {
-      return invalidPrice(amount, currency, "Satoshi prices must be whole sats")
+      return invalidPrice(
+        amount,
+        currency,
+        "Satoshi prices must be at least 1 whole sat"
+      )
     }
     return { status: "ok", sats, source, approximate: false }
   }
@@ -162,7 +167,7 @@ export function normalizeCommercePrice(
       return invalidPrice(
         amount,
         currency,
-        "Millisatoshi prices must convert to whole sats"
+        "Millisatoshi prices must convert to at least 1 whole sat"
       )
     }
     return { status: "ok", sats, source, approximate: false }
@@ -174,7 +179,7 @@ export function normalizeCommercePrice(
       return invalidPrice(
         amount,
         currency,
-        "BTC prices must convert to whole sats"
+        "BTC prices must convert to at least 1 whole sat"
       )
     }
     return { status: "ok", sats, source, approximate: false }
@@ -203,8 +208,15 @@ export function normalizeCommercePrice(
     }
 
     const sats = Math.round(((amount * usdPerUnit) / btcUsdRate) * SATS_PER_BTC)
-    if (!Number.isSafeInteger(sats) || sats < 0) {
+    if (!Number.isSafeInteger(sats)) {
       return invalidPrice(amount, currency, "Fiat price conversion overflowed")
+    }
+    if (sats < 1) {
+      return invalidPrice(
+        amount,
+        currency,
+        "Fiat prices must convert to at least 1 sat"
+      )
     }
     return { status: "ok", sats, source, approximate: true }
   }
@@ -262,7 +274,7 @@ export function getPriceSats(
   if (
     typeof price.priceSats === "number" &&
     Number.isSafeInteger(price.priceSats) &&
-    price.priceSats >= 0
+    price.priceSats >= 1
   ) {
     const sourceCurrency =
       price.sourcePrice?.normalizedCurrency ?? price.currency
