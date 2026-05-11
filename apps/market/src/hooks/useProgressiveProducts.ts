@@ -16,11 +16,22 @@ import {
   normalizePubkey,
   type Product,
 } from "@conduit/core"
+import {
+  getCatalogAuthorPubkeys,
+  getProductCatalogQueryKey,
+  isPerspectiveMarketplaceRead,
+  type ProductCatalogReadInput,
+} from "../lib/productCatalogRead"
 
 const PERSPECTIVE_STREAM_READ_POLICY: CommerceReadPolicy = {
   maxRelays: 32,
   connectTimeoutMs: 1_200,
   fetchTimeoutMs: 2_500,
+}
+const CATALOG_COMPLETION_READ_POLICY: CommerceReadPolicy = {
+  maxRelays: 32,
+  connectTimeoutMs: 4_000,
+  fetchTimeoutMs: 8_000,
 }
 const FOLLOW_CACHE_PREFIX = "conduit.market.perspectiveFollows.v1:"
 
@@ -103,6 +114,10 @@ function mergeProducts(existing: Product[], incoming: Product[]): Product[] {
   return dedupeProducts([...existing, ...incoming])
 }
 
+function shouldRunCatalogCompletionRead(input: ProgressiveListQuery): boolean {
+  return isPerspectiveMarketplaceRead(input)
+}
+
 function uniquePubkeys(pubkeys: readonly string[]): string[] {
   return Array.from(
     new Set(pubkeys.map(normalizePubkey).filter(Boolean) as string[])
@@ -146,45 +161,19 @@ function writeCachedPerspectiveFollows(
   }
 }
 
-function getListQueryKey(
-  input: ProgressiveListQuery,
-  source: "cache" | "network"
-) {
-  return [
-    "progressive-products",
-    source,
-    input.scope,
-    input.scope === "marketplace"
-      ? (input.merchantPubkey ?? "all")
-      : input.merchantPubkey,
-    input.scope === "marketplace"
-      ? (input.perspectivePubkey ?? "global")
-      : "storefront",
-    input.scope === "marketplace"
-      ? (input.seedAuthorPubkeys?.join(",") ?? "no-seed")
-      : "storefront",
-    input.textQuery ?? "",
-    input.scope === "marketplace"
-      ? (input.tags ?? []).join(",")
-      : (input.tag ?? ""),
-    input.sort ?? "newest",
-    input.limit ?? "default",
-  ] as const
-}
-
 async function fetchCachedList(
   input: ProgressiveListQuery,
   authorPubkeys?: string[]
 ) {
   if (input.scope === "marketplace") {
-    const cacheAuthorPubkeys = input.merchantPubkey ? authorPubkeys : undefined
+    const readsPerspectiveCatalog = isPerspectiveMarketplaceRead(input)
 
     return await getCachedMarketplaceProducts({
       merchantPubkey: input.merchantPubkey,
-      authorPubkeys: cacheAuthorPubkeys,
-      textQuery: input.textQuery,
-      tags: input.tags,
-      sort: input.sort,
+      authorPubkeys,
+      textQuery: readsPerspectiveCatalog ? undefined : input.textQuery,
+      tags: readsPerspectiveCatalog ? undefined : input.tags,
+      sort: readsPerspectiveCatalog ? "newest" : input.sort,
       limit: input.limit,
     })
   }
@@ -204,12 +193,14 @@ async function fetchNetworkList(
   readPolicy?: CommerceReadPolicy
 ) {
   if (input.scope === "marketplace") {
+    const readsPerspectiveCatalog = isPerspectiveMarketplaceRead(input)
+
     return await getMarketplaceProducts({
       merchantPubkey: input.merchantPubkey,
       authorPubkeys,
-      textQuery: input.textQuery,
-      tags: input.tags,
-      sort: input.sort,
+      textQuery: readsPerspectiveCatalog ? undefined : input.textQuery,
+      tags: readsPerspectiveCatalog ? undefined : input.tags,
+      sort: readsPerspectiveCatalog ? "newest" : input.sort,
       limit: input.limit,
       readPolicy,
     })
@@ -228,16 +219,14 @@ export function useProgressiveProducts(
   input: ProgressiveListQuery
 ): ProgressiveProductsResult {
   const queryEnabled = input.enabled ?? true
+  const perspectiveMarketplaceRead = isPerspectiveMarketplaceRead(input)
   const perspectivePubkey =
     input.scope === "marketplace" && !input.merchantPubkey
       ? normalizePubkey(input.perspectivePubkey)
       : null
   const usesPerspectiveGraph =
     input.scope === "marketplace" && !!perspectivePubkey
-  const streamsNetwork =
-    queryEnabled &&
-    input.scope === "marketplace" &&
-    (usesPerspectiveGraph || !!input.merchantPubkey)
+  const streamsNetwork = queryEnabled && input.scope === "marketplace"
   const seedAuthorKey =
     input.scope === "marketplace"
       ? (input.seedAuthorPubkeys?.join(",") ?? "")
@@ -256,29 +245,6 @@ export function useProgressiveProducts(
         : undefined,
     [perspectivePubkey, seededAuthors, usesPerspectiveGraph]
   )
-  const discoveryKey = useMemo(
-    () => JSON.stringify(getListQueryKey(input, "network")),
-    [input]
-  )
-  const [productAccumulator, setProductAccumulator] = useState<{
-    key: string
-    products: Product[]
-  }>({ key: discoveryKey, products: [] })
-  const [progressiveRead, setProgressiveRead] = useState<{
-    key: string
-    isFetching: boolean
-    count: number
-    meta: CommerceQueryMeta | null
-    error: unknown
-    latestResult?: CommerceResult<CommerceProductRecord[]>
-  }>({
-    key: discoveryKey,
-    isFetching: false,
-    count: 0,
-    meta: null,
-    error: null,
-  })
-
   const firstDegreeQuery = useQuery({
     queryKey: ["market-perspective-follows", perspectivePubkey],
     queryFn: () => getFollowPubkeys({ pubkey: perspectivePubkey! }),
@@ -307,7 +273,46 @@ export function useProgressiveProducts(
     usesPerspectiveGraph,
   ])
 
-  const graphReady = !usesPerspectiveGraph || firstDegreeAuthors !== undefined
+  const catalogReady =
+    !perspectiveMarketplaceRead || firstDegreeAuthors !== undefined
+  const catalogAuthorPubkeys = useMemo(
+    () => getCatalogAuthorPubkeys(input, firstDegreeAuthors),
+    [firstDegreeAuthors, input.merchantPubkey, input.scope]
+  )
+  const catalogAuthorKey = catalogAuthorPubkeys?.join(",") ?? "no-authors"
+  const discoveryKey = useMemo(
+    () =>
+      JSON.stringify([
+        ...getProductCatalogQueryKey(
+          input as ProductCatalogReadInput,
+          "network"
+        ),
+        catalogAuthorKey,
+      ]),
+    [catalogAuthorKey, input]
+  )
+  const inputTagsKey =
+    input.scope === "marketplace"
+      ? (input.tags ?? []).join(",")
+      : (input.tag ?? "")
+  const [productAccumulator, setProductAccumulator] = useState<{
+    key: string
+    products: Product[]
+  }>({ key: discoveryKey, products: [] })
+  const [progressiveRead, setProgressiveRead] = useState<{
+    key: string
+    isFetching: boolean
+    count: number
+    meta: CommerceQueryMeta | null
+    error: unknown
+    latestResult?: CommerceResult<CommerceProductRecord[]>
+  }>({
+    key: discoveryKey,
+    isFetching: false,
+    count: 0,
+    meta: null,
+    error: null,
+  })
 
   useEffect(() => {
     if (
@@ -320,29 +325,27 @@ export function useProgressiveProducts(
     writeCachedPerspectiveFollows(perspectivePubkey, firstDegreeAuthors)
   }, [firstDegreeAuthors, perspectivePubkey])
 
-  const canReadCache =
-    queryEnabled &&
-    (graphReady || (input.scope === "marketplace" && !input.merchantPubkey))
+  const canReadCache = queryEnabled && catalogReady
 
   const cachedQuery = useQuery({
     queryKey: [
-      ...getListQueryKey(input, "cache"),
-      firstDegreeAuthors?.join(",") ?? "no-graph",
+      ...getProductCatalogQueryKey(input as ProductCatalogReadInput, "cache"),
+      catalogAuthorKey,
     ],
-    queryFn: () => fetchCachedList(input, firstDegreeAuthors),
+    queryFn: () => fetchCachedList(input, catalogAuthorPubkeys),
     enabled: canReadCache,
     staleTime: 15_000,
   })
 
   const firstNetworkQuery = useQuery({
     queryKey: [
-      ...getListQueryKey(input, "network"),
-      "first-degree",
-      firstDegreeAuthors?.join(",") ?? "global",
+      ...getProductCatalogQueryKey(input as ProductCatalogReadInput, "network"),
+      "catalog",
+      catalogAuthorKey,
     ],
-    queryFn: () => fetchNetworkList(input, firstDegreeAuthors),
+    queryFn: () => fetchNetworkList(input, catalogAuthorPubkeys),
     placeholderData: (previousData) => previousData,
-    enabled: queryEnabled && graphReady && !streamsNetwork,
+    enabled: queryEnabled && catalogReady && !streamsNetwork,
     staleTime: 20_000,
   })
 
@@ -398,12 +401,12 @@ export function useProgressiveProducts(
   }, [mergedNetworkProducts, discoveryKey])
 
   useEffect(() => {
-    if (!streamsNetwork || !graphReady || input.scope !== "marketplace") {
+    if (!streamsNetwork || !catalogReady || input.scope !== "marketplace") {
       return undefined
     }
-    if (!input.merchantPubkey && !firstDegreeAuthors) return undefined
 
     let cancelled = false
+    const completionRead = shouldRunCatalogCompletionRead(input)
     setProgressiveRead((current) => ({
       key: discoveryKey,
       isFetching: true,
@@ -412,66 +415,104 @@ export function useProgressiveProducts(
       error: null,
     }))
 
-    getMarketplaceProductsProgressive(
-      {
-        merchantPubkey: input.merchantPubkey,
-        authorPubkeys: firstDegreeAuthors,
-        textQuery: input.textQuery,
-        tags: input.tags,
-        sort: input.sort,
-        limit: input.limit,
-        readPolicy: PERSPECTIVE_STREAM_READ_POLICY,
-      },
-      (result) => {
-        if (cancelled) return
-        const incoming = toProducts(result)
-        if (incoming.length > 0) {
-          setProductAccumulator((current) => ({
+    const readCatalog = async (
+      readPolicy: CommerceReadPolicy
+    ): Promise<CommerceResult<CommerceProductRecord[]>> =>
+      await getMarketplaceProductsProgressive(
+        {
+          merchantPubkey: input.merchantPubkey,
+          authorPubkeys: catalogAuthorPubkeys,
+          textQuery: perspectiveMarketplaceRead ? undefined : input.textQuery,
+          tags: perspectiveMarketplaceRead ? undefined : input.tags,
+          sort: perspectiveMarketplaceRead ? "newest" : input.sort,
+          limit: input.limit,
+          readPolicy,
+        },
+        (result) => {
+          if (cancelled) return
+          const incoming = toProducts(result)
+          if (incoming.length > 0) {
+            setProductAccumulator((current) => ({
+              key: discoveryKey,
+              products: mergeProducts(
+                current.key === discoveryKey ? current.products : [],
+                incoming
+              ),
+            }))
+          }
+          setProgressiveRead((current) => ({
             key: discoveryKey,
-            products: mergeProducts(
-              current.key === discoveryKey ? current.products : [],
-              incoming
+            isFetching: true,
+            count: Math.max(
+              current.key === discoveryKey ? current.count : 0,
+              result.data.length
             ),
+            meta: result.meta,
+            error: null,
+            latestResult: result,
           }))
         }
-        setProgressiveRead({
-          key: discoveryKey,
-          isFetching: true,
-          count: result.data.length,
-          meta: result.meta,
-          error: null,
-          latestResult: result,
-        })
-      }
-    )
-      .then((result) => {
-        if (cancelled) return
-        setProgressiveRead({
-          key: discoveryKey,
-          isFetching: false,
-          count: result.data.length,
-          meta: result.meta,
-          error: null,
-          latestResult: result,
-        })
+      )
+
+    ;(async () => {
+      const fastResult = await readCatalog(PERSPECTIVE_STREAM_READ_POLICY)
+      if (cancelled) return
+
+      setProgressiveRead({
+        key: discoveryKey,
+        isFetching: completionRead,
+        count: fastResult.data.length,
+        meta: fastResult.meta,
+        error: null,
+        latestResult: fastResult,
       })
-      .catch((error) => {
-        if (cancelled) return
-        setProgressiveRead((current) => ({
-          key: discoveryKey,
-          isFetching: false,
-          count: current.key === discoveryKey ? current.count : 0,
-          meta: current.key === discoveryKey ? current.meta : null,
-          error,
-          latestResult:
-            current.key === discoveryKey ? current.latestResult : undefined,
-        }))
-      })
+
+      if (!completionRead) return
+
+      const completionResult = await readCatalog(CATALOG_COMPLETION_READ_POLICY)
+      if (cancelled) return
+
+      setProgressiveRead((current) => ({
+        key: discoveryKey,
+        isFetching: false,
+        count: Math.max(
+          current.key === discoveryKey ? current.count : 0,
+          completionResult.data.length
+        ),
+        meta: completionResult.meta,
+        error: null,
+        latestResult: completionResult,
+      }))
+    })().catch((error) => {
+      if (cancelled) return
+      setProgressiveRead((current) => ({
+        key: discoveryKey,
+        isFetching: false,
+        count: current.key === discoveryKey ? current.count : 0,
+        meta: current.key === discoveryKey ? current.meta : null,
+        error,
+        latestResult:
+          current.key === discoveryKey ? current.latestResult : undefined,
+      }))
+    })
 
     return () => {
       cancelled = true
     }
-  }, [discoveryKey, firstDegreeAuthors, graphReady, streamsNetwork])
+  }, [
+    catalogAuthorKey,
+    catalogAuthorPubkeys,
+    catalogReady,
+    discoveryKey,
+    input.limit,
+    input.merchantPubkey,
+    input.scope,
+    input.sort,
+    input.textQuery,
+    inputTagsKey,
+    perspectiveMarketplaceRead,
+    streamsNetwork,
+  ])
 
   const products =
     accumulatedProducts.length > 0
@@ -480,7 +521,8 @@ export function useProgressiveProducts(
         ? mergedNetworkProducts
         : cachedProducts
   const cachedCount = cachedQuery.data?.data.length ?? 0
-  const isResolvingPerspectiveGraph = usesPerspectiveGraph && !graphReady
+  const isResolvingPerspectiveGraph =
+    perspectiveMarketplaceRead && !catalogReady
   const liveNetworkCount =
     progressiveRead.key === discoveryKey
       ? Math.max(progressiveRead.count, mergedNetworkProducts.length)

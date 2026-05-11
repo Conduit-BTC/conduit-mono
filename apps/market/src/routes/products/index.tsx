@@ -99,13 +99,13 @@ function sortProducts(
 ): Product[] {
   switch (sort) {
     case "price_asc":
-      return [...products].sort(
+      return Array.from(products).sort(
         (a, b) =>
           compareCommercePrices(a, b, btcUsdRate, "asc") ||
           b.createdAt - a.createdAt
       )
     case "price_desc":
-      return [...products].sort(
+      return Array.from(products).sort(
         (a, b) =>
           compareCommercePrices(a, b, btcUsdRate, "desc") ||
           b.createdAt - a.createdAt
@@ -113,7 +113,7 @@ function sortProducts(
     case "newest":
     default:
       return diversifyMerchantProductOrder(
-        [...products].sort((a, b) => b.createdAt - a.createdAt)
+        Array.from(products).sort((a, b) => b.createdAt - a.createdAt)
       )
   }
 }
@@ -150,7 +150,6 @@ function ProductsPage() {
     perspectivePubkey:
       status === "connected" && pubkey ? pubkey : guestMarket.perspectivePubkey,
     seedAuthorPubkeys: guestMarket.seedAuthorPubkeys,
-    textQuery: search.q,
     sort: "newest",
   })
   const productData = useMemo(
@@ -524,7 +523,7 @@ function ProductsPage() {
                 className="min-w-0 flex-1 justify-between text-xs sm:w-auto sm:min-w-[150px] sm:flex-none"
               >
                 {storeTriggerLabel}
-                <ChevronDown className="h-4 w-4 opacity-60" />
+                <ChevronDown className="size-4 opacity-60" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent className="max-h-80 w-72 overflow-y-scroll [scrollbar-gutter:stable]">
@@ -676,7 +675,7 @@ function ProductsPage() {
               : "pointer-events-none opacity-0",
           ].join(" ")}
         >
-          <LoaderCircle className="h-3 w-3 animate-spin text-secondary-300" />
+          <LoaderCircle className="size-3 animate-spin text-secondary-300" />
           Updating listings
         </span>
       </div>

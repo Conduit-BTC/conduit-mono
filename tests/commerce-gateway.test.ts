@@ -110,6 +110,47 @@ afterEach(async () => {
 })
 
 describe("commerce gateway", () => {
+  it("passes author filters for perspective-scoped marketplace discovery", async () => {
+    const productEvents = [
+      makeProductEvent({
+        pubkey: "merchant-a",
+        dTag: "item-a",
+        id: "event-a",
+        createdAt: 101,
+        title: "Item A",
+      }),
+      makeProductEvent({
+        pubkey: "merchant-b",
+        dTag: "item-b",
+        id: "event-b",
+        createdAt: 102,
+        title: "Item B",
+      }),
+    ]
+    let seenAuthors: string[] | undefined
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          seenAuthors = filter.authors
+          return productEvents as never
+        }
+
+        return []
+      },
+    })
+
+    const result = await getMarketplaceProducts({
+      authorPubkeys: ["merchant-a"],
+      sort: "newest",
+    })
+
+    expect(seenAuthors).toEqual(["merchant-a"])
+    expect(result.data.map((record) => record.product.pubkey)).toEqual([
+      "merchant-a",
+    ])
+  })
+
   it("falls back to local cached marketplace products without changing shape", async () => {
     cachedProducts.push({
       id: "30402:merchant:cached-item",
