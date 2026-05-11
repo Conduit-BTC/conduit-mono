@@ -1,8 +1,6 @@
 import { useNavigate } from "@tanstack/react-router"
 import {
-  getProfileName,
   getProductImageCandidates,
-  useProfile,
   type PricingRateInput,
   type Product,
 } from "@conduit/core"
@@ -40,17 +38,10 @@ export function ProductGridCard({
   onInvalidImage,
 }: ProductGridCardProps) {
   const navigate = useNavigate()
-  const profileQuery = useProfile(
-    merchantNameOverride ? undefined : product.pubkey,
-    { priority: "visible" }
-  )
-  const profile = profileQuery.data
-  const profileName = getProfileName(profile)
   const merchantNamePending =
-    merchantNamePendingOverride ?? (!profileName && !!product.pubkey)
+    merchantNamePendingOverride ?? !merchantNameOverride
   const merchantName =
     merchantNameOverride ||
-    profileName ||
     getPendingMerchantDisplayName(product.pubkey, { chars: 6 })
   const { primary, secondary } = getProductPriceDisplay(
     product,

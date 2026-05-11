@@ -2,21 +2,12 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
 } from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { ChevronDown, LoaderCircle } from "lucide-react"
-import {
-  EVENT_KINDS,
-  getProfileName,
-  mergeRicherProfiles,
-  useAuth,
-  useProfiles,
-  type PricingRateInput,
-  type Product,
-} from "@conduit/core"
+import { EVENT_KINDS } from "@conduit/core"
 import {
   Badge,
   Button,
@@ -35,38 +26,18 @@ import {
   ProductGridCard,
   ProductGridCardSkeleton,
 } from "../../components/ProductGridCard"
-import { getPendingMerchantDisplayName } from "../../components/MerchantIdentity"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
-import { useGuestMarketDiscovery } from "../../hooks/useGuestMarketDiscovery"
-import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
+import { useMarketBrowseModel } from "../../hooks/useMarketBrowseModel"
+import { normalizeFacetValues } from "../../lib/facets"
 import {
-  compareCommercePrices,
-  getComparablePriceValue,
-} from "../../lib/pricing"
-import { diversifyMerchantProductOrder } from "../../lib/productFeedDiversity"
-import {
-  filterProductsByFacets,
-  getCategoryFacetOptions,
-  getStoreFacetOptions,
-  normalizeFacetValues,
-} from "../../lib/facets"
+  type MarketBrowseSearch,
+  type MarketBrowseSortOption,
+} from "../../lib/marketBrowseModel"
 
 const PAGE_SIZE = 12
 
-type SortOption = "newest" | "price_asc" | "price_desc"
-
-function isPriceSort(sort: SortOption | undefined): boolean {
-  return sort === "price_asc" || sort === "price_desc"
-}
-
-export interface ProductSearch {
-  merchant?: string[]
-  q?: string
-  sort?: SortOption
-  tag?: string[]
-  authRequired?: boolean
-}
+export type ProductSearch = MarketBrowseSearch
 
 export const Route = createFileRoute("/products/")({
   component: ProductsPage,
@@ -78,9 +49,9 @@ export const Route = createFileRoute("/products/")({
       merchant: merchants.length > 0 ? merchants : undefined,
       q: typeof raw.q === "string" ? raw.q : undefined,
       sort: (["newest", "price_asc", "price_desc"] as const).includes(
-        raw.sort as SortOption
+        raw.sort as MarketBrowseSortOption
       )
-        ? (raw.sort as SortOption)
+        ? (raw.sort as MarketBrowseSortOption)
         : undefined,
       tag: tags.length > 0 ? Array.from(new Set(tags)) : undefined,
       authRequired:
@@ -92,36 +63,9 @@ export const Route = createFileRoute("/products/")({
   },
 })
 
-function sortProducts(
-  products: Product[],
-  sort: SortOption | undefined,
-  btcUsdRate: PricingRateInput
-): Product[] {
-  switch (sort) {
-    case "price_asc":
-      return Array.from(products).sort(
-        (a, b) =>
-          compareCommercePrices(a, b, btcUsdRate, "asc") ||
-          b.createdAt - a.createdAt
-      )
-    case "price_desc":
-      return Array.from(products).sort(
-        (a, b) =>
-          compareCommercePrices(a, b, btcUsdRate, "desc") ||
-          b.createdAt - a.createdAt
-      )
-    case "newest":
-    default:
-      return diversifyMerchantProductOrder(
-        Array.from(products).sort((a, b) => b.createdAt - a.createdAt)
-      )
-  }
-}
-
 function ProductsPage() {
   const cart = useCart()
   const search = Route.useSearch()
-  const { pubkey, status } = useAuth()
   const navigate = useNavigate({ from: Route.fullPath })
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [connectOpen, setConnectOpen] = useState(false)
@@ -133,37 +77,6 @@ function ProductsPage() {
   const tagCloudRef = useRef<HTMLDivElement | null>(null)
   const btcUsdRateQuery = useBtcUsdRate()
   const btcUsdRate = btcUsdRateQuery.data ?? null
-  const selectedMerchants = useMemo(
-    () => search.merchant ?? [],
-    [search.merchant]
-  )
-  const selectedMerchantSet = useMemo(
-    () => new Set(selectedMerchants),
-    [selectedMerchants]
-  )
-  const usesAnonymousPerspective = status !== "connected"
-  const guestMarket = useGuestMarketDiscovery({
-    enabled: usesAnonymousPerspective,
-  })
-  const productsQuery = useProgressiveProducts({
-    scope: "marketplace",
-    perspectivePubkey:
-      status === "connected" && pubkey ? pubkey : guestMarket.perspectivePubkey,
-    seedAuthorPubkeys: guestMarket.seedAuthorPubkeys,
-    sort: "newest",
-  })
-  const productData = useMemo(
-    () => productsQuery.products,
-    [productsQuery.products]
-  )
-
-  const allMerchants = useMemo(() => {
-    if (productData.length === 0) return []
-    const set = new Set<string>()
-    for (const p of productData) set.add(p.pubkey)
-    return Array.from(set).sort()
-  }, [productData])
-
   const updateSearch = useCallback(
     (updates: Partial<ProductSearch>) => {
       navigate({
@@ -188,8 +101,36 @@ function ProductsPage() {
     [navigate]
   )
 
-  const selectedTags = useMemo(() => search.tag ?? [], [search.tag])
-  const selectedTagSet = useMemo(() => new Set(selectedTags), [selectedTags])
+  const browseModel = useMarketBrowseModel({
+    btcUsdRate,
+    search,
+    storeMenuOpen,
+    visibleCount,
+  })
+  const {
+    auth,
+    categoryFacetOptions,
+    filtered,
+    hasActiveFilters,
+    hasMore,
+    hasUnavailablePriceForSort,
+    isUpdatingListings,
+    productCards,
+    productData,
+    productsQuery,
+    searchKey,
+    selectedMerchants,
+    selectedMerchantSet,
+    selectedTags,
+    selectedTagSet,
+    shouldShowCategories,
+    showCategorySkeleton,
+    storeFacetOptions,
+    storeFacetTotal,
+    storeTriggerLabel,
+    getMerchantIdentity,
+  } = browseModel
+  const { status } = auth
 
   const toggleTag = (tag: string) => {
     if (selectedTagSet.has(tag)) {
@@ -215,27 +156,6 @@ function ProductsPage() {
     updateSearch({ merchant: [...selectedMerchants, merchant] })
   }
 
-  const filteredProducts = useMemo(() => {
-    return filterProductsByFacets(productData, {
-      q: search.q,
-      merchants: selectedMerchants,
-      tags: selectedTags,
-    })
-  }, [productData, search.q, selectedMerchants, selectedTags])
-
-  const hasUnavailablePriceForSort = useMemo(() => {
-    if (!isPriceSort(search.sort)) return false
-    return filteredProducts.some(
-      (product) => getComparablePriceValue(product, btcUsdRate) === null
-    )
-  }, [btcUsdRate, filteredProducts, search.sort])
-
-  const filtered = useMemo(
-    () => sortProducts(filteredProducts, search.sort, btcUsdRate),
-    [btcUsdRate, filteredProducts, search.sort]
-  )
-
-  const searchKey = `${search.q}-${selectedTags.slice().sort().join(",")}-${search.sort}-${selectedMerchants.slice().sort().join(",")}`
   useEffect(() => {
     setVisibleCount(PAGE_SIZE)
   }, [searchKey])
@@ -262,96 +182,10 @@ function ProductsPage() {
     }
   }, [search.authRequired, status, updateSearch])
 
-  const visible = filtered.slice(0, visibleCount)
-  const hasMore = visibleCount < filtered.length
-  const visibleMerchantPubkeys = useMemo(
-    () => Array.from(new Set(visible.map((product) => product.pubkey))),
-    [visible]
-  )
-  const visibleMerchantProfiles = useProfiles(visibleMerchantPubkeys, {
-    priority: "visible",
-    relayHintsByPubkey: productsQuery.profileRelayHintsByPubkey,
-    refetchUnresolvedMs: 5_000,
-  })
-  const backgroundMerchantPubkeys = useMemo(
-    () =>
-      allMerchants.filter((pubkey) => !visibleMerchantPubkeys.includes(pubkey)),
-    [allMerchants, visibleMerchantPubkeys]
-  )
-  const backgroundMerchantProfiles = useProfiles(backgroundMerchantPubkeys, {
-    priority: "background",
-    relayHintsByPubkey: productsQuery.profileRelayHintsByPubkey,
-    refetchUnresolvedMs: 12_000,
-  })
-  const merchantProfiles = useMemo(
-    () =>
-      mergeRicherProfiles(
-        backgroundMerchantProfiles.data,
-        visibleMerchantProfiles.data
-      ),
-    [backgroundMerchantProfiles.data, visibleMerchantProfiles.data]
-  )
-  const getMerchantIdentity = useCallback(
-    (merchantPubkey: string) => {
-      const profile = merchantProfiles[merchantPubkey]
-      const name = getProfileName(profile)
-      const pending = !name
-
-      return {
-        name:
-          name || getPendingMerchantDisplayName(merchantPubkey, { chars: 6 }),
-        pending,
-      }
-    },
-    [merchantProfiles]
-  )
   const getMerchantName = useCallback(
-    (merchantPubkey: string) => getMerchantIdentity(merchantPubkey).name,
+    (merchantPubkey: string) => getMerchantIdentity(merchantPubkey).displayName,
     [getMerchantIdentity]
   )
-
-  const hasActiveFilters = !!(
-    search.q ||
-    selectedTags.length > 0 ||
-    search.sort ||
-    selectedMerchants.length > 0
-  )
-  const categoryFacetOptions = useMemo(
-    () =>
-      getCategoryFacetOptions(productData, {
-        q: search.q,
-        merchants: selectedMerchants,
-        tags: selectedTags,
-      }),
-    [productData, search.q, selectedMerchants, selectedTags]
-  )
-  const storeFacetOptions = useMemo(
-    () =>
-      getStoreFacetOptions(
-        productData,
-        {
-          q: search.q,
-          merchants: selectedMerchants,
-          tags: selectedTags,
-        },
-        getMerchantName
-      ),
-    [getMerchantName, productData, search.q, selectedMerchants, selectedTags]
-  )
-  const storeFacetTotal = useMemo(
-    () =>
-      filterProductsByFacets(productData, {
-        q: search.q,
-        tags: selectedTags,
-      }).length,
-    [productData, search.q, selectedTags]
-  )
-  const storeTriggerLabel =
-    selectedMerchants.length === 0
-      ? "All stores"
-      : selectedMerchants.length === 1
-        ? "1 store"
-        : `${selectedMerchants.length} stores`
 
   useLayoutEffect(() => {
     const element = tagCloudRef.current
@@ -373,12 +207,6 @@ function ProductsPage() {
       window.removeEventListener("resize", measure)
     }
   }, [categoryFacetOptions, showAllTags])
-  const isUpdatingListings =
-    !productsQuery.isInitialLoading && productsQuery.isHydrating
-  const showCategorySkeleton =
-    productsQuery.isInitialLoading && categoryFacetOptions.length === 0
-  const shouldShowCategories =
-    categoryFacetOptions.length > 0 || showCategorySkeleton
 
   return (
     <div className="space-y-5">
@@ -533,7 +361,9 @@ function ProductsPage() {
                 onCheckedChange={() => updateSearch({ merchant: undefined })}
                 className="justify-between gap-3"
               >
-                <span>All stores</span>
+                <span className="font-semibold text-primary-500">
+                  All stores
+                </span>
                 <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
                   [{storeFacetTotal}]
                 </span>
@@ -549,7 +379,7 @@ function ProductsPage() {
                   <span
                     className={[
                       "min-w-0 flex-1 truncate",
-                      getMerchantIdentity(option.value).pending
+                      getMerchantIdentity(option.value).status === "pending"
                         ? "animate-pulse"
                         : "",
                     ].join(" ")}
@@ -573,7 +403,8 @@ function ProductsPage() {
             value={search.sort ?? "newest"}
             onValueChange={(v) =>
               updateSearch({
-                sort: v === "newest" ? undefined : (v as SortOption),
+                sort:
+                  v === "newest" ? undefined : (v as MarketBrowseSortOption),
               })
             }
           >
@@ -736,35 +567,33 @@ function ProductsPage() {
         )}
 
       {/* Product grid */}
-      {visible.length > 0 && (
+      {productCards.length > 0 && (
         <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
-          {visible.map((p, index) => {
-            const merchantIdentity = getMerchantIdentity(p.pubkey)
-
+          {productCards.map(({ product, merchant }, index) => {
             return (
-              <li key={p.id} className="h-full">
+              <li key={product.id} className="h-full">
                 <ProductGridCard
-                  product={p}
-                  merchantName={merchantIdentity.name}
-                  merchantNamePending={merchantIdentity.pending}
+                  product={product}
+                  merchantName={merchant.displayName}
+                  merchantNamePending={merchant.status === "pending"}
                   imageLoading={index < 4 ? "eager" : "lazy"}
                   btcUsdRate={btcUsdRate}
                   cartQuantity={
-                    cart.items.find((item) => item.productId === p.id)
+                    cart.items.find((item) => item.productId === product.id)
                       ?.quantity ?? 0
                   }
                   onAddToCart={() =>
                     cart.addItem(
                       {
-                        productId: p.id,
-                        merchantPubkey: p.pubkey,
-                        title: p.title,
-                        price: p.price,
-                        currency: p.currency,
-                        priceSats: p.priceSats,
-                        sourcePrice: p.sourcePrice,
-                        image: p.images[0]?.url,
-                        tags: p.tags,
+                        productId: product.id,
+                        merchantPubkey: product.pubkey,
+                        title: product.title,
+                        price: product.price,
+                        currency: product.currency,
+                        priceSats: product.priceSats,
+                        sourcePrice: product.sourcePrice,
+                        image: product.images[0]?.url,
+                        tags: product.tags,
                       },
                       1
                     )
@@ -772,29 +601,29 @@ function ProductsPage() {
                   onIncrement={() =>
                     cart.addItem(
                       {
-                        productId: p.id,
-                        merchantPubkey: p.pubkey,
-                        title: p.title,
-                        price: p.price,
-                        currency: p.currency,
-                        priceSats: p.priceSats,
-                        sourcePrice: p.sourcePrice,
-                        image: p.images[0]?.url,
-                        tags: p.tags,
+                        productId: product.id,
+                        merchantPubkey: product.pubkey,
+                        title: product.title,
+                        price: product.price,
+                        currency: product.currency,
+                        priceSats: product.priceSats,
+                        sourcePrice: product.sourcePrice,
+                        image: product.images[0]?.url,
+                        tags: product.tags,
                       },
                       1
                     )
                   }
                   onDecrement={() => {
                     const existing = cart.items.find(
-                      (item) => item.productId === p.id
+                      (item) => item.productId === product.id
                     )
                     if (!existing) return
                     if (existing.quantity <= 1) {
-                      cart.removeItem(p.id)
+                      cart.removeItem(product.id)
                       return
                     }
-                    cart.setQuantity(p.id, existing.quantity - 1)
+                    cart.setQuantity(product.id, existing.quantity - 1)
                   }}
                 />
               </li>
