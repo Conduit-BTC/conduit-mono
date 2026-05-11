@@ -11,9 +11,7 @@ import {
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
-  useRef,
   useState,
   type FormEvent,
 } from "react"
@@ -128,12 +126,8 @@ function StorefrontPage() {
   const btcUsdRate = btcUsdRateQuery.data ?? null
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
   const [searchDirty, setSearchDirty] = useState(false)
-  const [showAllTags, setShowAllTags] = useState(false)
-  const [tagCloudOverflows, setTagCloudOverflows] = useState(false)
-  const [tagCloudInteracted, setTagCloudInteracted] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
-  const tagCloudRef = useRef<HTMLDivElement | null>(null)
   const productsQuery = useProgressiveProducts({
     scope: "storefront",
     merchantPubkey: pubkey,
@@ -246,27 +240,6 @@ function StorefrontPage() {
     () => sortProducts(matchingProducts, search.sort, btcUsdRate),
     [btcUsdRate, matchingProducts, search.sort]
   )
-
-  useLayoutEffect(() => {
-    const element = tagCloudRef.current
-    if (!element) return
-
-    const measure = () => {
-      setTagCloudOverflows(element.scrollHeight > element.clientHeight + 1)
-    }
-
-    measure()
-
-    const resizeObserver =
-      typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null
-    resizeObserver?.observe(element)
-    window.addEventListener("resize", measure)
-
-    return () => {
-      resizeObserver?.disconnect()
-      window.removeEventListener("resize", measure)
-    }
-  }, [categoryFacetOptions, showAllTags])
 
   useEffect(() => {
     setLocalSearch(search.q ?? "")
@@ -590,46 +563,11 @@ function StorefrontPage() {
                   <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
                     Category
                   </div>
-                  {tagCloudOverflows && (
-                    <button
-                      type="button"
-                      className="text-xs font-medium text-secondary-400 transition-colors duration-150 hover:text-secondary-300"
-                      onClick={() => {
-                        setTagCloudInteracted(true)
-                        setShowAllTags((current) => !current)
-                      }}
-                    >
-                      {showAllTags ? "Collapse" : "Expand"}
-                    </button>
-                  )}
                 </div>
 
                 <div className="relative mt-3">
-                  <div
-                    ref={tagCloudRef}
-                    className={[
-                      "overflow-y-scroll pr-1 [scrollbar-gutter:stable]",
-                      tagCloudInteracted
-                        ? "transition-[max-height] duration-150 ease-out"
-                        : "",
-                      showAllTags || !tagCloudOverflows
-                        ? "max-h-96"
-                        : "max-h-[4.75rem]",
-                    ].join(" ")}
-                  >
+                  <div className="max-h-96 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
                     <div className="flex flex-wrap items-center gap-1.5 pt-0.5 xl:flex-col xl:items-stretch">
-                      <button
-                        type="button"
-                        onClick={() => updateSearch({ tag: undefined })}
-                        className={[
-                          "rounded-full border px-3 py-2 text-left text-sm transition-colors xl:rounded-xl",
-                          selectedTags.length > 0
-                            ? "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                            : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)]",
-                        ].join(" ")}
-                      >
-                        Clear categories
-                      </button>
                       {categoryFacetOptions.map((option) => (
                         <button
                           key={option.value}

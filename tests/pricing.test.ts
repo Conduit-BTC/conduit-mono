@@ -145,7 +145,7 @@ describe("commerce pricing", () => {
     })
 
     expect(getProductPriceDisplay(product, testRates)).toEqual({
-      primary: "≈ 12,000 sats",
+      primary: "〜 12,000 sats",
       secondary: "€10.00 EUR source quote",
     })
   })
@@ -165,7 +165,7 @@ describe("commerce pricing", () => {
         testRates
       )
     ).toEqual({
-      primary: "≈ 20,000 sats",
+      primary: "〜 20,000 sats",
       secondary: "$20.00 USD source quote",
     })
 
@@ -183,7 +183,7 @@ describe("commerce pricing", () => {
         testRates
       )
     ).toEqual({
-      primary: "≈ 15,000 sats",
+      primary: "〜 15,000 sats",
       secondary: "CA$20.00 CAD source quote",
     })
 
@@ -196,7 +196,7 @@ describe("commerce pricing", () => {
         testRates
       )
     ).toEqual({
-      primary: "≈ 20,000 sats",
+      primary: "〜 20,000 sats",
       secondary: "$20.00 USD source quote",
     })
   })

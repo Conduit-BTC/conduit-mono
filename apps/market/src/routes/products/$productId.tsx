@@ -503,10 +503,6 @@ function ProductPage() {
                 <h2 className="text-2xl font-semibold text-[var(--text-primary)]">
                   More from this store
                 </h2>
-                <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                  Keep browsing merchant listings without leaving the product
-                  flow.
-                </p>
               </div>
               <Button asChild variant="outline" className="h-11 px-4 text-sm">
                 <Link to="/store/$pubkey" params={{ pubkey: product.pubkey }}>

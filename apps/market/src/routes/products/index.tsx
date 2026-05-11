@@ -393,6 +393,23 @@ function ProductsPage() {
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
+          {hasActiveFilters && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="shrink-0 text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+              onClick={() =>
+                updateSearch({
+                  q: undefined,
+                  tag: undefined,
+                  sort: undefined,
+                  merchant: undefined,
+                })
+              }
+            >
+              Clear filters
+            </Button>
+          )}
         </div>
 
         <div className="flex w-full items-center gap-2 sm:ml-auto sm:w-auto">
@@ -417,24 +434,6 @@ function ProductsPage() {
               <SelectItem value="price_desc">Price: High to Low</SelectItem>
             </SelectContent>
           </Select>
-
-          {hasActiveFilters && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="ml-auto text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
-              onClick={() =>
-                updateSearch({
-                  q: undefined,
-                  tag: undefined,
-                  sort: undefined,
-                  merchant: undefined,
-                })
-              }
-            >
-              Clear
-            </Button>
-          )}
         </div>
       </div>
 

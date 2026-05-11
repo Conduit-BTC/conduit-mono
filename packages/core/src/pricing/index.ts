@@ -358,7 +358,7 @@ export function getProductPriceDisplay(
     }
   }
 
-  const primary = `${sats.approximate ? "≈ " : ""}${formatSats(sats.sats)}`
+  const primary = `${sats.approximate ? "〜 " : ""}${formatSats(sats.sats)}`
 
   if (sats.approximate && source) {
     return { primary, secondary: `${formatSourcePrice(source)} source quote` }
