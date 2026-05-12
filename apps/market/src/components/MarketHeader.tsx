@@ -1,22 +1,26 @@
 import {
+  CircleUser,
   LoaderCircle,
   MessagesSquare,
   ReceiptText,
   Search,
+  Settings,
   ShoppingCart,
+  Store,
+  Wallet,
 } from "lucide-react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 import {
   config,
   formatPubkey,
-  getProfileDisplayLabel,
   useAuth,
+  useNdkState,
   useProfile,
 } from "@conduit/core"
 import {
-  AccountMenu,
   Badge,
   Button,
+  ProfileSelector,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -28,6 +32,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 
 import { SignerSwitch } from "./SignerSwitch"
 import { useCart } from "../hooks/useCart"
+import { useWallet } from "../hooks/useWallet"
 
 type NavState = "top" | "scrolled" | "hidden"
 
@@ -60,25 +65,38 @@ function Logo({
 
 function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
-  const profileQuery = useProfile(pubkey)
-  const profile = profileQuery.data
+  const { status: ndkStatus } = useNdkState()
+  const { data: profile, refetch } = useProfile(pubkey)
+  const wallet = useWallet()
   const navigate = useNavigate()
+
+  // Refetch from relays once NDK connects (market has no local cache on first visit)
+  useEffect(() => {
+    if (ndkStatus === "connected" && pubkey) {
+      void refetch()
+    }
+  }, [ndkStatus, pubkey, refetch])
 
   if (!pubkey || status !== "connected") return null
 
-  const displayName = getProfileDisplayLabel(profile, pubkey, {
-    lookupSettled: !profileQuery.isPlaceholderData,
-    pendingLabel: "Loading profile",
-    chars: 4,
-  })
+  const displayName =
+    profile?.displayName ?? profile?.name ?? formatPubkey(pubkey, 6)
+
+  const walletStatusLabel =
+    wallet.status === "pay-capable"
+      ? "Ready"
+      : wallet.status === "disconnected"
+        ? "Not connected"
+        : undefined
 
   return (
-    <AccountMenu
+    <ProfileSelector
       displayName={displayName}
-      pubkeyLabel={formatPubkey(pubkey, 12)}
       avatarUrl={profile?.picture}
       onProfile={() => navigate({ to: "/profile" })}
       onNetwork={() => navigate({ to: "/network" })}
+      onWallet={() => navigate({ to: "/wallet" })}
+      walletStatusLabel={walletStatusLabel}
       onDisconnect={disconnect}
     />
   )
@@ -246,6 +264,27 @@ export function MarketHeader() {
           </Badge>
         )}
 
+        <nav className="hidden items-center gap-1 text-sm text-[var(--text-secondary)] lg:flex">
+          <Button asChild variant="ghost" className="h-10 px-3">
+            <Link
+              to="/products"
+              activeProps={{ className: "text-[var(--text-primary)]" }}
+            >
+              <Store className="h-4 w-4" />
+              Shop
+            </Link>
+          </Button>
+          <Button asChild variant="ghost" className="h-10 px-3">
+            <Link
+              to="/network"
+              activeProps={{ className: "text-[var(--text-primary)]" }}
+            >
+              <Settings className="h-4 w-4" />
+              Relays
+            </Link>
+          </Button>
+        </nav>
+
         <div className="order-last w-full pb-5 lg:order-none lg:ml-2 lg:flex-1 lg:pb-0">
           <form
             className="relative"
@@ -279,7 +318,7 @@ export function MarketHeader() {
             {!isBrowseRoute &&
               searchDirty &&
               normalizedSearchValue.length > 0 && (
-                <div className="pointer-events-none absolute left-2 top-full mt-0.5 text-[10px] leading-none text-[var(--text-muted)]">
+                <div className="pointer-events-none absolute left-1 top-full mt-1 text-[11px] text-[var(--text-muted)]">
                   Press Enter to search
                 </div>
               )}
@@ -380,9 +419,21 @@ export function MarketHeader() {
 
                 <div className="mt-6 grid gap-2">
                   <Button asChild variant="ghost" className="justify-start">
+                    <Link to="/products" onClick={() => setMenuOpen(false)}>
+                      <Store className="h-4 w-4" />
+                      Shop
+                    </Link>
+                  </Button>
+                  <Button asChild variant="ghost" className="justify-start">
                     <Link to="/cart" onClick={() => setMenuOpen(false)}>
                       <ShoppingCart className="h-4 w-4" />
                       Cart ({cart.totals.count})
+                    </Link>
+                  </Button>
+                  <Button asChild variant="ghost" className="justify-start">
+                    <Link to="/network" onClick={() => setMenuOpen(false)}>
+                      <Settings className="h-4 w-4" />
+                      Relays
                     </Link>
                   </Button>
                   {status === "connected" && (
@@ -398,6 +449,22 @@ export function MarketHeader() {
                       <Link to="/orders" onClick={() => setMenuOpen(false)}>
                         <ReceiptText className="h-4 w-4" />
                         Orders
+                      </Link>
+                    </Button>
+                  )}
+                  {status === "connected" && (
+                    <Button asChild variant="ghost" className="justify-start">
+                      <Link to="/profile" onClick={() => setMenuOpen(false)}>
+                        <CircleUser className="h-4 w-4" />
+                        Profile
+                      </Link>
+                    </Button>
+                  )}
+                  {status === "connected" && (
+                    <Button asChild variant="ghost" className="justify-start">
+                      <Link to="/wallet" onClick={() => setMenuOpen(false)}>
+                        <Wallet className="h-4 w-4" />
+                        Wallet
                       </Link>
                     </Button>
                   )}
