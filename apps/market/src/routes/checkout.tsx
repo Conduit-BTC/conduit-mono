@@ -455,8 +455,20 @@ function CheckoutPage() {
       )
       return
     }
-    if (!shippingValid) {
-      setError("Fill in the required shipping fields to continue.")
+    const errors = validateShippingFields(shipping)
+    setShippingErrors(errors)
+    if (errors.length > 0) {
+      setError("Fix the highlighted fields to continue.")
+      return
+    }
+    // Validate buyer country against merchant's published shipping zones
+    if (
+      merchantShippingOptions.length > 0 &&
+      !isBuyerCountryEligible(shipping.country, merchantShippingOptions)
+    ) {
+      setError(
+        `This merchant doesn't ship to ${shipping.country}. Please check the country code or contact the merchant.`
+      )
       return
     }
     setError(null)
@@ -1428,13 +1440,26 @@ function CheckoutPage() {
                   >
                     Back to shipping
                   </Button>
+                  {fastEligible && (
+                    <Button className="h-11 px-5 text-sm" onClick={payNow}>
+                      <LightningIcon className="h-4 w-4" />
+                      Pay now
+                    </Button>
+                  )}
+
                   <Button
+                    variant={fastEligible ? "outline" : "primary"}
                     className="h-11 px-5 text-sm"
                     onClick={placeOrder}
-                    disabled={hasUnpricedCheckoutItems}
                   >
-                    <LightningIcon className="h-4 w-4" />
-                    Send order
+                    {fastEligible ? (
+                      "Send order (pay later)"
+                    ) : (
+                      <>
+                        <LightningIcon className="h-4 w-4" />
+                        Send order
+                      </>
+                    )}
                   </Button>
                 </div>
               </div>
