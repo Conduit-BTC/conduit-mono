@@ -11,7 +11,8 @@ import {
   formatPubkey,
   getCachedMerchantConversationList,
   getNdk,
-  getProfiles,
+  getProductPriceDisplay,
+  getProfileName,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
   hasWebLN,
@@ -21,8 +22,11 @@ import {
   publishWithPlanner,
   weblnMakeInvoice,
   type ParsedOrderMessage,
+  type PricingRateInput,
+  type Profile,
   type StatusUpdateMessageSchema,
   useAuth,
+  useProfiles,
 } from "@conduit/core"
 import {
   Badge,
@@ -82,11 +86,8 @@ function normalizeTrackingUrl(raw: string): string | undefined {
   return parsed.toString()
 }
 
-function getDisplayName(
-  profile: { displayName?: string; name?: string } | undefined,
-  pubkey: string
-): string {
-  return profile?.displayName || profile?.name || formatPubkey(pubkey, 8)
+function getDisplayName(profile: Profile | undefined, pubkey: string): string {
+  return getProfileName(profile) || formatPubkey(pubkey, 8)
 }
 
 const MESSAGE_TYPE_LABELS: Record<string, string> = {
@@ -186,9 +187,11 @@ async function publishOrderConversationMessage(params: {
 function MessageCard({
   message,
   mine,
+  btcUsdRate,
 }: {
   message: ParsedOrderMessage
   mine: boolean
+  btcUsdRate: PricingRateInput
 }) {
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
@@ -211,10 +214,33 @@ function MessageCard({
         {message.type === "order" && (
           <div className="space-y-1.5">
             <div className="text-[var(--text-primary)]">
-              Total: {message.payload.subtotal} {message.payload.currency}
+              Total:{" "}
+              {
+                getProductPriceDisplay(
+                  {
+                    price: message.payload.subtotal,
+                    currency: message.payload.currency,
+                    priceSats:
+                      message.payload.currency === "SATS"
+                        ? message.payload.subtotal
+                        : undefined,
+                  },
+                  btcUsdRate
+                ).primary
+              }
             </div>
             {message.payload.items.map((item) => {
               const product = formatProductReference(item.productId)
+              const itemPrice = getProductPriceDisplay(
+                {
+                  price: item.priceAtPurchase,
+                  currency: item.currency,
+                  priceSats:
+                    item.currency === "SATS" ? item.priceAtPurchase : undefined,
+                  sourcePrice: item.sourcePrice,
+                },
+                btcUsdRate
+              )
               return (
                 <div
                   key={`${message.id}-${item.productId}`}
@@ -224,7 +250,7 @@ function MessageCard({
                     {product.title}
                   </div>
                   <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                    Qty {item.quantity} · {item.priceAtPurchase} {item.currency}
+                    Qty {item.quantity} · {itemPrice.primary}
                   </div>
                 </div>
               )
@@ -368,7 +394,7 @@ function MessageCard({
 function OrdersPage() {
   const { pubkey, status } = useAuth()
   const btcUsdRateQuery = useBtcUsdRate()
-  const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
+  const btcUsdRate = btcUsdRateQuery.data ?? null
   const queryClient = useQueryClient()
   const [selectedConversationId, setSelectedConversationId] = useState<
     string | null
@@ -498,16 +524,10 @@ function OrdersPage() {
       ),
     [conversations]
   )
-  const buyerProfilesQuery = useQuery({
-    queryKey: ["merchant-order-buyer-profiles", buyerPubkeys],
+  const buyerProfilesQuery = useProfiles(buyerPubkeys, {
     enabled: signerConnected && buyerPubkeys.length > 0,
-    queryFn: async () => {
-      const result = await getProfiles({ pubkeys: buyerPubkeys })
-      return result.data
-    },
-    retry: 3,
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
+    priority: "background",
+    refetchUnresolvedMs: 12_000,
   })
 
   useEffect(() => {
@@ -1036,6 +1056,7 @@ function OrdersPage() {
                     trackingCarrier={orderSummary.trackingCarrier}
                     trackingNumber={orderSummary.trackingNumber}
                     trackingUrl={orderSummary.trackingUrl}
+                    btcUsdRate={btcUsdRateQuery.data ?? null}
                   />
                 </TabsContent>
 
@@ -1339,6 +1360,7 @@ function OrdersPage() {
                           key={message.id}
                           message={message}
                           mine={message.senderPubkey === pubkey}
+                          btcUsdRate={btcUsdRateQuery.data ?? null}
                         />
                       ))}
                     </div>

@@ -30,6 +30,9 @@ function SettingsPage() {
         onToggleRead={relaySettings.toggleRelayRead}
         onToggleWrite={relaySettings.toggleRelayWrite}
         onReset={relaySettings.resetRelaySettings}
+        onRestoreDefaults={
+          pubkey ? relaySettings.restoreDefaultRelaySettings : undefined
+        }
         onPublishRelayList={pubkey ? relaySettings.publishRelayList : undefined}
       />
     </div>

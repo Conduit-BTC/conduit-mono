@@ -11,9 +11,7 @@ import {
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
-  useRef,
   useState,
   type FormEvent,
 } from "react"
@@ -33,12 +31,14 @@ import {
 import {
   appendConduitClientTag,
   formatNpub,
+  getCommerceReadRelayUrls,
   getProfileDisplayLabel,
   getProfileName,
   publishWithPlanner,
   requireNdkConnected,
   useAuth,
   useProfile,
+  type PricingRateInput,
   type Product,
 } from "@conduit/core"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
@@ -52,50 +52,63 @@ import { CopyButton } from "../../components/CopyButton"
 import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
-import { getComparablePriceValue } from "../../lib/pricing"
+import {
+  compareCommercePrices,
+  getComparablePriceValue,
+} from "../../lib/pricing"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
+import {
+  filterProductsByFacets,
+  getCategoryFacetOptions,
+  normalizeFacetValues,
+} from "../../lib/facets"
 
 type SortOption = "newest" | "price_asc" | "price_desc"
+
+function isPriceSort(sort: SortOption | undefined): boolean {
+  return sort === "price_asc" || sort === "price_desc"
+}
 
 type StoreSearch = {
   q?: string
   sort?: SortOption
-  tag?: string
+  tag?: string[]
 }
 
 export const Route = createFileRoute("/store/$pubkey")({
   component: StorefrontPage,
-  validateSearch: (raw: Record<string, unknown>): StoreSearch => ({
-    q: typeof raw.q === "string" ? raw.q : undefined,
-    sort: (["newest", "price_asc", "price_desc"] as const).includes(
-      raw.sort as SortOption
-    )
-      ? (raw.sort as SortOption)
-      : undefined,
-    tag:
-      typeof raw.tag === "string" && raw.tag.trim() !== ""
-        ? raw.tag.trim().toLowerCase()
+  validateSearch: (raw: Record<string, unknown>): StoreSearch => {
+    const tags = normalizeFacetValues(raw.tag).map((tag) => tag.toLowerCase())
+
+    return {
+      q: typeof raw.q === "string" ? raw.q : undefined,
+      sort: (["newest", "price_asc", "price_desc"] as const).includes(
+        raw.sort as SortOption
+      )
+        ? (raw.sort as SortOption)
         : undefined,
-  }),
+      tag: tags.length > 0 ? Array.from(new Set(tags)) : undefined,
+    }
+  },
 })
 
 function sortProducts(
   products: Product[],
   sort: SortOption | undefined,
-  btcUsdRate: number | null
+  btcUsdRate: PricingRateInput
 ): Product[] {
   switch (sort) {
     case "price_asc":
       return [...products].sort(
         (a, b) =>
-          (getComparablePriceValue(a, btcUsdRate) ?? a.price) -
-          (getComparablePriceValue(b, btcUsdRate) ?? b.price)
+          compareCommercePrices(a, b, btcUsdRate, "asc") ||
+          b.createdAt - a.createdAt
       )
     case "price_desc":
       return [...products].sort(
         (a, b) =>
-          (getComparablePriceValue(b, btcUsdRate) ?? b.price) -
-          (getComparablePriceValue(a, btcUsdRate) ?? a.price)
+          compareCommercePrices(a, b, btcUsdRate, "desc") ||
+          b.createdAt - a.createdAt
       )
     case "newest":
     default:
@@ -110,26 +123,35 @@ function StorefrontPage() {
   const queryClient = useQueryClient()
   const cart = useCart()
   const { pubkey: viewerPubkey, status } = useAuth()
-  const profileQuery = useProfile(pubkey)
-  const profile = profileQuery.data
   const btcUsdRateQuery = useBtcUsdRate()
-  const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
+  const btcUsdRate = btcUsdRateQuery.data ?? null
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
   const [searchDirty, setSearchDirty] = useState(false)
-  const [showAllTags, setShowAllTags] = useState(false)
-  const [tagCloudOverflows, setTagCloudOverflows] = useState(false)
-  const [tagCloudInteracted, setTagCloudInteracted] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
-  const tagCloudRef = useRef<HTMLDivElement | null>(null)
   const productsQuery = useProgressiveProducts({
     scope: "storefront",
     merchantPubkey: pubkey,
     textQuery: search.q,
-    tag: search.tag,
-    sort: search.sort,
   })
+  const profileRelayHints = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...getCommerceReadRelayUrls(),
+          ...(productsQuery.profileRelayHintsByPubkey[pubkey] ?? []),
+        ])
+      ),
+    [productsQuery.profileRelayHintsByPubkey, pubkey]
+  )
+  const profileQuery = useProfile(pubkey, {
+    relayHints: profileRelayHints,
+    refetchUnresolvedMs: 2_000,
+  })
+  const profile = profileQuery.data
   const storeProducts = productsQuery.products
+  const selectedTags = useMemo(() => search.tag ?? [], [search.tag])
+  const selectedTagSet = useMemo(() => new Set(selectedTags), [selectedTags])
   const followQuery = useQuery({
     queryKey: ["following-store", viewerPubkey ?? "none", pubkey],
     enabled:
@@ -156,26 +178,23 @@ function StorefrontPage() {
   const [followOverride, setFollowOverride] = useState<boolean | null>(null)
 
   const merchantProfileName = getProfileName(profile)
-  const merchantIdentityPending =
-    !merchantProfileName && profileQuery.isPlaceholderData
+  const merchantIdentityPending = !merchantProfileName
   const merchantName =
     merchantProfileName ||
-    (merchantIdentityPending
-      ? "Store"
-      : getProfileDisplayLabel(profile, pubkey, {
-          lookupSettled: true,
-          emptyPrefix: "Store",
-          chars: 8,
-        }))
-  const identityReady = !profileQuery.isPlaceholderData
+    getProfileDisplayLabel(profile, pubkey, {
+      lookupSettled: false,
+      pendingLabel: `Store ${formatNpub(pubkey, 8)}`,
+      chars: 8,
+    })
   const merchantAbout = profile?.about?.trim()
-  const allTags = useMemo(() => {
-    const tagSet = new Set<string>()
-    for (const product of storeProducts) {
-      for (const tag of product.tags) tagSet.add(tag.toLowerCase())
-    }
-    return Array.from(tagSet).sort()
-  }, [storeProducts])
+  const categoryFacetOptions = useMemo(
+    () =>
+      getCategoryFacetOptions(storeProducts, {
+        q: search.q,
+        tags: selectedTags,
+      }),
+    [search.q, selectedTags, storeProducts]
+  )
 
   const updateSearch = useCallback(
     (updates: Partial<StoreSearch>) => {
@@ -184,7 +203,11 @@ function StorefrontPage() {
           const next = { ...prev, ...updates }
           for (const key of Object.keys(next) as (keyof StoreSearch)[]) {
             const value = next[key]
-            if (value === undefined || value === "") {
+            if (
+              value === undefined ||
+              value === "" ||
+              (Array.isArray(value) && value.length === 0)
+            ) {
               delete next[key]
             }
           }
@@ -199,76 +222,36 @@ function StorefrontPage() {
   const productCount = storeProducts.length
   const isFollowing = followOverride ?? followQuery.data === true
   const isFollowBusy = followState !== "idle"
-  const canShowPriceSort = useMemo(() => {
-    const products = storeProducts
-    if (products.length <= 1) return true
-    const currencies = new Set(
-      products.map((product) => product.currency.trim().toUpperCase())
+
+  const toggleTag = (tag: string) => {
+    if (selectedTagSet.has(tag)) {
+      updateSearch({
+        tag: selectedTags.filter((selectedTag) => selectedTag !== tag),
+      })
+      return
+    }
+
+    updateSearch({ tag: [...selectedTags, tag] })
+  }
+
+  const matchingProducts = useMemo(() => {
+    return filterProductsByFacets(storeProducts, {
+      q: search.q,
+      tags: selectedTags,
+    })
+  }, [search.q, selectedTags, storeProducts])
+
+  const hasUnavailablePriceForSort = useMemo(() => {
+    if (!isPriceSort(search.sort)) return false
+    return matchingProducts.some(
+      (product) => getComparablePriceValue(product, btcUsdRate) === null
     )
-    if (currencies.size <= 1) return true
-    return products.every(
-      (product) => getComparablePriceValue(product, btcUsdRate) !== null
-    )
-  }, [btcUsdRate, storeProducts])
+  }, [btcUsdRate, matchingProducts, search.sort])
 
-  const filteredProducts = useMemo(() => {
-    let result = storeProducts
-
-    if (search.q) {
-      const query = search.q.toLowerCase()
-      result = result.filter(
-        (product) =>
-          product.title.toLowerCase().includes(query) ||
-          (product.summary?.toLowerCase().includes(query) ?? false)
-      )
-    }
-
-    if (search.tag) {
-      result = result.filter((product) =>
-        product.tags.some((tag) => tag.toLowerCase() === search.tag)
-      )
-    }
-
-    const effectiveSort = canShowPriceSort ? search.sort : undefined
-    return sortProducts(result, effectiveSort, btcUsdRate)
-  }, [
-    btcUsdRate,
-    canShowPriceSort,
-    search.q,
-    search.sort,
-    search.tag,
-    storeProducts,
-  ])
-
-  useEffect(() => {
-    if (
-      !canShowPriceSort &&
-      (search.sort === "price_asc" || search.sort === "price_desc")
-    ) {
-      updateSearch({ sort: undefined })
-    }
-  }, [canShowPriceSort, search.sort, updateSearch])
-
-  useLayoutEffect(() => {
-    const element = tagCloudRef.current
-    if (!element) return
-
-    const measure = () => {
-      setTagCloudOverflows(element.scrollHeight > 76)
-    }
-
-    measure()
-
-    const resizeObserver =
-      typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null
-    resizeObserver?.observe(element)
-    window.addEventListener("resize", measure)
-
-    return () => {
-      resizeObserver?.disconnect()
-      window.removeEventListener("resize", measure)
-    }
-  }, [allTags, search.tag, showAllTags])
+  const filteredProducts = useMemo(
+    () => sortProducts(matchingProducts, search.sort, btcUsdRate),
+    [btcUsdRate, matchingProducts, search.sort]
+  )
 
   useEffect(() => {
     setLocalSearch(search.q ?? "")
@@ -419,10 +402,9 @@ function StorefrontPage() {
         <span>/</span>
         <span className="text-[var(--text-primary)]">
           {merchantIdentityPending ? (
-            <span
-              aria-hidden="true"
-              className="inline-block h-3 w-24 animate-pulse rounded bg-[var(--surface-elevated)] align-middle"
-            />
+            <span className="inline-block max-w-full animate-pulse truncate align-middle">
+              {merchantName}
+            </span>
           ) : (
             merchantName
           )}
@@ -437,7 +419,7 @@ function StorefrontPage() {
                 <Avatar className="h-24 w-24 self-start border border-[var(--border)] shadow-[var(--shadow-lg)] sm:h-28 sm:w-28">
                   <AvatarImage
                     src={profile?.picture}
-                    alt={merchantIdentityPending ? "Store" : merchantName}
+                    alt={merchantName}
                     className="object-cover"
                   />
                   <AvatarFallback>
@@ -450,12 +432,13 @@ function StorefrontPage() {
                     Store
                   </div>
                   {merchantIdentityPending ? (
-                    <div
-                      aria-hidden="true"
-                      className="mt-4 h-8 w-48 animate-pulse rounded bg-[var(--surface-elevated)] sm:h-10 sm:w-64"
-                    />
+                    <h1 className="mt-2 truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
+                      <span className="inline-block max-w-full animate-pulse truncate pb-1 leading-[1.16]">
+                        {merchantName}
+                      </span>
+                    </h1>
                   ) : (
-                    <h1 className="mt-2 truncate text-3xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
+                    <h1 className="mt-2 truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
                       {merchantName}
                     </h1>
                   )}
@@ -569,7 +552,7 @@ function StorefrontPage() {
                 <div className="text-sm font-medium text-[var(--text-primary)]">
                   Filters
                 </div>
-                {(search.tag || search.q || search.sort) && (
+                {(selectedTags.length > 0 || search.q || search.sort) && (
                   <button
                     type="button"
                     className="text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
@@ -592,87 +575,32 @@ function StorefrontPage() {
                   <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
                     Category
                   </div>
-                  {tagCloudOverflows && (
-                    <button
-                      type="button"
-                      className={[
-                        "text-xs font-medium text-secondary-400 transition-[opacity,color] duration-200 hover:text-secondary-300 xl:hidden",
-                        showAllTags
-                          ? "opacity-100"
-                          : "pointer-events-none opacity-0",
-                      ].join(" ")}
-                      onClick={() => {
-                        setTagCloudInteracted(true)
-                        setShowAllTags(false)
-                      }}
-                    >
-                      Collapse
-                    </button>
-                  )}
                 </div>
 
                 <div className="relative mt-3">
-                  <div
-                    ref={tagCloudRef}
-                    className={[
-                      "overflow-hidden xl:max-h-none xl:overflow-visible",
-                      tagCloudInteracted
-                        ? "transition-[max-height] duration-300 ease-out"
-                        : "",
-                      showAllTags || !tagCloudOverflows
-                        ? "max-h-64"
-                        : "max-h-[4.75rem]",
-                    ].join(" ")}
-                  >
+                  <div className="max-h-96 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
                     <div className="flex flex-wrap items-center gap-1.5 pt-0.5 xl:flex-col xl:items-stretch">
-                      <button
-                        type="button"
-                        onClick={() => updateSearch({ tag: undefined })}
-                        className={[
-                          "rounded-full border px-3 py-2 text-left text-sm transition-colors xl:rounded-xl",
-                          !search.tag
-                            ? "border-primary-500/70 bg-primary-500 font-semibold text-white shadow-[0_12px_28px_color-mix(in_srgb,var(--primary-500)_24%,transparent)]"
-                            : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
-                        ].join(" ")}
-                      >
-                        All products
-                      </button>
-                      {allTags.map((tag) => (
+                      {categoryFacetOptions.map((option) => (
                         <button
-                          key={tag}
+                          key={option.value}
                           type="button"
-                          onClick={() =>
-                            updateSearch({
-                              tag: search.tag === tag ? undefined : tag,
-                            })
-                          }
+                          onClick={() => toggleTag(option.value)}
+                          aria-pressed={option.selected}
                           className={[
-                            "rounded-full border px-3 py-2 text-left text-sm font-medium capitalize transition-colors xl:rounded-xl",
-                            search.tag === tag
+                            "inline-flex items-center rounded-full border px-3 py-2 text-left text-sm font-medium capitalize transition-colors xl:rounded-xl",
+                            option.selected
                               ? "border-primary-500/70 bg-primary-500 font-semibold text-white shadow-[0_12px_28px_color-mix(in_srgb,var(--primary-500)_24%,transparent)]"
                               : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
                           ].join(" ")}
                         >
-                          {tag}
+                          <span>{option.label}</span>
+                          <span className="ml-1.5 self-center text-[0.82em] font-medium leading-none tabular-nums text-[var(--text-muted)]">
+                            [{option.count}]
+                          </span>
                         </button>
                       ))}
                     </div>
                   </div>
-
-                  {!showAllTags && tagCloudOverflows && (
-                    <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-12 items-center justify-center bg-gradient-to-b from-transparent via-[var(--background)]/90 to-[var(--background)] transition-opacity duration-200 xl:hidden">
-                      <button
-                        type="button"
-                        className="pointer-events-auto rounded-full bg-[var(--text-primary)] px-3 py-1 text-xs font-medium text-[var(--text-inverse)] shadow-md transition-[opacity,transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-lg"
-                        onClick={() => {
-                          setTagCloudInteracted(true)
-                          setShowAllTags(true)
-                        }}
-                      >
-                        Expand categories
-                      </button>
-                    </div>
-                  )}
                 </div>
               </div>
             </div>
@@ -720,12 +648,8 @@ function StorefrontPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="newest">Newest</SelectItem>
-                  <SelectItem value="price_asc" disabled={!canShowPriceSort}>
-                    Price: Low to High
-                  </SelectItem>
-                  <SelectItem value="price_desc" disabled={!canShowPriceSort}>
-                    Price: High to Low
-                  </SelectItem>
+                  <SelectItem value="price_asc">Price: Low to High</SelectItem>
+                  <SelectItem value="price_desc">Price: High to Low</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -737,9 +661,9 @@ function StorefrontPage() {
                 {filteredProducts.length} product
                 {filteredProducts.length === 1 ? "" : "s"}
               </span>
-              {search.tag && (
+              {selectedTags.length > 0 && (
                 <span className="text-[var(--text-muted)]">
-                  in {search.tag}
+                  in {selectedTags.join(", ")}
                 </span>
               )}
             </div>
@@ -757,16 +681,15 @@ function StorefrontPage() {
               <LoaderCircle className="h-3 w-3 animate-spin text-secondary-300" />
               Updating store
             </span>
-            {!canShowPriceSort && (
+            {hasUnavailablePriceForSort && (
               <div className="mt-2 text-xs text-[var(--text-muted)]">
-                Price sorting is available when listings share a currency or a
-                BTC/USD display rate exists.
+                Listings without a rate-backed sats price are shown last.
               </div>
             )}
           </div>
 
           {productsQuery.isInitialLoading && (
-            <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
+            <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-4">
               {Array.from({ length: 6 }).map((_, index) => (
                 <li key={index} className="h-full">
                   <ProductGridCardSkeleton />
@@ -811,14 +734,14 @@ function StorefrontPage() {
             )}
 
           {filteredProducts.length > 0 && (
-            <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
+            <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-4">
               {filteredProducts.map((product, index) => (
                 <li key={product.id} className="h-full">
                   <ProductGridCard
                     product={product}
                     merchantName={merchantName}
                     merchantNamePending={merchantIdentityPending}
-                    imageLoading={identityReady && index < 4 ? "eager" : "lazy"}
+                    imageLoading={index < 4 ? "eager" : "lazy"}
                     btcUsdRate={btcUsdRate}
                     cartQuantity={
                       cart.items.find((item) => item.productId === product.id)
@@ -831,6 +754,8 @@ function StorefrontPage() {
                         title: product.title,
                         price: product.price,
                         currency: product.currency,
+                        priceSats: product.priceSats,
+                        sourcePrice: product.sourcePrice,
                         image: product.images[0]?.url,
                         tags: product.tags,
                       })
@@ -842,6 +767,8 @@ function StorefrontPage() {
                         title: product.title,
                         price: product.price,
                         currency: product.currency,
+                        priceSats: product.priceSats,
+                        sourcePrice: product.sourcePrice,
                         image: product.images[0]?.url,
                         tags: product.tags,
                       })

@@ -1,33 +1,40 @@
 import {
+  compareCommercePrices as compareCoreCommercePrices,
   getComparablePriceValue as getCoreComparablePriceValue,
+  getConfiguredPricingRateQuote,
   getProductPriceDisplay as getCoreProductPriceDisplay,
-  isSatsCurrency,
-  isUsdCurrency,
-  type Product,
+  isSatsLikeCurrency,
+  isUsdCurrencyCode,
+  type CommercePriceLike,
+  type CommercePriceSortDirection,
+  type PricingRateInput,
 } from "@conduit/core"
 
-export { isSatsCurrency, isUsdCurrency }
-
-export function getConfiguredBtcUsdRate(): number | null {
-  const raw = import.meta.env.VITE_BTC_USD_RATE
-  if (typeof raw !== "string") return null
-
-  const parsed = Number.parseFloat(raw)
-  if (!Number.isFinite(parsed) || parsed <= 0) return null
-
-  return parsed
+export {
+  getConfiguredPricingRateQuote,
+  isSatsLikeCurrency as isSatsCurrency,
+  isUsdCurrencyCode as isUsdCurrency,
 }
 
 export function getProductPriceDisplay(
-  product: Pick<Product, "price" | "currency">,
-  btcUsdRate: number | null = getConfiguredBtcUsdRate()
+  product: CommercePriceLike,
+  btcUsdRate: PricingRateInput = getConfiguredPricingRateQuote()
 ): { primary: string; secondary: string | null } {
   return getCoreProductPriceDisplay(product, btcUsdRate)
 }
 
 export function getComparablePriceValue(
-  product: Pick<Product, "price" | "currency">,
-  btcUsdRate: number | null = getConfiguredBtcUsdRate()
+  product: CommercePriceLike,
+  btcUsdRate: PricingRateInput = getConfiguredPricingRateQuote()
 ): number | null {
   return getCoreComparablePriceValue(product, btcUsdRate)
+}
+
+export function compareCommercePrices(
+  a: CommercePriceLike,
+  b: CommercePriceLike,
+  btcUsdRate: PricingRateInput = getConfiguredPricingRateQuote(),
+  direction: CommercePriceSortDirection = "asc"
+): number {
+  return compareCoreCommercePrices(a, b, btcUsdRate, direction)
 }

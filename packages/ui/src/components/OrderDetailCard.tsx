@@ -6,6 +6,11 @@ type OrderItem = {
   quantity: number
   priceAtPurchase: number
   currency: string
+  sourcePrice?: {
+    amount: number
+    currency: string
+    normalizedCurrency: string
+  }
 }
 
 type ShippingAddress = {
@@ -35,6 +40,15 @@ export type OrderDetailCardProps = {
   trackingCarrier: string | null
   trackingNumber: string | null
   trackingUrl: string | null
+  btcUsdRate?: unknown
+}
+
+function formatOrderAmount(amount: number, currency: string): string {
+  if (currency.trim().toUpperCase() === "SATS") {
+    return `${amount.toLocaleString()} sats`
+  }
+
+  return `${amount.toLocaleString()} ${currency.trim().toUpperCase()}`
 }
 
 export function OrderDetailCard({
@@ -67,9 +81,13 @@ export function OrderDetailCard({
         </div>
         <p className="mt-1 text-xs text-[var(--text-secondary)]">
           {counterpartyLabel}:{" "}
-          <span className="text-[var(--text-primary)]">{counterpartyName ?? counterpartyPubkey}</span>
+          <span className="text-[var(--text-primary)]">
+            {counterpartyName ?? counterpartyPubkey}
+          </span>
           {counterpartyName && (
-            <span className="ml-2 font-mono text-[var(--text-muted)]">{counterpartyPubkey}</span>
+            <span className="ml-2 font-mono text-[var(--text-muted)]">
+              {counterpartyPubkey}
+            </span>
           )}
         </p>
       </CardHeader>
@@ -77,27 +95,35 @@ export function OrderDetailCard({
       <CardContent className="space-y-4">
         {items.length > 0 && (
           <div className="space-y-2">
-            <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">Items</div>
+            <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+              Items
+            </div>
             <div className="space-y-1">
-              {items.map((item, i) => (
-                <div
-                  key={`${item.productId}-${i}`}
-                  className="flex items-center justify-between text-sm"
-                >
-                  <span className="text-[var(--text-primary)]">
-                    <span className="font-mono text-xs">{item.productId}</span>
-                    <span className="mx-1 text-[var(--text-secondary)]">x{item.quantity}</span>
-                  </span>
-                  <span className="text-[var(--text-secondary)]">
-                    {item.priceAtPurchase} {item.currency}
-                  </span>
-                </div>
-              ))}
+              {items.map((item, i) => {
+                return (
+                  <div
+                    key={`${item.productId}-${i}`}
+                    className="flex items-center justify-between text-sm"
+                  >
+                    <span className="text-[var(--text-primary)]">
+                      <span className="font-mono text-xs">
+                        {item.productId}
+                      </span>
+                      <span className="mx-1 text-[var(--text-secondary)]">
+                        x{item.quantity}
+                      </span>
+                    </span>
+                    <span className="text-[var(--text-secondary)]">
+                      {formatOrderAmount(item.priceAtPurchase, item.currency)}
+                    </span>
+                  </div>
+                )
+              })}
             </div>
             <div className="flex items-center justify-between border-t border-[var(--border)] pt-2 text-sm font-medium">
               <span className="text-[var(--text-primary)]">Subtotal</span>
               <span className="text-[var(--text-primary)]">
-                {subtotal} {currency}
+                {formatOrderAmount(subtotal, currency)}
               </span>
             </div>
           </div>
@@ -143,12 +169,18 @@ export function OrderDetailCard({
                 {invoiceCurrency ? ` ${invoiceCurrency}` : ""}
               </div>
               <div className="text-xs text-[var(--text-secondary)]">
-                {status === "paid" ? "Marked paid." : "Awaiting payment confirmation."}
-                {invoiceCount > 1 ? ` ${invoiceCount} invoices have been sent on this order.` : ""}
+                {status === "paid"
+                  ? "Marked paid."
+                  : "Awaiting payment confirmation."}
+                {invoiceCount > 1
+                  ? ` ${invoiceCount} invoices have been sent on this order.`
+                  : ""}
               </div>
             </div>
           ) : (
-            <div className="text-sm text-[var(--text-secondary)]">Not yet sent</div>
+            <div className="text-sm text-[var(--text-secondary)]">
+              Not yet sent
+            </div>
           )}
         </div>
 
@@ -158,7 +190,9 @@ export function OrderDetailCard({
               Tracking
             </div>
             {trackingCarrier && (
-              <div className="text-sm text-[var(--text-primary)]">{trackingCarrier}</div>
+              <div className="text-sm text-[var(--text-primary)]">
+                {trackingCarrier}
+              </div>
             )}
             {trackingNumber && (
               <div className="font-mono text-xs text-[var(--text-secondary)]">
@@ -169,7 +203,8 @@ export function OrderDetailCard({
               if (!trackingUrl) return null
               try {
                 const u = new URL(trackingUrl)
-                if (u.protocol !== "http:" && u.protocol !== "https:") return null
+                if (u.protocol !== "http:" && u.protocol !== "https:")
+                  return null
                 return (
                   <a
                     className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"

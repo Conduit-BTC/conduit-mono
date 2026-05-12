@@ -4,10 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   extractOrderSummary,
   formatNpub,
-  getProfiles,
   formatPubkey,
+  getProductPriceDisplay,
   useAuth,
   useProfile,
+  useProfiles,
 } from "@conduit/core"
 import { Badge, Button } from "@conduit/ui"
 import {
@@ -34,6 +35,7 @@ import {
   type BuyerConversation,
 } from "../lib/orderConversations"
 import { fetchStoreProducts } from "../lib/storeProducts"
+import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 
 export const Route = createFileRoute("/orders")({
   beforeLoad: () => {
@@ -121,11 +123,20 @@ function OrderListItem({
 
 function OrderHero({ conversation }: { conversation: BuyerConversation }) {
   const { data: profile } = useProfile(conversation.merchantPubkey)
+  const btcUsdRateQuery = useBtcUsdRate()
   const merchantName = getMerchantDisplayName(
     profile,
     conversation.merchantPubkey
   )
   const summary = extractOrderSummary(conversation.messages ?? [])
+  const subtotal = getProductPriceDisplay(
+    {
+      price: summary.subtotal,
+      currency: summary.currency,
+      priceSats: summary.currency === "SATS" ? summary.subtotal : undefined,
+    },
+    btcUsdRateQuery.data ?? null
+  )
 
   return (
     <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5">
@@ -180,7 +191,7 @@ function OrderHero({ conversation }: { conversation: BuyerConversation }) {
           <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm">
             <span className="text-[var(--text-secondary)]">Subtotal</span>
             <span className="ml-2 font-semibold text-secondary-300">
-              {summary.subtotal} {summary.currency}
+              {subtotal.primary}
             </span>
           </div>
           <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm">
@@ -253,6 +264,7 @@ function CollapsibleInfo({
 
 function OrdersPage() {
   const { pubkey, status } = useAuth()
+  const btcUsdRateQuery = useBtcUsdRate()
   const signerConnected = status === "connected" && !!pubkey
   const [selectedConversationId, setSelectedConversationId] = useState<
     string | null
@@ -333,13 +345,10 @@ function OrdersPage() {
       ),
     [conversations]
   )
-  const merchantProfilesQuery = useQuery({
-    queryKey: ["buyer-order-profiles", merchantPubkeys],
+  const merchantProfilesQuery = useProfiles(merchantPubkeys, {
     enabled: signerConnected && merchantPubkeys.length > 0,
-    queryFn: async () => {
-      const result = await getProfiles({ pubkeys: merchantPubkeys })
-      return result.data
-    },
+    priority: "background",
+    refetchUnresolvedMs: 12_000,
   })
 
   const filteredConversations = useMemo(() => {
@@ -563,6 +572,18 @@ function OrdersPage() {
                           )
                           const product = formatProductReference(item.productId)
                           const image = resolvedProduct?.images[0]
+                          const itemPrice = getProductPriceDisplay(
+                            {
+                              price: item.priceAtPurchase,
+                              currency: item.currency,
+                              priceSats:
+                                item.currency === "SATS"
+                                  ? item.priceAtPurchase
+                                  : undefined,
+                              sourcePrice: item.sourcePrice,
+                            },
+                            btcUsdRateQuery.data ?? null
+                          )
                           return (
                             <div
                               key={`${item.productId}-${index}`}
@@ -596,7 +617,7 @@ function OrdersPage() {
                                 </div>
                               </div>
                               <div className="shrink-0 text-right text-[var(--text-secondary)]">
-                                {item.priceAtPurchase} {item.currency}
+                                {itemPrice.primary}
                               </div>
                             </div>
                           )
@@ -615,7 +636,19 @@ function OrdersPage() {
                             Subtotal
                           </span>
                           <span className="font-medium text-secondary-300">
-                            {orderSummary.subtotal} {orderSummary.currency}
+                            {
+                              getProductPriceDisplay(
+                                {
+                                  price: orderSummary.subtotal,
+                                  currency: orderSummary.currency,
+                                  priceSats:
+                                    orderSummary.currency === "SATS"
+                                      ? orderSummary.subtotal
+                                      : undefined,
+                                },
+                                btcUsdRateQuery.data ?? null
+                              ).primary
+                            }
                           </span>
                         </div>
                         <div className="flex items-center justify-between gap-3">

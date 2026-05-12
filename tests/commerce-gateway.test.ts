@@ -110,6 +110,47 @@ afterEach(async () => {
 })
 
 describe("commerce gateway", () => {
+  it("passes author filters for perspective-scoped marketplace discovery", async () => {
+    const productEvents = [
+      makeProductEvent({
+        pubkey: "merchant-a",
+        dTag: "item-a",
+        id: "event-a",
+        createdAt: 101,
+        title: "Item A",
+      }),
+      makeProductEvent({
+        pubkey: "merchant-b",
+        dTag: "item-b",
+        id: "event-b",
+        createdAt: 102,
+        title: "Item B",
+      }),
+    ]
+    let seenAuthors: string[] | undefined
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          seenAuthors = filter.authors
+          return productEvents as never
+        }
+
+        return []
+      },
+    })
+
+    const result = await getMarketplaceProducts({
+      authorPubkeys: ["merchant-a"],
+      sort: "newest",
+    })
+
+    expect(seenAuthors).toEqual(["merchant-a"])
+    expect(result.data.map((record) => record.product.pubkey)).toEqual([
+      "merchant-a",
+    ])
+  })
+
   it("falls back to local cached marketplace products without changing shape", async () => {
     cachedProducts.push({
       id: "30402:merchant:cached-item",
@@ -449,5 +490,201 @@ describe("commerce gateway", () => {
     expect(seenOptions?.relayUrls?.length).toBeGreaterThan(0)
     expect(seenOptions?.connectTimeoutMs).toBe(1_500)
     expect(seenOptions?.fetchTimeoutMs).toBe(3_000)
+  })
+
+  it("uses cached product source relays as first-choice merchant profile hints", async () => {
+    cachedProducts.push({
+      id: "30402:merchant:source-hinted-item",
+      pubkey: "merchant",
+      title: "Source Hinted Item",
+      summary: "cached summary",
+      price: 25,
+      currency: "USD",
+      type: "simple",
+      visibility: "public",
+      images: [{ url: "https://example.com/source-hinted-item.png" }],
+      tags: ["cached"],
+      sourceRelayUrls: ["wss://profile-source.example"],
+      createdAt: FIXED_NOW - 5_000,
+      updatedAt: FIXED_NOW - 5_000,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+
+    let seenRelayUrls: string[] | undefined
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        seenRelayUrls = options?.relayUrls
+        if (
+          filter.kinds?.includes(EVENT_KINDS.PROFILE) &&
+          options?.relayUrls?.[0] === "wss://profile-source.example"
+        ) {
+          return [
+            {
+              id: "profile-merchant",
+              pubkey: "merchant",
+              created_at: 10,
+              content: JSON.stringify({
+                name: "Source Merchant",
+                picture: "https://example.com/avatar.png",
+              }),
+              tags: [],
+            } as never,
+          ]
+        }
+
+        return []
+      },
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      priority: "background",
+      skipCache: true,
+      readPolicy: { maxRelays: 1 },
+    })
+
+    expect(seenRelayUrls?.[0]).toBe("wss://profile-source.example")
+    expect(result.data.merchant?.name).toBe("Source Merchant")
+    expect(result.data.merchant?.picture).toBe("https://example.com/avatar.png")
+  })
+
+  it("uses explicit product relay hints before default relays for profiles", async () => {
+    let seenRelayUrls: string[] | undefined
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        seenRelayUrls = options?.relayUrls
+        if (
+          filter.kinds?.includes(EVENT_KINDS.PROFILE) &&
+          options?.relayUrls?.[0] === "wss://live-product-source.example"
+        ) {
+          return [
+            {
+              id: "profile-live-merchant",
+              pubkey: "live-merchant",
+              created_at: 10,
+              content: JSON.stringify({ display_name: "Live Merchant" }),
+              tags: [],
+            } as never,
+          ]
+        }
+
+        return []
+      },
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["live-merchant"],
+      priority: "visible",
+      skipCache: true,
+      readPolicy: { maxRelays: 1 },
+      relayHintsByPubkey: {
+        "live-merchant": ["wss://live-product-source.example"],
+      },
+    })
+
+    expect(seenRelayUrls?.[0]).toBe("wss://live-product-source.example")
+    expect(result.data["live-merchant"]?.displayName).toBe("Live Merchant")
+  })
+
+  it("emits profile progress before the full profile result settles", async () => {
+    const progressNames: string[] = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PROFILE)) return []
+
+        return [
+          {
+            id: "profile-progress-merchant",
+            pubkey: "progress-merchant",
+            created_at: 10,
+            content: JSON.stringify({ display_name: "Progress Merchant" }),
+            tags: [],
+          } as never,
+        ]
+      },
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["progress-merchant"],
+      skipCache: true,
+      onProgress: (progress) => {
+        const name = progress.data["progress-merchant"]?.displayName
+        if (name) progressNames.push(name)
+      },
+    })
+
+    expect(progressNames).toEqual(["Progress Merchant"])
+    expect(result.data["progress-merchant"]?.displayName).toBe(
+      "Progress Merchant"
+    )
+  })
+
+  it("uses the newest profile event with content instead of a newer bare event", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PROFILE)) return []
+
+        return [
+          {
+            id: "profile-blank-newer",
+            pubkey: "merchant",
+            created_at: 20,
+            content: "{}",
+            tags: [],
+          } as never,
+          {
+            id: "profile-rich-older",
+            pubkey: "merchant",
+            created_at: 10,
+            content: JSON.stringify({ name: "ZALGEBAR" }),
+            tags: [],
+          } as never,
+        ]
+      },
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+      skipCache: true,
+    })
+
+    expect(result.data.merchant?.name).toBe("ZALGEBAR")
+  })
+
+  it("keeps stale cached profile identity when live profile lookup misses", async () => {
+    cachedProfiles.set("merchant", {
+      pubkey: "merchant",
+      displayName: "ZALGEBAR",
+      cachedAt: FIXED_NOW - 10 * 60_000,
+    })
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["merchant"],
+    })
+
+    expect(result.data.merchant?.displayName).toBe("ZALGEBAR")
+  })
+
+  it("does not cache bare profile misses as successful profile rows", async () => {
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["missing-profile"],
+      skipCache: true,
+    })
+
+    expect(result.data["missing-profile"]).toEqual({
+      pubkey: "missing-profile",
+    })
+    expect(cachedProfiles.has("missing-profile")).toBe(false)
   })
 })

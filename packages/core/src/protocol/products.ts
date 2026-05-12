@@ -1,4 +1,5 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
+import { canonicalizeProductPrice } from "../pricing"
 import { productSchema, type ProductSchema } from "../schemas"
 
 const PRODUCT_IMAGE_URL_PATTERN = /^https?:\/\//i
@@ -74,7 +75,14 @@ export function parseProductEvent(
       updatedAt: parsed.updatedAt ?? createdAtMs,
     }
 
-    const res = productSchema.safeParse(candidate)
+    const pricedCandidate =
+      typeof candidate.price === "number"
+        ? canonicalizeProductPrice({
+            ...candidate,
+            currency: candidate.currency ?? "USD",
+          } as ProductSchema)
+        : candidate
+    const res = productSchema.safeParse(pricedCandidate)
     if (res.success) return res.data
   } catch {
     // fall through
@@ -97,20 +105,22 @@ export function parseProductEvent(
 
   const tags = getTagValues(event.tags, "t")
 
-  const fallback: ProductSchema = productSchema.parse({
-    id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
-    pubkey: event.pubkey,
-    title,
-    summary:
-      summaryTag ?? (fromContent ? fromContent.slice(0, 5000) : undefined),
-    price: priceInfo?.price ?? 0,
-    currency: priceInfo?.currency ?? "USD",
-    images,
-    tags,
-    location: locationTag ?? undefined,
-    createdAt: createdAtMs,
-    updatedAt: createdAtMs,
-  })
+  const fallback: ProductSchema = productSchema.parse(
+    canonicalizeProductPrice({
+      id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
+      pubkey: event.pubkey,
+      title,
+      summary:
+        summaryTag ?? (fromContent ? fromContent.slice(0, 5000) : undefined),
+      price: priceInfo?.price ?? 0,
+      currency: priceInfo?.currency ?? "USD",
+      images,
+      tags,
+      location: locationTag ?? undefined,
+      createdAt: createdAtMs,
+      updatedAt: createdAtMs,
+    })
+  )
 
   return fallback
 }

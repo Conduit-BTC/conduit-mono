@@ -1,16 +1,24 @@
-import { LoaderCircle, SearchX, ShoppingCart, Store } from "lucide-react"
+import {
+  ChevronDown,
+  LoaderCircle,
+  SearchX,
+  ShoppingCart,
+  Store,
+} from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import {
   formatNpub,
-  getProfileDisplayLabel,
   getProfileName,
   useProfile,
   type Product,
 } from "@conduit/core"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
-import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
+import {
+  MerchantAvatarFallback,
+  getPendingMerchantDisplayName,
+} from "../../components/MerchantIdentity"
 import {
   ProductGridCard,
   ProductGridCardSkeleton,
@@ -29,6 +37,13 @@ export const Route = createFileRoute("/products/$productId")({
 
 const PRODUCT_SUMMARY_FALLBACK =
   "This listing does not include a merchant-written summary yet. Product pricing, identity, and order flow are still available for checkout."
+const PRODUCT_DESCRIPTION_COLLAPSED_ROWS = 5
+
+type DescriptionMetrics = {
+  canExpand: boolean
+  collapsedHeight: number
+  expandedHeight: number
+}
 
 function getProductDisplaySummary(product: Product): string {
   let summary = product.summary?.trim() ?? ""
@@ -51,12 +66,24 @@ function ProductPage() {
   const [selectedImageIndex, setSelectedImageIndex] = useState(0)
   const [quantity, setQuantity] = useState(1)
   const [showAllTags, setShowAllTags] = useState(false)
+  const [showFullDescription, setShowFullDescription] = useState(false)
+  const [descriptionMetrics, setDescriptionMetrics] =
+    useState<DescriptionMetrics>({
+      canExpand: false,
+      collapsedHeight: 0,
+      expandedHeight: 0,
+    })
+  const descriptionRef = useRef<HTMLParagraphElement>(null)
   const btcUsdRateQuery = useBtcUsdRate()
 
   const productQuery = useProgressiveProductDetail(productId)
   const product = productQuery.product
 
-  const merchantProfile = useProfile(product?.pubkey)
+  const merchantProfile = useProfile(product?.pubkey, {
+    relayHints: product
+      ? productQuery.profileRelayHintsByPubkey[product.pubkey]
+      : undefined,
+  })
 
   const relatedProductsQuery = useProgressiveProducts({
     scope: "marketplace",
@@ -78,25 +105,17 @@ function ProductPage() {
   const hasMultipleImages = images.length > 1
   const selectedImage = images[selectedImageIndex] ?? images[0]
   const merchantProfileName = getProfileName(merchantProfile.data)
-  const merchantIdentityPending =
-    !!product && !merchantProfileName && merchantProfile.isPlaceholderData
+  const merchantIdentityPending = !!product && !merchantProfileName
   const merchantName = product
     ? merchantProfileName ||
-      (merchantIdentityPending
-        ? "Store"
-        : getProfileDisplayLabel(merchantProfile.data, product.pubkey, {
-            lookupSettled: true,
-            emptyPrefix: "Store",
-            chars: 8,
-          }))
+      getPendingMerchantDisplayName(product.pubkey, { chars: 8 })
     : ""
-  const merchantIdentityReady = !merchantProfile.isPlaceholderData
   const cartItem = product
     ? cart.items.find((item) => item.productId === product.id)
     : null
   const cartQuantity = cartItem?.quantity ?? 0
   const priceDisplay = product
-    ? getProductPriceDisplay(product, btcUsdRateQuery.data?.rate ?? null)
+    ? getProductPriceDisplay(product, btcUsdRateQuery.data ?? null)
     : null
   const updatedLabel = product
     ? new Intl.DateTimeFormat("en-US", {
@@ -112,14 +131,77 @@ function ProductPage() {
 
   const visibleTags = useMemo(() => {
     if (!product) return []
-    return showAllTags ? product.tags : product.tags.slice(0, 6)
+    return showAllTags ? product.tags : product.tags.slice(0, 4)
   }, [product, showAllTags])
 
   useEffect(() => {
     setSelectedImageIndex(0)
     setQuantity(1)
     setShowAllTags(false)
+    setShowFullDescription(false)
   }, [product?.id])
+
+  useLayoutEffect(() => {
+    const descriptionElement = descriptionRef.current
+    if (!descriptionElement || typeof window === "undefined") {
+      setDescriptionMetrics({
+        canExpand: false,
+        collapsedHeight: 0,
+        expandedHeight: 0,
+      })
+      return
+    }
+
+    const measureDescription = () => {
+      const computedStyles = window.getComputedStyle(descriptionElement)
+      const lineHeight = Number.parseFloat(computedStyles.lineHeight)
+      if (!Number.isFinite(lineHeight)) {
+        setDescriptionMetrics({
+          canExpand: false,
+          collapsedHeight: 0,
+          expandedHeight: 0,
+        })
+        return
+      }
+
+      const collapsedHeight = Math.ceil(
+        lineHeight * PRODUCT_DESCRIPTION_COLLAPSED_ROWS
+      )
+      const expandedHeight = Math.ceil(descriptionElement.scrollHeight)
+      const canExpand = expandedHeight > collapsedHeight + 1
+
+      setDescriptionMetrics((current) => {
+        if (
+          current.canExpand === canExpand &&
+          current.collapsedHeight === collapsedHeight &&
+          current.expandedHeight === expandedHeight
+        ) {
+          return current
+        }
+
+        return { canExpand, collapsedHeight, expandedHeight }
+      })
+    }
+
+    measureDescription()
+
+    if (typeof ResizeObserver !== "undefined") {
+      const resizeObserver = new ResizeObserver(measureDescription)
+      resizeObserver.observe(descriptionElement)
+
+      return () => resizeObserver.disconnect()
+    }
+
+    window.addEventListener("resize", measureDescription)
+
+    return () => window.removeEventListener("resize", measureDescription)
+  }, [displaySummary])
+
+  const descriptionMaxHeight = descriptionMetrics.canExpand
+    ? showFullDescription
+      ? descriptionMetrics.expandedHeight
+      : descriptionMetrics.collapsedHeight
+    : undefined
 
   return (
     <div className="min-w-0 max-w-full space-y-8 overflow-x-hidden">
@@ -140,10 +222,9 @@ function ProductPage() {
                 className="transition-colors hover:text-[var(--text-primary)]"
               >
                 {merchantIdentityPending ? (
-                  <span
-                    aria-hidden="true"
-                    className="inline-block h-3 w-24 animate-pulse rounded bg-[var(--surface-elevated)] align-middle"
-                  />
+                  <span className="inline-block max-w-full animate-pulse truncate align-middle">
+                    {merchantName}
+                  </span>
                 ) : (
                   merchantName
                 )}
@@ -296,7 +377,7 @@ function ProductPage() {
                   <Avatar className="h-11 w-11 shrink-0 border border-[var(--border)]">
                     <AvatarImage
                       src={merchantProfile.data?.picture}
-                      alt={merchantIdentityPending ? "Store" : merchantName}
+                      alt={merchantName}
                     />
                     <AvatarFallback>
                       <MerchantAvatarFallback />
@@ -309,10 +390,11 @@ function ProductPage() {
                       className="block min-w-0 rounded-md transition-colors hover:text-secondary-300"
                     >
                       {merchantIdentityPending ? (
-                        <div
-                          aria-hidden="true"
-                          className="mt-1 h-4 w-32 animate-pulse rounded bg-[var(--surface)]"
-                        />
+                        <div className="truncate text-base font-semibold leading-tight text-[var(--text-primary)]">
+                          <span className="inline-block max-w-full animate-pulse truncate">
+                            {merchantName}
+                          </span>
+                        </div>
                       ) : (
                         <div className="truncate text-base font-semibold leading-tight text-[var(--text-primary)]">
                           {merchantName}
@@ -393,6 +475,8 @@ function ProductPage() {
                           title: product.title,
                           price: product.price,
                           currency: product.currency,
+                          priceSats: product.priceSats,
+                          sourcePrice: product.sourcePrice,
                           image: product.images[0]?.url,
                           tags: product.tags,
                         },
@@ -422,7 +506,7 @@ function ProductPage() {
                 <h2 className="text-xl font-semibold text-[var(--text-primary)]">
                   Details
                 </h2>
-                {product.tags.length > 0 && (
+                {product.tags.length > 4 && (
                   <button
                     type="button"
                     className="text-xs font-medium text-secondary-400 transition-colors hover:text-secondary-300"
@@ -436,9 +520,56 @@ function ProductPage() {
               </div>
 
               <div className="space-y-5">
-                <p className="break-words whitespace-pre-line text-sm leading-7 text-[var(--text-secondary)] [overflow-wrap:anywhere]">
-                  {displaySummary}
-                </p>
+                <div className="space-y-2">
+                  <div className="relative">
+                    <div
+                      className={[
+                        descriptionMetrics.canExpand
+                          ? "overflow-hidden transition-[max-height] duration-300 ease-out motion-reduce:transition-none"
+                          : "",
+                      ].join(" ")}
+                      style={
+                        descriptionMaxHeight === undefined
+                          ? undefined
+                          : { maxHeight: `${descriptionMaxHeight}px` }
+                      }
+                    >
+                      <p
+                        ref={descriptionRef}
+                        className="break-words whitespace-pre-line text-sm leading-7 text-[var(--text-secondary)] [overflow-wrap:anywhere]"
+                      >
+                        {displaySummary}
+                      </p>
+                    </div>
+                    <div
+                      aria-hidden="true"
+                      className={[
+                        "pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-[var(--surface)] to-transparent transition-opacity duration-200 motion-reduce:transition-none",
+                        descriptionMetrics.canExpand && !showFullDescription
+                          ? "opacity-100"
+                          : "opacity-0",
+                      ].join(" ")}
+                    />
+                  </div>
+                  {descriptionMetrics.canExpand && (
+                    <button
+                      type="button"
+                      className="inline-flex h-8 items-center gap-1 rounded-full px-2 text-xs font-medium text-secondary-400 transition-colors hover:bg-[var(--surface-elevated)] hover:text-secondary-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                      aria-expanded={showFullDescription}
+                      onClick={() =>
+                        setShowFullDescription((current) => !current)
+                      }
+                    >
+                      {showFullDescription ? "Show less" : "Show more"}
+                      <ChevronDown
+                        className={[
+                          "h-3.5 w-3.5 transition-transform",
+                          showFullDescription ? "rotate-180" : "",
+                        ].join(" ")}
+                      />
+                    </button>
+                  )}
+                </div>
 
                 {(product.location || updatedLabel) && (
                   <dl className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm sm:grid-cols-2">
@@ -503,10 +634,6 @@ function ProductPage() {
                 <h2 className="text-2xl font-semibold text-[var(--text-primary)]">
                   More from this store
                 </h2>
-                <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                  Keep browsing merchant listings without leaving the product
-                  flow.
-                </p>
               </div>
               <Button asChild variant="outline" className="h-11 px-4 text-sm">
                 <Link to="/store/$pubkey" params={{ pubkey: product.pubkey }}>
@@ -517,7 +644,7 @@ function ProductPage() {
             </div>
 
             {relatedProductsQuery.isInitialLoading && (
-              <ul className="grid list-none grid-cols-2 gap-3 p-0 lg:grid-cols-4">
+              <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 lg:grid-cols-4">
                 {Array.from({ length: 4 }).map((_, index) => (
                   <li key={index} className="h-full">
                     <ProductGridCardSkeleton />
@@ -535,7 +662,7 @@ function ProductPage() {
               )}
 
             {relatedProducts.length > 0 && (
-              <ul className="grid list-none grid-cols-2 gap-3 p-0 lg:grid-cols-4">
+              <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 lg:grid-cols-4">
                 {relatedProducts.map((relatedProduct, index) => {
                   const relatedCartItem = cart.items.find(
                     (item) => item.productId === relatedProduct.id
@@ -548,10 +675,8 @@ function ProductPage() {
                         product={relatedProduct}
                         merchantName={merchantName}
                         merchantNamePending={merchantIdentityPending}
-                        imageLoading={
-                          merchantIdentityReady && index < 4 ? "eager" : "lazy"
-                        }
-                        btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+                        imageLoading={index < 4 ? "eager" : "lazy"}
+                        btcUsdRate={btcUsdRateQuery.data ?? null}
                         cartQuantity={relatedCartQuantity}
                         onAddToCart={() =>
                           cart.addItem(
@@ -561,6 +686,8 @@ function ProductPage() {
                               title: relatedProduct.title,
                               price: relatedProduct.price,
                               currency: relatedProduct.currency,
+                              priceSats: relatedProduct.priceSats,
+                              sourcePrice: relatedProduct.sourcePrice,
                               image: relatedProduct.images[0]?.url,
                               tags: relatedProduct.tags,
                             },
@@ -575,6 +702,8 @@ function ProductPage() {
                               title: relatedProduct.title,
                               price: relatedProduct.price,
                               currency: relatedProduct.currency,
+                              priceSats: relatedProduct.priceSats,
+                              sourcePrice: relatedProduct.sourcePrice,
                               image: relatedProduct.images[0]?.url,
                               tags: relatedProduct.tags,
                             },

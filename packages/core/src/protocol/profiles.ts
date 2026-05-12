@@ -114,6 +114,7 @@ export async function publishProfile(
     nip05: profile.nip05,
     lud16: profile.lud16,
     website: profile.website,
+    sourceRelayUrls: [],
     cachedAt: Date.now(),
   })
 }

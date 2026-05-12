@@ -8,11 +8,11 @@ import {
   appendConduitClientTag,
   formatNpub,
   getNdk,
-  getProfiles,
   formatPubkey,
   publishWithPlanner,
   useAuth,
   useProfile,
+  useProfiles,
 } from "@conduit/core"
 import { requireAuth } from "../lib/auth"
 import { CopyButton } from "../components/CopyButton"
@@ -158,13 +158,10 @@ function MessagesPage() {
       ),
     [conversations]
   )
-  const merchantProfilesQuery = useQuery({
-    queryKey: ["buyer-message-profiles", merchantPubkeys],
+  const merchantProfilesQuery = useProfiles(merchantPubkeys, {
     enabled: signerConnected && merchantPubkeys.length > 0,
-    queryFn: async () => {
-      const result = await getProfiles({ pubkeys: merchantPubkeys })
-      return result.data
-    },
+    priority: "background",
+    refetchUnresolvedMs: 12_000,
   })
 
   const filteredConversations = useMemo(() => {

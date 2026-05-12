@@ -119,7 +119,7 @@ function ProfilePage() {
               </div>
             )}
 
-            {profileQuery.error && (
+            {!!profileQuery.error && (
               <div className="rounded-2xl border border-[var(--destructive)]/30 bg-[color-mix(in_srgb,var(--destructive)_8%,transparent)] p-4 text-sm text-[var(--destructive)]">
                 Failed to load profile:{" "}
                 {profileQuery.error instanceof Error

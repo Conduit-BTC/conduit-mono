@@ -1,6 +1,12 @@
 import { type ClassValue, clsx } from "clsx"
 import { nip19 } from "@nostr-dev-kit/ndk"
 import { twMerge } from "tailwind-merge"
+import {
+  formatFiatPrice,
+  formatSats,
+  getComparablePriceValue,
+  getProductPriceDisplay,
+} from "../pricing"
 import type { Profile } from "../types"
 
 /**
@@ -18,96 +24,10 @@ export function formatPrice(
   currency = "USD",
   locale = "en-US"
 ): string {
-  return new Intl.NumberFormat(locale, {
-    style: "currency",
-    currency,
-  }).format(amount)
+  return formatFiatPrice(amount, currency, locale)
 }
 
-/**
- * Format satoshis to BTC or sats display
- */
-export function formatSats(sats: number, showBtc = false): string {
-  if (showBtc && sats >= 100_000_000) {
-    return `${(sats / 100_000_000).toFixed(8)} BTC`
-  }
-  return `${sats.toLocaleString()} sats`
-}
-
-const SATS_PER_BTC = 100_000_000
-
-function normalizeCurrency(currency: string): string {
-  return currency.trim().toUpperCase()
-}
-
-function isCommerceSatsCurrency(currency: string): boolean {
-  const code = normalizeCurrency(currency)
-  return code === "SAT" || code === "SATS"
-}
-
-function isCommerceUsdCurrency(currency: string): boolean {
-  return normalizeCurrency(currency) === "USD"
-}
-
-function formatNativeCommercePrice(amount: number, currency: string): string {
-  if (isCommerceSatsCurrency(currency)) return formatSats(amount)
-  if (isCommerceUsdCurrency(currency)) return formatPrice(amount, "USD")
-
-  return `${amount.toLocaleString()} ${normalizeCurrency(currency)}`
-}
-
-function formatApproxUsdFromSats(sats: number, btcUsdRate: number): string {
-  const usd = (sats / SATS_PER_BTC) * btcUsdRate
-  if (usd < 0.01) return "~$0.01"
-
-  return `~${formatPrice(usd, "USD")}`
-}
-
-function formatApproxSatsFromUsd(usd: number, btcUsdRate: number): string {
-  const sats = Math.round((usd / btcUsdRate) * SATS_PER_BTC)
-  return `~${formatSats(sats)}`
-}
-
-export function getProductPriceDisplay(
-  product: { price: number; currency: string },
-  btcUsdRate: number | null = null
-): { primary: string; secondary: string | null } {
-  const primary = formatNativeCommercePrice(product.price, product.currency)
-
-  if (!btcUsdRate) {
-    return { primary, secondary: null }
-  }
-
-  if (isCommerceSatsCurrency(product.currency)) {
-    return {
-      primary,
-      secondary: formatApproxUsdFromSats(product.price, btcUsdRate),
-    }
-  }
-
-  if (isCommerceUsdCurrency(product.currency)) {
-    return {
-      primary,
-      secondary: formatApproxSatsFromUsd(product.price, btcUsdRate),
-    }
-  }
-
-  return { primary, secondary: null }
-}
-
-export function getComparablePriceValue(
-  product: { price: number; currency: string },
-  btcUsdRate: number | null = null
-): number | null {
-  if (isCommerceSatsCurrency(product.currency)) return product.price
-
-  if (isCommerceUsdCurrency(product.currency)) {
-    if (!btcUsdRate) return null
-    return Math.round((product.price / btcUsdRate) * SATS_PER_BTC)
-  }
-
-  return null
-}
+export { formatSats, getComparablePriceValue, getProductPriceDisplay }
 
 /**
  * Convert a hex pubkey to npub (bech32). Returns the input unchanged if
