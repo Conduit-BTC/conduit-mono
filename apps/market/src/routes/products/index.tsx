@@ -6,7 +6,7 @@ import {
   useState,
 } from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { ChevronDown, LoaderCircle } from "lucide-react"
+import { ChevronDown, LoaderCircle, X } from "lucide-react"
 import { EVENT_KINDS } from "@conduit/core"
 import {
   Badge,
@@ -62,6 +62,25 @@ export const Route = createFileRoute("/products/")({
     }
   },
 })
+
+function FilterRemoveButton({
+  label,
+  onClick,
+}: {
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="-mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[var(--text-muted)] transition-colors hover:bg-[var(--surface)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+      aria-label={label}
+    >
+      <X className="h-3.5 w-3.5" aria-hidden="true" />
+    </button>
+  )
+}
 
 function ProductsPage() {
   const cart = useCart()
@@ -275,13 +294,21 @@ function ProductsPage() {
             {tagCloudOverflows && (
               <button
                 type="button"
-                className="text-xs font-medium text-secondary-400 transition-colors duration-150 hover:text-secondary-300"
+                className="inline-flex h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-secondary-400 transition-colors duration-150 hover:bg-[var(--surface-elevated)] hover:text-secondary-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                aria-expanded={showAllTags}
                 onClick={() => {
                   setTagCloudInteracted(true)
                   setShowAllTags((current) => !current)
                 }}
               >
                 {showAllTags ? "Collapse" : "Expand categories"}
+                <ChevronDown
+                  className={[
+                    "h-3.5 w-3.5 transition-transform duration-150",
+                    showAllTags ? "rotate-180" : "",
+                  ].join(" ")}
+                  aria-hidden="true"
+                />
               </button>
             )}
           </div>
@@ -445,15 +472,12 @@ function ProductsPage() {
 
       {search.q && (
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="secondary" className="gap-1">
+          <Badge variant="secondary" className="gap-1.5">
             &ldquo;{search.q}&rdquo;
-            <button
+            <FilterRemoveButton
+              label="Remove search filter"
               onClick={() => updateSearch({ q: undefined })}
-              className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
-              aria-label="Remove search filter"
-            >
-              &times;
-            </button>
+            />
           </Badge>
         </div>
       )}
@@ -461,15 +485,12 @@ function ProductsPage() {
       {selectedMerchants.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">
           {selectedMerchants.map((merchant) => (
-            <Badge key={merchant} variant="secondary" className="gap-1">
+            <Badge key={merchant} variant="secondary" className="gap-1.5">
               {getMerchantName(merchant)}
-              <button
+              <FilterRemoveButton
+                label={`Remove ${getMerchantName(merchant)} store filter`}
                 onClick={() => toggleMerchant(merchant)}
-                className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
-                aria-label={`Remove ${getMerchantName(merchant)} store filter`}
-              >
-                &times;
-              </button>
+              />
             </Badge>
           ))}
         </div>
@@ -478,15 +499,12 @@ function ProductsPage() {
       {selectedTags.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">
           {selectedTags.map((tag) => (
-            <Badge key={tag} variant="secondary" className="gap-1 capitalize">
+            <Badge key={tag} variant="secondary" className="gap-1.5 capitalize">
               {tag}
-              <button
+              <FilterRemoveButton
+                label={`Remove ${tag} filter`}
                 onClick={() => toggleTag(tag)}
-                className="ml-0.5 transition-colors hover:text-[var(--text-primary)]"
-                aria-label={`Remove ${tag} filter`}
-              >
-                &times;
-              </button>
+              />
             </Badge>
           ))}
         </div>
