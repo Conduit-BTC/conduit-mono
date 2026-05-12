@@ -56,7 +56,7 @@ export function ProductCard({
   }, [activeImage?.url])
 
   const merchantNameContent = merchantNamePending ? (
-    <span className="inline-block max-w-full animate-pulse truncate">
+    <span className="inline-block max-w-full animate-pulse truncate leading-5">
       {merchantName}
     </span>
   ) : (
@@ -128,7 +128,7 @@ export function ProductCard({
           {onMerchantActivate ? (
             <button
               type="button"
-              className="truncate text-left text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+              className="truncate text-left text-xs leading-5 text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
               aria-label={merchantNamePending ? "Open store" : undefined}
               onClick={(event) => {
                 event.preventDefault()
@@ -139,7 +139,7 @@ export function ProductCard({
               {merchantNameContent}
             </button>
           ) : (
-            <div className="truncate text-left text-xs text-[var(--text-muted)]">
+            <div className="truncate text-left text-xs leading-5 text-[var(--text-muted)]">
               {merchantNameContent}
             </div>
           )}

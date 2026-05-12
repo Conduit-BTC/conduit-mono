@@ -664,7 +664,7 @@ function ProductsPage() {
 
       {/* Loading */}
       {productsQuery.isInitialLoading && (
-        <ul className="grid auto-rows-fr list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
+        <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-4">
           {Array.from({ length: PAGE_SIZE }).map((_, idx) => (
             <li key={idx} className="h-full">
               <ProductGridCardSkeleton />
@@ -719,7 +719,7 @@ function ProductsPage() {
 
       {/* Product grid */}
       {productCards.length > 0 && (
-        <ul className="grid auto-rows-fr list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
+        <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-4">
           {productCards.map(({ product, merchant }, index) => {
             return (
               <li key={product.id} className="h-full">
