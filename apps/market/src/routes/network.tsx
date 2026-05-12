@@ -15,23 +15,25 @@ function SettingsPage() {
   })
 
   return (
-    <div className="mx-auto max-w-5xl">
-      <RelaySettingsPanel
-        settings={relaySettings.settings}
-        scanningUrls={relaySettings.scanningUrls}
-        error={relaySettings.error}
-        isLoadingPublishedRelayList={relaySettings.isLoadingPublishedRelayList}
-        publishedRelayListUpdatedAt={relaySettings.publishedRelayListUpdatedAt}
-        publishingRelayList={relaySettings.publishingRelayList}
-        publishError={relaySettings.publishError}
-        onAddRelay={relaySettings.addRelay}
-        onRefreshRelay={relaySettings.refreshRelay}
-        onRemoveRelay={relaySettings.removeRelay}
-        onToggleRead={relaySettings.toggleRelayRead}
-        onToggleWrite={relaySettings.toggleRelayWrite}
-        onReset={relaySettings.resetRelaySettings}
-        onPublishRelayList={pubkey ? relaySettings.publishRelayList : undefined}
-      />
+    <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
+      <div className="mx-auto max-w-[50rem]">
+        <RelaySettingsPanel
+          settings={relaySettings.settings}
+          scanningUrls={relaySettings.scanningUrls}
+          error={relaySettings.error}
+          isLoadingPublishedRelayList={relaySettings.isLoadingPublishedRelayList}
+          publishedRelayListUpdatedAt={relaySettings.publishedRelayListUpdatedAt}
+          publishingRelayList={relaySettings.publishingRelayList}
+          publishError={relaySettings.publishError}
+          onAddRelay={relaySettings.addRelay}
+          onRefreshRelay={relaySettings.refreshRelay}
+          onRemoveRelay={relaySettings.removeRelay}
+          onToggleRead={relaySettings.toggleRelayRead}
+          onToggleWrite={relaySettings.toggleRelayWrite}
+          onReset={relaySettings.resetRelaySettings}
+          onPublishRelayList={pubkey ? relaySettings.publishRelayList : undefined}
+        />
+      </div>
     </div>
   )
 }
