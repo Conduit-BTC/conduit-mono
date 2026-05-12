@@ -124,10 +124,14 @@ function getUsdPerUnitRate(
     : null
 }
 
-function toSafeIntegerSats(value: number, minimum = 1): number | null {
+function toSafeIntegerSats(
+  value: number,
+  minimum = 1,
+  tolerance = Number.EPSILON
+): number | null {
   if (!Number.isFinite(value) || value < minimum) return null
   const rounded = Math.round(value)
-  if (Math.abs(value - rounded) > Number.EPSILON) return null
+  if (Math.abs(value - rounded) > tolerance) return null
   if (!Number.isSafeInteger(rounded)) return null
   if (rounded < minimum) return null
   return rounded
@@ -174,7 +178,7 @@ export function normalizeCommercePrice(
   }
 
   if (isBtcLikeCurrency(source.normalizedCurrency)) {
-    const sats = toSafeIntegerSats(amount * SATS_PER_BTC)
+    const sats = toSafeIntegerSats(amount * SATS_PER_BTC, 1, 1e-6)
     if (sats === null) {
       return invalidPrice(
         amount,
