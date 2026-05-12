@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   useQuery,
   useQueryClient,
@@ -100,6 +100,29 @@ export function useProfiles(
   )
   const [resolvedProfiles, setResolvedProfiles] = useState<ProfileMap>({})
   const enabled = (options.enabled ?? true) && unique.length > 0
+  const cacheResolvedProfiles = useCallback(
+    (profiles: ProfileMap | undefined) => {
+      const richProfiles = Object.fromEntries(
+        Object.entries(profiles ?? {}).filter(([, profile]) =>
+          hasProfileContent(profile)
+        )
+      ) as ProfileMap
+
+      if (Object.keys(richProfiles).length === 0) return
+
+      setResolvedProfiles((current) =>
+        mergeRicherProfiles(current, richProfiles)
+      )
+
+      for (const [pubkey, profile] of Object.entries(richProfiles)) {
+        queryClient.setQueryData<Profile | undefined>(
+          ["profile", pubkey],
+          (current) => mergeRicherProfile(current, profile)
+        )
+      }
+    },
+    [queryClient]
+  )
 
   useEffect(() => {
     const cached = Object.fromEntries(
@@ -123,6 +146,7 @@ export function useProfiles(
         priority,
         readPolicy: defaultReadPolicy(priority, options.readPolicy),
         relayHintsByPubkey: options.relayHintsByPubkey,
+        onProgress: (progress) => cacheResolvedProfiles(progress.data),
       })
       return result.data
     },
@@ -145,21 +169,8 @@ export function useProfiles(
   })
 
   useEffect(() => {
-    const richProfiles = Object.fromEntries(
-      Object.entries(query.data ?? {}).filter(([, profile]) =>
-        hasProfileContent(profile)
-      )
-    ) as ProfileMap
-
-    setResolvedProfiles((current) => mergeRicherProfiles(current, richProfiles))
-
-    for (const [pubkey, profile] of Object.entries(richProfiles)) {
-      queryClient.setQueryData<Profile | undefined>(
-        ["profile", pubkey],
-        (current) => mergeRicherProfile(current, profile)
-      )
-    }
-  }, [query.data, queryClient])
+    cacheResolvedProfiles(query.data)
+  }, [cacheResolvedProfiles, query.data])
 
   const profiles = useMemo(
     () =>

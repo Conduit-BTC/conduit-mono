@@ -588,6 +588,40 @@ describe("commerce gateway", () => {
     expect(result.data["live-merchant"]?.displayName).toBe("Live Merchant")
   })
 
+  it("emits profile progress before the full profile result settles", async () => {
+    const progressNames: string[] = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PROFILE)) return []
+
+        return [
+          {
+            id: "profile-progress-merchant",
+            pubkey: "progress-merchant",
+            created_at: 10,
+            content: JSON.stringify({ display_name: "Progress Merchant" }),
+            tags: [],
+          } as never,
+        ]
+      },
+    })
+
+    const result = await getProfiles({
+      pubkeys: ["progress-merchant"],
+      skipCache: true,
+      onProgress: (progress) => {
+        const name = progress.data["progress-merchant"]?.displayName
+        if (name) progressNames.push(name)
+      },
+    })
+
+    expect(progressNames).toEqual(["Progress Merchant"])
+    expect(result.data["progress-merchant"]?.displayName).toBe(
+      "Progress Merchant"
+    )
+  })
+
   it("uses the newest profile event with content instead of a newer bare event", async () => {
     __setCommerceTestOverrides({
       fetchEventsFanout: async (filter) => {

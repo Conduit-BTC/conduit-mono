@@ -31,6 +31,7 @@ import {
 import {
   appendConduitClientTag,
   formatNpub,
+  getCommerceReadRelayUrls,
   getProfileDisplayLabel,
   getProfileName,
   publishWithPlanner,
@@ -133,8 +134,19 @@ function StorefrontPage() {
     merchantPubkey: pubkey,
     textQuery: search.q,
   })
+  const profileRelayHints = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...getCommerceReadRelayUrls(),
+          ...(productsQuery.profileRelayHintsByPubkey[pubkey] ?? []),
+        ])
+      ),
+    [productsQuery.profileRelayHintsByPubkey, pubkey]
+  )
   const profileQuery = useProfile(pubkey, {
-    relayHints: productsQuery.profileRelayHintsByPubkey[pubkey],
+    relayHints: profileRelayHints,
+    refetchUnresolvedMs: 2_000,
   })
   const profile = profileQuery.data
   const storeProducts = productsQuery.products

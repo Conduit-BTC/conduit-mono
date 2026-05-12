@@ -116,6 +116,7 @@ export interface ProfileBatchQuery {
   priority?: "visible" | "background"
   readPolicy?: CommerceReadPolicy
   relayHintsByPubkey?: Record<string, string[] | undefined>
+  onProgress?: (result: CommerceResult<Record<string, Profile>>) => void
 }
 
 export interface FollowListQuery {
@@ -784,6 +785,48 @@ function pickLatestProfileEventWithContent(
     .filter((event) => event.pubkey === pubkey)
     .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
     .find((event) => hasProfileContent(parseProfileEvent(event)))
+}
+
+function mergeProfileEvents(
+  pubkeys: readonly string[],
+  currentProfiles: Record<string, Profile>,
+  events: readonly NDKEvent[]
+): {
+  profiles: Record<string, Profile>
+  rowsToCache: CachedProfile[]
+  hasResolvedProfile: boolean
+} {
+  const profiles = { ...currentProfiles }
+  const rowsToCache: CachedProfile[] = []
+  let hasResolvedProfile = false
+
+  for (const pubkey of pubkeys) {
+    const event = pickLatestProfileEventWithContent(events, pubkey)
+    const profile = mergeProfileData(
+      profiles[pubkey],
+      event ? parseProfileEvent(event) : { pubkey }
+    )
+    const sourceRelayUrls = event ? getEventSourceRelayUrls(event) : undefined
+    profiles[pubkey] = profile ?? { pubkey }
+    if (profile && hasProfileContent(profile)) {
+      if (event) hasResolvedProfile = true
+      rowsToCache.push({
+        pubkey: profile.pubkey,
+        name: profile.name,
+        displayName: profile.displayName,
+        about: profile.about,
+        picture: profile.picture,
+        banner: profile.banner,
+        nip05: profile.nip05,
+        lud16: profile.lud16,
+        website: profile.website,
+        sourceRelayUrls,
+        cachedAt: now(),
+      })
+    }
+  }
+
+  return { profiles, rowsToCache, hasResolvedProfile }
 }
 
 async function loadCachedOrderMessages(
@@ -1632,6 +1675,18 @@ export async function getProfiles(
     }
   }
 
+  if (
+    query.onProgress &&
+    Object.values(result).some((profile) => hasProfileContent(profile))
+  ) {
+    query.onProgress({
+      data: { ...result },
+      meta: createMeta("profile_batch", "local_cache", PROFILE_CAPABILITIES, {
+        stale: true,
+      }),
+    })
+  }
+
   try {
     const visible = query.priority !== "background"
     const sourceRelayHints = uniqueStrings([
@@ -1644,59 +1699,48 @@ export async function getProfiles(
       maxRelays: query.readPolicy?.maxRelays ?? (visible ? 8 : 4),
       extraRelayUrls: sourceRelayHints,
     })
-    const events = await runFetchEventsFanout(
-      {
-        kinds: [EVENT_KINDS.PROFILE],
-        authors: missing,
-        limit: Math.max(10, missing.length * 3),
-      },
-      {
-        relayUrls,
-        connectTimeoutMs:
-          query.readPolicy?.connectTimeoutMs ?? (visible ? 1_500 : 3_000),
-        fetchTimeoutMs:
-          query.readPolicy?.fetchTimeoutMs ?? (visible ? 3_000 : 6_000),
-      }
-    )
-
-    const rowsToCache: Array<{
-      pubkey: string
-      name?: string
-      displayName?: string
-      about?: string
-      picture?: string
-      banner?: string
-      nip05?: string
-      lud16?: string
-      website?: string
-      sourceRelayUrls?: string[]
-      cachedAt: number
-    }> = []
-
-    for (const pubkey of missing) {
-      const event = pickLatestProfileEventWithContent(events, pubkey)
-      const profile = mergeProfileData(
-        result[pubkey],
-        event ? parseProfileEvent(event) : { pubkey }
-      )
-      const sourceRelayUrls = event ? getEventSourceRelayUrls(event) : undefined
-      result[pubkey] = profile ?? { pubkey }
-      if (profile && hasProfileContent(profile)) {
-        rowsToCache.push({
-          pubkey: profile.pubkey,
-          name: profile.name,
-          displayName: profile.displayName,
-          about: profile.about,
-          picture: profile.picture,
-          banner: profile.banner,
-          nip05: profile.nip05,
-          lud16: profile.lud16,
-          website: profile.website,
-          sourceRelayUrls,
-          cachedAt: now(),
-        })
-      }
+    const profileFilter: NDKFilter = {
+      kinds: [EVENT_KINDS.PROFILE],
+      authors: missing,
+      limit: Math.max(10, missing.length * 3),
     }
+    const fanoutOptions = {
+      relayUrls,
+      connectTimeoutMs:
+        query.readPolicy?.connectTimeoutMs ?? (visible ? 1_500 : 3_000),
+      fetchTimeoutMs:
+        query.readPolicy?.fetchTimeoutMs ?? (visible ? 3_000 : 6_000),
+    }
+    const emitProgress = (events: readonly NDKEvent[]) => {
+      if (!query.onProgress) return
+
+      const progress = mergeProfileEvents(missing, result, events)
+      if (!progress.hasResolvedProfile) return
+
+      query.onProgress({
+        data: progress.profiles,
+        meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
+      })
+    }
+    const events =
+      query.onProgress && !testOverrides.fetchEventsFanout
+        ? await fetchEventsFanoutProgressive(
+            profileFilter,
+            fanoutOptions,
+            ({ mergedEvents }) => emitProgress(mergedEvents)
+          )
+        : await runFetchEventsFanout(profileFilter, fanoutOptions)
+
+    if (query.onProgress && testOverrides.fetchEventsFanout) {
+      emitProgress(events)
+    }
+
+    const { profiles, rowsToCache } = mergeProfileEvents(
+      missing,
+      result,
+      events
+    )
+    Object.assign(result, profiles)
 
     if (rowsToCache.length > 0) {
       await storeCachedProfiles(rowsToCache)
