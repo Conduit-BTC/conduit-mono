@@ -629,18 +629,11 @@ function CheckoutPage() {
       const lnurlMeta = await fetchLnurlPayMetadata(merchantLud16)
 
       // 2. Convert order total to msats
-      const btcUsdRate = btcUsdRateQuery.data?.rate ?? null
-      let amountMsats: number
-      if (currency.toUpperCase() === "SATS") {
-        amountMsats = Math.round(total * 1000)
-      } else if (currency.toUpperCase() === "USD" && btcUsdRate) {
-        const sats = Math.round((total / btcUsdRate) * 100_000_000)
-        amountMsats = sats * 1000
-      } else {
-        throw new Error(
-          `Cannot convert ${currency} amount to msats without a BTC/USD rate.`
-        )
+      // `total` is always in sats (computed via getPriceSats regardless of source currency)
+      if (!Number.isFinite(total) || total <= 0) {
+        throw new Error("Order total could not be converted to sats.")
       }
+      const amountMsats = Math.round(total * 1000)
 
       if (
         amountMsats < lnurlMeta.minSendable ||
