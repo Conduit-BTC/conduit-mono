@@ -14,12 +14,14 @@ import {
   type MarketBrowseSearch,
   type MarketProductCardView,
 } from "../lib/marketBrowseModel"
+import type { ProductCatalogSourceMode } from "../lib/productCatalogRead"
 import { useGuestMarketDiscovery } from "./useGuestMarketDiscovery"
 import { useMerchantIdentities } from "./useMerchantIdentities"
 import { useProgressiveProducts } from "./useProgressiveProducts"
 
 interface UseMarketBrowseModelInput {
   btcUsdRate: PricingRateInput
+  catalogSource: ProductCatalogSourceMode
   search: MarketBrowseSearch
   storeMenuOpen: boolean
   visibleCount: number
@@ -27,6 +29,7 @@ interface UseMarketBrowseModelInput {
 
 export function useMarketBrowseModel({
   btcUsdRate,
+  catalogSource,
   search,
   storeMenuOpen,
   visibleCount,
@@ -43,11 +46,14 @@ export function useMarketBrowseModel({
   const selectedTags = useMemo(() => search.tag ?? [], [search.tag])
   const selectedTagSet = useMemo(() => new Set(selectedTags), [selectedTags])
   const usesAnonymousPerspective = status !== "connected"
+  const effectiveCatalogSource =
+    status === "connected" ? catalogSource : "conduit"
   const guestMarket = useGuestMarketDiscovery({
     enabled: usesAnonymousPerspective,
   })
   const productsQuery = useProgressiveProducts({
     scope: "marketplace",
+    catalogSource: effectiveCatalogSource,
     perspectivePubkey:
       status === "connected" && pubkey ? pubkey : guestMarket.perspectivePubkey,
     seedAuthorPubkeys: guestMarket.seedAuthorPubkeys,
@@ -155,15 +161,23 @@ export function useMarketBrowseModel({
     () =>
       getBrowseSearchKey({
         q: search.q,
+        source: effectiveCatalogSource,
         selectedMerchants,
         selectedTags,
         sort: search.sort,
       }),
-    [search.q, search.sort, selectedMerchants, selectedTags]
+    [
+      effectiveCatalogSource,
+      search.q,
+      search.sort,
+      selectedMerchants,
+      selectedTags,
+    ]
   )
 
   return {
     auth: { pubkey, status },
+    catalogSource: effectiveCatalogSource,
     categoryFacetOptions,
     filtered,
     filteredProducts,

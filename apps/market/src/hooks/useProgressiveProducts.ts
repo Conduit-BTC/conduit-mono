@@ -21,6 +21,8 @@ import {
   getProductCatalogQueryKey,
   isPerspectiveMarketplaceRead,
   resolvePerspectiveAuthorPubkeys,
+  type PerspectiveAuthorSource,
+  type ProductCatalogSourceMode,
   type ProductCatalogReadInput,
 } from "../lib/productCatalogRead"
 import { getDefaultMarketPerspectiveFollowPubkeys } from "../lib/defaultMarketPerspective"
@@ -42,6 +44,7 @@ type SortOption = "newest" | "price_asc" | "price_desc"
 type ProgressiveListQuery =
   | {
       scope: "marketplace"
+      catalogSource?: ProductCatalogSourceMode
       merchantPubkey?: string
       perspectivePubkey?: string | null
       seedAuthorPubkeys?: string[]
@@ -68,6 +71,10 @@ export interface ProgressiveProductsResult {
   cachedCount: number
   networkCount: number
   firstDegreeAuthorCount: number
+  fallbackAuthorCount: number
+  authorSource: PerspectiveAuthorSource
+  catalogSource: ProductCatalogSourceMode
+  followLookupStatus: "idle" | "loading" | "ready" | "error"
   hydrationStage: "cache" | "resolving_follows" | "first_degree"
   isInitialLoading: boolean
   isHydrating: boolean
@@ -218,6 +225,10 @@ export function useProgressiveProducts(
 ): ProgressiveProductsResult {
   const queryEnabled = input.enabled ?? true
   const perspectiveMarketplaceRead = isPerspectiveMarketplaceRead(input)
+  const catalogSource: ProductCatalogSourceMode =
+    input.scope === "marketplace"
+      ? (input.catalogSource ?? "following")
+      : "following"
   const perspectivePubkey =
     input.scope === "marketplace" && !input.merchantPubkey
       ? normalizePubkey(input.perspectivePubkey)
@@ -244,7 +255,8 @@ export function useProgressiveProducts(
   const firstDegreeQuery = useQuery({
     queryKey: ["market-perspective-follows", perspectivePubkey],
     queryFn: () => getFollowPubkeys({ pubkey: perspectivePubkey! }),
-    enabled: queryEnabled && usesPerspectiveGraph,
+    enabled:
+      queryEnabled && usesPerspectiveGraph && catalogSource !== "conduit",
     staleTime: 60_000,
     refetchInterval: (query) => {
       const data = query.state.data as CommerceResult<string[]> | undefined
@@ -263,6 +275,7 @@ export function useProgressiveProducts(
     () =>
       resolvePerspectiveAuthorPubkeys({
         usesPerspectiveGraph,
+        sourceMode: catalogSource,
         perspectivePubkey,
         refreshedAuthorPubkeys: firstDegreeQuery.data?.data,
         seedAuthorPubkeys: seededAuthors,
@@ -273,6 +286,7 @@ export function useProgressiveProducts(
       }),
     [
       cachedPerspectiveAuthors,
+      catalogSource,
       fallbackPerspectiveAuthors,
       firstDegreeQuery.data?.data,
       firstDegreeQuery.isError,
@@ -284,10 +298,25 @@ export function useProgressiveProducts(
   )
   const firstDegreeAuthors = firstDegreeResolution.authorPubkeys
   const usingFallbackPerspective = firstDegreeResolution.source === "fallback"
+  const fallbackAuthorCount = fallbackPerspectiveAuthors?.length ?? 0
+  const fallbackAuthorSet = useMemo(
+    () => new Set(fallbackPerspectiveAuthors ?? []),
+    [fallbackPerspectiveAuthors]
+  )
+  const followLookupStatus =
+    !usesPerspectiveGraph || catalogSource === "conduit"
+      ? "idle"
+      : firstDegreeQuery.isError
+        ? "error"
+        : firstDegreeQuery.isSuccess
+          ? "ready"
+          : "loading"
 
-  const personalizedAuthorCount = usingFallbackPerspective
-    ? 0
-    : (firstDegreeAuthors?.length ?? 0)
+  const personalizedAuthorCount =
+    usingFallbackPerspective || catalogSource === "conduit"
+      ? 0
+      : (firstDegreeAuthors?.filter((pubkey) => !fallbackAuthorSet.has(pubkey))
+          .length ?? 0)
 
   const catalogReady =
     !perspectiveMarketplaceRead || firstDegreeAuthors !== undefined
@@ -321,8 +350,9 @@ export function useProgressiveProducts(
       : (input.tag ?? "")
   const [productAccumulator, setProductAccumulator] = useState<{
     key: string
+    catalogSource: ProductCatalogSourceMode
     products: Product[]
-  }>({ key: discoveryKey, products: [] })
+  }>({ key: discoveryKey, catalogSource, products: [] })
   const [progressiveRead, setProgressiveRead] = useState<{
     key: string
     isFetching: boolean
@@ -387,11 +417,26 @@ export function useProgressiveProducts(
     () => toProducts(cachedQuery.data),
     [cachedQuery.data]
   )
+  const canUseCarriedProducts =
+    catalogSource === "combined" &&
+    productAccumulator.catalogSource === "combined" &&
+    productAccumulator.products.length > 0
   const accumulatedProducts =
-    productAccumulator.key === discoveryKey ? productAccumulator.products : []
+    productAccumulator.key === discoveryKey || canUseCarriedProducts
+      ? productAccumulator.products
+      : []
 
   useEffect(() => {
-    setProductAccumulator({ key: discoveryKey, products: [] })
+    setProductAccumulator((current) => ({
+      key: discoveryKey,
+      catalogSource,
+      products:
+        catalogSource === "combined" &&
+        current.catalogSource === "combined" &&
+        current.products.length > 0
+          ? current.products
+          : [],
+    }))
     setProgressiveRead({
       key: discoveryKey,
       isFetching: false,
@@ -400,29 +445,31 @@ export function useProgressiveProducts(
       error: null,
       latestResult: undefined,
     })
-  }, [discoveryKey])
+  }, [catalogSource, discoveryKey])
 
   useEffect(() => {
     if (cachedProducts.length === 0) return
     setProductAccumulator((current) => ({
       key: discoveryKey,
+      catalogSource,
       products: mergeProducts(
         current.key === discoveryKey ? current.products : [],
         cachedProducts
       ),
     }))
-  }, [cachedProducts, discoveryKey])
+  }, [cachedProducts, catalogSource, discoveryKey])
 
   useEffect(() => {
     if (mergedNetworkProducts.length === 0) return
     setProductAccumulator((current) => ({
       key: discoveryKey,
+      catalogSource,
       products: mergeProducts(
         current.key === discoveryKey ? current.products : [],
         mergedNetworkProducts
       ),
     }))
-  }, [mergedNetworkProducts, discoveryKey])
+  }, [mergedNetworkProducts, catalogSource, discoveryKey])
 
   useEffect(() => {
     if (!streamsNetwork || !catalogReady || input.scope !== "marketplace") {
@@ -458,6 +505,7 @@ export function useProgressiveProducts(
           if (incoming.length > 0) {
             setProductAccumulator((current) => ({
               key: discoveryKey,
+              catalogSource,
               products: mergeProducts(
                 current.key === discoveryKey ? current.products : [],
                 incoming
@@ -527,6 +575,7 @@ export function useProgressiveProducts(
     catalogAuthorKey,
     catalogAuthorPubkeys,
     catalogReady,
+    catalogSource,
     discoveryKey,
     input.limit,
     input.merchantPubkey,
@@ -583,6 +632,10 @@ export function useProgressiveProducts(
     cachedCount,
     networkCount,
     firstDegreeAuthorCount: personalizedAuthorCount,
+    fallbackAuthorCount,
+    authorSource: firstDegreeResolution.source,
+    catalogSource,
+    followLookupStatus,
     hydrationStage,
     isInitialLoading:
       products.length === 0 &&

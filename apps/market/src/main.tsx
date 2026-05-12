@@ -23,35 +23,24 @@ import "./styles/index.css"
 const queryClient = new QueryClient()
 
 const router = createRouter({ routeTree })
-const criticalMarketFonts = [
-  { url: bricolageRegularUrl, weight: "400" },
-  { url: bricolageMediumUrl, weight: "500" },
-  { url: bricolageSemiBoldUrl, weight: "600" },
+const criticalMarketFontUrls = [
+  bricolageRegularUrl,
+  bricolageMediumUrl,
+  bricolageSemiBoldUrl,
 ]
 
-async function preloadCriticalMarketFonts() {
-  if (!("fonts" in document) || !("FontFace" in window)) return
+function preloadCriticalMarketFonts() {
+  for (const url of criticalMarketFontUrls) {
+    if (document.head.querySelector(`link[href="${url}"]`)) continue
 
-  const fontLoads = Promise.allSettled(
-    criticalMarketFonts.map(async ({ url, weight }) => {
-      const fontFace = new FontFace(
-        "Bricolage Grotesque",
-        `url("${url}") format("truetype")`,
-        {
-          display: "optional",
-          style: "normal",
-          weight,
-        }
-      )
-      const loadedFontFace = await fontFace.load()
-      document.fonts.add(loadedFontFace)
-    })
-  )
-
-  await Promise.race([
-    fontLoads,
-    new Promise((resolve) => window.setTimeout(resolve, 800)),
-  ])
+    const link = document.createElement("link")
+    link.rel = "preload"
+    link.as = "font"
+    link.href = url
+    link.type = "font/ttf"
+    link.crossOrigin = "anonymous"
+    document.head.appendChild(link)
+  }
 }
 
 function MarketAuthQueryBoundary({ children }: { children: ReactNode }) {
@@ -91,24 +80,19 @@ declare module "@tanstack/react-router" {
 }
 
 void pruneCommerceCaches()
+preloadCriticalMarketFonts()
 
-async function bootstrap() {
-  await preloadCriticalMarketFonts()
-
-  createRoot(document.getElementById("root")!).render(
-    <StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <AuthProvider>
-          <ConduitSessionProvider appId="market">
-            <MarketAuthQueryBoundary>
-              <RouterProvider router={router} />
-            </MarketAuthQueryBoundary>
-          </ConduitSessionProvider>
-        </AuthProvider>
-        {import.meta.env.DEV && <ReactQueryDevtools />}
-      </QueryClientProvider>
-    </StrictMode>
-  )
-}
-
-void bootstrap()
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <ConduitSessionProvider appId="market">
+          <MarketAuthQueryBoundary>
+            <RouterProvider router={router} />
+          </MarketAuthQueryBoundary>
+        </ConduitSessionProvider>
+      </AuthProvider>
+      {import.meta.env.DEV && <ReactQueryDevtools />}
+    </QueryClientProvider>
+  </StrictMode>
+)

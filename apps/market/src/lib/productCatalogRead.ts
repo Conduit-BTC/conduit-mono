@@ -1,9 +1,11 @@
 import { normalizePubkey } from "@conduit/core"
 
 export type ProductCatalogScope = "marketplace" | "storefront"
+export type ProductCatalogSourceMode = "following" | "conduit" | "combined"
 
 export interface ProductCatalogReadInput {
   scope: ProductCatalogScope
+  catalogSource?: ProductCatalogSourceMode
   merchantPubkey?: string
   perspectivePubkey?: string | null
   seedAuthorPubkeys?: string[]
@@ -19,6 +21,7 @@ export type PerspectiveAuthorSource =
   | "seed"
   | "cached"
   | "fallback"
+  | "combined"
   | "none"
 
 export interface PerspectiveAuthorResolution {
@@ -45,6 +48,7 @@ function uniquePerspectiveAuthors(
 
 export function resolvePerspectiveAuthorPubkeys(input: {
   usesPerspectiveGraph: boolean
+  sourceMode?: ProductCatalogSourceMode
   perspectivePubkey?: string | null
   refreshedAuthorPubkeys?: readonly string[]
   seedAuthorPubkeys?: readonly string[]
@@ -56,6 +60,69 @@ export function resolvePerspectiveAuthorPubkeys(input: {
     input.refreshedAuthorPubkeys,
     input.perspectivePubkey
   )
+  const fallback = uniquePerspectiveAuthors(
+    input.fallbackAuthorPubkeys,
+    input.perspectivePubkey
+  )
+  const sourceMode = input.sourceMode ?? "following"
+
+  if (input.usesPerspectiveGraph && sourceMode === "conduit") {
+    const seeded = uniquePerspectiveAuthors(
+      input.seedAuthorPubkeys,
+      input.perspectivePubkey
+    )
+    if (seeded.length > 0) return { authorPubkeys: seeded, source: "seed" }
+
+    if (fallback.length > 0) {
+      return { authorPubkeys: fallback, source: "fallback" }
+    }
+    return { authorPubkeys: undefined, source: "none" }
+  }
+
+  if (input.usesPerspectiveGraph && sourceMode === "combined") {
+    if (refreshed.length > 0) {
+      return {
+        authorPubkeys: uniquePerspectiveAuthors(
+          [...refreshed, ...fallback],
+          input.perspectivePubkey
+        ),
+        source: fallback.length > 0 ? "combined" : "refreshed",
+      }
+    }
+
+    const seeded = uniquePerspectiveAuthors(
+      input.seedAuthorPubkeys,
+      input.perspectivePubkey
+    )
+    if (seeded.length > 0) {
+      return {
+        authorPubkeys: uniquePerspectiveAuthors(
+          [...seeded, ...fallback],
+          input.perspectivePubkey
+        ),
+        source: fallback.length > 0 ? "combined" : "seed",
+      }
+    }
+
+    const cached = uniquePerspectiveAuthors(
+      input.cachedAuthorPubkeys,
+      input.perspectivePubkey
+    )
+    if (cached.length > 0) {
+      return {
+        authorPubkeys: uniquePerspectiveAuthors(
+          [...cached, ...fallback],
+          input.perspectivePubkey
+        ),
+        source: fallback.length > 0 ? "combined" : "cached",
+      }
+    }
+
+    if (fallback.length > 0) {
+      return { authorPubkeys: fallback, source: "fallback" }
+    }
+  }
+
   if (refreshed.length > 0) {
     return { authorPubkeys: refreshed, source: "refreshed" }
   }
@@ -73,13 +140,7 @@ export function resolvePerspectiveAuthorPubkeys(input: {
   if (cached.length > 0) return { authorPubkeys: cached, source: "cached" }
 
   if (input.usesPerspectiveGraph && input.followLookupSettled) {
-    const fallback = uniquePerspectiveAuthors(
-      input.fallbackAuthorPubkeys,
-      input.perspectivePubkey
-    )
-    if (fallback.length > 0) {
-      return { authorPubkeys: fallback, source: "fallback" }
-    }
+    return { authorPubkeys: [], source: "none" }
   }
 
   if (!input.usesPerspectiveGraph) {
@@ -102,6 +163,7 @@ export function getProductCatalogQueryKey(
   source: "cache" | "network"
 ) {
   const perspectiveMarketplace = isPerspectiveMarketplaceRead(input)
+  const catalogSource = input.catalogSource ?? "following"
 
   return [
     "progressive-products",
@@ -120,6 +182,7 @@ export function getProductCatalogQueryKey(
       : input.scope === "marketplace"
         ? (input.seedAuthorPubkeys?.join(",") ?? "no-seed")
         : "storefront",
+    perspectiveMarketplace ? catalogSource : "scoped",
     perspectiveMarketplace ? "" : (input.textQuery ?? ""),
     perspectiveMarketplace
       ? ""

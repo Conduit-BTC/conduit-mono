@@ -87,9 +87,10 @@ describe("product catalog read planning", () => {
     expect(merchantA).not.toEqual(merchantB)
   })
 
-  it("falls back to the default perspective after an empty signed-in follow lookup settles", () => {
+  it("returns an empty author set after an empty following-only lookup settles", () => {
     const resolved = resolvePerspectiveAuthorPubkeys({
       usesPerspectiveGraph: true,
+      sourceMode: "following",
       perspectivePubkey: viewerPubkey,
       refreshedAuthorPubkeys: [],
       fallbackAuthorPubkeys: [merchantBPubkey, merchantAPubkey, viewerPubkey],
@@ -97,8 +98,8 @@ describe("product catalog read planning", () => {
     })
 
     expect(resolved).toEqual({
-      authorPubkeys: [merchantAPubkey, merchantBPubkey],
-      source: "fallback",
+      authorPubkeys: [],
+      source: "none",
     })
   })
 
@@ -129,6 +130,53 @@ describe("product catalog read planning", () => {
     expect(resolved).toEqual({
       authorPubkeys: [merchantAPubkey],
       source: "refreshed",
+    })
+  })
+
+  it("can start from fallback authors while signed-in follows are still loading", () => {
+    const resolved = resolvePerspectiveAuthorPubkeys({
+      usesPerspectiveGraph: true,
+      sourceMode: "combined",
+      perspectivePubkey: viewerPubkey,
+      fallbackAuthorPubkeys: [merchantBPubkey, merchantAPubkey, viewerPubkey],
+      followLookupSettled: false,
+    })
+
+    expect(resolved).toEqual({
+      authorPubkeys: [merchantAPubkey, merchantBPubkey],
+      source: "fallback",
+    })
+  })
+
+  it("merges signed-in follows with fallback authors in combined mode", () => {
+    const resolved = resolvePerspectiveAuthorPubkeys({
+      usesPerspectiveGraph: true,
+      sourceMode: "combined",
+      perspectivePubkey: viewerPubkey,
+      refreshedAuthorPubkeys: [merchantAPubkey, viewerPubkey],
+      fallbackAuthorPubkeys: [merchantBPubkey, merchantAPubkey],
+      followLookupSettled: true,
+    })
+
+    expect(resolved).toEqual({
+      authorPubkeys: [merchantAPubkey, merchantBPubkey],
+      source: "combined",
+    })
+  })
+
+  it("lets users choose Conduit-only source without waiting on follow lookup", () => {
+    const resolved = resolvePerspectiveAuthorPubkeys({
+      usesPerspectiveGraph: true,
+      sourceMode: "conduit",
+      perspectivePubkey: viewerPubkey,
+      refreshedAuthorPubkeys: [merchantAPubkey],
+      fallbackAuthorPubkeys: [merchantBPubkey],
+      followLookupSettled: false,
+    })
+
+    expect(resolved).toEqual({
+      authorPubkeys: [merchantBPubkey],
+      source: "fallback",
     })
   })
 })
