@@ -78,7 +78,7 @@ function UserMenu() {
       pubkeyLabel={formatPubkey(pubkey, 12)}
       avatarUrl={profile?.picture}
       onProfile={() => navigate({ to: "/profile" })}
-      onNetwork={() => navigate({ to: "/settings" })}
+      onNetwork={() => navigate({ to: "/network" })}
       onDisconnect={disconnect}
     />
   )
