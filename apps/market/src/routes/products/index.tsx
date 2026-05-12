@@ -36,6 +36,7 @@ import {
 } from "../../lib/marketBrowseModel"
 
 const PAGE_SIZE = 12
+const COLLAPSED_TAG_CLOUD_HEIGHT = 76
 
 export type ProductSearch = MarketBrowseSearch
 
@@ -90,6 +91,7 @@ function ProductsPage() {
   const [connectOpen, setConnectOpen] = useState(false)
   const [showAllTags, setShowAllTags] = useState(false)
   const [tagCloudOverflows, setTagCloudOverflows] = useState(false)
+  const [tagCloudMeasured, setTagCloudMeasured] = useState(false)
   const [tagCloudInteracted, setTagCloudInteracted] = useState(false)
   const [storeMenuOpen, setStoreMenuOpen] = useState(false)
   const hasAutoPromptedConnect = useRef(false)
@@ -150,6 +152,8 @@ function ProductsPage() {
     getMerchantIdentity,
   } = browseModel
   const { status } = auth
+  const shouldCollapseTagCloud =
+    !showAllTags && (!tagCloudMeasured || tagCloudOverflows)
 
   const toggleTag = (tag: string) => {
     if (selectedTagSet.has(tag)) {
@@ -211,7 +215,10 @@ function ProductsPage() {
     if (!element) return
 
     const measure = () => {
-      setTagCloudOverflows(element.scrollHeight > element.clientHeight + 1)
+      setTagCloudOverflows(
+        element.scrollHeight > COLLAPSED_TAG_CLOUD_HEIGHT + 1
+      )
+      setTagCloudMeasured(true)
     }
 
     measure()
@@ -287,30 +294,32 @@ function ProductsPage() {
 
       {shouldShowCategories && (
         <section className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex min-h-8 items-center justify-between gap-3">
             <div className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
               Categories
             </div>
-            {tagCloudOverflows && (
-              <button
-                type="button"
-                className="inline-flex h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-secondary-400 transition-colors duration-150 hover:bg-[var(--surface-elevated)] hover:text-secondary-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-                aria-expanded={showAllTags}
-                onClick={() => {
-                  setTagCloudInteracted(true)
-                  setShowAllTags((current) => !current)
-                }}
-              >
-                {showAllTags ? "Collapse" : "Expand categories"}
-                <ChevronDown
-                  className={[
-                    "h-3.5 w-3.5 transition-transform duration-150",
-                    showAllTags ? "rotate-180" : "",
-                  ].join(" ")}
-                  aria-hidden="true"
-                />
-              </button>
-            )}
+            <div className="flex h-8 shrink-0 items-center justify-end">
+              {tagCloudOverflows && (
+                <button
+                  type="button"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-secondary-400 transition-colors duration-150 hover:bg-[var(--surface-elevated)] hover:text-secondary-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                  aria-expanded={showAllTags}
+                  onClick={() => {
+                    setTagCloudInteracted(true)
+                    setShowAllTags((current) => !current)
+                  }}
+                >
+                  {showAllTags ? "Collapse" : "Expand categories"}
+                  <ChevronDown
+                    className={[
+                      "h-3.5 w-3.5 transition-transform duration-150",
+                      showAllTags ? "rotate-180" : "",
+                    ].join(" ")}
+                    aria-hidden="true"
+                  />
+                </button>
+              )}
+            </div>
           </div>
 
           {showCategorySkeleton ? (
@@ -334,9 +343,7 @@ function ProductsPage() {
                   tagCloudInteracted
                     ? "transition-[max-height] duration-150 ease-out"
                     : "",
-                  showAllTags || !tagCloudOverflows
-                    ? "max-h-72"
-                    : "max-h-[4.75rem]",
+                  shouldCollapseTagCloud ? "max-h-[4.75rem]" : "max-h-72",
                 ].join(" ")}
               >
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
@@ -352,7 +359,7 @@ function ProductsPage() {
                         className="gap-1.5 cursor-pointer capitalize transition-colors hover:border-secondary-400 hover:text-[var(--text-primary)]"
                       >
                         <span>{option.label}</span>
-                        <span className="self-center text-[0.82em] font-medium leading-none tabular-nums text-[var(--text-muted)]">
+                        <span className="inline-block min-w-[5ch] self-center text-right text-[0.82em] font-medium leading-none tabular-nums text-[var(--text-muted)]">
                           [{option.count}]
                         </span>
                       </Badge>
