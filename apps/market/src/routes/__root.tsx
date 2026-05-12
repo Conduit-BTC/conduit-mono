@@ -99,9 +99,5 @@ function RootErrorComponent({ error }: ErrorComponentProps) {
 }
 
 function RootNotFound() {
-  return (
-    <RootShell>
-      <NotFoundPage backTo="/" backLabel="Go to marketplace" />
-    </RootShell>
-  )
+  return <NotFoundPage backTo="/" backLabel="Go to marketplace" />
 }
