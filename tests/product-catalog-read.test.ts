@@ -3,9 +3,14 @@ import {
   getCatalogAuthorPubkeys,
   getProductCatalogQueryKey,
   isPerspectiveMarketplaceRead,
+  resolvePerspectiveAuthorPubkeys,
 } from "../apps/market/src/lib/productCatalogRead"
 
 describe("product catalog read planning", () => {
+  const viewerPubkey = "a".repeat(64)
+  const merchantAPubkey = "b".repeat(64)
+  const merchantBPubkey = "c".repeat(64)
+
   it("keeps all-store marketplace reads scoped to the market perspective", () => {
     expect(isPerspectiveMarketplaceRead({ scope: "marketplace" })).toBe(true)
     expect(
@@ -80,5 +85,50 @@ describe("product catalog read planning", () => {
     )
 
     expect(merchantA).not.toEqual(merchantB)
+  })
+
+  it("falls back to the default perspective after an empty signed-in follow lookup settles", () => {
+    const resolved = resolvePerspectiveAuthorPubkeys({
+      usesPerspectiveGraph: true,
+      perspectivePubkey: viewerPubkey,
+      refreshedAuthorPubkeys: [],
+      fallbackAuthorPubkeys: [merchantBPubkey, merchantAPubkey, viewerPubkey],
+      followLookupSettled: true,
+    })
+
+    expect(resolved).toEqual({
+      authorPubkeys: [merchantAPubkey, merchantBPubkey],
+      source: "fallback",
+    })
+  })
+
+  it("waits for signed-in follow lookup before using fallback perspective authors", () => {
+    const resolved = resolvePerspectiveAuthorPubkeys({
+      usesPerspectiveGraph: true,
+      perspectivePubkey: viewerPubkey,
+      refreshedAuthorPubkeys: [],
+      fallbackAuthorPubkeys: [merchantAPubkey],
+      followLookupSettled: false,
+    })
+
+    expect(resolved).toEqual({
+      authorPubkeys: undefined,
+      source: "none",
+    })
+  })
+
+  it("prefers signed-in follows over fallback perspective authors", () => {
+    const resolved = resolvePerspectiveAuthorPubkeys({
+      usesPerspectiveGraph: true,
+      perspectivePubkey: viewerPubkey,
+      refreshedAuthorPubkeys: [merchantAPubkey],
+      fallbackAuthorPubkeys: [merchantBPubkey],
+      followLookupSettled: true,
+    })
+
+    expect(resolved).toEqual({
+      authorPubkeys: [merchantAPubkey],
+      source: "refreshed",
+    })
   })
 })

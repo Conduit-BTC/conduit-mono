@@ -65,6 +65,7 @@ export interface RelaySettingsPanelProps {
   onToggleWrite: (url: string, enabled: boolean) => void
   onReorderCommerceRelay?: (sourceUrl: string, targetUrl: string) => void
   onReset?: () => void
+  onRestoreDefaults?: () => void
   onPublishRelayList?: () => void | Promise<void>
   className?: string
 }
@@ -599,6 +600,7 @@ export function RelaySettingsPanel({
   onToggleWrite,
   onReorderCommerceRelay,
   onReset,
+  onRestoreDefaults,
   onPublishRelayList,
   className,
 }: RelaySettingsPanelProps) {
@@ -692,6 +694,28 @@ export function RelaySettingsPanel({
           onToggleWrite={onToggleWrite}
         />
 
+        {settings.entries.length === 0 && onRestoreDefaults ? (
+          <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+            <div className="text-sm font-medium text-[var(--text-primary)]">
+              No relays saved for this signer
+            </div>
+            <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+              Market reads can still use Conduit defaults as a fallback. Add
+              relays manually or start from the default list.
+            </p>
+            <div className="mt-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onRestoreDefaults}
+              >
+                <RefreshCw className="h-4 w-4" />
+                Use default relays
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
         <RelaySection
           section="public"
           entries={publicEntries}
@@ -748,6 +772,11 @@ export function RelaySettingsPanel({
             {onReset ? (
               <Button type="button" variant="ghost" onClick={onReset}>
                 {onPublishRelayList ? "Reset local draft" : "Reset to defaults"}
+              </Button>
+            ) : null}
+            {onRestoreDefaults && settings.entries.length > 0 ? (
+              <Button type="button" variant="ghost" onClick={onRestoreDefaults}>
+                Replace with defaults
               </Button>
             ) : null}
             {onPublishRelayList ? (

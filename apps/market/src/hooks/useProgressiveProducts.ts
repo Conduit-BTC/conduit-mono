@@ -20,8 +20,10 @@ import {
   getCatalogAuthorPubkeys,
   getProductCatalogQueryKey,
   isPerspectiveMarketplaceRead,
+  resolvePerspectiveAuthorPubkeys,
   type ProductCatalogReadInput,
 } from "../lib/productCatalogRead"
+import { getDefaultMarketPerspectiveFollowPubkeys } from "../lib/defaultMarketPerspective"
 
 const PERSPECTIVE_STREAM_READ_POLICY: CommerceReadPolicy = {
   maxRelays: 32,
@@ -112,10 +114,6 @@ function dedupeProducts(products: Product[]): Product[] {
 
 function mergeProducts(existing: Product[], incoming: Product[]): Product[] {
   return dedupeProducts([...existing, ...incoming])
-}
-
-function shouldRunCatalogCompletionRead(input: ProgressiveListQuery): boolean {
-  return isPerspectiveMarketplaceRead(input)
 }
 
 function uniquePubkeys(pubkeys: readonly string[]): string[] {
@@ -227,16 +225,14 @@ export function useProgressiveProducts(
   const usesPerspectiveGraph =
     input.scope === "marketplace" && !!perspectivePubkey
   const streamsNetwork = queryEnabled && input.scope === "marketplace"
-  const seedAuthorKey =
-    input.scope === "marketplace"
-      ? (input.seedAuthorPubkeys?.join(",") ?? "")
-      : ""
+  const rawSeedAuthorPubkeys =
+    input.scope === "marketplace" ? input.seedAuthorPubkeys : undefined
   const seededAuthors = useMemo(
     () =>
-      input.scope === "marketplace" && input.seedAuthorPubkeys?.length
-        ? uniquePubkeys(input.seedAuthorPubkeys)
+      rawSeedAuthorPubkeys?.length
+        ? uniquePubkeys(rawSeedAuthorPubkeys)
         : undefined,
-    [input.scope, seedAuthorKey]
+    [rawSeedAuthorPubkeys]
   )
   const cachedPerspectiveAuthors = useMemo(
     () =>
@@ -256,27 +252,54 @@ export function useProgressiveProducts(
     },
   })
 
-  const firstDegreeAuthors = useMemo(() => {
-    const refreshed = uniquePubkeys(firstDegreeQuery.data?.data ?? []).filter(
-      (pubkey) => pubkey !== perspectivePubkey
-    )
-    if (refreshed.length > 0) return refreshed
-    if (seededAuthors) return seededAuthors
-    if (cachedPerspectiveAuthors) return cachedPerspectiveAuthors
-    if (!usesPerspectiveGraph) return undefined
-    return undefined
-  }, [
-    cachedPerspectiveAuthors,
-    firstDegreeQuery.data?.data,
-    perspectivePubkey,
-    seededAuthors,
-    usesPerspectiveGraph,
-  ])
+  const fallbackPerspectiveAuthors = useMemo(
+    () =>
+      usesPerspectiveGraph && !seededAuthors
+        ? getDefaultMarketPerspectiveFollowPubkeys()
+        : undefined,
+    [seededAuthors, usesPerspectiveGraph]
+  )
+  const firstDegreeResolution = useMemo(
+    () =>
+      resolvePerspectiveAuthorPubkeys({
+        usesPerspectiveGraph,
+        perspectivePubkey,
+        refreshedAuthorPubkeys: firstDegreeQuery.data?.data,
+        seedAuthorPubkeys: seededAuthors,
+        cachedAuthorPubkeys: cachedPerspectiveAuthors,
+        fallbackAuthorPubkeys: fallbackPerspectiveAuthors,
+        followLookupSettled:
+          firstDegreeQuery.isSuccess || firstDegreeQuery.isError,
+      }),
+    [
+      cachedPerspectiveAuthors,
+      fallbackPerspectiveAuthors,
+      firstDegreeQuery.data?.data,
+      firstDegreeQuery.isError,
+      firstDegreeQuery.isSuccess,
+      perspectivePubkey,
+      seededAuthors,
+      usesPerspectiveGraph,
+    ]
+  )
+  const firstDegreeAuthors = firstDegreeResolution.authorPubkeys
+  const usingFallbackPerspective = firstDegreeResolution.source === "fallback"
+
+  const personalizedAuthorCount = usingFallbackPerspective
+    ? 0
+    : (firstDegreeAuthors?.length ?? 0)
 
   const catalogReady =
     !perspectiveMarketplaceRead || firstDegreeAuthors !== undefined
   const catalogAuthorPubkeys = useMemo(
-    () => getCatalogAuthorPubkeys(input, firstDegreeAuthors),
+    () =>
+      getCatalogAuthorPubkeys(
+        {
+          scope: input.scope,
+          merchantPubkey: input.merchantPubkey,
+        },
+        firstDegreeAuthors
+      ),
     [firstDegreeAuthors, input.merchantPubkey, input.scope]
   )
   const catalogAuthorKey = catalogAuthorPubkeys?.join(",") ?? "no-authors"
@@ -291,9 +314,10 @@ export function useProgressiveProducts(
       ]),
     [catalogAuthorKey, input]
   )
+  const marketplaceTags = input.scope === "marketplace" ? input.tags : undefined
   const inputTagsKey =
     input.scope === "marketplace"
-      ? (input.tags ?? []).join(",")
+      ? (marketplaceTags ?? []).join(",")
       : (input.tag ?? "")
   const [productAccumulator, setProductAccumulator] = useState<{
     key: string
@@ -406,7 +430,7 @@ export function useProgressiveProducts(
     }
 
     let cancelled = false
-    const completionRead = shouldRunCatalogCompletionRead(input)
+    const completionRead = perspectiveMarketplaceRead
     setProgressiveRead((current) => ({
       key: discoveryKey,
       isFetching: true,
@@ -423,7 +447,7 @@ export function useProgressiveProducts(
           merchantPubkey: input.merchantPubkey,
           authorPubkeys: catalogAuthorPubkeys,
           textQuery: perspectiveMarketplaceRead ? undefined : input.textQuery,
-          tags: perspectiveMarketplaceRead ? undefined : input.tags,
+          tags: perspectiveMarketplaceRead ? undefined : marketplaceTags,
           sort: perspectiveMarketplaceRead ? "newest" : input.sort,
           limit: input.limit,
           readPolicy,
@@ -510,6 +534,7 @@ export function useProgressiveProducts(
     input.sort,
     input.textQuery,
     inputTagsKey,
+    marketplaceTags,
     perspectiveMarketplaceRead,
     streamsNetwork,
   ])
@@ -557,7 +582,7 @@ export function useProgressiveProducts(
     profileRelayHintsByPubkey,
     cachedCount,
     networkCount,
-    firstDegreeAuthorCount: firstDegreeAuthors?.length ?? 0,
+    firstDegreeAuthorCount: personalizedAuthorCount,
     hydrationStage,
     isInitialLoading:
       products.length === 0 &&
