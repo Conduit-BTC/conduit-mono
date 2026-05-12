@@ -21,8 +21,12 @@ function SettingsPage() {
           settings={relaySettings.settings}
           scanningUrls={relaySettings.scanningUrls}
           error={relaySettings.error}
-          isLoadingPublishedRelayList={relaySettings.isLoadingPublishedRelayList}
-          publishedRelayListUpdatedAt={relaySettings.publishedRelayListUpdatedAt}
+          isLoadingPublishedRelayList={
+            relaySettings.isLoadingPublishedRelayList
+          }
+          publishedRelayListUpdatedAt={
+            relaySettings.publishedRelayListUpdatedAt
+          }
           publishingRelayList={relaySettings.publishingRelayList}
           publishError={relaySettings.publishError}
           onAddRelay={relaySettings.addRelay}
@@ -31,7 +35,9 @@ function SettingsPage() {
           onToggleRead={relaySettings.toggleRelayRead}
           onToggleWrite={relaySettings.toggleRelayWrite}
           onReset={relaySettings.resetRelaySettings}
-          onPublishRelayList={pubkey ? relaySettings.publishRelayList : undefined}
+          onPublishRelayList={
+            pubkey ? relaySettings.publishRelayList : undefined
+          }
         />
       </div>
     </div>
