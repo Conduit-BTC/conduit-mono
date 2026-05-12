@@ -1,4 +1,10 @@
-import { LoaderCircle, SearchX, ShoppingCart, Store } from "lucide-react"
+import {
+  ChevronDown,
+  LoaderCircle,
+  SearchX,
+  ShoppingCart,
+  Store,
+} from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import {
   formatNpub,
@@ -6,7 +12,7 @@ import {
   useProfile,
   type Product,
 } from "@conduit/core"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
 import {
@@ -31,6 +37,7 @@ export const Route = createFileRoute("/products/$productId")({
 
 const PRODUCT_SUMMARY_FALLBACK =
   "This listing does not include a merchant-written summary yet. Product pricing, identity, and order flow are still available for checkout."
+const PRODUCT_DESCRIPTION_COLLAPSED_ROWS = 5
 
 function getProductDisplaySummary(product: Product): string {
   let summary = product.summary?.trim() ?? ""
@@ -53,6 +60,9 @@ function ProductPage() {
   const [selectedImageIndex, setSelectedImageIndex] = useState(0)
   const [quantity, setQuantity] = useState(1)
   const [showAllTags, setShowAllTags] = useState(false)
+  const [showFullDescription, setShowFullDescription] = useState(false)
+  const [descriptionCanExpand, setDescriptionCanExpand] = useState(false)
+  const descriptionRef = useRef<HTMLParagraphElement>(null)
   const btcUsdRateQuery = useBtcUsdRate()
 
   const productQuery = useProgressiveProductDetail(productId)
@@ -110,14 +120,50 @@ function ProductPage() {
 
   const visibleTags = useMemo(() => {
     if (!product) return []
-    return showAllTags ? product.tags : product.tags.slice(0, 6)
+    return showAllTags ? product.tags : product.tags.slice(0, 4)
   }, [product, showAllTags])
 
   useEffect(() => {
     setSelectedImageIndex(0)
     setQuantity(1)
     setShowAllTags(false)
+    setShowFullDescription(false)
   }, [product?.id])
+
+  useEffect(() => {
+    const descriptionElement = descriptionRef.current
+    if (!descriptionElement || typeof window === "undefined") {
+      setDescriptionCanExpand(false)
+      return
+    }
+
+    const measureDescription = () => {
+      const computedStyles = window.getComputedStyle(descriptionElement)
+      const lineHeight = Number.parseFloat(computedStyles.lineHeight)
+      if (!Number.isFinite(lineHeight)) {
+        setDescriptionCanExpand(false)
+        return
+      }
+
+      setDescriptionCanExpand(
+        descriptionElement.scrollHeight >
+          lineHeight * PRODUCT_DESCRIPTION_COLLAPSED_ROWS + 1
+      )
+    }
+
+    measureDescription()
+
+    if (typeof ResizeObserver !== "undefined") {
+      const resizeObserver = new ResizeObserver(measureDescription)
+      resizeObserver.observe(descriptionElement)
+
+      return () => resizeObserver.disconnect()
+    }
+
+    window.addEventListener("resize", measureDescription)
+
+    return () => window.removeEventListener("resize", measureDescription)
+  }, [displaySummary])
 
   return (
     <div className="min-w-0 max-w-full space-y-8 overflow-x-hidden">
@@ -422,7 +468,7 @@ function ProductPage() {
                 <h2 className="text-xl font-semibold text-[var(--text-primary)]">
                   Details
                 </h2>
-                {product.tags.length > 0 && (
+                {product.tags.length > 4 && (
                   <button
                     type="button"
                     className="text-xs font-medium text-secondary-400 transition-colors hover:text-secondary-300"
@@ -436,9 +482,37 @@ function ProductPage() {
               </div>
 
               <div className="space-y-5">
-                <p className="break-words whitespace-pre-line text-sm leading-7 text-[var(--text-secondary)] [overflow-wrap:anywhere]">
-                  {displaySummary}
-                </p>
+                <div className="space-y-2">
+                  <p
+                    ref={descriptionRef}
+                    className={[
+                      "break-words whitespace-pre-line text-sm leading-7 text-[var(--text-secondary)] [overflow-wrap:anywhere]",
+                      descriptionCanExpand && !showFullDescription
+                        ? "line-clamp-5"
+                        : "",
+                    ].join(" ")}
+                  >
+                    {displaySummary}
+                  </p>
+                  {descriptionCanExpand && (
+                    <button
+                      type="button"
+                      className="inline-flex h-8 items-center gap-1 rounded-full px-2 text-xs font-medium text-secondary-400 transition-colors hover:bg-[var(--surface-elevated)] hover:text-secondary-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                      aria-expanded={showFullDescription}
+                      onClick={() =>
+                        setShowFullDescription((current) => !current)
+                      }
+                    >
+                      {showFullDescription ? "Show less" : "Show more"}
+                      <ChevronDown
+                        className={[
+                          "h-3.5 w-3.5 transition-transform",
+                          showFullDescription ? "rotate-180" : "",
+                        ].join(" ")}
+                      />
+                    </button>
+                  )}
+                </div>
 
                 {(product.location || updatedLabel) && (
                   <dl className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm sm:grid-cols-2">
