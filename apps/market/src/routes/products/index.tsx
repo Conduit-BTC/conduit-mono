@@ -34,8 +34,20 @@ import {
   type MarketBrowseSearch,
   type MarketBrowseSortOption,
 } from "../../lib/marketBrowseModel"
+import type { ProductCatalogSourceMode } from "../../lib/productCatalogRead"
 
 const PAGE_SIZE = 12
+const COLLAPSED_TAG_CLOUD_HEIGHT = 76
+const CATALOG_SOURCE_OPTIONS: ProductCatalogSourceMode[] = [
+  "combined",
+  "following",
+  "conduit",
+]
+const CATALOG_SOURCE_LABELS: Record<ProductCatalogSourceMode, string> = {
+  combined: "Following + Conduit",
+  following: "Following",
+  conduit: "Conduit",
+}
 
 export type ProductSearch = MarketBrowseSearch
 
@@ -45,6 +57,12 @@ export const Route = createFileRoute("/products/")({
     const merchants = normalizeFacetValues(raw.merchant)
     const tags = normalizeFacetValues(raw.tag).map((tag) => tag.toLowerCase())
 
+    const authRequired =
+      raw.authRequired === true ||
+      raw.authRequired === "true" ||
+      raw.authRequired === 1 ||
+      raw.authRequired === "1"
+
     return {
       merchant: merchants.length > 0 ? merchants : undefined,
       q: typeof raw.q === "string" ? raw.q : undefined,
@@ -53,12 +71,13 @@ export const Route = createFileRoute("/products/")({
       )
         ? (raw.sort as MarketBrowseSortOption)
         : undefined,
+      source: CATALOG_SOURCE_OPTIONS.includes(
+        raw.source as ProductCatalogSourceMode
+      )
+        ? (raw.source as ProductCatalogSourceMode)
+        : undefined,
       tag: tags.length > 0 ? Array.from(new Set(tags)) : undefined,
-      authRequired:
-        raw.authRequired === true ||
-        raw.authRequired === "true" ||
-        raw.authRequired === 1 ||
-        raw.authRequired === "1",
+      ...(authRequired ? { authRequired } : {}),
     }
   },
 })
@@ -82,6 +101,91 @@ function FilterRemoveButton({
   )
 }
 
+function CatalogSourceControl({
+  catalogSource,
+  connected,
+  fallbackAuthorCount,
+  firstDegreeAuthorCount,
+  followLookupStatus,
+  onSelect,
+}: {
+  catalogSource: ProductCatalogSourceMode
+  connected: boolean
+  fallbackAuthorCount: number
+  firstDegreeAuthorCount: number
+  followLookupStatus: "idle" | "loading" | "ready" | "error"
+  onSelect: (source: ProductCatalogSourceMode) => void
+}) {
+  const statusContent = (() => {
+    if (!connected) {
+      return "Conduit list"
+    }
+
+    if (followLookupStatus === "loading") {
+      return (
+        <>
+          <LoaderCircle className="size-3 animate-spin text-secondary-300" />
+          Loading follows
+        </>
+      )
+    }
+
+    if (followLookupStatus === "error") {
+      return "Using Conduit fallback"
+    }
+
+    if (catalogSource === "conduit") {
+      return `${fallbackAuthorCount} Conduit stores`
+    }
+
+    if (firstDegreeAuthorCount > 0) {
+      return `${firstDegreeAuthorCount} followed stores`
+    }
+
+    return "No followed stores yet"
+  })()
+
+  return (
+    <section className="flex min-h-10 flex-col gap-2 text-xs sm:flex-row sm:items-center">
+      <div className="shrink-0 font-medium uppercase tracking-wider text-[var(--text-muted)]">
+        Catalog
+      </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <div className="inline-flex rounded-full border border-[var(--border)] bg-[var(--surface)] p-1">
+          {CATALOG_SOURCE_OPTIONS.map((source) => {
+            const selected = catalogSource === source
+            return (
+              <button
+                key={source}
+                type="button"
+                disabled={!connected && source !== "conduit"}
+                onClick={() => onSelect(source)}
+                className={[
+                  "h-7 rounded-full px-3 font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+                  selected
+                    ? "bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-sm)]"
+                    : "text-[var(--text-muted)] hover:text-[var(--text-primary)]",
+                  !connected && source !== "conduit"
+                    ? "pointer-events-none opacity-45"
+                    : "",
+                ].join(" ")}
+              >
+                {CATALOG_SOURCE_LABELS[source]}
+              </button>
+            )
+          })}
+        </div>
+        <div
+          className="inline-flex min-h-7 items-center gap-1.5 font-medium text-[var(--text-muted)]"
+          aria-live="polite"
+        >
+          {statusContent}
+        </div>
+      </div>
+    </section>
+  )
+}
+
 function ProductsPage() {
   const cart = useCart()
   const search = Route.useSearch()
@@ -90,6 +194,7 @@ function ProductsPage() {
   const [connectOpen, setConnectOpen] = useState(false)
   const [showAllTags, setShowAllTags] = useState(false)
   const [tagCloudOverflows, setTagCloudOverflows] = useState(false)
+  const [tagCloudMeasured, setTagCloudMeasured] = useState(false)
   const [tagCloudInteracted, setTagCloudInteracted] = useState(false)
   const [storeMenuOpen, setStoreMenuOpen] = useState(false)
   const hasAutoPromptedConnect = useRef(false)
@@ -107,6 +212,7 @@ function ProductsPage() {
               value === undefined ||
               value === null ||
               value === "" ||
+              (key === "authRequired" && value === false) ||
               (Array.isArray(value) && value.length === 0)
             ) {
               delete next[key]
@@ -122,12 +228,14 @@ function ProductsPage() {
 
   const browseModel = useMarketBrowseModel({
     btcUsdRate,
+    catalogSource: search.source ?? "combined",
     search,
     storeMenuOpen,
     visibleCount,
   })
   const {
     auth,
+    catalogSource,
     categoryFacetOptions,
     filtered,
     hasActiveFilters,
@@ -150,6 +258,9 @@ function ProductsPage() {
     getMerchantIdentity,
   } = browseModel
   const { status } = auth
+  const connected = status === "connected"
+  const shouldCollapseTagCloud =
+    !showAllTags && (!tagCloudMeasured || tagCloudOverflows)
 
   const toggleTag = (tag: string) => {
     if (selectedTagSet.has(tag)) {
@@ -211,7 +322,10 @@ function ProductsPage() {
     if (!element) return
 
     const measure = () => {
-      setTagCloudOverflows(element.scrollHeight > element.clientHeight + 1)
+      setTagCloudOverflows(
+        element.scrollHeight > COLLAPSED_TAG_CLOUD_HEIGHT + 1
+      )
+      setTagCloudMeasured(true)
     }
 
     measure()
@@ -285,32 +399,47 @@ function ProductsPage() {
         </section>
       )}
 
+      <CatalogSourceControl
+        catalogSource={catalogSource}
+        connected={connected}
+        fallbackAuthorCount={productsQuery.fallbackAuthorCount}
+        firstDegreeAuthorCount={productsQuery.firstDegreeAuthorCount}
+        followLookupStatus={productsQuery.followLookupStatus}
+        onSelect={(source) =>
+          updateSearch({
+            source: source === "combined" ? undefined : source,
+          })
+        }
+      />
+
       {shouldShowCategories && (
         <section className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex min-h-8 items-center justify-between gap-3">
             <div className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">
               Categories
             </div>
-            {tagCloudOverflows && (
-              <button
-                type="button"
-                className="inline-flex h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-secondary-400 transition-colors duration-150 hover:bg-[var(--surface-elevated)] hover:text-secondary-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-                aria-expanded={showAllTags}
-                onClick={() => {
-                  setTagCloudInteracted(true)
-                  setShowAllTags((current) => !current)
-                }}
-              >
-                {showAllTags ? "Collapse" : "Expand categories"}
-                <ChevronDown
-                  className={[
-                    "h-3.5 w-3.5 transition-transform duration-150",
-                    showAllTags ? "rotate-180" : "",
-                  ].join(" ")}
-                  aria-hidden="true"
-                />
-              </button>
-            )}
+            <div className="flex h-8 shrink-0 items-center justify-end">
+              {tagCloudOverflows && (
+                <button
+                  type="button"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-secondary-400 transition-colors duration-150 hover:bg-[var(--surface-elevated)] hover:text-secondary-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                  aria-expanded={showAllTags}
+                  onClick={() => {
+                    setTagCloudInteracted(true)
+                    setShowAllTags((current) => !current)
+                  }}
+                >
+                  {showAllTags ? "Collapse" : "Expand categories"}
+                  <ChevronDown
+                    className={[
+                      "h-3.5 w-3.5 transition-transform duration-150",
+                      showAllTags ? "rotate-180" : "",
+                    ].join(" ")}
+                    aria-hidden="true"
+                  />
+                </button>
+              )}
+            </div>
           </div>
 
           {showCategorySkeleton ? (
@@ -334,9 +463,7 @@ function ProductsPage() {
                   tagCloudInteracted
                     ? "transition-[max-height] duration-150 ease-out"
                     : "",
-                  showAllTags || !tagCloudOverflows
-                    ? "max-h-72"
-                    : "max-h-[4.75rem]",
+                  shouldCollapseTagCloud ? "max-h-[4.75rem]" : "max-h-72",
                 ].join(" ")}
               >
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
@@ -352,7 +479,14 @@ function ProductsPage() {
                         className="gap-1.5 cursor-pointer capitalize transition-colors hover:border-secondary-400 hover:text-[var(--text-primary)]"
                       >
                         <span>{option.label}</span>
-                        <span className="self-center text-[0.82em] font-medium leading-none tabular-nums text-[var(--text-muted)]">
+                        <span
+                          className={[
+                            "inline-block min-w-[3ch] self-center text-right text-[0.82em] font-medium leading-none tabular-nums transition-colors",
+                            option.selected
+                              ? "text-white/85"
+                              : "text-[var(--text-muted)]",
+                          ].join(" ")}
+                        >
                           [{option.count}]
                         </span>
                       </Badge>
@@ -530,7 +664,7 @@ function ProductsPage() {
 
       {/* Loading */}
       {productsQuery.isInitialLoading && (
-        <ul className="grid auto-rows-fr list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
+        <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-4">
           {Array.from({ length: PAGE_SIZE }).map((_, idx) => (
             <li key={idx} className="h-full">
               <ProductGridCardSkeleton />
@@ -585,7 +719,7 @@ function ProductsPage() {
 
       {/* Product grid */}
       {productCards.length > 0 && (
-        <ul className="grid auto-rows-fr list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
+        <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-4">
           {productCards.map(({ product, merchant }, index) => {
             return (
               <li key={product.id} className="h-full">

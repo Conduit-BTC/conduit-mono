@@ -432,13 +432,13 @@ function StorefrontPage() {
                     Store
                   </div>
                   {merchantIdentityPending ? (
-                    <h1 className="mt-2 truncate text-3xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
-                      <span className="inline-block max-w-full animate-pulse truncate">
+                    <h1 className="mt-2 truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
+                      <span className="inline-block max-w-full animate-pulse truncate pb-1 leading-[1.16]">
                         {merchantName}
                       </span>
                     </h1>
                   ) : (
-                    <h1 className="mt-2 truncate text-3xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
+                    <h1 className="mt-2 truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
                       {merchantName}
                     </h1>
                   )}
@@ -689,7 +689,7 @@ function StorefrontPage() {
           </div>
 
           {productsQuery.isInitialLoading && (
-            <ul className="grid auto-rows-fr list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
+            <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-4">
               {Array.from({ length: 6 }).map((_, index) => (
                 <li key={index} className="h-full">
                   <ProductGridCardSkeleton />
@@ -734,7 +734,7 @@ function StorefrontPage() {
             )}
 
           {filteredProducts.length > 0 && (
-            <ul className="grid auto-rows-fr list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
+            <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-4">
               {filteredProducts.map((product, index) => (
                 <li key={product.id} className="h-full">
                   <ProductGridCard

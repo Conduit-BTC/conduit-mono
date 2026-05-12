@@ -49,6 +49,7 @@ export interface UseRelaySettingsResult {
   toggleRelayWrite: (url: string, enabled: boolean) => void
   reorderRelay: (sourceUrl: string, targetUrl: string) => void
   resetRelaySettings: () => void
+  restoreDefaultRelaySettings: () => void
   publishRelayList: () => Promise<void>
 }
 
@@ -65,6 +66,17 @@ function createEmptyRelaySettings(): RelaySettingsState {
     version: RELAY_SETTINGS_STORAGE_VERSION,
     entries: [],
     updatedAt: Date.now(),
+  }
+}
+
+function createManualDefaultRelaySettings(): RelaySettingsState {
+  const defaults = createDefaultRelaySettings()
+  return {
+    ...defaults,
+    entries: defaults.entries.map((entry) => ({
+      ...entry,
+      source: "manual" as const,
+    })),
   }
 }
 
@@ -396,6 +408,17 @@ export function useRelaySettings(
     setSettings(defaults)
   }
 
+  function restoreDefaultRelaySettings(): void {
+    setError(null)
+    setPublishError(null)
+    const defaults = saveRelaySettings(
+      createManualDefaultRelaySettings(),
+      scope
+    )
+    settingsRef.current = defaults
+    setSettings(defaults)
+  }
+
   async function publishRelayList(): Promise<void> {
     setPublishError(null)
     setError(null)
@@ -451,6 +474,7 @@ export function useRelaySettings(
     toggleRelayWrite,
     reorderRelay,
     resetRelaySettings,
+    restoreDefaultRelaySettings,
     publishRelayList,
   }
 }

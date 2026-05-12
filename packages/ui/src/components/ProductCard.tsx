@@ -41,16 +41,22 @@ export function ProductCard({
 }: ProductCardProps) {
   const [imageFailed, setImageFailed] = useState(false)
   const [imageIndex, setImageIndex] = useState(0)
+  const [imageLoaded, setImageLoaded] = useState(false)
   const activeImage = images[imageIndex]
   const imageKey = images.map((image) => image.url).join("|")
 
   useEffect(() => {
     setImageFailed(false)
     setImageIndex(0)
+    setImageLoaded(false)
   }, [imageKey, title])
 
+  useEffect(() => {
+    setImageLoaded(false)
+  }, [activeImage?.url])
+
   const merchantNameContent = merchantNamePending ? (
-    <span className="inline-block max-w-full animate-pulse truncate">
+    <span className="inline-block max-w-full animate-pulse truncate leading-5">
       {merchantName}
     </span>
   ) : (
@@ -73,23 +79,39 @@ export function ProductCard({
         onActivate()
       }}
     >
-      <div className="aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)]">
+      <div className="relative aspect-[4/3] overflow-hidden border-b border-[var(--border)] bg-[var(--background)]">
         {activeImage && !imageFailed ? (
-          <img
-            src={activeImage.url}
-            alt={activeImage.alt ?? title}
-            className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
-            decoding="async"
-            loading={imageLoading}
-            onError={() => {
-              if (imageIndex < images.length - 1) {
-                setImageIndex((current) => current + 1)
-                return
-              }
-              setImageFailed(true)
-              onInvalidImage?.()
-            }}
-          />
+          <>
+            <div
+              aria-hidden="true"
+              className={cn(
+                "absolute inset-0 bg-[var(--surface-elevated)] transition-opacity duration-300",
+                !imageLoaded && "animate-pulse",
+                imageLoaded ? "opacity-0" : "opacity-100"
+              )}
+            />
+            <img
+              src={activeImage.url}
+              alt={activeImage.alt ?? title}
+              width={640}
+              height={480}
+              className={cn(
+                "h-full w-full object-cover transition-[opacity,transform] duration-300 group-hover:scale-105",
+                imageLoaded ? "opacity-100" : "opacity-0"
+              )}
+              decoding="async"
+              loading={imageLoading}
+              onLoad={() => setImageLoaded(true)}
+              onError={() => {
+                if (imageIndex < images.length - 1) {
+                  setImageIndex((current) => current + 1)
+                  return
+                }
+                setImageFailed(true)
+                onInvalidImage?.()
+              }}
+            />
+          </>
         ) : (
           <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-[var(--surface-elevated)] text-[var(--text-muted)]">
             <ImageOff className="h-6 w-6" aria-hidden="true" />
@@ -106,7 +128,7 @@ export function ProductCard({
           {onMerchantActivate ? (
             <button
               type="button"
-              className="truncate text-left text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+              className="truncate text-left text-xs leading-5 text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
               aria-label={merchantNamePending ? "Open store" : undefined}
               onClick={(event) => {
                 event.preventDefault()
@@ -117,7 +139,7 @@ export function ProductCard({
               {merchantNameContent}
             </button>
           ) : (
-            <div className="truncate text-left text-xs text-[var(--text-muted)]">
+            <div className="truncate text-left text-xs leading-5 text-[var(--text-muted)]">
               {merchantNameContent}
             </div>
           )}

@@ -8,12 +8,14 @@ import {
 import type { FacetOption } from "./facets"
 import { compareCommercePrices, getComparablePriceValue } from "./pricing"
 import { diversifyMerchantProductOrder } from "./productFeedDiversity"
+import type { ProductCatalogSourceMode } from "./productCatalogRead"
 
 export type MarketBrowseSortOption = "newest" | "price_asc" | "price_desc"
 
 export interface MarketBrowseSearch {
   merchant?: string[]
   q?: string
+  source?: ProductCatalogSourceMode
   sort?: MarketBrowseSortOption
   tag?: string[]
   authRequired?: boolean
@@ -136,9 +138,10 @@ export function getStoreTriggerLabel(selectedMerchants: readonly string[]) {
 
 export function getBrowseSearchKey(input: {
   q?: string
+  source?: ProductCatalogSourceMode
   selectedTags: readonly string[]
   selectedMerchants: readonly string[]
   sort?: MarketBrowseSortOption
 }): string {
-  return `${input.q}-${input.selectedTags.slice().sort().join(",")}-${input.sort}-${input.selectedMerchants.slice().sort().join(",")}`
+  return `${input.q}-${input.source}-${input.selectedTags.slice().sort().join(",")}-${input.sort}-${input.selectedMerchants.slice().sort().join(",")}`
 }

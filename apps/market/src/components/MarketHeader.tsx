@@ -43,19 +43,47 @@ function Logo({
   variant?: "full" | "bg" | "icon"
   className?: string
 }) {
-  const src =
-    variant === "bg"
-      ? "/images/logo/logo-full-bg.svg"
-      : variant === "icon"
-        ? "/images/logo/logo-icon.svg"
-        : "/images/logo/logo-full.svg"
+  const logo = (() => {
+    switch (variant) {
+      case "bg":
+        return {
+          src: "/images/logo/logo-full-bg.svg",
+          width: 410,
+          height: 139,
+          className: "h-8 w-[5.875rem]",
+        }
+      case "icon":
+        return {
+          src: "/images/logo/logo-icon.svg",
+          width: 78,
+          height: 115,
+          className: "h-8 w-[1.375rem]",
+        }
+      case "full":
+      default:
+        return {
+          src: "/images/logo/logo-full.svg",
+          width: 386,
+          height: 115,
+          className: "h-8 w-[6.75rem]",
+        }
+    }
+  })()
 
   return (
     <Link
       to="/"
       className={cn("flex items-center gap-3 select-none", className)}
     >
-      <img src={src} alt="Conduit" className="h-8 w-auto" />
+      <img
+        src={logo.src}
+        alt="Conduit"
+        width={logo.width}
+        height={logo.height}
+        decoding="async"
+        fetchPriority={variant === "full" ? "high" : "auto"}
+        className={cn("shrink-0 object-contain", logo.className)}
+      />
       <span className="hidden border-l border-[var(--border)] pl-3 font-display text-2xl font-medium tracking-tight text-[var(--text-primary)] md:block">
         market
       </span>
