@@ -31,6 +31,10 @@ import {
 } from "@conduit/ui"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { requireAuth } from "../lib/auth"
+import {
+  assertPublishableProductPrice,
+  getProductPriceInputStep,
+} from "../lib/productPriceForm"
 
 export const Route = createFileRoute("/products")({
   beforeLoad: () => {
@@ -152,10 +156,9 @@ async function publishProduct(
   if (!title) throw new Error("Title is required")
 
   const price = Number(form.price)
-  if (!Number.isFinite(price) || price < 0)
-    throw new Error("Price must be a non-negative number")
 
   const currency = form.currency.trim().toUpperCase() || "USD"
+  assertPublishableProductPrice(price, currency)
   const summary = form.summary.trim()
   const imageUrl = form.imageUrl.trim()
   if (!imageUrl) {
@@ -405,7 +408,7 @@ function ProductsPage() {
                     id="product-price"
                     type="number"
                     min="0"
-                    step="0.01"
+                    step={getProductPriceInputStep(form.currency)}
                     value={form.price}
                     onChange={(e) =>
                       setForm((prev) => ({ ...prev, price: e.target.value }))
