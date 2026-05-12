@@ -689,7 +689,7 @@ function StorefrontPage() {
           </div>
 
           {productsQuery.isInitialLoading && (
-            <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
+            <ul className="grid auto-rows-fr list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
               {Array.from({ length: 6 }).map((_, index) => (
                 <li key={index} className="h-full">
                   <ProductGridCardSkeleton />
@@ -734,7 +734,7 @@ function StorefrontPage() {
             )}
 
           {filteredProducts.length > 0 && (
-            <ul className="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
+            <ul className="grid auto-rows-fr list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
               {filteredProducts.map((product, index) => (
                 <li key={product.id} className="h-full">
                   <ProductGridCard

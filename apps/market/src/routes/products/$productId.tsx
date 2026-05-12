@@ -12,7 +12,7 @@ import {
   useProfile,
   type Product,
 } from "@conduit/core"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
 import {
@@ -39,6 +39,12 @@ const PRODUCT_SUMMARY_FALLBACK =
   "This listing does not include a merchant-written summary yet. Product pricing, identity, and order flow are still available for checkout."
 const PRODUCT_DESCRIPTION_COLLAPSED_ROWS = 5
 
+type DescriptionMetrics = {
+  canExpand: boolean
+  collapsedHeight: number
+  expandedHeight: number
+}
+
 function getProductDisplaySummary(product: Product): string {
   let summary = product.summary?.trim() ?? ""
 
@@ -61,7 +67,12 @@ function ProductPage() {
   const [quantity, setQuantity] = useState(1)
   const [showAllTags, setShowAllTags] = useState(false)
   const [showFullDescription, setShowFullDescription] = useState(false)
-  const [descriptionCanExpand, setDescriptionCanExpand] = useState(false)
+  const [descriptionMetrics, setDescriptionMetrics] =
+    useState<DescriptionMetrics>({
+      canExpand: false,
+      collapsedHeight: 0,
+      expandedHeight: 0,
+    })
   const descriptionRef = useRef<HTMLParagraphElement>(null)
   const btcUsdRateQuery = useBtcUsdRate()
 
@@ -130,10 +141,14 @@ function ProductPage() {
     setShowFullDescription(false)
   }, [product?.id])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const descriptionElement = descriptionRef.current
     if (!descriptionElement || typeof window === "undefined") {
-      setDescriptionCanExpand(false)
+      setDescriptionMetrics({
+        canExpand: false,
+        collapsedHeight: 0,
+        expandedHeight: 0,
+      })
       return
     }
 
@@ -141,14 +156,31 @@ function ProductPage() {
       const computedStyles = window.getComputedStyle(descriptionElement)
       const lineHeight = Number.parseFloat(computedStyles.lineHeight)
       if (!Number.isFinite(lineHeight)) {
-        setDescriptionCanExpand(false)
+        setDescriptionMetrics({
+          canExpand: false,
+          collapsedHeight: 0,
+          expandedHeight: 0,
+        })
         return
       }
 
-      setDescriptionCanExpand(
-        descriptionElement.scrollHeight >
-          lineHeight * PRODUCT_DESCRIPTION_COLLAPSED_ROWS + 1
+      const collapsedHeight = Math.ceil(
+        lineHeight * PRODUCT_DESCRIPTION_COLLAPSED_ROWS
       )
+      const expandedHeight = Math.ceil(descriptionElement.scrollHeight)
+      const canExpand = expandedHeight > collapsedHeight + 1
+
+      setDescriptionMetrics((current) => {
+        if (
+          current.canExpand === canExpand &&
+          current.collapsedHeight === collapsedHeight &&
+          current.expandedHeight === expandedHeight
+        ) {
+          return current
+        }
+
+        return { canExpand, collapsedHeight, expandedHeight }
+      })
     }
 
     measureDescription()
@@ -164,6 +196,12 @@ function ProductPage() {
 
     return () => window.removeEventListener("resize", measureDescription)
   }, [displaySummary])
+
+  const descriptionMaxHeight = descriptionMetrics.canExpand
+    ? showFullDescription
+      ? descriptionMetrics.expandedHeight
+      : descriptionMetrics.collapsedHeight
+    : undefined
 
   return (
     <div className="min-w-0 max-w-full space-y-8 overflow-x-hidden">
@@ -483,18 +521,37 @@ function ProductPage() {
 
               <div className="space-y-5">
                 <div className="space-y-2">
-                  <p
-                    ref={descriptionRef}
-                    className={[
-                      "break-words whitespace-pre-line text-sm leading-7 text-[var(--text-secondary)] [overflow-wrap:anywhere]",
-                      descriptionCanExpand && !showFullDescription
-                        ? "line-clamp-5"
-                        : "",
-                    ].join(" ")}
-                  >
-                    {displaySummary}
-                  </p>
-                  {descriptionCanExpand && (
+                  <div className="relative">
+                    <div
+                      className={[
+                        descriptionMetrics.canExpand
+                          ? "overflow-hidden transition-[max-height] duration-300 ease-out motion-reduce:transition-none"
+                          : "",
+                      ].join(" ")}
+                      style={
+                        descriptionMaxHeight === undefined
+                          ? undefined
+                          : { maxHeight: `${descriptionMaxHeight}px` }
+                      }
+                    >
+                      <p
+                        ref={descriptionRef}
+                        className="break-words whitespace-pre-line text-sm leading-7 text-[var(--text-secondary)] [overflow-wrap:anywhere]"
+                      >
+                        {displaySummary}
+                      </p>
+                    </div>
+                    <div
+                      aria-hidden="true"
+                      className={[
+                        "pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-[var(--surface)] to-transparent transition-opacity duration-200 motion-reduce:transition-none",
+                        descriptionMetrics.canExpand && !showFullDescription
+                          ? "opacity-100"
+                          : "opacity-0",
+                      ].join(" ")}
+                    />
+                  </div>
+                  {descriptionMetrics.canExpand && (
                     <button
                       type="button"
                       className="inline-flex h-8 items-center gap-1 rounded-full px-2 text-xs font-medium text-secondary-400 transition-colors hover:bg-[var(--surface-elevated)] hover:text-secondary-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
@@ -587,7 +644,7 @@ function ProductPage() {
             </div>
 
             {relatedProductsQuery.isInitialLoading && (
-              <ul className="grid list-none grid-cols-2 gap-3 p-0 lg:grid-cols-4">
+              <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 lg:grid-cols-4">
                 {Array.from({ length: 4 }).map((_, index) => (
                   <li key={index} className="h-full">
                     <ProductGridCardSkeleton />
@@ -605,7 +662,7 @@ function ProductPage() {
               )}
 
             {relatedProducts.length > 0 && (
-              <ul className="grid list-none grid-cols-2 gap-3 p-0 lg:grid-cols-4">
+              <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 lg:grid-cols-4">
                 {relatedProducts.map((relatedProduct, index) => {
                   const relatedCartItem = cart.items.find(
                     (item) => item.productId === relatedProduct.id

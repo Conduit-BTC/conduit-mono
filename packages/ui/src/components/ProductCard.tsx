@@ -125,7 +125,7 @@ export function ProductCard({
 
         <div className="mt-auto flex items-end justify-between gap-2 pt-3">
           <div className="min-w-0">
-            <div className="text-sm font-bold text-secondary-400">
+            <div className="min-h-5 truncate text-sm font-bold text-secondary-400">
               {primaryPrice}
             </div>
             <div className="min-h-[1rem] truncate text-xs text-[var(--text-muted)]">
@@ -248,17 +248,17 @@ export function ProductCartAction({
 
 export function ProductCardSkeleton() {
   return (
-    <div className="flex h-full animate-pulse flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)]">
+    <div className="flex h-full animate-pulse flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-md)]">
       <div className="aspect-[4/3] bg-[var(--surface-elevated)]" />
       <div className="flex flex-1 flex-col p-3">
-        <div className="space-y-1.5">
+        <div className="min-h-[3.25rem] space-y-1.5">
           <div className="h-4 w-4/5 rounded bg-[var(--surface-elevated)]" />
           <div className="h-4 w-3/5 rounded bg-[var(--surface-elevated)]" />
           <div className="h-3 w-1/2 rounded bg-[var(--surface-elevated)]" />
         </div>
-        <div className="mt-auto flex items-end justify-between pt-3">
+        <div className="mt-auto flex items-end justify-between gap-2 pt-3">
           <div className="space-y-1">
-            <div className="h-4 w-20 rounded bg-[var(--surface-elevated)]" />
+            <div className="h-5 w-20 rounded bg-[var(--surface-elevated)]" />
             <div className="h-3 w-16 rounded bg-[var(--surface-elevated)]" />
           </div>
           <div className="h-7 w-14 rounded bg-[var(--surface-elevated)]" />
