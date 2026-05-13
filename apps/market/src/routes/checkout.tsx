@@ -556,7 +556,12 @@ function CheckoutPage() {
 
   // Probe merchant's LNURL for Nostr zap support when merchant profile arrives
   useEffect(() => {
-    if (!merchantLud16 || wallet.status !== "pay-capable") return
+    setLnurlAllowsNostr(false)
+
+    if (!merchantLud16 || wallet.status !== "pay-capable") {
+      setLnurlProbing(false)
+      return
+    }
 
     let cancelled = false
     setLnurlProbing(true)
@@ -904,6 +909,12 @@ function CheckoutPage() {
       setPaymentStage("requesting_invoice")
 
       const lnurlMeta = await fetchLnurlPayMetadata(merchantLud16)
+      if (!lnurlMeta.allowsNostr) {
+        throw new Error(
+          "Merchant Lightning Address does not advertise Nostr zap support."
+        )
+      }
+
       const zapRelayUrls = Array.from(
         new Set([...(ndk.explicitRelayUrls ?? []), ...config.publicRelayUrls])
       )
