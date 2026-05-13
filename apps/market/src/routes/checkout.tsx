@@ -1447,6 +1447,7 @@ function CheckoutPage() {
                         onChange={(e) =>
                           updateShipping("firstName", e.target.value)
                         }
+                        autoComplete="given-name"
                         placeholder="Jane"
                         aria-invalid={fieldInvalid("firstName")}
                         className={fieldClassName("firstName")}
@@ -1467,6 +1468,7 @@ function CheckoutPage() {
                         onChange={(e) =>
                           updateShipping("lastName", e.target.value)
                         }
+                        autoComplete="family-name"
                         placeholder="Doe"
                         aria-invalid={fieldInvalid("lastName")}
                         className={fieldClassName("lastName")}
@@ -1488,6 +1490,7 @@ function CheckoutPage() {
                       id="ship-street"
                       value={shipping.street}
                       onChange={(e) => updateShipping("street", e.target.value)}
+                      autoComplete="address-line1"
                       placeholder="123 Main St"
                       aria-invalid={fieldInvalid("street")}
                       className={fieldClassName("street")}
@@ -1508,6 +1511,7 @@ function CheckoutPage() {
                       id="ship-line2"
                       value={shipping.line2}
                       onChange={(e) => updateShipping("line2", e.target.value)}
+                      autoComplete="address-line2"
                       placeholder="Unit 4B"
                     />
                   </div>
@@ -1524,6 +1528,7 @@ function CheckoutPage() {
                         onChange={(e) =>
                           updateShipping("postalCode", e.target.value)
                         }
+                        autoComplete="postal-code"
                         placeholder="78701"
                         aria-invalid={fieldInvalid("postalCode")}
                         className={fieldClassName("postalCode")}
@@ -1542,6 +1547,7 @@ function CheckoutPage() {
                         id="ship-city"
                         value={shipping.city}
                         onChange={(e) => updateShipping("city", e.target.value)}
+                        autoComplete="address-level2"
                         placeholder="Austin"
                         aria-invalid={fieldInvalid("city")}
                         className={fieldClassName("city")}
@@ -1560,6 +1566,7 @@ function CheckoutPage() {
                         onChange={(e) =>
                           updateShipping("state", e.target.value)
                         }
+                        autoComplete="address-level1"
                         placeholder="TX"
                       />
                     </div>
@@ -1584,6 +1591,7 @@ function CheckoutPage() {
                           onChange={(e) =>
                             updateShipping("phone", e.target.value)
                           }
+                          autoComplete="tel"
                           placeholder="+1 555 123 4567"
                           aria-invalid={fieldInvalid("phone")}
                           className={fieldClassName("phone")}
@@ -1602,6 +1610,7 @@ function CheckoutPage() {
                           onChange={(e) =>
                             updateShipping("email", e.target.value)
                           }
+                          autoComplete="email"
                           placeholder="jane@example.com"
                           aria-invalid={fieldInvalid("email")}
                           className={fieldClassName("email")}
