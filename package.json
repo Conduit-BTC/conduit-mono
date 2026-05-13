@@ -51,15 +51,15 @@
   },
   "devDependencies": {
     "@tanstack/router-generator": "^1.158.1",
-    "@nostr-dev-kit/ndk": "^2.14.0",
-    "@eslint/js": "^9.19.0",
-    "eslint": "^9.19.0",
+    "@nostr-dev-kit/ndk": "^3.0.3",
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.3.0",
     "eslint-plugin-react": "^7.37.4",
-    "eslint-plugin-react-hooks": "^5.1.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "husky": "^9.1.7",
-    "lint-staged": "^16.0.0",
+    "lint-staged": "^17.0.4",
     "prettier": "^3.6.2",
-    "typescript": "^5.7.3",
+    "typescript": "^6.0.3",
     "typescript-eslint": "^8.22.0"
   },
   "lint-staged": {
