@@ -17,8 +17,9 @@ import {
   Wifi,
 } from "lucide-react"
 import { useState, type ComponentType } from "react"
-import { Link } from "@tanstack/react-router"
+import { Link, useRouterState } from "@tanstack/react-router"
 import {
+  buildBugReportUrl,
   config,
   formatNpub,
   getProfileDisplayLabel,
@@ -266,9 +267,13 @@ function MerchantNavLinks({
 function UserMenu({ className }: { className?: string } = {}) {
   const { pubkey, status, disconnect } = useAuth()
   const [npubCopied, setNpubCopied] = useState(false)
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
   const profileQuery = useProfile(pubkey)
   const profile = profileQuery.data
   const readiness = useMerchantReadinessState()
+  const bugReportUrl = buildBugReportUrl({ app: "merchant", route: pathname })
 
   if (!pubkey || status !== "connected") return null
 
@@ -400,6 +405,18 @@ function UserMenu({ className }: { className?: string } = {}) {
             </DropdownMenuItem>
           )
         })}
+
+        <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
+
+        <DropdownMenuItem
+          className="h-10 rounded-xl px-2 text-sm font-medium text-[var(--text-primary)] focus:bg-[var(--surface-elevated)]"
+          onSelect={() => {
+            window.open(bugReportUrl, "_blank", "noopener,noreferrer")
+          }}
+        >
+          <CircleHelp className="mr-2 h-4 w-4 text-[var(--text-secondary)]" />
+          <span>Report a Bug</span>
+        </DropdownMenuItem>
 
         <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
 

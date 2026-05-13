@@ -18,6 +18,12 @@ export {
   normalizeRepositoryUrl,
   type ConduitBuildInfo,
 } from "./build-info"
+export {
+  buildBugReportUrl,
+  getBugReportAppLabel,
+  type BugReportAppId,
+  type BugReportUrlInput,
+} from "./bug-report"
 
 // Pricing
 export {

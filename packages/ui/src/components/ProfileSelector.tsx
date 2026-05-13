@@ -1,4 +1,5 @@
 import {
+  Bug,
   ChevronDown,
   CircleUserRound,
   LogOut,
@@ -31,6 +32,7 @@ export interface ProfileSelectorProps {
   onWallet?: () => void
   walletHref?: string
   walletStatusLabel?: string
+  onReportBug?: () => void
   onDisconnect: () => void
 }
 
@@ -124,6 +126,7 @@ export function ProfileSelector({
   onWallet,
   walletHref,
   walletStatusLabel,
+  onReportBug,
   onDisconnect,
 }: ProfileSelectorProps) {
   const [open, setOpen] = useState(false)
@@ -240,6 +243,26 @@ export function ProfileSelector({
           ) : null}
 
           {onProfile || onNetwork || onWallet ? (
+            <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
+          ) : null}
+
+          {onReportBug ? (
+            <SelectorItem
+              icon={<Bug className="h-4 w-4" />}
+              label="Report a Bug"
+              pill={
+                <span className="text-xs font-normal leading-4 text-[var(--text-secondary)]">
+                  No keys, wallet secrets, or sensitive info.
+                </span>
+              }
+              onSelect={() => {
+                setOpen(false)
+                onReportBug()
+              }}
+            />
+          ) : null}
+
+          {onReportBug ? (
             <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
           ) : null}
 
