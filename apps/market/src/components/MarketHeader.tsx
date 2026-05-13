@@ -1,4 +1,5 @@
 import {
+  Info,
   LoaderCircle,
   MessagesSquare,
   ReceiptText,
@@ -349,6 +350,20 @@ export function MarketHeader() {
 
           <Button
             asChild
+            variant="ghost"
+            className="hidden h-10 px-3 lg:inline-flex"
+          >
+            <Link
+              to="/about"
+              activeProps={{ className: "text-[var(--text-primary)]" }}
+            >
+              <Info className="h-4 w-4" />
+              About
+            </Link>
+          </Button>
+
+          <Button
+            asChild
             variant={pathname === "/cart" ? "muted" : "ghost"}
             size="sm"
             className="h-10 px-2.5 text-xs sm:px-3 sm:text-sm"
@@ -429,6 +444,12 @@ export function MarketHeader() {
                       </Link>
                     </Button>
                   )}
+                  <Button asChild variant="ghost" className="justify-start">
+                    <Link to="/about" onClick={() => setMenuOpen(false)}>
+                      <Info className="h-4 w-4" />
+                      About
+                    </Link>
+                  </Button>
                 </div>
 
                 <div className="mt-6 border-t border-[var(--border)] pt-4">

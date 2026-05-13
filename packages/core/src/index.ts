@@ -10,6 +10,14 @@ export * from "./schemas"
 // Utils
 export * from "./utils"
 
+// Build provenance
+export {
+  conduitBuildInfo,
+  getCommitUrl,
+  normalizeRepositoryUrl,
+  type ConduitBuildInfo,
+} from "./build-info"
+
 // Pricing
 export {
   MSATS_PER_SAT,

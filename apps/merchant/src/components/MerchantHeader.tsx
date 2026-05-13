@@ -2,6 +2,7 @@ import {
   Bell,
   Bitcoin,
   Grid2x2,
+  Info,
   Menu,
   Package,
   Search,
@@ -46,6 +47,7 @@ type NavRoute =
   | "/payments"
   | "/shipping"
   | "/network"
+  | "/about"
 
 type NavItem = {
   to: NavRoute
@@ -59,6 +61,7 @@ const mainNavItems: NavItem[] = [
   { to: "/", label: "Home", icon: Grid2x2 },
   { to: "/orders", label: "Orders", icon: ShoppingBag },
   { to: "/products", label: "Products", icon: Package },
+  { to: "/about", label: "About", icon: Info },
 ]
 
 const setupNavItems: NavItem[] = [
@@ -149,6 +152,7 @@ function MerchantNavLinks({
     "/payments": paymentsIncomplete,
     "/shipping": shippingIncomplete,
     "/network": networkIncomplete,
+    "/about": false,
     "/": false,
     "/orders": false,
     "/products": false,
