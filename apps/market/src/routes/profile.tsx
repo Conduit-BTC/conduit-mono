@@ -156,7 +156,7 @@ function ProfilePage() {
         </div>
       )}
 
-      {profileQuery.error && (
+      {!!profileQuery.error && (
         <div className="rounded-2xl border border-error/30 bg-error/10 p-4 text-sm text-error">
           Failed to load profile:{" "}
           {profileQuery.error instanceof Error

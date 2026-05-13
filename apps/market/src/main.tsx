@@ -14,12 +14,34 @@ import {
   pruneCommerceCaches,
   useConduitSession,
 } from "@conduit/core"
+import bricolageMediumUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-Medium.ttf?url"
+import bricolageRegularUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-Regular.ttf?url"
+import bricolageSemiBoldUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-SemiBold.ttf?url"
 import { routeTree } from "./routeTree.gen"
 import "./styles/index.css"
 
 const queryClient = new QueryClient()
 
 const router = createRouter({ routeTree })
+const criticalMarketFontUrls = [
+  bricolageRegularUrl,
+  bricolageMediumUrl,
+  bricolageSemiBoldUrl,
+]
+
+function preloadCriticalMarketFonts() {
+  for (const url of criticalMarketFontUrls) {
+    if (document.head.querySelector(`link[href="${url}"]`)) continue
+
+    const link = document.createElement("link")
+    link.rel = "preload"
+    link.as = "font"
+    link.href = url
+    link.type = "font/ttf"
+    link.crossOrigin = "anonymous"
+    document.head.appendChild(link)
+  }
+}
 
 function MarketAuthQueryBoundary({ children }: { children: ReactNode }) {
   const session = useConduitSession()
@@ -58,6 +80,7 @@ declare module "@tanstack/react-router" {
 }
 
 void pruneCommerceCaches()
+preloadCriticalMarketFonts()
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

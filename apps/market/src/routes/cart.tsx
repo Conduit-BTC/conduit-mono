@@ -5,10 +5,12 @@ import {
   formatPubkey,
   getCachedMarketplaceProducts,
   getCachedMerchantStorefront,
+  getPriceSats,
   getMarketplaceProducts,
   getMerchantStorefront,
   useAuth,
   useProfile,
+  type PricingRateInput,
   type Product,
 } from "@conduit/core"
 import { Avatar, AvatarFallback, AvatarImage, Button } from "@conduit/ui"
@@ -80,24 +82,23 @@ function groupCartItems(items: CartItem[]): MerchantCartGroup[] {
     .sort((a, b) => b.totalItems - a.totalItems)
 }
 
-function sumCartItems(items: CartItem[]): number {
-  return items.reduce((sum, item) => sum + item.price * item.quantity, 0)
-}
-
-function getCartSummaryPrice(items: CartItem[], btcUsdRate: number | null) {
-  const currencies = Array.from(
-    new Set(items.map((item) => item.currency).filter(Boolean))
-  )
+function getCartSummaryPrice(items: CartItem[], btcUsdRate: PricingRateInput) {
   const totalItems = items.reduce((sum, item) => sum + item.quantity, 0)
-  if (currencies.length !== 1) {
+  const totalSats = items.reduce((sum, item) => {
+    const sats = getPriceSats(item, btcUsdRate)
+    return sats ? sum + sats.sats * item.quantity : sum
+  }, 0)
+  const allItemsPriced = items.every((item) => getPriceSats(item, btcUsdRate))
+
+  if (!allItemsPriced) {
     return {
       primary: `${totalItems} item${totalItems === 1 ? "" : "s"}`,
-      secondary: "Mixed currencies",
+      secondary: "Price conversion unavailable",
     }
   }
 
   return getProductPriceDisplay(
-    { price: sumCartItems(items), currency: currencies[0] },
+    { price: totalSats, currency: "SATS", priceSats: totalSats },
     btcUsdRate
   )
 }
@@ -210,7 +211,7 @@ function MerchantOverviewCard({
   onCheckout,
 }: {
   group: MerchantCartGroup
-  btcUsdRate: number | null
+  btcUsdRate: PricingRateInput
   onCheckout: (merchantPubkey: string) => void
 }) {
   const summary = getCartSummaryPrice(group.items, btcUsdRate)
@@ -263,7 +264,7 @@ function RelatedProductRow({
   onAdd,
 }: {
   product: Product
-  btcUsdRate: number | null
+  btcUsdRate: PricingRateInput
   cartQuantity: number
   onAdd: () => void
 }) {
@@ -334,19 +335,29 @@ function CartLineItem({
   onRemove,
 }: {
   item: CartItem
-  btcUsdRate: number | null
+  btcUsdRate: PricingRateInput
   onIncrement: () => void
   onDecrement: () => void
   onRemove: () => void
 }) {
   const linePrice = getProductPriceDisplay(
-    { price: item.price * item.quantity, currency: item.currency },
+    {
+      price: item.price * item.quantity,
+      currency: item.currency,
+      priceSats:
+        typeof item.priceSats === "number"
+          ? item.priceSats * item.quantity
+          : undefined,
+      sourcePrice: item.sourcePrice
+        ? {
+            ...item.sourcePrice,
+            amount: item.sourcePrice.amount * item.quantity,
+          }
+        : undefined,
+    },
     btcUsdRate
   )
-  const unitPrice = getProductPriceDisplay(
-    { price: item.price, currency: item.currency },
-    btcUsdRate
-  )
+  const unitPrice = getProductPriceDisplay(item, btcUsdRate)
 
   return (
     <div className="grid gap-4 py-5 md:grid-cols-[132px_minmax(0,1fr)_auto] md:items-start">
@@ -475,10 +486,7 @@ function CartPage() {
     (group) => group.merchantPubkey === selectedMerchant
   )
   const selectedSummary = selectedGroup
-    ? getCartSummaryPrice(
-        selectedGroup.items,
-        btcUsdRateQuery.data?.rate ?? null
-      )
+    ? getCartSummaryPrice(selectedGroup.items, btcUsdRateQuery.data ?? null)
     : null
   const preferredTags = useMemo(() => {
     const sourceItems = selectedGroup ? selectedGroup.items : cart.items
@@ -667,7 +675,7 @@ function CartPage() {
               <MerchantOverviewCard
                 key={group.merchantPubkey}
                 group={group}
-                btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+                btcUsdRate={btcUsdRateQuery.data ?? null}
                 onCheckout={handleCheckout}
               />
             ))}
@@ -728,7 +736,7 @@ function CartPage() {
                     <RelatedProductRow
                       key={product.id}
                       product={product}
-                      btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+                      btcUsdRate={btcUsdRateQuery.data ?? null}
                       cartQuantity={cartQuantity}
                       onAdd={() =>
                         cart.addItem({
@@ -737,6 +745,8 @@ function CartPage() {
                           title: product.title,
                           price: product.price,
                           currency: product.currency,
+                          priceSats: product.priceSats,
+                          sourcePrice: product.sourcePrice,
                           image: product.images[0]?.url,
                           tags: product.tags,
                         })
@@ -845,7 +855,7 @@ function CartPage() {
               <CartLineItem
                 key={item.productId}
                 item={item}
-                btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+                btcUsdRate={btcUsdRateQuery.data ?? null}
                 onIncrement={() =>
                   cart.addItem(
                     {
@@ -854,7 +864,10 @@ function CartPage() {
                       title: item.title,
                       price: item.price,
                       currency: item.currency,
+                      priceSats: item.priceSats,
+                      sourcePrice: item.sourcePrice,
                       image: item.image,
+                      tags: item.tags,
                     },
                     1
                   )
@@ -969,7 +982,7 @@ function CartPage() {
                   <RelatedProductRow
                     key={product.id}
                     product={product}
-                    btcUsdRate={btcUsdRateQuery.data?.rate ?? null}
+                    btcUsdRate={btcUsdRateQuery.data ?? null}
                     cartQuantity={cartQuantity}
                     onAdd={() =>
                       cart.addItem({
@@ -978,6 +991,8 @@ function CartPage() {
                         title: product.title,
                         price: product.price,
                         currency: product.currency,
+                        priceSats: product.priceSats,
+                        sourcePrice: product.sourcePrice,
                         image: product.images[0]?.url,
                         tags: product.tags,
                       })

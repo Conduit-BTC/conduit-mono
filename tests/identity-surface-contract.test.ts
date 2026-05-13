@@ -6,21 +6,38 @@ describe("identity surface contracts", () => {
     const expectations = {
       "apps/market/src/components/ProductGridCard.tsx": [
         "merchantNamePending",
-        "profileQuery.isPlaceholderData",
+        "getPendingMerchantDisplayName",
+      ],
+      "apps/market/src/hooks/useMerchantIdentities.ts": [
+        "useProfiles(visibleMerchantPubkeys",
+        "useProfiles(backgroundMerchantPubkeys",
+        "refetchUnresolvedMs: 5_000",
+        "refetchUnresolvedMs: 12_000",
+      ],
+      "apps/market/src/lib/marketBrowseModel.ts": [
+        "getProfileName(profile)",
+        'status: profileName ? "resolved" : "pending"',
+        "getPendingMerchantName(pubkey)",
       ],
       "apps/market/src/routes/products/$productId.tsx": [
         "merchantIdentityPending",
-        "merchantProfile.isPlaceholderData",
+        "getPendingMerchantDisplayName",
+        "relayHints:",
       ],
       "apps/market/src/routes/products/index.tsx": [
+        "useMarketBrowseModel",
         "getMerchantIdentity",
-        "visibleMerchantPubkeys.includes(merchantPubkey)",
-        "visibleIdentityReady",
-        "!visibleMerchantProfilesQuery.isPlaceholderData",
+        'merchant.status === "pending"',
       ],
       "apps/market/src/routes/store/$pubkey.tsx": [
         "merchantIdentityPending",
-        "profileQuery.isPlaceholderData",
+        "useProfile(pubkey",
+        "relayHints:",
+        "getProfileName(profile)",
+      ],
+      "apps/merchant/src/routes/orders.tsx": [
+        "useProfiles(buyerPubkeys",
+        "refetchUnresolvedMs: 12_000",
       ],
     }
 
@@ -31,6 +48,13 @@ describe("identity surface contracts", () => {
       }
       expect(content).not.toContain('pendingLabel: "Loading store"')
     }
+
+    const productGridCard = await readFile(
+      "apps/market/src/components/ProductGridCard.tsx",
+      "utf8"
+    )
+    expect(productGridCard).not.toContain("useProfile(")
+    expect(productGridCard).not.toContain("getProfileName(")
   })
 
   it("keeps Merchant readiness on the session-owned relay scope", async () => {

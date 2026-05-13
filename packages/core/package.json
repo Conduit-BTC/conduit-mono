@@ -9,6 +9,7 @@
     ".": "./src/index.ts",
     "./types": "./src/types/index.ts",
     "./protocol": "./src/protocol/index.ts",
+    "./pricing": "./src/pricing/index.ts",
     "./schemas": "./src/schemas/index.ts",
     "./utils": "./src/utils/index.ts",
     "./config": "./src/config.ts",

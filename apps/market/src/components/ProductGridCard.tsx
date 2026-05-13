@@ -1,9 +1,7 @@
 import { useNavigate } from "@tanstack/react-router"
 import {
-  getProfileDisplayLabel,
-  getProfileName,
   getProductImageCandidates,
-  useProfile,
+  type PricingRateInput,
   type Product,
 } from "@conduit/core"
 import {
@@ -11,6 +9,7 @@ import {
   ProductCardSkeleton,
   ProductCartAction,
 } from "@conduit/ui"
+import { getPendingMerchantDisplayName } from "./MerchantIdentity"
 import { getProductPriceDisplay } from "../lib/pricing"
 
 type ProductGridCardProps = {
@@ -19,7 +18,7 @@ type ProductGridCardProps = {
   merchantNamePending?: boolean
   imageLoading?: "eager" | "lazy"
   onAddToCart?: () => void
-  btcUsdRate?: number | null
+  btcUsdRate?: PricingRateInput
   cartQuantity?: number
   onIncrement?: () => void
   onDecrement?: () => void
@@ -39,25 +38,11 @@ export function ProductGridCard({
   onInvalidImage,
 }: ProductGridCardProps) {
   const navigate = useNavigate()
-  const profileQuery = useProfile(
-    merchantNameOverride ? undefined : product.pubkey,
-    { priority: "visible" }
-  )
-  const profile = profileQuery.data
-  const profileName = getProfileName(profile)
   const merchantNamePending =
-    merchantNamePendingOverride ??
-    (!profileName && profileQuery.isPlaceholderData)
+    merchantNamePendingOverride ?? !merchantNameOverride
   const merchantName =
     merchantNameOverride ||
-    profileName ||
-    (merchantNamePending
-      ? "Store"
-      : getProfileDisplayLabel(profile, product.pubkey, {
-          lookupSettled: true,
-          emptyPrefix: "Store",
-          chars: 6,
-        }))
+    getPendingMerchantDisplayName(product.pubkey, { chars: 6 })
   const { primary, secondary } = getProductPriceDisplay(
     product,
     btcUsdRate ?? null

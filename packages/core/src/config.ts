@@ -1,6 +1,7 @@
 const DEFAULT_RELAYS = [
   // Bootstrap read relays for product discovery. Capability scans determine
   // trust/commerce status; inclusion here does not grant write authority.
+  "wss://relay.conduit.market",
   "wss://conduitl2.fly.dev",
   "wss://relay.plebeian.market",
   "wss://relay.primal.net",

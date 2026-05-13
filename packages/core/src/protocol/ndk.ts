@@ -36,6 +36,12 @@ export interface FetchEventsFanoutProgress {
   mergedEvents: NDKEvent[]
 }
 
+const EVENT_SOURCE_RELAY_URLS = "__conduitSourceRelayUrls"
+
+type EventWithSourceRelayUrls = NDKEvent & {
+  [EVENT_SOURCE_RELAY_URLS]?: string[]
+}
+
 type Listener = () => void
 
 let ndkInstance: NDK | null = null
@@ -58,6 +64,30 @@ function getConnectedRelayUrls(ndk: NDK): string[] {
   return Array.from(ndk.pool?.relays?.entries() ?? [])
     .filter(([, relay]) => relay.status >= NDKRelayStatus.CONNECTED)
     .map(([url]) => url)
+}
+
+function uniqueRelayUrls(urls: readonly string[]): string[] {
+  return Array.from(new Set(urls.map((url) => url.trim()).filter(Boolean)))
+}
+
+function attachEventSourceRelayUrl(event: NDKEvent, relayUrl: string): void {
+  const eventWithSources = event as EventWithSourceRelayUrls
+  const next = uniqueRelayUrls([
+    ...(eventWithSources[EVENT_SOURCE_RELAY_URLS] ?? []),
+    relayUrl,
+  ])
+
+  Object.defineProperty(eventWithSources, EVENT_SOURCE_RELAY_URLS, {
+    value: next,
+    enumerable: false,
+    configurable: true,
+  })
+}
+
+export function getEventSourceRelayUrls(event: NDKEvent): string[] {
+  return [
+    ...((event as EventWithSourceRelayUrls)[EVENT_SOURCE_RELAY_URLS] ?? []),
+  ]
 }
 
 export function subscribeNdkState(listener: Listener): () => void {
@@ -121,7 +151,11 @@ async function fetchEventsFromRelay(
     }
 
     recordRelaySuccess(relayUrl)
-    return Array.from(events) as NDKEvent[]
+    const fetched = Array.from(events) as NDKEvent[]
+    for (const event of fetched) {
+      attachEventSourceRelayUrl(event, relayUrl)
+    }
+    return fetched
   } catch {
     recordRelayFailure(relayUrl)
     return []
@@ -162,7 +196,15 @@ function mergeEventsInto(
 ): void {
   for (const event of events) {
     const fallbackId = `${event.pubkey}:${event.kind}:${event.created_at ?? 0}`
-    merged.set(event.id || fallbackId, event)
+    const key = event.id || fallbackId
+    const existing = merged.get(key)
+    if (existing) {
+      for (const relayUrl of getEventSourceRelayUrls(event)) {
+        attachEventSourceRelayUrl(existing, relayUrl)
+      }
+      continue
+    }
+    merged.set(key, event)
   }
 }
 
