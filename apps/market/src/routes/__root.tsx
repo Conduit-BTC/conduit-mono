@@ -74,6 +74,9 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/settings") {
     return "Relay Settings"
   }
+  if (pathname === "/about") {
+    return "About"
+  }
   if (pathname.startsWith("/u/")) {
     return "User Profile"
   }

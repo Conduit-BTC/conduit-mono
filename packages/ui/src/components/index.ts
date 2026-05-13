@@ -78,6 +78,12 @@ export {
 export { OrderDetailCard, type OrderDetailCardProps } from "./OrderDetailCard"
 export { ErrorPage } from "./ErrorPage"
 export { NotFoundPage } from "./NotFoundPage"
+export {
+  AppProvenancePanel,
+  type AppProvenanceBuildInfo,
+  type AppProvenanceIdentity,
+  type AppProvenancePanelProps,
+} from "./AppProvenancePanel"
 
 export { ProfileSelector, type ProfileSelectorProps } from "./ProfileSelector"
 export {

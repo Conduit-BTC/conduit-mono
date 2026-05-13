@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { nip19 } from "@nostr-dev-kit/ndk"
 import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
@@ -6,6 +7,7 @@ import {
   getConversationDetail,
   getMarketplaceProducts,
   getMerchantStorefront,
+  getProductDetail,
   getProfiles,
 } from "@conduit/core"
 import { EVENT_KINDS } from "@conduit/core"
@@ -326,6 +328,44 @@ describe("commerce gateway", () => {
     expect(marketResult.data).toHaveLength(0)
     expect(merchantResult.data).toHaveLength(1)
     expect(merchantResult.data[0]?.product.title).toBe("Needs Image")
+  })
+
+  it("resolves product detail from a NIP-89 naddr handler URL", async () => {
+    const merchantPubkey = "a".repeat(64)
+    const dTag = "naddr-item"
+    const productEvent = makeProductEvent({
+      pubkey: merchantPubkey,
+      dTag,
+      id: "event-naddr",
+      createdAt: 100,
+      title: "Naddr Item",
+    })
+    const naddr = nip19.naddrEncode({
+      kind: EVENT_KINDS.PRODUCT,
+      pubkey: merchantPubkey,
+      identifier: dTag,
+    })
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (
+          filter.kinds?.includes(EVENT_KINDS.PRODUCT) &&
+          filter.authors?.includes(merchantPubkey) &&
+          filter["#d"]?.includes(dTag)
+        ) {
+          return [productEvent as never]
+        }
+
+        return []
+      },
+    })
+
+    const result = await getProductDetail({ productId: naddr })
+
+    expect(result.data?.product.title).toBe("Naddr Item")
+    expect(result.data?.addressId).toBe(
+      `${EVENT_KINDS.PRODUCT}:${merchantPubkey}:${dTag}`
+    )
   })
 
   it("builds stable buyer conversation summaries from cached messages", async () => {
