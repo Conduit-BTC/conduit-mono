@@ -13,14 +13,17 @@ import { NDKEvent, NDKUser, giftWrap } from "@nostr-dev-kit/ndk"
 import {
   EVENT_KINDS,
   appendConduitClientTag,
+  config,
   fetchLnurlPayMetadata,
   fetchZapInvoice,
   formatPubkey,
   getPriceSats,
   getNdk,
   getShippingOptions,
-  isBuyerCountryEligible,
-  isInvoiceCompatibleWithCurrentNetwork,
+  getShippingDestinationEligibility,
+  publishWithPlanner,
+  validateLightningInvoiceForPayment,
+  waitForZapReceipt,
   nwcPayInvoice,
   useAuth,
   useProfile,
@@ -34,6 +37,7 @@ import { useWallet } from "../hooks/useWallet"
 import { requireAuth } from "../lib/auth"
 import {
   isFastCheckoutEligible,
+  getFastCheckoutUnavailableReasons,
   getValidationErrorFields,
   shippingFieldLabel,
   validateShippingFields,
@@ -41,6 +45,17 @@ import {
   type ShippingFieldKey,
   type ShippingValidationError,
 } from "../lib/checkout-validation"
+import {
+  buildCheckoutPricingIntent,
+  buildDefaultZapContent,
+  buildZapRequestContent,
+  type CheckoutPaymentStage,
+  type CheckoutZapVisibility,
+} from "../lib/checkout-payment"
+import {
+  savePaymentAttempt,
+  updatePaymentAttempt,
+} from "../lib/payment-attempts"
 import { getProductPriceDisplay } from "../lib/pricing"
 
 type CheckoutStep =
@@ -59,6 +74,7 @@ type CheckoutSearch = {
 // Shipping is session-scoped: pre-fills within a browser session, never
 // persisted permanently to localStorage.
 const CHECKOUT_STORAGE_KEY = "conduit:checkout-shipping"
+const ZAP_RECEIPT_WAIT_MS = 5_000
 
 const DEFAULT_SHIPPING_FORM: ShippingFormState = {
   firstName: "",
@@ -346,6 +362,12 @@ function CheckoutPage() {
   >([])
   const [sentOrderId, setSentOrderId] = useState<string | null>(null)
   const [showSentGlow, setShowSentGlow] = useState(false)
+  const [, setPaymentStage] = useState<CheckoutPaymentStage | null>(null)
+  const [paidNotice, setPaidNotice] = useState<string | null>(null)
+  const [zapVisibility, setZapVisibility] =
+    useState<CheckoutZapVisibility>("public_zap")
+  const [zapContent, setZapContent] = useState("")
+  const [zapContentEdited, setZapContentEdited] = useState(false)
   const btcUsdRate = btcUsdRateQuery.data ?? null
 
   // LNURL probe state
@@ -393,10 +415,19 @@ function CheckoutPage() {
     [btcUsdRate, checkoutItems]
   )
 
-  const currency = checkoutItems[0]?.currency ?? "USD"
-
   const { data: merchantProfile } = useProfile(selectedMerchant ?? null)
   const merchantLud16 = merchantProfile?.lud16
+  const merchantName =
+    merchantProfile?.displayName ||
+    merchantProfile?.name ||
+    (selectedMerchant ? formatPubkey(selectedMerchant, 8) : "this merchant")
+
+  useEffect(() => {
+    if (zapContentEdited || checkoutItems.length === 0) return
+    setZapContent(
+      buildDefaultZapContent({ items: checkoutItems, merchantName })
+    )
+  }, [checkoutItems, merchantName, zapContentEdited])
 
   // Probe merchant's LNURL for Nostr zap support when merchant profile arrives
   useEffect(() => {
@@ -421,11 +452,34 @@ function CheckoutPage() {
     }
   }, [merchantLud16, wallet.status])
 
-  const fastEligible = isFastCheckoutEligible({
+  const pricingPreview = useMemo(
+    () => buildCheckoutPricingIntent(checkoutItems, btcUsdRate, Date.now()),
+    [btcUsdRate, checkoutItems]
+  )
+
+  const destinationEligibility = isAllDigital
+    ? ({ eligible: true } as const)
+    : getShippingDestinationEligibility(
+        {
+          country: shipping.country,
+          postalCode: shipping.postalCode,
+        },
+        merchantShippingOptions
+      )
+
+  const shippingEligibleForFastCheckout =
+    destinationEligibility.eligible === true
+
+  const fastEligibilityInput = {
     walletPayCapable: wallet.status === "pay-capable",
     merchantLud16,
     lnurlAllowsNostr,
-  })
+    pricingReady: pricingPreview.status === "ok",
+    shippingEligible: shippingEligibleForFastCheckout,
+  }
+  const fastEligible = isFastCheckoutEligible(fastEligibilityInput)
+  const fastUnavailableReasons =
+    getFastCheckoutUnavailableReasons(fastEligibilityInput)
 
   const summaryStep: Exclude<
     CheckoutStep,
@@ -461,14 +515,12 @@ function CheckoutPage() {
       setError("Fix the highlighted fields to continue.")
       return
     }
-    // Validate buyer country against merchant's published shipping zones
-    if (
-      merchantShippingOptions.length > 0 &&
-      !isBuyerCountryEligible(shipping.country, merchantShippingOptions)
-    ) {
-      setError(
-        `This merchant doesn't ship to ${shipping.country}. Please check the country code or contact the merchant.`
-      )
+    if (destinationEligibility.eligible === false) {
+      const message =
+        destinationEligibility.reason === "country_unsupported"
+          ? `This merchant doesn't ship to ${shipping.country}. Please check the country code or contact the merchant.`
+          : `This merchant's shipping rules do not include postal code ${shipping.postalCode}.`
+      setError(message)
       return
     }
     setError(null)
@@ -524,6 +576,39 @@ function CheckoutPage() {
     return lines.length > 0 ? lines.join("\n") : undefined
   }
 
+  async function publishWrappedToMerchantAndSelf(
+    rumor: NDKEvent,
+    ndk: ReturnType<typeof getNdk>,
+    merchantPubkey: string,
+    buyerPubkey: string
+  ): Promise<void> {
+    const merchantUser = new NDKUser({ pubkey: merchantPubkey })
+    const buyerUser = new NDKUser({ pubkey: buyerPubkey })
+    const [wrappedToMerchant, wrappedToSelf] = await Promise.all([
+      giftWrap(rumor, merchantUser, ndk.signer, {
+        rumorKind: EVENT_KINDS.ORDER,
+      }),
+      giftWrap(rumor, buyerUser, ndk.signer, {
+        rumorKind: EVENT_KINDS.ORDER,
+      }),
+    ])
+
+    await Promise.all([
+      publishWithPlanner(wrappedToMerchant, {
+        intent: "recipient_event",
+        authorPubkey: buyerPubkey,
+        recipientPubkeys: [merchantPubkey],
+        refreshRelayLists: true,
+      }),
+      publishWithPlanner(wrappedToSelf, {
+        intent: "recipient_event",
+        authorPubkey: buyerPubkey,
+        recipientPubkeys: [buyerPubkey],
+        refreshRelayLists: true,
+      }),
+    ])
+  }
+
   // ─── Order-first path (existing flow) ───────────────────────────────────
 
   async function placeOrder(): Promise<void> {
@@ -575,26 +660,10 @@ function CheckoutPage() {
       rumor.tags = appendConduitClientTag(rumor.tags, "market")
       rumor.content = JSON.stringify(payload)
 
-      const merchantUser = new NDKUser({ pubkey: selectedMerchant })
-      const wrappedToMerchant = await giftWrap(
-        rumor,
-        merchantUser,
-        ndk.signer,
-        {
-          rumorKind: EVENT_KINDS.ORDER,
-        }
-      )
-
-      const buyerUser = new NDKUser({ pubkey })
-      const wrappedToSelf = await giftWrap(rumor, buyerUser, ndk.signer, {
-        rumorKind: EVENT_KINDS.ORDER,
-      })
-
       setStep("sending")
 
       await Promise.all([
-        wrappedToMerchant.publish(),
-        wrappedToSelf.publish(),
+        publishWrappedToMerchantAndSelf(rumor, ndk, selectedMerchant, pubkey),
         new Promise((resolve) => window.setTimeout(resolve, 900)),
       ])
 
@@ -610,6 +679,25 @@ function CheckoutPage() {
 
   // ─── Fast zap path ───────────────────────────────────────────────────────
 
+  async function getFreshPricingIntent() {
+    const initial = buildCheckoutPricingIntent(
+      checkoutItems,
+      btcUsdRateQuery.data ?? null
+    )
+    if (initial.status === "ok" || initial.code !== "stale_quote") {
+      return initial
+    }
+
+    const refetched = await Promise.race([
+      btcUsdRateQuery.refetch().then((result) => result.data ?? null),
+      new Promise<null>((resolve) =>
+        window.setTimeout(() => resolve(null), 5000)
+      ),
+    ])
+
+    return buildCheckoutPricingIntent(checkoutItems, refetched)
+  }
+
   async function payNow(): Promise<void> {
     if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
     if (!wallet.connection) {
@@ -622,88 +710,49 @@ function CheckoutPage() {
     }
 
     setError(null)
+    setPaidNotice(null)
+    setPaymentStage("checking_order_delivery")
     setStep("paying")
 
+    let orderDelivered = false
+    let paymentMoved = false
+    let paidOrderId: string | null = null
+
     try {
-      // 1. Fetch merchant LNURL metadata
-      const lnurlMeta = await fetchLnurlPayMetadata(merchantLud16)
-
-      // 2. Convert order total to msats
-      // `total` is always in sats (computed via getPriceSats regardless of source currency)
-      if (!Number.isFinite(total) || total <= 0) {
-        throw new Error("Order total could not be converted to sats.")
-      }
-      const amountMsats = Math.round(total * 1000)
-
-      if (
-        amountMsats < lnurlMeta.minSendable ||
-        amountMsats > lnurlMeta.maxSendable
-      ) {
+      if (hasUnpricedCheckoutItems) {
         throw new Error(
-          `Order amount (${amountMsats} msats) is outside merchant's accepted range ` +
-            `(${lnurlMeta.minSendable}-${lnurlMeta.maxSendable} msats).`
+          "One or more items cannot be converted to sats right now. Refresh prices before checkout."
         )
+      }
+
+      if (destinationEligibility.eligible !== true) {
+        throw new Error(
+          destinationEligibility.reason === "unknown"
+            ? "Checkout needs current shipping rules before direct payment."
+            : "Merchant shipping zone does not include this destination."
+        )
+      }
+
+      const pricingIntent = await getFreshPricingIntent()
+      if (pricingIntent.status !== "ok") {
+        throw new Error(pricingIntent.reason)
       }
 
       const orderId = crypto.randomUUID()
-
-      // 3. Build and sign the NIP-57 zap request (kind 9734)
+      paidOrderId = orderId
+      const currency = "SATS"
       const ndk = getNdk()
-      const zapRequest = new NDKEvent(ndk)
-      zapRequest.kind = 9734
-      zapRequest.created_at = Math.floor(Date.now() / 1000)
-      zapRequest.content = note.trim() || "Conduit order payment"
-      zapRequest.tags = [
-        ["p", selectedMerchant],
-        ["amount", String(amountMsats)],
-        ["lnurl", lnurlMeta.callback],
-        ["relays", ...(ndk.explicitRelayUrls ?? [])],
-        ["order", orderId],
-      ]
-      zapRequest.tags = appendConduitClientTag(zapRequest.tags, "market")
-
-      // Sign without publishing
-      await zapRequest.sign(ndk.signer)
-      const zapRequestJson = JSON.stringify(zapRequest.rawEvent())
-
-      // 4. Fetch BOLT11 invoice from merchant's LNURL callback
-      const { invoice } = await fetchZapInvoice(
-        lnurlMeta.callback,
-        amountMsats,
-        zapRequestJson
-      )
-
-      // 5. Validate the invoice is for the right network
-      if (!isInvoiceCompatibleWithCurrentNetwork(invoice)) {
-        throw new Error(
-          "The invoice returned by the merchant is for a different Lightning network."
-        )
-      }
-
-      // 6. Pay the invoice via NWC
-      const payResult = await nwcPayInvoice(
-        wallet.connection,
-        { invoice, amountMsats },
-        60_000,
-        "market"
-      )
-
-      // 7. Send order message (so merchant has shipping info)
       const orderPayload = {
         id: orderId,
         merchantPubkey: selectedMerchant,
         buyerPubkey: pubkey,
-        items: checkoutItems.map((item) => ({
-          productId: item.productId,
-          quantity: item.quantity,
-          priceAtPurchase: item.price,
-          currency: item.currency,
-        })),
-        subtotal: total,
+        items: pricingIntent.items,
+        subtotal: pricingIntent.totalSats,
         currency,
         shippingAddress: buildShippingAddress(),
         note: buildContactNote(),
         createdAt: Date.now(),
+        pricingQuote: pricingIntent.quote,
       }
 
       const orderRumor = new NDKEvent(ndk)
@@ -713,16 +762,117 @@ function CheckoutPage() {
         ["p", selectedMerchant],
         ["type", "order"],
         ["order", orderId],
+        ["amount", String(pricingIntent.totalSats)],
+        ["currency", currency],
       ]
       orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
       orderRumor.content = JSON.stringify(orderPayload)
 
-      // 8. Send payment proof message
+      await publishWrappedToMerchantAndSelf(
+        orderRumor,
+        ndk,
+        selectedMerchant,
+        pubkey
+      )
+      orderDelivered = true
+
+      setPaymentStage("requesting_invoice")
+
+      const lnurlMeta = await fetchLnurlPayMetadata(merchantLud16)
+      const zapRelayUrls = Array.from(
+        new Set([...(ndk.explicitRelayUrls ?? []), ...config.publicRelayUrls])
+      )
+      if (
+        pricingIntent.totalMsats < lnurlMeta.minSendable ||
+        pricingIntent.totalMsats > lnurlMeta.maxSendable
+      ) {
+        throw new Error(
+          `Order amount (${pricingIntent.totalMsats} msats) is outside merchant's accepted range ` +
+            `(${lnurlMeta.minSendable}-${lnurlMeta.maxSendable} msats).`
+        )
+      }
+
+      const zapRequest = new NDKEvent(ndk)
+      zapRequest.kind = EVENT_KINDS.ZAP_REQUEST
+      zapRequest.created_at = Math.floor(Date.now() / 1000)
+      zapRequest.content = buildZapRequestContent(zapVisibility, zapContent)
+      zapRequest.tags = [
+        ["p", selectedMerchant],
+        ["amount", String(pricingIntent.totalMsats)],
+        ["lnurl", lnurlMeta.lnurl],
+        ["relays", ...zapRelayUrls],
+      ]
+      zapRequest.tags = appendConduitClientTag(zapRequest.tags, "market")
+
+      await zapRequest.sign(ndk.signer)
+      const zapRequestJson = JSON.stringify(zapRequest.rawEvent())
+
+      const { invoice } = await fetchZapInvoice(
+        lnurlMeta.callback,
+        pricingIntent.totalMsats,
+        zapRequestJson,
+        lnurlMeta.lnurl
+      )
+
+      const invoiceValidation = validateLightningInvoiceForPayment({
+        invoice,
+        expectedAmountMsats: pricingIntent.totalMsats,
+      })
+      if (!invoiceValidation.ok) {
+        throw new Error(invoiceValidation.reason)
+      }
+
+      setPaymentStage("paying_invoice")
+      const payResult = await nwcPayInvoice(
+        wallet.connection,
+        {
+          invoice,
+          amountMsats: pricingIntent.totalMsats,
+          metadata: {
+            app: "conduit-market",
+            action: "checkout-zap",
+            amountMsats: pricingIntent.totalMsats,
+          },
+        },
+        60_000,
+        "market"
+      )
+      paymentMoved = true
+
+      try {
+        await savePaymentAttempt({
+          id: orderId,
+          orderId,
+          buyerPubkey: pubkey,
+          merchantPubkey: selectedMerchant,
+          amountMsats: pricingIntent.totalMsats,
+          currency: "SATS",
+          invoice,
+          paymentHash: payResult.paymentHash,
+          preimage: payResult.preimage,
+          feeMsats: payResult.feeMsats,
+          zapRequestId: zapRequest.id,
+          proofDeliveryStatus: "pending",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        })
+      } catch (e) {
+        console.warn("Failed to persist payment attempt", e)
+      }
+
+      setPaymentStage("sending_receipt")
       const proofPayload = {
+        orderId,
+        rail: "lightning",
+        action: "zap",
+        amount: pricingIntent.totalSats,
+        currency,
         invoice,
         preimage: payResult.preimage,
         paymentHash: payResult.paymentHash,
         feeMsats: payResult.feeMsats,
+        zapRequestId: zapRequest.id,
+        proofDeliveryStatus: "pending",
         note: `Payment for order ${orderId}`,
       }
 
@@ -733,44 +883,84 @@ function CheckoutPage() {
         ["p", selectedMerchant],
         ["type", "payment_proof"],
         ["order", orderId],
+        ["amount", String(pricingIntent.totalSats)],
+        ["currency", currency],
+        ["rail", "lightning"],
       ]
       proofRumor.tags = appendConduitClientTag(proofRumor.tags, "market")
       proofRumor.content = JSON.stringify(proofPayload)
 
-      const merchantUser = new NDKUser({ pubkey: selectedMerchant })
-      const buyerUser = new NDKUser({ pubkey })
+      let proofDelivered = true
+      try {
+        await publishWrappedToMerchantAndSelf(
+          proofRumor,
+          ndk,
+          selectedMerchant,
+          pubkey
+        )
+        await updatePaymentAttempt(orderId, {
+          proofDeliveryStatus: "sent",
+        }).catch((e) => {
+          console.warn("Failed to update payment proof status", e)
+        })
+      } catch {
+        proofDelivered = false
+        await updatePaymentAttempt(orderId, {
+          proofDeliveryStatus: "retry_needed",
+        }).catch((e) => {
+          console.warn("Failed to mark payment proof retry", e)
+        })
+      }
 
-      const [orderToMerchant, orderToSelf, proofToMerchant, proofToSelf] =
-        await Promise.all([
-          giftWrap(orderRumor, merchantUser, ndk.signer, {
-            rumorKind: EVENT_KINDS.ORDER,
-          }),
-          giftWrap(orderRumor, buyerUser, ndk.signer, {
-            rumorKind: EVENT_KINDS.ORDER,
-          }),
-          giftWrap(proofRumor, merchantUser, ndk.signer, {
-            rumorKind: EVENT_KINDS.ORDER,
-          }),
-          giftWrap(proofRumor, buyerUser, ndk.signer, {
-            rumorKind: EVENT_KINDS.ORDER,
-          }),
-        ])
-
-      await Promise.all([
-        orderToMerchant.publish(),
-        orderToSelf.publish(),
-        proofToMerchant.publish(),
-        proofToSelf.publish(),
-        new Promise((resolve) => window.setTimeout(resolve, 600)),
-      ])
+      setPaymentStage("checking_receipt")
+      const receipt = await waitForZapReceipt({
+        zapRequestId: zapRequest.id,
+        recipientPubkey: selectedMerchant,
+        expectedAmountMsats: pricingIntent.totalMsats,
+        expectedLnurl: lnurlMeta.lnurl,
+        lnurlNostrPubkey: lnurlMeta.nostrPubkey,
+        relayUrls: zapRelayUrls,
+        timeoutMs: ZAP_RECEIPT_WAIT_MS,
+      }).catch((e) => {
+        console.warn("Failed to observe zap receipt", e)
+        return null
+      })
+      if (receipt) {
+        await updatePaymentAttempt(orderId, {
+          zapReceiptId: receipt.id,
+        }).catch((e) => {
+          console.warn("Failed to persist zap receipt id", e)
+        })
+      }
 
       cart.clearMerchant(selectedMerchant)
       setSentOrderId(orderId)
       setShowSentGlow(true)
+      setPaidNotice(
+        proofDelivered
+          ? receipt
+            ? "Payment sent, proof delivered, and the merchant zap receipt was observed."
+            : "Payment sent and proof delivered. Awaiting merchant confirmation."
+          : "Payment sent. Receipt delivery needs retry."
+      )
       setStep("paid")
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Payment failed")
-      setStep("payment")
+      if (paymentMoved) {
+        if (paidOrderId) setSentOrderId(paidOrderId)
+        setPaidNotice("Payment sent. Receipt delivery needs retry.")
+        setShowSentGlow(true)
+        setStep("paid")
+      } else {
+        const message = e instanceof Error ? e.message : "Payment failed"
+        setError(
+          orderDelivered
+            ? `Order delivered, but payment did not complete. ${message}`
+            : message
+        )
+        setStep("payment")
+      }
+    } finally {
+      setPaymentStage(null)
     }
   }
 
@@ -780,18 +970,18 @@ function CheckoutPage() {
     return (
       <div className="flex min-h-[70vh] items-center justify-center">
         <section className="w-full max-w-3xl rounded-[2rem] bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--secondary-500)_35%,transparent),transparent_55%),linear-gradient(180deg,var(--primary-500),var(--primary-600))] px-8 py-14 text-center text-white shadow-[0_24px_60px_color-mix(in_srgb,var(--primary-500)_40%,transparent)] sm:px-12">
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-[color-mix(in_srgb,var(--text-inverse)_20%,transparent)] bg-[color-mix(in_srgb,var(--text-inverse)_10%,transparent)]">
-            <SpinnerIcon className="h-8 w-8 animate-spin" />
+          <div
+            className="mx-auto flex h-24 w-24 animate-pulse items-center justify-center rounded-full border border-[color-mix(in_srgb,var(--text-inverse)_25%,transparent)] bg-[color-mix(in_srgb,var(--text-inverse)_12%,transparent)] shadow-[0_0_55px_color-mix(in_srgb,var(--secondary-500)_55%,transparent)]"
+            aria-hidden="true"
+          >
+            <LightningIcon className="h-12 w-12" />
           </div>
           <h1 className="mt-8 text-4xl font-semibold tracking-tight">
-            Paying...
+            Lightning payment started
           </h1>
-          <div className="mx-auto mt-8 h-1.5 w-full max-w-sm overflow-hidden rounded-full bg-black/15">
-            <div className="h-full w-2/3 animate-pulse rounded-full bg-white" />
-          </div>
           <p className="mx-auto mt-8 max-w-md text-sm leading-7 text-white/85">
-            Authorising your Lightning payment and sending the order to the
-            merchant. This usually takes a few seconds.
+            Your click registered. Conduit is safely delivering the order before
+            funds move, then completing the payment in the background.
           </p>
         </section>
       </div>
@@ -862,8 +1052,8 @@ function CheckoutPage() {
           </h1>
           <div className="relative mx-auto mt-8 h-1 w-full max-w-sm rounded-full bg-secondary-500/50" />
           <p className="relative mx-auto mt-8 max-w-xl text-lg leading-9 text-[var(--text-primary)]">
-            Your Lightning payment was sent and the order has been delivered to
-            the merchant.
+            {paidNotice ??
+              "Your Lightning payment was sent and the order has been delivered to the merchant."}
           </p>
           <p className="relative mx-auto mt-4 max-w-lg text-sm leading-7 text-[var(--text-secondary)]">
             The merchant will confirm receipt and send fulfillment updates
@@ -1372,6 +1562,71 @@ function CheckoutPage() {
                   </div>
                 )}
 
+                {!lnurlProbing && fastEligible && (
+                  <div className="mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
+                    <div className="text-sm font-medium text-[var(--text-primary)]">
+                      Zap visibility
+                    </div>
+                    <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                      <button
+                        type="button"
+                        aria-pressed={zapVisibility === "public_zap"}
+                        onClick={() => setZapVisibility("public_zap")}
+                        className={[
+                          "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+                          zapVisibility === "public_zap"
+                            ? "border-secondary-500/60 bg-secondary-500/10 text-[var(--text-primary)]"
+                            : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+                        ].join(" ")}
+                      >
+                        <span className="block font-medium">Public zap</span>
+                        <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
+                          Include an editable public zap comment.
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={zapVisibility === "private_checkout"}
+                        onClick={() => setZapVisibility("private_checkout")}
+                        className={[
+                          "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+                          zapVisibility === "private_checkout"
+                            ? "border-primary-500/60 bg-primary-500/10 text-[var(--text-primary)]"
+                            : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+                        ].join(" ")}
+                      >
+                        <span className="block font-medium">
+                          Private checkout
+                        </span>
+                        <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
+                          Send no public zap comment.
+                        </span>
+                      </button>
+                    </div>
+                    {zapVisibility === "public_zap" && (
+                      <div className="mt-4 grid gap-1.5">
+                        <Label htmlFor="zap-content">Public zap comment</Label>
+                        <textarea
+                          id="zap-content"
+                          value={zapContent}
+                          onChange={(e) => {
+                            setZapContent(e.target.value)
+                            setZapContentEdited(true)
+                          }}
+                          rows={3}
+                          maxLength={280}
+                          className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
+                        />
+                        <p className="text-xs leading-6 text-[var(--text-muted)]">
+                          Public zap receipts can expose this comment. Shipping
+                          address, contact details, private notes, wallet data,
+                          payment evidence, and order IDs are never added here.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* What happens next (order-first) */}
                 {!fastEligible && !lnurlProbing && (
                   <div className="mt-6 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
@@ -1391,6 +1646,18 @@ function CheckoutPage() {
                         order history.
                       </li>
                     </ul>
+                    {fastUnavailableReasons.length > 0 && (
+                      <div className="mt-4 border-t border-[var(--border)] pt-4">
+                        <div className="text-xs font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                          Pay now unavailable
+                        </div>
+                        <ul className="mt-3 space-y-2 text-xs leading-5 text-[var(--text-secondary)]">
+                          {fastUnavailableReasons.map((reason) => (
+                            <li key={reason}>- {reason}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                     {wallet.status === "disconnected" && (
                       <div className="mt-4 border-t border-[var(--border)] pt-4 text-xs text-[var(--text-muted)]">
                         <Link

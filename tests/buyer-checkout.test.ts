@@ -6,13 +6,29 @@ import { describe, expect, it, mock, afterEach } from "bun:test"
 import {
   validateShippingFields,
   isFastCheckoutEligible,
+  getFastCheckoutUnavailableReasons,
   type ShippingFormState,
 } from "../apps/market/src/lib/checkout-validation"
+import {
+  buildCheckoutPricingIntent,
+  buildDefaultZapContent,
+  buildZapRequestContent,
+  CHECKOUT_QUOTE_MAX_AGE_MS,
+} from "../apps/market/src/lib/checkout-payment"
+import type { CartItem } from "../apps/market/src/hooks/useCart"
 import {
   fetchLnurlPayMetadata,
   fetchZapInvoice,
 } from "../packages/core/src/protocol/lightning"
 import { parseNwcUri } from "../packages/core/src/protocol/nwc"
+import {
+  getShippingDestinationEligibility,
+  parseShippingOptionEvent,
+} from "../packages/core/src/protocol/shipping"
+
+const FAKE_PUBKEY = "a".repeat(64)
+const FAKE_SECRET = "b".repeat(64)
+const VALID_NWC_URI = `nostr+walletconnect://${FAKE_PUBKEY}?relay=wss%3A%2F%2Frelay.example.com&secret=${FAKE_SECRET}`
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -185,13 +201,232 @@ describe("isFastCheckoutEligible", () => {
       })
     ).toBe(false)
   })
+
+  it("returns unavailable reasons for pricing and shipping readiness", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        pricingReady: false,
+        shippingEligible: false,
+      })
+    ).toEqual([
+      "Refresh price conversion before paying.",
+      "Merchant shipping zone does not include this destination.",
+    ])
+  })
+})
+
+// ─── checkout payment helpers ────────────────────────────────────────────────
+
+function cartItem(overrides: Partial<CartItem> = {}): CartItem {
+  return {
+    productId: "product-1",
+    merchantPubkey: FAKE_PUBKEY,
+    title: "Notebook",
+    price: 1000,
+    currency: "SATS",
+    quantity: 1,
+    ...overrides,
+  }
+}
+
+describe("checkout payment helpers", () => {
+  it("creates SATS purchase payload from a fresh non-SATS quote", () => {
+    const now = 1_700_000_000_000
+    const intent = buildCheckoutPricingIntent(
+      [
+        cartItem({
+          price: 10,
+          currency: "USD",
+          sourcePrice: {
+            amount: 10,
+            currency: "USD",
+            normalizedCurrency: "USD",
+          },
+        }),
+      ],
+      {
+        rate: 50_000,
+        fetchedAt: now,
+        source: "mempool",
+      },
+      now + 30_000
+    )
+
+    expect(intent.status).toBe("ok")
+    if (intent.status !== "ok") return
+    expect(intent.totalSats).toBe(20_000)
+    expect(intent.totalMsats).toBe(20_000_000)
+    expect(intent.items[0]).toMatchObject({
+      productId: "product-1",
+      priceAtPurchase: 20_000,
+      currency: "SATS",
+      sourcePrice: {
+        amount: 10,
+        currency: "USD",
+        normalizedCurrency: "USD",
+      },
+    })
+    expect(intent.quote?.rate).toBe(50_000)
+  })
+
+  it("recomputes cached fiat sats from the fresh quote at click time", () => {
+    const now = 1_700_000_000_000
+    const intent = buildCheckoutPricingIntent(
+      [
+        cartItem({
+          price: 10,
+          currency: "USD",
+          priceSats: 99_999,
+          sourcePrice: {
+            amount: 10,
+            currency: "USD",
+            normalizedCurrency: "USD",
+          },
+        }),
+      ],
+      {
+        rate: 50_000,
+        fetchedAt: now,
+        source: "mempool",
+      },
+      now
+    )
+
+    expect(intent.status).toBe("ok")
+    if (intent.status !== "ok") return
+    expect(intent.items[0]?.priceAtPurchase).toBe(20_000)
+    expect(intent.totalSats).toBe(20_000)
+  })
+
+  it("blocks direct payment when a non-SATS quote is stale", () => {
+    const now = 1_700_000_000_000
+    const intent = buildCheckoutPricingIntent(
+      [cartItem({ price: 10, currency: "USD" })],
+      {
+        rate: 50_000,
+        fetchedAt: now - CHECKOUT_QUOTE_MAX_AGE_MS - 1,
+        source: "mempool",
+      },
+      now
+    )
+
+    expect(intent).toMatchObject({
+      status: "error",
+      code: "stale_quote",
+    })
+  })
+
+  it("builds public zap content from basic cart details only", () => {
+    const content = buildDefaultZapContent({
+      items: [
+        cartItem({
+          title: "Notebook",
+          quantity: 2,
+        }),
+      ],
+      merchantName: "Merchant",
+    })
+    expect(content).toBe("Paid for 2 items from Merchant on Conduit.")
+    expect(content).not.toContain("order")
+    expect(content).not.toContain("Phone")
+  })
+
+  it("uses empty zap content for private checkout", () => {
+    expect(buildZapRequestContent("private_checkout", "hello public")).toBe("")
+    expect(buildZapRequestContent("public_zap", "hello\npublic")).toBe(
+      "hello public"
+    )
+  })
+})
+
+// ─── shipping eligibility ───────────────────────────────────────────────────
+
+describe("shipping destination eligibility", () => {
+  it("parses postal include and exclude rules", () => {
+    const parsed = parseShippingOptionEvent({
+      id: "shipping-event",
+      pubkey: FAKE_PUBKEY,
+      created_at: 1,
+      tags: [
+        ["d", "conduit-default"],
+        ["price", "0", "SATS"],
+        ["country", "US", "CA"],
+        ["restrict", "US", "787**", "94105"],
+        ["exclude", "US", "78799"],
+      ],
+    })
+
+    expect(parsed?.countries).toEqual(["US", "CA"])
+    expect(parsed?.countryRules.find((rule) => rule.code === "US")).toEqual({
+      code: "US",
+      name: "US",
+      restrictTo: ["787**", "94105"],
+      exclude: ["78799"],
+    })
+  })
+
+  it("rejects non-finite shipping prices", () => {
+    expect(
+      parseShippingOptionEvent({
+        id: "shipping-event",
+        pubkey: FAKE_PUBKEY,
+        created_at: 1,
+        tags: [
+          ["d", "conduit-default"],
+          ["price", "Infinity", "SATS"],
+          ["country", "US"],
+        ],
+      })
+    ).toBeNull()
+  })
+
+  it("matches country include, postal include, postal exclude, and unknown readiness", () => {
+    const parsed = parseShippingOptionEvent({
+      id: "shipping-event",
+      pubkey: FAKE_PUBKEY,
+      created_at: 1,
+      tags: [
+        ["d", "conduit-default"],
+        ["price", "0", "SATS"],
+        ["country", "US"],
+        ["restrict", "US", "787**"],
+        ["exclude", "US", "78799"],
+      ],
+    })
+    expect(parsed).not.toBeNull()
+    const options = parsed ? [parsed] : []
+
+    expect(
+      getShippingDestinationEligibility(
+        { country: "US", postalCode: "78701" },
+        options
+      )
+    ).toEqual({ eligible: true })
+    expect(
+      getShippingDestinationEligibility(
+        { country: "US", postalCode: "78799" },
+        options
+      )
+    ).toEqual({ eligible: false, reason: "postal_restricted" })
+    expect(
+      getShippingDestinationEligibility(
+        { country: "CA", postalCode: "M5V" },
+        options
+      )
+    ).toEqual({ eligible: false, reason: "country_unsupported" })
+    expect(
+      getShippingDestinationEligibility(
+        { country: "US", postalCode: "78701" },
+        []
+      )
+    ).toEqual({ eligible: null, reason: "unknown" })
+  })
 })
 
 // ─── parseNwcUri ──────────────────────────────────────────────────────────────
-
-const FAKE_PUBKEY = "a".repeat(64)
-const FAKE_SECRET = "b".repeat(64)
-const VALID_NWC_URI = `nostr+walletconnect://${FAKE_PUBKEY}?relay=wss%3A%2F%2Frelay.example.com&secret=${FAKE_SECRET}`
 
 describe("parseNwcUri", () => {
   it("parses a valid NWC URI", () => {
@@ -352,16 +587,22 @@ describe("fetchZapInvoice", () => {
     ).rejects.toThrow(/BOLT11/)
   })
 
-  it("appends amount and nostr params to callback URL", async () => {
+  it("appends amount, nostr, and lnurl params to callback URL", async () => {
     let capturedUrl = ""
     globalThis.fetch = mock(async (url: string | URL | Request) => {
       capturedUrl = url.toString()
       return { ok: true, status: 200, json: async () => ({ pr: FAKE_INVOICE }) }
     }) as unknown as typeof fetch
 
-    await fetchZapInvoice("https://wallet.example/cb", 50_000, FAKE_ZAP_REQUEST)
+    await fetchZapInvoice(
+      "https://wallet.example/cb",
+      50_000,
+      FAKE_ZAP_REQUEST,
+      "lnurl1test"
+    )
 
     expect(capturedUrl).toContain("amount=50000")
     expect(capturedUrl).toContain("nostr=")
+    expect(capturedUrl).toContain("lnurl=lnurl1test")
   })
 })

@@ -3,9 +3,8 @@
  *
  * GammaMarkets market-spec: https://github.com/GammaMarkets/market-spec
  *
- * A merchant publishes one kind-30406 event per shipping zone. Each event
- * carries the list of countries it covers. Conduit uses a single event with
- * d-tag "default" to represent the merchant's entire shipping config.
+ * Conduit publishes one consolidated kind-30406 event with d-tag
+ * "conduit-default" to represent the merchant's current shipping config.
  */
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
 import { config } from "../config"
@@ -50,6 +49,8 @@ export interface ParsedShippingOption {
   price: number
   /** ISO-3166-1 alpha-2 country codes this option covers */
   countries: string[]
+  /** Country-specific postal include/exclude rules from CND-7. */
+  countryRules: ShippingCountryConfig[]
   /** Service label (e.g. "standard", "express") */
   service: string
   createdAt: number
@@ -97,14 +98,35 @@ export function parseShippingOptionEvent(
   const priceTag = tags.find((t) => t[0] === "price")
   const price = priceTag ? Number(priceTag[1] ?? 0) : 0
   const currency = priceTag?.[2] ?? "USD"
+  if (!Number.isFinite(price)) return null
 
-  // ["country", code1, code2, ...]
-  const countryTag = tags.find((t) => t[0] === "country")
-  const countries: string[] = countryTag
-    ? countryTag.slice(1).filter(Boolean)
-    : []
+  // ["country", code1, code2, ...] or repeated ["country", code]
+  const countries = Array.from(
+    new Set(
+      tags
+        .filter((t) => t[0] === "country")
+        .flatMap((t) => t.slice(1))
+        .map((country) => country.trim().toUpperCase())
+        .filter(Boolean)
+    )
+  )
 
   if (!dTag || countries.length === 0) return null
+
+  const countryRules = countries.map((code) => ({
+    code,
+    name: code,
+    restrictTo:
+      tags
+        .find((t) => t[0] === "restrict" && t[1]?.toUpperCase() === code)
+        ?.slice(2)
+        .filter(Boolean) ?? [],
+    exclude:
+      tags
+        .find((t) => t[0] === "exclude" && t[1]?.toUpperCase() === code)
+        ?.slice(2)
+        .filter(Boolean) ?? [],
+  }))
 
   return {
     id: `30406:${event.pubkey}:${dTag}`,
@@ -114,6 +136,7 @@ export function parseShippingOptionEvent(
     currency,
     price,
     countries,
+    countryRules,
     service,
     createdAt: (event.created_at ?? 0) * 1000,
   }
@@ -148,11 +171,8 @@ export async function getShippingOptions(
 // ---------------------------------------------------------------------------
 
 /**
- * Publish the merchant's shipping config as kind-30406 events.
- *
- * One event is published per country in the config, each with d-tag
- * `conduit-<countryCode>`. A "catch-all" event with d-tag `conduit-default`
- * is also published listing all countries for easy lookup.
+ * Publish the merchant's shipping config as one consolidated kind-30406 event
+ * with d-tag `conduit-default`.
  *
  * If the config has no countries, this is a no-op.
  */
@@ -179,6 +199,14 @@ export async function publishShippingOptions(
     ["service", "standard"],
     ["price", "0", "USD"],
     ["country", ...allCodes],
+    ...config.countries.flatMap((country) => [
+      ...(country.restrictTo.length > 0
+        ? [["restrict", country.code, ...country.restrictTo]]
+        : []),
+      ...(country.exclude.length > 0
+        ? [["exclude", country.code, ...country.exclude]]
+        : []),
+    ]),
     ...appendConduitClientTag([], appId),
   ]
 
@@ -205,4 +233,57 @@ export function isBuyerCountryEligible(
   return shippingOptions.some((opt) =>
     opt.countries.some((c) => c.toUpperCase() === buyerCountry.toUpperCase())
   )
+}
+
+export function normalizeShippingPostalCode(postalCode: string): string {
+  return postalCode.trim().toUpperCase().replace(/\s+/g, "")
+}
+
+function postalPatternMatches(pattern: string, postalCode: string): boolean {
+  const normalizedPattern = normalizeShippingPostalCode(pattern)
+  const normalizedPostal = normalizeShippingPostalCode(postalCode)
+  if (!normalizedPattern) return false
+  if (normalizedPattern.endsWith("**")) {
+    return normalizedPostal.startsWith(normalizedPattern.slice(0, -2))
+  }
+  return normalizedPostal === normalizedPattern
+}
+
+export type ShippingDestinationEligibility =
+  | { eligible: true }
+  | { eligible: false; reason: "country_unsupported" | "postal_restricted" }
+  | { eligible: null; reason: "unknown" }
+
+export function getShippingDestinationEligibility(
+  destination: { country: string; postalCode: string },
+  shippingOptions: ParsedShippingOption[]
+): ShippingDestinationEligibility {
+  if (shippingOptions.length === 0) {
+    return { eligible: null, reason: "unknown" }
+  }
+
+  const country = destination.country.trim().toUpperCase()
+  const rules = shippingOptions
+    .flatMap((option) => option.countryRules)
+    .filter((rule) => rule.code.toUpperCase() === country)
+
+  if (rules.length === 0)
+    return { eligible: false, reason: "country_unsupported" }
+
+  const postalCode = normalizeShippingPostalCode(destination.postalCode)
+  const allowed = rules.some((rule) => {
+    const restrictTo = rule.restrictTo ?? []
+    const exclude = rule.exclude ?? []
+    const included =
+      restrictTo.length === 0 ||
+      restrictTo.some((pattern) => postalPatternMatches(pattern, postalCode))
+    const excluded = exclude.some((pattern) =>
+      postalPatternMatches(pattern, postalCode)
+    )
+    return included && !excluded
+  })
+
+  return allowed
+    ? { eligible: true }
+    : { eligible: false, reason: "postal_restricted" }
 }

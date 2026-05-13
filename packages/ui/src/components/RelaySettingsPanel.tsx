@@ -174,7 +174,11 @@ function CapabilityTooltip({
   children: ReactNode
 }) {
   return (
-    <span className="group/tooltip relative inline-flex">
+    <span
+      tabIndex={0}
+      aria-label={`${label}: ${description}`}
+      className="group/tooltip relative inline-flex rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+    >
       {children}
       <span className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 w-64 max-w-[calc(100vw-3rem)] rounded-xl border border-[var(--border)] bg-[var(--surface-dialog)] px-3 py-2 text-left text-xs leading-5 text-[var(--text-secondary)] opacity-0 shadow-[var(--shadow-dialog)] transition-opacity group-focus-within/tooltip:opacity-100 group-hover/tooltip:opacity-100 sm:left-1/2 sm:-translate-x-1/2">
         <span className="block font-semibold text-[var(--text-primary)]">

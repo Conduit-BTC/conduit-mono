@@ -56,6 +56,7 @@ export interface CachedProduct {
     normalizedCurrency: string
   }
   type?: "simple" | "variable"
+  format?: "physical" | "digital"
   visibility?: "public" | "private"
   stock?: number
   images: Array<{ url: string; alt?: string }>
@@ -142,6 +143,24 @@ export interface CachedProductSocialSummary {
   verifiedAt?: number
 }
 
+export interface StoredPaymentAttempt {
+  id: string
+  orderId: string
+  buyerPubkey: string
+  merchantPubkey: string
+  amountMsats: number
+  currency: "SATS"
+  invoice?: string
+  paymentHash?: string
+  preimage?: string
+  feeMsats?: number
+  zapRequestId?: string
+  zapReceiptId?: string
+  proofDeliveryStatus: "pending" | "sent" | "retry_needed"
+  createdAt: number
+  updatedAt: number
+}
+
 class ConduitDB extends Dexie {
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
@@ -150,6 +169,7 @@ class ConduitDB extends Dexie {
   orderMessages!: EntityTable<CachedOrderMessage, "id">
   relayLists!: EntityTable<CachedRelayList, "pubkey">
   productSocialSummaries!: EntityTable<CachedProductSocialSummary, "key">
+  paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
 
   constructor() {
     super("conduit")
@@ -189,6 +209,19 @@ class ConduitDB extends Dexie {
         "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
       relayLists: "pubkey, cachedAt",
       productSocialSummaries: "key, cachedAt",
+    })
+
+    this.version(5).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
+      productSocialSummaries: "key, cachedAt",
+      paymentAttempts:
+        "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
     })
   }
 }

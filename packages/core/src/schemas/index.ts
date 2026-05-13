@@ -208,6 +208,11 @@ export type ConversationMessageSchema = z.infer<
  * Lets the merchant confirm payment without querying the Lightning node.
  */
 export const paymentProofMessageSchema = z.object({
+  orderId: z.string().optional(),
+  rail: z.literal("lightning").optional(),
+  action: z.enum(["zap", "invoice"]).optional(),
+  amount: z.number().min(0).optional(),
+  currency: z.string().min(1).optional(),
   /** BOLT11 invoice that was paid. */
   invoice: z.string().min(1),
   /** Payment preimage (hex) returned by the wallet. */
@@ -216,6 +221,9 @@ export const paymentProofMessageSchema = z.object({
   paymentHash: z.string().optional(),
   /** Fees paid in msats, if returned by the wallet. */
   feeMsats: z.number().optional(),
+  zapRequestId: z.string().optional(),
+  zapReceiptId: z.string().optional(),
+  proofDeliveryStatus: z.enum(["pending", "sent", "retry_needed"]).optional(),
   /** Human-readable note. */
   note: z.string().max(2000).optional(),
 })

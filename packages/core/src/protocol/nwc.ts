@@ -55,6 +55,8 @@ export interface NwcPayInvoiceParams {
   invoice: string
   /** Optional override amount in msats (for zero-amount invoices). */
   amountMsats?: number
+  /** Optional wallet-visible metadata per NIP-47. Must not include private order data. */
+  metadata?: Record<string, unknown>
 }
 
 export interface NwcPayInvoiceResult {
@@ -248,6 +250,7 @@ export async function nwcPayInvoice(
       params: {
         invoice: params.invoice,
         ...(params.amountMsats !== undefined && { amount: params.amountMsats }),
+        ...(params.metadata !== undefined && { metadata: params.metadata }),
       },
     })
 

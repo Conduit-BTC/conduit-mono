@@ -129,8 +129,41 @@ export function isFastCheckoutEligible(params: {
   walletPayCapable: boolean
   merchantLud16: string | undefined | null
   lnurlAllowsNostr: boolean
+  pricingReady?: boolean
+  shippingEligible?: boolean
+  relayReady?: boolean
 }): boolean {
-  return (
-    params.walletPayCapable && !!params.merchantLud16 && params.lnurlAllowsNostr
-  )
+  return getFastCheckoutUnavailableReasons(params).length === 0
+}
+
+export function getFastCheckoutUnavailableReasons(params: {
+  walletPayCapable: boolean
+  merchantLud16: string | undefined | null
+  lnurlAllowsNostr: boolean
+  pricingReady?: boolean
+  shippingEligible?: boolean
+  relayReady?: boolean
+}): string[] {
+  const reasons: string[] = []
+  if (!params.walletPayCapable) {
+    reasons.push("Connect a wallet that can send payments through NWC.")
+  }
+  if (!params.merchantLud16) {
+    reasons.push("Merchant has not added a Lightning Address.")
+  }
+  if (!params.lnurlAllowsNostr) {
+    reasons.push("Direct zap is not supported by this merchant yet.")
+  }
+  if (params.pricingReady === false) {
+    reasons.push("Refresh price conversion before paying.")
+  }
+  if (params.shippingEligible === false) {
+    reasons.push("Merchant shipping zone does not include this destination.")
+  }
+  if (params.relayReady === false) {
+    reasons.push(
+      "Checkout needs reliable order delivery before direct payment."
+    )
+  }
+  return reasons
 }

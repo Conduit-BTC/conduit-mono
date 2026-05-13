@@ -60,6 +60,7 @@ export {
   type CachedProduct,
   type CachedProfile,
   type CachedOrderMessage,
+  type StoredPaymentAttempt,
 } from "./db"
 
 // Billing

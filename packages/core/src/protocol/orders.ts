@@ -208,10 +208,20 @@ export function parseOrderMessageRumorEvent(
 
   if (type === "payment_proof") {
     const payload = paymentProofMessageSchema.parse({
+      orderId,
+      rail: getString(json?.rail),
+      action: getString(json?.action),
+      amount:
+        parseNumericTag(event.tags ?? [], "amount") ?? getNumber(json?.amount),
+      currency:
+        getTagValue(event.tags ?? [], "currency") ?? getString(json?.currency),
       invoice: getString(json?.invoice),
       preimage: getString(json?.preimage),
       paymentHash: getString(json?.paymentHash),
       feeMsats: getNumber(json?.feeMsats),
+      zapRequestId: getString(json?.zapRequestId),
+      zapReceiptId: getString(json?.zapReceiptId),
+      proofDeliveryStatus: getString(json?.proofDeliveryStatus),
       note: getString(json?.note),
     })
     return { ...messageBase(event, type, orderId), payload }
