@@ -1408,11 +1408,6 @@ function CheckoutPage() {
                 </div>
 
                 <div className="mt-5 grid gap-4">
-                  <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm text-[var(--text-secondary)]">
-                    Required: Country, First name, Last name, Street address,
-                    Postal code, and City.
-                  </div>
-
                   {shippingAttempted && shippingErrors.length > 0 && (
                     <div className="rounded-xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">
                       {shippingErrors.length === 1

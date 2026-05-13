@@ -1,7 +1,6 @@
 const DEFAULT_RELAYS = [
   // Bootstrap read relays for product discovery. Capability scans determine
   // trust/commerce status; inclusion here does not grant write authority.
-  "wss://relay.conduit.market",
   "wss://conduitl2.fly.dev",
   "wss://relay.plebeian.market",
   "wss://relay.primal.net",
@@ -9,6 +8,7 @@ const DEFAULT_RELAYS = [
   "wss://nos.lol",
   "wss://purplepag.es",
 ]
+const RETIRED_DEFAULT_RELAYS = new Set(["wss://relay.conduit.market"])
 
 export interface ConduitConfig {
   relayUrl: string
@@ -85,7 +85,8 @@ function getDefaultRelays(env: ReturnType<typeof getViteEnv>): string[] {
   const raw = env.defaultRelays.trim() || env.defaultRelayUrl.trim()
   if (!raw) return DEFAULT_RELAYS
   return [...parseRelayList(raw), ...DEFAULT_RELAYS].filter(
-    (url, index, all) => all.indexOf(url) === index
+    (url, index, all) =>
+      !RETIRED_DEFAULT_RELAYS.has(url) && all.indexOf(url) === index
   )
 }
 

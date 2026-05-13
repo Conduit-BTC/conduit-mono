@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useState } from "react"
 import { AlertCircle, Plus, Trash2, X } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
+import { useQuery } from "@tanstack/react-query"
 import {
   SHIPPING_COUNTRIES,
+  getShippingOptions,
   publishShippingOptions,
+  useAuth,
   type CountryOption,
+  type ParsedShippingOption,
 } from "@conduit/core"
 import { Button, Input, Label, Badge } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
@@ -42,6 +46,22 @@ function buildSummary(countries: ShippingCountryConfig[]): string {
       return parts.join(" ")
     })
     .join(" . ")
+}
+
+function shippingOptionToConfig(option: ParsedShippingOption): ShippingConfig {
+  return {
+    countries: option.countryRules.map((rule) => {
+      const country = SHIPPING_COUNTRIES.find(
+        (item) => item.code === rule.code.toUpperCase()
+      )
+      return {
+        code: rule.code.toUpperCase(),
+        name: country?.name ?? rule.name,
+        restrictTo: rule.restrictTo,
+        exclude: rule.exclude,
+      }
+    }),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -239,10 +259,17 @@ function CountrySelector({
 // ---------------------------------------------------------------------------
 
 function ShippingPage() {
+  const { pubkey } = useAuth()
   const [config, setConfig] = useState<ShippingConfig>(() =>
     loadShippingConfig()
   )
   const [saved, setSaved] = useState(false)
+  const remoteShippingQuery = useQuery({
+    queryKey: ["merchant-shipping-options", pubkey ?? "none"],
+    enabled: !!pubkey,
+    queryFn: () => getShippingOptions(pubkey!),
+    staleTime: 60_000,
+  })
 
   const complete = isShippingComplete(config)
   const summary = buildSummary(config.countries)
@@ -285,6 +312,19 @@ function ShippingPage() {
       console.warn("[shipping] Failed to publish kind-30406:", err)
     })
   }
+
+  useEffect(() => {
+    if (config.countries.length > 0) return
+    const latest = remoteShippingQuery.data?.[0]
+    if (!latest) return
+
+    const remoteConfig = shippingOptionToConfig(latest)
+    if (remoteConfig.countries.length === 0) return
+
+    setConfig(remoteConfig)
+    saveShippingConfig(remoteConfig)
+    setSaved(true)
+  }, [config.countries.length, remoteShippingQuery.data])
 
   // Persist on unmount to avoid data loss
   useEffect(() => {

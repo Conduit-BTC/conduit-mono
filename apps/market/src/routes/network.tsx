@@ -1,8 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router"
 import { useAuth, useConduitSession, useRelaySettings } from "@conduit/core"
 import { RelaySettingsPanel } from "@conduit/ui"
+import { requireAuth } from "../lib/auth"
 
 export const Route = createFileRoute("/network")({
+  beforeLoad: () => {
+    requireAuth()
+  },
   component: SettingsPage,
 })
 

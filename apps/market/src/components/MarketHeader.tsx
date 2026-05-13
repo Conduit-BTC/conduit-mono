@@ -4,9 +4,7 @@ import {
   MessagesSquare,
   ReceiptText,
   Search,
-  Settings,
   ShoppingCart,
-  Store,
   Wallet,
 } from "lucide-react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
@@ -292,27 +290,6 @@ export function MarketHeader() {
           </Badge>
         )}
 
-        <nav className="hidden items-center gap-1 text-sm text-[var(--text-secondary)] lg:flex">
-          <Button asChild variant="ghost" className="h-10 px-3">
-            <Link
-              to="/products"
-              activeProps={{ className: "text-[var(--text-primary)]" }}
-            >
-              <Store className="h-4 w-4" />
-              Shop
-            </Link>
-          </Button>
-          <Button asChild variant="ghost" className="h-10 px-3">
-            <Link
-              to="/network"
-              activeProps={{ className: "text-[var(--text-primary)]" }}
-            >
-              <Settings className="h-4 w-4" />
-              Relays
-            </Link>
-          </Button>
-        </nav>
-
         <div className="order-last w-full pb-5 lg:order-none lg:ml-2 lg:flex-1 lg:pb-0">
           <form
             className="relative"
@@ -447,21 +424,9 @@ export function MarketHeader() {
 
                 <div className="mt-6 grid gap-2">
                   <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/products" onClick={() => setMenuOpen(false)}>
-                      <Store className="h-4 w-4" />
-                      Shop
-                    </Link>
-                  </Button>
-                  <Button asChild variant="ghost" className="justify-start">
                     <Link to="/cart" onClick={() => setMenuOpen(false)}>
                       <ShoppingCart className="h-4 w-4" />
                       Cart ({cart.totals.count})
-                    </Link>
-                  </Button>
-                  <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/network" onClick={() => setMenuOpen(false)}>
-                      <Settings className="h-4 w-4" />
-                      Relays
                     </Link>
                   </Button>
                   {status === "connected" && (

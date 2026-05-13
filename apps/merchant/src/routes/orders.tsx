@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
@@ -886,30 +886,6 @@ function OrdersPage() {
               </span>
             </Button>
           </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            asChild
-            variant={
-              canMockInvoice() || weblnAvailable || nwc.connection
-                ? "outline"
-                : "muted"
-            }
-            size="sm"
-          >
-            <Link to="/payments">
-              {canMockInvoice()
-                ? "Mock mode"
-                : weblnAvailable
-                  ? "Alby detected"
-                  : nwc.connection
-                    ? "Wallet connected"
-                    : "Payment settings"}
-            </Link>
-          </Button>
-          <Button asChild variant="muted">
-            <Link to="/">Home</Link>
-          </Button>
         </div>
       </div>
 

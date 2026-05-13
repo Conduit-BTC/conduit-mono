@@ -758,6 +758,7 @@ function StorefrontPage() {
                         sourcePrice: product.sourcePrice,
                         image: product.images[0]?.url,
                         tags: product.tags,
+                        format: product.format,
                       })
                     }
                     onIncrement={() =>
@@ -771,6 +772,7 @@ function StorefrontPage() {
                         sourcePrice: product.sourcePrice,
                         image: product.images[0]?.url,
                         tags: product.tags,
+                        format: product.format,
                       })
                     }
                     onDecrement={() => {

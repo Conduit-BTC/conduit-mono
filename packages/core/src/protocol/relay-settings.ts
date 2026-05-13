@@ -379,13 +379,19 @@ export function deriveRelayScanResult(
   options: Pick<RelayScanOptions, "knownCommerceRelayUrls" | "now"> = {}
 ): RelayScanResult {
   const normalizedUrl = normalizeRelayUrl(relayUrl)
+  const knownCommerceRelayUrls = new Set(
+    uniqueRelayUrls(options.knownCommerceRelayUrls ?? [])
+  )
+  const knownCommerceRelay = knownCommerceRelayUrls.has(normalizedUrl)
   const supportedNips = getSupportedNips(info)
   const hasSupportedNips = Array.isArray(info?.supported_nips)
   const supportsSearch = supportedNips.includes(50)
   const supportsDm = supportedNips.includes(17)
   const supportsAuth = supportedNips.includes(42) || getAuthRequired(info)
   const hasNip11 = !!info
-  const commerce = hasNip11 && hasCommerceCompatibilityEvidence(supportedNips)
+  const commerce =
+    knownCommerceRelay ||
+    (hasNip11 && hasCommerceCompatibilityEvidence(supportedNips))
 
   const capabilities: RelayCapabilities = {
     nip11: hasNip11,
@@ -400,7 +406,10 @@ export function deriveRelayScanResult(
     dmWithoutAuth: supportsDm && !supportsAuth,
     staleRelayInfo: hasNip11 && !hasSupportedNips,
     commercePartialSupport:
-      hasNip11 && !commerce && hasPartialCommerceEvidence(supportedNips),
+      !knownCommerceRelay &&
+      hasNip11 &&
+      !commerce &&
+      hasPartialCommerceEvidence(supportedNips),
   }
 
   return {

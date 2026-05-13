@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { config } from "../config"
 import {
   assertSafeNip65RelayList,
   createDefaultRelaySettings,
@@ -107,6 +108,7 @@ export function useRelaySettings(
     maskDefaultSettingsForIdentity(loadRelaySettings(scope), pubkey)
   )
   const settingsRef = useRef(settings)
+  const autoScannedStaleKeyRef = useRef("")
   const [scanningUrls, setScanningUrls] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [isLoadingPublishedRelayList, setIsLoadingPublishedRelayList] =
@@ -214,7 +216,11 @@ export function useRelaySettings(
             const existing = settingsRef.current.entries.find(
               (entry) => entry.url === url
             )
-            return scanRelaySettingsEntry(url, {}, existing)
+            return scanRelaySettingsEntry(
+              url,
+              { knownCommerceRelayUrls: config.commerceRelayUrls },
+              existing
+            )
           })
         )
         persist((current) =>
@@ -231,6 +237,23 @@ export function useRelaySettings(
     },
     [persist]
   )
+
+  useEffect(() => {
+    if (!enabled) return
+
+    const staleUrls = settings.entries
+      .filter((entry) => entry.warnings.staleRelayInfo)
+      .map((entry) => entry.url)
+      .sort()
+
+    if (staleUrls.length === 0) return
+
+    const staleKey = staleUrls.join("|")
+    if (staleKey === autoScannedStaleKeyRef.current) return
+    autoScannedStaleKeyRef.current = staleKey
+
+    void scanImportedRelayUrls(staleUrls)
+  }, [enabled, scanImportedRelayUrls, settings.entries])
 
   useEffect(() => {
     if (!enabled || !bootstrapRelayList) return
@@ -339,7 +362,11 @@ export function useRelaySettings(
       setScanningUrls((current) =>
         current.includes(scanningKey) ? current : [...current, scanningKey]
       )
-      const scanned = await scanRelaySettingsEntry(url, {}, existing)
+      const scanned = await scanRelaySettingsEntry(
+        url,
+        { knownCommerceRelayUrls: config.commerceRelayUrls },
+        existing
+      )
       persist((current) => upsertRelaySettingsEntry(current, scanned))
     } catch (scanError) {
       setError(getErrorMessage(scanError))
@@ -358,7 +385,11 @@ export function useRelaySettings(
       setScanningUrls((current) =>
         current.includes(url) ? current : [...current, url]
       )
-      const scanned = await scanRelaySettingsEntry(url, {}, existing)
+      const scanned = await scanRelaySettingsEntry(
+        url,
+        { knownCommerceRelayUrls: config.commerceRelayUrls },
+        existing
+      )
       persist((current) => upsertRelaySettingsEntry(current, scanned))
     } catch (scanError) {
       setError(getErrorMessage(scanError))

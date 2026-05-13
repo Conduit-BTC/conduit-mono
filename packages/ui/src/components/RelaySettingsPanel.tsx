@@ -82,7 +82,7 @@ const sectionMeta: Record<
   }
 > = {
   commerce: {
-    label: "Commerce Enabled Relays",
+    label: "Commerce Relays",
     description:
       "Relays that Conduit can use for commerce events like products, stock updates, orders, and merchant messages.",
     labelClassName: "text-[var(--primary-500)]",
@@ -93,7 +93,7 @@ const sectionMeta: Record<
       "No verified commerce relays yet. Add a relay and Conduit will verify whether it belongs here.",
   },
   public: {
-    label: "Other Public Relays",
+    label: "Public Relays",
     description:
       "General Nostr relays used for broader network reading, publishing, and discovery.",
     labelClassName: "text-[var(--accent-500)]",
@@ -223,14 +223,12 @@ function CapabilityIcon({
   active,
   icon: Icon,
   label,
-  shortLabel,
   description,
   warning = false,
 }: {
   active: boolean
   icon: typeof Search
   label: string
-  shortLabel: string
   description: string
   warning?: boolean
 }) {
@@ -250,9 +248,6 @@ function CapabilityIcon({
         )}
       >
         <Icon className="h-3 w-3" />
-        <span className="pointer-events-none absolute left-1/2 top-full mt-1 hidden -translate-x-1/2 text-[0.56rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)] lg:block">
-          {shortLabel}
-        </span>
       </span>
     </CapabilityTooltip>
   )
@@ -283,10 +278,11 @@ function RelayRow({
   onToggleRead: (url: string, enabled: boolean) => void
   onToggleWrite: (url: string, enabled: boolean) => void
 }) {
-  const warningText = getRelayWarningText(entry)
+  const warningText = scanning ? null : getRelayWarningText(entry)
   const compatibilityText = getRelayCompatibilityText(entry)
   const isDisabled = entry.warnings.unreachable || scanning
   const draggable = section === "commerce" && !!onDropRelay
+  const statusLabel = scanning ? "Checking" : getRelayStatusLabel(entry)
 
   function handleDragStart(event: DragEvent<HTMLDivElement>): void {
     if (!draggable) return
@@ -347,7 +343,7 @@ function RelayRow({
               {entry.url}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
-              <span>{getRelayStatusLabel(entry)}</span>
+              <span>{statusLabel}</span>
               <CapabilityTooltip
                 label={
                   entry.capabilities.commerce
@@ -377,11 +373,6 @@ function RelayRow({
                 </StatusPill>
               </CapabilityTooltip>
               {entry.relayName ? <span>{entry.relayName}</span> : null}
-              {warningText ? (
-                <span className="text-warning" title={warningText}>
-                  {warningText}
-                </span>
-              ) : null}
             </div>
           </div>
         </div>
@@ -411,7 +402,6 @@ function RelayRow({
           <CapabilityIcon
             active={entry.capabilities.search}
             icon={Search}
-            shortLabel="Search"
             label={
               entry.capabilities.search
                 ? "Search supported"
@@ -426,7 +416,6 @@ function RelayRow({
           <CapabilityIcon
             active={entry.capabilities.dm}
             icon={Send}
-            shortLabel="DM"
             label={
               entry.capabilities.dm
                 ? "DM support detected"
@@ -441,7 +430,6 @@ function RelayRow({
           <CapabilityIcon
             active={entry.capabilities.auth || entry.warnings.dmWithoutAuth}
             icon={LockKeyhole}
-            shortLabel="Auth"
             label={
               entry.warnings.dmWithoutAuth
                 ? "DM relay without auth"
@@ -462,7 +450,6 @@ function RelayRow({
             <CapabilityIcon
               active
               icon={entry.warnings.unreachable ? WifiOff : AlertTriangle}
-              shortLabel="Warn"
               label={warningText ?? "Relay warning"}
               description={`${warningText ?? "Conduit detected a relay warning."} ${compatibilityText}`}
               warning
@@ -614,14 +601,6 @@ export function RelaySettingsPanel({
   const activeRelayCount = settings.entries.filter(
     (entry) => entry.readEnabled || entry.writeEnabled
   ).length
-  const publishedLabel = publishedRelayListUpdatedAt
-    ? `Published relays loaded ${new Date(
-        publishedRelayListUpdatedAt * 1000
-      ).toLocaleDateString()}`
-    : isLoadingPublishedRelayList
-      ? "Checking published relays"
-      : "Local relay changes"
-
   async function handleAddRelay(event: FormEvent): Promise<void> {
     event.preventDefault()
     const trimmed = newRelayUrl.trim()
@@ -657,21 +636,20 @@ export function RelaySettingsPanel({
       <div className="space-y-8">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
-              Network
-            </div>
-            <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
-              Relay Settings
+            <h1 className="font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
+              Network Settings
             </h1>
             <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
               Relays store and deliver data across the Nostr network.
             </p>
           </div>
-          <div className="flex flex-col items-start gap-1 pt-1 sm:items-end">
-            <span className="text-[0.65rem] uppercase tracking-[0.18em] text-[var(--text-muted)]">
-              {publishedLabel}
-            </span>
-          </div>
+          {isLoadingPublishedRelayList || publishedRelayListUpdatedAt ? (
+            <div className="flex min-h-7 items-center pt-1 text-xs text-[var(--text-muted)]">
+              {isLoadingPublishedRelayList
+                ? "Checking relays"
+                : "Published relays loaded"}
+            </div>
+          ) : null}
         </div>
 
         <RelaySection

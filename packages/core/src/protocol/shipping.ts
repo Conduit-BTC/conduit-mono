@@ -14,6 +14,7 @@ import {
   getCommerceReadRelayUrls,
   getGeneralReadRelayUrls,
 } from "./relay-settings"
+import { publishWithPlanner } from "./relay-publish"
 import type { ConduitAppId } from "./nip89"
 import { appendConduitClientTag } from "./nip89"
 
@@ -174,16 +175,16 @@ export async function getShippingOptions(
  * Publish the merchant's shipping config as one consolidated kind-30406 event
  * with d-tag `conduit-default`.
  *
- * If the config has no countries, this is a no-op.
+ * If the config has no countries, Conduit still publishes an empty replacement
+ * event so older shipping destinations are cleared from relays.
  */
 export async function publishShippingOptions(
   config: ShippingConfig,
   appId: ConduitAppId
 ): Promise<void> {
-  if (config.countries.length === 0) return
-
   const ndk = await requireNdkConnected()
   if (!ndk.signer) throw new Error("Signer not connected")
+  const signerPubkey = (await ndk.signer.user()).pubkey
 
   const now = Math.floor(Date.now() / 1000)
   const allCodes = config.countries.map((c) => c.code)
@@ -211,7 +212,10 @@ export async function publishShippingOptions(
   ]
 
   await event.sign(ndk.signer)
-  await event.publish()
+  await publishWithPlanner(event, {
+    intent: "author_event",
+    authorPubkey: signerPubkey,
+  })
 }
 
 // ---------------------------------------------------------------------------

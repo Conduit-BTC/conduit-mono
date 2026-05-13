@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import {
   __resetRelayHealth,
+  config,
   normalizeRelaySettingsState,
   planRelayReads,
   planRelayWrites,
@@ -297,6 +298,18 @@ describe("planRelayWrites", () => {
     })
     expect(plan.primaryRelayUrls).toEqual(["wss://outbox.example.com"])
     // Broadcast is empty here because the only outbox relay is already in primary.
+    expect(plan.broadcastRelayUrls).toEqual([])
+  })
+
+  it("uses default public relays for recipient delivery when the signer has no write relays", () => {
+    const plan = planRelayWrites({
+      intent: "recipient_event",
+      recipientPubkeys: ["unknown"],
+      relayLists: new Map(),
+      settings: settings([]),
+    })
+
+    expect(plan.primaryRelayUrls).toEqual(config.publicRelayUrls.slice(0, 4))
     expect(plan.broadcastRelayUrls).toEqual([])
   })
 
