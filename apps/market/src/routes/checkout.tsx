@@ -1,5 +1,6 @@
 import {
   Check,
+  CreditCard,
   KeyRound,
   LoaderCircle,
   ShoppingCart,
@@ -12,6 +13,7 @@ import { useQuery } from "@tanstack/react-query"
 import { NDKEvent, NDKUser, giftWrap } from "@nostr-dev-kit/ndk"
 import {
   EVENT_KINDS,
+  SHIPPING_COUNTRIES,
   appendConduitClientTag,
   config,
   fetchLnurlPayMetadata,
@@ -185,6 +187,129 @@ function PaymentMethodButton({
         </span>
       )}
     </button>
+  )
+}
+
+function getCountryLabel(code: string): string {
+  const country = SHIPPING_COUNTRIES.find((option) => option.code === code)
+  return country ? `${country.name} (${country.code})` : code
+}
+
+function CountryCombobox({
+  value,
+  invalid,
+  onChange,
+}: {
+  value: string
+  invalid?: boolean
+  onChange: (countryCode: string) => void
+}) {
+  const [query, setQuery] = useState(() => getCountryLabel(value))
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    if (!open) setQuery(getCountryLabel(value))
+  }, [open, value])
+
+  const filteredCountries = useMemo(() => {
+    const normalized = query.trim().toLowerCase()
+    if (!normalized) return SHIPPING_COUNTRIES
+    return SHIPPING_COUNTRIES.filter(
+      (country) =>
+        country.name.toLowerCase().includes(normalized) ||
+        country.code.toLowerCase().startsWith(normalized)
+    )
+  }, [query])
+
+  function commitCountry(country: (typeof SHIPPING_COUNTRIES)[number]) {
+    onChange(country.code)
+    setQuery(`${country.name} (${country.code})`)
+    setOpen(false)
+  }
+
+  function commitExactMatch() {
+    const normalized = query.trim().toLowerCase()
+    const exact = SHIPPING_COUNTRIES.find(
+      (country) =>
+        country.code.toLowerCase() === normalized ||
+        country.name.toLowerCase() === normalized ||
+        `${country.name} (${country.code})`.toLowerCase() === normalized
+    )
+
+    if (exact) {
+      commitCountry(exact)
+      return
+    }
+
+    setQuery(getCountryLabel(value))
+    setOpen(false)
+  }
+
+  return (
+    <div className="relative">
+      <Input
+        id="ship-country"
+        role="combobox"
+        aria-controls="ship-country-listbox"
+        aria-expanded={open}
+        aria-autocomplete="list"
+        aria-invalid={invalid}
+        value={query}
+        onFocus={(event) => {
+          event.currentTarget.select()
+          setOpen(true)
+        }}
+        onChange={(event) => {
+          setQuery(event.target.value)
+          setOpen(true)
+        }}
+        onBlur={commitExactMatch}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault()
+            setQuery(getCountryLabel(value))
+            setOpen(false)
+          }
+          if (event.key === "Enter" && open && filteredCountries[0]) {
+            event.preventDefault()
+            commitCountry(filteredCountries[0])
+          }
+        }}
+        placeholder="Search countries..."
+        className={[
+          "h-10 rounded-xl bg-[var(--surface-elevated)]",
+          invalid
+            ? "border-error/50 focus:border-error focus:ring-error/30"
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+      />
+      {open && filteredCountries.length > 0 && (
+        <div
+          id="ship-country-listbox"
+          role="listbox"
+          className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-[var(--border-overlay)] bg-[var(--surface-overlay)] shadow-[var(--shadow-dialog)] backdrop-blur-xl"
+        >
+          {filteredCountries.map((country) => (
+            <button
+              key={country.code}
+              type="button"
+              role="option"
+              aria-selected={country.code === value}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)] focus:bg-[var(--surface)] focus:outline-none"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => commitCountry(country)}
+            >
+              <span className="text-xs font-mono text-[var(--text-muted)]">
+                {country.code}
+              </span>
+              {country.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -1290,16 +1415,12 @@ function CheckoutPage() {
                     <Label htmlFor="ship-country">
                       Country <span className="text-error">*</span>
                     </Label>
-                    <Input
-                      id="ship-country"
+                    <CountryCombobox
                       value={shipping.country}
-                      onChange={(e) =>
-                        updateShipping("country", e.target.value.toUpperCase())
+                      invalid={fieldInvalid("country")}
+                      onChange={(countryCode) =>
+                        updateShipping("country", countryCode)
                       }
-                      placeholder="US"
-                      maxLength={2}
-                      aria-invalid={fieldInvalid("country")}
-                      className={fieldClassName("country")}
                     />
                     {fieldInvalid("country") && (
                       <p className="text-xs text-error">
@@ -1530,6 +1651,12 @@ function CheckoutPage() {
                   <PaymentMethodButton
                     label="USDT"
                     icon={<span className="text-base">₮</span>}
+                    disabled
+                    subtitle="Coming soon"
+                  />
+                  <PaymentMethodButton
+                    label="Card"
+                    icon={<CreditCard className="h-4 w-4" />}
                     disabled
                     subtitle="Coming soon"
                   />

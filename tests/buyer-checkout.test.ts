@@ -216,6 +216,31 @@ describe("isFastCheckoutEligible", () => {
       "Merchant shipping zone does not include this destination.",
     ])
   })
+
+  it("does not report zap support when the merchant has no Lightning Address", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: false,
+        merchantLud16: undefined,
+        lnurlAllowsNostr: false,
+      })
+    ).toEqual([
+      "Connect a wallet that can send payments through NWC.",
+      "Merchant has not added a Lightning Address.",
+    ])
+  })
+
+  it("reports zap support only after a Lightning Address exists", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: false,
+      })
+    ).toEqual([
+      "Merchant Lightning Address does not advertise Nostr zap support.",
+    ])
+  })
 })
 
 // ─── checkout payment helpers ────────────────────────────────────────────────

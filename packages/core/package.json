@@ -26,6 +26,7 @@
   "dependencies": {
     "@nostr-dev-kit/ndk": "^2.14.0",
     "clsx": "^2.1.1",
+    "country-list": "^2.4.1",
     "dexie": "^4.0.0",
     "tailwind-merge": "^3.3.0",
     "zod": "^3.24.1"
@@ -36,6 +37,7 @@
   },
   "devDependencies": {
     "@tanstack/react-query": "^5.62.8",
+    "@types/country-list": "^2.1.4",
     "@types/react": "^19.0.2",
     "typescript": "^5.7.3"
   }

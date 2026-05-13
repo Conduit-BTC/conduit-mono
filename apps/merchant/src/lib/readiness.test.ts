@@ -83,6 +83,19 @@ describe("merchant setup readiness", () => {
     expect(readiness.missingAreas).toEqual([])
   })
 
+  test("does not mark malformed Lightning Addresses payment-ready", () => {
+    const readiness = getMerchantSetupReadiness({
+      profile: { ...completeProfile, lud16: "not-a-lightning-address" },
+      shippingConfig,
+      relaySettings: createDefaultRelaySettings(),
+      hasNwc: false,
+    })
+
+    expect(readiness.paymentsComplete).toBe(false)
+    expect(readiness.paymentCapability).toBe("invoice_only")
+    expect(readiness.missingAreas).toEqual(["payments"])
+  })
+
   test("separates invoice/manual flow from direct payment readiness", () => {
     const readiness = getMerchantSetupReadiness({
       profile: { ...completeProfile, lud16: undefined },

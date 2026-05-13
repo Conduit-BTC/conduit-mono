@@ -1,4 +1,4 @@
-import type { ShippingAddressSchema } from "@conduit/core"
+import { SHIPPING_COUNTRIES, type ShippingAddressSchema } from "@conduit/core"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,6 +36,10 @@ export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 /** Accept blank phone, or a string with 7-20 digit/space/+/- chars. */
 export const PHONE_RE = /^[\d\s\-+().]{7,20}$/
 
+const SHIPPING_COUNTRY_CODES = new Set(
+  SHIPPING_COUNTRIES.map((country) => country.code)
+)
+
 // ─── Validation ───────────────────────────────────────────────────────────────
 
 export function validateShippingFields(
@@ -44,10 +48,10 @@ export function validateShippingFields(
   const errors: ShippingValidationError[] = []
 
   const country = shipping.country.trim().toUpperCase()
-  if (!ISO_COUNTRY_RE.test(country)) {
+  if (!ISO_COUNTRY_RE.test(country) || !SHIPPING_COUNTRY_CODES.has(country)) {
     errors.push({
       field: "country",
-      message: "Enter a 2-letter country code (e.g. US)",
+      message: "Select a supported country",
     })
   }
 
@@ -151,8 +155,10 @@ export function getFastCheckoutUnavailableReasons(params: {
   if (!params.merchantLud16) {
     reasons.push("Merchant has not added a Lightning Address.")
   }
-  if (!params.lnurlAllowsNostr) {
-    reasons.push("Direct zap is not supported by this merchant yet.")
+  if (params.merchantLud16 && !params.lnurlAllowsNostr) {
+    reasons.push(
+      "Merchant Lightning Address does not advertise Nostr zap support."
+    )
   }
   if (params.pricingReady === false) {
     reasons.push("Refresh price conversion before paying.")

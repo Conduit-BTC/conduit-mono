@@ -1,8 +1,11 @@
-import { getData } from "country-list"
 import { useCallback, useEffect, useState } from "react"
 import { AlertCircle, Plus, Trash2, X } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
-import { publishShippingOptions } from "@conduit/core"
+import {
+  SHIPPING_COUNTRIES,
+  publishShippingOptions,
+  type CountryOption,
+} from "@conduit/core"
 import { Button, Input, Label, Badge } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import {
@@ -19,46 +22,6 @@ export const Route = createFileRoute("/shipping")({
   },
   component: ShippingPage,
 })
-
-// ---------------------------------------------------------------------------
-// Country data -- ISO 3166-1 via country-list, with common-name overrides
-// ---------------------------------------------------------------------------
-
-const COUNTRY_NAME_OVERRIDES: Record<string, string> = {
-  AE: "United Arab Emirates",
-  BO: "Bolivia",
-  BS: "Bahamas",
-  CD: "DR Congo",
-  CG: "Congo",
-  DO: "Dominican Republic",
-  FK: "Falkland Islands",
-  FM: "Micronesia",
-  FO: "Faroe Islands",
-  GB: "United Kingdom",
-  GM: "Gambia",
-  IR: "Iran",
-  KP: "North Korea",
-  KR: "South Korea",
-  LA: "Laos",
-  MD: "Moldova",
-  NL: "Netherlands",
-  NE: "Niger",
-  PH: "Philippines",
-  RU: "Russia",
-  SD: "Sudan",
-  SY: "Syria",
-  TW: "Taiwan",
-  US: "United States",
-  VA: "Vatican City",
-  VE: "Venezuela",
-}
-
-const COUNTRIES: { code: string; name: string }[] = getData()
-  .map((c) => ({
-    code: c.code,
-    name: COUNTRY_NAME_OVERRIDES[c.code] ?? c.name,
-  }))
-  .sort((a, b) => a.name.localeCompare(b.name))
 
 // ---------------------------------------------------------------------------
 // Summary helper
@@ -211,12 +174,12 @@ function CountrySelector({
   onAdd,
 }: {
   selected: string[]
-  onAdd: (country: { code: string; name: string }) => void
+  onAdd: (country: CountryOption) => void
 }) {
   const [search, setSearch] = useState("")
   const [open, setOpen] = useState(false)
 
-  const filtered = COUNTRIES.filter(
+  const filtered = SHIPPING_COUNTRIES.filter(
     (c) =>
       !selected.includes(c.code) &&
       c.name.toLowerCase().includes(search.toLowerCase())
@@ -284,7 +247,7 @@ function ShippingPage() {
   const complete = isShippingComplete(config)
   const summary = buildSummary(config.countries)
 
-  const addCountry = useCallback((country: { code: string; name: string }) => {
+  const addCountry = useCallback((country: CountryOption) => {
     setConfig((prev) => ({
       countries: [
         ...prev.countries,

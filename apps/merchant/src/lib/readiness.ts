@@ -6,6 +6,7 @@
  */
 import {
   isRelaySetupIncomplete,
+  isValidLud16Address,
   parseNwcUri,
   type NwcConnection,
   type Profile,
@@ -70,7 +71,7 @@ export function isPaymentsComplete(
   profile: Profile | null | undefined
 ): boolean {
   if (!profile) return false
-  return !!profile.lud16?.trim()
+  return profile.lud16 ? isValidLud16Address(profile.lud16) : false
 }
 
 export function parseStoredNwcConnection(

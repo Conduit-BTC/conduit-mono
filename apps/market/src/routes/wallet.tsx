@@ -277,7 +277,7 @@ function WalletPage() {
                   <code className="font-mono text-xs">
                     nostr+walletconnect://
                   </code>{" "}
-                  URI from your Lightning wallet app (Alby, Zeus, Mutiny, etc.).
+                  URI from your Lightning wallet app (Alby, Rizful, Zeus, etc.).
                 </p>
 
                 <div className="mt-3 rounded-[1.5rem] border border-dashed border-[var(--border)] bg-[var(--surface)] p-4">

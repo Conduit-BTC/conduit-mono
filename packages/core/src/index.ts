@@ -3,6 +3,7 @@ export * from "./types"
 
 // Protocol
 export * from "./protocol"
+export * from "./protocol/countries"
 
 // Schemas
 export * from "./schemas"

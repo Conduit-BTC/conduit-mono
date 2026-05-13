@@ -1,15 +1,15 @@
-import { useState } from "react"
-import { AlertCircle, CheckCircle2, ExternalLink, Zap } from "lucide-react"
+import { useEffect, useState } from "react"
+import { AlertCircle, CheckCircle2, LoaderCircle, Zap } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import {
-  formatPubkey,
+  fetchLnurlPayMetadata,
+  isValidLud16Address,
   useAuth,
   useProfile,
   useUpdateProfile,
 } from "@conduit/core"
-import { Badge, Button, Input, Label } from "@conduit/ui"
+import { Button, Input, Label } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
-import { useNwcConnection } from "../hooks/useNwcConnection"
 import {
   profileFormToUpdatePayload,
   profileToFormValues,
@@ -27,14 +27,59 @@ function PaymentsPage() {
   const { pubkey } = useAuth()
   const profileQuery = useProfile(pubkey)
   const updateMutation = useUpdateProfile("merchant")
-  const nwc = useNwcConnection()
 
   const profile = profileQuery.data
   const complete = isPaymentsComplete(profile)
+  const lud16 = profile?.lud16?.trim() ?? ""
 
   const [editingLud16, setEditingLud16] = useState(false)
   const [lud16Draft, setLud16Draft] = useState("")
-  const [nwcDraft, setNwcDraft] = useState("")
+  const [lud16Error, setLud16Error] = useState<string | null>(null)
+  const [addressCheck, setAddressCheck] = useState<
+    | { status: "idle" }
+    | { status: "checking" }
+    | { status: "invalid" }
+    | { status: "lnurl_ready" }
+    | { status: "zap_supported" }
+    | { status: "unverified"; message: string }
+  >({ status: "idle" })
+
+  useEffect(() => {
+    if (!lud16) {
+      setAddressCheck({ status: "idle" })
+      return
+    }
+
+    if (!isValidLud16Address(lud16)) {
+      setAddressCheck({ status: "invalid" })
+      return
+    }
+
+    let cancelled = false
+    setAddressCheck({ status: "checking" })
+
+    fetchLnurlPayMetadata(lud16)
+      .then((metadata) => {
+        if (cancelled) return
+        setAddressCheck({
+          status: metadata.allowsNostr ? "zap_supported" : "lnurl_ready",
+        })
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setAddressCheck({
+          status: "unverified",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Could not verify this Lightning Address.",
+        })
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [lud16])
 
   function startEditLud16() {
     setLud16Draft(profile?.lud16 ?? "")
@@ -44,19 +89,19 @@ function PaymentsPage() {
   async function saveLud16(e: React.FormEvent) {
     e.preventDefault()
     if (!profile) return
+    const nextLud16 = lud16Draft.trim()
+    if (nextLud16 && !isValidLud16Address(nextLud16)) {
+      setLud16Error("Enter a Lightning Address like you@example.com.")
+      return
+    }
+    setLud16Error(null)
     updateMutation.mutate(
       profileFormToUpdatePayload({
         ...profileToFormValues(profile),
-        lud16: lud16Draft.trim(),
+        lud16: nextLud16,
       }),
       { onSuccess: () => setEditingLud16(false) }
     )
-  }
-
-  function connectNwc(e: React.FormEvent) {
-    e.preventDefault()
-    nwc.setUri(nwcDraft.trim())
-    setNwcDraft("")
   }
 
   return (
@@ -74,8 +119,7 @@ function PaymentsPage() {
                   Payments
                 </h1>
                 <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
-                  Configure how buyers pay you. A Lightning Address is required
-                  to receive payments.
+                  Configure where buyers send Lightning payments.
                 </p>
               </div>
 
@@ -86,7 +130,7 @@ function PaymentsPage() {
                     <span className="font-semibold">
                       Lightning Address required.
                     </span>{" "}
-                    Add a Lightning Address so buyers can pay for orders.
+                    Add a valid Lightning Address so buyers can pay for orders.
                   </p>
                 </div>
               )}
@@ -129,16 +173,19 @@ function PaymentsPage() {
                     <div className="mt-4">
                       {!editingLud16 ? (
                         profile?.lud16 ? (
-                          <div className="flex items-center gap-2">
-                            <CheckCircle2 className="h-4 w-4 shrink-0 text-[var(--success)]" />
-                            <span className="font-mono text-sm text-[var(--text-primary)]">
-                              {profile.lud16}
-                            </span>
+                          <div className="space-y-4">
+                            <div className="flex items-center gap-2">
+                              <CheckCircle2 className="h-4 w-4 shrink-0 text-[var(--success)]" />
+                              <span className="font-mono text-sm text-[var(--text-primary)]">
+                                {profile.lud16}
+                              </span>
+                            </div>
+                            <LightningAddressStatus check={addressCheck} />
                           </div>
                         ) : (
                           <p className="text-sm text-[var(--text-muted)]">
                             No Lightning Address set. Add one to receive
-                            payments from buyers.
+                            Lightning payments from buyers.
                           </p>
                         )
                       ) : (
@@ -170,6 +217,9 @@ function PaymentsPage() {
                                 : "Failed to save"}
                             </p>
                           )}
+                          {lud16Error && (
+                            <p className="text-sm text-error">{lud16Error}</p>
+                          )}
                           <div className="flex items-center gap-2">
                             <Button
                               type="submit"
@@ -192,145 +242,94 @@ function PaymentsPage() {
                     </div>
                   </div>
                 </section>
-
-                {/* NWC section */}
-                <section className="space-y-4">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--secondary-500)]">
-                        AUTOMATION
-                      </div>
-                      <Badge variant="outline">Optional</Badge>
-                    </div>
-                    <div className="mt-1 text-[1rem] text-[var(--text-secondary)]">
-                      Auto-generate invoices directly from orders
-                    </div>
-                  </div>
-
-                  <div className="rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--secondary-500)_1%,transparent)] px-6 py-5 shadow-[var(--shadow-glass-inset)]">
-                    <div className="mb-1 text-[1rem] font-semibold text-[var(--text-primary)]">
-                      Wallet Connect (NWC)
-                    </div>
-                    <p className="mb-5 text-sm text-[var(--text-secondary)]">
-                      Connect a Lightning wallet via NIP-47 to generate invoices
-                      with one click directly from the Orders page. Without NWC
-                      you can still paste BOLT11 invoices manually.
-                    </p>
-
-                    {nwc.connection ? (
-                      <div className="space-y-3">
-                        <div className="flex items-center gap-2">
-                          <CheckCircle2 className="h-4 w-4 shrink-0 text-[var(--success)]" />
-                          <span className="text-sm text-[var(--text-primary)]">
-                            Connected to wallet{" "}
-                            <span className="font-mono">
-                              {formatPubkey(nwc.connection.walletPubkey, 8)}
-                            </span>
-                          </span>
-                        </div>
-                        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-xs text-[var(--text-secondary)] space-y-1">
-                          <div>
-                            Wallet pubkey:{" "}
-                            <span className="font-mono text-[var(--text-primary)]">
-                              {nwc.connection.walletPubkey}
-                            </span>
-                          </div>
-                          <div>
-                            Relay:{" "}
-                            <span className="font-mono text-[var(--text-primary)]">
-                              {nwc.connection.relays[0]}
-                            </span>
-                          </div>
-                        </div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={nwc.disconnect}
-                        >
-                          Disconnect wallet
-                        </Button>
-                      </div>
-                    ) : (
-                      <div className="space-y-4">
-                        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)] space-y-2">
-                          <p className="font-medium text-[var(--text-primary)]">
-                            How to connect:
-                          </p>
-                          <ol className="list-decimal list-inside space-y-1 text-xs">
-                            <li>
-                              Set up a Lightning wallet that supports NWC
-                              (NIP-47)
-                            </li>
-                            <li>
-                              Create a new connection with{" "}
-                              <span className="font-medium text-[var(--text-primary)]">
-                                make_invoice
-                              </span>{" "}
-                              permission
-                            </li>
-                            <li>
-                              Copy the{" "}
-                              <span className="font-mono">
-                                nostr+walletconnect://
-                              </span>{" "}
-                              URI and paste below
-                            </li>
-                          </ol>
-                          <div className="flex flex-wrap gap-2 pt-1">
-                            {[
-                              { label: "Alby", href: "https://getalby.com" },
-                              {
-                                label: "Mutiny",
-                                href: "https://mutinywallet.com",
-                              },
-                              { label: "nwc.dev", href: "https://nwc.dev" },
-                            ].map(({ label, href }) => (
-                              <a
-                                key={href}
-                                href={href}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--accent)] hover:bg-[var(--surface-overlay)]"
-                              >
-                                {label}
-                                <ExternalLink className="h-3 w-3" />
-                              </a>
-                            ))}
-                          </div>
-                        </div>
-
-                        <form onSubmit={connectNwc} className="space-y-3">
-                          <div className="grid gap-1.5">
-                            <Label htmlFor="nwc-uri-input">
-                              NWC Connection URI
-                            </Label>
-                            <Input
-                              id="nwc-uri-input"
-                              value={nwcDraft}
-                              onChange={(e) => setNwcDraft(e.target.value)}
-                              placeholder="nostr+walletconnect://..."
-                            />
-                            {nwc.error && (
-                              <p className="text-xs text-error">{nwc.error}</p>
-                            )}
-                          </div>
-                          <Button
-                            type="submit"
-                            size="sm"
-                            disabled={!nwcDraft.trim()}
-                          >
-                            Connect wallet
-                          </Button>
-                        </form>
-                      </div>
-                    )}
-                  </div>
-                </section>
               </div>
             )}
           </div>
         </section>
       </div>
+    </div>
+  )
+}
+
+function LightningAddressStatus({
+  check,
+}: {
+  check:
+    | { status: "idle" }
+    | { status: "checking" }
+    | { status: "invalid" }
+    | { status: "lnurl_ready" }
+    | { status: "zap_supported" }
+    | { status: "unverified"; message: string }
+}) {
+  if (check.status === "idle") return null
+
+  if (check.status === "checking") {
+    return (
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
+        <div className="flex items-center gap-2 font-semibold text-[var(--text-primary)]">
+          <LoaderCircle className="h-4 w-4 animate-spin" />
+          Checking Lightning Address
+        </div>
+      </div>
+    )
+  }
+
+  if (check.status === "invalid") {
+    return (
+      <div className="rounded-xl border border-[var(--warning)]/50 bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-primary)]">
+        <div className="flex items-center gap-2 font-semibold">
+          <AlertCircle className="h-4 w-4 text-[var(--warning)]" />
+          Lightning Address needs review
+        </div>
+        <p className="mt-1 text-[var(--text-secondary)]">
+          Use a valid Lightning Address such as you@example.com.
+        </p>
+      </div>
+    )
+  }
+
+  if (check.status === "zap_supported") {
+    return (
+      <div className="rounded-xl border border-[var(--success)]/35 bg-[color-mix(in_srgb,var(--success)_10%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-primary)]">
+        <div className="flex items-center gap-2 font-semibold">
+          <Zap className="h-4 w-4 text-[var(--success)]" />
+          Zap support detected
+        </div>
+        <p className="mt-1 text-[var(--text-secondary)]">
+          Eligible orders can be paid directly to this Lightning Address.
+          Conduit links the payment to the order so the merchant can review and
+          fulfill it.
+        </p>
+      </div>
+    )
+  }
+
+  if (check.status === "lnurl_ready") {
+    return (
+      <div className="rounded-xl border border-[var(--success)]/35 bg-[color-mix(in_srgb,var(--success)_10%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-primary)]">
+        <div className="flex items-center gap-2 font-semibold">
+          <CheckCircle2 className="h-4 w-4 text-[var(--success)]" />
+          Lightning Address ready
+        </div>
+        <p className="mt-1 text-[var(--text-secondary)]">
+          This address resolves to a Lightning payment endpoint. Direct zap
+          checkout needs NIP-57 support from the wallet provider.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-xl border border-[var(--warning)]/50 bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-primary)]">
+      <div className="flex items-center gap-2 font-semibold">
+        <AlertCircle className="h-4 w-4 text-[var(--warning)]" />
+        Lightning Address saved
+      </div>
+      <p className="mt-1 text-[var(--text-secondary)]">
+        We could not verify the payment endpoint right now. Buyers can still use
+        the order-first invoice flow until direct payment support is confirmed.
+      </p>
     </div>
   )
 }

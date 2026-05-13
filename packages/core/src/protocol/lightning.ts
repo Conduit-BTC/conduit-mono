@@ -30,6 +30,27 @@ export interface LnurlPayMetadata {
 }
 
 /**
+ * Return true when a value has the basic `name@domain.tld` shape expected for
+ * lud16 / Lightning Address resolution.
+ */
+export function isValidLud16Address(lud16: string): boolean {
+  const trimmed = lud16.trim().toLowerCase()
+  const atIndex = trimmed.indexOf("@")
+  if (atIndex <= 0 || atIndex !== trimmed.lastIndexOf("@")) return false
+  if (atIndex === trimmed.length - 1) return false
+
+  const user = trimmed.slice(0, atIndex)
+  const domain = trimmed.slice(atIndex + 1)
+  if (!/^[a-z0-9._~!$&'()*+,;=:-]+$/.test(user)) return false
+  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) return false
+  if (domain.startsWith(".") || domain.endsWith(".") || domain.includes("..")) {
+    return false
+  }
+
+  return true
+}
+
+/**
  * Resolve an lud16 address (user@domain) to an LNURL pay metadata object.
  *
  * Throws if the address is malformed, the endpoint is unreachable, or the
@@ -39,10 +60,10 @@ export async function fetchLnurlPayMetadata(
   lud16: string
 ): Promise<LnurlPayMetadata> {
   const trimmed = lud16.trim().toLowerCase()
-  const atIndex = trimmed.indexOf("@")
-  if (atIndex <= 0 || atIndex === trimmed.length - 1) {
+  if (!isValidLud16Address(trimmed)) {
     throw new Error(`Invalid lud16 address: ${lud16}`)
   }
+  const atIndex = trimmed.indexOf("@")
   const user = trimmed.slice(0, atIndex)
   const domain = trimmed.slice(atIndex + 1)
   const url = `https://${domain}/.well-known/lnurlp/${user}`
