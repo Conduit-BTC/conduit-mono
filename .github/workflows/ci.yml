@@ -162,7 +162,7 @@ jobs:
 
       - name: Post preview links
         if: github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const branch = context.payload.pull_request.head.ref;
