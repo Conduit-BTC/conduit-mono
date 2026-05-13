@@ -101,19 +101,25 @@ bun run dev:merchant:mainnet
 
 `.env.local` should remain for personal overrides only. Keep mode files minimal and let the shared core relay defaults handle the broader fallback strategy unless a mode truly needs different values.
 
-| Variable                     | Default (dev) | Description                                              |
-| ---------------------------- | ------------- | -------------------------------------------------------- |
-| `VITE_RELAY_URL`             | —             | Optional single relay hint also added to fallback relays |
-| `VITE_DEFAULT_RELAY_URL`     | —             | Optional single relay added to fallback relay discovery  |
-| `VITE_DEFAULT_RELAYS`        | —             | Optional comma-separated relays added to fallback reads  |
-| `VITE_APP_WRITE_RELAY_URLS`  | —             | Optional comma-separated app write relay additions       |
-| `VITE_PUBLIC_RELAY_URLS`     | —             | Optional comma-separated public relay override/additions |
-| `VITE_COMMERCE_RELAY_URLS`   | —             | Optional comma-separated commerce relay additions        |
-| `VITE_LIGHTNING_NETWORK`     | `mock`        | `mock`, `signet`, or `mainnet`                           |
-| `VITE_BLOSSOM_SERVER_URL`    | —             | Blossom media server for product images                  |
-| `VITE_NIP89_RELAY_HINT`      | `VITE_RELAY_URL` | Relay hint for Conduit NIP-89 handler metadata        |
-| `VITE_NIP89_MARKET_PUBKEY`   | —             | Official Conduit Market handler pubkey                   |
-| `VITE_NIP89_MERCHANT_PUBKEY` | —             | Official Conduit Merchant Portal handler pubkey          |
+| Variable                     | Default (dev)         | Description                                              |
+| ---------------------------- | --------------------- | -------------------------------------------------------- |
+| `VITE_RELAY_URL`             | —                     | Optional single relay hint also added to fallback relays |
+| `VITE_DEFAULT_RELAY_URL`     | —                     | Optional single relay added to fallback relay discovery  |
+| `VITE_DEFAULT_RELAYS`        | —                     | Optional comma-separated relays added to fallback reads  |
+| `VITE_APP_WRITE_RELAY_URLS`  | —                     | Optional comma-separated app write relay additions       |
+| `VITE_PUBLIC_RELAY_URLS`     | —                     | Optional comma-separated public relay override/additions |
+| `VITE_COMMERCE_RELAY_URLS`   | —                     | Optional comma-separated commerce relay additions        |
+| `VITE_LIGHTNING_NETWORK`     | `mock`                | `mock`, `signet`, or `mainnet`                           |
+| `VITE_BLOSSOM_SERVER_URL`    | —                     | Blossom media server for product images                  |
+| `VITE_NIP89_RELAY_HINT`      | `VITE_RELAY_URL`      | Relay hint for Conduit NIP-89 handler metadata           |
+| `VITE_NIP89_MARKET_PUBKEY`   | —                     | Official Conduit Market handler pubkey                   |
+| `VITE_NIP89_MERCHANT_PUBKEY` | —                     | Official Conduit Merchant Portal handler pubkey          |
+| `VITE_APP_VERSION`           | app package version   | Build-time app version surfaced on About pages           |
+| `VITE_BUILD_COMMIT`          | current git commit    | Commit SHA surfaced on About pages                       |
+| `VITE_BUILD_BRANCH`          | current git branch    | Branch or preview ref surfaced on About pages            |
+| `VITE_BUILD_TIME`            | current build time    | Build timestamp surfaced on About pages                  |
+| `VITE_SOURCE_URL`            | GitHub repository URL | Source repository link surfaced on About pages           |
+| `VITE_RELEASE_CHANNEL`       | local/preview/prod    | Release channel surfaced on About pages                  |
 
 The canonical fallback/reset relay list is code-owned in `packages/core/src/config.ts` and currently starts from:
 
@@ -151,7 +157,11 @@ bun run seed:nsec
 ### 4. Publish NIP-89 Handler Metadata
 
 Conduit uses NIP-89 `kind:31990` handler metadata plus outbound `client` tags
-for app provenance. Official client/source names are:
+for protocol-level app provenance. Market and Merchant also expose human-facing
+About pages with build metadata, source links, and the matching NIP-89 app
+identity.
+
+Official client/source names are:
 
 - Market: `Conduit Market`
 - Merchant: `Conduit Merchant Portal`
@@ -159,6 +169,10 @@ for app provenance. Official client/source names are:
 Set the matching `VITE_NIP89_*_PUBKEY` values in deploy env before relying on
 outbound client tags. The publish helper should be run with dedicated
 Conduit-controlled app keys, never a user or merchant signer.
+
+The app build injects version, commit, branch, build time, release channel, and
+source URL from CI-friendly environment variables. Cloudflare Pages and GitHub
+Actions variables are used when explicit `VITE_BUILD_*` overrides are absent.
 
 Dry-run first:
 

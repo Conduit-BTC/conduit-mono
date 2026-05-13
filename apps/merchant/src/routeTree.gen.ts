@@ -15,6 +15,7 @@ import { Route as ProductsRouteImport } from "./routes/products"
 import { Route as PaymentsRouteImport } from "./routes/payments"
 import { Route as OrdersRouteImport } from "./routes/orders"
 import { Route as NetworkRouteImport } from "./routes/network"
+import { Route as AboutRouteImport } from "./routes/about"
 import { Route as IndexRouteImport } from "./routes/index"
 
 const ShippingRoute = ShippingRouteImport.update({
@@ -47,6 +48,11 @@ const NetworkRoute = NetworkRouteImport.update({
   path: "/network",
   getParentRoute: () => rootRouteImport,
 } as any)
+const AboutRoute = AboutRouteImport.update({
+  id: "/about",
+  path: "/about",
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: "/",
   path: "/",
@@ -55,6 +61,7 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   "/": typeof IndexRoute
+  "/about": typeof AboutRoute
   "/network": typeof NetworkRoute
   "/orders": typeof OrdersRoute
   "/payments": typeof PaymentsRoute
@@ -64,6 +71,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   "/": typeof IndexRoute
+  "/about": typeof AboutRoute
   "/network": typeof NetworkRoute
   "/orders": typeof OrdersRoute
   "/payments": typeof PaymentsRoute
@@ -74,6 +82,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   "/": typeof IndexRoute
+  "/about": typeof AboutRoute
   "/network": typeof NetworkRoute
   "/orders": typeof OrdersRoute
   "/payments": typeof PaymentsRoute
@@ -85,6 +94,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | "/"
+    | "/about"
     | "/network"
     | "/orders"
     | "/payments"
@@ -94,6 +104,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | "/"
+    | "/about"
     | "/network"
     | "/orders"
     | "/payments"
@@ -103,6 +114,7 @@ export interface FileRouteTypes {
   id:
     | "__root__"
     | "/"
+    | "/about"
     | "/network"
     | "/orders"
     | "/payments"
@@ -113,6 +125,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AboutRoute: typeof AboutRoute
   NetworkRoute: typeof NetworkRoute
   OrdersRoute: typeof OrdersRoute
   PaymentsRoute: typeof PaymentsRoute
@@ -165,6 +178,13 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof NetworkRouteImport
       parentRoute: typeof rootRouteImport
     }
+    "/about": {
+      id: "/about"
+      path: "/about"
+      fullPath: "/about"
+      preLoaderRoute: typeof AboutRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     "/": {
       id: "/"
       path: "/"
@@ -177,6 +197,7 @@ declare module "@tanstack/react-router" {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AboutRoute: AboutRoute,
   NetworkRoute: NetworkRoute,
   OrdersRoute: OrdersRoute,
   PaymentsRoute: PaymentsRoute,

@@ -1,6 +1,7 @@
 import {
   ChevronDown,
   CircleUser,
+  Info,
   LoaderCircle,
   LogOut,
   MessagesSquare,
@@ -536,6 +537,13 @@ export function MarketHeader() {
             labelClassName="hidden sm:inline"
             count={cart.totals.count}
             onClick={() => void navigate({ to: "/cart" })}
+          />
+          <HeaderAction
+            label="About"
+            icon={<Info className="size-4" aria-hidden="true" />}
+            active={pathname === "/about"}
+            labelClassName="hidden xl:inline"
+            onClick={() => void navigate({ to: "/about" })}
           />
         </nav>
 
