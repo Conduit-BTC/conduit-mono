@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Conduit security concern
+    url: https://github.com/Conduit-BTC/conduit-mono/security/advisories/new
+    about: Please report security vulnerabilities privately.
