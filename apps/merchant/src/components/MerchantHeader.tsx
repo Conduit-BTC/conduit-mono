@@ -12,8 +12,9 @@ import {
   Wifi,
 } from "lucide-react"
 import type { ComponentType } from "react"
-import { Link, useNavigate } from "@tanstack/react-router"
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 import {
+  buildBugReportUrl,
   config,
   getProfileDisplayLabel,
   useAuth,
@@ -213,9 +214,13 @@ function MerchantNavLinks({
 function UserMenu() {
   const { pubkey, status, disconnect } = useAuth()
   const navigate = useNavigate()
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
   const profileQuery = useProfile(pubkey)
   const profile = profileQuery.data
   const readiness = useMerchantReadiness()
+  const bugReportUrl = buildBugReportUrl({ app: "merchant", route: pathname })
 
   if (!pubkey || status !== "connected") return null
 
@@ -233,6 +238,9 @@ function UserMenu() {
       alertLabel={readiness.setupComplete ? undefined : "Needs completion"}
       onProfile={() => navigate({ to: "/profile" })}
       onNetwork={() => navigate({ to: "/network" })}
+      onReportBug={() => {
+        window.open(bugReportUrl, "_blank", "noopener,noreferrer")
+      }}
       onDisconnect={disconnect}
       className="h-12 min-w-[12.75rem] rounded-[16px] px-3"
     />

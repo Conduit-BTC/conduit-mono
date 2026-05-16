@@ -1,4 +1,4 @@
-import { ChevronDown, CircleUserRound, LogOut, Radio } from "lucide-react"
+import { Bug, ChevronDown, CircleUserRound, LogOut, Radio } from "lucide-react"
 import { useState, type ReactNode } from "react"
 import { Avatar, AvatarFallback, AvatarImage } from "./Avatar"
 import {
@@ -20,6 +20,7 @@ export interface ProfileSelectorProps {
   className?: string
   onProfile?: () => void
   onNetwork?: () => void
+  onReportBug?: () => void
   onDisconnect: () => void
 }
 
@@ -75,6 +76,7 @@ export function ProfileSelector({
   className,
   onProfile,
   onNetwork,
+  onReportBug,
   onDisconnect,
 }: ProfileSelectorProps) {
   const [open, setOpen] = useState(false)
@@ -185,6 +187,26 @@ export function ProfileSelector({
           ) : null}
 
           {onProfile || onNetwork ? (
+            <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
+          ) : null}
+
+          {onReportBug ? (
+            <SelectorItem
+              icon={<Bug className="h-4 w-4" />}
+              label="Report a Bug"
+              pill={
+                <span className="text-xs font-normal leading-4 text-[var(--text-secondary)]">
+                  No keys, wallet secrets, or sensitive info.
+                </span>
+              }
+              onSelect={() => {
+                setOpen(false)
+                onReportBug()
+              }}
+            />
+          ) : null}
+
+          {onReportBug ? (
             <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
           ) : null}
 
