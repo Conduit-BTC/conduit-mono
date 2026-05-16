@@ -141,6 +141,21 @@ bun test                 # Run tests
 bun run clean            # Remove all node_modules
 ```
 
+### Local Dev Ports
+
+When agents start local app servers, prefer the 7000 port range so the repo has stable, predictable URLs:
+
+- Market: `7000`
+- Merchant Portal: `7001`
+- Store Builder: `7002`
+
+For remote browser access over Tailscale or a forwarded host, bind Vite to all interfaces and pass the port explicitly, for example:
+
+```bash
+bun run --filter @conduit/market dev --host 0.0.0.0 --port 7000
+bun run --filter @conduit/merchant dev --host 0.0.0.0 --port 7001
+```
+
 ## Code Style
 
 - **TypeScript strict mode** - All code must pass strict type checking
