@@ -117,9 +117,10 @@ bun test            # Must pass
 GitHub bug reports use `.github/ISSUE_TEMPLATE/bug_report.yml`, which applies
 the `bug` and `user-reported` labels. Maintainers should triage these by:
 
-1. Checking that no private keys, seed phrases, passwords, NWC connection
-   strings, payment credentials, full shipping addresses, phone numbers, or
-   other sensitive personal information were included.
+1. Checking that no Nostr secret keys (`nsec`), signer connection URLs/codes,
+   seed phrases, passwords, NWC connection strings, payment credentials, full
+   shipping addresses, phone numbers, or other sensitive personal information
+   were included.
 2. Confirming the affected app, route, build, and shortest reproduction path.
 3. Acknowledging valid reports so the community can see they entered the
    maintainer triage path, then closing duplicates or out-of-scope reports with

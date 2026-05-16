@@ -8,7 +8,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a bug. Do not include private keys, seed phrases, passwords, NWC connection strings, payment credentials, full shipping addresses, phone numbers, or other sensitive personal information.
+        Thanks for reporting a bug. Do not include Nostr secret keys (`nsec`), signer connection URLs or codes, seed phrases, passwords, NWC connection strings, payment credentials, full shipping addresses, phone numbers, or other sensitive personal information.
 
   - type: dropdown
     id: app
@@ -87,7 +87,7 @@ body:
     attributes:
       label: Wallet or payment context
       description: Optional. Include only non-sensitive context, such as wallet app name or whether this involved checkout/invoices/zaps.
-      placeholder: Do not include NWC URIs, invoices with private context, payment credentials, seed phrases, or private keys.
+      placeholder: Do not include NWC URIs, invoices with private context, payment credentials, seed phrases, Nostr secret keys (`nsec`), or signer connection URLs/codes.
 
   - type: textarea
     id: browser-device
@@ -108,7 +108,7 @@ body:
     attributes:
       label: Privacy check
       options:
-        - label: I did not include private keys, seed phrases, passwords, NWC connection strings, payment credentials, or sensitive personal information.
+        - label: I did not include Nostr secret keys (`nsec`), signer connection URLs/codes, seed phrases, passwords, NWC connection strings, payment credentials, or sensitive personal information.
           required: true
         - label: Conduit maintainers may follow up in this GitHub issue.
           required: false
