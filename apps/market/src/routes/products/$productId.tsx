@@ -480,6 +480,7 @@ function ProductPage() {
                           image: product.images[0]?.url,
                           tags: product.tags,
                           format: product.format,
+                          shippingCostSats: product.shippingCostSats,
                         },
                         quantity
                       )
@@ -692,6 +693,7 @@ function ProductPage() {
                               image: relatedProduct.images[0]?.url,
                               tags: relatedProduct.tags,
                               format: relatedProduct.format,
+                              shippingCostSats: relatedProduct.shippingCostSats,
                             },
                             1
                           )
@@ -709,6 +711,7 @@ function ProductPage() {
                               image: relatedProduct.images[0]?.url,
                               tags: relatedProduct.tags,
                               format: relatedProduct.format,
+                              shippingCostSats: relatedProduct.shippingCostSats,
                             },
                             1
                           )

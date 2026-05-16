@@ -21,6 +21,8 @@ export const productSchema = z.object({
   type: z.enum(["simple", "variable"]).default("simple"),
   /** Whether the product requires physical shipping. Defaults to "physical". */
   format: z.enum(["physical", "digital"]).default("physical"),
+  /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
+  shippingCostSats: z.number().int().min(0).optional(),
   visibility: z.enum(["public", "private"]).default("public"),
   stock: z.number().int().min(0).optional(),
   images: z
@@ -94,6 +96,7 @@ export const orderItemSchema = z.object({
   quantity: z.number().int().min(1),
   priceAtPurchase: z.number().min(0),
   currency: z.string(),
+  shippingCostSats: z.number().int().min(0).optional(),
   sourcePrice: z
     .object({
       amount: z.number().min(0),
@@ -117,6 +120,10 @@ export const orderSchema = z.object({
   items: z.array(orderItemSchema).min(1),
   subtotal: z.number().min(0),
   currency: z.string(),
+  shippingCostSats: z.number().int().min(0).optional(),
+  shippingCostStatus: z
+    .enum(["not_required", "included", "priced", "manual"])
+    .optional(),
   shippingAddress: shippingAddressSchema.optional(),
   note: z.string().max(2000).optional(),
   createdAt: z.number(),

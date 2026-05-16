@@ -777,6 +777,7 @@ function CartPage() {
                           image: product.images[0]?.url,
                           tags: product.tags,
                           format: product.format,
+                          shippingCostSats: product.shippingCostSats,
                         })
                       }
                     />
@@ -898,6 +899,7 @@ function CartPage() {
                       image: item.image,
                       tags: item.tags,
                       format: item.format,
+                      shippingCostSats: item.shippingCostSats,
                     },
                     1
                   )
@@ -1026,6 +1028,7 @@ function CartPage() {
                         image: product.images[0]?.url,
                         tags: product.tags,
                         format: product.format,
+                        shippingCostSats: product.shippingCostSats,
                       })
                     }
                   />

@@ -88,6 +88,7 @@ describe("commerce pricing", () => {
         ["d", "clip"],
         ["title", "Extra Pocket Clip"],
         ["price", "250000", "SAT"],
+        ["shipping_cost", "5000"],
         ["image", "https://example.com/clip.png"],
       ],
     })
@@ -95,6 +96,7 @@ describe("commerce pricing", () => {
     expect(product.price).toBe(250_000)
     expect(product.currency).toBe("SATS")
     expect(product.priceSats).toBe(250_000)
+    expect(product.shippingCostSats).toBe(5_000)
     expect(product.sourcePrice).toEqual({
       amount: 250_000,
       currency: "SAT",

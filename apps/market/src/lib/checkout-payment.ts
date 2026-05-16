@@ -26,15 +26,30 @@ export type CheckoutPricingItem = {
   quantity: number
   priceAtPurchase: number
   currency: "SATS"
+  shippingCostSats?: number
   sourcePrice?: SourcePriceQuote
+}
+
+export type CheckoutShippingCostStatus =
+  | "not_required"
+  | "included"
+  | "priced"
+  | "manual"
+
+export type CheckoutShippingCostSummary = {
+  status: CheckoutShippingCostStatus
+  totalSats: number
+  missingProductIds: string[]
 }
 
 export type CheckoutPricingIntent =
   | {
       status: "ok"
+      itemSubtotalSats: number
       totalSats: number
       totalMsats: number
       items: CheckoutPricingItem[]
+      shippingCost: CheckoutShippingCostSummary
       quote?: {
         rate: number
         fetchedAt: number
@@ -65,13 +80,57 @@ function itemNeedsFreshQuote(item: CartItem, approximate: boolean): boolean {
   )
 }
 
+function getKnownShippingCostSats(item: CartItem): number | null {
+  const value = item.shippingCostSats
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+    return value
+  }
+  return null
+}
+
+export function getCheckoutShippingCost(
+  items: CartItem[]
+): CheckoutShippingCostSummary {
+  const physicalItems = items.filter((item) => item.format !== "digital")
+  if (physicalItems.length === 0) {
+    return {
+      status: "not_required",
+      totalSats: 0,
+      missingProductIds: [],
+    }
+  }
+
+  const missingProductIds = physicalItems
+    .filter((item) => getKnownShippingCostSats(item) === null)
+    .map((item) => item.productId)
+
+  if (missingProductIds.length > 0) {
+    return {
+      status: "manual",
+      totalSats: 0,
+      missingProductIds,
+    }
+  }
+
+  const totalSats = physicalItems.reduce(
+    (sum, item) => sum + (getKnownShippingCostSats(item) ?? 0) * item.quantity,
+    0
+  )
+
+  return {
+    status: totalSats === 0 ? "included" : "priced",
+    totalSats,
+    missingProductIds: [],
+  }
+}
+
 export function buildCheckoutPricingIntent(
   items: CartItem[],
   rateInput: PricingRateInput,
   nowMs = Date.now()
 ): CheckoutPricingIntent {
   const pricedItems: CheckoutPricingItem[] = []
-  let totalSats = 0
+  let itemSubtotalSats = 0
   let needsFreshQuote = false
 
   for (const item of items) {
@@ -125,15 +184,19 @@ export function buildCheckoutPricingIntent(
       itemSats = normalized.sats
     }
 
-    totalSats += itemSats * item.quantity
+    itemSubtotalSats += itemSats * item.quantity
     pricedItems.push({
       productId: item.productId,
       quantity: item.quantity,
       priceAtPurchase: itemSats,
       currency: "SATS",
+      shippingCostSats: getKnownShippingCostSats(item) ?? undefined,
       sourcePrice: item.sourcePrice,
     })
   }
+
+  const shippingCost = getCheckoutShippingCost(items)
+  const totalSats = itemSubtotalSats + shippingCost.totalSats
 
   if (!Number.isSafeInteger(totalSats) || totalSats <= 0) {
     return {
@@ -145,9 +208,11 @@ export function buildCheckoutPricingIntent(
 
   return {
     status: "ok",
+    itemSubtotalSats,
     totalSats,
     totalMsats: totalSats * 1000,
     items: pricedItems,
+    shippingCost,
     approximate: needsFreshQuote,
     quote: isQuoteObject(rateInput)
       ? {

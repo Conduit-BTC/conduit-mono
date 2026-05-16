@@ -759,6 +759,7 @@ function StorefrontPage() {
                         image: product.images[0]?.url,
                         tags: product.tags,
                         format: product.format,
+                        shippingCostSats: product.shippingCostSats,
                       })
                     }
                     onIncrement={() =>
@@ -773,6 +774,7 @@ function StorefrontPage() {
                         image: product.images[0]?.url,
                         tags: product.tags,
                         format: product.format,
+                        shippingCostSats: product.shippingCostSats,
                       })
                     }
                     onDecrement={() => {

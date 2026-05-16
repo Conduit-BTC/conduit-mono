@@ -51,6 +51,7 @@ import {
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
   buildZapRequestContent,
+  getCheckoutShippingCost,
   type CheckoutPaymentStage,
   type CheckoutZapVisibility,
 } from "../lib/checkout-payment"
@@ -331,17 +332,44 @@ function OrderSummary({
     merchantProfile?.displayName ||
     merchantProfile?.name ||
     formatPubkey(merchantPubkey, 8)
-  const totalSats = items.reduce((sum, item) => {
+  const shippingCost = getCheckoutShippingCost(items)
+  const itemSubtotalSats = items.reduce((sum, item) => {
     const sats = getPriceSats(item, btcUsdRate)
     return sats ? sum + sats.sats * item.quantity : sum
   }, 0)
+  const totalSats = itemSubtotalSats + shippingCost.totalSats
   const allItemsPriced = items.every((item) => getPriceSats(item, btcUsdRate))
+  const itemSubtotalPrice = getProductPriceDisplay(
+    allItemsPriced
+      ? {
+          price: itemSubtotalSats,
+          currency: "SATS",
+          priceSats: itemSubtotalSats,
+        }
+      : { price: 0, currency: "UNSUPPORTED" },
+    btcUsdRate
+  )
   const totalPrice = getProductPriceDisplay(
     allItemsPriced
       ? { price: totalSats, currency: "SATS", priceSats: totalSats }
       : { price: 0, currency: "UNSUPPORTED" },
     btcUsdRate
   )
+  const shippingLabel =
+    shippingCost.status === "not_required"
+      ? "Not required"
+      : shippingCost.status === "included"
+        ? "Included"
+        : shippingCost.status === "manual"
+          ? "Coordinated with merchant"
+          : getProductPriceDisplay(
+              {
+                price: shippingCost.totalSats,
+                currency: "SATS",
+                priceSats: shippingCost.totalSats,
+              },
+              btcUsdRate
+            ).primary
 
   return (
     <aside className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
@@ -430,11 +458,11 @@ function OrderSummary({
               : "s"}
             )
           </span>
-          <span>{totalPrice.primary}</span>
+          <span>{itemSubtotalPrice.primary}</span>
         </div>
         <div className="mt-3 flex items-center justify-between gap-3 text-sm text-[var(--text-secondary)]">
           <span>Shipping</span>
-          <span>Coordinated with merchant</span>
+          <span>{shippingLabel}</span>
         </div>
         <div className="mt-5 flex items-end justify-between gap-3">
           <div className="text-lg font-semibold text-[var(--text-primary)]">
@@ -527,14 +555,17 @@ function CheckoutPage() {
     staleTime: 5 * 60 * 1000,
   })
 
-  const total = useMemo(
-    () =>
-      checkoutItems.reduce((sum, item) => {
-        const sats = getPriceSats(item, btcUsdRate)
-        return sats ? sum + sats.sats * item.quantity : sum
-      }, 0),
-    [btcUsdRate, checkoutItems]
+  const checkoutShippingCost = useMemo(
+    () => getCheckoutShippingCost(checkoutItems),
+    [checkoutItems]
   )
+  const total = useMemo(() => {
+    const itemSubtotal = checkoutItems.reduce((sum, item) => {
+      const sats = getPriceSats(item, btcUsdRate)
+      return sats ? sum + sats.sats * item.quantity : sum
+    }, 0)
+    return itemSubtotal + checkoutShippingCost.totalSats
+  }, [btcUsdRate, checkoutItems, checkoutShippingCost.totalSats])
   const hasUnpricedCheckoutItems = useMemo(
     () => checkoutItems.some((item) => !getPriceSats(item, btcUsdRate)),
     [btcUsdRate, checkoutItems]
@@ -606,6 +637,7 @@ function CheckoutPage() {
     lnurlAllowsNostr,
     pricingReady: pricingPreview.status === "ok",
     shippingEligible: shippingEligibleForFastCheckout,
+    shippingPriced: checkoutShippingCost.status !== "manual",
   }
   const fastEligible = isFastCheckoutEligible(fastEligibilityInput)
   const fastUnavailableReasons =
@@ -761,6 +793,7 @@ function CheckoutPage() {
         quantity: item.quantity,
         priceAtPurchase: getPriceSats(item, btcUsdRate)?.sats ?? 0,
         currency,
+        shippingCostSats: item.shippingCostSats,
         sourcePrice: item.sourcePrice,
       }))
 
@@ -771,6 +804,11 @@ function CheckoutPage() {
         items,
         subtotal: total,
         currency,
+        shippingCostSats:
+          checkoutShippingCost.status === "manual"
+            ? undefined
+            : checkoutShippingCost.totalSats,
+        shippingCostStatus: checkoutShippingCost.status,
         shippingAddress: buildShippingAddress(),
         note: buildContactNote(),
         createdAt: Date.now(),
@@ -855,6 +893,12 @@ function CheckoutPage() {
         )
       }
 
+      if (checkoutShippingCost.status === "manual") {
+        throw new Error(
+          "Shipping cost is coordinated with the merchant for one or more items. Send the order first."
+        )
+      }
+
       if (destinationEligibility.eligible !== true) {
         throw new Error(
           destinationEligibility.reason === "unknown"
@@ -879,6 +923,8 @@ function CheckoutPage() {
         items: pricingIntent.items,
         subtotal: pricingIntent.totalSats,
         currency,
+        shippingCostSats: pricingIntent.shippingCost.totalSats,
+        shippingCostStatus: pricingIntent.shippingCost.status,
         shippingAddress: buildShippingAddress(),
         note: buildContactNote(),
         createdAt: Date.now(),

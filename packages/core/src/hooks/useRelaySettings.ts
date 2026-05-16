@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
-import { config } from "../config"
 import {
   assertSafeNip65RelayList,
   createDefaultRelaySettings,
@@ -216,11 +215,7 @@ export function useRelaySettings(
             const existing = settingsRef.current.entries.find(
               (entry) => entry.url === url
             )
-            return scanRelaySettingsEntry(
-              url,
-              { knownCommerceRelayUrls: config.commerceRelayUrls },
-              existing
-            )
+            return scanRelaySettingsEntry(url, {}, existing)
           })
         )
         persist((current) =>
@@ -362,11 +357,7 @@ export function useRelaySettings(
       setScanningUrls((current) =>
         current.includes(scanningKey) ? current : [...current, scanningKey]
       )
-      const scanned = await scanRelaySettingsEntry(
-        url,
-        { knownCommerceRelayUrls: config.commerceRelayUrls },
-        existing
-      )
+      const scanned = await scanRelaySettingsEntry(url, {}, existing)
       persist((current) => upsertRelaySettingsEntry(current, scanned))
     } catch (scanError) {
       setError(getErrorMessage(scanError))
@@ -385,11 +376,7 @@ export function useRelaySettings(
       setScanningUrls((current) =>
         current.includes(url) ? current : [...current, url]
       )
-      const scanned = await scanRelaySettingsEntry(
-        url,
-        { knownCommerceRelayUrls: config.commerceRelayUrls },
-        existing
-      )
+      const scanned = await scanRelaySettingsEntry(url, {}, existing)
       persist((current) => upsertRelaySettingsEntry(current, scanned))
     } catch (scanError) {
       setError(getErrorMessage(scanError))

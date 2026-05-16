@@ -14,6 +14,7 @@ import {
   buildDefaultZapContent,
   buildZapRequestContent,
   CHECKOUT_QUOTE_MAX_AGE_MS,
+  getCheckoutShippingCost,
 } from "../apps/market/src/lib/checkout-payment"
 import type { CartItem } from "../apps/market/src/hooks/useCart"
 import {
@@ -241,6 +242,19 @@ describe("isFastCheckoutEligible", () => {
       "Merchant Lightning Address does not advertise Nostr zap support.",
     ])
   })
+
+  it("blocks fast checkout when shipping cost is not fixed", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        shippingPriced: false,
+      })
+    ).toEqual([
+      "Shipping cost is coordinated with the merchant, so direct payment is disabled.",
+    ])
+  })
 })
 
 // ─── checkout payment helpers ────────────────────────────────────────────────
@@ -324,6 +338,44 @@ describe("checkout payment helpers", () => {
     if (intent.status !== "ok") return
     expect(intent.items[0]?.priceAtPurchase).toBe(20_000)
     expect(intent.totalSats).toBe(20_000)
+  })
+
+  it("adds known physical shipping costs to checkout totals", () => {
+    const intent = buildCheckoutPricingIntent(
+      [cartItem({ quantity: 2, shippingCostSats: 500 })],
+      null
+    )
+
+    expect(intent.status).toBe("ok")
+    if (intent.status !== "ok") return
+    expect(intent.itemSubtotalSats).toBe(2_000)
+    expect(intent.shippingCost).toEqual({
+      status: "priced",
+      totalSats: 1_000,
+      missingProductIds: [],
+    })
+    expect(intent.totalSats).toBe(3_000)
+    expect(intent.items[0]?.shippingCostSats).toBe(500)
+  })
+
+  it("summarizes shipping as manual until every physical item is priced", () => {
+    expect(getCheckoutShippingCost([cartItem()])).toEqual({
+      status: "manual",
+      totalSats: 0,
+      missingProductIds: ["product-1"],
+    })
+    expect(getCheckoutShippingCost([cartItem({ format: "digital" })])).toEqual({
+      status: "not_required",
+      totalSats: 0,
+      missingProductIds: [],
+    })
+    expect(
+      getCheckoutShippingCost([cartItem({ shippingCostSats: 0 })])
+    ).toEqual({
+      status: "included",
+      totalSats: 0,
+      missingProductIds: [],
+    })
   })
 
   it("blocks direct payment when a non-SATS quote is stale", () => {

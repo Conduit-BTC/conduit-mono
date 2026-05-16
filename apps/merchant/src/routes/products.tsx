@@ -63,6 +63,7 @@ type ProductFormState = {
   summary: string
   price: string
   currency: string
+  shippingCostSats: string
   imageUrl: string
   tags: string
 }
@@ -74,6 +75,7 @@ const EMPTY_FORM: ProductFormState = {
   summary: "",
   price: "0",
   currency: "USD",
+  shippingCostSats: "0",
   imageUrl: "",
   tags: "",
 }
@@ -97,6 +99,10 @@ function productToForm(product: ProductSchema): ProductFormState {
     summary: product.summary ?? "",
     price: String(source?.amount ?? product.price),
     currency: source?.normalizedCurrency ?? product.currency,
+    shippingCostSats:
+      typeof product.shippingCostSats === "number"
+        ? String(product.shippingCostSats)
+        : "",
     imageUrl: product.images[0]?.url ?? "",
     tags: product.tags.join(", "),
   }
@@ -107,6 +113,21 @@ function parseTags(tagsCsv: string): string[] {
     .split(",")
     .map((t) => t.trim())
     .filter(Boolean)
+}
+
+function getShippingCostHelpText(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return "Shipping is coordinated with the buyer after order request; direct pay is disabled for physical carts."
+  }
+  const sats = Number(trimmed)
+  if (Number.isSafeInteger(sats) && sats === 0) {
+    return "Shipping included. Buyers can pay immediately without a separate shipping request."
+  }
+  if (Number.isSafeInteger(sats) && sats > 0) {
+    return "Added to buyer total at checkout."
+  }
+  return "Enter a whole-number shipping amount in sats."
 }
 
 async function fetchMerchantProducts(
@@ -165,9 +186,18 @@ async function publishProduct(
   if (!title) throw new Error("Title is required")
 
   const price = Number(form.price)
+  const shippingCostInput = form.shippingCostSats.trim()
+  const shippingCostSats =
+    shippingCostInput.length > 0 ? Number(shippingCostInput) : undefined
 
   const currency = form.currency.trim().toUpperCase() || "USD"
   assertPublishableProductPrice(price, currency)
+  if (
+    typeof shippingCostSats === "number" &&
+    (!Number.isSafeInteger(shippingCostSats) || shippingCostSats < 0)
+  ) {
+    throw new Error("Shipping must be a whole-number sats amount or blank.")
+  }
   const summary = form.summary.trim()
   const imageUrl = form.imageUrl.trim()
   if (!imageUrl) {
@@ -191,6 +221,7 @@ async function publishProduct(
     currency,
     type: "simple",
     format: "physical",
+    shippingCostSats,
     visibility: "public",
     stock: undefined,
     images: [{ url: imageUrl }],
@@ -211,6 +242,9 @@ async function publishProduct(
   ]
 
   if (product.summary) event.tags.push(["summary", product.summary])
+  if (typeof product.shippingCostSats === "number") {
+    event.tags.push(["shipping_cost", String(product.shippingCostSats)])
+  }
   if (imageUrl) event.tags.push(["image", imageUrl])
   for (const tag of tags) event.tags.push(["t", tag])
   event.tags = appendConduitClientTag(event.tags, "merchant")
@@ -700,7 +734,7 @@ function ProductsPage() {
               />
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-3">
               <div className="grid gap-1.5">
                 <Label htmlFor="product-price">Price</Label>
                 <Input
@@ -734,6 +768,29 @@ function ProductsPage() {
                     <SelectItem value="BTC">BTC</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="product-shipping">Shipping</Label>
+                <Input
+                  id="product-shipping"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={form.shippingCostSats}
+                  onChange={(event) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      shippingCostSats: event.target.value,
+                    }))
+                  }
+                  placeholder="Blank"
+                />
+              </div>
+              <div className="text-xs leading-5 text-[var(--text-muted)] sm:col-span-3">
+                Enter the shipping amount to charge for this item. Use 0 only if
+                shipping is included in the product price.{" "}
+                {getShippingCostHelpText(form.shippingCostSats)}
               </div>
             </div>
 

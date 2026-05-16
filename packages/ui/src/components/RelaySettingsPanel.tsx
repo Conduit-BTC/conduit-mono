@@ -137,7 +137,7 @@ function getRelayWarningText(entry: RelaySettingsPanelEntry): string | null {
     return "DM relay without auth. Conduit may limit DM use here because access controls may be weaker."
   }
   if (entry.warnings.commercePartialSupport) {
-    return "Some commerce signals were detected, but this relay does not meet the full commerce profile."
+    return "Some commerce signals were detected, but this relay does not meet the full profile: NIP-33, NIP-65, NIP-99, NIP-17, and NIP-42."
   }
   if (entry.warnings.staleRelayInfo) {
     return "Relay information is cached or seeded. Refresh to verify current capabilities."
@@ -153,7 +153,7 @@ function getRelayCompatibilityText(entry: RelaySettingsPanelEntry): string {
     return "Commerce compatible. Conduit can prioritize this relay for products, stock, orders, and merchant messages."
   }
   if (entry.warnings.commercePartialSupport) {
-    return "Partial commerce signals detected. Conduit keeps this relay public until full commerce checks pass."
+    return "Partial commerce signals detected. Conduit keeps this relay public until NIP-33, NIP-65, NIP-99, NIP-17, and NIP-42 are advertised."
   }
   if (entry.capabilities.nip11) {
     return "Public relay verified. Conduit can use it for general Nostr reads or writes when enabled."

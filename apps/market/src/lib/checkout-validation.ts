@@ -135,6 +135,7 @@ export function isFastCheckoutEligible(params: {
   lnurlAllowsNostr: boolean
   pricingReady?: boolean
   shippingEligible?: boolean
+  shippingPriced?: boolean
   relayReady?: boolean
 }): boolean {
   return getFastCheckoutUnavailableReasons(params).length === 0
@@ -146,6 +147,7 @@ export function getFastCheckoutUnavailableReasons(params: {
   lnurlAllowsNostr: boolean
   pricingReady?: boolean
   shippingEligible?: boolean
+  shippingPriced?: boolean
   relayReady?: boolean
 }): string[] {
   const reasons: string[] = []
@@ -165,6 +167,11 @@ export function getFastCheckoutUnavailableReasons(params: {
   }
   if (params.shippingEligible === false) {
     reasons.push("Merchant shipping zone does not include this destination.")
+  }
+  if (params.shippingPriced === false) {
+    reasons.push(
+      "Shipping cost is coordinated with the merchant, so direct payment is disabled."
+    )
   }
   if (params.relayReady === false) {
     reasons.push(

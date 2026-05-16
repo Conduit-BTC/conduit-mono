@@ -20,6 +20,8 @@ export interface Product {
   type: "simple" | "variable"
   /** Whether the product requires physical shipping. Defaults to "physical". */
   format: "physical" | "digital"
+  /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
+  shippingCostSats?: number
   visibility: "public" | "private"
   stock?: number
   images: ProductImage[]
@@ -75,6 +77,7 @@ export interface OrderItem {
   quantity: number
   priceAtPurchase: number
   currency: string
+  shippingCostSats?: number
   sourcePrice?: {
     amount: number
     currency: string

@@ -10,6 +10,7 @@ export interface StoredOrder {
     quantity: number
     priceAtPurchase: number
     currency: string
+    shippingCostSats?: number
     sourcePrice?: {
       amount: number
       currency: string
@@ -57,6 +58,7 @@ export interface CachedProduct {
   }
   type?: "simple" | "variable"
   format?: "physical" | "digital"
+  shippingCostSats?: number
   visibility?: "public" | "private"
   stock?: number
   images: Array<{ url: string; alt?: string }>

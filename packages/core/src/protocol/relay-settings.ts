@@ -78,7 +78,6 @@ export interface RelayScanOptions {
   timeoutMs?: number
   now?: () => number
   fetchImpl?: typeof fetch
-  knownCommerceRelayUrls?: readonly string[]
 }
 
 export interface RelayPlanOptions {
@@ -376,22 +375,16 @@ export function mergeNip65RelayUrls(list: Nip65RelayUrls): RelayPreference[] {
 export function deriveRelayScanResult(
   relayUrl: string,
   info: RelayInfoDocument | null,
-  options: Pick<RelayScanOptions, "knownCommerceRelayUrls" | "now"> = {}
+  options: Pick<RelayScanOptions, "now"> = {}
 ): RelayScanResult {
   const normalizedUrl = normalizeRelayUrl(relayUrl)
-  const knownCommerceRelayUrls = new Set(
-    uniqueRelayUrls(options.knownCommerceRelayUrls ?? [])
-  )
-  const knownCommerceRelay = knownCommerceRelayUrls.has(normalizedUrl)
   const supportedNips = getSupportedNips(info)
   const hasSupportedNips = Array.isArray(info?.supported_nips)
   const supportsSearch = supportedNips.includes(50)
   const supportsDm = supportedNips.includes(17)
   const supportsAuth = supportedNips.includes(42) || getAuthRequired(info)
   const hasNip11 = !!info
-  const commerce =
-    knownCommerceRelay ||
-    (hasNip11 && hasCommerceCompatibilityEvidence(supportedNips))
+  const commerce = hasNip11 && hasCommerceCompatibilityEvidence(supportedNips)
 
   const capabilities: RelayCapabilities = {
     nip11: hasNip11,
@@ -406,10 +399,7 @@ export function deriveRelayScanResult(
     dmWithoutAuth: supportsDm && !supportsAuth,
     staleRelayInfo: hasNip11 && !hasSupportedNips,
     commercePartialSupport:
-      !knownCommerceRelay &&
-      hasNip11 &&
-      !commerce &&
-      hasPartialCommerceEvidence(supportedNips),
+      hasNip11 && !commerce && hasPartialCommerceEvidence(supportedNips),
   }
 
   return {
@@ -532,7 +522,6 @@ export async function scanRelaySettingsEntry(
 
     const info = json
     const scan = deriveRelayScanResult(normalizedUrl, info, {
-      knownCommerceRelayUrls: options.knownCommerceRelayUrls,
       now: () => scannedAt,
     })
     return createRelaySettingsEntryFromScan(scan, existing)
