@@ -71,7 +71,7 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/profile") {
     return "Profile"
   }
-  if (pathname === "/settings") {
+  if (pathname === "/network") {
     return "Relay Settings"
   }
   if (pathname.startsWith("/u/")) {
@@ -88,13 +88,11 @@ function getPageTitle(pathname: string): string {
 
 function RootErrorComponent({ error }: ErrorComponentProps) {
   return (
-    <RootShell>
-      <ErrorPage
-        title="Something went wrong"
-        message={error.message || "An unexpected error occurred."}
-        showReload
-      />
-    </RootShell>
+    <ErrorPage
+      title="Something went wrong"
+      message={error.message || "An unexpected error occurred."}
+      showReload
+    />
   )
 }
 

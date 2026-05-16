@@ -1,4 +1,10 @@
-import { ChevronDown, CircleUserRound, LogOut, Radio } from "lucide-react"
+import {
+  ChevronDown,
+  CircleUserRound,
+  LogOut,
+  Radio,
+  Wallet,
+} from "lucide-react"
 import { useState, type ReactNode } from "react"
 import { Avatar, AvatarFallback, AvatarImage } from "./Avatar"
 import {
@@ -20,6 +26,8 @@ export interface ProfileSelectorProps {
   className?: string
   onProfile?: () => void
   onNetwork?: () => void
+  onWallet?: () => void
+  walletStatusLabel?: string
   onDisconnect: () => void
 }
 
@@ -75,6 +83,8 @@ export function ProfileSelector({
   className,
   onProfile,
   onNetwork,
+  onWallet,
+  walletStatusLabel,
   onDisconnect,
 }: ProfileSelectorProps) {
   const [open, setOpen] = useState(false)
@@ -128,21 +138,6 @@ export function ProfileSelector({
         }}
         className="w-[15rem] rounded-[1.35rem] border-0 bg-[var(--surface-overlay)] p-0 backdrop-blur-xl"
       >
-        <div className="rounded-t-[1.35rem] border-b border-[var(--border)] bg-[linear-gradient(135deg,color-mix(in_srgb,var(--primary-400)_88%,var(--primary-500))_0%,color-mix(in_srgb,var(--primary-300)_76%,var(--tertiary-500)_24%)_100%)] px-4 py-3 text-[var(--on-primary)]">
-          <div className="flex items-center gap-3">
-            <Avatar className="h-8 w-8 border border-[color-mix(in_srgb,var(--on-primary)_20%,transparent)]">
-              <AvatarImage src={avatarUrl ?? undefined} alt={displayName} />
-              <AvatarFallback className="bg-[var(--avatar-bg)] text-[var(--on-primary)]">
-                {avatarFallback ?? displayName.slice(0, 1).toUpperCase()}
-              </AvatarFallback>
-            </Avatar>
-            <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">
-              {displayName}
-            </span>
-            <ChevronDown className="h-5 w-5 rotate-180" />
-          </div>
-        </div>
-
         <div className="p-3">
           <div className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-[var(--text-secondary)]">
             <span className="h-2.5 w-2.5 rounded-full bg-success" />
@@ -184,7 +179,25 @@ export function ProfileSelector({
             />
           ) : null}
 
-          {onProfile || onNetwork ? (
+          {onWallet ? (
+            <SelectorItem
+              icon={<Wallet className="h-4 w-4" />}
+              label="Wallet"
+              pill={
+                walletStatusLabel ? (
+                  <span className="text-[10px] text-[var(--text-muted)]">
+                    {walletStatusLabel}
+                  </span>
+                ) : undefined
+              }
+              onSelect={() => {
+                setOpen(false)
+                onWallet()
+              }}
+            />
+          ) : null}
+
+          {onProfile || onNetwork || onWallet ? (
             <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
           ) : null}
 

@@ -479,6 +479,8 @@ function ProductPage() {
                           sourcePrice: product.sourcePrice,
                           image: product.images[0]?.url,
                           tags: product.tags,
+                          format: product.format,
+                          shippingCostSats: product.shippingCostSats,
                         },
                         quantity
                       )
@@ -690,6 +692,8 @@ function ProductPage() {
                               sourcePrice: relatedProduct.sourcePrice,
                               image: relatedProduct.images[0]?.url,
                               tags: relatedProduct.tags,
+                              format: relatedProduct.format,
+                              shippingCostSats: relatedProduct.shippingCostSats,
                             },
                             1
                           )
@@ -706,6 +710,8 @@ function ProductPage() {
                               sourcePrice: relatedProduct.sourcePrice,
                               image: relatedProduct.images[0]?.url,
                               tags: relatedProduct.tags,
+                              format: relatedProduct.format,
+                              shippingCostSats: relatedProduct.shippingCostSats,
                             },
                             1
                           )

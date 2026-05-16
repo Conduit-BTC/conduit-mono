@@ -50,6 +50,16 @@ function parsePriceTag(
   return null
 }
 
+function parseShippingCostTag(
+  tags: string[][] | undefined
+): number | undefined {
+  const raw = getTagValue(tags, "shipping_cost")
+  if (raw === null) return undefined
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value < 0) return undefined
+  return value
+}
+
 /**
  * Best-effort parser for kind-30402 product events.
  *
@@ -96,8 +106,14 @@ export function parseProductEvent(
     "Untitled"
 
   const priceInfo = parsePriceTag(event.tags)
+  const shippingCostSats = parseShippingCostTag(event.tags)
   const summaryTag = getTagValue(event.tags, "summary")
   const locationTag = getTagValue(event.tags, "location")
+
+  // market-spec: ["type", "simple|variable|variation", "digital|physical"]
+  const typeTag = event.tags?.find((t) => t[0] === "type")
+  const format: "physical" | "digital" =
+    typeTag?.[2] === "digital" ? "digital" : "physical"
 
   const images = getTagValues(event.tags, "image")
     .filter((url) => url.startsWith("http://") || url.startsWith("https://"))
@@ -114,6 +130,8 @@ export function parseProductEvent(
         summaryTag ?? (fromContent ? fromContent.slice(0, 5000) : undefined),
       price: priceInfo?.price ?? 0,
       currency: priceInfo?.currency ?? "USD",
+      format,
+      shippingCostSats,
       images,
       tags,
       location: locationTag ?? undefined,

@@ -19,6 +19,10 @@ export const productSchema = z.object({
     })
     .optional(),
   type: z.enum(["simple", "variable"]).default("simple"),
+  /** Whether the product requires physical shipping. Defaults to "physical". */
+  format: z.enum(["physical", "digital"]).default("physical"),
+  /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
+  shippingCostSats: z.number().int().min(0).optional(),
   visibility: z.enum(["public", "private"]).default("public"),
   stock: z.number().int().min(0).optional(),
   images: z
@@ -92,6 +96,7 @@ export const orderItemSchema = z.object({
   quantity: z.number().int().min(1),
   priceAtPurchase: z.number().min(0),
   currency: z.string(),
+  shippingCostSats: z.number().int().min(0).optional(),
   sourcePrice: z
     .object({
       amount: z.number().min(0),
@@ -115,6 +120,10 @@ export const orderSchema = z.object({
   items: z.array(orderItemSchema).min(1),
   subtotal: z.number().min(0),
   currency: z.string(),
+  shippingCostSats: z.number().int().min(0).optional(),
+  shippingCostStatus: z
+    .enum(["not_required", "included", "priced", "manual"])
+    .optional(),
   shippingAddress: shippingAddressSchema.optional(),
   note: z.string().max(2000).optional(),
   createdAt: z.number(),
@@ -199,4 +208,33 @@ export const conversationMessageSchema = z.object({
 
 export type ConversationMessageSchema = z.infer<
   typeof conversationMessageSchema
+>
+
+/**
+ * Payment proof message -- sent by the buyer after a successful NWC pay_invoice.
+ * Lets the merchant confirm payment without querying the Lightning node.
+ */
+export const paymentProofMessageSchema = z.object({
+  orderId: z.string().optional(),
+  rail: z.literal("lightning").optional(),
+  action: z.enum(["zap", "invoice"]).optional(),
+  amount: z.number().min(0).optional(),
+  currency: z.string().min(1).optional(),
+  /** BOLT11 invoice that was paid. */
+  invoice: z.string().min(1),
+  /** Payment preimage (hex) returned by the wallet. */
+  preimage: z.string().min(1),
+  /** Payment hash (hex), if returned by the wallet. */
+  paymentHash: z.string().optional(),
+  /** Fees paid in msats, if returned by the wallet. */
+  feeMsats: z.number().optional(),
+  zapRequestId: z.string().optional(),
+  zapReceiptId: z.string().optional(),
+  proofDeliveryStatus: z.enum(["pending", "sent", "retry_needed"]).optional(),
+  /** Human-readable note. */
+  note: z.string().max(2000).optional(),
+})
+
+export type PaymentProofMessageSchema = z.infer<
+  typeof paymentProofMessageSchema
 >

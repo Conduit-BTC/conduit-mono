@@ -78,7 +78,6 @@ export interface RelayScanOptions {
   timeoutMs?: number
   now?: () => number
   fetchImpl?: typeof fetch
-  knownCommerceRelayUrls?: readonly string[]
 }
 
 export interface RelayPlanOptions {
@@ -376,7 +375,7 @@ export function mergeNip65RelayUrls(list: Nip65RelayUrls): RelayPreference[] {
 export function deriveRelayScanResult(
   relayUrl: string,
   info: RelayInfoDocument | null,
-  options: Pick<RelayScanOptions, "knownCommerceRelayUrls" | "now"> = {}
+  options: Pick<RelayScanOptions, "now"> = {}
 ): RelayScanResult {
   const normalizedUrl = normalizeRelayUrl(relayUrl)
   const supportedNips = getSupportedNips(info)
@@ -523,7 +522,6 @@ export async function scanRelaySettingsEntry(
 
     const info = json
     const scan = deriveRelayScanResult(normalizedUrl, info, {
-      knownCommerceRelayUrls: options.knownCommerceRelayUrls,
       now: () => scannedAt,
     })
     return createRelaySettingsEntryFromScan(scan, existing)

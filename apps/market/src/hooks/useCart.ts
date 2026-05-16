@@ -14,6 +14,10 @@ export type CartItem = {
   }
   image?: string
   tags?: string[]
+  /** Whether the product requires physical shipping. Defaults to "physical". */
+  format?: "physical" | "digital"
+  /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
+  shippingCostSats?: number
   quantity: number
 }
 

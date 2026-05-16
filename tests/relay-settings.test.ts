@@ -152,6 +152,15 @@ describe("relay settings protocol helpers", () => {
     expect(partial.warnings.commercePartialSupport).toBe(true)
   })
 
+  it("does not mark configured relays as commerce without NIP-11 evidence", () => {
+    const scanned = deriveRelayScanResult("wss://relay.conduit.market", {
+      supported_nips: [17, 42, 50],
+    })
+
+    expect(scanned.capabilities.commerce).toBe(false)
+    expect(scanned.warnings.commercePartialSupport).toBe(true)
+  })
+
   it("keeps unreachable relays disabled instead of silently discarding them", () => {
     const relay = createUnreachableRelaySettingsEntry("relay.example")
 

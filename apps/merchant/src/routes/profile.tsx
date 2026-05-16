@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react"
-import { AlertCircle, Link2, UserRound } from "lucide-react"
+import { AlertCircle, Check, Copy, Link2, UserRound } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import {
+  pubkeyToNpub,
   useAuth,
   useProfile,
   useUpdateProfile,
@@ -53,6 +54,7 @@ function ProfilePage() {
   const updateMutation = useUpdateProfile("merchant")
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_PROFILE_FORM)
+  const [copiedPubkey, setCopiedPubkey] = useState(false)
 
   useEffect(() => {
     if (profileQuery.data) {
@@ -63,12 +65,24 @@ function ProfilePage() {
   const profileData = profileQuery.data
   const complete = isProfileComplete(profileData)
   const displayName = profileData?.displayName || profileData?.name
+  const npub = pubkey ? pubkeyToNpub(pubkey) : ""
 
   function handleSave(e: React.FormEvent) {
     e.preventDefault()
     updateMutation.mutate(profileFormToUpdatePayload(form), {
       onSuccess: () => setEditing(false),
     })
+  }
+
+  async function copyNpub() {
+    if (!npub) return
+    try {
+      await navigator.clipboard.writeText(npub)
+      setCopiedPubkey(true)
+      window.setTimeout(() => setCopiedPubkey(false), 1400)
+    } catch {
+      setCopiedPubkey(false)
+    }
   }
 
   return (
@@ -237,9 +251,28 @@ function ProfilePage() {
                         <div className="text-xs font-medium text-[var(--text-secondary)]">
                           Pubkey
                         </div>
-                        <p className="mt-1 break-all font-mono text-xs text-[var(--text-secondary)]">
-                          {pubkey}
-                        </p>
+                        <div className="mt-1 flex items-start gap-2">
+                          <p className="break-all font-mono text-xs text-[var(--text-secondary)]">
+                            {npub}
+                          </p>
+                          <button
+                            type="button"
+                            aria-label={copiedPubkey ? "Copied" : "Copy npub"}
+                            onClick={copyNpub}
+                            className={[
+                              "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors",
+                              copiedPubkey
+                                ? "border-[var(--success)]/40 bg-[color-mix(in_srgb,var(--success)_12%,transparent)] text-[var(--success)]"
+                                : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+                            ].join(" ")}
+                          >
+                            {copiedPubkey ? (
+                              <Check className="h-3.5 w-3.5" />
+                            ) : (
+                              <Copy className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>

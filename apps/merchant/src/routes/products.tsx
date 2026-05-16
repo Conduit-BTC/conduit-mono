@@ -2,6 +2,7 @@ import { useMemo, useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { Plus, Search } from "lucide-react"
 import {
   EVENT_KINDS,
   appendConduitClientTag,
@@ -20,6 +21,12 @@ import {
 import {
   Badge,
   Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   Input,
   Label,
   ProductCard,
@@ -56,15 +63,19 @@ type ProductFormState = {
   summary: string
   price: string
   currency: string
+  shippingCostSats: string
   imageUrl: string
   tags: string
 }
+
+type ProductSort = "updated_desc" | "title_asc" | "price_asc" | "price_desc"
 
 const EMPTY_FORM: ProductFormState = {
   title: "",
   summary: "",
   price: "0",
   currency: "USD",
+  shippingCostSats: "0",
   imageUrl: "",
   tags: "",
 }
@@ -88,6 +99,10 @@ function productToForm(product: ProductSchema): ProductFormState {
     summary: product.summary ?? "",
     price: String(source?.amount ?? product.price),
     currency: source?.normalizedCurrency ?? product.currency,
+    shippingCostSats:
+      typeof product.shippingCostSats === "number"
+        ? String(product.shippingCostSats)
+        : "",
     imageUrl: product.images[0]?.url ?? "",
     tags: product.tags.join(", "),
   }
@@ -98,6 +113,21 @@ function parseTags(tagsCsv: string): string[] {
     .split(",")
     .map((t) => t.trim())
     .filter(Boolean)
+}
+
+function getShippingCostHelpText(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return "Shipping is coordinated with the buyer after order request; direct pay is disabled for physical carts."
+  }
+  const sats = Number(trimmed)
+  if (Number.isSafeInteger(sats) && sats === 0) {
+    return "Shipping included. Buyers can pay immediately without a separate shipping request."
+  }
+  if (Number.isSafeInteger(sats) && sats > 0) {
+    return "Added to buyer total at checkout."
+  }
+  return "Enter a whole-number shipping amount in sats."
 }
 
 async function fetchMerchantProducts(
@@ -156,9 +186,18 @@ async function publishProduct(
   if (!title) throw new Error("Title is required")
 
   const price = Number(form.price)
+  const shippingCostInput = form.shippingCostSats.trim()
+  const shippingCostSats =
+    shippingCostInput.length > 0 ? Number(shippingCostInput) : undefined
 
   const currency = form.currency.trim().toUpperCase() || "USD"
   assertPublishableProductPrice(price, currency)
+  if (
+    typeof shippingCostSats === "number" &&
+    (!Number.isSafeInteger(shippingCostSats) || shippingCostSats < 0)
+  ) {
+    throw new Error("Shipping must be a whole-number sats amount or blank.")
+  }
   const summary = form.summary.trim()
   const imageUrl = form.imageUrl.trim()
   if (!imageUrl) {
@@ -181,6 +220,8 @@ async function publishProduct(
     price,
     currency,
     type: "simple",
+    format: "physical",
+    shippingCostSats,
     visibility: "public",
     stock: undefined,
     images: [{ url: imageUrl }],
@@ -201,6 +242,9 @@ async function publishProduct(
   ]
 
   if (product.summary) event.tags.push(["summary", product.summary])
+  if (typeof product.shippingCostSats === "number") {
+    event.tags.push(["shipping_cost", String(product.shippingCostSats)])
+  }
   if (imageUrl) event.tags.push(["image", imageUrl])
   for (const tag of tags) event.tags.push(["t", tag])
   event.tags = appendConduitClientTag(event.tags, "merchant")
@@ -251,6 +295,10 @@ function ProductsPage() {
   const btcUsdRateQuery = useBtcUsdRate()
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM)
   const [editing, setEditing] = useState<MerchantProduct | null>(null)
+  const [productDialogOpen, setProductDialogOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState("")
+  const [selectedTag, setSelectedTag] = useState("all")
+  const [sortOrder, setSortOrder] = useState<ProductSort>("updated_desc")
 
   const productsQuery = useQuery({
     queryKey: ["merchant-products-live", pubkey ?? "none"],
@@ -268,8 +316,6 @@ function ProductsPage() {
     () => productsQuery.data?.data ?? cachedProductsQuery.data?.data ?? [],
     [cachedProductsQuery.data?.data, productsQuery.data?.data]
   )
-  const merchantProductsMeta =
-    productsQuery.data?.meta ?? cachedProductsQuery.data?.meta ?? null
 
   const saveMutation = useMutation({
     mutationFn: async (payload: {
@@ -281,6 +327,7 @@ function ProductsPage() {
     onSuccess: async () => {
       setEditing(null)
       setForm(EMPTY_FORM)
+      setProductDialogOpen(false)
       await queryClient.invalidateQueries({
         queryKey: ["merchant-products", pubkey ?? "none"],
       })
@@ -306,11 +353,91 @@ function ProductsPage() {
 
   const isSaving = saveMutation.isPending
   const isDeleting = deleteMutation.isPending
+  const productsInitialLoading =
+    productsQuery.isLoading && cachedProductsQuery.isLoading
+
+  const tagFilters = useMemo(() => {
+    const tagCounts = new Map<string, number>()
+    for (const item of merchantProducts) {
+      for (const tag of item.product.tags) {
+        const normalized = tag.trim()
+        if (!normalized) continue
+        tagCounts.set(normalized, (tagCounts.get(normalized) ?? 0) + 1)
+      }
+    }
+
+    return Array.from(tagCounts.entries())
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
+  }, [merchantProducts])
+
+  const visibleProducts = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase()
+    const filtered = merchantProducts.filter((item) => {
+      const tagMatch =
+        selectedTag === "all" || item.product.tags.includes(selectedTag)
+      if (!tagMatch) return false
+      if (!query) return true
+
+      const haystack = [
+        item.product.title,
+        item.product.summary ?? "",
+        item.product.tags.join(" "),
+      ]
+        .join(" ")
+        .toLowerCase()
+      return haystack.includes(query)
+    })
+
+    return filtered.slice().sort((a, b) => {
+      switch (sortOrder) {
+        case "title_asc":
+          return a.product.title.localeCompare(b.product.title)
+        case "price_asc":
+          return (
+            (a.product.priceSats ?? a.product.price) -
+            (b.product.priceSats ?? b.product.price)
+          )
+        case "price_desc":
+          return (
+            (b.product.priceSats ?? b.product.price) -
+            (a.product.priceSats ?? a.product.price)
+          )
+        case "updated_desc":
+          return b.eventCreatedAt - a.eventCreatedAt
+      }
+    })
+  }, [merchantProducts, searchQuery, selectedTag, sortOrder])
 
   const itemCountLabel = useMemo(() => {
     const count = merchantProducts.length
     return `${count} listing${count === 1 ? "" : "s"}`
   }, [merchantProducts])
+
+  const productStatusLabel = productsQuery.isFetching
+    ? "Updating listings"
+    : `${visibleProducts.length} of ${merchantProducts.length} listings`
+
+  function closeProductDialog(): void {
+    setProductDialogOpen(false)
+    setEditing(null)
+    setForm(EMPTY_FORM)
+    saveMutation.reset()
+  }
+
+  function openCreateDialog(): void {
+    saveMutation.reset()
+    setEditing(null)
+    setForm(EMPTY_FORM)
+    setProductDialogOpen(true)
+  }
+
+  function openEditDialog(item: MerchantProduct): void {
+    saveMutation.reset()
+    setEditing(item)
+    setForm(productToForm(item.product))
+    setProductDialogOpen(true)
+  }
 
   return (
     <div className="space-y-6">
@@ -335,18 +462,10 @@ function ProductsPage() {
           >
             {itemCountLabel}
           </Badge>
-          {editing && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setEditing(null)
-                setForm(EMPTY_FORM)
-              }}
-            >
-              Cancel edit
-            </Button>
-          )}
+          <Button onClick={openCreateDialog} disabled={!pubkey}>
+            <Plus className="h-4 w-4" />
+            Add product
+          </Button>
         </div>
       </div>
 
@@ -356,257 +475,384 @@ function ProductsPage() {
         </div>
       )}
 
-      <div className="grid items-start gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
-        <section className="xl:sticky xl:top-28">
-          <div className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
-            <div className="mb-4">
-              <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                {editing ? "Edit listing" : "Create listing"}
-              </div>
-              <div className="mt-2 text-xl font-semibold text-[var(--text-primary)]">
-                {editing ? editing.product.title : "New product"}
-              </div>
-            </div>
-
-            <form
-              className="grid gap-3"
-              onSubmit={(e) => {
-                e.preventDefault()
-                saveMutation.mutate({ form, existing: editing ?? undefined })
-              }}
-            >
-              <div className="grid gap-1.5">
-                <Label htmlFor="product-title">Title</Label>
-                <Input
-                  id="product-title"
-                  value={form.title}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, title: e.target.value }))
-                  }
-                  placeholder="Product title"
-                  required
-                />
-              </div>
-
-              <div className="grid gap-1.5">
-                <Label htmlFor="product-summary">Summary</Label>
-                <textarea
-                  id="product-summary"
-                  className="min-h-28 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-primary/20 transition focus:ring-2"
-                  value={form.summary}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, summary: e.target.value }))
-                  }
-                  placeholder="Short description shown to buyers"
-                />
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="product-price">Price</Label>
-                  <Input
-                    id="product-price"
-                    type="number"
-                    min="0"
-                    step={getProductPriceInputStep(form.currency)}
-                    value={form.price}
-                    onChange={(e) =>
-                      setForm((prev) => ({ ...prev, price: e.target.value }))
-                    }
-                    required
-                  />
-                </div>
-
-                <div className="grid gap-1.5">
-                  <Label htmlFor="product-currency">Currency</Label>
-                  <Select
-                    value={form.currency}
-                    onValueChange={(value) =>
-                      setForm((prev) => ({ ...prev, currency: value }))
-                    }
-                  >
-                    <SelectTrigger id="product-currency">
-                      <SelectValue placeholder="Choose currency" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="USD">USD</SelectItem>
-                      <SelectItem value="SAT">SAT</SelectItem>
-                      <SelectItem value="SATS">SATS</SelectItem>
-                      <SelectItem value="BTC">BTC</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              <div className="grid gap-1.5">
-                <Label htmlFor="product-image">Image URL</Label>
-                <Input
-                  id="product-image"
-                  type="url"
-                  value={form.imageUrl}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, imageUrl: e.target.value }))
-                  }
-                  placeholder="https://..."
-                  required
-                />
-                <div className="text-xs leading-5 text-[var(--text-muted)]">
-                  Products without images are not shown in Market.
-                </div>
-              </div>
-
-              <div className="grid gap-1.5">
-                <Label htmlFor="product-tags">Tags</Label>
-                <Input
-                  id="product-tags"
-                  value={form.tags}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, tags: e.target.value }))
-                  }
-                  placeholder="gear, hardware, demo"
-                />
-              </div>
-
-              {saveMutation.error && (
-                <div className="rounded-xl border border-error/30 bg-error/10 p-3 text-sm text-error">
-                  {saveMutation.error instanceof Error
-                    ? saveMutation.error.message
-                    : "Failed to publish product"}
-                </div>
-              )}
-
-              <div className="pt-2">
-                <Button
-                  type="submit"
-                  className="w-full"
-                  disabled={!pubkey || isSaving}
-                >
-                  {isSaving
-                    ? "Saving…"
-                    : editing
-                      ? "Save changes"
-                      : "Publish product"}
-                </Button>
-              </div>
-            </form>
+      <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-glass-inset)]">
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px_180px]">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
+            <Input
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search products"
+              aria-label="Search products"
+              className="pl-10"
+            />
           </div>
-        </section>
+          <Select value={selectedTag} onValueChange={setSelectedTag}>
+            <SelectTrigger aria-label="Filter by tag">
+              <SelectValue placeholder="All categories" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All categories</SelectItem>
+              {tagFilters.map(({ tag, count }) => (
+                <SelectItem key={tag} value={tag}>
+                  {tag} ({count})
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            value={sortOrder}
+            onValueChange={(value) => setSortOrder(value as ProductSort)}
+          >
+            <SelectTrigger aria-label="Sort products">
+              <SelectValue placeholder="Sort" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="updated_desc">Newest</SelectItem>
+              <SelectItem value="title_asc">Title A-Z</SelectItem>
+              <SelectItem value="price_asc">Price low-high</SelectItem>
+              <SelectItem value="price_desc">Price high-low</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
 
-        <section className="space-y-4">
-          {productsQuery.isLoading && cachedProductsQuery.isLoading && (
+        {tagFilters.length > 0 && (
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant={selectedTag === "all" ? "secondary" : "outline"}
+              size="sm"
+              className="h-8 px-3 text-xs"
+              onClick={() => setSelectedTag("all")}
+            >
+              All
+            </Button>
+            {tagFilters.slice(0, 12).map(({ tag, count }) => (
+              <Button
+                key={tag}
+                type="button"
+                variant={selectedTag === tag ? "secondary" : "outline"}
+                size="sm"
+                className="h-8 px-3 text-xs"
+                onClick={() => setSelectedTag(tag)}
+              >
+                {tag}
+                <span className="font-mono text-[10px] opacity-80">
+                  {count}
+                </span>
+              </Button>
+            ))}
+          </div>
+        )}
+
+        <div className="mt-3 min-h-5 text-xs text-[var(--text-muted)]">
+          {productStatusLabel}
+        </div>
+      </section>
+
+      <section className="space-y-4">
+        {productsInitialLoading && (
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {Array.from({ length: 6 }).map((_, index) => (
+              <div
+                key={index}
+                className="min-h-[22rem] animate-pulse rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface)]"
+              />
+            ))}
+          </div>
+        )}
+
+        {productsQuery.error && (
+          <div className="rounded-[1.4rem] border border-error/30 bg-error/10 p-4 text-sm text-error">
+            Failed to load products:{" "}
+            {productsQuery.error instanceof Error
+              ? productsQuery.error.message
+              : "Unknown error"}
+          </div>
+        )}
+
+        {!productsInitialLoading && merchantProducts.length === 0 && (
+          <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-6 text-sm text-[var(--text-secondary)]">
+            <div className="text-lg font-semibold text-[var(--text-primary)]">
+              No listings yet
+            </div>
+            <p className="mt-2 max-w-xl leading-6">
+              Add your first product to publish a Market-visible listing from
+              this signer.
+            </p>
+            <Button
+              className="mt-4"
+              onClick={openCreateDialog}
+              disabled={!pubkey}
+            >
+              <Plus className="h-4 w-4" />
+              Add product
+            </Button>
+          </div>
+        )}
+
+        {!productsInitialLoading &&
+          merchantProducts.length > 0 &&
+          visibleProducts.length === 0 && (
             <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
-              Loading products...
+              No listings match the current search or category filter.
             </div>
           )}
 
-          {merchantProductsMeta && (
-            <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4 text-xs text-[var(--text-secondary)]">
-              Source: {merchantProductsMeta.source.replace("_", " ")}
-              {merchantProductsMeta.stale ? " / stale view" : ""}
-              {productsQuery.isFetching ? " / checking latest relays" : ""}
-            </div>
-          )}
+        <div className="grid auto-rows-fr gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {visibleProducts.map((item) => {
+            const { primary, secondary } = getProductPriceDisplay(
+              item.product,
+              btcUsdRateQuery.data ?? null
+            )
+            const marketVisible = hasMarketVisibleProductImage(item.product)
 
-          {productsQuery.error && (
-            <div className="rounded-[1.4rem] border border-error/30 bg-error/10 p-4 text-sm text-error">
-              Failed to load products:{" "}
-              {productsQuery.error instanceof Error
-                ? productsQuery.error.message
-                : "Unknown error"}
-            </div>
-          )}
-
-          {!cachedProductsQuery.isLoading && merchantProducts.length === 0 && (
-            <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
-              No listings yet. Publish your first product from the panel on the
-              left.
-            </div>
-          )}
-
-          <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
-            {merchantProducts.map((item) => {
-              const { primary, secondary } = getProductPriceDisplay(
-                item.product,
-                btcUsdRateQuery.data ?? null
-              )
-              const marketVisible = hasMarketVisibleProductImage(item.product)
-
-              if (!marketVisible) {
-                return (
-                  <article
-                    key={item.addressId}
-                    className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning"
+            if (!marketVisible) {
+              return (
+                <article
+                  key={item.addressId}
+                  className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning"
+                >
+                  <div className="font-semibold text-[var(--text-primary)]">
+                    {item.product.title}
+                  </div>
+                  <div className="mt-2 leading-6">
+                    Missing a valid image URL. This listing is hidden from
+                    Market until it is fixed.
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-3"
+                    onClick={() => openEditDialog(item)}
                   >
-                    <div className="font-semibold text-[var(--text-primary)]">
-                      {item.product.title}
-                    </div>
-                    <div className="mt-2 leading-6">
-                      Missing a valid image URL. This listing is hidden from
-                      Market until it is fixed.
-                    </div>
+                    Fix listing
+                  </Button>
+                </article>
+              )
+            }
+
+            return (
+              <ProductCard
+                key={item.addressId}
+                title={item.product.title}
+                merchantName="Your store"
+                images={getProductImageCandidates(item.product)}
+                primaryPrice={primary}
+                secondaryPrice={secondary}
+                imageLoading="lazy"
+                action={
+                  <div className="flex gap-1">
                     <Button
                       variant="outline"
                       size="sm"
-                      className="mt-3"
-                      onClick={() => {
-                        setEditing(item)
-                        setForm(productToForm(item.product))
+                      className="h-7 px-2 text-xs"
+                      onClick={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        openEditDialog(item)
                       }}
                     >
-                      Fix listing
+                      Edit
                     </Button>
-                  </article>
-                )
-              }
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      disabled={isDeleting}
+                      onClick={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        const ok = window.confirm(
+                          `Delete "${item.product.title}"?`
+                        )
+                        if (ok) deleteMutation.mutate(item)
+                      }}
+                    >
+                      {isDeleting ? "..." : "Delete"}
+                    </Button>
+                  </div>
+                }
+              />
+            )
+          })}
+        </div>
+      </section>
 
-              return (
-                <ProductCard
-                  key={item.addressId}
-                  title={item.product.title}
-                  merchantName="Your store"
-                  images={getProductImageCandidates(item.product)}
-                  primaryPrice={primary}
-                  secondaryPrice={secondary}
-                  imageLoading="lazy"
-                  action={
-                    <div className="flex gap-1">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        onClick={(event) => {
-                          event.preventDefault()
-                          event.stopPropagation()
-                          setEditing(item)
-                          setForm(productToForm(item.product))
-                        }}
-                      >
-                        Edit
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        disabled={isDeleting}
-                        onClick={(event) => {
-                          event.preventDefault()
-                          event.stopPropagation()
-                          const ok = window.confirm(
-                            `Delete "${item.product.title}"?`
-                          )
-                          if (ok) deleteMutation.mutate(item)
-                        }}
-                      >
-                        {isDeleting ? "..." : "Delete"}
-                      </Button>
-                    </div>
+      <Dialog
+        open={productDialogOpen}
+        onOpenChange={(open) => {
+          if (open) {
+            setProductDialogOpen(true)
+            return
+          }
+          closeProductDialog()
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              {editing ? "Edit listing" : "Add product"}
+            </DialogTitle>
+            <DialogDescription>
+              {editing
+                ? "Update this kind 30402 product listing."
+                : "Publish a Market-visible kind 30402 listing from this signer."}
+            </DialogDescription>
+          </DialogHeader>
+
+          <form
+            className="grid gap-3"
+            onSubmit={(event) => {
+              event.preventDefault()
+              saveMutation.mutate({ form, existing: editing ?? undefined })
+            }}
+          >
+            <div className="grid gap-1.5">
+              <Label htmlFor="product-title">Title</Label>
+              <Input
+                id="product-title"
+                value={form.title}
+                onChange={(event) =>
+                  setForm((prev) => ({ ...prev, title: event.target.value }))
+                }
+                placeholder="Product title"
+                required
+              />
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label htmlFor="product-summary">Summary</Label>
+              <textarea
+                id="product-summary"
+                className="min-h-28 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-primary/20 transition focus:ring-2"
+                value={form.summary}
+                onChange={(event) =>
+                  setForm((prev) => ({ ...prev, summary: event.target.value }))
+                }
+                placeholder="Short description shown to buyers"
+              />
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-1.5">
+                <Label htmlFor="product-price">Price</Label>
+                <Input
+                  id="product-price"
+                  type="number"
+                  min="0"
+                  step={getProductPriceInputStep(form.currency)}
+                  value={form.price}
+                  onChange={(event) =>
+                    setForm((prev) => ({ ...prev, price: event.target.value }))
                   }
+                  required
                 />
-              )
-            })}
-          </div>
-        </section>
-      </div>
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="product-currency">Currency</Label>
+                <Select
+                  value={form.currency}
+                  onValueChange={(value) =>
+                    setForm((prev) => ({ ...prev, currency: value }))
+                  }
+                >
+                  <SelectTrigger id="product-currency">
+                    <SelectValue placeholder="Choose currency" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="USD">USD</SelectItem>
+                    <SelectItem value="SAT">SAT</SelectItem>
+                    <SelectItem value="SATS">SATS</SelectItem>
+                    <SelectItem value="BTC">BTC</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="product-shipping">Shipping</Label>
+                <Input
+                  id="product-shipping"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={form.shippingCostSats}
+                  onChange={(event) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      shippingCostSats: event.target.value,
+                    }))
+                  }
+                  placeholder="Blank"
+                />
+              </div>
+              <div className="text-xs leading-5 text-[var(--text-muted)] sm:col-span-3">
+                Enter the shipping amount to charge for this item. Use 0 only if
+                shipping is included in the product price.{" "}
+                {getShippingCostHelpText(form.shippingCostSats)}
+              </div>
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label htmlFor="product-image">Image URL</Label>
+              <Input
+                id="product-image"
+                type="url"
+                value={form.imageUrl}
+                onChange={(event) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    imageUrl: event.target.value,
+                  }))
+                }
+                placeholder="https://..."
+                required
+              />
+              <div className="text-xs leading-5 text-[var(--text-muted)]">
+                Products without images are not shown in Market.
+              </div>
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label htmlFor="product-tags">Tags</Label>
+              <Input
+                id="product-tags"
+                value={form.tags}
+                onChange={(event) =>
+                  setForm((prev) => ({ ...prev, tags: event.target.value }))
+                }
+                placeholder="gear, hardware, demo"
+              />
+            </div>
+
+            {saveMutation.error && (
+              <div className="rounded-xl border border-error/30 bg-error/10 p-3 text-sm text-error">
+                {saveMutation.error instanceof Error
+                  ? saveMutation.error.message
+                  : "Failed to publish product"}
+              </div>
+            )}
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={closeProductDialog}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={!pubkey || isSaving}>
+                {isSaving
+                  ? "Saving..."
+                  : editing
+                    ? "Save changes"
+                    : "Publish product"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

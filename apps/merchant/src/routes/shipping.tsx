@@ -1,7 +1,15 @@
-import { getData } from "country-list"
 import { useCallback, useEffect, useState } from "react"
 import { AlertCircle, Plus, Trash2, X } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
+import { useQuery } from "@tanstack/react-query"
+import {
+  SHIPPING_COUNTRIES,
+  getShippingOptions,
+  publishShippingOptions,
+  useAuth,
+  type CountryOption,
+  type ParsedShippingOption,
+} from "@conduit/core"
 import { Button, Input, Label, Badge } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import {
@@ -18,46 +26,6 @@ export const Route = createFileRoute("/shipping")({
   },
   component: ShippingPage,
 })
-
-// ---------------------------------------------------------------------------
-// Country data -- ISO 3166-1 via country-list, with common-name overrides
-// ---------------------------------------------------------------------------
-
-const COUNTRY_NAME_OVERRIDES: Record<string, string> = {
-  AE: "United Arab Emirates",
-  BO: "Bolivia",
-  BS: "Bahamas",
-  CD: "DR Congo",
-  CG: "Congo",
-  DO: "Dominican Republic",
-  FK: "Falkland Islands",
-  FM: "Micronesia",
-  FO: "Faroe Islands",
-  GB: "United Kingdom",
-  GM: "Gambia",
-  IR: "Iran",
-  KP: "North Korea",
-  KR: "South Korea",
-  LA: "Laos",
-  MD: "Moldova",
-  NL: "Netherlands",
-  NE: "Niger",
-  PH: "Philippines",
-  RU: "Russia",
-  SD: "Sudan",
-  SY: "Syria",
-  TW: "Taiwan",
-  US: "United States",
-  VA: "Vatican City",
-  VE: "Venezuela",
-}
-
-const COUNTRIES: { code: string; name: string }[] = getData()
-  .map((c) => ({
-    code: c.code,
-    name: COUNTRY_NAME_OVERRIDES[c.code] ?? c.name,
-  }))
-  .sort((a, b) => a.name.localeCompare(b.name))
 
 // ---------------------------------------------------------------------------
 // Summary helper
@@ -78,6 +46,22 @@ function buildSummary(countries: ShippingCountryConfig[]): string {
       return parts.join(" ")
     })
     .join(" . ")
+}
+
+function shippingOptionToConfig(option: ParsedShippingOption): ShippingConfig {
+  return {
+    countries: option.countryRules.map((rule) => {
+      const country = SHIPPING_COUNTRIES.find(
+        (item) => item.code === rule.code.toUpperCase()
+      )
+      return {
+        code: rule.code.toUpperCase(),
+        name: country?.name ?? rule.name,
+        restrictTo: rule.restrictTo,
+        exclude: rule.exclude,
+      }
+    }),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -210,12 +194,12 @@ function CountrySelector({
   onAdd,
 }: {
   selected: string[]
-  onAdd: (country: { code: string; name: string }) => void
+  onAdd: (country: CountryOption) => void
 }) {
   const [search, setSearch] = useState("")
   const [open, setOpen] = useState(false)
 
-  const filtered = COUNTRIES.filter(
+  const filtered = SHIPPING_COUNTRIES.filter(
     (c) =>
       !selected.includes(c.code) &&
       c.name.toLowerCase().includes(search.toLowerCase())
@@ -275,15 +259,22 @@ function CountrySelector({
 // ---------------------------------------------------------------------------
 
 function ShippingPage() {
+  const { pubkey } = useAuth()
   const [config, setConfig] = useState<ShippingConfig>(() =>
     loadShippingConfig()
   )
   const [saved, setSaved] = useState(false)
+  const remoteShippingQuery = useQuery({
+    queryKey: ["merchant-shipping-options", pubkey ?? "none"],
+    enabled: !!pubkey,
+    queryFn: () => getShippingOptions(pubkey!),
+    staleTime: 60_000,
+  })
 
   const complete = isShippingComplete(config)
   const summary = buildSummary(config.countries)
 
-  const addCountry = useCallback((country: { code: string; name: string }) => {
+  const addCountry = useCallback((country: CountryOption) => {
     setConfig((prev) => ({
       countries: [
         ...prev.countries,
@@ -316,7 +307,24 @@ function ShippingPage() {
     e.preventDefault()
     saveShippingConfig(config)
     setSaved(true)
+    // Publish to Nostr (best-effort -- don't block UI on failure)
+    publishShippingOptions(config, "merchant").catch((err: unknown) => {
+      console.warn("[shipping] Failed to publish kind-30406:", err)
+    })
   }
+
+  useEffect(() => {
+    if (config.countries.length > 0) return
+    const latest = remoteShippingQuery.data?.[0]
+    if (!latest) return
+
+    const remoteConfig = shippingOptionToConfig(latest)
+    if (remoteConfig.countries.length === 0) return
+
+    setConfig(remoteConfig)
+    saveShippingConfig(remoteConfig)
+    setSaved(true)
+  }, [config.countries.length, remoteShippingQuery.data])
 
   // Persist on unmount to avoid data loss
   useEffect(() => {

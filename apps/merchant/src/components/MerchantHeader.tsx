@@ -1,10 +1,8 @@
 import {
-  Bell,
-  Bitcoin,
+  CreditCard,
   Grid2x2,
   Menu,
   Package,
-  Search,
   ShoppingBag,
   Truck,
   UserRound,
@@ -21,7 +19,6 @@ import {
 import {
   Badge,
   Button,
-  Input,
   ProfileSelector,
   Sheet,
   SheetContent,
@@ -63,7 +60,7 @@ const mainNavItems: NavItem[] = [
 
 const setupNavItems: NavItem[] = [
   { to: "/profile", label: "Profile", icon: UserRound, hasReadiness: true },
-  { to: "/payments", label: "Payments", icon: Bitcoin, hasReadiness: true },
+  { to: "/payments", label: "Payments", icon: CreditCard, hasReadiness: true },
   { to: "/shipping", label: "Shipping", icon: Truck, hasReadiness: true },
   { to: "/network", label: "Network", icon: Wifi, hasReadiness: true },
 ]
@@ -347,24 +344,9 @@ export function MerchantHeader() {
       <div className="flex h-20 items-center gap-3 px-4 sm:px-6">
         <MobileNav />
 
-        <div className="relative flex-1">
-          <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
-          <Input
-            className="h-12 rounded-2xl border-[var(--border)] bg-[var(--surface-elevated)] pl-11 pr-4 text-sm shadow-[var(--shadow-glass-inset)]"
-            placeholder="Search products, orders, or buyers"
-            aria-label="Search merchant portal"
-          />
-        </div>
+        <div className="flex-1" />
 
         <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="hidden h-11 w-11 rounded-xl sm:inline-flex"
-            aria-label="Notifications"
-          >
-            <Bell className="h-4 w-4" />
-          </Button>
           <div className="hidden lg:block">
             {signerConnected ? <UserMenu /> : <SignerSwitch />}
           </div>
