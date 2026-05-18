@@ -25,7 +25,7 @@ import {
 } from "../protocol/relay-settings"
 import { getRelayList } from "../protocol/relay-list"
 import { EVENT_KINDS } from "../protocol/kinds"
-import { requireNdkConnected } from "../protocol/ndk"
+import { getNdk } from "../protocol/ndk"
 import { publishWithPlanner } from "../protocol/relay-publish"
 
 export interface UseRelaySettingsOptions {
@@ -440,13 +440,14 @@ export function useRelaySettings(
   async function publishRelayList(): Promise<void> {
     setPublishError(null)
     setError(null)
+    setPublishingRelayList(true)
 
     try {
       if (!pubkey) throw new Error("Connect a signer before publishing relays")
 
       assertSafeNip65RelayList(settingsRef.current.entries)
 
-      const ndk = await requireNdkConnected()
+      const ndk = getNdk()
       if (!ndk.signer) throw new Error("Signer not connected")
 
       const user = await ndk.signer.user()
@@ -460,7 +461,6 @@ export function useRelaySettings(
       event.content = ""
       event.tags = serializeNip65RelayTags(settingsRef.current.entries)
 
-      setPublishingRelayList(true)
       await event.sign(ndk.signer)
       await publishWithPlanner(event, {
         intent: "author_event",
