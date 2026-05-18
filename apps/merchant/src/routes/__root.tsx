@@ -9,7 +9,12 @@ import { KeyRound, ShieldCheck, Store } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
 import { useAuth, useNip07Availability } from "@conduit/core"
-import { Button, ErrorPage, NotFoundPage } from "@conduit/ui"
+import {
+  Button,
+  ErrorPage,
+  NoSignerSetupGuide,
+  NotFoundPage,
+} from "@conduit/ui"
 import { MerchantHeader, MerchantSidebar } from "../components/MerchantHeader"
 
 export const Route = createRootRoute({
@@ -243,6 +248,8 @@ function ConnectGate() {
                       ? "Use your Nostr signer to open the merchant workspace."
                       : "No signer extension detected. Install a NIP-07 signer such as Alby or nos2x, then refresh and connect."}
               </div>
+
+              <NoSignerSetupGuide className="mt-5" />
 
               {error && (
                 <div className="mt-5 rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error">

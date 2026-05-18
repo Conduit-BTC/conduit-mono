@@ -1,4 +1,4 @@
-import { Check, KeyRound, ShieldCheck } from "lucide-react"
+import { Check, ExternalLink, KeyRound, ShieldCheck } from "lucide-react"
 import { useMemo, useState } from "react"
 import { Badge } from "./Badge"
 import { Button } from "./Button"
@@ -11,6 +11,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "./Dialog"
+import { cn } from "../utils"
 
 export type SignerSwitchStatus =
   | "disconnected"
@@ -75,6 +76,63 @@ function SignerHeader({
         {description}
       </DialogDescription>
     </DialogHeader>
+  )
+}
+
+export function NoSignerSetupGuide({ className }: { className?: string }) {
+  return (
+    <div
+      className={cn(
+        "rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-left",
+        className
+      )}
+    >
+      <div className="text-sm font-semibold text-[var(--text-primary)]">
+        Need a signer?
+      </div>
+      <p className="mt-2 text-[15px] leading-6 text-[var(--text-secondary)]">
+        Hold your keys. Conduit never creates, stores, or recovers them.
+      </p>
+      <ol className="mt-4 space-y-3 text-[15px] leading-6 text-[var(--text-secondary)]">
+        <li className="flex gap-3">
+          <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[var(--border)] text-xs font-semibold text-[var(--text-primary)]">
+            1
+          </span>
+          <span>Start at nstart.me to set up your Nostr identity.</span>
+        </li>
+        <li className="flex gap-3">
+          <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[var(--border)] text-xs font-semibold text-[var(--text-primary)]">
+            2
+          </span>
+          <span>
+            Use Alby as your signer and wallet, then return to Conduit and
+            connect.
+          </span>
+        </li>
+      </ol>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button asChild variant="outline" size="sm">
+          <a
+            href="https://nstart.me/"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            nstart.me
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        </Button>
+        <Button asChild variant="ghost" size="sm">
+          <a
+            href="https://getalby.com/"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Alby
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        </Button>
+      </div>
+    </div>
   )
 }
 
@@ -253,6 +311,8 @@ export function SignerSwitch({
                       ? "Try a desktop browser with a signer extension, or a mobile browser that already exposes one."
                       : "Conduit currently supports external signers only."}
                   </div>
+
+                  <NoSignerSetupGuide />
                 </div>
 
                 <div className="mx-auto mt-4 grid max-w-md gap-4">

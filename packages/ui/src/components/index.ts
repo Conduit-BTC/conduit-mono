@@ -88,6 +88,7 @@ export {
   type ProductCartActionProps,
 } from "./ProductCard"
 export {
+  NoSignerSetupGuide,
   SignerSwitch,
   type SignerSwitchProps,
   type SignerSwitchStatus,
