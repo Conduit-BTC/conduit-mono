@@ -57,7 +57,7 @@ export async function fetchProfile(
 export async function publishProfile(
   profile: Omit<Profile, "pubkey">,
   appId: ConduitAppId
-): Promise<void> {
+): Promise<Profile> {
   const ndk = await requireNdkConnected()
   if (!ndk.signer) throw new Error("Signer not connected")
 
@@ -103,8 +103,7 @@ export async function publishProfile(
     authorPubkey: pubkey,
   })
 
-  // Update local cache
-  await db.profiles.put({
+  const publishedProfile: Profile = {
     pubkey,
     name: profile.name,
     displayName: profile.displayName,
@@ -114,7 +113,14 @@ export async function publishProfile(
     nip05: profile.nip05,
     lud16: profile.lud16,
     website: profile.website,
+  }
+
+  // Update local cache
+  await db.profiles.put({
+    ...publishedProfile,
     sourceRelayUrls: [],
     cachedAt: Date.now(),
   })
+
+  return publishedProfile
 }

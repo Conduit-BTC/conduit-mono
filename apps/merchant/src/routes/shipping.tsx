@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { AlertCircle, Plus, Trash2, X } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
@@ -198,23 +198,112 @@ function CountrySelector({
 }) {
   const [search, setSearch] = useState("")
   const [open, setOpen] = useState(false)
+  const [activeIndex, setActiveIndex] = useState(0)
 
-  const filtered = SHIPPING_COUNTRIES.filter(
-    (c) =>
-      !selected.includes(c.code) &&
-      c.name.toLowerCase().includes(search.toLowerCase())
-  )
+  const filtered = useMemo(() => {
+    const normalized = search.trim().toLowerCase()
+    return SHIPPING_COUNTRIES.filter((country) => {
+      if (selected.includes(country.code)) return false
+      if (!normalized) return true
+      return (
+        country.name.toLowerCase().includes(normalized) ||
+        country.code.toLowerCase().startsWith(normalized)
+      )
+    })
+  }, [search, selected])
+
+  useEffect(() => {
+    setActiveIndex(0)
+  }, [search, filtered.length])
+
+  function commitCountry(country: CountryOption) {
+    onAdd(country)
+    setSearch("")
+    setOpen(false)
+    setActiveIndex(0)
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault()
+      setOpen(true)
+      if (filtered.length === 0) return
+      setActiveIndex((index) => (index + 1) % filtered.length)
+      return
+    }
+
+    if (e.key === "ArrowUp") {
+      e.preventDefault()
+      setOpen(true)
+      if (filtered.length === 0) return
+      setActiveIndex((index) =>
+        index - 1 < 0 ? filtered.length - 1 : index - 1
+      )
+      return
+    }
+
+    if (e.key === "Home" && open && filtered.length > 0) {
+      e.preventDefault()
+      setActiveIndex(0)
+      return
+    }
+
+    if (e.key === "End" && open && filtered.length > 0) {
+      e.preventDefault()
+      setActiveIndex(filtered.length - 1)
+      return
+    }
+
+    if (e.key === "Enter" && open && filtered[activeIndex]) {
+      e.preventDefault()
+      commitCountry(filtered[activeIndex])
+      return
+    }
+
+    if (e.key === "Escape" && open) {
+      e.preventDefault()
+      setOpen(false)
+    }
+  }
+
+  const listboxId = "shipping-country-listbox"
+  const activeOption = open ? filtered[activeIndex] : undefined
+
+  useEffect(() => {
+    if (!activeOption) return
+    document
+      .getElementById(`shipping-country-option-${activeOption.code}`)
+      ?.scrollIntoView({ block: "nearest" })
+  }, [activeOption])
 
   return (
-    <div className="relative">
+    <div
+      className="relative"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          setOpen(false)
+        }
+      }}
+    >
       <div className="flex gap-2">
         <Input
+          role="combobox"
+          aria-haspopup="listbox"
+          aria-autocomplete="list"
+          aria-controls={listboxId}
+          aria-expanded={open}
+          aria-activedescendant={
+            activeOption
+              ? `shipping-country-option-${activeOption.code}`
+              : undefined
+          }
           value={search}
           onChange={(e) => {
             setSearch(e.target.value)
             setOpen(true)
           }}
           onFocus={() => setOpen(true)}
+          onKeyDown={handleKeyDown}
           placeholder="Search countries to add..."
           className="h-9 text-sm"
         />
@@ -223,24 +312,39 @@ function CountrySelector({
           variant="outline"
           size="sm"
           className="shrink-0"
-          onClick={() => setOpen((o) => !o)}
+          onClick={() => {
+            setOpen((o) => !o)
+            setActiveIndex(0)
+          }}
           aria-label="Toggle country list"
+          aria-expanded={open}
+          aria-controls={listboxId}
         >
           <Plus className="h-4 w-4" />
         </Button>
       </div>
       {open && filtered.length > 0 && (
-        <div className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-xl border border-[var(--border-overlay)] bg-[var(--surface-overlay)] shadow-[var(--shadow-dialog)] backdrop-blur-xl">
-          {filtered.map((c) => (
+        <div
+          id={listboxId}
+          role="listbox"
+          className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-xl border border-[var(--border-overlay)] bg-[var(--surface-overlay)] shadow-[var(--shadow-dialog)] backdrop-blur-xl"
+        >
+          {filtered.map((c, index) => (
             <button
+              id={`shipping-country-option-${c.code}`}
               key={c.code}
               type="button"
-              className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[var(--text-primary)] hover:bg-[var(--surface)] transition-colors text-left"
-              onClick={() => {
-                onAdd(c)
-                setSearch("")
-                setOpen(false)
-              }}
+              role="option"
+              aria-selected={index === activeIndex}
+              className={[
+                "flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)] focus:bg-[var(--surface)] focus:outline-none",
+                index === activeIndex ? "bg-[var(--surface)]" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              onMouseDown={(event) => event.preventDefault()}
+              onMouseEnter={() => setActiveIndex(index)}
+              onClick={() => commitCountry(c)}
             >
               <span className="text-xs font-mono text-[var(--text-muted)]">
                 {c.code}

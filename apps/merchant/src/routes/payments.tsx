@@ -31,6 +31,12 @@ function PaymentsPage() {
   const profile = profileQuery.data
   const complete = isPaymentsComplete(profile)
   const lud16 = profile?.lud16?.trim() ?? ""
+  const isSavingLud16 = updateMutation.isPending
+  const isLoadingProfile =
+    profileQuery.isLoading ||
+    (profileQuery.isPlaceholderData && profileQuery.isFetching)
+  const isRefreshingProfile =
+    profileQuery.isFetching && !isLoadingProfile && !isSavingLud16
 
   const [editingLud16, setEditingLud16] = useState(false)
   const [lud16Draft, setLud16Draft] = useState("")
@@ -88,21 +94,52 @@ function PaymentsPage() {
 
   async function saveLud16(e: React.FormEvent) {
     e.preventDefault()
-    if (!profile) return
+    if (!profile || isSavingLud16) return
     const nextLud16 = lud16Draft.trim()
     if (nextLud16 && !isValidLud16Address(nextLud16)) {
       setLud16Error("Enter a Lightning Address like you@example.com.")
       return
     }
     setLud16Error(null)
-    updateMutation.mutate(
-      profileFormToUpdatePayload({
-        ...profileToFormValues(profile),
-        lud16: nextLud16,
-      }),
-      { onSuccess: () => setEditingLud16(false) }
-    )
+    try {
+      await updateMutation.mutateAsync(
+        profileFormToUpdatePayload({
+          ...profileToFormValues(profile),
+          lud16: nextLud16,
+        })
+      )
+      setEditingLud16(false)
+      void profileQuery.refetch()
+    } catch {
+      // The mutation error is rendered below the input.
+    }
   }
+
+  function cancelEditLud16() {
+    if (isSavingLud16) return
+    setEditingLud16(false)
+    setLud16Draft(profile?.lud16 ?? "")
+    setLud16Error(null)
+  }
+
+  function getBusyStatus() {
+    if (isSavingLud16) {
+      return {
+        title: "Saving Lightning Address",
+        message:
+          "Publishing the updated payment address to your merchant profile.",
+      }
+    }
+    if (isRefreshingProfile) {
+      return {
+        title: "Refreshing payment profile",
+        message: "Checking the latest profile state from your relays.",
+      }
+    }
+    return null
+  }
+
+  const busyStatus = getBusyStatus()
 
   return (
     <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
@@ -123,7 +160,7 @@ function PaymentsPage() {
                 </p>
               </div>
 
-              {!complete && !profileQuery.isLoading && (
+              {!complete && !isLoadingProfile && (
                 <div className="flex items-start gap-3 rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3.5">
                   <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" />
                   <p className="text-sm text-[var(--warning)]">
@@ -134,10 +171,29 @@ function PaymentsPage() {
                   </p>
                 </div>
               )}
+
+              {busyStatus && (
+                <div className="flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_8%,transparent)] px-4 py-3.5">
+                  <LoaderCircle className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-[var(--primary-500)]" />
+                  <div className="text-sm leading-6">
+                    <div className="font-semibold text-[var(--text-primary)]">
+                      {busyStatus.title}
+                    </div>
+                    <p className="text-[var(--text-secondary)]">
+                      {busyStatus.message}
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
 
-            {profileQuery.isLoading ? (
-              <p className="text-sm text-[var(--text-secondary)]">Loading...</p>
+            {isLoadingProfile ? (
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--text-secondary)]">
+                <div className="flex items-center gap-2 font-medium text-[var(--text-primary)]">
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                  Loading payment profile
+                </div>
+              </div>
             ) : (
               <div className="space-y-8">
                 {/* Lightning Address section */}
@@ -164,6 +220,7 @@ function PaymentsPage() {
                           variant="outline"
                           size="sm"
                           onClick={startEditLud16}
+                          disabled={isSavingLud16}
                         >
                           {profile?.lud16 ? "Change" : "Add"}
                         </Button>
@@ -199,6 +256,7 @@ function PaymentsPage() {
                               value={lud16Draft}
                               onChange={(e) => setLud16Draft(e.target.value)}
                               placeholder="you@wallet-provider.com"
+                              disabled={isSavingLud16}
                               autoFocus
                             />
                             <p className="text-xs text-[var(--text-muted)]">
@@ -224,15 +282,23 @@ function PaymentsPage() {
                             <Button
                               type="submit"
                               size="sm"
-                              disabled={updateMutation.isPending}
+                              disabled={isSavingLud16}
                             >
-                              {updateMutation.isPending ? "Saving..." : "Save"}
+                              {isSavingLud16 ? (
+                                <span className="inline-flex items-center gap-2">
+                                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                                  Saving
+                                </span>
+                              ) : (
+                                "Save"
+                              )}
                             </Button>
                             <Button
                               type="button"
                               variant="ghost"
                               size="sm"
-                              onClick={() => setEditingLud16(false)}
+                              onClick={cancelEditLud16}
+                              disabled={isSavingLud16}
                             >
                               Cancel
                             </Button>
