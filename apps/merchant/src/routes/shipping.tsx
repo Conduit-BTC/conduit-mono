@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { AlertCircle, Trash2, X } from "lucide-react"
+import { AlertCircle, CheckCircle2, Loader2, Trash2, X } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
@@ -62,6 +62,21 @@ function shippingOptionToConfig(option: ParsedShippingOption): ShippingConfig {
       }
     }),
   }
+}
+
+type SaveState =
+  | { status: "idle" }
+  | { status: "saving" }
+  | { status: "saved" }
+  | { status: "error"; message: string }
+
+function serializeShippingConfig(config: ShippingConfig): string {
+  return JSON.stringify(config)
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message
+  return "Failed to save shipping settings."
 }
 
 // ---------------------------------------------------------------------------
@@ -233,10 +248,11 @@ function CountrySelector({
 
 function ShippingPage() {
   const { pubkey } = useAuth()
-  const [config, setConfig] = useState<ShippingConfig>(() =>
-    loadShippingConfig()
-  )
-  const [saved, setSaved] = useState(false)
+  const [initialConfig] = useState<ShippingConfig>(() => loadShippingConfig())
+  const [config, setConfig] = useState<ShippingConfig>(initialConfig)
+  const [lastSavedConfig, setLastSavedConfig] =
+    useState<ShippingConfig>(initialConfig)
+  const [saveState, setSaveState] = useState<SaveState>({ status: "idle" })
   const remoteShippingQuery = useQuery({
     queryKey: ["merchant-shipping-options", pubkey ?? "none"],
     enabled: !!pubkey,
@@ -246,6 +262,13 @@ function ShippingPage() {
 
   const complete = isShippingComplete(config)
   const summary = buildSummary(config.countries)
+  const hasUnsavedChanges = useMemo(
+    () =>
+      serializeShippingConfig(config) !==
+      serializeShippingConfig(lastSavedConfig),
+    [config, lastSavedConfig]
+  )
+  const isSaving = saveState.status === "saving"
 
   const addCountry = useCallback((country: CountryOption) => {
     setConfig((prev) => ({
@@ -254,7 +277,7 @@ function ShippingPage() {
         { code: country.code, name: country.name, restrictTo: [], exclude: [] },
       ],
     }))
-    setSaved(false)
+    setSaveState({ status: "idle" })
   }, [])
 
   const updateCountry = useCallback(
@@ -264,7 +287,7 @@ function ShippingPage() {
         countries[index] = updated
         return { countries }
       })
-      setSaved(false)
+      setSaveState({ status: "idle" })
     },
     []
   )
@@ -273,21 +296,29 @@ function ShippingPage() {
     setConfig((prev) => ({
       countries: prev.countries.filter((_, i) => i !== index),
     }))
-    setSaved(false)
+    setSaveState({ status: "idle" })
   }, [])
 
-  function handleSave(e: React.FormEvent) {
+  async function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    saveShippingConfig(config)
-    setSaved(true)
-    // Publish to Nostr (best-effort -- don't block UI on failure)
-    publishShippingOptions(config, "merchant").catch((err: unknown) => {
+    if (!hasUnsavedChanges || isSaving) return
+
+    setSaveState({ status: "saving" })
+
+    try {
+      await publishShippingOptions(config, "merchant")
+      saveShippingConfig(config)
+      setLastSavedConfig(config)
+      setSaveState({ status: "saved" })
+    } catch (err: unknown) {
       console.warn("[shipping] Failed to publish kind-30406:", err)
-    })
+      setSaveState({ status: "error", message: getErrorMessage(err) })
+    }
   }
 
   useEffect(() => {
     if (config.countries.length > 0) return
+    if (hasUnsavedChanges) return
     const latest = remoteShippingQuery.data?.[0]
     if (!latest) return
 
@@ -296,15 +327,9 @@ function ShippingPage() {
 
     setConfig(remoteConfig)
     saveShippingConfig(remoteConfig)
-    setSaved(true)
-  }, [config.countries.length, remoteShippingQuery.data])
-
-  // Persist on unmount to avoid data loss
-  useEffect(() => {
-    return () => {
-      saveShippingConfig(config)
-    }
-  }, [config])
+    setLastSavedConfig(remoteConfig)
+    setSaveState({ status: "saved" })
+  }, [config.countries.length, hasUnsavedChanges, remoteShippingQuery.data])
 
   return (
     <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
@@ -320,6 +345,18 @@ function ShippingPage() {
                 <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
                   Shipping
                 </h1>
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  {hasUnsavedChanges ? (
+                    <Badge variant="warning">Unsaved changes</Badge>
+                  ) : saveState.status === "saved" ? (
+                    <Badge variant="success">Saved</Badge>
+                  ) : (
+                    <Badge variant="secondary">No changes to save</Badge>
+                  )}
+                  {remoteShippingQuery.isFetching && (
+                    <Badge variant="outline">Checking published settings</Badge>
+                  )}
+                </div>
                 <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
                   Define where you ship. Buyers outside your configured
                   destinations will not see your products as available.
@@ -391,11 +428,45 @@ function ShippingPage() {
                 </div>
               </section>
 
-              <div className="flex items-center gap-3">
-                <Button type="submit">Save shipping settings</Button>
-                {saved && (
-                  <span className="text-sm text-[var(--success)]">Saved</span>
-                )}
+              <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
+                <Button
+                  type="submit"
+                  disabled={!pubkey || !hasUnsavedChanges || isSaving}
+                >
+                  {isSaving && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {isSaving ? "Waiting for signer..." : "Save changes"}
+                </Button>
+                <div
+                  aria-live="polite"
+                  className="min-h-5 text-sm text-[var(--text-secondary)]"
+                >
+                  {isSaving && (
+                    <span>
+                      Confirm the shipping update in your signer. It will show
+                      as saved after signing and relay publish finish.
+                    </span>
+                  )}
+                  {!isSaving &&
+                    hasUnsavedChanges &&
+                    saveState.status !== "error" && (
+                      <span className="text-[var(--warning)]">
+                        Save changes to publish your shipping settings.
+                      </span>
+                    )}
+                  {!isSaving &&
+                    !hasUnsavedChanges &&
+                    saveState.status === "saved" && (
+                      <span className="inline-flex items-center gap-1.5 text-[var(--success)]">
+                        <CheckCircle2 className="h-4 w-4" />
+                        Signed and saved.
+                      </span>
+                    )}
+                  {!isSaving && saveState.status === "error" && (
+                    <span className="text-[var(--error)]">
+                      {saveState.message}
+                    </span>
+                  )}
+                </div>
               </div>
             </form>
           </div>
