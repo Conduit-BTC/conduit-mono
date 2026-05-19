@@ -101,11 +101,15 @@ bun run dev:merchant:mainnet
 
 `.env.local` should remain for personal overrides only. Keep mode files minimal and let the shared core relay defaults handle the broader fallback strategy unless a mode truly needs different values.
 
-| Variable                  | Default (dev) | Description                                        |
-| ------------------------- | ------------- | -------------------------------------------------- |
-| `VITE_RELAY_URL`          | —             | Optional single relay hint for legacy/NIP-89 flows |
-| `VITE_LIGHTNING_NETWORK`  | `mock`        | `mock`, `signet`, or `mainnet`                     |
-| `VITE_BLOSSOM_SERVER_URL` | —             | Blossom media server for product images            |
+| Variable                   | Default (dev) | Description                                              |
+| -------------------------- | ------------- | -------------------------------------------------------- |
+| `VITE_RELAY_URL`           | —             | Optional single relay hint also added to fallback relays |
+| `VITE_DEFAULT_RELAY_URL`   | —             | Optional single relay added to fallback relay discovery  |
+| `VITE_DEFAULT_RELAYS`      | —             | Optional comma-separated relays added to fallback reads  |
+| `VITE_PUBLIC_RELAY_URLS`   | —             | Optional comma-separated public relay override/additions |
+| `VITE_COMMERCE_RELAY_URLS` | —             | Optional comma-separated commerce relay additions        |
+| `VITE_LIGHTNING_NETWORK`   | `mock`        | `mock`, `signet`, or `mainnet`                           |
+| `VITE_BLOSSOM_SERVER_URL`  | —             | Blossom media server for product images                  |
 
 The canonical fallback/reset relay list is code-owned in `packages/core/src/config.ts` and currently starts from:
 
@@ -117,6 +121,8 @@ wss://relay.damus.io
 wss://nos.lol
 wss://purplepag.es
 ```
+
+Browser builds print a relay map in DevTools showing the code defaults, raw/normalized relay env vars, and the final resolved relay lists. Conduit-hosted deploys should leave relay env vars empty so reviewers can compare the open-source code defaults with the deployed behavior.
 
 **Modes:**
 

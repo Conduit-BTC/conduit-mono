@@ -64,7 +64,9 @@ describe("relay settings protocol helpers", () => {
       "wss://nos.lol",
       "wss://purplepag.es",
     ])
-    expect(config.defaultRelays).toEqual(CANONICAL_DEFAULT_RELAYS)
+    for (const relay of CANONICAL_DEFAULT_RELAYS) {
+      expect(config.defaultRelays).toContain(relay)
+    }
     expect(config.defaultRelays).not.toContain("wss://relay.conduit.market")
 
     const settings = createDefaultRelaySettings({
