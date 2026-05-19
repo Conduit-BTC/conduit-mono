@@ -27,6 +27,8 @@ pnpm-debug.log*
 
 # Testing
 coverage/
+playwright-report/
+test-results/
 
 # Ephemeral context files (call transcripts, meeting notes, temp checklists)
 /context/
