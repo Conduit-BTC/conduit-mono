@@ -5,6 +5,7 @@ Use this guidance for code generation and PR review comments in this repository.
 ## Core Review Priorities
 
 Prioritize in this order:
+
 1. Functional correctness and regressions
 2. Protocol/auth/privacy/payments constraints
 3. Reliability and failure-mode handling
@@ -29,6 +30,7 @@ Prioritize in this order:
 ## PR Review Expectations
 
 When reviewing PRs:
+
 - Flag issues with severity tags: `P0`, `P1`, `P2`.
 - Include concrete file/line references.
 - Focus comments on behavior impact and reproducible scenarios.
@@ -38,14 +40,25 @@ When reviewing PRs:
 ## Reliability Checks (Orders/Messaging)
 
 For Market and Merchant changes touching orders/messages:
+
 - Verify signer connected-state gates all order/message actions.
 - Verify relay lag/fallback does not produce ambiguous UI states.
 - Verify polling and manual refresh do not create UI jitter loops.
+
+## Agent Automation Checks
+
+For changes touching agent automation, telemetry, or smoke-test artifacts:
+
+- Keep public repo content sanitized and public-safe.
+- Keep Linear, Slack, Cloudflare, telemetry backend, credential, and release-runbook details out of public tracked files.
+- Verify telemetry properties match `docs/analytics/events.md`.
+- Verify code-changing agent paths require maintainer intent and do not run for high-risk protocol/auth/payment/privacy work without human planning.
 
 ## Suggested Validation Commands
 
 ```bash
 bun run typecheck
 bun run lint
+bun run telemetry:check
 bun test
 ```

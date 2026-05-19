@@ -70,6 +70,7 @@ Payments: NWC-based Lightning payments (NIP-47).
    - `docs/ARCHITECTURE.md` - System diagrams, protocol, data flow
    - `docs/plans/ROADMAP.md` - Strategic epochs and direction
    - `docs/plans/IMPLEMENTATION.md` - Current build phases and deliverables
+   - `docs/knowledge/self-healing-agent-system.md` - Public-safe agent automation boundary
 
 2. **Before building**: Read the relevant `docs/specs/*.md` for feature details
    - For UI/theming work, also read `docs/DESIGN.md`
@@ -118,6 +119,14 @@ If discussing future repo boundaries, keep `conduit-services` clearly separate f
 
 Keep private company context out of tracked public history unless explicitly requested.
 
+## Agent Automation Boundary
+
+- Keep agent workflows in this public repo sanitized and least-privilege.
+- Linear is the team-facing target for automated triage; GitHub issues are community-facing.
+- Private prompts, dashboard links, Linear/Slack/Cloudflare runbooks, credentials, and release coordination belong outside this public repo.
+- Code-changing agent workflows require maintainer intent, such as an `agent-ready` or `agent-fix` label, and must not run for high-risk protocol/auth/payment/privacy work without human planning.
+- Telemetry and smoke artifacts used by agents must follow `docs/analytics/events.md` and must not include pubkeys, npubs, nsecs, invoices, order contents, addresses, message contents, IPs, fingerprints, signer connection strings, or NWC URIs.
+
 ## Commands
 
 ```bash
@@ -135,6 +144,7 @@ bun run build:packages   # Build shared packages only
 # Quality
 bun run typecheck        # Type check all packages
 bun run lint             # Lint all packages
+bun run telemetry:check  # Enforce privacy-safe telemetry allowlist
 bun test                 # Run tests
 
 # Clean
