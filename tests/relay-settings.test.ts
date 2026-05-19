@@ -77,6 +77,8 @@ describe("relay settings protocol helpers", () => {
     expect(settings.entries.map((relay) => relay.url)).toEqual([
       "wss://relay.primal.net",
     ])
+    expect(settings.entries.every((relay) => relay.readEnabled)).toBe(true)
+    expect(settings.entries.every((relay) => relay.writeEnabled)).toBe(true)
   })
 
   it("normalizes relay urls before deduplication", () => {
@@ -409,6 +411,23 @@ describe("relay settings protocol helpers", () => {
     expect(next.entries[0]?.readEnabled).toBe(false)
     expect(next.entries[0]?.writeEnabled).toBe(true)
     expect(next.entries[0]?.source).toBe("published")
+  })
+
+  it("upgrades persisted default relays to IN and OUT controls", () => {
+    const settings = normalizeRelaySettingsState({
+      version: 1,
+      updatedAt: 1,
+      entries: [
+        entry("wss://relay.example", {
+          readEnabled: true,
+          writeEnabled: false,
+          source: "default",
+        }),
+      ],
+    })
+
+    expect(settings.entries[0]?.readEnabled).toBe(true)
+    expect(settings.entries[0]?.writeEnabled).toBe(true)
   })
 
   it("blocks unsafe tiny NIP-65 publishes", () => {

@@ -75,7 +75,6 @@ function createManualDefaultRelaySettings(): RelaySettingsState {
     ...defaults,
     entries: defaults.entries.map((entry) => ({
       ...entry,
-      writeEnabled: true,
       source: "manual" as const,
     })),
   }
@@ -90,9 +89,10 @@ function isDefaultOnlyRelaySettings(settings: RelaySettingsState): boolean {
 
 function maskDefaultSettingsForIdentity(
   settings: RelaySettingsState,
-  pubkey: string | null
+  pubkey: string | null,
+  maskDefaults: boolean
 ): RelaySettingsState {
-  return pubkey && isDefaultOnlyRelaySettings(settings)
+  return pubkey && maskDefaults && isDefaultOnlyRelaySettings(settings)
     ? createEmptyRelaySettings()
     : settings
 }
@@ -105,7 +105,11 @@ export function useRelaySettings(
   const enabled = options.enabled ?? true
   const bootstrapRelayList = options.bootstrapRelayList ?? true
   const [settings, setSettings] = useState<RelaySettingsState>(() =>
-    maskDefaultSettingsForIdentity(loadRelaySettings(scope), pubkey)
+    maskDefaultSettingsForIdentity(
+      loadRelaySettings(scope),
+      pubkey,
+      bootstrapRelayList
+    )
   )
   const settingsRef = useRef(settings)
   const autoScannedStaleKeyRef = useRef("")
@@ -130,13 +134,19 @@ export function useRelaySettings(
     }
 
     const loaded = loadRelaySettings(scope)
-    const next = maskDefaultSettingsForIdentity(loaded, pubkey)
+    const next = maskDefaultSettingsForIdentity(
+      loaded,
+      pubkey,
+      bootstrapRelayList
+    )
     settingsRef.current = next
     setSettings(next)
-    if (pubkey && isDefaultOnlyRelaySettings(loaded)) {
+    if (bootstrapRelayList && pubkey && isDefaultOnlyRelaySettings(loaded)) {
       setIsLoadingPublishedRelayList(true)
+    } else {
+      setIsLoadingPublishedRelayList(false)
     }
-  }, [enabled, pubkey, scope])
+  }, [bootstrapRelayList, enabled, pubkey, scope])
 
   useEffect(() => {
     if (!enabled) return
@@ -147,7 +157,8 @@ export function useRelaySettings(
       if (event.key !== storageKey) return
       const next = maskDefaultSettingsForIdentity(
         loadRelaySettings(scope),
-        pubkey
+        pubkey,
+        bootstrapRelayList
       )
       settingsRef.current = next
       setSettings(next)
@@ -164,7 +175,8 @@ export function useRelaySettings(
       if (changedScope !== targetScope) return
       const next = maskDefaultSettingsForIdentity(
         loadRelaySettings(scope),
-        pubkey
+        pubkey,
+        bootstrapRelayList
       )
       settingsRef.current = next
       setSettings(next)
@@ -463,6 +475,9 @@ export function useRelaySettings(
       event.tags = serializeNip65RelayTags(settingsRef.current.entries)
 
       await event.sign(ndk.signer)
+      if (!event.sig?.trim()) {
+        throw new Error("Signer did not return a signature")
+      }
       await publishWithPlanner(event, {
         intent: "author_event",
         authorPubkey: pubkey,

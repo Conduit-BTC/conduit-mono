@@ -794,7 +794,7 @@ export function RelaySettingsPanel({
                 {writeRelayCount} OUT.
                 {writeRelayCount === 0
                   ? " Enable OUT on at least one relay before publishing."
-                  : " Signers may show empty content because relay URLs live in tags."}
+                  : " Signers may show empty content because relay URLs live in tags, and may auto-approve if this site already has signing permission."}
               </div>
             ) : null}
             <div className="flex flex-wrap justify-end gap-2">
@@ -852,11 +852,6 @@ export function RelaySettingsPanel({
                 className="justify-end"
               />
             ) : null}
-          </div>
-        ) : null}
-        {publishError ? (
-          <div className="rounded-xl border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
-            {publishError}
           </div>
         ) : null}
       </div>

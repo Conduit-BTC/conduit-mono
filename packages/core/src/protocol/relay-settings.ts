@@ -448,10 +448,16 @@ export function createRelaySettingsEntryFromScan(
   const section: RelaySettingsSection = scan.capabilities.commerce
     ? "commerce"
     : "public"
-  const readEnabled = existing?.readEnabled ?? scan.reachable
-  const writeEnabled =
-    existing?.writeEnabled ??
-    (scan.reachable && scan.capabilities.commerce && !scan.warnings.unreachable)
+  const usesCanonicalDefaults = source === "default"
+  const readEnabled = usesCanonicalDefaults
+    ? true
+    : (existing?.readEnabled ?? scan.reachable)
+  const writeEnabled = usesCanonicalDefaults
+    ? true
+    : (existing?.writeEnabled ??
+      (scan.reachable &&
+        scan.capabilities.commerce &&
+        !scan.warnings.unreachable))
 
   return {
     url: scan.url,
@@ -573,7 +579,7 @@ export function createDefaultRelaySettings(
   ).map((url) => ({
     url,
     readEnabled: true,
-    writeEnabled: false,
+    writeEnabled: true,
     section: "public",
     capabilities: EMPTY_CAPABILITIES,
     warnings: {
@@ -660,6 +666,8 @@ export function normalizeRelaySettingsState(
     const normalizedEntry: RelaySettingsEntry = {
       ...entry,
       url: result.url,
+      readEnabled: entry.source === "default" ? true : entry.readEnabled,
+      writeEnabled: entry.source === "default" ? true : entry.writeEnabled,
       capabilities,
       warnings,
       section,
