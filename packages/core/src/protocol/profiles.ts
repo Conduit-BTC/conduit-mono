@@ -6,6 +6,7 @@ import { getProfiles } from "./commerce"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { requireNdkConnected } from "./ndk"
 import { publishWithPlanner } from "./relay-publish"
+import { assertSafeReplaceablePublish } from "./replaceable-safety"
 
 interface RawProfileContent {
   name?: string
@@ -54,33 +55,9 @@ export async function fetchProfile(
   return result.data[pubkey] ?? { pubkey }
 }
 
-export async function publishProfile(
-  profile: Omit<Profile, "pubkey">,
-  appId: ConduitAppId
-): Promise<Profile> {
-  const ndk = await requireNdkConnected()
-  if (!ndk.signer) throw new Error("Signer not connected")
-
-  const user = await ndk.signer.user()
-  const pubkey = user.pubkey
-  const hasSubmittedContent = [
-    profile.name,
-    profile.displayName,
-    profile.about,
-    profile.picture,
-    profile.banner,
-    profile.nip05,
-    profile.lud16,
-    profile.website,
-  ].some((value) => typeof value === "string" && value.trim().length > 0)
-
-  if (!hasSubmittedContent) {
-    throw new Error(
-      "Refusing to publish an empty profile. Wait for the profile to load or add profile details before saving."
-    )
-  }
-
-  // Build NIP-01 snake_case content, omitting empty/undefined fields
+export function buildNip01ProfileContent(
+  profile: Omit<Profile, "pubkey">
+): Record<string, string> {
   const content: Record<string, string> = {}
   if (profile.name) content.name = profile.name
   if (profile.displayName) content.display_name = profile.displayName
@@ -90,6 +67,45 @@ export async function publishProfile(
   if (profile.nip05) content.nip05 = profile.nip05
   if (profile.lud16) content.lud16 = profile.lud16
   if (profile.website) content.website = profile.website
+  return content
+}
+
+export function shouldEnforceNip01ProfileMinimumFields({
+  content,
+  latestContent,
+}: {
+  content: Record<string, string>
+  latestContent: Record<string, string>
+}): boolean {
+  return (
+    Object.keys(content).length === 0 || Object.keys(latestContent).length <= 1
+  )
+}
+
+export async function publishProfile(
+  profile: Omit<Profile, "pubkey">,
+  appId: ConduitAppId
+): Promise<Profile> {
+  const ndk = await requireNdkConnected()
+  if (!ndk.signer) throw new Error("Signer not connected")
+
+  const user = await ndk.signer.user()
+  const pubkey = user.pubkey
+  const latestProfile = await fetchProfile(pubkey, {
+    priority: "visible",
+  })
+
+  // Build NIP-01 snake_case content, omitting empty/undefined fields
+  const content = buildNip01ProfileContent(profile)
+  const latestContent = buildNip01ProfileContent(latestProfile)
+  const replaceableSafety = {
+    profile: {
+      enforceMinimumFields: shouldEnforceNip01ProfileMinimumFields({
+        content,
+        latestContent,
+      }),
+    },
+  }
 
   const event = new NDKEvent(ndk)
   event.kind = EVENT_KINDS.PROFILE
@@ -97,10 +113,12 @@ export async function publishProfile(
   event.content = JSON.stringify(content)
   event.tags = appendConduitClientTag([], appId)
 
+  assertSafeReplaceablePublish(event, replaceableSafety)
   await event.sign(ndk.signer)
   await publishWithPlanner(event, {
     intent: "author_event",
     authorPubkey: pubkey,
+    replaceableSafety,
   })
 
   const publishedProfile: Profile = {

@@ -29,18 +29,15 @@ import {
   SelectValue,
 } from "@conduit/ui"
 import {
-  appendConduitClientTag,
   formatNpub,
   getCommerceReadRelayUrls,
   normalizePubkey,
-  publishWithPlanner,
+  publishContactListUpdate,
   pubkeyToNpub,
-  requireNdkConnected,
   useAuth,
   type PricingRateInput,
   type Product,
 } from "@conduit/core"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { SignerSwitch } from "../../components/SignerSwitch"
 import { RichProfileText } from "../../components/RichProfileText"
 import {
@@ -201,6 +198,7 @@ function StorefrontPage() {
     "idle" | "saving_follow" | "saving_unfollow"
   >("idle")
   const [followOverride, setFollowOverride] = useState<boolean | null>(null)
+  const [followError, setFollowError] = useState<string | null>(null)
 
   const merchantIdentityPending = merchantTrust.merchantNamePending
   const merchantName = merchantTrust.merchantName
@@ -324,45 +322,13 @@ function StorefrontPage() {
 
     const nextShouldFollow = !isFollowing
     setFollowState(nextShouldFollow ? "saving_follow" : "saving_unfollow")
+    setFollowError(null)
     try {
-      const ndk = await requireNdkConnected()
-      if (!ndk.signer) throw new Error("Signer not connected")
-
-      const existingEvents = await ndk.fetchEvents({
-        kinds: [3],
-        authors: [viewerPubkey],
-        limit: 10,
-      })
-      const latest = Array.from(existingEvents).sort(
-        (a, b) => (b.created_at ?? 0) - (a.created_at ?? 0)
-      )[0]
-
-      const nextTags = Array.from(latest?.tags ?? [])
-      const alreadyFollowing = nextTags.some(
-        (tag) => tag[0] === "p" && tag[1] === pubkey
-      )
-      if (nextShouldFollow && !alreadyFollowing) {
-        nextTags.push(["p", pubkey])
-      }
-      if (!nextShouldFollow && alreadyFollowing) {
-        for (let index = nextTags.length - 1; index >= 0; index -= 1) {
-          const tag = nextTags[index]
-          if (tag[0] === "p" && tag[1] === pubkey) {
-            nextTags.splice(index, 1)
-          }
-        }
-      }
-
-      const event = new NDKEvent(ndk)
-      event.kind = 3
-      event.created_at = Math.floor(Date.now() / 1000)
-      event.content = latest?.content ?? ""
-      event.tags = appendConduitClientTag(nextTags, "market")
-
-      await event.sign(ndk.signer)
-      await publishWithPlanner(event, {
-        intent: "author_event",
-        authorPubkey: viewerPubkey,
+      await publishContactListUpdate({
+        ownerPubkey: viewerPubkey,
+        targetPubkey: pubkey,
+        shouldFollow: nextShouldFollow,
+        appId: "market",
       })
 
       setFollowOverride(nextShouldFollow)
@@ -370,8 +336,13 @@ function StorefrontPage() {
         queryKey: ["merchant-trust-social", viewerPubkey, pubkey],
       })
       setFollowState("idle")
-    } catch {
+    } catch (error) {
       setFollowOverride(null)
+      setFollowError(
+        error instanceof Error
+          ? error.message
+          : "Could not update this follow list."
+      )
       setFollowState("idle")
     }
   }
@@ -549,6 +520,11 @@ function StorefrontPage() {
                   )}
                 </Button>
               </div>
+              {followError && (
+                <p className="max-w-sm text-left text-xs leading-5 text-[var(--warning)] sm:ml-auto sm:text-right">
+                  {followError}
+                </p>
+              )}
             </div>
 
             <MerchantTrustSummary trust={merchantTrust} />
