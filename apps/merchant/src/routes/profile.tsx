@@ -16,6 +16,7 @@ import {
   Input,
   Label,
   StatusPill,
+  Textarea,
   cn,
 } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
@@ -363,10 +364,10 @@ function ProfilePage() {
                         About
                         <RequiredMark />
                       </Label>
-                      <textarea
+                      <Textarea
                         id="profile-about"
                         className={cn(
-                          "min-h-24 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-primary/20 transition focus:ring-2",
+                          "min-h-24 ring-primary/20 transition",
                           REQUIRED_FIELDS.includes("about") && !form.about
                             ? "border-[var(--warning)]/40 focus:ring-[var(--warning)]/30"
                             : ""

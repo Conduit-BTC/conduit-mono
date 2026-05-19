@@ -164,6 +164,14 @@ bun run --filter @conduit/merchant dev --host 0.0.0.0 --port 7001
 - **async/await** over .then() chains
 - **Explicit error handling** - No swallowed errors
 
+### UI Component Rules
+
+- Use shadcn-style primitives through `@conduit/ui` before adding app-local controls.
+- Do not hand-roll native `<select>`, custom listboxes/comboboxes, dialogs, dropdowns, tabs, sheets, or textareas in app routes when `@conduit/ui` already provides the primitive.
+- If a common primitive is missing, add it to `packages/ui/src/components`, export it from `@conduit/ui`, and consume it from apps.
+- Keep route files focused on workflow composition and state. Shared keyboard behavior, focus management, overlay behavior, and reusable control styling belong in `@conduit/ui`.
+- For UI/theming changes, read `docs/DESIGN.md` and keep tokens/components aligned with the shared design system.
+
 ### Import Order
 
 1. External dependencies (react, zustand, etc)

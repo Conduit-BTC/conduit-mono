@@ -1220,23 +1220,27 @@ function OrdersPage() {
                         <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
                           Status update
                         </div>
-                        <select
-                          className="h-10 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--text-primary)]"
+                        <Select
                           value={orderStatus}
-                          onChange={(event) =>
+                          onValueChange={(value) =>
                             setOrderStatus(
-                              event.target
-                                .value as StatusUpdateMessageSchema["status"]
+                              value as StatusUpdateMessageSchema["status"]
                             )
                           }
                         >
-                          <option value="">Choose status</option>
-                          <option value="paid">paid</option>
-                          <option value="processing">processing</option>
-                          <option value="shipped">shipped</option>
-                          <option value="complete">complete</option>
-                          <option value="cancelled">cancelled</option>
-                        </select>
+                          <SelectTrigger aria-label="Choose status">
+                            <SelectValue placeholder="Choose status" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="paid">paid</SelectItem>
+                            <SelectItem value="processing">
+                              processing
+                            </SelectItem>
+                            <SelectItem value="shipped">shipped</SelectItem>
+                            <SelectItem value="complete">complete</SelectItem>
+                            <SelectItem value="cancelled">cancelled</SelectItem>
+                          </SelectContent>
+                        </Select>
                         <Input
                           value={statusNote}
                           onChange={(event) =>

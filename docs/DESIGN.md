@@ -25,6 +25,16 @@ Conduit uses one shared visual system across `apps/market`, `apps/merchant`, `ap
 - implementation requirements that change behavior still belong in `docs/specs/*`
 - this document defines shared visual and theming guidance for the monorepo
 
+## Component System Rule
+
+Conduit uses shadcn-style primitives wrapped and themed in `@conduit/ui`. Product work should compose those shared primitives before adding app-local controls.
+
+- Use existing `@conduit/ui` components for common controls: `Button`, `Input`, `Textarea`, `Select`, `Combobox`, `DropdownMenu`, `Dialog`, `Sheet`, `Tabs`, `Badge`, `StatusPill`, and shared cards.
+- Do not hand-roll native `<select>`, custom listboxes, custom comboboxes, modal shells, dropdown menus, tabs, or textareas in app routes when a shared primitive exists.
+- If a needed shadcn-style primitive does not exist yet, add it to `packages/ui/src/components`, export it from `@conduit/ui`, and then use that shared component from apps.
+- Route files may own workflow-specific composition and state, but interaction primitives, keyboard behavior, focus handling, overlays, and shared styling belong in `@conduit/ui`.
+- When there is an intentional exception, call it out in the PR description with the reason and expected follow-up.
+
 ## Token-First Rule
 
 - prefer shared tokens or CSS variables over raw hardcoded values when the value is brand-defining, reused, or likely to spread

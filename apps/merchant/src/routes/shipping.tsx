@@ -10,7 +10,7 @@ import {
   type CountryOption,
   type ParsedShippingOption,
 } from "@conduit/core"
-import { Button, Input, Label, Badge } from "@conduit/ui"
+import { Badge, Button, Combobox, Label } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import {
   loadShippingConfig,
@@ -196,150 +196,34 @@ function CountrySelector({
   selected: string[]
   onAdd: (country: CountryOption) => void
 }) {
-  const [search, setSearch] = useState("")
-  const [open, setOpen] = useState(false)
-  const [activeIndex, setActiveIndex] = useState(0)
-
-  const filtered = useMemo(() => {
-    const normalized = search.trim().toLowerCase()
-    return SHIPPING_COUNTRIES.filter((country) => {
-      if (selected.includes(country.code)) return false
-      if (!normalized) return true
-      return (
-        country.name.toLowerCase().includes(normalized) ||
-        country.code.toLowerCase().startsWith(normalized)
-      )
-    })
-  }, [search, selected])
-
-  useEffect(() => {
-    setActiveIndex(0)
-  }, [search, filtered.length])
-
-  function commitCountry(country: CountryOption) {
-    onAdd(country)
-    setSearch("")
-    setOpen(false)
-    setActiveIndex(0)
-  }
-
-  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "ArrowDown") {
-      e.preventDefault()
-      setOpen(true)
-      if (filtered.length === 0) return
-      setActiveIndex((index) => (index + 1) % filtered.length)
-      return
-    }
-
-    if (e.key === "ArrowUp") {
-      e.preventDefault()
-      setOpen(true)
-      if (filtered.length === 0) return
-      setActiveIndex((index) =>
-        index - 1 < 0 ? filtered.length - 1 : index - 1
-      )
-      return
-    }
-
-    if (e.key === "Home" && open && filtered.length > 0) {
-      e.preventDefault()
-      setActiveIndex(0)
-      return
-    }
-
-    if (e.key === "End" && open && filtered.length > 0) {
-      e.preventDefault()
-      setActiveIndex(filtered.length - 1)
-      return
-    }
-
-    if (e.key === "Enter" && open && filtered[activeIndex]) {
-      e.preventDefault()
-      commitCountry(filtered[activeIndex])
-      return
-    }
-
-    if (e.key === "Escape" && open) {
-      e.preventDefault()
-      setOpen(false)
-    }
-  }
-
-  const listboxId = "shipping-country-listbox"
-  const activeOption = open ? filtered[activeIndex] : undefined
-
-  useEffect(() => {
-    if (!activeOption) return
-    document
-      .getElementById(`shipping-country-option-${activeOption.code}`)
-      ?.scrollIntoView({ block: "nearest" })
-  }, [activeOption])
+  const options = useMemo(
+    () =>
+      SHIPPING_COUNTRIES.filter(
+        (country) => !selected.includes(country.code)
+      ).map((country) => ({
+        value: country.code,
+        label: country.name,
+        meta: country.code,
+        searchText: `${country.code} ${country.name}`,
+      })),
+    [selected]
+  )
 
   return (
-    <div
-      className="relative"
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) {
-          setOpen(false)
-        }
+    <Combobox
+      options={options}
+      onValueChange={(countryCode) => {
+        const country = SHIPPING_COUNTRIES.find(
+          (item) => item.code === countryCode
+        )
+        if (country) onAdd(country)
       }}
-    >
-      <Input
-        role="combobox"
-        aria-haspopup="listbox"
-        aria-autocomplete="list"
-        aria-controls={listboxId}
-        aria-expanded={open}
-        aria-activedescendant={
-          activeOption
-            ? `shipping-country-option-${activeOption.code}`
-            : undefined
-        }
-        value={search}
-        onChange={(e) => {
-          setSearch(e.target.value)
-          setOpen(true)
-        }}
-        onFocus={() => setOpen(true)}
-        onKeyDown={handleKeyDown}
-        placeholder="Search countries to add..."
-        className="h-9 w-full text-sm"
-      />
-      {open && filtered.length > 0 && (
-        <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-xl border border-[var(--border-overlay)] bg-[var(--surface-overlay)] p-1 shadow-[var(--shadow-dialog)] backdrop-blur-xl">
-          <div
-            id={listboxId}
-            role="listbox"
-            className="max-h-48 overflow-y-auto pr-1 [scrollbar-gutter:stable]"
-          >
-            {filtered.map((c, index) => (
-              <button
-                id={`shipping-country-option-${c.code}`}
-                key={c.code}
-                type="button"
-                role="option"
-                aria-selected={index === activeIndex}
-                className={[
-                  "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)] focus:bg-[var(--surface)] focus:outline-none",
-                  index === activeIndex ? "bg-[var(--surface)]" : "",
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
-                onMouseDown={(event) => event.preventDefault()}
-                onMouseEnter={() => setActiveIndex(index)}
-                onClick={() => commitCountry(c)}
-              >
-                <span className="text-xs font-mono text-[var(--text-muted)]">
-                  {c.code}
-                </span>
-                {c.name}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
+      placeholder="Search countries to add..."
+      searchPlaceholder="Search countries to add..."
+      emptyText="No countries available."
+      triggerClassName="h-9 text-sm"
+      contentClassName="max-h-64 overflow-hidden rounded-xl border-[var(--border-overlay)] bg-[var(--surface-overlay)]"
+    />
   )
 }
 

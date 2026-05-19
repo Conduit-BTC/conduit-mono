@@ -35,6 +35,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Textarea,
 } from "@conduit/ui"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { requireAuth } from "../lib/auth"
@@ -723,9 +724,9 @@ function ProductsPage() {
 
             <div className="grid gap-1.5">
               <Label htmlFor="product-summary">Summary</Label>
-              <textarea
+              <Textarea
                 id="product-summary"
-                className="min-h-28 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-primary/20 transition focus:ring-2"
+                className="min-h-28 rounded-xl bg-[var(--surface-elevated)] ring-primary/20 transition"
                 value={form.summary}
                 onChange={(event) =>
                   setForm((prev) => ({ ...prev, summary: event.target.value }))

@@ -21,20 +21,31 @@ This is the Conduit monorepo - a decentralized Nostr-based commerce platform. Se
 4. If the work changes product requirements, protocol behavior, or shared implementation expectations, land the docs/spec PR to `main` before starting the implementation `feat/*` branch.
 5. Use `@conduit/core` Zod schemas for validation. Interop parsing stays best-effort, but shared contracts should be reflected in repo docs first.
 
+## UI Component Rules
+
+- Use shadcn-style primitives through `@conduit/ui` before adding app-local controls.
+- Do not hand-roll native `<select>`, custom listboxes/comboboxes, dialogs, dropdowns, tabs, sheets, or textareas in app routes when `@conduit/ui` already provides the primitive.
+- If a common primitive is missing, add it to `packages/ui/src/components`, export it from `@conduit/ui`, and consume it from apps.
+- Keep route files focused on workflow composition and state. Shared keyboard behavior, focus management, overlay behavior, and reusable control styling belong in `@conduit/ui`.
+- If an exception is intentional, document the reason and expected follow-up in the PR description.
+
 ## Critical Protocol Constraints
 
 ### Authentication
+
 - External signers ONLY (NIP-07, NIP-46)
 - NO key generation, custody, or storage in apps
 - Merchant/buyer identity = pubkey only
 
 ### Privacy
+
 - NO behavioral tracking or profiling
 - NO message content inspection
 - System metrics only (relay success, load times)
 - All user data stays on user's device or relays
 
 ### Payments
+
 - NWC-based Lightning (no custody)
 - Invoice generation, not balance management
 - No refund processing in-app
@@ -42,22 +53,25 @@ This is the Conduit monorepo - a decentralized Nostr-based commerce platform. Se
 ## Nostr Event Handling
 
 ### Event Kinds Reference
+
 ```typescript
 // packages/core/src/protocol/kinds.ts
 export const EVENT_KINDS = {
-  PROFILE: 0,              // User metadata (NIP-01)
-  DM_LEGACY: 4,            // Encrypted DM legacy (NIP-04)
-  DELETION: 5,             // Event deletion (NIP-09)
-  ZAP_REQUEST: 9734,       // Zap request (NIP-57)
-  ZAP_RECEIPT: 9735,       // Zap receipt (NIP-57)
-  RELAY_LIST: 10002,       // Relay list (NIP-65)
-  DM_GIFT_WRAP: 1059,      // NIP-17 gift wrap
-  PRODUCT: 30402,          // Product listing (NIP-99 + GammaMarkets `market-spec`)
+  PROFILE: 0, // User metadata (NIP-01)
+  DM_LEGACY: 4, // Encrypted DM legacy (NIP-04)
+  DELETION: 5, // Event deletion (NIP-09)
+  ZAP_REQUEST: 9734, // Zap request (NIP-57)
+  ZAP_RECEIPT: 9735, // Zap receipt (NIP-57)
+  RELAY_LIST: 10002, // Relay list (NIP-65)
+  DM_GIFT_WRAP: 1059, // NIP-17 gift wrap
+  PRODUCT: 30402, // Product listing (NIP-99 + GammaMarkets `market-spec`)
 } as const
 ```
 
 ### NDK Usage
+
 NDK singleton lives in `packages/core`. Apps import and use:
+
 ```typescript
 import { getNdk, connectNdk } from "@conduit/core/protocol"
 ```
@@ -65,38 +79,41 @@ import { getNdk, connectNdk } from "@conduit/core/protocol"
 ## Shared Packages
 
 ### @conduit/core
+
 - `types/` - TypeScript interfaces (Product, Order, Profile, etc)
 - `protocol/` - NDK service, event builders, relay utilities
 - `schemas/` - Zod validators for Nostr events
 - `utils/` - formatPrice, formatPubkey, cn()
 
 ### @conduit/ui
+
 - `components/` - Button, Card, Dialog, Form, etc
 - `hooks/` - useViewport, useBreakpoint
 - `styles/` - Tailwind config, theme tokens
 
 ## Tech Stack
 
-| Layer | Choice |
-|-------|--------|
-| Runtime | Bun |
-| Build | Vite 6 + SWC |
-| Framework | React 19 |
-| Routing | TanStack Router |
-| Server State | TanStack Query + NDK |
-| Client State | React Context (auth only) |
-| Persistence | localStorage (cart, preferences) |
-| Database | Dexie (IndexedDB) - orders, messages, cache |
-| Forms | react-hook-form + Zod |
-| Validation | Zod schemas in `@conduit/core` |
-| UI | shadcn/ui + Tailwind |
-| Analytics | Plausible + PostHog (privacy configured) |
+| Layer        | Choice                                      |
+| ------------ | ------------------------------------------- |
+| Runtime      | Bun                                         |
+| Build        | Vite 6 + SWC                                |
+| Framework    | React 19                                    |
+| Routing      | TanStack Router                             |
+| Server State | TanStack Query + NDK                        |
+| Client State | React Context (auth only)                   |
+| Persistence  | localStorage (cart, preferences)            |
+| Database     | Dexie (IndexedDB) - orders, messages, cache |
+| Forms        | react-hook-form + Zod                       |
+| Validation   | Zod schemas in `@conduit/core`              |
+| UI           | shadcn/ui + Tailwind                        |
+| Analytics    | Plausible + PostHog (privacy configured)    |
 
 **No state management library.** TanStack Query handles all relay data. Dexie handles local persistence.
 
 ## Current Operational Notes (March 2026)
 
 ### Cloudflare Pages projects
+
 - Mainnet projects:
   - `conduit-market` (branch domain suffix: `conduit-market-coo.pages.dev`)
   - `conduit-merchant` (branch domain suffix: `conduit-merchant-33n.pages.dev`)
@@ -105,6 +122,7 @@ import { getNdk, connectNdk } from "@conduit/core/protocol"
   - `conduit-merchant-signet`
 
 ### Cloudflare preview/deploy gotchas
+
 - Signet projects must be Git-connected Pages projects (`source.type = "github"`), not Direct Upload projects.
 - Direct Upload projects cannot be converted to Git source (`8000069` API error). Recreate if needed.
 - Keep `BUN_VERSION=1.3.5` and `NODE_VERSION=20` in both preview + production deployment configs.
@@ -112,6 +130,7 @@ import { getNdk, connectNdk } from "@conduit/core/protocol"
 - Cloudflare PR comments are authored by `cloudflare-workers-and-pages[bot]` (note `[bot]` suffix).
 
 ### GitHub CI / merge checks
+
 - Required checks on `main` currently include:
   - `lint`, `typecheck`, `test`, `build-signet`, `preview-links`
   - `Cloudflare Pages: conduit-market`
@@ -121,12 +140,14 @@ import { getNdk, connectNdk } from "@conduit/core/protocol"
 - `preview-links` is expected to proceed once Cloudflare checks are complete, even if some URL comments arrive late.
 
 ### Orders auth gate behavior
+
 - Market and Merchant orders pages should only fetch/show conversations when:
   - `status === "connected"` and `pubkey` is present.
 - Do not rely on persisted pubkey alone for gated views.
 - Orders polling interval is tuned to `30_000` ms with manual refresh available.
 
 ### Refresh button behavior
+
 - Orders refresh uses Lucide `RefreshCw` on the left.
 - During refresh: icon spins and pulses.
 - State text transitions: `Refresh` -> `Refreshing...` -> `Updated`.
@@ -134,6 +155,7 @@ import { getNdk, connectNdk } from "@conduit/core/protocol"
 ## Code Patterns
 
 ### Query Hook Pattern
+
 ```typescript
 // packages/core/src/hooks/useProducts.ts
 import { useQuery } from "@tanstack/react-query"
@@ -153,6 +175,7 @@ export function useProducts(filters?: ProductFilters) {
 ```
 
 ### Auth Context Pattern
+
 ```typescript
 // packages/core/src/context/AuthContext.tsx
 export function AuthProvider({ children }) {
@@ -170,6 +193,7 @@ export function AuthProvider({ children }) {
 ```
 
 ### Component Pattern
+
 ```typescript
 // Prefer composition over configuration
 import { cn } from "@conduit/core/utils"
@@ -187,6 +211,7 @@ export function ProductCard({ product, className }: ProductCardProps) {
 ## Safety Rules
 
 ### Git
+
 - Never force push to main
 - Use `git restore --staged` not `git reset`
 - Confirm before any destructive action
@@ -194,11 +219,13 @@ export function ProductCard({ product, className }: ProductCardProps) {
 - Use `.github/pull_request_template.md` for PRs
 
 ### Packages
+
 - Build order matters: core → ui → apps
 - Never create circular dependencies
 - Run `bun run typecheck` before committing
 
 ### Context Files
+
 - `context/` is gitignored - ephemeral only
 - Permanent source-of-truth docs live in `docs/`
 - `docs/specs/` is authoritative for feature and protocol requirements
@@ -210,11 +237,13 @@ export function ProductCard({ product, className }: ProductCardProps) {
 Treat `conduit-mono` as a future public client/shared-code repository.
 
 When writing commit messages, PR descriptions, or tracked public-facing docs:
+
 - treat this repo as a public-facing client/shared-code repo
 - keep repo-scope language aligned with the actual monorepo contents
 - avoid internal company-planning framing
 
 Prefer language centered on:
+
 - Market
 - Merchant
 - Store Builder

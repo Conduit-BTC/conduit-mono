@@ -32,7 +32,24 @@ export {
   DialogClose,
 } from "./Dialog"
 export { Input, type InputProps } from "./Input"
+export { Textarea, type TextareaProps } from "./Textarea"
 export { Label } from "./Label"
+export {
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+  PopoverAnchor,
+} from "./Popover"
+export {
+  Command,
+  CommandInput,
+  CommandList,
+  CommandEmpty,
+  CommandGroup,
+  CommandItem,
+  CommandSeparator,
+} from "./Command"
+export { Combobox, type ComboboxOption, type ComboboxProps } from "./Combobox"
 export {
   Sheet,
   SheetPortal,

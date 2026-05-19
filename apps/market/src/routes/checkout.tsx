@@ -32,7 +32,7 @@ import {
   type PricingRateInput,
   type ShippingAddressSchema,
 } from "@conduit/core"
-import { Button, Input, Label } from "@conduit/ui"
+import { Button, Combobox, Input, Label, Textarea } from "@conduit/ui"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
 import { useWallet } from "../hooks/useWallet"
@@ -92,6 +92,13 @@ const DEFAULT_SHIPPING_FORM: ShippingFormState = {
   phone: "",
   email: "",
 }
+
+const COUNTRY_COMBOBOX_OPTIONS = SHIPPING_COUNTRIES.map((country) => ({
+  value: country.code,
+  label: country.name,
+  meta: country.code,
+  searchText: `${country.code} ${country.name}`,
+}))
 
 // ─── Session storage ──────────────────────────────────────────────────────────
 
@@ -194,124 +201,6 @@ function PaymentMethodButton({
 function getCountryLabel(code: string): string {
   const country = SHIPPING_COUNTRIES.find((option) => option.code === code)
   return country ? `${country.name} (${country.code})` : code
-}
-
-function CountryCombobox({
-  value,
-  invalid,
-  onChange,
-}: {
-  value: string
-  invalid?: boolean
-  onChange: (countryCode: string) => void
-}) {
-  const [query, setQuery] = useState(() => getCountryLabel(value))
-  const [open, setOpen] = useState(false)
-
-  useEffect(() => {
-    if (!open) setQuery(getCountryLabel(value))
-  }, [open, value])
-
-  const filteredCountries = useMemo(() => {
-    const normalized = query.trim().toLowerCase()
-    if (!normalized) return SHIPPING_COUNTRIES
-    return SHIPPING_COUNTRIES.filter(
-      (country) =>
-        country.name.toLowerCase().includes(normalized) ||
-        country.code.toLowerCase().startsWith(normalized)
-    )
-  }, [query])
-
-  function commitCountry(country: (typeof SHIPPING_COUNTRIES)[number]) {
-    onChange(country.code)
-    setQuery(`${country.name} (${country.code})`)
-    setOpen(false)
-  }
-
-  function commitExactMatch() {
-    const normalized = query.trim().toLowerCase()
-    const exact = SHIPPING_COUNTRIES.find(
-      (country) =>
-        country.code.toLowerCase() === normalized ||
-        country.name.toLowerCase() === normalized ||
-        `${country.name} (${country.code})`.toLowerCase() === normalized
-    )
-
-    if (exact) {
-      commitCountry(exact)
-      return
-    }
-
-    setQuery(getCountryLabel(value))
-    setOpen(false)
-  }
-
-  return (
-    <div className="relative">
-      <Input
-        id="ship-country"
-        role="combobox"
-        aria-controls="ship-country-listbox"
-        aria-expanded={open}
-        aria-autocomplete="list"
-        aria-invalid={invalid}
-        value={query}
-        onFocus={(event) => {
-          event.currentTarget.select()
-          setOpen(true)
-        }}
-        onChange={(event) => {
-          setQuery(event.target.value)
-          setOpen(true)
-        }}
-        onBlur={commitExactMatch}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault()
-            setQuery(getCountryLabel(value))
-            setOpen(false)
-          }
-          if (event.key === "Enter" && open && filteredCountries[0]) {
-            event.preventDefault()
-            commitCountry(filteredCountries[0])
-          }
-        }}
-        placeholder="Search countries..."
-        className={[
-          "h-10 rounded-xl bg-[var(--surface-elevated)]",
-          invalid
-            ? "border-error/50 focus:border-error focus:ring-error/30"
-            : "",
-        ]
-          .filter(Boolean)
-          .join(" ")}
-      />
-      {open && filteredCountries.length > 0 && (
-        <div
-          id="ship-country-listbox"
-          role="listbox"
-          className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-[var(--border-overlay)] bg-[var(--surface-overlay)] shadow-[var(--shadow-dialog)] backdrop-blur-xl"
-        >
-          {filteredCountries.map((country) => (
-            <button
-              key={country.code}
-              type="button"
-              role="option"
-              aria-selected={country.code === value}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)] focus:bg-[var(--surface)] focus:outline-none"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => commitCountry(country)}
-            >
-              <span className="text-xs font-mono text-[var(--text-muted)]">
-                {country.code}
-              </span>
-              {country.name}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
 }
 
 // ─── Order summary sidebar ────────────────────────────────────────────────────
@@ -1467,12 +1356,20 @@ function CheckoutPage() {
                     <Label htmlFor="ship-country">
                       Country <span className="text-error">*</span>
                     </Label>
-                    <CountryCombobox
+                    <Combobox
+                      id="ship-country"
                       value={shipping.country}
+                      selectedLabel={getCountryLabel(shipping.country)}
+                      options={COUNTRY_COMBOBOX_OPTIONS}
                       invalid={fieldInvalid("country")}
-                      onChange={(countryCode) =>
+                      onValueChange={(countryCode) =>
                         updateShipping("country", countryCode)
                       }
+                      placeholder="Search countries..."
+                      searchPlaceholder="Search countries..."
+                      emptyText="No supported countries found."
+                      triggerClassName="h-10 rounded-xl bg-[var(--surface-elevated)]"
+                      contentClassName="rounded-xl border-[var(--border-overlay)] bg-[var(--surface-overlay)]"
                     />
                     {fieldInvalid("country") && (
                       <p className="text-xs text-error">
@@ -1794,7 +1691,7 @@ function CheckoutPage() {
                     {zapVisibility === "public_zap" && (
                       <div className="mt-4 grid gap-1.5">
                         <Label htmlFor="zap-content">Public zap comment</Label>
-                        <textarea
+                        <Textarea
                           id="zap-content"
                           value={zapContent}
                           onChange={(e) => {
@@ -1803,7 +1700,7 @@ function CheckoutPage() {
                           }}
                           rows={3}
                           maxLength={280}
-                          className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
+                          className="min-h-0 rounded-xl bg-[var(--surface)] py-2.5 focus-visible:border-primary-500 focus-visible:ring-primary-500/30"
                         />
                         <p className="text-xs leading-6 text-[var(--text-muted)]">
                           Public zap receipts can expose this comment. Shipping
@@ -1863,13 +1760,13 @@ function CheckoutPage() {
                 {/* Order note */}
                 <div className="mt-6 grid gap-1.5">
                   <Label htmlFor="order-note">Order note (optional)</Label>
-                  <textarea
+                  <Textarea
                     id="order-note"
                     value={note}
                     onChange={(e) => setNote(e.target.value)}
                     placeholder="Anything the merchant should know before they confirm the order?"
                     rows={4}
-                    className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
+                    className="min-h-0 rounded-xl bg-[var(--surface-elevated)] py-2.5 focus-visible:border-primary-500 focus-visible:ring-primary-500/30"
                   />
                 </div>
 
