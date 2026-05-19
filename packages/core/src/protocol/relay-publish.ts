@@ -25,6 +25,7 @@ import {
   assertSafeNip65RelayTags,
   tryNormalizeRelayUrl,
 } from "./relay-settings"
+import { config } from "../config"
 
 export interface PublishWithPlannerInput {
   intent: RelayWriteIntent
@@ -141,6 +142,40 @@ function mergeUnique(urls: readonly string[][]): string[] {
   return Array.from(new Set(urls.flat()))
 }
 
+function getAuthorEventFallbackRelayUrls(input: {
+  eventKind: number | undefined
+  intent: RelayWriteIntent
+  attemptedRelayUrls: readonly string[]
+}): string[] {
+  if (input.intent !== "author_event") return []
+  if (input.eventKind === EVENT_KINDS.RELAY_LIST) return []
+
+  const attempted = new Set(
+    input.attemptedRelayUrls.map(normalizeOutcomeRelayUrl)
+  )
+  return config.publicRelayUrls.filter(
+    (url) => !attempted.has(normalizeOutcomeRelayUrl(url))
+  )
+}
+
+function createAuthorFallbackPublishError(
+  primaryError: unknown,
+  fallbackError: unknown
+): Error {
+  const fallbackMessage =
+    fallbackError instanceof Error
+      ? fallbackError.message
+      : "fallback relays did not accept the event"
+  const primaryMessage =
+    primaryError instanceof Error ? primaryError.message : null
+
+  return new Error(
+    primaryMessage
+      ? `Could not publish to configured or fallback relays. Configured relay error: ${primaryMessage}. Fallback relay error: ${fallbackMessage}`
+      : `Could not publish to configured or fallback relays. Fallback relay error: ${fallbackMessage}`
+  )
+}
+
 async function publishToRelayUrls(input: {
   event: NDKEvent
   ndk: ReturnType<typeof getNdk>
@@ -253,17 +288,40 @@ export async function publishWithPlanner(
   const plan = testOverrides.planPublishRelays
     ? await testOverrides.planPublishRelays(input)
     : await planPublishRelays(input)
-  const attemptedRelayUrls = Array.from(
+  const plannedRelayUrls = Array.from(
     new Set([...plan.primaryRelayUrls, ...plan.broadcastRelayUrls])
   )
+  let attemptedRelayUrls = [...plannedRelayUrls]
 
-  if (attemptedRelayUrls.length === 0) {
+  if (plannedRelayUrls.length === 0) {
     if (event.kind === EVENT_KINDS.RELAY_LIST) {
       throw new Error(
         "Refusing to publish NIP-65 relays without an explicit OUT relay target."
       )
     }
-    // Defensive: planner produced no targets — fall back to default publish.
+    const fallbackRelayUrls = getAuthorEventFallbackRelayUrls({
+      eventKind: event.kind,
+      intent: input.intent,
+      attemptedRelayUrls,
+    })
+    if (fallbackRelayUrls.length > 0) {
+      attemptedRelayUrls = fallbackRelayUrls
+      const fallback = await publishToRelayUrls({
+        event,
+        ndk: testOverrides.getNdk ? testOverrides.getNdk() : getNdk(),
+        relayUrls: fallbackRelayUrls,
+        requiredRelayCount: 1,
+      })
+      if (fallback.thrown) throw fallback.thrown
+      return {
+        plan: emptyPlan(input.intent),
+        attemptedRelayUrls,
+        successfulRelayUrls: fallback.successfulRelayUrls,
+        failedRelayUrls: fallback.failedRelayUrls,
+      }
+    }
+
+    // Defensive: planner produced no targets and no configured fallback exists.
     await event.publish()
     return {
       plan: emptyPlan(input.intent),
@@ -281,7 +339,39 @@ export async function publishWithPlanner(
     requiredRelayCount: plan.primaryRelayUrls.length > 0 ? 1 : 0,
   })
 
-  if (primary.thrown) throw primary.thrown
+  if (primary.thrown) {
+    const fallbackRelayUrls = getAuthorEventFallbackRelayUrls({
+      eventKind: event.kind,
+      intent: input.intent,
+      attemptedRelayUrls,
+    })
+
+    if (fallbackRelayUrls.length > 0) {
+      attemptedRelayUrls = mergeUnique([attemptedRelayUrls, fallbackRelayUrls])
+      const fallback = await publishToRelayUrls({
+        event,
+        ndk,
+        relayUrls: fallbackRelayUrls,
+        requiredRelayCount: 1,
+      })
+
+      if (!fallback.thrown) {
+        return {
+          plan,
+          attemptedRelayUrls,
+          successfulRelayUrls: fallback.successfulRelayUrls,
+          failedRelayUrls: mergeUnique([
+            primary.failedRelayUrls,
+            fallback.failedRelayUrls,
+          ]),
+        }
+      }
+
+      throw createAuthorFallbackPublishError(primary.thrown, fallback.thrown)
+    }
+
+    throw primary.thrown
+  }
 
   const broadcast = await publishToRelayUrls({
     event,

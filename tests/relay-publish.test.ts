@@ -223,6 +223,86 @@ describe("planPublishRelays", () => {
     expect(result.successfulRelayUrls).toEqual([primaryRelay])
     expect(result.failedRelayUrls).toEqual([broadcastRelay])
   })
+
+  it("retries non-NIP-65 author events on public fallback relays when configured writes fail", async () => {
+    const primaryRelay = "wss://configured-write.example"
+    const normalizedPrimaryRelay = `${primaryRelay}/`
+    const attempts: string[][] = []
+    const fakeEvent = {
+      kind: EVENT_KINDS.PRODUCT,
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        if (relayUrls.includes(normalizedPrimaryRelay)) {
+          throw new Error("configured write relay failed")
+        }
+        return new Set(relayUrls.slice(0, 1).map((url) => ({ url })))
+      },
+    } as never
+
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: [primaryRelay],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    const result = await publishWithPlanner(fakeEvent, {
+      intent: "author_event",
+      authorPubkey: "alice",
+    })
+
+    expect(attempts).toHaveLength(2)
+    expect(attempts[0]).toEqual([normalizedPrimaryRelay])
+    expect(attempts[1]?.length).toBeGreaterThan(0)
+    expect(attempts[1]).not.toContain(normalizedPrimaryRelay)
+    expect(result.successfulRelayUrls.length).toBe(1)
+    expect(result.failedRelayUrls).toContain(primaryRelay)
+  })
+
+  it("does not fallback NIP-65 relay-list publishes after configured writes fail", async () => {
+    const primaryRelay = "wss://configured-write.example"
+    const normalizedPrimaryRelay = `${primaryRelay}/`
+    const attempts: string[][] = []
+    const fakeEvent = {
+      kind: EVENT_KINDS.RELAY_LIST,
+      tags: [
+        ["r", "wss://one.example"],
+        ["r", "wss://two.example", "write"],
+      ],
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        throw new Error("configured write relay failed")
+      },
+    } as never
+
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: [primaryRelay],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await expect(
+      publishWithPlanner(fakeEvent, {
+        intent: "author_event",
+        authorPubkey: "alice",
+      })
+    ).rejects.toThrow("configured write relay failed")
+
+    expect(attempts).toEqual([[normalizedPrimaryRelay]])
+  })
 })
 
 describe("deriveRelayOutcomes", () => {

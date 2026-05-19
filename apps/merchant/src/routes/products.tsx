@@ -132,6 +132,26 @@ function getShippingCostHelpText(value: string): string {
   return "Enter a whole-number shipping amount in sats."
 }
 
+function getPublishErrorMessage(
+  error: unknown,
+  action: "publish" | "delete"
+): string {
+  const fallback =
+    action === "delete"
+      ? "Failed to delete listing"
+      : "Failed to publish listing"
+  if (!(error instanceof Error)) return fallback
+
+  if (
+    error.message.includes("Not enough relays received the event") ||
+    error.message.includes("Could not publish to configured or fallback relays")
+  ) {
+    return `${fallback}. No relay accepted the signed event. Open Network Settings, reset to defaults or enable OUT on another relay, then try again.`
+  }
+
+  return error.message
+}
+
 async function fetchMerchantProducts(
   merchantPubkey: string
 ): Promise<CommerceResult<MerchantProduct[]>> {
@@ -567,11 +587,7 @@ function ProductsPage() {
                 : "idle"
           }
           awaitingSignatureMessage="Confirm the deletion event in your signer. The listing will disappear after relay publish finishes."
-          errorMessage={
-            deleteMutation.error instanceof Error
-              ? deleteMutation.error.message
-              : "Failed to delete listing"
-          }
+          errorMessage={getPublishErrorMessage(deleteMutation.error, "delete")}
           className="mt-2"
         />
       </section>
@@ -852,14 +868,6 @@ function ProductsPage() {
               />
             </div>
 
-            {saveMutation.error && (
-              <div className="rounded-xl border border-error/30 bg-error/10 p-3 text-sm text-error">
-                {saveMutation.error instanceof Error
-                  ? saveMutation.error.message
-                  : "Failed to publish product"}
-              </div>
-            )}
-
             <SignedActionStatus
               state={
                 isSaving
@@ -876,11 +884,10 @@ function ProductsPage() {
                   : "Publish this product to create a signed kind 30402 listing."
               }
               awaitingSignatureMessage="Confirm the product listing in your signer. It will close after relay publish finishes."
-              errorMessage={
-                saveMutation.error instanceof Error
-                  ? saveMutation.error.message
-                  : "Failed to publish product"
-              }
+              errorMessage={getPublishErrorMessage(
+                saveMutation.error,
+                "publish"
+              )}
             />
 
             <DialogFooter>
