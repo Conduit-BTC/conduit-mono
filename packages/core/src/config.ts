@@ -1,6 +1,6 @@
-const DEFAULT_RELAYS = [
-  // Bootstrap read relays for product discovery. Capability scans determine
-  // trust/commerce status; inclusion here does not grant write authority.
+export const CANONICAL_DEFAULT_RELAYS = [
+  // Canonical in-app relay reset list. Deploy env should not inject or replace
+  // this list; users can still publish their own NIP-65 preferences.
   "wss://conduitl2.fly.dev",
   "wss://relay.plebeian.market",
   "wss://relay.primal.net",
@@ -9,6 +9,7 @@ const DEFAULT_RELAYS = [
   "wss://purplepag.es",
 ]
 const RETIRED_DEFAULT_RELAYS = new Set(["wss://relay.conduit.market"])
+const FALLBACK_RELAY_URL = "wss://relay.primal.net"
 
 export interface ConduitConfig {
   relayUrl: string
@@ -29,10 +30,6 @@ export interface ConduitConfig {
 // Use direct access for each variable so Vite can inline them at build time.
 function getViteEnv(): {
   relayUrl: string
-  defaultRelays: string
-  defaultRelayUrl: string
-  commerceRelayUrls: string
-  publicRelayUrls: string
   cacheApiUrl: string
   lightningNetwork: string
   nip89RelayHint: string
@@ -44,10 +41,6 @@ function getViteEnv(): {
   if (typeof import.meta !== "undefined" && import.meta.env) {
     return {
       relayUrl: import.meta.env.VITE_RELAY_URL ?? "",
-      defaultRelays: import.meta.env.VITE_DEFAULT_RELAYS ?? "",
-      defaultRelayUrl: import.meta.env.VITE_DEFAULT_RELAY_URL ?? "",
-      commerceRelayUrls: import.meta.env.VITE_COMMERCE_RELAY_URLS ?? "",
-      publicRelayUrls: import.meta.env.VITE_PUBLIC_RELAY_URLS ?? "",
       cacheApiUrl: import.meta.env.VITE_CACHE_API_URL ?? "",
       lightningNetwork: import.meta.env.VITE_LIGHTNING_NETWORK ?? "",
       nip89RelayHint: import.meta.env.VITE_NIP89_RELAY_HINT ?? "",
@@ -59,10 +52,6 @@ function getViteEnv(): {
   }
   return {
     relayUrl: "",
-    defaultRelays: "",
-    defaultRelayUrl: "",
-    commerceRelayUrls: "",
-    publicRelayUrls: "",
     cacheApiUrl: "",
     lightningNetwork: "",
     nip89RelayHint: "",
@@ -73,38 +62,60 @@ function getViteEnv(): {
   }
 }
 
-function parseRelayList(raw: string): string[] {
-  return raw
-    .split(",")
-    .map((r) => r.trim())
-    .filter(Boolean)
-    .filter((v, i, a) => a.indexOf(v) === i)
+function normalizeConfiguredRelayUrl(input: string): string | null {
+  const trimmed = input.trim()
+  if (!trimmed) return null
+
+  try {
+    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
+      ? trimmed
+      : `wss://${trimmed}`
+    const parsed = new URL(withScheme)
+    if (parsed.protocol === "http:") parsed.protocol = "ws:"
+    if (parsed.protocol === "https:") parsed.protocol = "wss:"
+    if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") return null
+    if (!parsed.hostname) return null
+
+    parsed.hash = ""
+    parsed.search = ""
+    const pathname =
+      parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "")
+    return `${parsed.protocol}//${parsed.host.toLowerCase()}${pathname}`
+  } catch {
+    return null
+  }
 }
 
-function getDefaultRelays(env: ReturnType<typeof getViteEnv>): string[] {
-  const raw = env.defaultRelays.trim() || env.defaultRelayUrl.trim()
-  if (!raw) return DEFAULT_RELAYS
-  return [...parseRelayList(raw), ...DEFAULT_RELAYS].filter(
-    (url, index, all) =>
-      !RETIRED_DEFAULT_RELAYS.has(url) && all.indexOf(url) === index
-  )
+export function isRetiredDefaultRelayUrl(input: string): boolean {
+  const normalized = normalizeConfiguredRelayUrl(input)
+  return !!normalized && RETIRED_DEFAULT_RELAYS.has(normalized)
+}
+
+function uniqueConfiguredRelayUrls(urls: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const url of urls) {
+    const normalized = normalizeConfiguredRelayUrl(url)
+    if (!normalized) continue
+    if (RETIRED_DEFAULT_RELAYS.has(normalized)) continue
+    if (seen.has(normalized)) continue
+    seen.add(normalized)
+    out.push(normalized)
+  }
+  return out
+}
+
+function getConfiguredRelayUrl(raw: string, fallback: string): string {
+  return uniqueConfiguredRelayUrls([raw])[0] ?? fallback
 }
 
 const env = getViteEnv()
 
-const relayUrl = env.relayUrl || "wss://relay.primal.net"
-const legacyRelays = getDefaultRelays(env)
-const commerceRelayUrls = parseRelayList(env.commerceRelayUrls)
-const configuredPublicRelayUrls = parseRelayList(env.publicRelayUrls)
-const publicRelayUrls =
-  configuredPublicRelayUrls.length > 0
-    ? configuredPublicRelayUrls
-    : legacyRelays
-const defaultRelays = [
-  ...commerceRelayUrls,
-  ...publicRelayUrls,
-  relayUrl,
-].filter((url, index, all) => url && all.indexOf(url) === index)
+const relayUrl = getConfiguredRelayUrl(env.relayUrl, FALLBACK_RELAY_URL)
+const defaultRelays = uniqueConfiguredRelayUrls(CANONICAL_DEFAULT_RELAYS)
+const commerceRelayUrls: string[] = []
+const publicRelayUrls = defaultRelays
+const nip89RelayHint = getConfiguredRelayUrl(env.nip89RelayHint, relayUrl)
 
 export const config: ConduitConfig = {
   relayUrl,
@@ -114,7 +125,7 @@ export const config: ConduitConfig = {
   cacheApiUrl: env.cacheApiUrl.trim() || null,
   lightningNetwork: (env.lightningNetwork ||
     "mainnet") as ConduitConfig["lightningNetwork"],
-  nip89RelayHint: env.nip89RelayHint.trim() || relayUrl,
+  nip89RelayHint,
   nip89MarketPubkey: env.nip89MarketPubkey.trim() || null,
   nip89MerchantPubkey: env.nip89MerchantPubkey.trim() || null,
   nip89MarketDTag: env.nip89MarketDTag.trim() || "conduit-market",

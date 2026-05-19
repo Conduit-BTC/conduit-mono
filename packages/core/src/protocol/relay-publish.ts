@@ -236,7 +236,8 @@ export async function planPublishRelays(
  *
  * Returns the resolved plan and the URL list that was attempted so callers
  * can surface diagnostics. If the planner yields no relays we fall back to
- * the NDKEvent's default `publish()` (NDK's pool of connected relays).
+ * the NDKEvent's default `publish()` (NDK's pool of connected relays), except
+ * for NIP-65 relay-list publishes where explicit user OUT relays are required.
  *
  * Primary relays are the delivery requirement. Broadcast relays are diagnostic
  * best-effort fanout and must not make a recipient delivery look successful.
@@ -257,6 +258,11 @@ export async function publishWithPlanner(
   )
 
   if (attemptedRelayUrls.length === 0) {
+    if (event.kind === EVENT_KINDS.RELAY_LIST) {
+      throw new Error(
+        "Refusing to publish NIP-65 relays without an explicit OUT relay target."
+      )
+    }
     // Defensive: planner produced no targets — fall back to default publish.
     await event.publish()
     return {

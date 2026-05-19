@@ -1,4 +1,4 @@
-import { config, type ConduitConfig } from "../config"
+import { config, isRetiredDefaultRelayUrl, type ConduitConfig } from "../config"
 
 export type RelaySettingsSection = "commerce" | "public"
 export type RelaySettingsSource = "default" | "manual" | "signer" | "published"
@@ -341,6 +341,22 @@ export function countActiveNip65RelayTagsFromTags(
   ).length
 }
 
+export function countWriteNip65Relays(
+  relays: readonly Pick<
+    RelaySettingsEntry,
+    "url" | "readEnabled" | "writeEnabled"
+  >[]
+): number {
+  return serializeNip65RelayTags(relays).filter((tag) => tag[2] !== "read")
+    .length
+}
+
+export function countWriteNip65RelayTags(tags: readonly string[][]): number {
+  return parseNip65RelayTags(tags).filter(
+    (preference) => preference.writeEnabled
+  ).length
+}
+
 export function assertSafeNip65RelayList(
   relays: readonly Pick<
     RelaySettingsEntry,
@@ -353,6 +369,12 @@ export function assertSafeNip65RelayList(
       "Refusing to publish a tiny NIP-65 relay list. Load or add at least two active relays before publishing."
     )
   }
+  const writeRelayCount = countWriteNip65Relays(relays)
+  if (writeRelayCount < 1) {
+    throw new Error(
+      "Refusing to publish a NIP-65 relay list without an OUT relay. Enable write access on at least one relay before publishing."
+    )
+  }
 }
 
 export function assertSafeNip65RelayTags(tags: readonly string[][]): void {
@@ -360,6 +382,12 @@ export function assertSafeNip65RelayTags(tags: readonly string[][]): void {
   if (activeRelayCount <= 1) {
     throw new Error(
       "Refusing to publish a tiny NIP-65 relay list. Load or add at least two active relays before publishing."
+    )
+  }
+  const writeRelayCount = countWriteNip65RelayTags(tags)
+  if (writeRelayCount < 1) {
+    throw new Error(
+      "Refusing to publish a NIP-65 relay list without an OUT relay. Enable write access on at least one relay before publishing."
     )
   }
 }
@@ -540,20 +568,20 @@ export async function scanRelaySettingsEntry(
 export function createDefaultRelaySettings(
   cfg: ConduitConfig = config
 ): RelaySettingsState {
-  const entries: RelaySettingsEntry[] = uniqueRelayUrls(cfg.defaultRelays).map(
-    (url) => ({
-      url,
-      readEnabled: true,
-      writeEnabled: false,
-      section: "public",
-      capabilities: EMPTY_CAPABILITIES,
-      warnings: {
-        ...EMPTY_WARNINGS,
-        staleRelayInfo: true,
-      },
-      source: "default" as const,
-    })
-  )
+  const entries: RelaySettingsEntry[] = uniqueRelayUrls(
+    cfg.defaultRelays.filter((url) => !isRetiredDefaultRelayUrl(url))
+  ).map((url) => ({
+    url,
+    readEnabled: true,
+    writeEnabled: false,
+    section: "public",
+    capabilities: EMPTY_CAPABILITIES,
+    warnings: {
+      ...EMPTY_WARNINGS,
+      staleRelayInfo: true,
+    },
+    source: "default" as const,
+  }))
 
   return normalizeRelaySettingsState({
     version: RELAY_SETTINGS_STORAGE_VERSION,

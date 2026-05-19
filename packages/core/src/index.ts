@@ -44,7 +44,9 @@ export type {
 
 // Config
 export {
+  CANONICAL_DEFAULT_RELAYS,
   config,
+  isRetiredDefaultRelayUrl,
   isMockPayments,
   isSignet,
   isTestnet,

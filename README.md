@@ -101,14 +101,22 @@ bun run dev:merchant:mainnet
 
 `.env.local` should remain for personal overrides only. Keep mode files minimal and let the shared core relay defaults handle the broader fallback strategy unless a mode truly needs different values.
 
-| Variable                   | Default (dev)         | Description                                              |
-| -------------------------- | --------------------- | -------------------------------------------------------- |
-| `VITE_RELAY_URL`           | `ws://127.0.0.1:7777` | Default relay hint when no relay preference is available |
-| `VITE_DEFAULT_RELAYS`      | `ws://127.0.0.1:7777` | General relay defaults                                   |
-| `VITE_PUBLIC_RELAY_URLS`   | —                     | Public relays for broader Nostr reads and writes         |
-| `VITE_COMMERCE_RELAY_URLS` | —                     | Commerce-compatible relays Conduit can prioritize        |
-| `VITE_LIGHTNING_NETWORK`   | `mock`                | `mock`, `signet`, or `mainnet`                           |
-| `VITE_BLOSSOM_SERVER_URL`  | —                     | Blossom media server for product images                  |
+| Variable                  | Default (dev) | Description                                        |
+| ------------------------- | ------------- | -------------------------------------------------- |
+| `VITE_RELAY_URL`          | —             | Optional single relay hint for legacy/NIP-89 flows |
+| `VITE_LIGHTNING_NETWORK`  | `mock`        | `mock`, `signet`, or `mainnet`                     |
+| `VITE_BLOSSOM_SERVER_URL` | —             | Blossom media server for product images            |
+
+The canonical fallback/reset relay list is code-owned in `packages/core/src/config.ts` and currently starts from:
+
+```text
+wss://conduitl2.fly.dev
+wss://relay.plebeian.market
+wss://relay.primal.net
+wss://relay.damus.io
+wss://nos.lol
+wss://purplepag.es
+```
 
 **Modes:**
 

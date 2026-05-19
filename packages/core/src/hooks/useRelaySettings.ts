@@ -75,6 +75,7 @@ function createManualDefaultRelaySettings(): RelaySettingsState {
     ...defaults,
     entries: defaults.entries.map((entry) => ({
       ...entry,
+      writeEnabled: true,
       source: "manual" as const,
     })),
   }
@@ -419,7 +420,7 @@ export function useRelaySettings(
     setError(null)
     setPublishError(null)
     const defaults = saveRelaySettings(
-      pubkey ? createEmptyRelaySettings() : createDefaultRelaySettings(),
+      createManualDefaultRelaySettings(),
       scope
     )
     settingsRef.current = defaults

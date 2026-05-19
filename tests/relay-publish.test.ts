@@ -115,6 +115,41 @@ describe("planPublishRelays", () => {
     ).rejects.toThrow("Refusing to publish a tiny NIP-65 relay list")
   })
 
+  it("refuses NIP-65 relay-list publishes without an explicit planner target", async () => {
+    const publishAttempts: string[] = []
+
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: [],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await expect(
+      publishWithPlanner(
+        {
+          kind: EVENT_KINDS.RELAY_LIST,
+          tags: [
+            ["r", "wss://one.example"],
+            ["r", "wss://two.example", "write"],
+          ],
+          publish: async () => {
+            publishAttempts.push("fallback")
+            return new Set()
+          },
+        } as never,
+        {
+          intent: "author_event",
+          authorPubkey: "alice",
+        }
+      )
+    ).rejects.toThrow("without an explicit OUT relay target")
+
+    expect(publishAttempts).toEqual([])
+  })
+
   it("does not let broadcast success mask recipient primary failure", async () => {
     const primaryRelay = "wss://recipient.example"
     const broadcastRelay = "wss://sender.example"

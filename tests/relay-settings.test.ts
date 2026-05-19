@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test"
 import {
   assertSafeNip65RelayList,
+  CANONICAL_DEFAULT_RELAYS,
+  config,
+  createDefaultRelaySettings,
   createRelaySettingsEntryFromScan,
   createRelaySettingsFromPreferences,
   createUnreachableRelaySettingsEntry,
@@ -52,6 +55,28 @@ function entry(
 }
 
 describe("relay settings protocol helpers", () => {
+  it("keeps relay defaults canonical and excludes retired relay domains", () => {
+    expect(CANONICAL_DEFAULT_RELAYS).toEqual([
+      "wss://conduitl2.fly.dev",
+      "wss://relay.plebeian.market",
+      "wss://relay.primal.net",
+      "wss://relay.damus.io",
+      "wss://nos.lol",
+      "wss://purplepag.es",
+    ])
+    expect(config.defaultRelays).toEqual(CANONICAL_DEFAULT_RELAYS)
+    expect(config.defaultRelays).not.toContain("wss://relay.conduit.market")
+
+    const settings = createDefaultRelaySettings({
+      ...config,
+      defaultRelays: ["wss://relay.conduit.market", "wss://relay.primal.net"],
+    })
+
+    expect(settings.entries.map((relay) => relay.url)).toEqual([
+      "wss://relay.primal.net",
+    ])
+  })
+
   it("normalizes relay urls before deduplication", () => {
     expect(normalizeRelayUrl("relay.example.com/")).toBe(
       "wss://relay.example.com"
@@ -413,6 +438,25 @@ describe("relay settings protocol helpers", () => {
         ]).entries
       )
     ).not.toThrow()
+  })
+
+  it("blocks NIP-65 publishes without an OUT relay", () => {
+    expect(() =>
+      assertSafeNip65RelayList(
+        createRelaySettingsFromPreferences([
+          {
+            url: "wss://one.example",
+            readEnabled: true,
+            writeEnabled: false,
+          },
+          {
+            url: "wss://two.example",
+            readEnabled: true,
+            writeEnabled: false,
+          },
+        ]).entries
+      )
+    ).toThrow("without an OUT relay")
   })
 
   it("applies safe defaults when creating an entry from a scan", () => {

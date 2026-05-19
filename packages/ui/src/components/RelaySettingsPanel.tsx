@@ -601,6 +601,13 @@ export function RelaySettingsPanel({
   const activeRelayCount = settings.entries.filter(
     (entry) => entry.readEnabled || entry.writeEnabled
   ).length
+  const readRelayCount = settings.entries.filter(
+    (entry) => entry.readEnabled
+  ).length
+  const writeRelayCount = settings.entries.filter(
+    (entry) => entry.writeEnabled
+  ).length
+  const canPublishRelayList = activeRelayCount > 1 && writeRelayCount > 0
   async function handleAddRelay(event: FormEvent): Promise<void> {
     event.preventDefault()
     const trimmed = newRelayUrl.trim()
@@ -747,35 +754,55 @@ export function RelaySettingsPanel({
         </form>
 
         {onReset || onPublishRelayList ? (
-          <div className="flex flex-wrap justify-end gap-2">
-            {onReset ? (
-              <Button type="button" variant="ghost" onClick={onReset}>
-                {onPublishRelayList ? "Reset local draft" : "Reset to defaults"}
-              </Button>
-            ) : null}
-            {onRestoreDefaults && settings.entries.length > 0 ? (
-              <Button type="button" variant="ghost" onClick={onRestoreDefaults}>
-                Replace with defaults
-              </Button>
-            ) : null}
+          <div className="space-y-3">
             {onPublishRelayList ? (
-              <Button
-                type="button"
-                variant="outline"
-                disabled={
-                  activeRelayCount <= 1 ||
-                  isLoadingPublishedRelayList ||
-                  isPublishing ||
-                  publishingRelayList
-                }
-                onClick={() => void handlePublishRelayList()}
-              >
-                <Upload className="h-4 w-4" />
-                {isPublishing || publishingRelayList
-                  ? "Publishing..."
-                  : "Publish relays"}
-              </Button>
+              <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
+                Publishing signs a NIP-65 event with {activeRelayCount} relay{" "}
+                {activeRelayCount === 1 ? "tag" : "tags"}: {readRelayCount} IN,{" "}
+                {writeRelayCount} OUT.
+                {writeRelayCount === 0
+                  ? " Enable OUT on at least one relay before publishing."
+                  : " Signers may show empty content because relay URLs live in tags."}
+              </div>
             ) : null}
+            <div className="flex flex-wrap justify-end gap-2">
+              {onReset ? (
+                <Button type="button" variant="ghost" onClick={onReset}>
+                  {onPublishRelayList
+                    ? "Reset to default relays"
+                    : "Reset to defaults"}
+                </Button>
+              ) : null}
+              {onRestoreDefaults &&
+              settings.entries.length > 0 &&
+              !onPublishRelayList ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={onRestoreDefaults}
+                >
+                  Replace with defaults
+                </Button>
+              ) : null}
+              {onPublishRelayList ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={
+                    !canPublishRelayList ||
+                    isLoadingPublishedRelayList ||
+                    isPublishing ||
+                    publishingRelayList
+                  }
+                  onClick={() => void handlePublishRelayList()}
+                >
+                  <Upload className="h-4 w-4" />
+                  {isPublishing || publishingRelayList
+                    ? "Publishing..."
+                    : "Publish relays"}
+                </Button>
+              ) : null}
+            </div>
           </div>
         ) : null}
         {publishError ? (
