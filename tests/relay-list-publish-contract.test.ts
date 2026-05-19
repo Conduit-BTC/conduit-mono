@@ -15,6 +15,9 @@ describe("relay-list publish contract", () => {
     const signatureCheckIndex = publishBody.indexOf(
       'throw new Error("Signer did not return a signature")'
     )
+    const publishableIndex = publishBody.indexOf(
+      "getPublishableRelaySettingsEntries"
+    )
     const publishIndex = publishBody.indexOf("await publishWithPlanner(event")
     const ndkIndex = publishBody.indexOf("const ndk = getNdk()")
     const loadingIndex = publishBody.indexOf("setPublishingRelayList(true)")
@@ -22,6 +25,8 @@ describe("relay-list publish contract", () => {
     expect(publishBody).not.toContain("requireNdkConnected")
     expect(ndkIndex).toBeGreaterThan(-1)
     expect(loadingIndex).toBeGreaterThan(-1)
+    expect(publishableIndex).toBeGreaterThan(-1)
+    expect(publishableIndex).toBeLessThan(signingIndex)
     expect(signingIndex).toBeGreaterThan(ndkIndex)
     expect(signingIndex).toBeLessThan(publishIndex)
     expect(signatureCheckIndex).toBeGreaterThan(signingIndex)

@@ -4,8 +4,10 @@ import {
   assertSafeNip65RelayList,
   createDefaultRelaySettings,
   createRelaySettingsFromPreferences,
+  getPublishableRelaySettingsEntries,
   getRelaySettingsStorageKey,
   hasManualRelaySettings,
+  includeDefaultRelaySettingsEntries,
   loadRelaySettings,
   mergeRelayPreferencesIntoSettings,
   mergeNip65RelayUrls,
@@ -50,6 +52,7 @@ export interface UseRelaySettingsResult {
   reorderRelay: (sourceUrl: string, targetUrl: string) => void
   resetRelaySettings: () => void
   restoreDefaultRelaySettings: () => void
+  includeDefaultRelays: () => void
   publishRelayList: () => Promise<void>
 }
 
@@ -450,6 +453,12 @@ export function useRelaySettings(
     setSettings(defaults)
   }
 
+  function includeDefaultRelays(): void {
+    setError(null)
+    setPublishError(null)
+    persist((current) => includeDefaultRelaySettingsEntries(current))
+  }
+
   async function publishRelayList(): Promise<void> {
     setPublishError(null)
     setError(null)
@@ -458,7 +467,16 @@ export function useRelaySettings(
     try {
       if (!pubkey) throw new Error("Connect a signer before publishing relays")
 
-      assertSafeNip65RelayList(settingsRef.current.entries)
+      const publishableEntries = getPublishableRelaySettingsEntries(
+        settingsRef.current.entries
+      )
+      if (publishableEntries.length === 0) {
+        throw new Error(
+          "Choose relays for your published NIP-65 list first. Conduit defaults stay local until you add them to your list."
+        )
+      }
+
+      assertSafeNip65RelayList(publishableEntries)
 
       const ndk = getNdk()
       if (!ndk.signer) throw new Error("Signer not connected")
@@ -472,7 +490,7 @@ export function useRelaySettings(
       event.kind = EVENT_KINDS.RELAY_LIST
       event.created_at = Math.floor(Date.now() / 1000)
       event.content = ""
-      event.tags = serializeNip65RelayTags(settingsRef.current.entries)
+      event.tags = serializeNip65RelayTags(publishableEntries)
 
       await event.sign(ndk.signer)
       if (!event.sig?.trim()) {
@@ -509,6 +527,7 @@ export function useRelaySettings(
     reorderRelay,
     resetRelaySettings,
     restoreDefaultRelaySettings,
+    includeDefaultRelays,
     publishRelayList,
   }
 }

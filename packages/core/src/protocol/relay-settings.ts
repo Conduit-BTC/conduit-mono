@@ -196,6 +196,40 @@ function withRelayFallback(
   return uniqueRelayUrls(fallbackRelayUrls ?? config.defaultRelays)
 }
 
+function createDefaultRelaySettingsEntry(url: string): RelaySettingsEntry {
+  return {
+    url,
+    readEnabled: true,
+    writeEnabled: true,
+    section: "public",
+    capabilities: EMPTY_CAPABILITIES,
+    warnings: {
+      ...EMPTY_WARNINGS,
+      staleRelayInfo: true,
+    },
+    source: "default",
+  }
+}
+
+function appendDefaultRelaySettingsEntries(
+  state: RelaySettingsState,
+  cfg: ConduitConfig = config
+): RelaySettingsState {
+  const existingUrls = new Set(state.entries.map((entry) => entry.url))
+  const missingDefaults = uniqueRelayUrls(
+    cfg.defaultRelays.filter((url) => !isRetiredDefaultRelayUrl(url))
+  )
+    .filter((url) => !existingUrls.has(url))
+    .map(createDefaultRelaySettingsEntry)
+
+  if (missingDefaults.length === 0) return state
+
+  return normalizeRelaySettingsState({
+    ...state,
+    entries: [...state.entries, ...missingDefaults],
+  })
+}
+
 function getSettingsForPlan(options: RelayPlanOptions): RelaySettingsState {
   return (
     options.settings ??
@@ -481,15 +515,22 @@ export function createUnreachableRelaySettingsEntry(
   existing?: RelaySettingsEntry
 ): RelaySettingsEntry {
   const preservePreference = !!existing && existing.source !== "default"
+  const usesCanonicalDefaults = source === "default"
   const baseCapabilities = preservePreference
     ? (existing?.capabilities ?? EMPTY_CAPABILITIES)
     : EMPTY_CAPABILITIES
   return {
     url: normalizeRelayUrl(relayUrl),
-    readEnabled: preservePreference ? (existing?.readEnabled ?? false) : false,
-    writeEnabled: preservePreference
-      ? (existing?.writeEnabled ?? false)
-      : false,
+    readEnabled: usesCanonicalDefaults
+      ? true
+      : preservePreference
+        ? (existing?.readEnabled ?? false)
+        : false,
+    writeEnabled: usesCanonicalDefaults
+      ? true
+      : preservePreference
+        ? (existing?.writeEnabled ?? false)
+        : false,
     section: preservePreference ? (existing?.section ?? "public") : "public",
     commercePriority: preservePreference
       ? existing?.commercePriority
@@ -576,18 +617,7 @@ export function createDefaultRelaySettings(
 ): RelaySettingsState {
   const entries: RelaySettingsEntry[] = uniqueRelayUrls(
     cfg.defaultRelays.filter((url) => !isRetiredDefaultRelayUrl(url))
-  ).map((url) => ({
-    url,
-    readEnabled: true,
-    writeEnabled: true,
-    section: "public",
-    capabilities: EMPTY_CAPABILITIES,
-    warnings: {
-      ...EMPTY_WARNINGS,
-      staleRelayInfo: true,
-    },
-    source: "default" as const,
-  }))
+  ).map(createDefaultRelaySettingsEntry)
 
   return normalizeRelaySettingsState({
     version: RELAY_SETTINGS_STORAGE_VERSION,
@@ -707,13 +737,15 @@ export function loadRelaySettings(scope?: string | null): RelaySettingsState {
       return createDefaultRelaySettings()
     }
 
-    return normalizeRelaySettingsState({
-      version: Number(parsed.version) || RELAY_SETTINGS_STORAGE_VERSION,
-      updatedAt: Number(parsed.updatedAt) || now(),
-      entries: parsed.entries.filter(
-        isRecord
-      ) as unknown as RelaySettingsEntry[],
-    })
+    return appendDefaultRelaySettingsEntries(
+      normalizeRelaySettingsState({
+        version: Number(parsed.version) || RELAY_SETTINGS_STORAGE_VERSION,
+        updatedAt: Number(parsed.updatedAt) || now(),
+        entries: parsed.entries.filter(
+          isRecord
+        ) as unknown as RelaySettingsEntry[],
+      })
+    )
   } catch {
     return createDefaultRelaySettings()
   }
@@ -723,10 +755,12 @@ export function saveRelaySettings(
   state: RelaySettingsState,
   scope?: string | null
 ): RelaySettingsState {
-  const normalized = normalizeRelaySettingsState({
-    ...state,
-    updatedAt: now(),
-  })
+  const normalized = appendDefaultRelaySettingsEntries(
+    normalizeRelaySettingsState({
+      ...state,
+      updatedAt: now(),
+    })
+  )
 
   if (typeof window !== "undefined") {
     window.localStorage.setItem(
@@ -824,6 +858,26 @@ export function reorderCommerceRelay(
             source: "manual" as const,
           }
         : entry
+    ),
+  })
+}
+
+export function getPublishableRelaySettingsEntries(
+  entries: readonly RelaySettingsEntry[]
+): RelaySettingsEntry[] {
+  return entries.filter(
+    (entry) =>
+      entry.source !== "default" && (entry.readEnabled || entry.writeEnabled)
+  )
+}
+
+export function includeDefaultRelaySettingsEntries(
+  state: RelaySettingsState
+): RelaySettingsState {
+  return normalizeRelaySettingsState({
+    ...state,
+    entries: state.entries.map((entry) =>
+      entry.source === "default" ? { ...entry, source: "manual" } : entry
     ),
   })
 }

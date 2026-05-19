@@ -74,6 +74,7 @@ export interface RelaySettingsPanelProps {
   onReorderCommerceRelay?: (sourceUrl: string, targetUrl: string) => void
   onReset?: () => void
   onRestoreDefaults?: () => void
+  onIncludeDefaults?: () => void
   onPublishRelayList?: () => void | Promise<void>
   className?: string
 }
@@ -170,6 +171,23 @@ function getRelayCompatibilityText(entry: RelaySettingsPanelEntry): string {
     return "Compatibility has not been freshly verified. Refresh this relay to update detected capabilities."
   }
   return "Compatibility has not been scanned yet."
+}
+
+function getRelaySourceMeta(entry: RelaySettingsPanelEntry): {
+  label: string
+  variant: "success" | "info" | "neutral"
+} {
+  switch (entry.source) {
+    case "published":
+      return { label: "Published", variant: "success" }
+    case "signer":
+      return { label: "Signer", variant: "info" }
+    case "manual":
+      return { label: "Manual", variant: "info" }
+    case "default":
+    default:
+      return { label: "Conduit default", variant: "neutral" }
+  }
 }
 
 function CapabilityTooltip({
@@ -289,8 +307,10 @@ function RelayRow({
   const warningText = scanning ? null : getRelayWarningText(entry)
   const compatibilityText = getRelayCompatibilityText(entry)
   const isDisabled = entry.warnings.unreachable || scanning
+  const isDefaultEntry = entry.source === "default"
   const draggable = section === "commerce" && !!onDropRelay
   const statusLabel = scanning ? "Checking" : getRelayStatusLabel(entry)
+  const sourceMeta = getRelaySourceMeta(entry)
 
   function handleDragStart(event: DragEvent<HTMLDivElement>): void {
     if (!draggable) return
@@ -381,6 +401,13 @@ function RelayRow({
                 </StatusPill>
               </CapabilityTooltip>
               {entry.relayName ? <span>{entry.relayName}</span> : null}
+              <StatusPill
+                variant={sourceMeta.variant}
+                noIcon
+                className="cursor-default py-0.5 text-[0.68rem]"
+              >
+                {sourceMeta.label}
+              </StatusPill>
             </div>
           </div>
         </div>
@@ -486,9 +513,18 @@ function RelayRow({
           <button
             type="button"
             onClick={() => onRemoveRelay(entry.url)}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)] opacity-100 transition-colors hover:border-[var(--error)] hover:bg-[color-mix(in_srgb,var(--error)_12%,transparent)] hover:text-[var(--error)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 lg:opacity-0 lg:group-hover:opacity-100"
-            aria-label={`Remove ${entry.url}`}
-            title="Remove relay"
+            disabled={isDefaultEntry}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)] opacity-100 transition-colors hover:border-[var(--error)] hover:bg-[color-mix(in_srgb,var(--error)_12%,transparent)] hover:text-[var(--error)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:border-[var(--border-overlay)] disabled:hover:bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] disabled:hover:text-[var(--text-secondary)] lg:opacity-0 lg:group-hover:opacity-100"
+            aria-label={
+              isDefaultEntry
+                ? `${entry.url} is a default fallback`
+                : `Remove ${entry.url}`
+            }
+            title={
+              isDefaultEntry
+                ? "Default fallbacks stay visible unless you edit them into your list."
+                : "Remove relay"
+            }
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
@@ -597,6 +633,7 @@ export function RelaySettingsPanel({
   onReorderCommerceRelay,
   onReset,
   onRestoreDefaults,
+  onIncludeDefaults,
   onPublishRelayList,
   className,
 }: RelaySettingsPanelProps) {
@@ -607,13 +644,21 @@ export function RelaySettingsPanel({
   const [draggedUrl, setDraggedUrl] = useState<string | null>(null)
   const commerceEntries = sortSectionEntries(settings.entries, "commerce")
   const publicEntries = sortSectionEntries(settings.entries, "public")
-  const activeRelayCount = settings.entries.filter(
+  const publishableEntries = settings.entries.filter(
+    (entry) =>
+      entry.source !== "default" && (entry.readEnabled || entry.writeEnabled)
+  )
+  const defaultRelayCount = settings.entries.filter(
+    (entry) => entry.source === "default"
+  ).length
+  const activeRelayCount = publishableEntries.length
+  const localActiveRelayCount = settings.entries.filter(
     (entry) => entry.readEnabled || entry.writeEnabled
   ).length
-  const readRelayCount = settings.entries.filter(
+  const readRelayCount = publishableEntries.filter(
     (entry) => entry.readEnabled
   ).length
-  const writeRelayCount = settings.entries.filter(
+  const writeRelayCount = publishableEntries.filter(
     (entry) => entry.writeEnabled
   ).length
   const canPublishRelayList = activeRelayCount > 1 && writeRelayCount > 0
@@ -789,9 +834,12 @@ export function RelaySettingsPanel({
           <div className="space-y-3">
             {onPublishRelayList ? (
               <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
-                Publishing signs a NIP-65 event with {activeRelayCount} relay{" "}
-                {activeRelayCount === 1 ? "tag" : "tags"}: {readRelayCount} IN,{" "}
-                {writeRelayCount} OUT.
+                Publishing signs a NIP-65 event with {activeRelayCount} saved{" "}
+                relay {activeRelayCount === 1 ? "tag" : "tags"}:{" "}
+                {readRelayCount} IN, {writeRelayCount} OUT.
+                {defaultRelayCount > 0
+                  ? ` ${defaultRelayCount} Conduit default ${defaultRelayCount === 1 ? "relay is" : "relays are"} shown as local fallback and excluded until added to your list.`
+                  : ""}
                 {writeRelayCount === 0
                   ? " Enable OUT on at least one relay before publishing."
                   : " Signers may show empty content because relay URLs live in tags, and may auto-approve if this site already has signing permission."}
@@ -801,8 +849,18 @@ export function RelaySettingsPanel({
               {onReset ? (
                 <Button type="button" variant="ghost" onClick={onReset}>
                   {onPublishRelayList
-                    ? "Reset to default relays"
+                    ? "Replace with default relays"
                     : "Reset to defaults"}
+                </Button>
+              ) : null}
+              {onIncludeDefaults && defaultRelayCount > 0 ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={onIncludeDefaults}
+                >
+                  <Plus className="h-4 w-4" />
+                  Add defaults to my list
                 </Button>
               ) : null}
               {onRestoreDefaults &&
@@ -822,6 +880,7 @@ export function RelaySettingsPanel({
                   variant="outline"
                   disabled={
                     !canPublishRelayList ||
+                    localActiveRelayCount === 0 ||
                     isLoadingPublishedRelayList ||
                     isPublishing ||
                     publishingRelayList
