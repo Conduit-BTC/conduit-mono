@@ -8,7 +8,7 @@ import {
   useProfile,
   useUpdateProfile,
 } from "@conduit/core"
-import { Button, Input, Label } from "@conduit/ui"
+import { Button, Input, Label, SignedActionStatus } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import {
   profileFormToUpdatePayload,
@@ -41,6 +41,7 @@ function PaymentsPage() {
   const [editingLud16, setEditingLud16] = useState(false)
   const [lud16Draft, setLud16Draft] = useState("")
   const [lud16Error, setLud16Error] = useState<string | null>(null)
+  const [lud16SaveSucceeded, setLud16SaveSucceeded] = useState(false)
   const [addressCheck, setAddressCheck] = useState<
     | { status: "idle" }
     | { status: "checking" }
@@ -87,8 +88,20 @@ function PaymentsPage() {
     }
   }, [lud16])
 
+  const hasLud16Changes = lud16Draft.trim() !== lud16
+  const lud16SaveStatus = isSavingLud16
+    ? "awaiting_signature"
+    : updateMutation.error
+      ? "error"
+      : hasLud16Changes
+        ? "dirty"
+        : lud16SaveSucceeded
+          ? "success"
+          : "idle"
+
   function startEditLud16() {
     setLud16Draft(profile?.lud16 ?? "")
+    setLud16SaveSucceeded(false)
     setEditingLud16(true)
   }
 
@@ -101,6 +114,8 @@ function PaymentsPage() {
       return
     }
     setLud16Error(null)
+    if (!hasLud16Changes) return
+    setLud16SaveSucceeded(false)
     try {
       await updateMutation.mutateAsync(
         profileFormToUpdatePayload({
@@ -108,6 +123,7 @@ function PaymentsPage() {
           lud16: nextLud16,
         })
       )
+      setLud16SaveSucceeded(true)
       setEditingLud16(false)
       void profileQuery.refetch()
     } catch {
@@ -120,14 +136,15 @@ function PaymentsPage() {
     setEditingLud16(false)
     setLud16Draft(profile?.lud16 ?? "")
     setLud16Error(null)
+    setLud16SaveSucceeded(false)
   }
 
   function getBusyStatus() {
     if (isSavingLud16) {
       return {
-        title: "Saving Lightning Address",
+        title: "Waiting for signer",
         message:
-          "Publishing the updated payment address to your merchant profile.",
+          "Confirm the Lightning Address update. It will show as saved after relay publish finishes.",
       }
     }
     if (isRefreshingProfile) {
@@ -158,6 +175,13 @@ function PaymentsPage() {
                 <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
                   Configure where buyers send Lightning payments.
                 </p>
+                {!editingLud16 && lud16SaveSucceeded && (
+                  <SignedActionStatus
+                    state="success"
+                    successMessage="Lightning Address signed and saved."
+                    className="mt-3"
+                  />
+                )}
               </div>
 
               {!complete && !isLoadingProfile && (
@@ -282,15 +306,15 @@ function PaymentsPage() {
                             <Button
                               type="submit"
                               size="sm"
-                              disabled={isSavingLud16}
+                              disabled={isSavingLud16 || !hasLud16Changes}
                             >
                               {isSavingLud16 ? (
                                 <span className="inline-flex items-center gap-2">
                                   <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                                  Saving
+                                  Waiting for signer
                                 </span>
                               ) : (
-                                "Save"
+                                "Save changes"
                               )}
                             </Button>
                             <Button
@@ -303,6 +327,17 @@ function PaymentsPage() {
                               Cancel
                             </Button>
                           </div>
+                          <SignedActionStatus
+                            state={lud16SaveStatus}
+                            dirtyMessage="Save changes to publish your Lightning Address."
+                            awaitingSignatureMessage="Confirm the Lightning Address update in your signer. It will show as saved after relay publish finishes."
+                            successMessage="Lightning Address signed and saved."
+                            errorMessage={
+                              updateMutation.error instanceof Error
+                                ? updateMutation.error.message
+                                : "Failed to save Lightning Address"
+                            }
+                          />
                         </form>
                       )}
                     </div>

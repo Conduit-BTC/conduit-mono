@@ -10,9 +10,17 @@ import {
   Upload,
   WifiOff,
 } from "lucide-react"
-import { type DragEvent, type FormEvent, type ReactNode, useState } from "react"
+import {
+  type DragEvent,
+  type FormEvent,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useState,
+} from "react"
 import { Button } from "./Button"
 import { Input } from "./Input"
+import { SignedActionStatus } from "./SignedActionStatus"
 import { StatusPill } from "./StatusPill"
 import { cn } from "../utils"
 
@@ -595,6 +603,7 @@ export function RelaySettingsPanel({
   const [newRelayUrl, setNewRelayUrl] = useState("")
   const [isAdding, setIsAdding] = useState(false)
   const [isPublishing, setIsPublishing] = useState(false)
+  const [relayPublishSucceeded, setRelayPublishSucceeded] = useState(false)
   const [draggedUrl, setDraggedUrl] = useState<string | null>(null)
   const commerceEntries = sortSectionEntries(settings.entries, "commerce")
   const publicEntries = sortSectionEntries(settings.entries, "public")
@@ -608,6 +617,25 @@ export function RelaySettingsPanel({
     (entry) => entry.writeEnabled
   ).length
   const canPublishRelayList = activeRelayCount > 1 && writeRelayCount > 0
+  const relaySettingsFingerprint = useMemo(
+    () =>
+      settings.entries
+        .map((entry) =>
+          [
+            entry.url,
+            entry.readEnabled ? "read" : "no-read",
+            entry.writeEnabled ? "write" : "no-write",
+          ].join(":")
+        )
+        .sort()
+        .join("|"),
+    [settings.entries]
+  )
+
+  useEffect(() => {
+    setRelayPublishSucceeded(false)
+  }, [relaySettingsFingerprint])
+
   async function handleAddRelay(event: FormEvent): Promise<void> {
     event.preventDefault()
     const trimmed = newRelayUrl.trim()
@@ -626,8 +654,12 @@ export function RelaySettingsPanel({
     if (!onPublishRelayList || isPublishing || publishingRelayList) return
 
     setIsPublishing(true)
+    setRelayPublishSucceeded(false)
     try {
       await onPublishRelayList()
+      setRelayPublishSucceeded(true)
+    } catch {
+      setRelayPublishSucceeded(false)
     } finally {
       setIsPublishing(false)
     }
@@ -798,11 +830,28 @@ export function RelaySettingsPanel({
                 >
                   <Upload className="h-4 w-4" />
                   {isPublishing || publishingRelayList
-                    ? "Publishing..."
+                    ? "Waiting for signer..."
                     : "Publish relays"}
                 </Button>
               ) : null}
             </div>
+            {onPublishRelayList ? (
+              <SignedActionStatus
+                state={
+                  isPublishing || publishingRelayList
+                    ? "awaiting_signature"
+                    : publishError
+                      ? "error"
+                      : relayPublishSucceeded
+                        ? "success"
+                        : "idle"
+                }
+                awaitingSignatureMessage="Confirm the relay list in your signer. It will show as published after relay delivery finishes."
+                successMessage="Relay list signed and published."
+                errorMessage={publishError ?? undefined}
+                className="justify-end"
+              />
+            ) : null}
           </div>
         ) : null}
         {publishError ? (

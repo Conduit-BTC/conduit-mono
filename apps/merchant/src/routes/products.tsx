@@ -35,6 +35,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  SignedActionStatus,
   Textarea,
 } from "@conduit/ui"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
@@ -354,6 +355,14 @@ function ProductsPage() {
 
   const isSaving = saveMutation.isPending
   const isDeleting = deleteMutation.isPending
+  const savedProductForm = useMemo(
+    () => (editing ? productToForm(editing.product) : EMPTY_FORM),
+    [editing]
+  )
+  const hasProductChanges = useMemo(
+    () => JSON.stringify(form) !== JSON.stringify(savedProductForm),
+    [form, savedProductForm]
+  )
   const productsInitialLoading =
     productsQuery.isLoading && cachedProductsQuery.isLoading
 
@@ -549,6 +558,22 @@ function ProductsPage() {
         <div className="mt-3 min-h-5 text-xs text-[var(--text-muted)]">
           {productStatusLabel}
         </div>
+        <SignedActionStatus
+          state={
+            isDeleting
+              ? "awaiting_signature"
+              : deleteMutation.error
+                ? "error"
+                : "idle"
+          }
+          awaitingSignatureMessage="Confirm the deletion event in your signer. The listing will disappear after relay publish finishes."
+          errorMessage={
+            deleteMutation.error instanceof Error
+              ? deleteMutation.error.message
+              : "Failed to delete listing"
+          }
+          className="mt-2"
+        />
       </section>
 
       <section className="space-y-4">
@@ -835,6 +860,29 @@ function ProductsPage() {
               </div>
             )}
 
+            <SignedActionStatus
+              state={
+                isSaving
+                  ? "awaiting_signature"
+                  : saveMutation.error
+                    ? "error"
+                    : hasProductChanges
+                      ? "dirty"
+                      : "idle"
+              }
+              dirtyMessage={
+                editing
+                  ? "Save changes to publish this listing update."
+                  : "Publish this product to create a signed kind 30402 listing."
+              }
+              awaitingSignatureMessage="Confirm the product listing in your signer. It will close after relay publish finishes."
+              errorMessage={
+                saveMutation.error instanceof Error
+                  ? saveMutation.error.message
+                  : "Failed to publish product"
+              }
+            />
+
             <DialogFooter>
               <Button
                 type="button"
@@ -843,9 +891,12 @@ function ProductsPage() {
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={!pubkey || isSaving}>
+              <Button
+                type="submit"
+                disabled={!pubkey || isSaving || !hasProductChanges}
+              >
                 {isSaving
-                  ? "Saving..."
+                  ? "Waiting for signer..."
                   : editing
                     ? "Save changes"
                     : "Publish product"}

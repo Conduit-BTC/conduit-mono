@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { AlertCircle, CheckCircle2, Loader2, Trash2, X } from "lucide-react"
+import { AlertCircle, Loader2, Trash2, X } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
@@ -10,7 +10,7 @@ import {
   type CountryOption,
   type ParsedShippingOption,
 } from "@conduit/core"
-import { Badge, Button, Combobox, Label } from "@conduit/ui"
+import { Badge, Button, Combobox, Label, SignedActionStatus } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import {
   loadShippingConfig,
@@ -436,37 +436,25 @@ function ShippingPage() {
                   {isSaving && <Loader2 className="h-4 w-4 animate-spin" />}
                   {isSaving ? "Waiting for signer..." : "Save changes"}
                 </Button>
-                <div
-                  aria-live="polite"
-                  className="min-h-5 text-sm text-[var(--text-secondary)]"
-                >
-                  {isSaving && (
-                    <span>
-                      Confirm the shipping update in your signer. It will show
-                      as saved after signing and relay publish finish.
-                    </span>
-                  )}
-                  {!isSaving &&
-                    hasUnsavedChanges &&
-                    saveState.status !== "error" && (
-                      <span className="text-[var(--warning)]">
-                        Save changes to publish your shipping settings.
-                      </span>
-                    )}
-                  {!isSaving &&
-                    !hasUnsavedChanges &&
-                    saveState.status === "saved" && (
-                      <span className="inline-flex items-center gap-1.5 text-[var(--success)]">
-                        <CheckCircle2 className="h-4 w-4" />
-                        Signed and saved.
-                      </span>
-                    )}
-                  {!isSaving && saveState.status === "error" && (
-                    <span className="text-[var(--error)]">
-                      {saveState.message}
-                    </span>
-                  )}
-                </div>
+                <SignedActionStatus
+                  state={
+                    isSaving
+                      ? "awaiting_signature"
+                      : saveState.status === "error"
+                        ? "error"
+                        : hasUnsavedChanges
+                          ? "dirty"
+                          : saveState.status === "saved"
+                            ? "success"
+                            : "idle"
+                  }
+                  dirtyMessage="Save changes to publish your shipping settings."
+                  awaitingSignatureMessage="Confirm the shipping update in your signer. It will show as saved after signing and relay publish finish."
+                  successMessage="Signed and saved."
+                  errorMessage={
+                    saveState.status === "error" ? saveState.message : undefined
+                  }
+                />
               </div>
             </form>
           </div>

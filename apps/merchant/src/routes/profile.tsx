@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { AlertCircle, Check, Copy, Link2, UserRound } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import {
@@ -15,6 +15,7 @@ import {
   Button,
   Input,
   Label,
+  SignedActionStatus,
   StatusPill,
   Textarea,
   cn,
@@ -56,6 +57,7 @@ function ProfilePage() {
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_PROFILE_FORM)
   const [copiedPubkey, setCopiedPubkey] = useState(false)
+  const [profileSaveSucceeded, setProfileSaveSucceeded] = useState(false)
 
   useEffect(() => {
     if (profileQuery.data) {
@@ -67,11 +69,37 @@ function ProfilePage() {
   const complete = isProfileComplete(profileData)
   const displayName = profileData?.displayName || profileData?.name
   const npub = pubkey ? pubkeyToNpub(pubkey) : ""
+  const savedProfileForm = useMemo(
+    () => (profileData ? profileToFormValues(profileData) : EMPTY_PROFILE_FORM),
+    [profileData]
+  )
+  const hasProfileChanges = useMemo(
+    () => JSON.stringify(form) !== JSON.stringify(savedProfileForm),
+    [form, savedProfileForm]
+  )
+  const profileSaveStatus = updateMutation.isPending
+    ? "awaiting_signature"
+    : updateMutation.error
+      ? "error"
+      : hasProfileChanges
+        ? "dirty"
+        : profileSaveSucceeded
+          ? "success"
+          : "idle"
+
+  useEffect(() => {
+    if (hasProfileChanges) setProfileSaveSucceeded(false)
+  }, [hasProfileChanges])
 
   function handleSave(e: React.FormEvent) {
     e.preventDefault()
+    if (!hasProfileChanges || updateMutation.isPending) return
+    setProfileSaveSucceeded(false)
     updateMutation.mutate(profileFormToUpdatePayload(form), {
-      onSuccess: () => setEditing(false),
+      onSuccess: () => {
+        setProfileSaveSucceeded(true)
+        setEditing(false)
+      },
     })
   }
 
@@ -104,6 +132,13 @@ function ProfilePage() {
                   Edit the merchant profile buyers see across Market and your
                   storefront surfaces.
                 </p>
+                {!editing && profileSaveSucceeded && (
+                  <SignedActionStatus
+                    state="success"
+                    successMessage="Profile signed and saved."
+                    className="mt-3"
+                  />
+                )}
               </div>
             </div>
 
@@ -203,7 +238,10 @@ function ProfilePage() {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => setEditing(true)}
+                          onClick={() => {
+                            setEditing(true)
+                            setProfileSaveSucceeded(false)
+                          }}
                         >
                           Edit
                         </Button>
@@ -305,6 +343,7 @@ function ProfilePage() {
                       size="sm"
                       onClick={() => {
                         setEditing(false)
+                        setProfileSaveSucceeded(false)
                         if (profileQuery.data) {
                           setForm(profileToFormValues(profileQuery.data))
                         }
@@ -531,11 +570,27 @@ function ProfilePage() {
                       </div>
                     )}
 
-                    <div className="flex items-center justify-end gap-2 md:col-span-2">
-                      <Button type="submit" disabled={updateMutation.isPending}>
+                    <div className="flex flex-col items-start gap-3 md:col-span-2 md:flex-row md:items-center md:justify-end">
+                      <SignedActionStatus
+                        state={profileSaveStatus}
+                        dirtyMessage="Save changes to publish your merchant profile."
+                        awaitingSignatureMessage="Confirm the profile update in your signer. It will show as saved after relay publish finishes."
+                        successMessage="Profile signed and saved."
+                        errorMessage={
+                          updateMutation.error instanceof Error
+                            ? updateMutation.error.message
+                            : "Failed to update profile"
+                        }
+                      />
+                      <Button
+                        type="submit"
+                        disabled={
+                          updateMutation.isPending || !hasProfileChanges
+                        }
+                      >
                         {updateMutation.isPending
-                          ? "Saving..."
-                          : "Save profile"}
+                          ? "Waiting for signer..."
+                          : "Save changes"}
                       </Button>
                     </div>
                   </form>
