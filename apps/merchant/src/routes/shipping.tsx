@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { AlertCircle, Plus, Trash2, X } from "lucide-react"
+import { AlertCircle, Trash2, X } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
@@ -285,73 +285,58 @@ function CountrySelector({
         }
       }}
     >
-      <div className="flex gap-2">
-        <Input
-          role="combobox"
-          aria-haspopup="listbox"
-          aria-autocomplete="list"
-          aria-controls={listboxId}
-          aria-expanded={open}
-          aria-activedescendant={
-            activeOption
-              ? `shipping-country-option-${activeOption.code}`
-              : undefined
-          }
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value)
-            setOpen(true)
-          }}
-          onFocus={() => setOpen(true)}
-          onKeyDown={handleKeyDown}
-          placeholder="Search countries to add..."
-          className="h-9 text-sm"
-        />
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="shrink-0"
-          onClick={() => {
-            setOpen((o) => !o)
-            setActiveIndex(0)
-          }}
-          aria-label="Toggle country list"
-          aria-expanded={open}
-          aria-controls={listboxId}
-        >
-          <Plus className="h-4 w-4" />
-        </Button>
-      </div>
+      <Input
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-autocomplete="list"
+        aria-controls={listboxId}
+        aria-expanded={open}
+        aria-activedescendant={
+          activeOption
+            ? `shipping-country-option-${activeOption.code}`
+            : undefined
+        }
+        value={search}
+        onChange={(e) => {
+          setSearch(e.target.value)
+          setOpen(true)
+        }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={handleKeyDown}
+        placeholder="Search countries to add..."
+        className="h-9 w-full text-sm"
+      />
       {open && filtered.length > 0 && (
-        <div
-          id={listboxId}
-          role="listbox"
-          className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-xl border border-[var(--border-overlay)] bg-[var(--surface-overlay)] shadow-[var(--shadow-dialog)] backdrop-blur-xl"
-        >
-          {filtered.map((c, index) => (
-            <button
-              id={`shipping-country-option-${c.code}`}
-              key={c.code}
-              type="button"
-              role="option"
-              aria-selected={index === activeIndex}
-              className={[
-                "flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)] focus:bg-[var(--surface)] focus:outline-none",
-                index === activeIndex ? "bg-[var(--surface)]" : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
-              onMouseDown={(event) => event.preventDefault()}
-              onMouseEnter={() => setActiveIndex(index)}
-              onClick={() => commitCountry(c)}
-            >
-              <span className="text-xs font-mono text-[var(--text-muted)]">
-                {c.code}
-              </span>
-              {c.name}
-            </button>
-          ))}
+        <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-xl border border-[var(--border-overlay)] bg-[var(--surface-overlay)] p-1 shadow-[var(--shadow-dialog)] backdrop-blur-xl">
+          <div
+            id={listboxId}
+            role="listbox"
+            className="max-h-48 overflow-y-auto pr-1 [scrollbar-gutter:stable]"
+          >
+            {filtered.map((c, index) => (
+              <button
+                id={`shipping-country-option-${c.code}`}
+                key={c.code}
+                type="button"
+                role="option"
+                aria-selected={index === activeIndex}
+                className={[
+                  "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)] focus:bg-[var(--surface)] focus:outline-none",
+                  index === activeIndex ? "bg-[var(--surface)]" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setActiveIndex(index)}
+                onClick={() => commitCountry(c)}
+              >
+                <span className="text-xs font-mono text-[var(--text-muted)]">
+                  {c.code}
+                </span>
+                {c.name}
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>
