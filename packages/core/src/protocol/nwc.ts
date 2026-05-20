@@ -20,6 +20,7 @@
 import NDK, {
   NDKEvent,
   NDKPrivateKeySigner,
+  type NDKRelay,
   NDKRelayStatus,
   NDKUser,
   type NDKFilter,
@@ -29,6 +30,7 @@ import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 // NIP-47 event kinds
 const NWC_REQUEST_KIND = 23194
 const NWC_RESPONSE_KIND = 23195
+const NWC_CONNECT_TIMEOUT_MS = 10_000
 
 export interface NwcConnection {
   walletPubkey: string
@@ -126,13 +128,11 @@ async function buildNwcNdk(connection: NwcConnection): Promise<{
     signer,
   })
 
-  await ndk.connect(5000)
-
-  const connectedRelays = Array.from(ndk.pool?.relays?.entries() ?? []).filter(
-    ([, relay]) => relay.status >= NDKRelayStatus.CONNECTED
-  )
-  if (connectedRelays.length === 0) {
-    throw new Error("Failed to connect to NWC relay(s)")
+  try {
+    await waitForNwcRelayConnection(ndk, NWC_CONNECT_TIMEOUT_MS)
+  } catch (error) {
+    disconnectNwcNdk(ndk)
+    throw error
   }
 
   const clientPubkey = signer.pubkey
@@ -149,6 +149,67 @@ function disconnectNwcNdk(ndk: NDK): void {
   } catch {
     // ignore cleanup errors
   }
+}
+
+function getConnectedNwcRelays(ndk: NDK): NDKRelay[] {
+  const pool = ndk.pool
+  if (!pool) return []
+
+  if (typeof pool.connectedRelays === "function") {
+    return pool.connectedRelays()
+  }
+
+  return Array.from(pool.relays?.values() ?? []).filter(
+    (relay) => relay.status >= NDKRelayStatus.CONNECTED
+  )
+}
+
+function waitForNwcRelayConnection(ndk: NDK, timeoutMs: number): Promise<void> {
+  if (getConnectedNwcRelays(ndk).length > 0) return Promise.resolve()
+
+  const pool = ndk.pool
+  if (!pool)
+    return Promise.reject(new Error("Failed to connect to NWC relay(s)"))
+
+  return new Promise<void>((resolve, reject) => {
+    let settled = false
+    let connectError: unknown = null
+
+    const handleConnect = () => {
+      if (getConnectedNwcRelays(ndk).length > 0) settle()
+    }
+
+    const timer = setTimeout(() => {
+      const suffix =
+        connectError instanceof Error && connectError.message
+          ? ` ${connectError.message}`
+          : ""
+      settle(new Error(`Failed to connect to NWC relay(s).${suffix}`.trim()))
+    }, timeoutMs)
+
+    const cleanup = () => {
+      clearTimeout(timer)
+      pool.off("relay:connect", handleConnect)
+    }
+
+    const settle = (error?: Error) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (error) reject(error)
+      else resolve()
+    }
+
+    pool.on("relay:connect", handleConnect)
+
+    void ndk
+      .connect(timeoutMs)
+      .then(handleConnect)
+      .catch((error: unknown) => {
+        connectError = error
+        handleConnect()
+      })
+  })
 }
 
 // ─── make_invoice ─────────────────────────────────────────────────────────────
@@ -433,4 +494,9 @@ async function waitForNwcResponse<T>(
       }
     })
   })
+}
+
+export const __nwcTestInternals = {
+  getConnectedNwcRelays,
+  waitForNwcRelayConnection,
 }
