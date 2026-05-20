@@ -135,11 +135,21 @@ export function isFastCheckoutEligible(params: {
   lnurlAllowsNostr: boolean
   pricingReady?: boolean
   shippingEligible?: boolean
+  shippingState?: ShippingCheckoutState
   shippingPriced?: boolean
   relayReady?: boolean
 }): boolean {
   return getFastCheckoutUnavailableReasons(params).length === 0
 }
+
+export type ShippingCheckoutState =
+  | "not_required"
+  | "loading"
+  | "missing_product_zone"
+  | "no_published_rule"
+  | "allowed"
+  | "country_unsupported"
+  | "postal_restricted"
 
 export function getFastCheckoutUnavailableReasons(params: {
   walletPayCapable: boolean
@@ -147,6 +157,7 @@ export function getFastCheckoutUnavailableReasons(params: {
   lnurlAllowsNostr: boolean
   pricingReady?: boolean
   shippingEligible?: boolean
+  shippingState?: ShippingCheckoutState
   shippingPriced?: boolean
   relayReady?: boolean
 }): string[] {
@@ -165,7 +176,31 @@ export function getFastCheckoutUnavailableReasons(params: {
   if (params.pricingReady === false) {
     reasons.push("Refresh price conversion before paying.")
   }
-  if (params.shippingEligible === false) {
+  if (params.shippingState && params.shippingState !== "allowed") {
+    switch (params.shippingState) {
+      case "not_required":
+        break
+      case "loading":
+        reasons.push("Checking merchant shipping rules.")
+        break
+      case "missing_product_zone":
+        reasons.push(
+          "A product in this cart is missing product-level shipping-zone data."
+        )
+        break
+      case "no_published_rule":
+        reasons.push("Merchant has not published shipping rules yet.")
+        break
+      case "country_unsupported":
+        reasons.push("Merchant shipping zone does not include this country.")
+        break
+      case "postal_restricted":
+        reasons.push(
+          "Merchant shipping zone does not include this postal code."
+        )
+        break
+    }
+  } else if (params.shippingEligible === false) {
     reasons.push("Merchant shipping zone does not include this destination.")
   }
   if (params.shippingPriced === false) {

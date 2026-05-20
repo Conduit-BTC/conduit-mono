@@ -5,9 +5,12 @@ import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { Plus, Search } from "lucide-react"
 import {
   EVENT_KINDS,
+  SUPPORTED_PRODUCT_PRICE_CURRENCIES,
+  CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   appendConduitClientTag,
   canonicalizeProductPrice,
   getCachedMerchantStorefront,
+  getShippingOptionAddress,
   getMerchantStorefront,
   getProductImageCandidates,
   getProductPriceDisplay,
@@ -44,6 +47,7 @@ import {
   assertPublishableProductPrice,
   getProductPriceInputStep,
 } from "../lib/productPriceForm"
+import { isShippingComplete, loadShippingConfig } from "../lib/readiness"
 
 export const Route = createFileRoute("/products")({
   beforeLoad: () => {
@@ -66,6 +70,7 @@ type ProductFormState = {
   price: string
   currency: string
   shippingCostSats: string
+  usePresetShippingZone: boolean
   imageUrl: string
   tags: string
 }
@@ -78,6 +83,7 @@ const EMPTY_FORM: ProductFormState = {
   price: "0",
   currency: "USD",
   shippingCostSats: "0",
+  usePresetShippingZone: true,
   imageUrl: "",
   tags: "",
 }
@@ -105,8 +111,37 @@ function productToForm(product: ProductSchema): ProductFormState {
       typeof product.shippingCostSats === "number"
         ? String(product.shippingCostSats)
         : "",
+    usePresetShippingZone: !!product.shippingOptionId,
     imageUrl: product.images[0]?.url ?? "",
     tags: product.tags.join(", "),
+  }
+}
+
+function buildShippingMetadata(
+  merchantPubkey: string,
+  usePresetShippingZone: boolean
+): Pick<
+  ProductSchema,
+  | "shippingOptionId"
+  | "shippingOptionDTag"
+  | "shippingCountries"
+  | "shippingCountryRules"
+> {
+  if (!usePresetShippingZone) return {}
+
+  const shippingConfig = loadShippingConfig()
+  if (!isShippingComplete(shippingConfig)) return {}
+
+  return {
+    shippingOptionId: getShippingOptionAddress(merchantPubkey),
+    shippingOptionDTag: CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
+    shippingCountries: shippingConfig.countries.map((country) => country.code),
+    shippingCountryRules: shippingConfig.countries.map((country) => ({
+      code: country.code,
+      name: country.name,
+      restrictTo: country.restrictTo,
+      exclude: country.exclude,
+    })),
   }
 }
 
@@ -144,7 +179,10 @@ function getPublishErrorMessage(
 
   if (
     error.message.includes("Not enough relays received the event") ||
-    error.message.includes("Could not publish to configured or fallback relays")
+    error.message.includes(
+      "Could not publish to configured or fallback relays"
+    ) ||
+    error.message.includes("no primary relay accepted")
   ) {
     return `${fallback}. No relay accepted the signed event. Open Network Settings, reset to defaults or enable OUT on another relay, then try again.`
   }
@@ -220,6 +258,18 @@ async function publishProduct(
   ) {
     throw new Error("Shipping must be a whole-number sats amount or blank.")
   }
+  const shippingMetadata = buildShippingMetadata(
+    signerPubkey,
+    form.usePresetShippingZone
+  )
+  if (
+    typeof shippingCostSats === "number" &&
+    !shippingMetadata.shippingOptionId
+  ) {
+    throw new Error(
+      "Attach your preset shipping zone before publishing a physical product with a fixed shipping cost."
+    )
+  }
   const summary = form.summary.trim()
   const imageUrl = form.imageUrl.trim()
   if (!imageUrl) {
@@ -244,6 +294,7 @@ async function publishProduct(
     type: "simple",
     format: "physical",
     shippingCostSats,
+    ...shippingMetadata,
     visibility: "public",
     stock: undefined,
     images: [{ url: imageUrl }],
@@ -267,6 +318,20 @@ async function publishProduct(
   if (typeof product.shippingCostSats === "number") {
     event.tags.push(["shipping_cost", String(product.shippingCostSats)])
   }
+  if (product.shippingOptionId) {
+    event.tags.push(["shipping_option", product.shippingOptionId])
+  }
+  if (product.shippingCountries && product.shippingCountries.length > 0) {
+    event.tags.push(["shipping_country", ...product.shippingCountries])
+  }
+  for (const rule of product.shippingCountryRules ?? []) {
+    if (rule.restrictTo.length > 0) {
+      event.tags.push(["shipping_restrict", rule.code, ...rule.restrictTo])
+    }
+    if (rule.exclude.length > 0) {
+      event.tags.push(["shipping_exclude", rule.code, ...rule.exclude])
+    }
+  }
   if (imageUrl) event.tags.push(["image", imageUrl])
   for (const tag of tags) event.tags.push(["t", tag])
   event.tags = appendConduitClientTag(event.tags, "merchant")
@@ -275,6 +340,7 @@ async function publishProduct(
   await publishWithPlanner(event, {
     intent: "author_event",
     authorPubkey: signerPubkey,
+    deliveryMode: "critical",
   })
 }
 
@@ -308,6 +374,7 @@ async function deleteProduct(
   await publishWithPlanner(deletion, {
     intent: "author_event",
     authorPubkey: merchantPubkey,
+    deliveryMode: "critical",
   })
 }
 
@@ -447,6 +514,8 @@ function ProductsPage() {
   const productStatusLabel = productsQuery.isFetching
     ? "Updating listings"
     : `${visibleProducts.length} of ${merchantProducts.length} listings`
+  const shippingConfig = loadShippingConfig()
+  const hasPresetShippingZone = isShippingComplete(shippingConfig)
 
   function closeProductDialog(): void {
     setProductDialogOpen(false)
@@ -804,10 +873,11 @@ function ProductsPage() {
                     <SelectValue placeholder="Choose currency" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="USD">USD</SelectItem>
-                    <SelectItem value="SAT">SAT</SelectItem>
-                    <SelectItem value="SATS">SATS</SelectItem>
-                    <SelectItem value="BTC">BTC</SelectItem>
+                    {SUPPORTED_PRODUCT_PRICE_CURRENCIES.map((currency) => (
+                      <SelectItem key={currency} value={currency}>
+                        {currency}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -834,6 +904,30 @@ function ProductsPage() {
                 shipping is included in the product price.{" "}
                 {getShippingCostHelpText(form.shippingCostSats)}
               </div>
+              <label className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm sm:col-span-3">
+                <input
+                  type="checkbox"
+                  checked={hasPresetShippingZone && form.usePresetShippingZone}
+                  disabled={!hasPresetShippingZone}
+                  onChange={(event) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      usePresetShippingZone: event.target.checked,
+                    }))
+                  }
+                  className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500"
+                />
+                <span className="grid gap-1">
+                  <span className="font-medium text-[var(--text-primary)]">
+                    Use my preset shipping zone for this product
+                  </span>
+                  <span className="text-xs leading-5 text-[var(--text-muted)]">
+                    {hasPresetShippingZone
+                      ? "Direct checkout will use your published shipping countries and postal rules."
+                      : "Set up Shipping before direct checkout can use a fixed item shipping cost."}
+                  </span>
+                </span>
+              </label>
             </div>
 
             <div className="grid gap-1.5">

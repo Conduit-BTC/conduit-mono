@@ -15,6 +15,7 @@ export * from "./utils"
 export {
   MSATS_PER_SAT,
   SATS_PER_BTC,
+  SUPPORTED_PRODUCT_PRICE_CURRENCIES,
   canonicalizeProductPrice,
   compareCommercePrices,
   formatApproxUsdFromSats,
@@ -40,6 +41,7 @@ export type {
   CommercePriceNormalization,
   PricingRateInput,
   SourcePriceQuote,
+  SupportedProductPriceCurrency,
 } from "./pricing"
 
 // Config

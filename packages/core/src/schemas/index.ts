@@ -23,6 +23,21 @@ export const productSchema = z.object({
   format: z.enum(["physical", "digital"]).default("physical"),
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
   shippingCostSats: z.number().int().min(0).optional(),
+  /** Addressable kind-30406 shipping option reference attached by the merchant. */
+  shippingOptionId: z.string().optional(),
+  shippingOptionDTag: z.string().optional(),
+  /** Product-level snapshot of the referenced shipping option for checkout. */
+  shippingCountries: z.array(z.string()).optional(),
+  shippingCountryRules: z
+    .array(
+      z.object({
+        code: z.string(),
+        name: z.string(),
+        restrictTo: z.array(z.string()).default([]),
+        exclude: z.array(z.string()).default([]),
+      })
+    )
+    .optional(),
   visibility: z.enum(["public", "private"]).default("public"),
   stock: z.number().int().min(0).optional(),
   images: z
@@ -97,6 +112,19 @@ export const orderItemSchema = z.object({
   priceAtPurchase: z.number().min(0),
   currency: z.string(),
   shippingCostSats: z.number().int().min(0).optional(),
+  shippingOptionId: z.string().optional(),
+  shippingOptionDTag: z.string().optional(),
+  shippingCountries: z.array(z.string()).optional(),
+  shippingCountryRules: z
+    .array(
+      z.object({
+        code: z.string(),
+        name: z.string(),
+        restrictTo: z.array(z.string()).default([]),
+        exclude: z.array(z.string()).default([]),
+      })
+    )
+    .optional(),
   sourcePrice: z
     .object({
       amount: z.number().min(0),

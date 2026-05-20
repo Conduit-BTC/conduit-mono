@@ -78,6 +78,42 @@ describe("planPublishRelays", () => {
     expect(plan.primaryRelayUrls).toContain("wss://bob-read.example")
   })
 
+  it("uses every recipient relay for critical delivery jobs", async () => {
+    const relays = Array.from(
+      { length: 6 },
+      (_, index) => `wss://bob-read-${index}.example`
+    )
+    __setRelayListTestOverrides({
+      now: () => NOW,
+      loadCached: async (pubkey) =>
+        pubkey === "bob"
+          ? {
+              pubkey: "bob",
+              readRelayUrls: relays,
+              writeRelayUrls: [],
+              eventCreatedAt: 1,
+              sourceRelayUrls: undefined,
+              cachedAt: NOW,
+            }
+          : undefined,
+    })
+
+    const standard = await planPublishRelays({
+      intent: "recipient_event",
+      authorPubkey: "alice",
+      recipientPubkeys: ["bob"],
+    })
+    const critical = await planPublishRelays({
+      intent: "recipient_event",
+      authorPubkey: "alice",
+      recipientPubkeys: ["bob"],
+      deliveryMode: "critical",
+    })
+
+    expect(standard.primaryRelayUrls).toEqual(relays.slice(0, 4))
+    expect(critical.primaryRelayUrls).toEqual(relays)
+  })
+
   it("falls back gracefully when no cached relay list is present", async () => {
     __setRelayListTestOverrides({
       now: () => NOW,
@@ -183,7 +219,7 @@ describe("planPublishRelays", () => {
         authorPubkey: "alice",
         recipientPubkeys: ["bob"],
       })
-    ).rejects.toThrow("recipient relay failed")
+    ).rejects.toThrow("no primary relay accepted")
 
     expect(attempts).toHaveLength(1)
     expect(attempts[0]?.[0]).toStartWith(primaryRelay)
@@ -299,7 +335,7 @@ describe("planPublishRelays", () => {
         intent: "author_event",
         authorPubkey: "alice",
       })
-    ).rejects.toThrow("configured write relay failed")
+    ).rejects.toThrow("no primary relay accepted")
 
     expect(attempts).toEqual([[normalizedPrimaryRelay]])
   })

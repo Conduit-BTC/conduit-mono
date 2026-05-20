@@ -30,6 +30,7 @@ import {
   useAuth,
   useProfile,
   type PricingRateInput,
+  type ParsedShippingOption,
   type ShippingAddressSchema,
 } from "@conduit/core"
 import { Button, Combobox, Input, Label, Textarea } from "@conduit/ui"
@@ -45,6 +46,7 @@ import {
   validateShippingFields,
   type ShippingFormState,
   type ShippingFieldKey,
+  type ShippingCheckoutState,
   type ShippingValidationError,
 } from "../lib/checkout-validation"
 import {
@@ -201,6 +203,35 @@ function PaymentMethodButton({
 function getCountryLabel(code: string): string {
   const country = SHIPPING_COUNTRIES.find((option) => option.code === code)
   return country ? `${country.name} (${country.code})` : code
+}
+
+function getCartShippingOptionSnapshots(
+  items: CartItem[]
+): ParsedShippingOption[] {
+  return items
+    .filter((item) => item.format !== "digital")
+    .filter(
+      (item) =>
+        item.shippingOptionId &&
+        item.shippingOptionDTag &&
+        item.shippingCountryRules &&
+        item.shippingCountryRules.length > 0
+    )
+    .map((item) => ({
+      id: item.shippingOptionId!,
+      pubkey: item.merchantPubkey,
+      dTag: item.shippingOptionDTag!,
+      title: "Product shipping zone",
+      currency: "SATS",
+      price: item.shippingCostSats ?? 0,
+      countries:
+        item.shippingCountries ??
+        item.shippingCountryRules?.map((rule) => rule.code) ??
+        [],
+      countryRules: item.shippingCountryRules!,
+      service: "standard",
+      createdAt: 0,
+    }))
 }
 
 // ─── Order summary sidebar ────────────────────────────────────────────────────
@@ -437,12 +468,13 @@ function CheckoutPage() {
   )
 
   // Fetch merchant's published shipping zones (kind-30406)
-  const { data: merchantShippingOptions = [] } = useQuery({
+  const shippingOptionsQuery = useQuery({
     queryKey: ["shippingOptions", selectedMerchant],
     queryFn: () => getShippingOptions(selectedMerchant!),
     enabled: !!selectedMerchant && !isAllDigital,
     staleTime: 5 * 60 * 1000,
   })
+  const merchantShippingOptions = shippingOptionsQuery.data ?? []
 
   const checkoutShippingCost = useMemo(
     () => getCheckoutShippingCost(checkoutItems),
@@ -507,6 +539,17 @@ function CheckoutPage() {
     [btcUsdRate, checkoutItems]
   )
 
+  const productShippingOptions = useMemo(
+    () => getCartShippingOptionSnapshots(checkoutItems),
+    [checkoutItems]
+  )
+  const shippingOptionsForEligibility =
+    merchantShippingOptions.length > 0
+      ? merchantShippingOptions
+      : productShippingOptions
+  const physicalItemsMissingShippingZone = checkoutItems.some(
+    (item) => item.format !== "digital" && !item.shippingOptionId
+  )
   const destinationEligibility = isAllDigital
     ? ({ eligible: true } as const)
     : getShippingDestinationEligibility(
@@ -514,11 +557,26 @@ function CheckoutPage() {
           country: shipping.country,
           postalCode: shipping.postalCode,
         },
-        merchantShippingOptions
+        shippingOptionsForEligibility
       )
 
+  const shippingCheckoutState: ShippingCheckoutState = isAllDigital
+    ? "not_required"
+    : shippingOptionsQuery.isLoading
+      ? "loading"
+      : physicalItemsMissingShippingZone
+        ? "missing_product_zone"
+        : shippingOptionsForEligibility.length === 0
+          ? "no_published_rule"
+          : destinationEligibility.eligible === true
+            ? "allowed"
+            : destinationEligibility.reason === "country_unsupported"
+              ? "country_unsupported"
+              : "postal_restricted"
+
   const shippingEligibleForFastCheckout =
-    destinationEligibility.eligible === true
+    shippingCheckoutState === "not_required" ||
+    shippingCheckoutState === "allowed"
 
   const fastEligibilityInput = {
     walletPayCapable: wallet.status === "pay-capable",
@@ -526,11 +584,30 @@ function CheckoutPage() {
     lnurlAllowsNostr,
     pricingReady: pricingPreview.status === "ok",
     shippingEligible: shippingEligibleForFastCheckout,
+    shippingState: shippingCheckoutState,
     shippingPriced: checkoutShippingCost.status !== "manual",
   }
   const fastEligible = isFastCheckoutEligible(fastEligibilityInput)
   const fastUnavailableReasons =
     getFastCheckoutUnavailableReasons(fastEligibilityInput)
+  const shippingStatusMessage = (() => {
+    switch (shippingCheckoutState) {
+      case "not_required":
+        return "This cart does not require shipping."
+      case "loading":
+        return "Checking merchant shipping rules before direct payment is offered."
+      case "missing_product_zone":
+        return "One product is missing product-level shipping-zone data, so direct payment is disabled."
+      case "no_published_rule":
+        return "No published merchant shipping rule was found yet. You can still send the order first."
+      case "allowed":
+        return "This destination is covered by the merchant shipping zone."
+      case "country_unsupported":
+        return "This merchant does not ship to the selected country."
+      case "postal_restricted":
+        return "This merchant shipping zone excludes or does not include this postal code."
+    }
+  })()
 
   const summaryStep: Exclude<
     CheckoutStep,
@@ -632,7 +709,7 @@ function CheckoutPage() {
     ndk: ReturnType<typeof getNdk>,
     merchantPubkey: string,
     buyerPubkey: string
-  ): Promise<void> {
+  ): Promise<{ buyerSelfCopyError: string | null }> {
     const merchantUser = new NDKUser({ pubkey: merchantPubkey })
     const buyerUser = new NDKUser({ pubkey: buyerPubkey })
     const [wrappedToMerchant, wrappedToSelf] = await Promise.all([
@@ -644,20 +721,32 @@ function CheckoutPage() {
       }),
     ])
 
-    await Promise.all([
-      publishWithPlanner(wrappedToMerchant, {
-        intent: "recipient_event",
-        authorPubkey: buyerPubkey,
-        recipientPubkeys: [merchantPubkey],
-        refreshRelayLists: true,
-      }),
-      publishWithPlanner(wrappedToSelf, {
+    await publishWithPlanner(wrappedToMerchant, {
+      intent: "recipient_event",
+      authorPubkey: buyerPubkey,
+      recipientPubkeys: [merchantPubkey],
+      refreshRelayLists: true,
+      deliveryMode: "critical",
+    })
+
+    try {
+      await publishWithPlanner(wrappedToSelf, {
         intent: "recipient_event",
         authorPubkey: buyerPubkey,
         recipientPubkeys: [buyerPubkey],
         refreshRelayLists: true,
-      }),
-    ])
+        deliveryMode: "critical",
+      })
+      return { buyerSelfCopyError: null }
+    } catch (selfCopyError) {
+      console.warn("Buyer self-copy publish failed", selfCopyError)
+      return {
+        buyerSelfCopyError:
+          selfCopyError instanceof Error
+            ? selfCopyError.message
+            : "Buyer self-copy publish failed",
+      }
+    }
   }
 
   // ─── Order-first path (existing flow) ───────────────────────────────────
@@ -683,6 +772,10 @@ function CheckoutPage() {
         priceAtPurchase: getPriceSats(item, btcUsdRate)?.sats ?? 0,
         currency,
         shippingCostSats: item.shippingCostSats,
+        shippingOptionId: item.shippingOptionId,
+        shippingOptionDTag: item.shippingOptionDTag,
+        shippingCountries: item.shippingCountries,
+        shippingCountryRules: item.shippingCountryRules,
         sourcePrice: item.sourcePrice,
       }))
 
@@ -714,6 +807,12 @@ function CheckoutPage() {
         ["amount", String(total)],
         ["currency", currency],
       ]
+      for (const item of checkoutItems) {
+        rumor.tags.push(["item", item.productId, String(item.quantity)])
+        if (item.shippingOptionId) {
+          rumor.tags.push(["shipping", item.shippingOptionId])
+        }
+      }
       rumor.tags = appendConduitClientTag(rumor.tags, "market")
       rumor.content = JSON.stringify(payload)
 
@@ -788,11 +887,13 @@ function CheckoutPage() {
         )
       }
 
-      if (destinationEligibility.eligible !== true) {
+      if (!shippingEligibleForFastCheckout) {
         throw new Error(
-          destinationEligibility.reason === "unknown"
-            ? "Checkout needs current shipping rules before direct payment."
-            : "Merchant shipping zone does not include this destination."
+          getFastCheckoutUnavailableReasons({
+            ...fastEligibilityInput,
+            shippingEligible: false,
+          }).find((reason) => reason.includes("shipping")) ??
+            "Checkout needs current shipping rules before direct payment."
         )
       }
 
@@ -830,6 +931,12 @@ function CheckoutPage() {
         ["amount", String(pricingIntent.totalSats)],
         ["currency", currency],
       ]
+      for (const item of checkoutItems) {
+        orderRumor.tags.push(["item", item.productId, String(item.quantity)])
+        if (item.shippingOptionId) {
+          orderRumor.tags.push(["shipping", item.shippingOptionId])
+        }
+      }
       orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
       orderRumor.content = JSON.stringify(orderPayload)
 
@@ -1566,6 +1673,12 @@ function CheckoutPage() {
                       </div>
                     </div>
                   </div>
+
+                  {!isAllDigital && (
+                    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-xs leading-5 text-[var(--text-secondary)]">
+                      {shippingStatusMessage}
+                    </div>
+                  )}
 
                   <Button
                     className="mt-2 h-11 w-full text-sm"

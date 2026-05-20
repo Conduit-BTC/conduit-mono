@@ -18,6 +18,15 @@ import { publishWithPlanner } from "./relay-publish"
 import type { ConduitAppId } from "./nip89"
 import { appendConduitClientTag } from "./nip89"
 
+export const CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG = "conduit-default"
+
+export function getShippingOptionAddress(
+  pubkey: string,
+  dTag = CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG
+): string {
+  return `${EVENT_KINDS.SHIPPING_OPTION}:${pubkey}:${dTag}`
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -130,7 +139,7 @@ export function parseShippingOptionEvent(
   }))
 
   return {
-    id: `30406:${event.pubkey}:${dTag}`,
+    id: getShippingOptionAddress(event.pubkey, dTag),
     pubkey: event.pubkey,
     dTag,
     title,
@@ -195,7 +204,7 @@ export async function publishShippingOptions(
   event.created_at = now
   event.content = ""
   event.tags = [
-    ["d", "conduit-default"],
+    ["d", CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG],
     ["title", "Standard Shipping"],
     ["service", "standard"],
     ["price", "0", "USD"],
@@ -215,6 +224,7 @@ export async function publishShippingOptions(
   await publishWithPlanner(event, {
     intent: "author_event",
     authorPubkey: signerPubkey,
+    deliveryMode: "critical",
   })
 }
 

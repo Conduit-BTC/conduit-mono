@@ -41,6 +41,44 @@ export type CommercePriceLike = {
 
 export type CommercePriceSortDirection = "asc" | "desc"
 
+export const SUPPORTED_PRODUCT_PRICE_CURRENCIES = [
+  "SATS",
+  "USD",
+  "AUD",
+  "BGN",
+  "BRL",
+  "CAD",
+  "CHF",
+  "CNY",
+  "CZK",
+  "DKK",
+  "EUR",
+  "GBP",
+  "HKD",
+  "HUF",
+  "IDR",
+  "ILS",
+  "INR",
+  "ISK",
+  "JPY",
+  "KRW",
+  "MXN",
+  "MYR",
+  "NOK",
+  "NZD",
+  "PHP",
+  "PLN",
+  "RON",
+  "SEK",
+  "SGD",
+  "THB",
+  "TRY",
+  "ZAR",
+] as const
+
+export type SupportedProductPriceCurrency =
+  (typeof SUPPORTED_PRODUCT_PRICE_CURRENCIES)[number]
+
 export function normalizeCurrencyCode(currency: string): string {
   return currency.trim().toUpperCase()
 }

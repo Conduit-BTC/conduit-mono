@@ -26,6 +26,7 @@ import {
   getShippingDestinationEligibility,
   parseShippingOptionEvent,
 } from "../packages/core/src/protocol/shipping"
+import { parseProductEvent } from "../packages/core/src/protocol/products"
 
 const FAKE_PUBKEY = "a".repeat(64)
 const FAKE_SECRET = "b".repeat(64)
@@ -211,10 +212,25 @@ describe("isFastCheckoutEligible", () => {
         lnurlAllowsNostr: true,
         pricingReady: false,
         shippingEligible: false,
+        shippingState: "country_unsupported",
       })
     ).toEqual([
       "Refresh price conversion before paying.",
-      "Merchant shipping zone does not include this destination.",
+      "Merchant shipping zone does not include this country.",
+    ])
+  })
+
+  it("reports missing product-level shipping data separately", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        shippingEligible: false,
+        shippingState: "missing_product_zone",
+      })
+    ).toEqual([
+      "A product in this cart is missing product-level shipping-zone data.",
     ])
   })
 
@@ -422,6 +438,36 @@ describe("checkout payment helpers", () => {
 // ─── shipping eligibility ───────────────────────────────────────────────────
 
 describe("shipping destination eligibility", () => {
+  it("parses product-level shipping option references and snapshots", () => {
+    const product = parseProductEvent({
+      id: "product-event",
+      pubkey: FAKE_PUBKEY,
+      created_at: 1,
+      content: "",
+      tags: [
+        ["d", "notebook"],
+        ["title", "Notebook"],
+        ["price", "1000", "SATS"],
+        ["type", "simple", "physical"],
+        ["shipping_cost", "500"],
+        ["shipping_option", `30406:${FAKE_PUBKEY}:conduit-default`],
+        ["shipping_country", "US", "CA"],
+        ["shipping_restrict", "US", "787**"],
+        ["shipping_exclude", "US", "78799"],
+      ],
+    })
+
+    expect(product.shippingOptionId).toBe(
+      `30406:${FAKE_PUBKEY}:conduit-default`
+    )
+    expect(product.shippingCountries).toEqual(["US", "CA"])
+    expect(product.shippingCountryRules?.[0]).toMatchObject({
+      code: "US",
+      restrictTo: ["787**"],
+      exclude: ["78799"],
+    })
+  })
+
   it("parses postal include and exclude rules", () => {
     const parsed = parseShippingOptionEvent({
       id: "shipping-event",

@@ -11,6 +11,15 @@ export interface StoredOrder {
     priceAtPurchase: number
     currency: string
     shippingCostSats?: number
+    shippingOptionId?: string
+    shippingOptionDTag?: string
+    shippingCountries?: string[]
+    shippingCountryRules?: Array<{
+      code: string
+      name: string
+      restrictTo: string[]
+      exclude: string[]
+    }>
     sourcePrice?: {
       amount: number
       currency: string
@@ -59,6 +68,15 @@ export interface CachedProduct {
   type?: "simple" | "variable"
   format?: "physical" | "digital"
   shippingCostSats?: number
+  shippingOptionId?: string
+  shippingOptionDTag?: string
+  shippingCountries?: string[]
+  shippingCountryRules?: Array<{
+    code: string
+    name: string
+    restrictTo: string[]
+    exclude: string[]
+  }>
   visibility?: "public" | "private"
   stock?: number
   images: Array<{ url: string; alt?: string }>

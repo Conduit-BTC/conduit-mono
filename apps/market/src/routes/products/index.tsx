@@ -747,6 +747,10 @@ function ProductsPage() {
                         tags: product.tags,
                         format: product.format,
                         shippingCostSats: product.shippingCostSats,
+                        shippingOptionId: product.shippingOptionId,
+                        shippingOptionDTag: product.shippingOptionDTag,
+                        shippingCountries: product.shippingCountries,
+                        shippingCountryRules: product.shippingCountryRules,
                       },
                       1
                     )
@@ -765,6 +769,10 @@ function ProductsPage() {
                         tags: product.tags,
                         format: product.format,
                         shippingCostSats: product.shippingCostSats,
+                        shippingOptionId: product.shippingOptionId,
+                        shippingOptionDTag: product.shippingOptionDTag,
+                        shippingCountries: product.shippingCountries,
+                        shippingCountryRules: product.shippingCountryRules,
                       },
                       1
                     )

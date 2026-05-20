@@ -22,6 +22,17 @@ export interface Product {
   format: "physical" | "digital"
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
   shippingCostSats?: number
+  /** Addressable kind-30406 shipping option reference attached by the merchant. */
+  shippingOptionId?: string
+  shippingOptionDTag?: string
+  /** Product-level snapshot of the referenced shipping option for checkout. */
+  shippingCountries?: string[]
+  shippingCountryRules?: Array<{
+    code: string
+    name: string
+    restrictTo: string[]
+    exclude: string[]
+  }>
   visibility: "public" | "private"
   stock?: number
   images: ProductImage[]
@@ -78,6 +89,15 @@ export interface OrderItem {
   priceAtPurchase: number
   currency: string
   shippingCostSats?: number
+  shippingOptionId?: string
+  shippingOptionDTag?: string
+  shippingCountries?: string[]
+  shippingCountryRules?: Array<{
+    code: string
+    name: string
+    restrictTo: string[]
+    exclude: string[]
+  }>
   sourcePrice?: {
     amount: number
     currency: string

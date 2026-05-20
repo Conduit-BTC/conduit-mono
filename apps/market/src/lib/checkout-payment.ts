@@ -27,6 +27,10 @@ export type CheckoutPricingItem = {
   priceAtPurchase: number
   currency: "SATS"
   shippingCostSats?: number
+  shippingOptionId?: string
+  shippingOptionDTag?: string
+  shippingCountries?: string[]
+  shippingCountryRules?: CartItem["shippingCountryRules"]
   sourcePrice?: SourcePriceQuote
 }
 
@@ -191,6 +195,10 @@ export function buildCheckoutPricingIntent(
       priceAtPurchase: itemSats,
       currency: "SATS",
       shippingCostSats: getKnownShippingCostSats(item) ?? undefined,
+      shippingOptionId: item.shippingOptionId,
+      shippingOptionDTag: item.shippingOptionDTag,
+      shippingCountries: item.shippingCountries,
+      shippingCountryRules: item.shippingCountryRules,
       sourcePrice: item.sourcePrice,
     })
   }

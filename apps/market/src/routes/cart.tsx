@@ -778,6 +778,10 @@ function CartPage() {
                           tags: product.tags,
                           format: product.format,
                           shippingCostSats: product.shippingCostSats,
+                          shippingOptionId: product.shippingOptionId,
+                          shippingOptionDTag: product.shippingOptionDTag,
+                          shippingCountries: product.shippingCountries,
+                          shippingCountryRules: product.shippingCountryRules,
                         })
                       }
                     />
@@ -900,6 +904,10 @@ function CartPage() {
                       tags: item.tags,
                       format: item.format,
                       shippingCostSats: item.shippingCostSats,
+                      shippingOptionId: item.shippingOptionId,
+                      shippingOptionDTag: item.shippingOptionDTag,
+                      shippingCountries: item.shippingCountries,
+                      shippingCountryRules: item.shippingCountryRules,
                     },
                     1
                   )
@@ -1029,6 +1037,10 @@ function CartPage() {
                         tags: product.tags,
                         format: product.format,
                         shippingCostSats: product.shippingCostSats,
+                        shippingOptionId: product.shippingOptionId,
+                        shippingOptionDTag: product.shippingOptionDTag,
+                        shippingCountries: product.shippingCountries,
+                        shippingCountryRules: product.shippingCountryRules,
                       })
                     }
                   />

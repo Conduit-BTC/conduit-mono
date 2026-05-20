@@ -760,6 +760,10 @@ function StorefrontPage() {
                         tags: product.tags,
                         format: product.format,
                         shippingCostSats: product.shippingCostSats,
+                        shippingOptionId: product.shippingOptionId,
+                        shippingOptionDTag: product.shippingOptionDTag,
+                        shippingCountries: product.shippingCountries,
+                        shippingCountryRules: product.shippingCountryRules,
                       })
                     }
                     onIncrement={() =>
@@ -775,6 +779,10 @@ function StorefrontPage() {
                         tags: product.tags,
                         format: product.format,
                         shippingCostSats: product.shippingCostSats,
+                        shippingOptionId: product.shippingOptionId,
+                        shippingOptionDTag: product.shippingOptionDTag,
+                        shippingCountries: product.shippingCountries,
+                        shippingCountryRules: product.shippingCountryRules,
                       })
                     }
                     onDecrement={() => {

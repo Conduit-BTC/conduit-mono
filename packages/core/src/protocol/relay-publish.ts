@@ -33,6 +33,12 @@ export interface PublishWithPlannerInput {
   recipientPubkeys?: readonly string[]
   /** Fetch missing NIP-65 hints before planning instead of cache-only lookup. */
   refreshRelayLists?: boolean
+  /**
+   * Critical writes are user-visible delivery jobs. They fan out to every
+   * intended relay and include parked relays instead of silently applying the
+   * normal small-batch health/cap policy.
+   */
+  deliveryMode?: "standard" | "critical"
   /** Disable per-relay health filtering (last-resort retries). */
   skipHealthFilter?: boolean
 }
@@ -45,6 +51,22 @@ export interface PublishWithPlannerResult {
   successfulRelayUrls: string[]
   /** URLs that failed (rejection or no ack). Empty on fallback path. */
   failedRelayUrls: string[]
+}
+
+export class RelayPublishDiagnosticsError extends Error {
+  readonly diagnostics: PublishWithPlannerResult
+  readonly cause: unknown
+
+  constructor(
+    message: string,
+    diagnostics: PublishWithPlannerResult,
+    cause: unknown
+  ) {
+    super(message)
+    this.name = "RelayPublishDiagnosticsError"
+    this.diagnostics = diagnostics
+    this.cause = cause
+  }
 }
 
 interface RelayPublishTestOverrides {
@@ -176,6 +198,40 @@ function createAuthorFallbackPublishError(
   )
 }
 
+function formatRelayListForError(urls: readonly string[]): string {
+  if (urls.length === 0) return "none"
+  return urls.slice(0, 8).join(", ") + (urls.length > 8 ? ", ..." : "")
+}
+
+function createPublishDiagnosticsError(input: {
+  message: string
+  plan: RelayWritePlan
+  attemptedRelayUrls: readonly string[]
+  successfulRelayUrls: readonly string[]
+  failedRelayUrls: readonly string[]
+  thrown: unknown
+}): RelayPublishDiagnosticsError {
+  const details = [
+    `Attempted: ${formatRelayListForError(input.attemptedRelayUrls)}.`,
+    `ACKed: ${formatRelayListForError(input.successfulRelayUrls)}.`,
+    `Failed: ${formatRelayListForError(input.failedRelayUrls)}.`,
+    input.plan.parkedRelayUrls.length > 0
+      ? `Parked before this attempt: ${formatRelayListForError(input.plan.parkedRelayUrls)}.`
+      : null,
+  ].filter(Boolean)
+
+  return new RelayPublishDiagnosticsError(
+    `${input.message} ${details.join(" ")}`,
+    {
+      plan: input.plan,
+      attemptedRelayUrls: [...input.attemptedRelayUrls],
+      successfulRelayUrls: [...input.successfulRelayUrls],
+      failedRelayUrls: [...input.failedRelayUrls],
+    },
+    input.thrown
+  )
+}
+
 async function publishToRelayUrls(input: {
   event: NDKEvent
   ndk: ReturnType<typeof getNdk>
@@ -262,7 +318,10 @@ export async function planPublishRelays(
     authorPubkey: input.authorPubkey,
     recipientPubkeys: input.recipientPubkeys,
     relayLists,
-    skipHealthFilter: input.skipHealthFilter,
+    maxPrimaryRelays: input.deliveryMode === "critical" ? 0 : undefined,
+    maxBroadcastRelays: input.deliveryMode === "critical" ? 0 : undefined,
+    skipHealthFilter:
+      input.skipHealthFilter ?? input.deliveryMode === "critical",
   })
 }
 
@@ -312,7 +371,17 @@ export async function publishWithPlanner(
         relayUrls: fallbackRelayUrls,
         requiredRelayCount: 1,
       })
-      if (fallback.thrown) throw fallback.thrown
+      if (fallback.thrown) {
+        throw createPublishDiagnosticsError({
+          message:
+            "Could not publish because no fallback relay accepted the event.",
+          plan: emptyPlan(input.intent),
+          attemptedRelayUrls,
+          successfulRelayUrls: fallback.successfulRelayUrls,
+          failedRelayUrls: fallback.failedRelayUrls,
+          thrown: fallback.thrown,
+        })
+      }
       return {
         plan: emptyPlan(input.intent),
         attemptedRelayUrls,
@@ -367,10 +436,33 @@ export async function publishWithPlanner(
         }
       }
 
-      throw createAuthorFallbackPublishError(primary.thrown, fallback.thrown)
+      throw createPublishDiagnosticsError({
+        message: createAuthorFallbackPublishError(
+          primary.thrown,
+          fallback.thrown
+        ).message,
+        plan,
+        attemptedRelayUrls,
+        successfulRelayUrls: mergeUnique([
+          primary.successfulRelayUrls,
+          fallback.successfulRelayUrls,
+        ]),
+        failedRelayUrls: mergeUnique([
+          primary.failedRelayUrls,
+          fallback.failedRelayUrls,
+        ]),
+        thrown: fallback.thrown,
+      })
     }
 
-    throw primary.thrown
+    throw createPublishDiagnosticsError({
+      message: "Could not publish because no primary relay accepted the event.",
+      plan,
+      attemptedRelayUrls,
+      successfulRelayUrls: primary.successfulRelayUrls,
+      failedRelayUrls: primary.failedRelayUrls,
+      thrown: primary.thrown,
+    })
   }
 
   const broadcast = await publishToRelayUrls({

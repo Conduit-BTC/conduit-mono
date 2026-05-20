@@ -481,6 +481,10 @@ function ProductPage() {
                           tags: product.tags,
                           format: product.format,
                           shippingCostSats: product.shippingCostSats,
+                          shippingOptionId: product.shippingOptionId,
+                          shippingOptionDTag: product.shippingOptionDTag,
+                          shippingCountries: product.shippingCountries,
+                          shippingCountryRules: product.shippingCountryRules,
                         },
                         quantity
                       )
@@ -694,6 +698,13 @@ function ProductPage() {
                               tags: relatedProduct.tags,
                               format: relatedProduct.format,
                               shippingCostSats: relatedProduct.shippingCostSats,
+                              shippingOptionId: relatedProduct.shippingOptionId,
+                              shippingOptionDTag:
+                                relatedProduct.shippingOptionDTag,
+                              shippingCountries:
+                                relatedProduct.shippingCountries,
+                              shippingCountryRules:
+                                relatedProduct.shippingCountryRules,
                             },
                             1
                           )
@@ -712,6 +723,13 @@ function ProductPage() {
                               tags: relatedProduct.tags,
                               format: relatedProduct.format,
                               shippingCostSats: relatedProduct.shippingCostSats,
+                              shippingOptionId: relatedProduct.shippingOptionId,
+                              shippingOptionDTag:
+                                relatedProduct.shippingOptionDTag,
+                              shippingCountries:
+                                relatedProduct.shippingCountries,
+                              shippingCountryRules:
+                                relatedProduct.shippingCountryRules,
                             },
                             1
                           )

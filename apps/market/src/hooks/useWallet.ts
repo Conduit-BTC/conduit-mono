@@ -14,6 +14,8 @@ import {
 } from "@conduit/core"
 
 const WALLET_STORAGE_KEY = "conduit:buyer-wallet-nwc"
+const WALLET_CAPABILITY_STORAGE_KEY = "conduit:buyer-wallet-nwc-capability"
+const WALLET_CAPABILITY_STALE_MS = 60 * 60_000
 
 export type WalletConnectionStatus =
   | "disconnected"
@@ -30,6 +32,13 @@ export interface WalletState {
   /** Plain-language reason the wallet cannot be used for fast checkout, if any. */
   unavailableReason: string | null
   error: string | null
+}
+
+type StoredWalletCapability = {
+  walletPubkey: string
+  info: NwcGetInfoResult | null
+  status: Extract<WalletConnectionStatus, "pay-capable" | "unsupported">
+  checkedAt: number
 }
 
 export interface UseWalletReturn extends WalletState {
@@ -61,9 +70,59 @@ function clearStoredConnection(): void {
   if (typeof window === "undefined") return
   try {
     localStorage.removeItem(WALLET_STORAGE_KEY)
+    localStorage.removeItem(WALLET_CAPABILITY_STORAGE_KEY)
   } catch {
     // ignore
   }
+}
+
+function readStoredCapability(
+  connection: NwcConnection
+): StoredWalletCapability | null {
+  if (typeof window === "undefined") return null
+  try {
+    const raw = localStorage.getItem(WALLET_CAPABILITY_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<StoredWalletCapability>
+    if (
+      parsed.walletPubkey !== connection.walletPubkey ||
+      typeof parsed.checkedAt !== "number" ||
+      (parsed.status !== "pay-capable" && parsed.status !== "unsupported")
+    ) {
+      return null
+    }
+    return {
+      walletPubkey: parsed.walletPubkey,
+      info: parsed.info ?? null,
+      status: parsed.status,
+      checkedAt: parsed.checkedAt,
+    }
+  } catch {
+    return null
+  }
+}
+
+function writeStoredCapability(
+  connection: NwcConnection,
+  info: NwcGetInfoResult
+): StoredWalletCapability {
+  const status = info.methods.includes("pay_invoice")
+    ? "pay-capable"
+    : "unsupported"
+  const next: StoredWalletCapability = {
+    walletPubkey: connection.walletPubkey,
+    info,
+    status,
+    checkedAt: Date.now(),
+  }
+  if (typeof window !== "undefined") {
+    try {
+      localStorage.setItem(WALLET_CAPABILITY_STORAGE_KEY, JSON.stringify(next))
+    } catch {
+      // ignore
+    }
+  }
+  return next
 }
 
 function deriveStatus(
@@ -110,23 +169,38 @@ export function useWallet(): UseWalletReturn {
     const stored = readStoredConnection()
     if (!stored) return
 
-    setState((s) => ({ ...s, connection: stored, status: "connecting" }))
+    const cached = readStoredCapability(stored)
+    const cachedFresh =
+      cached && Date.now() - cached.checkedAt < WALLET_CAPABILITY_STALE_MS
+
+    setState((s) => ({
+      ...s,
+      connection: stored,
+      info: cached?.info ?? null,
+      status: cached ? cached.status : "connecting",
+      error: null,
+    }))
+
+    if (cachedFresh) return
 
     nwcGetInfo(stored, 10_000, "market")
       .then((info) => {
-        const resolvedStatus = info.methods.includes("pay_invoice")
-          ? "pay-capable"
-          : "unsupported"
-        setState((s) => ({ ...s, info, error: null, status: resolvedStatus }))
-      })
-      .catch(() => {
-        // Capability probe failed - wallet may still be valid but we cannot
-        // confirm pay_invoice support. Mark as connected, not pay-capable.
+        const resolved = writeStoredCapability(stored, info)
         setState((s) => ({
           ...s,
-          info: null,
+          info,
           error: null,
-          status: "connected",
+          status: resolved.status,
+        }))
+      })
+      .catch(() => {
+        // Keep stale pay-capable state usable if we had it; otherwise the
+        // wallet is connected but payment support is unconfirmed.
+        setState((s) => ({
+          ...s,
+          info: cached?.info ?? null,
+          error: null,
+          status: cached?.status ?? "connected",
         }))
       })
   }, [])
@@ -137,8 +211,10 @@ export function useWallet(): UseWalletReturn {
   const error = state.error
 
   const status =
-    state.status === "connecting"
-      ? "connecting"
+    state.status === "connecting" ||
+    state.status === "pay-capable" ||
+    state.status === "unsupported"
+      ? state.status
       : deriveStatus(info, error, connection)
 
   const connect = useCallback(async (uri: string) => {
@@ -158,8 +234,14 @@ export function useWallet(): UseWalletReturn {
 
     try {
       const info = await nwcGetInfo(conn, 10_000, "market")
+      const resolved = writeStoredCapability(conn, info)
       writeStoredConnection(conn)
-      setState({ connection: conn, info, status: "pay-capable", error: null })
+      setState({
+        connection: conn,
+        info,
+        status: resolved.status,
+        error: null,
+      })
     } catch {
       // Capability probe failed but URI parsed - store and mark connected
       writeStoredConnection(conn)
