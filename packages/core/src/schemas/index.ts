@@ -239,7 +239,7 @@ export type ConversationMessageSchema = z.infer<
 >
 
 /**
- * Payment proof message -- sent by the buyer after a successful NWC pay_invoice.
+ * Payment proof message -- sent by the buyer after a successful Lightning payment.
  * Lets the merchant confirm payment without querying the Lightning node.
  */
 export const paymentProofMessageSchema = z.object({

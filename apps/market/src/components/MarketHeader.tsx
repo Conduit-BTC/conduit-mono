@@ -111,9 +111,11 @@ function UserMenu() {
   const walletStatusLabel =
     wallet.status === "pay-capable"
       ? "Ready"
-      : wallet.status === "disconnected"
-        ? "Not connected"
-        : undefined
+      : wallet.status === "unreachable"
+        ? "Saved"
+        : wallet.status === "disconnected"
+          ? "Not connected"
+          : undefined
 
   return (
     <ProfileSelector

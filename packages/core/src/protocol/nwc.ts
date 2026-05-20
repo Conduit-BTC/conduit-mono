@@ -4,33 +4,29 @@
  * Supports merchant invoice generation (`make_invoice`) and buyer payment
  * (`pay_invoice`) with capability detection (`get_info`).
  *
- * Usage:
- *   const conn = parseNwcUri("nostr+walletconnect://...")
- *
- *   // Merchant: generate an invoice
- *   const bolt11 = await nwcMakeInvoice(conn, { amountMsats: 100_000, description: "Order #123" }, 30_000, "merchant")
- *
- *   // Buyer: probe wallet capabilities
- *   const info = await nwcGetInfo(conn, 10_000, "market")
- *   if (info.methods.includes("pay_invoice")) { ... }
- *
- *   // Buyer: pay an invoice
- *   const result = await nwcPayInvoice(conn, { invoice: "lnbc..." }, 60_000, "market")
+ * NWC is the wallet RPC transport for invoice payment. It is not the zap
+ * protocol itself: checkout should fetch/validate a NIP-57 zap invoice first,
+ * then use this module to ask the connected wallet to pay that invoice.
  */
-import NDK, {
-  NDKEvent,
-  NDKPrivateKeySigner,
-  type NDKRelay,
-  NDKRelayStatus,
-  NDKUser,
-  type NDKFilter,
-} from "@nostr-dev-kit/ndk"
-import { appendConduitClientTag, type ConduitAppId } from "./nip89"
+import {
+  NWCClient,
+  Nip47NetworkError,
+  Nip47PublishError,
+  Nip47PublishTimeoutError,
+  Nip47ReplyTimeoutError,
+  Nip47TimeoutError,
+} from "@getalby/sdk/nwc"
+import type {
+  NewNWCClientOptions,
+  Nip47GetInfoResponse,
+  Nip47MakeInvoiceRequest,
+  Nip47PayInvoiceRequest,
+  Nip47PayResponse,
+  Nip47Transaction,
+} from "@getalby/sdk/nwc"
 
-// NIP-47 event kinds
-const NWC_REQUEST_KIND = 23194
-const NWC_RESPONSE_KIND = 23195
-const NWC_CONNECT_TIMEOUT_MS = 10_000
+import { decodeLightningInvoiceAmount } from "./lightning"
+import type { ConduitAppId } from "./nip89"
 
 export interface NwcConnection {
   walletPubkey: string
@@ -77,139 +73,32 @@ export interface NwcGetInfoResult {
   blockHeight?: number
 }
 
+type NwcClientLike = {
+  getInfo(): Promise<Nip47GetInfoResponse>
+  makeInvoice(request: Nip47MakeInvoiceRequest): Promise<Nip47Transaction>
+  payInvoice(request: Nip47PayInvoiceRequest): Promise<Nip47PayResponse>
+  close(): void
+}
+
+type NwcClientFactory = (connection: NwcConnection) => NwcClientLike
+
+let testNwcClientFactory: NwcClientFactory | null = null
+
 /**
  * Parse a nostr+walletconnect:// URI into its components.
+ *
+ * Delegate URI compatibility to the NWC SDK so Conduit accepts the same
+ * modern and legacy NWC URI forms as other web clients.
  */
 export function parseNwcUri(uri: string): NwcConnection {
-  // nostr+walletconnect://<walletPubkey>?relay=...&secret=...
-  const cleaned = uri.trim()
-  if (!cleaned.startsWith("nostr+walletconnect://")) {
-    throw new Error("Invalid NWC URI: must start with nostr+walletconnect://")
-  }
-
-  const withoutScheme = cleaned.slice("nostr+walletconnect://".length)
-  const [walletPubkey, queryString] = withoutScheme.split("?", 2)
-
-  if (!walletPubkey || walletPubkey.length !== 64) {
-    throw new Error("Invalid NWC URI: missing or invalid wallet pubkey")
-  }
-
-  const params = new URLSearchParams(queryString ?? "")
-
-  const secret = params.get("secret")
-  if (!secret || secret.length !== 64) {
-    throw new Error("Invalid NWC URI: missing or invalid secret")
-  }
-
-  const relays = params.getAll("relay")
-  if (relays.length === 0) {
-    throw new Error("Invalid NWC URI: at least one relay is required")
-  }
+  const parsed = NWCClient.parseWalletConnectUrl(uri.trim(), true)
 
   return {
-    walletPubkey,
-    secret,
-    relays,
-    lud16: params.get("lud16") ?? undefined,
+    walletPubkey: parsed.walletPubkey,
+    secret: parsed.secret ?? "",
+    relays: parsed.relayUrls,
+    lud16: parsed.lud16,
   }
-}
-
-// ─── Shared NDK bootstrapping ─────────────────────────────────────────────────
-
-async function buildNwcNdk(connection: NwcConnection): Promise<{
-  ndk: NDK
-  signer: NDKPrivateKeySigner
-  walletUser: NDKUser
-  clientPubkey: string
-}> {
-  const signer = new NDKPrivateKeySigner(connection.secret)
-  const ndk = new NDK({
-    explicitRelayUrls: connection.relays,
-    signer,
-  })
-
-  try {
-    await waitForNwcRelayConnection(ndk, NWC_CONNECT_TIMEOUT_MS)
-  } catch (error) {
-    disconnectNwcNdk(ndk)
-    throw error
-  }
-
-  const clientPubkey = signer.pubkey
-  const walletUser = new NDKUser({ pubkey: connection.walletPubkey })
-
-  return { ndk, signer, walletUser, clientPubkey }
-}
-
-function disconnectNwcNdk(ndk: NDK): void {
-  try {
-    for (const [, relay] of ndk.pool?.relays?.entries() ?? []) {
-      relay.disconnect()
-    }
-  } catch {
-    // ignore cleanup errors
-  }
-}
-
-function getConnectedNwcRelays(ndk: NDK): NDKRelay[] {
-  const pool = ndk.pool
-  if (!pool) return []
-
-  if (typeof pool.connectedRelays === "function") {
-    return pool.connectedRelays()
-  }
-
-  return Array.from(pool.relays?.values() ?? []).filter(
-    (relay) => relay.status >= NDKRelayStatus.CONNECTED
-  )
-}
-
-function waitForNwcRelayConnection(ndk: NDK, timeoutMs: number): Promise<void> {
-  if (getConnectedNwcRelays(ndk).length > 0) return Promise.resolve()
-
-  const pool = ndk.pool
-  if (!pool)
-    return Promise.reject(new Error("Failed to connect to NWC relay(s)"))
-
-  return new Promise<void>((resolve, reject) => {
-    let settled = false
-    let connectError: unknown = null
-
-    const handleConnect = () => {
-      if (getConnectedNwcRelays(ndk).length > 0) settle()
-    }
-
-    const timer = setTimeout(() => {
-      const suffix =
-        connectError instanceof Error && connectError.message
-          ? ` ${connectError.message}`
-          : ""
-      settle(new Error(`Failed to connect to NWC relay(s).${suffix}`.trim()))
-    }, timeoutMs)
-
-    const cleanup = () => {
-      clearTimeout(timer)
-      pool.off("relay:connect", handleConnect)
-    }
-
-    const settle = (error?: Error) => {
-      if (settled) return
-      settled = true
-      cleanup()
-      if (error) reject(error)
-      else resolve()
-    }
-
-    pool.on("relay:connect", handleConnect)
-
-    void ndk
-      .connect(timeoutMs)
-      .then(handleConnect)
-      .catch((error: unknown) => {
-        connectError = error
-        handleConnect()
-      })
-  })
 }
 
 // ─── make_invoice ─────────────────────────────────────────────────────────────
@@ -223,56 +112,36 @@ export async function nwcMakeInvoice(
   timeoutMs = 30_000,
   clientAppId: ConduitAppId
 ): Promise<NwcMakeInvoiceResult> {
-  const { ndk, signer, walletUser, clientPubkey } =
-    await buildNwcNdk(connection)
+  void clientAppId
+  const client = createNwcClient(connection)
 
   try {
-    const requestPayload = JSON.stringify({
-      method: "make_invoice",
-      params: {
-        amount: params.amountMsats,
-        description: params.description,
-        expiry: params.expiry,
-      },
-    })
-
-    const encrypted = await signer.encrypt(walletUser, requestPayload, "nip44")
-
-    const requestEvent = new NDKEvent(ndk)
-    requestEvent.kind = NWC_REQUEST_KIND
-    requestEvent.tags = [
-      ["p", connection.walletPubkey],
-      ["encryption", "nip44_v2"],
-    ]
-    requestEvent.tags = appendConduitClientTag(requestEvent.tags, clientAppId)
-    requestEvent.content = encrypted
-    await requestEvent.sign(signer)
-    const requestId = requestEvent.id
-
-    const responsePromise = waitForNwcResponse<NwcMakeInvoiceResult>(
-      ndk,
-      signer,
-      walletUser,
-      requestId,
-      clientPubkey,
+    const request: Nip47MakeInvoiceRequest = {
+      amount: params.amountMsats,
+      description: params.description,
+      expiry: params.expiry,
+    }
+    const result = await withNwcTimeout(
+      client.makeInvoice(request),
       timeoutMs,
-      parseMakeInvoiceResult
+      "make_invoice"
     )
 
-    await requestEvent.publish()
-
-    return await responsePromise
+    return parseMakeInvoiceResult(result)
+  } catch (error) {
+    throw normalizeNwcError(error)
   } finally {
-    disconnectNwcNdk(ndk)
+    client.close()
   }
 }
 
 function parseMakeInvoiceResult(
-  result: Record<string, unknown>
+  result: Nip47Transaction
 ): NwcMakeInvoiceResult {
   const invoice = typeof result.invoice === "string" ? result.invoice : ""
   if (!invoice)
     throw new Error("Invalid NWC make_invoice response: missing invoice")
+
   return {
     invoice,
     paymentHash:
@@ -302,60 +171,52 @@ export async function nwcPayInvoice(
   timeoutMs = 60_000,
   clientAppId: ConduitAppId
 ): Promise<NwcPayInvoiceResult> {
-  const { ndk, signer, walletUser, clientPubkey } =
-    await buildNwcNdk(connection)
+  void clientAppId
+  const client = createNwcClient(connection)
 
   try {
-    const requestPayload = JSON.stringify({
-      method: "pay_invoice",
-      params: {
-        invoice: params.invoice,
-        ...(params.amountMsats !== undefined && { amount: params.amountMsats }),
-        ...(params.metadata !== undefined && { metadata: params.metadata }),
-      },
-    })
-
-    const encrypted = await signer.encrypt(walletUser, requestPayload, "nip44")
-
-    const requestEvent = new NDKEvent(ndk)
-    requestEvent.kind = NWC_REQUEST_KIND
-    requestEvent.tags = [
-      ["p", connection.walletPubkey],
-      ["encryption", "nip44_v2"],
-    ]
-    requestEvent.tags = appendConduitClientTag(requestEvent.tags, clientAppId)
-    requestEvent.content = encrypted
-    await requestEvent.sign(signer)
-    const requestId = requestEvent.id
-
-    const responsePromise = waitForNwcResponse<NwcPayInvoiceResult>(
-      ndk,
-      signer,
-      walletUser,
-      requestId,
-      clientPubkey,
+    const request: Nip47PayInvoiceRequest = {
+      invoice: params.invoice,
+      ...(params.metadata !== undefined && { metadata: params.metadata }),
+    }
+    const amount = getNwcPayInvoiceAmount(params)
+    if (amount !== undefined) request.amount = amount
+    const result = await withNwcTimeout(
+      client.payInvoice(request),
       timeoutMs,
-      parsePayInvoiceResult
+      "pay_invoice"
     )
 
-    await requestEvent.publish()
-
-    return await responsePromise
+    return parsePayInvoiceResult(result)
+  } catch (error) {
+    throw normalizeNwcError(error)
   } finally {
-    disconnectNwcNdk(ndk)
+    client.close()
   }
 }
 
-function parsePayInvoiceResult(
-  result: Record<string, unknown>
-): NwcPayInvoiceResult {
+function getNwcPayInvoiceAmount(
+  params: NwcPayInvoiceParams
+): number | undefined {
+  if (params.amountMsats === undefined) return undefined
+
+  const decodedAmount = decodeLightningInvoiceAmount(params.invoice)
+  if (decodedAmount.msats === null) return params.amountMsats
+
+  if (decodedAmount.msats !== params.amountMsats) {
+    throw new Error("Amount in invoice does not match amount in request")
+  }
+
+  return undefined
+}
+
+function parsePayInvoiceResult(result: Nip47PayResponse): NwcPayInvoiceResult {
   const preimage = typeof result.preimage === "string" ? result.preimage : ""
   if (!preimage)
     throw new Error("Invalid NWC pay_invoice response: missing preimage")
+
   return {
     preimage,
-    paymentHash:
-      typeof result.payment_hash === "string" ? result.payment_hash : undefined,
     feeMsats:
       typeof result.fees_paid === "number" ? result.fees_paid : undefined,
   }
@@ -367,56 +228,33 @@ function parsePayInvoiceResult(
  * Probe a NWC wallet for supported methods and node metadata.
  *
  * Use this to determine whether a connected wallet supports `pay_invoice`
- * before offering fast checkout. If capability detection fails (e.g. the
- * wallet does not support `get_info`), the caller should fail closed for
- * fast checkout and keep the invoice fallback visible.
+ * before offering one-tap checkout. If capability detection fails, callers can
+ * still fetch a Lightning invoice and offer browser/manual payment fallback.
  */
 export async function nwcGetInfo(
   connection: NwcConnection,
   timeoutMs = 10_000,
   clientAppId: ConduitAppId
 ): Promise<NwcGetInfoResult> {
-  const { ndk, signer, walletUser, clientPubkey } =
-    await buildNwcNdk(connection)
+  void clientAppId
+  const client = createNwcClient(connection)
 
   try {
-    const requestPayload = JSON.stringify({ method: "get_info", params: {} })
+    const result = await withNwcTimeout(client.getInfo(), timeoutMs, "get_info")
 
-    const encrypted = await signer.encrypt(walletUser, requestPayload, "nip44")
-
-    const requestEvent = new NDKEvent(ndk)
-    requestEvent.kind = NWC_REQUEST_KIND
-    requestEvent.tags = [
-      ["p", connection.walletPubkey],
-      ["encryption", "nip44_v2"],
-    ]
-    requestEvent.tags = appendConduitClientTag(requestEvent.tags, clientAppId)
-    requestEvent.content = encrypted
-    await requestEvent.sign(signer)
-    const requestId = requestEvent.id
-
-    const responsePromise = waitForNwcResponse<NwcGetInfoResult>(
-      ndk,
-      signer,
-      walletUser,
-      requestId,
-      clientPubkey,
-      timeoutMs,
-      parseGetInfoResult
-    )
-
-    await requestEvent.publish()
-
-    return await responsePromise
+    return parseGetInfoResult(result)
+  } catch (error) {
+    throw normalizeNwcError(error)
   } finally {
-    disconnectNwcNdk(ndk)
+    client.close()
   }
 }
 
-function parseGetInfoResult(result: Record<string, unknown>): NwcGetInfoResult {
+function parseGetInfoResult(result: Nip47GetInfoResponse): NwcGetInfoResult {
   const methods = Array.isArray(result.methods)
-    ? result.methods.filter((m): m is string => typeof m === "string")
+    ? result.methods.filter((m) => typeof m === "string")
     : []
+
   return {
     methods,
     alias: typeof result.alias === "string" ? result.alias : undefined,
@@ -428,75 +266,62 @@ function parseGetInfoResult(result: Record<string, unknown>): NwcGetInfoResult {
   }
 }
 
-// ─── Generic response waiter ─────────────────────────────────────────────────
+function createNwcClient(connection: NwcConnection): NwcClientLike {
+  if (testNwcClientFactory) return testNwcClientFactory(connection)
 
-async function waitForNwcResponse<T>(
-  ndk: NDK,
-  signer: NDKPrivateKeySigner,
-  walletUser: NDKUser,
-  requestId: string,
-  clientPubkey: string,
+  const options: NewNWCClientOptions = {
+    relayUrls: connection.relays,
+    secret: connection.secret,
+    walletPubkey: connection.walletPubkey,
+    lud16: connection.lud16,
+    requireSecret: true,
+  }
+
+  return new NWCClient(options)
+}
+
+async function withNwcTimeout<T>(
+  promise: Promise<T>,
   timeoutMs: number,
-  parseResult: (result: Record<string, unknown>) => T
+  method: string
 ): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const filter: NDKFilter = {
-      kinds: [NWC_RESPONSE_KIND],
-      "#p": [clientPubkey],
-      "#e": [requestId],
-      limit: 1,
-    }
+  let timeout: ReturnType<typeof setTimeout> | undefined
 
-    const sub = ndk.subscribe(filter, { closeOnEose: false })
-    const timer = setTimeout(() => {
-      sub.stop()
-      reject(new Error("NWC request timed out"))
-    }, timeoutMs)
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`NWC ${method} timed out after ${timeoutMs}ms`))
+        }, timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
 
-    sub.on("event", async (event: NDKEvent) => {
-      // Reject responses not authored by the configured wallet (prevents relay-level forgery)
-      if (event.pubkey !== walletUser.pubkey) return
+function normalizeNwcError(error: unknown): Error {
+  if (
+    error instanceof Nip47NetworkError ||
+    error instanceof Nip47PublishError ||
+    error instanceof Nip47PublishTimeoutError
+  ) {
+    return new Error("Failed to connect to NWC relay(s).")
+  }
 
-      clearTimeout(timer)
-      sub?.stop()
+  if (
+    error instanceof Nip47TimeoutError ||
+    error instanceof Nip47ReplyTimeoutError
+  ) {
+    return new Error("NWC request timed out.")
+  }
 
-      try {
-        const decrypted = await signer.decrypt(
-          walletUser,
-          event.content,
-          "nip44"
-        )
-        const response = JSON.parse(decrypted) as {
-          result_type: string
-          result?: Record<string, unknown>
-          error?: { code: string; message: string }
-        }
-
-        if (response.error) {
-          reject(
-            new Error(
-              `NWC error (${response.error.code}): ${response.error.message}`
-            )
-          )
-          return
-        }
-
-        if (!response.result) {
-          reject(new Error("Invalid NWC response: missing result"))
-          return
-        }
-
-        resolve(parseResult(response.result))
-      } catch (err) {
-        reject(
-          err instanceof Error ? err : new Error("Failed to parse NWC response")
-        )
-      }
-    })
-  })
+  return error instanceof Error ? error : new Error("NWC request failed.")
 }
 
 export const __nwcTestInternals = {
-  getConnectedNwcRelays,
-  waitForNwcRelayConnection,
+  __setNwcClientFactory(factory: NwcClientFactory | null): void {
+    testNwcClientFactory = factory
+  },
 }

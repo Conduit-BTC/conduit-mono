@@ -44,6 +44,13 @@ function WalletStatusPill({ status }: { status: WalletConnectionStatus }) {
           Payments unsupported
         </StatusPill>
       )
+    case "unreachable":
+      return (
+        <StatusPill variant="warning">
+          <AlertTriangle className="h-3 w-3" />
+          Wallet saved
+        </StatusPill>
+      )
     case "error":
       return <StatusPill variant="error">Connection error</StatusPill>
     case "disconnected":
@@ -84,6 +91,7 @@ function WalletPage() {
     wallet.status === "connected" ||
     wallet.status === "pay-capable" ||
     wallet.status === "unsupported" ||
+    wallet.status === "unreachable" ||
     wallet.status === "error"
 
   return (
@@ -147,7 +155,8 @@ function WalletPage() {
                         ? "border-t-[var(--success)]"
                         : wallet.status === "error"
                           ? "border-t-[var(--error)]"
-                          : wallet.status === "unsupported"
+                          : wallet.status === "unsupported" ||
+                              wallet.status === "unreachable"
                             ? "border-t-[var(--warning)]"
                             : "border-t-[var(--border)]",
                     ].join(" ")}
@@ -248,6 +257,13 @@ function WalletPage() {
                     <code className="font-mono">pay_invoice</code>. Fast
                     checkout will remain unavailable until you connect a
                     payment-capable wallet.
+                  </div>
+                )}
+
+                {wallet.status === "unreachable" && (
+                  <div className="mt-4 rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] p-3 text-sm text-[var(--warning)]">
+                    Wallet saved, but Conduit cannot reach its NWC relay right
+                    now. Checkout can still offer a Lightning invoice fallback.
                   </div>
                 )}
 
@@ -359,17 +375,18 @@ function WalletPage() {
                   </li>
                   <li>
                     2. At checkout, Conduit checks if the merchant has a
-                    Lightning address and your wallet supports outgoing
-                    payments.
+                    Lightning address and whether your saved wallet is currently
+                    reachable.
                   </li>
                   <li>
-                    3. If eligible, you can pay the merchant directly - your
-                    wallet sends the payment and Conduit forwards proof to the
-                    merchant.
+                    3. Conduit requests a zap invoice, tries your connected
+                    wallet first, and forwards payment proof to the merchant
+                    when the wallet returns it.
                   </li>
                   <li>
-                    4. If fast checkout is not available, the standard
-                    order-first path remains available.
+                    4. If the NWC path is unreachable before funds move,
+                    checkout can fall back to a Lightning invoice you can open
+                    in another wallet.
                   </li>
                 </ol>
 

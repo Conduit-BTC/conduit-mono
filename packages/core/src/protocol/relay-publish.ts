@@ -27,6 +27,10 @@ import {
 } from "./relay-settings"
 import { config } from "../config"
 
+const STANDARD_PUBLISH_TIMEOUT_MS = 5_000
+const CRITICAL_PUBLISH_TIMEOUT_MS = 10_000
+const CRITICAL_RETRY_PUBLISH_TIMEOUT_MS = 15_000
+
 export interface PublishWithPlannerInput {
   intent: RelayWriteIntent
   authorPubkey?: string
@@ -172,6 +176,42 @@ function mergeRelayFailureMessages(
   return Object.assign({}, ...messages)
 }
 
+function mergePublishResults(
+  results: readonly {
+    successfulRelayUrls: readonly string[]
+    failedRelayUrls: readonly string[]
+    relayFailureMessages: Record<string, string>
+  }[]
+): {
+  successfulRelayUrls: string[]
+  failedRelayUrls: string[]
+  relayFailureMessages: Record<string, string>
+} {
+  const successful = new Set<string>()
+  const failed = new Set<string>()
+  const relayFailureMessages: Record<string, string> = {}
+
+  for (const result of results) {
+    for (const url of result.successfulRelayUrls) {
+      successful.add(url)
+      failed.delete(url)
+      delete relayFailureMessages[url]
+    }
+    for (const url of result.failedRelayUrls) {
+      if (successful.has(url)) continue
+      failed.add(url)
+      relayFailureMessages[url] =
+        result.relayFailureMessages[url] ?? "No acknowledgement before timeout"
+    }
+  }
+
+  return {
+    successfulRelayUrls: Array.from(successful),
+    failedRelayUrls: Array.from(failed),
+    relayFailureMessages,
+  }
+}
+
 function getAuthorEventFallbackRelayUrls(input: {
   eventKind: number | undefined
   intent: RelayWriteIntent
@@ -190,6 +230,21 @@ function getAuthorEventFallbackRelayUrls(input: {
         )
 
   return mergeUnique([config.appWriteRelayUrls, publicRelayFallbackUrls])
+}
+
+function getCriticalRecipientFallbackRelayUrls(input: {
+  intent: RelayWriteIntent
+  attemptedRelayUrls: readonly string[]
+}): string[] {
+  if (input.intent !== "recipient_event") return []
+
+  const attempted = new Set(
+    input.attemptedRelayUrls.map(normalizeOutcomeRelayUrl)
+  )
+
+  return mergeUnique([config.appWriteRelayUrls, config.publicRelayUrls]).filter(
+    (url) => !attempted.has(normalizeOutcomeRelayUrl(url))
+  )
 }
 
 function createAuthorFallbackPublishError(
@@ -269,6 +324,7 @@ async function publishToRelayUrls(input: {
   ndk: ReturnType<typeof getNdk>
   relayUrls: readonly string[]
   requiredRelayCount: number
+  timeoutMs: number
 }): Promise<{
   successfulRelayUrls: string[]
   failedRelayUrls: string[]
@@ -293,7 +349,7 @@ async function publishToRelayUrls(input: {
   try {
     const publishedRelays = await input.event.publish(
       relaySet,
-      undefined,
+      input.timeoutMs,
       input.requiredRelayCount
     )
     publishedUrls = collectRelayUrls(publishedRelays)
@@ -416,6 +472,10 @@ export async function publishWithPlanner(
         ndk: testOverrides.getNdk ? testOverrides.getNdk() : getNdk(),
         relayUrls: fallbackRelayUrls,
         requiredRelayCount: 1,
+        timeoutMs:
+          input.deliveryMode === "critical"
+            ? CRITICAL_RETRY_PUBLISH_TIMEOUT_MS
+            : STANDARD_PUBLISH_TIMEOUT_MS,
       })
       if (fallback.thrown) {
         throw createPublishDiagnosticsError({
@@ -456,42 +516,100 @@ export async function publishWithPlanner(
   }
 
   const ndk = testOverrides.getNdk ? testOverrides.getNdk() : getNdk()
+  const publishTimeoutMs =
+    input.deliveryMode === "critical"
+      ? CRITICAL_PUBLISH_TIMEOUT_MS
+      : STANDARD_PUBLISH_TIMEOUT_MS
   const primary = await publishToRelayUrls({
     event,
     ndk,
     relayUrls: plan.primaryRelayUrls,
     requiredRelayCount: plan.primaryRelayUrls.length > 0 ? 1 : 0,
+    timeoutMs: publishTimeoutMs,
   })
 
   if (primary.thrown) {
+    let retry: Awaited<ReturnType<typeof publishToRelayUrls>> | null = null
+
+    if (input.deliveryMode === "critical" && primary.failedRelayUrls.length) {
+      retry = await publishToRelayUrls({
+        event,
+        ndk,
+        relayUrls: primary.failedRelayUrls,
+        requiredRelayCount: 1,
+        timeoutMs: CRITICAL_RETRY_PUBLISH_TIMEOUT_MS,
+      })
+
+      if (!retry.thrown) {
+        const merged = mergePublishResults([primary, retry])
+        return {
+          plan,
+          attemptedRelayUrls: mergeUnique([
+            attemptedRelayUrls,
+            primary.failedRelayUrls,
+          ]),
+          successfulRelayUrls: merged.successfulRelayUrls,
+          failedRelayUrls: merged.failedRelayUrls,
+          relayFailureMessages: merged.relayFailureMessages,
+        }
+      }
+    }
+
     const fallbackRelayUrls = getAuthorEventFallbackRelayUrls({
       eventKind: event.kind,
       intent: input.intent,
       attemptedRelayUrls,
     })
+    const criticalRecipientFallbackRelayUrls =
+      input.deliveryMode === "critical"
+        ? getCriticalRecipientFallbackRelayUrls({
+            intent: input.intent,
+            attemptedRelayUrls,
+          })
+        : []
+    const retryResults = retry ? [primary, retry] : [primary]
+    const retryRelayFailureMessages = mergeRelayFailureMessages(
+      retryResults.map((result) => result.relayFailureMessages)
+    )
+    const retryFailedRelayUrls = mergeUnique(
+      retryResults.map((result) => result.failedRelayUrls)
+    )
+    const retrySuccessfulRelayUrls = mergeUnique(
+      retryResults.map((result) => result.successfulRelayUrls)
+    )
 
-    if (fallbackRelayUrls.length > 0) {
-      attemptedRelayUrls = mergeUnique([attemptedRelayUrls, fallbackRelayUrls])
+    if (
+      fallbackRelayUrls.length > 0 ||
+      criticalRecipientFallbackRelayUrls.length > 0
+    ) {
+      const fallbackAttemptRelayUrls = mergeUnique([
+        fallbackRelayUrls,
+        criticalRecipientFallbackRelayUrls,
+      ])
+      attemptedRelayUrls = mergeUnique([
+        attemptedRelayUrls,
+        primary.failedRelayUrls,
+        fallbackAttemptRelayUrls,
+      ])
       const fallback = await publishToRelayUrls({
         event,
         ndk,
-        relayUrls: fallbackRelayUrls,
+        relayUrls: fallbackAttemptRelayUrls,
         requiredRelayCount: 1,
+        timeoutMs:
+          input.deliveryMode === "critical"
+            ? CRITICAL_RETRY_PUBLISH_TIMEOUT_MS
+            : STANDARD_PUBLISH_TIMEOUT_MS,
       })
+      const merged = mergePublishResults([...retryResults, fallback])
 
       if (!fallback.thrown) {
         return {
           plan,
           attemptedRelayUrls,
-          successfulRelayUrls: fallback.successfulRelayUrls,
-          failedRelayUrls: mergeUnique([
-            primary.failedRelayUrls,
-            fallback.failedRelayUrls,
-          ]),
-          relayFailureMessages: mergeRelayFailureMessages([
-            primary.relayFailureMessages,
-            fallback.relayFailureMessages,
-          ]),
+          successfulRelayUrls: merged.successfulRelayUrls,
+          failedRelayUrls: merged.failedRelayUrls,
+          relayFailureMessages: merged.relayFailureMessages,
         }
       }
 
@@ -502,30 +620,31 @@ export async function publishWithPlanner(
         ).message,
         plan,
         attemptedRelayUrls,
-        successfulRelayUrls: mergeUnique([
-          primary.successfulRelayUrls,
-          fallback.successfulRelayUrls,
-        ]),
-        failedRelayUrls: mergeUnique([
-          primary.failedRelayUrls,
-          fallback.failedRelayUrls,
-        ]),
-        relayFailureMessages: mergeRelayFailureMessages([
-          primary.relayFailureMessages,
-          fallback.relayFailureMessages,
-        ]),
+        successfulRelayUrls: merged.successfulRelayUrls,
+        failedRelayUrls: merged.failedRelayUrls,
+        relayFailureMessages: merged.relayFailureMessages,
         thrown: fallback.thrown,
       })
     }
 
+    const merged = mergePublishResults(retryResults)
     throw createPublishDiagnosticsError({
       message: "Could not publish because no primary relay accepted the event.",
       plan,
-      attemptedRelayUrls,
-      successfulRelayUrls: primary.successfulRelayUrls,
-      failedRelayUrls: primary.failedRelayUrls,
-      relayFailureMessages: primary.relayFailureMessages,
-      thrown: primary.thrown,
+      attemptedRelayUrls: mergeUnique([
+        attemptedRelayUrls,
+        retryFailedRelayUrls,
+      ]),
+      successfulRelayUrls:
+        merged.successfulRelayUrls.length > 0
+          ? merged.successfulRelayUrls
+          : retrySuccessfulRelayUrls,
+      failedRelayUrls: merged.failedRelayUrls,
+      relayFailureMessages:
+        Object.keys(merged.relayFailureMessages).length > 0
+          ? merged.relayFailureMessages
+          : retryRelayFailureMessages,
+      thrown: retry?.thrown ?? primary.thrown,
     })
   }
 
@@ -534,6 +653,7 @@ export async function publishWithPlanner(
     ndk,
     relayUrls: plan.broadcastRelayUrls,
     requiredRelayCount: plan.broadcastRelayUrls.length > 0 ? 1 : 0,
+    timeoutMs: publishTimeoutMs,
   })
 
   return {

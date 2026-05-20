@@ -24,6 +24,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@getalby/sdk": "^8.0.3",
     "@nostr-dev-kit/ndk": "^2.14.0",
     "clsx": "^2.1.1",
     "country-list": "^2.4.1",

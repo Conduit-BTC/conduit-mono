@@ -386,6 +386,92 @@ describe("planPublishRelays", () => {
       "wss://configured-write.example (relay rejected the event kind)"
     )
   })
+
+  it("retries critical recipient primary relays with a longer timeout", async () => {
+    const primaryRelay = "wss://recipient.example"
+    const normalizedPrimaryRelay = `${primaryRelay}/`
+    const attempts: { relayUrls: string[]; timeoutMs: number | undefined }[] =
+      []
+    const fakeEvent = {
+      publish: async (relaySet: unknown, timeoutMs?: number) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push({ relayUrls, timeoutMs })
+        if (attempts.length === 1) {
+          throw new Error("recipient relay was slow")
+        }
+        return new Set(relayUrls.map((url) => ({ url })))
+      },
+    } as never
+
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "recipient_event",
+        primaryRelayUrls: [primaryRelay],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    const result = await publishWithPlanner(fakeEvent, {
+      intent: "recipient_event",
+      authorPubkey: "alice",
+      recipientPubkeys: ["bob"],
+      deliveryMode: "critical",
+    })
+
+    expect(attempts).toEqual([
+      { relayUrls: [normalizedPrimaryRelay], timeoutMs: 10_000 },
+      { relayUrls: [normalizedPrimaryRelay], timeoutMs: 15_000 },
+    ])
+    expect(result.successfulRelayUrls).toEqual([primaryRelay])
+    expect(result.failedRelayUrls).toEqual([])
+  })
+
+  it("broadens critical recipient delivery to fallback relays after primary retry fails", async () => {
+    const primaryRelay = "wss://recipient.example"
+    const normalizedPrimaryRelay = `${primaryRelay}/`
+    const attempts: string[][] = []
+    const fakeEvent = {
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        if (relayUrls.includes(normalizedPrimaryRelay)) {
+          throw new Error("recipient relay failed")
+        }
+        return new Set(relayUrls.slice(0, 1).map((url) => ({ url })))
+      },
+    } as never
+
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "recipient_event",
+        primaryRelayUrls: [primaryRelay],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    const result = await publishWithPlanner(fakeEvent, {
+      intent: "recipient_event",
+      authorPubkey: "alice",
+      recipientPubkeys: ["bob"],
+      deliveryMode: "critical",
+    })
+
+    expect(attempts).toHaveLength(3)
+    expect(attempts[0]).toEqual([normalizedPrimaryRelay])
+    expect(attempts[1]).toEqual([normalizedPrimaryRelay])
+    expect(attempts[2]?.length).toBeGreaterThan(0)
+    expect(attempts[2]).toContain(APP_WRITE_ATTEMPT_RELAYS[0])
+    expect(result.successfulRelayUrls).toEqual(CANONICAL_APP_WRITE_RELAYS)
+    expect(result.failedRelayUrls).toContain(primaryRelay)
+  })
 })
 
 describe("deriveRelayOutcomes", () => {

@@ -1,6 +1,8 @@
 import {
   Check,
+  Copy,
   CreditCard,
+  ExternalLink,
   KeyRound,
   LoaderCircle,
   ShoppingCart,
@@ -20,13 +22,14 @@ import {
   fetchZapInvoice,
   formatPubkey,
   getPriceSats,
+  hasWebLN,
   getNdk,
   getShippingOptions,
   getShippingDestinationEligibility,
+  normalizeLightningInvoice,
   publishWithPlanner,
   validateLightningInvoiceForPayment,
   waitForZapReceipt,
-  nwcPayInvoice,
   useAuth,
   useProfile,
   type PricingRateInput,
@@ -61,6 +64,7 @@ import {
   savePaymentAttempt,
   updatePaymentAttempt,
 } from "../lib/payment-attempts"
+import { payCheckoutInvoice } from "../lib/payment-rails"
 import { getProductPriceDisplay } from "../lib/pricing"
 
 type CheckoutStep =
@@ -80,6 +84,16 @@ type CheckoutSearch = {
 // persisted permanently to localStorage.
 const CHECKOUT_STORAGE_KEY = "conduit:checkout-shipping"
 const ZAP_RECEIPT_WAIT_MS = 5_000
+
+type PendingManualInvoice = {
+  orderId: string
+  merchantPubkey: string
+  amountMsats: number
+  amountSats: number
+  invoice: string
+  zapRequestId: string
+  reason: string
+}
 
 const DEFAULT_SHIPPING_FORM: ShippingFormState = {
   firstName: "",
@@ -408,7 +422,7 @@ function OrderSummary({
 
 /**
  * Returns true when all preconditions for the fast zap path are met:
- *   - buyer has a pay-capable NWC wallet
+ *   - buyer has a Lightning payment path
  *   - merchant profile has a lud16 address
  *   - the LNURL endpoint declares allowsNostr (zap support)
  *
@@ -441,6 +455,9 @@ function CheckoutPage() {
     useState<CheckoutZapVisibility>("public_zap")
   const [zapContent, setZapContent] = useState("")
   const [zapContentEdited, setZapContentEdited] = useState(false)
+  const [weblnAvailable, setWeblnAvailable] = useState(false)
+  const [pendingManualInvoice, setPendingManualInvoice] =
+    useState<PendingManualInvoice | null>(null)
   const btcUsdRate = btcUsdRateQuery.data ?? null
 
   // LNURL probe state
@@ -506,11 +523,15 @@ function CheckoutPage() {
     )
   }, [checkoutItems, merchantName, zapContentEdited])
 
+  useEffect(() => {
+    setWeblnAvailable(hasWebLN())
+  }, [])
+
   // Probe merchant's LNURL for Nostr zap support when merchant profile arrives
   useEffect(() => {
     setLnurlAllowsNostr(false)
 
-    if (!merchantLud16 || wallet.status !== "pay-capable") {
+    if (!merchantLud16) {
       setLnurlProbing(false)
       return
     }
@@ -532,7 +553,7 @@ function CheckoutPage() {
     return () => {
       cancelled = true
     }
-  }, [merchantLud16, wallet.status])
+  }, [merchantLud16])
 
   const pricingPreview = useMemo(
     () => buildCheckoutPricingIntent(checkoutItems, btcUsdRate, Date.now()),
@@ -578,8 +599,12 @@ function CheckoutPage() {
     shippingCheckoutState === "not_required" ||
     shippingCheckoutState === "allowed"
 
+  const canAttemptLightningPayment =
+    wallet.status === "pay-capable" ||
+    wallet.status === "unreachable" ||
+    weblnAvailable
   const fastEligibilityInput = {
-    walletPayCapable: wallet.status === "pay-capable",
+    walletPayCapable: canAttemptLightningPayment,
     merchantLud16,
     lnurlAllowsNostr,
     pricingReady: pricingPreview.status === "ok",
@@ -702,6 +727,15 @@ function CheckoutPage() {
       shipping.email.trim() ? `Email: ${shipping.email.trim()}` : undefined,
     ].filter(Boolean) as string[]
     return lines.length > 0 ? lines.join("\n") : undefined
+  }
+
+  async function copyPendingInvoice(): Promise<void> {
+    if (!pendingManualInvoice) return
+    try {
+      await navigator.clipboard.writeText(pendingManualInvoice.invoice)
+    } catch (e) {
+      console.warn("Failed to copy invoice", e)
+    }
   }
 
   async function publishWrappedToMerchantAndSelf(
@@ -856,8 +890,8 @@ function CheckoutPage() {
 
   async function payNow(): Promise<void> {
     if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
-    if (!wallet.connection) {
-      setError("Wallet not connected.")
+    if (!canAttemptLightningPayment) {
+      setError("Connect a Lightning wallet or browser payment method.")
       return
     }
     if (!merchantLud16) {
@@ -867,6 +901,7 @@ function CheckoutPage() {
 
     setError(null)
     setPaidNotice(null)
+    setPendingManualInvoice(null)
     setPaymentStage("checking_order_delivery")
     setStep("paying")
 
@@ -1001,20 +1036,36 @@ function CheckoutPage() {
       }
 
       setPaymentStage("paying_invoice")
-      const payResult = await nwcPayInvoice(
-        wallet.connection,
-        {
-          invoice,
+      const payResult = await payCheckoutInvoice({
+        invoice,
+        amountMsats: pricingIntent.totalMsats,
+        walletConnection: wallet.connection,
+        preferNwc: wallet.status === "pay-capable",
+        timeoutMs: 60_000,
+        appId: "market",
+        metadata: {
+          app: "conduit-market",
+          action: "checkout-zap",
           amountMsats: pricingIntent.totalMsats,
-          metadata: {
-            app: "conduit-market",
-            action: "checkout-zap",
-            amountMsats: pricingIntent.totalMsats,
-          },
         },
-        60_000,
-        "market"
-      )
+      })
+
+      if (payResult.status === "manual_required") {
+        setPendingManualInvoice({
+          orderId,
+          merchantPubkey: selectedMerchant,
+          amountMsats: pricingIntent.totalMsats,
+          amountSats: pricingIntent.totalSats,
+          invoice,
+          zapRequestId: zapRequest.id,
+          reason: payResult.reason,
+        })
+        setSentOrderId(orderId)
+        setError(null)
+        setStep("payment")
+        return
+      }
+
       paymentMoved = true
 
       try {
@@ -1706,7 +1757,9 @@ function CheckoutPage() {
                 </h1>
                 <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
                   {fastEligible
-                    ? "Your wallet is connected and ready. Pay now or send the order first and pay later."
+                    ? wallet.status === "pay-capable"
+                      ? "Your wallet is connected and ready. Pay now or send the order first and pay later."
+                      : "Conduit can request a zap invoice now and fall back to your browser or wallet if the saved wallet is unreachable."
                     : "Orders are sent to the merchant first. The merchant will reply with payment details after reviewing your order."}
                 </p>
               </div>
@@ -1748,14 +1801,14 @@ function CheckoutPage() {
                     <div className="flex items-center gap-2">
                       <LightningIcon className="h-4 w-4 text-secondary-400" />
                       <div className="text-sm font-medium text-[var(--text-primary)]">
-                        Pay now with your connected wallet
+                        Pay now with Lightning
                       </div>
                     </div>
                     <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                      Your wallet supports instant Lightning payments. Tap{" "}
-                      <strong>Pay now</strong> to complete this order
-                      immediately - the payment and order details will both be
-                      delivered to the merchant.
+                      Conduit will deliver the order, request a zap invoice, and
+                      try your connected wallet first. If that path is
+                      unreachable before funds move, you can still pay the
+                      invoice with another Lightning wallet.
                     </p>
                   </div>
                 )}
@@ -1886,6 +1939,52 @@ function CheckoutPage() {
                 {error && (
                   <div className="mt-5 rounded-xl border border-error/30 bg-error/10 p-3 text-sm text-error">
                     {error}
+                  </div>
+                )}
+
+                {pendingManualInvoice && (
+                  <div className="mt-5 rounded-2xl border border-secondary-500/40 bg-secondary-500/8 p-5">
+                    <div className="flex items-center gap-2">
+                      <LightningIcon className="h-4 w-4 text-secondary-400" />
+                      <div className="text-sm font-medium text-[var(--text-primary)]">
+                        Order delivered. Pay the Lightning invoice to finish.
+                      </div>
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                      The order is with the merchant, but automatic payment did
+                      not complete. Open or copy this invoice with your wallet;
+                      Conduit will not mark the order paid until payment proof
+                      is available.
+                    </p>
+                    {pendingManualInvoice.reason && (
+                      <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
+                        Automatic payment fallback reason:{" "}
+                        {pendingManualInvoice.reason}
+                      </p>
+                    )}
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <Button asChild className="h-10 px-4 text-sm">
+                        <a
+                          href={`lightning:${normalizeLightningInvoice(
+                            pendingManualInvoice.invoice
+                          )}`}
+                        >
+                          <ExternalLink className="h-4 w-4" />
+                          Open in wallet
+                        </a>
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="h-10 px-4 text-sm"
+                        onClick={copyPendingInvoice}
+                      >
+                        <Copy className="h-4 w-4" />
+                        Copy invoice
+                      </Button>
+                    </div>
+                    <div className="mt-4 max-h-28 overflow-auto rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 font-mono text-xs leading-5 break-all text-[var(--text-secondary)]">
+                      {pendingManualInvoice.invoice}
+                    </div>
                   </div>
                 )}
 

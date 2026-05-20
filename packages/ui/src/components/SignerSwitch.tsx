@@ -238,7 +238,7 @@ export function SignerSwitch({
                     <Button
                       type="button"
                       onClick={() => void handleConnect()}
-                      disabled={isWorking || authPending || !extensionAvailable}
+                      disabled={isWorking || authPending}
                       className="h-12 w-full justify-center gap-2 text-base"
                     >
                       <SignerGlyph />

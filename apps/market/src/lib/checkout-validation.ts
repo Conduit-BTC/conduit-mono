@@ -163,7 +163,7 @@ export function getFastCheckoutUnavailableReasons(params: {
 }): string[] {
   const reasons: string[] = []
   if (!params.walletPayCapable) {
-    reasons.push("Connect a wallet that can send payments through NWC.")
+    reasons.push("Connect a Lightning wallet or browser payment method.")
   }
   if (!params.merchantLud16) {
     reasons.push("Merchant has not added a Lightning Address.")

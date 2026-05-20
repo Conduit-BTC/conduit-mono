@@ -15,7 +15,6 @@ import {
 
 const WALLET_STORAGE_KEY = "conduit:buyer-wallet-nwc"
 const WALLET_CAPABILITY_STORAGE_KEY = "conduit:buyer-wallet-nwc-capability"
-const WALLET_CAPABILITY_STALE_MS = 60 * 60_000
 
 export type WalletConnectionStatus =
   | "disconnected"
@@ -23,12 +22,21 @@ export type WalletConnectionStatus =
   | "connected"
   | "pay-capable"
   | "unsupported"
+  | "unreachable"
   | "error"
+
+export type NwcReachability =
+  | "unchecked"
+  | "checking"
+  | "reachable"
+  | "unreachable"
 
 export interface WalletState {
   status: WalletConnectionStatus
   connection: NwcConnection | null
   info: NwcGetInfoResult | null
+  reachability: NwcReachability
+  lastProbeAt: number | null
   /** Plain-language reason the wallet cannot be used for fast checkout, if any. */
   unavailableReason: string | null
   error: string | null
@@ -147,6 +155,8 @@ function deriveUnavailableReason(
       return "Checking wallet capabilities..."
     case "error":
       return "Could not connect to wallet. Check the connection string."
+    case "unreachable":
+      return "Wallet saved, but its NWC relay is currently unreachable."
     case "unsupported":
       return "Your wallet does not support outgoing payments via NWC."
     case "connected":
@@ -161,6 +171,8 @@ export function useWallet(): UseWalletReturn {
     status: "disconnected",
     connection: null,
     info: null,
+    reachability: "unchecked",
+    lastProbeAt: null,
     error: null,
   })
 
@@ -170,18 +182,15 @@ export function useWallet(): UseWalletReturn {
     if (!stored) return
 
     const cached = readStoredCapability(stored)
-    const cachedFresh =
-      cached && Date.now() - cached.checkedAt < WALLET_CAPABILITY_STALE_MS
 
     setState((s) => ({
       ...s,
       connection: stored,
       info: cached?.info ?? null,
-      status: cached ? cached.status : "connecting",
+      status: "connecting",
+      reachability: "checking",
       error: null,
     }))
-
-    if (cachedFresh) return
 
     nwcGetInfo(stored, 10_000, "market")
       .then((info) => {
@@ -191,16 +200,20 @@ export function useWallet(): UseWalletReturn {
           info,
           error: null,
           status: resolved.status,
+          reachability: "reachable",
+          lastProbeAt: Date.now(),
         }))
       })
       .catch(() => {
-        // Keep stale pay-capable state usable if we had it; otherwise the
-        // wallet is connected but payment support is unconfirmed.
+        // Keep cached capability visible as historical metadata, but do not
+        // advertise the wallet as live when the current probe fails.
         setState((s) => ({
           ...s,
           info: cached?.info ?? null,
-          error: null,
-          status: cached?.status ?? "connected",
+          error: "Wallet saved, but its NWC relay is currently unreachable.",
+          status: "unreachable",
+          reachability: "unreachable",
+          lastProbeAt: Date.now(),
         }))
       })
   }, [])
@@ -213,7 +226,8 @@ export function useWallet(): UseWalletReturn {
   const status =
     state.status === "connecting" ||
     state.status === "pay-capable" ||
-    state.status === "unsupported"
+    state.status === "unsupported" ||
+    state.status === "unreachable"
       ? state.status
       : deriveStatus(info, error, connection)
 
@@ -240,16 +254,21 @@ export function useWallet(): UseWalletReturn {
         connection: conn,
         info,
         status: resolved.status,
+        reachability: "reachable",
+        lastProbeAt: Date.now(),
         error: null,
       })
     } catch {
-      // Capability probe failed but URI parsed - store and mark connected
+      // Capability probe failed but URI parsed - store without advertising it
+      // as ready. Checkout can still fall back to WebLN or the invoice.
       writeStoredConnection(conn)
       setState({
         connection: conn,
         info: null,
-        status: "connected",
-        error: null,
+        status: "unreachable",
+        reachability: "unreachable",
+        lastProbeAt: Date.now(),
+        error: "Wallet saved, but its NWC relay is currently unreachable.",
       })
     }
   }, [])
@@ -260,6 +279,8 @@ export function useWallet(): UseWalletReturn {
       status: "disconnected",
       connection: null,
       info: null,
+      reachability: "unchecked",
+      lastProbeAt: null,
       error: null,
     })
   }, [])
@@ -270,6 +291,8 @@ export function useWallet(): UseWalletReturn {
     status,
     connection,
     info,
+    reachability: state.reachability,
+    lastProbeAt: state.lastProbeAt,
     error,
     unavailableReason,
     connect,

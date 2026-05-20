@@ -9,6 +9,7 @@ import {
   getFastCheckoutUnavailableReasons,
   type ShippingFormState,
 } from "../apps/market/src/lib/checkout-validation"
+import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
 import {
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
@@ -242,7 +243,7 @@ describe("isFastCheckoutEligible", () => {
         lnurlAllowsNostr: false,
       })
     ).toEqual([
-      "Connect a wallet that can send payments through NWC.",
+      "Connect a Lightning wallet or browser payment method.",
       "Merchant has not added a Lightning Address.",
     ])
   })
@@ -432,6 +433,162 @@ describe("checkout payment helpers", () => {
     expect(buildZapRequestContent("public_zap", "hello\npublic")).toBe(
       "hello public"
     )
+  })
+})
+
+// ─── payment rail routing ────────────────────────────────────────────────────
+
+describe("payCheckoutInvoice", () => {
+  const connection = parseNwcUri(VALID_NWC_URI)
+
+  it("uses NWC first when the saved wallet is live", async () => {
+    const nwcPay = mock(async () => ({
+      preimage: "preimage",
+      paymentHash: "hash",
+      feeMsats: 10,
+    }))
+    const weblnPay = mock(async () => {
+      throw new Error("should not use WebLN")
+    })
+
+    const result = await payCheckoutInvoice(
+      {
+        invoice: "lnbc1test",
+        amountMsats: 1000,
+        walletConnection: connection,
+        preferNwc: true,
+        timeoutMs: 60_000,
+        appId: "market",
+      },
+      {
+        nwcPayInvoice: nwcPay as never,
+        hasWebLN: () => true,
+        weblnSendPayment: weblnPay as never,
+      }
+    )
+
+    expect(result).toEqual({
+      status: "paid",
+      rail: "nwc",
+      preimage: "preimage",
+      paymentHash: "hash",
+      feeMsats: 10,
+    })
+    expect(nwcPay).toHaveBeenCalledTimes(1)
+    expect(weblnPay).toHaveBeenCalledTimes(0)
+  })
+
+  it("falls back to WebLN when NWC fails before payment moves", async () => {
+    const nwcPay = mock(async () => {
+      throw new Error("Failed to connect to NWC relay(s)")
+    })
+    const weblnPay = mock(async () => ({
+      preimage: "webln-preimage",
+      paymentHash: "webln-hash",
+    }))
+
+    const result = await payCheckoutInvoice(
+      {
+        invoice: "lnbc1test",
+        amountMsats: 1000,
+        walletConnection: connection,
+        preferNwc: true,
+        timeoutMs: 60_000,
+        appId: "market",
+      },
+      {
+        nwcPayInvoice: nwcPay as never,
+        hasWebLN: () => true,
+        weblnSendPayment: weblnPay as never,
+      }
+    )
+
+    expect(result).toEqual({
+      status: "paid",
+      rail: "webln",
+      preimage: "webln-preimage",
+      paymentHash: "webln-hash",
+    })
+    expect(nwcPay).toHaveBeenCalledTimes(1)
+    expect(weblnPay).toHaveBeenCalledTimes(1)
+  })
+
+  it("returns manual fallback when automatic rails are unavailable", async () => {
+    const result = await payCheckoutInvoice(
+      {
+        invoice: "lnbc1test",
+        amountMsats: 1000,
+        walletConnection: connection,
+        preferNwc: false,
+        timeoutMs: 60_000,
+        appId: "market",
+      },
+      {
+        nwcPayInvoice: mock(async () => {
+          throw new Error("should not use NWC")
+        }) as never,
+        hasWebLN: () => false,
+        weblnSendPayment: mock(async () => {
+          throw new Error("should not use WebLN")
+        }) as never,
+      }
+    )
+
+    expect(result).toEqual({
+      status: "manual_required",
+      reason: "No automatic Lightning payment rail is currently available.",
+    })
+  })
+
+  it("does not fall back after an ambiguous NWC request failure", async () => {
+    const weblnPay = mock(async () => ({
+      preimage: "should-not-pay",
+    }))
+
+    await expect(
+      payCheckoutInvoice(
+        {
+          invoice: "lnbc1test",
+          amountMsats: 1000,
+          walletConnection: connection,
+          preferNwc: true,
+          timeoutMs: 60_000,
+          appId: "market",
+        },
+        {
+          nwcPayInvoice: mock(async () => {
+            throw new Error("NWC pay_invoice response timed out")
+          }) as never,
+          hasWebLN: () => true,
+          weblnSendPayment: weblnPay as never,
+        }
+      )
+    ).rejects.toThrow(/Check your wallet/)
+    expect(weblnPay).toHaveBeenCalledTimes(0)
+  })
+
+  it("does not offer manual fallback when WebLN may have paid without proof", async () => {
+    await expect(
+      payCheckoutInvoice(
+        {
+          invoice: "lnbc1test",
+          amountMsats: 1000,
+          walletConnection: null,
+          preferNwc: false,
+          timeoutMs: 60_000,
+          appId: "market",
+        },
+        {
+          nwcPayInvoice: mock(async () => {
+            throw new Error("should not use NWC")
+          }) as never,
+          hasWebLN: () => true,
+          weblnSendPayment: mock(async () => {
+            throw new Error("WebLN payment did not return a payment proof")
+          }) as never,
+        }
+      )
+    ).rejects.toThrow(/Check your wallet/)
   })
 })
 

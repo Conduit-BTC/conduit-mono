@@ -223,7 +223,7 @@ function ConnectGate() {
                 <div className="mt-6">
                   <Button
                     onClick={() => void handleConnect()}
-                    disabled={isWorking || authPending || !extensionAvailable}
+                    disabled={isWorking || authPending}
                     className="h-12 w-full justify-center gap-2 text-base"
                   >
                     <KeyRound className="h-5 w-5" />
