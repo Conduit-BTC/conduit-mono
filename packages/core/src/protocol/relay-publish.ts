@@ -178,14 +178,18 @@ function getAuthorEventFallbackRelayUrls(input: {
   attemptedRelayUrls: readonly string[]
 }): string[] {
   if (input.intent !== "author_event") return []
-  if (input.eventKind === EVENT_KINDS.RELAY_LIST) return []
 
   const attempted = new Set(
     input.attemptedRelayUrls.map(normalizeOutcomeRelayUrl)
   )
-  return config.publicRelayUrls.filter(
-    (url) => !attempted.has(normalizeOutcomeRelayUrl(url))
-  )
+  const publicRelayFallbackUrls =
+    input.eventKind === EVENT_KINDS.RELAY_LIST
+      ? []
+      : config.publicRelayUrls.filter(
+          (url) => !attempted.has(normalizeOutcomeRelayUrl(url))
+        )
+
+  return mergeUnique([config.appWriteRelayUrls, publicRelayFallbackUrls])
 }
 
 function createAuthorFallbackPublishError(
@@ -400,11 +404,6 @@ export async function publishWithPlanner(
   let attemptedRelayUrls = [...plannedRelayUrls]
 
   if (plannedRelayUrls.length === 0) {
-    if (event.kind === EVENT_KINDS.RELAY_LIST) {
-      throw new Error(
-        "Refusing to publish NIP-65 relays without an explicit OUT relay target."
-      )
-    }
     const fallbackRelayUrls = getAuthorEventFallbackRelayUrls({
       eventKind: event.kind,
       intent: input.intent,
@@ -437,6 +436,12 @@ export async function publishWithPlanner(
         failedRelayUrls: fallback.failedRelayUrls,
         relayFailureMessages: fallback.relayFailureMessages,
       }
+    }
+
+    if (event.kind === EVENT_KINDS.RELAY_LIST) {
+      throw new Error(
+        "Refusing to publish NIP-65 relays without an explicit OUT relay target."
+      )
     }
 
     // Defensive: planner produced no targets and no configured fallback exists.

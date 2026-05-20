@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import {
   assertSafeNip65RelayList,
+  CANONICAL_APP_WRITE_RELAYS,
   CANONICAL_DEFAULT_RELAYS,
   config,
   createDefaultRelaySettings,
@@ -72,6 +73,9 @@ describe("relay settings protocol helpers", () => {
     for (const relay of CANONICAL_DEFAULT_RELAYS) {
       expect(config.defaultRelays).toContain(relay)
     }
+    expect(CANONICAL_APP_WRITE_RELAYS).toEqual(["wss://conduitl2.fly.dev"])
+    expect(config.appWriteRelayUrls).toEqual(CANONICAL_APP_WRITE_RELAYS)
+    expect(config.commerceRelayUrls).toContain("wss://conduitl2.fly.dev")
     expect(config.defaultRelays).not.toContain("wss://relay.conduit.market")
 
     const settings = createDefaultRelaySettings({

@@ -10,6 +10,7 @@ export const CANONICAL_DEFAULT_RELAYS = [
   "wss://relay.nostr.net",
   "wss://relay.minibits.cash",
 ]
+export const CANONICAL_APP_WRITE_RELAYS = ["wss://conduitl2.fly.dev"]
 const RETIRED_DEFAULT_RELAYS = new Set(["wss://relay.conduit.market"])
 const FALLBACK_RELAY_URL = "wss://relay.primal.net"
 const PUBLIC_REPO_ISSUES_URL =
@@ -18,6 +19,7 @@ const PUBLIC_REPO_ISSUES_URL =
 export interface ConduitConfig {
   relayUrl: string
   defaultRelays: string[]
+  appWriteRelayUrls: string[]
   commerceRelayUrls: string[]
   publicRelayUrls: string[]
   cacheApiUrl: string | null
@@ -36,6 +38,7 @@ function getViteEnv(): {
   relayUrl: string
   defaultRelayUrl: string
   defaultRelays: string
+  appWriteRelayUrls: string
   publicRelayUrls: string
   commerceRelayUrls: string
   cacheApiUrl: string
@@ -51,6 +54,7 @@ function getViteEnv(): {
       relayUrl: import.meta.env.VITE_RELAY_URL ?? "",
       defaultRelayUrl: import.meta.env.VITE_DEFAULT_RELAY_URL ?? "",
       defaultRelays: import.meta.env.VITE_DEFAULT_RELAYS ?? "",
+      appWriteRelayUrls: import.meta.env.VITE_APP_WRITE_RELAY_URLS ?? "",
       publicRelayUrls: import.meta.env.VITE_PUBLIC_RELAY_URLS ?? "",
       commerceRelayUrls: import.meta.env.VITE_COMMERCE_RELAY_URLS ?? "",
       cacheApiUrl: import.meta.env.VITE_CACHE_API_URL ?? "",
@@ -66,6 +70,7 @@ function getViteEnv(): {
     relayUrl: "",
     defaultRelayUrl: "",
     defaultRelays: "",
+    appWriteRelayUrls: "",
     publicRelayUrls: "",
     commerceRelayUrls: "",
     cacheApiUrl: "",
@@ -161,6 +166,7 @@ function logRelayDebugConfig(input: {
   resolved: {
     relayUrl: string
     defaultRelays: readonly string[]
+    appWriteRelayUrls: readonly string[]
     publicRelayUrls: readonly string[]
     commerceRelayUrls: readonly string[]
   }
@@ -181,6 +187,8 @@ function logRelayDebugConfig(input: {
       "",
       "Resolved relay config:",
       `  relayUrl hint: ${input.resolved.relayUrl}`,
+      "  appWriteRelayUrls:",
+      formatRelayDebugList(input.resolved.appWriteRelayUrls),
       "  defaultRelays:",
       formatRelayDebugList(input.resolved.defaultRelays),
       "  publicRelayUrls:",
@@ -199,6 +207,7 @@ const relayUrl = getConfiguredRelayUrl(env.relayUrl, FALLBACK_RELAY_URL)
 const envRelayUrl = uniqueConfiguredRelayUrls([env.relayUrl])
 const envDefaultRelayUrl = uniqueConfiguredRelayUrls([env.defaultRelayUrl])
 const envDefaultRelays = parseRelayList(env.defaultRelays)
+const envAppWriteRelayUrls = parseRelayList(env.appWriteRelayUrls)
 const envPublicRelayUrls = parseRelayList(env.publicRelayUrls)
 const envCommerceRelayUrls = parseRelayList(env.commerceRelayUrls)
 const envGeneralRelayUrls = uniqueConfiguredRelayUrls([
@@ -207,7 +216,14 @@ const envGeneralRelayUrls = uniqueConfiguredRelayUrls([
   ...envDefaultRelays,
 ])
 const defaultRelays = uniqueConfiguredRelayUrls(CANONICAL_DEFAULT_RELAYS)
-const commerceRelayUrls = envCommerceRelayUrls
+const appWriteRelayUrls = uniqueConfiguredRelayUrls([
+  ...CANONICAL_APP_WRITE_RELAYS,
+  ...envAppWriteRelayUrls,
+])
+const commerceRelayUrls = uniqueConfiguredRelayUrls([
+  ...appWriteRelayUrls,
+  ...envCommerceRelayUrls,
+])
 const publicRelayUrls = uniqueConfiguredRelayUrls([
   ...envPublicRelayUrls,
   ...envGeneralRelayUrls,
@@ -222,6 +238,7 @@ const nip89RelayHint = getConfiguredRelayUrl(env.nip89RelayHint, relayUrl)
 export const config: ConduitConfig = {
   relayUrl,
   defaultRelays: resolvedDefaultRelays,
+  appWriteRelayUrls,
   commerceRelayUrls,
   publicRelayUrls,
   cacheApiUrl: env.cacheApiUrl.trim() || null,
@@ -253,6 +270,11 @@ logRelayDebugConfig({
       relays: envDefaultRelays,
     },
     {
+      label: "VITE_APP_WRITE_RELAY_URLS",
+      raw: env.appWriteRelayUrls,
+      relays: envAppWriteRelayUrls,
+    },
+    {
       label: "VITE_PUBLIC_RELAY_URLS",
       raw: env.publicRelayUrls,
       relays: envPublicRelayUrls,
@@ -266,6 +288,7 @@ logRelayDebugConfig({
   resolved: {
     relayUrl: config.relayUrl,
     defaultRelays: config.defaultRelays,
+    appWriteRelayUrls: config.appWriteRelayUrls,
     publicRelayUrls: config.publicRelayUrls,
     commerceRelayUrls: config.commerceRelayUrls,
   },

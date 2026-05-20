@@ -46,6 +46,7 @@ export type {
 
 // Config
 export {
+  CANONICAL_APP_WRITE_RELAYS,
   CANONICAL_DEFAULT_RELAYS,
   config,
   isRetiredDefaultRelayUrl,

@@ -4,6 +4,7 @@ import {
   __resetRelayPublishTestOverrides,
   __setRelayListTestOverrides,
   __setRelayPublishTestOverrides,
+  CANONICAL_APP_WRITE_RELAYS,
   deriveRelayOutcomes,
   EVENT_KINDS,
   planPublishRelays,
@@ -12,6 +13,9 @@ import {
 } from "@conduit/core"
 
 const NOW = 1_700_000_000_000
+const APP_WRITE_ATTEMPT_RELAYS = CANONICAL_APP_WRITE_RELAYS.map(
+  (url) => `${url}/`
+)
 
 function relayList(
   pubkey: string,
@@ -151,8 +155,8 @@ describe("planPublishRelays", () => {
     ).rejects.toThrow("Refusing to publish a tiny NIP-65 relay list")
   })
 
-  it("refuses NIP-65 relay-list publishes without an explicit planner target", async () => {
-    const publishAttempts: string[] = []
+  it("uses the app write relay for NIP-65 publishes without a planner target", async () => {
+    const publishAttempts: string[][] = []
 
     __setRelayPublishTestOverrides({
       planPublishRelays: async () => ({
@@ -171,9 +175,13 @@ describe("planPublishRelays", () => {
             ["r", "wss://one.example"],
             ["r", "wss://two.example", "write"],
           ],
-          publish: async () => {
-            publishAttempts.push("fallback")
-            return new Set()
+          publish: async (relaySet: unknown) => {
+            const relayUrls = [
+              ...((relaySet as { relayUrls?: Set<string> | string[] })
+                .relayUrls ?? []),
+            ]
+            publishAttempts.push(relayUrls)
+            return new Set(relayUrls.map((url) => ({ url })))
           },
         } as never,
         {
@@ -181,9 +189,11 @@ describe("planPublishRelays", () => {
           authorPubkey: "alice",
         }
       )
-    ).rejects.toThrow("without an explicit OUT relay target")
+    ).resolves.toMatchObject({
+      successfulRelayUrls: CANONICAL_APP_WRITE_RELAYS,
+    })
 
-    expect(publishAttempts).toEqual([])
+    expect(publishAttempts).toEqual([APP_WRITE_ATTEMPT_RELAYS])
   })
 
   it("does not let broadcast success mask recipient primary failure", async () => {
@@ -301,7 +311,7 @@ describe("planPublishRelays", () => {
     expect(result.failedRelayUrls).toContain(primaryRelay)
   })
 
-  it("does not fallback NIP-65 relay-list publishes after configured writes fail", async () => {
+  it("falls back to the app write relay for NIP-65 after configured writes fail", async () => {
     const primaryRelay = "wss://configured-write.example"
     const normalizedPrimaryRelay = `${primaryRelay}/`
     const attempts: string[][] = []
@@ -317,7 +327,10 @@ describe("planPublishRelays", () => {
             []),
         ]
         attempts.push(relayUrls)
-        throw new Error("configured write relay failed")
+        if (relayUrls.includes(normalizedPrimaryRelay)) {
+          throw new Error("configured write relay failed")
+        }
+        return new Set(relayUrls.map((url) => ({ url })))
       },
     } as never
 
@@ -330,14 +343,16 @@ describe("planPublishRelays", () => {
       }),
     })
 
-    await expect(
-      publishWithPlanner(fakeEvent, {
-        intent: "author_event",
-        authorPubkey: "alice",
-      })
-    ).rejects.toThrow("no primary relay accepted")
+    const result = await publishWithPlanner(fakeEvent, {
+      intent: "author_event",
+      authorPubkey: "alice",
+    })
 
-    expect(attempts).toEqual([[normalizedPrimaryRelay]])
+    expect(result.successfulRelayUrls).toEqual(CANONICAL_APP_WRITE_RELAYS)
+    expect(attempts).toEqual([
+      [normalizedPrimaryRelay],
+      APP_WRITE_ATTEMPT_RELAYS,
+    ])
   })
 
   it("includes relay failure reasons in publish diagnostics", async () => {
