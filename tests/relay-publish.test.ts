@@ -339,6 +339,38 @@ describe("planPublishRelays", () => {
 
     expect(attempts).toEqual([[normalizedPrimaryRelay]])
   })
+
+  it("includes relay failure reasons in publish diagnostics", async () => {
+    const primaryRelay = "wss://configured-write.example"
+    const fakeEvent = {
+      kind: EVENT_KINDS.RELAY_LIST,
+      tags: [
+        ["r", "wss://one.example"],
+        ["r", "wss://two.example", "write"],
+      ],
+      publish: async () => {
+        throw new Error("relay rejected the event kind")
+      },
+    } as never
+
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "author_event",
+        primaryRelayUrls: [primaryRelay],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await expect(
+      publishWithPlanner(fakeEvent, {
+        intent: "author_event",
+        authorPubkey: "alice",
+      })
+    ).rejects.toThrow(
+      "wss://configured-write.example (relay rejected the event kind)"
+    )
+  })
 })
 
 describe("deriveRelayOutcomes", () => {

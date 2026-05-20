@@ -6,7 +6,9 @@ export const CANONICAL_DEFAULT_RELAYS = [
   "wss://relay.primal.net",
   "wss://relay.damus.io",
   "wss://nos.lol",
-  "wss://purplepag.es",
+  "wss://nostr.mom",
+  "wss://relay.nostr.net",
+  "wss://relay.minibits.cash",
 ]
 const RETIRED_DEFAULT_RELAYS = new Set(["wss://relay.conduit.market"])
 const FALLBACK_RELAY_URL = "wss://relay.primal.net"

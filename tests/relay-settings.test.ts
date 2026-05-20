@@ -65,7 +65,9 @@ describe("relay settings protocol helpers", () => {
       "wss://relay.primal.net",
       "wss://relay.damus.io",
       "wss://nos.lol",
-      "wss://purplepag.es",
+      "wss://nostr.mom",
+      "wss://relay.nostr.net",
+      "wss://relay.minibits.cash",
     ])
     for (const relay of CANONICAL_DEFAULT_RELAYS) {
       expect(config.defaultRelays).toContain(relay)

@@ -51,6 +51,8 @@ export interface PublishWithPlannerResult {
   successfulRelayUrls: string[]
   /** URLs that failed (rejection or no ack). Empty on fallback path. */
   failedRelayUrls: string[]
+  /** Per-relay failure detail when NDK exposes a rejection reason. */
+  relayFailureMessages: Record<string, string>
 }
 
 export class RelayPublishDiagnosticsError extends Error {
@@ -164,6 +166,12 @@ function mergeUnique(urls: readonly string[][]): string[] {
   return Array.from(new Set(urls.flat()))
 }
 
+function mergeRelayFailureMessages(
+  messages: readonly Record<string, string>[]
+): Record<string, string> {
+  return Object.assign({}, ...messages)
+}
+
 function getAuthorEventFallbackRelayUrls(input: {
   eventKind: number | undefined
   intent: RelayWriteIntent
@@ -203,18 +211,37 @@ function formatRelayListForError(urls: readonly string[]): string {
   return urls.slice(0, 8).join(", ") + (urls.length > 8 ? ", ..." : "")
 }
 
+function formatRelayFailureListForError(
+  urls: readonly string[],
+  messages: Record<string, string>
+): string {
+  if (urls.length === 0) return "none"
+  const formatted = urls.slice(0, 5).map((url) => {
+    const message = messages[url]?.trim()
+    return message ? `${url} (${message})` : url
+  })
+  return formatted.join(", ") + (urls.length > 5 ? ", ..." : "")
+}
+
+function getPublishErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message
+  if (typeof error === "string" && error.trim()) return error.trim()
+  return "No acknowledgement before publish timeout"
+}
+
 function createPublishDiagnosticsError(input: {
   message: string
   plan: RelayWritePlan
   attemptedRelayUrls: readonly string[]
   successfulRelayUrls: readonly string[]
   failedRelayUrls: readonly string[]
+  relayFailureMessages: Record<string, string>
   thrown: unknown
 }): RelayPublishDiagnosticsError {
   const details = [
     `Attempted: ${formatRelayListForError(input.attemptedRelayUrls)}.`,
     `ACKed: ${formatRelayListForError(input.successfulRelayUrls)}.`,
-    `Failed: ${formatRelayListForError(input.failedRelayUrls)}.`,
+    `Failed: ${formatRelayFailureListForError(input.failedRelayUrls, input.relayFailureMessages)}.`,
     input.plan.parkedRelayUrls.length > 0
       ? `Parked before this attempt: ${formatRelayListForError(input.plan.parkedRelayUrls)}.`
       : null,
@@ -227,6 +254,7 @@ function createPublishDiagnosticsError(input: {
       attemptedRelayUrls: [...input.attemptedRelayUrls],
       successfulRelayUrls: [...input.successfulRelayUrls],
       failedRelayUrls: [...input.failedRelayUrls],
+      relayFailureMessages: { ...input.relayFailureMessages },
     },
     input.thrown
   )
@@ -240,12 +268,14 @@ async function publishToRelayUrls(input: {
 }): Promise<{
   successfulRelayUrls: string[]
   failedRelayUrls: string[]
+  relayFailureMessages: Record<string, string>
   thrown: unknown
 }> {
   if (input.relayUrls.length === 0) {
     return {
       successfulRelayUrls: [],
       failedRelayUrls: [],
+      relayFailureMessages: {},
       thrown: null,
     }
   }
@@ -253,6 +283,7 @@ async function publishToRelayUrls(input: {
   const relaySet = NDKRelaySet.fromRelayUrls([...input.relayUrls], input.ndk)
   let publishedUrls = new Set<string>()
   let explicitFailedUrls = new Set<string>()
+  const explicitFailureMessages = new Map<string, string>()
   let thrown: unknown = null
 
   try {
@@ -266,12 +297,21 @@ async function publishToRelayUrls(input: {
     thrown = err
     if (err instanceof NDKPublishError) {
       publishedUrls = collectRelayUrls(err.publishedToRelays)
-      for (const relay of err.errors.keys()) {
+      for (const [relay, relayError] of err.errors.entries()) {
         const url = relayUrl(relay)
-        if (url) explicitFailedUrls.add(url)
+        if (url) {
+          explicitFailedUrls.add(url)
+          explicitFailureMessages.set(url, getPublishErrorMessage(relayError))
+        }
       }
     } else {
       explicitFailedUrls = new Set(input.relayUrls)
+      for (const url of input.relayUrls) {
+        explicitFailureMessages.set(
+          normalizeOutcomeRelayUrl(url),
+          getPublishErrorMessage(err)
+        )
+      }
     }
   }
 
@@ -284,7 +324,14 @@ async function publishToRelayUrls(input: {
   for (const url of outcome.successfulRelayUrls) recordRelaySuccess(url)
   for (const url of outcome.failedRelayUrls) recordRelayFailure(url)
 
-  return { ...outcome, thrown }
+  const relayFailureMessages = Object.fromEntries(
+    outcome.failedRelayUrls.map((url) => [
+      url,
+      explicitFailureMessages.get(url) ?? "No acknowledgement before timeout",
+    ])
+  )
+
+  return { ...outcome, relayFailureMessages, thrown }
 }
 
 /**
@@ -379,6 +426,7 @@ export async function publishWithPlanner(
           attemptedRelayUrls,
           successfulRelayUrls: fallback.successfulRelayUrls,
           failedRelayUrls: fallback.failedRelayUrls,
+          relayFailureMessages: fallback.relayFailureMessages,
           thrown: fallback.thrown,
         })
       }
@@ -387,6 +435,7 @@ export async function publishWithPlanner(
         attemptedRelayUrls,
         successfulRelayUrls: fallback.successfulRelayUrls,
         failedRelayUrls: fallback.failedRelayUrls,
+        relayFailureMessages: fallback.relayFailureMessages,
       }
     }
 
@@ -397,6 +446,7 @@ export async function publishWithPlanner(
       attemptedRelayUrls: [],
       successfulRelayUrls: [],
       failedRelayUrls: [],
+      relayFailureMessages: {},
     }
   }
 
@@ -433,6 +483,10 @@ export async function publishWithPlanner(
             primary.failedRelayUrls,
             fallback.failedRelayUrls,
           ]),
+          relayFailureMessages: mergeRelayFailureMessages([
+            primary.relayFailureMessages,
+            fallback.relayFailureMessages,
+          ]),
         }
       }
 
@@ -451,6 +505,10 @@ export async function publishWithPlanner(
           primary.failedRelayUrls,
           fallback.failedRelayUrls,
         ]),
+        relayFailureMessages: mergeRelayFailureMessages([
+          primary.relayFailureMessages,
+          fallback.relayFailureMessages,
+        ]),
         thrown: fallback.thrown,
       })
     }
@@ -461,6 +519,7 @@ export async function publishWithPlanner(
       attemptedRelayUrls,
       successfulRelayUrls: primary.successfulRelayUrls,
       failedRelayUrls: primary.failedRelayUrls,
+      relayFailureMessages: primary.relayFailureMessages,
       thrown: primary.thrown,
     })
   }
@@ -482,6 +541,10 @@ export async function publishWithPlanner(
     failedRelayUrls: mergeUnique([
       primary.failedRelayUrls,
       broadcast.failedRelayUrls,
+    ]),
+    relayFailureMessages: mergeRelayFailureMessages([
+      primary.relayFailureMessages,
+      broadcast.relayFailureMessages,
     ]),
   }
 }
