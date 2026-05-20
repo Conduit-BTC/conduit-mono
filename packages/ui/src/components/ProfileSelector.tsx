@@ -5,7 +5,7 @@ import {
   Radio,
   Wallet,
 } from "lucide-react"
-import { useState, type ReactNode } from "react"
+import { useState, type MouseEvent, type ReactNode } from "react"
 import { Avatar, AvatarFallback, AvatarImage } from "./Avatar"
 import {
   DropdownMenu,
@@ -25,10 +25,23 @@ export interface ProfileSelectorProps {
   alertLabel?: string
   className?: string
   onProfile?: () => void
+  profileHref?: string
   onNetwork?: () => void
+  networkHref?: string
   onWallet?: () => void
+  walletHref?: string
   walletStatusLabel?: string
   onDisconnect: () => void
+}
+
+function isModifiedLinkClick(event: MouseEvent<HTMLAnchorElement>): boolean {
+  return (
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  )
 }
 
 function SelectorItem({
@@ -36,28 +49,28 @@ function SelectorItem({
   label,
   pill,
   onSelect,
+  href,
   variant = "default",
 }: {
   icon: ReactNode
   label: string
   pill?: ReactNode
-  onSelect: () => void
+  onSelect?: () => void
+  href?: string
   variant?: "default" | "danger" | "warning"
 }) {
-  return (
-    <DropdownMenuItem
-      onSelect={onSelect}
-      className={cn(
-        "cursor-pointer rounded-xl px-3 text-[15px] font-medium",
-        pill ? "min-h-11 py-2" : "h-11",
-        variant === "default" &&
-          "text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_6%,transparent)] focus:text-[var(--text-primary)]",
-        variant === "warning" &&
-          "text-secondary-400 focus:bg-secondary-500/5 focus:text-secondary-300",
-        variant === "danger" &&
-          "text-[var(--error)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error)]"
-      )}
-    >
+  const className = cn(
+    "cursor-pointer rounded-xl px-3 text-[15px] font-medium",
+    pill ? "min-h-11 py-2" : "h-11",
+    variant === "default" &&
+      "text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_6%,transparent)] focus:text-[var(--text-primary)]",
+    variant === "warning" &&
+      "text-secondary-400 focus:bg-secondary-500/5 focus:text-secondary-300",
+    variant === "danger" &&
+      "text-[var(--error)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error)]"
+  )
+  const content = (
+    <>
       <span
         className={cn(
           "mr-3 inline-flex h-5 w-5 shrink-0 items-center justify-center",
@@ -70,6 +83,29 @@ function SelectorItem({
         <span>{label}</span>
         {pill}
       </span>
+    </>
+  )
+
+  if (href) {
+    return (
+      <DropdownMenuItem asChild className={className}>
+        <a
+          href={href}
+          onClick={(event) => {
+            if (!onSelect || isModifiedLinkClick(event)) return
+            event.preventDefault()
+            onSelect()
+          }}
+        >
+          {content}
+        </a>
+      </DropdownMenuItem>
+    )
+  }
+
+  return (
+    <DropdownMenuItem onSelect={onSelect} className={className}>
+      {content}
     </DropdownMenuItem>
   )
 }
@@ -82,8 +118,11 @@ export function ProfileSelector({
   alertLabel,
   className,
   onProfile,
+  profileHref,
   onNetwork,
+  networkHref,
   onWallet,
+  walletHref,
   walletStatusLabel,
   onDisconnect,
 }: ProfileSelectorProps) {
@@ -150,6 +189,7 @@ export function ProfileSelector({
             <SelectorItem
               icon={<CircleUserRound className="h-4 w-4" />}
               label="Profile"
+              href={profileHref}
               pill={
                 alertLabel ? (
                   <StatusPill
@@ -172,6 +212,7 @@ export function ProfileSelector({
             <SelectorItem
               icon={<Radio className="h-4 w-4" />}
               label="Network"
+              href={networkHref}
               onSelect={() => {
                 setOpen(false)
                 onNetwork()
@@ -183,6 +224,7 @@ export function ProfileSelector({
             <SelectorItem
               icon={<Wallet className="h-4 w-4" />}
               label="Wallet"
+              href={walletHref}
               pill={
                 walletStatusLabel ? (
                   <span className="text-[10px] text-[var(--text-muted)]">

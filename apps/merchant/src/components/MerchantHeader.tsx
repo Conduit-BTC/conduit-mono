@@ -224,7 +224,9 @@ function UserMenu() {
       avatarUrl={profile?.picture}
       avatarFallback={<MerchantAvatarFallback iconClassName="h-4 w-4" />}
       alertLabel={readiness.setupComplete ? undefined : "Needs completion"}
+      profileHref="/profile"
       onProfile={() => navigate({ to: "/profile" })}
+      networkHref="/network"
       onNetwork={() => navigate({ to: "/network" })}
       onDisconnect={disconnect}
       className="h-12 min-w-[12.75rem] rounded-[16px] px-3"

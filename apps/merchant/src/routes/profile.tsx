@@ -346,6 +346,7 @@ function ProfilePage() {
                               href={storefrontUrl}
                               target="_blank"
                               rel="noopener noreferrer"
+                              title="Open Conduit store in a new tab"
                               className="min-w-0 flex-1 break-all font-mono text-xs leading-5 text-[var(--accent)] underline-offset-2 hover:underline"
                             >
                               {storefrontUrl}
@@ -376,6 +377,7 @@ function ProfilePage() {
                                 href={storefrontUrl}
                                 target="_blank"
                                 rel="noopener noreferrer"
+                                title="Open Conduit store in a new tab"
                                 aria-label="Open Conduit store"
                                 className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] transition-colors hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]"
                               >

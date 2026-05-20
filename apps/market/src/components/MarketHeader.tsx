@@ -119,8 +119,11 @@ function UserMenu() {
     <ProfileSelector
       displayName={displayName}
       avatarUrl={profile?.picture}
+      profileHref="/profile"
       onProfile={() => navigate({ to: "/profile" })}
+      networkHref="/network"
       onNetwork={() => navigate({ to: "/network" })}
+      walletHref="/wallet"
       onWallet={() => navigate({ to: "/wallet" })}
       walletStatusLabel={walletStatusLabel}
       onDisconnect={disconnect}
