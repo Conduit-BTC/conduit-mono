@@ -79,7 +79,7 @@ jobs:
 
       - name: Run Sudden Agent hardening
         if: env.SUDDEN_AGENT_API_KEY != ''
-        uses: sudden-network/agent@v1
+        uses: sudden-network/agent@326a428887a4ae4736a17ebf75a416944a04c0ab
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
           github_token: ${{ github.token }}

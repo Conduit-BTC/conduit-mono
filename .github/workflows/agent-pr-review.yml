@@ -29,8 +29,13 @@ jobs:
   review:
     if: >-
       github.event.pull_request ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/agent review')) ||
-      github.event_name == 'pull_request_review_comment' ||
+      (github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        contains(github.event.comment.body, '/agent review') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review_comment' &&
+        contains(github.event.comment.body, '/agent review') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -49,7 +54,7 @@ jobs:
 
       - name: Run Sudden Agent review
         if: env.SUDDEN_AGENT_API_KEY != ''
-        uses: sudden-network/agent@v1
+        uses: sudden-network/agent@326a428887a4ae4736a17ebf75a416944a04c0ab
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
           github_token: ${{ github.token }}

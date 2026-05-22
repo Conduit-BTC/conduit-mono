@@ -28,6 +28,30 @@ export const bannedTelemetryPackages = [
   "rrweb",
 ]
 
+export const sensitiveTelemetryPropertyNames = new Set([
+  "address",
+  "content",
+  "fingerprint",
+  "invoice",
+  "lnurl",
+  "message",
+  "npub",
+  "nwcUri",
+  "nwc_uri",
+  "orderId",
+  "order_id",
+  "paymentHash",
+  "preimage",
+  "productTitle",
+  "pubkey",
+  "secret",
+  "shippingAddress",
+  "signer",
+  "title",
+  "userAgent",
+  "wallet",
+])
+
 export type TelemetryEventMarker = {
   eventName: string
   properties: string[]
@@ -40,6 +64,12 @@ export type TelemetryPolicyResult = {
 
 const eventMarkerPattern =
   /<!--\s*telemetry-event:\s*([a-z0-9_]+)\s+properties=([a-z0-9_,]+)\s*-->/g
+
+const telemetryApiPattern =
+  /\b(?:posthog\.capture|plausible|trackTelemetry|recordTelemetryEvent)\s*\(/g
+
+const literalTelemetryCallPattern =
+  /\b(?:posthog\.capture|plausible|trackTelemetry|recordTelemetryEvent)\s*\(\s*["'`]([a-z0-9_]+)["'`]/g
 
 function walkFiles(
   root: string,
@@ -101,6 +131,78 @@ export function validateTelemetryEvents(
   return errors
 }
 
+export function validateTelemetrySourceUsage(input: {
+  source: string
+  relativePath: string
+  allowedEventNames: Set<string>
+}): string[] {
+  const errors: string[] = []
+  const telemetryCalls = [...input.source.matchAll(telemetryApiPattern)]
+  const literalTelemetryCalls = [
+    ...input.source.matchAll(literalTelemetryCallPattern),
+  ]
+
+  if (telemetryCalls.length !== literalTelemetryCalls.length) {
+    errors.push(
+      `${input.relativePath} includes a telemetry call without a literal allowlisted event name`
+    )
+  }
+
+  for (const match of literalTelemetryCalls) {
+    const eventName = match[1]
+    if (!input.allowedEventNames.has(eventName)) {
+      errors.push(
+        `${input.relativePath} uses telemetry event ${eventName} outside docs/analytics/events.md`
+      )
+    }
+
+    const callWindow = input.source.slice(
+      match.index ?? 0,
+      (match.index ?? 0) + 800
+    )
+    for (const propertyName of sensitiveTelemetryPropertyNames) {
+      const propertyPattern = new RegExp(`\\b${propertyName}\\b\\s*(?=[:,}])`)
+      if (propertyPattern.test(callWindow)) {
+        errors.push(
+          `${input.relativePath} includes sensitive telemetry property ${propertyName}`
+        )
+      }
+    }
+  }
+
+  return errors
+}
+
+export function checkTelemetrySourceUsage(
+  repoRoot: string,
+  events: TelemetryEventMarker[]
+): string[] {
+  const allowedEventNames = new Set(events.map((event) => event.eventName))
+  const sourceRoots = ["apps", "packages"]
+  const sourceFiles = sourceRoots.flatMap((root) =>
+    walkFiles(join(repoRoot, root), (path) => {
+      if (path.includes("/node_modules/") || path.includes("/dist/")) {
+        return false
+      }
+      if (path.endsWith(".test.ts") || path.endsWith(".test.tsx")) {
+        return false
+      }
+      if (path.endsWith("routeTree.gen.ts")) {
+        return false
+      }
+      return /\.(ts|tsx|js|jsx)$/.test(path)
+    })
+  )
+
+  return sourceFiles.flatMap((sourcePath) =>
+    validateTelemetrySourceUsage({
+      source: readFileSync(sourcePath, "utf8"),
+      relativePath: relative(repoRoot, sourcePath),
+      allowedEventNames,
+    })
+  )
+}
+
 export function checkPackageManifests(repoRoot: string): string[] {
   const errors: string[] = []
   const manifests = walkFiles(
@@ -141,6 +243,7 @@ export function checkTelemetryPolicy(repoRoot: string): TelemetryPolicyResult {
   const events = parseTelemetryEventMarkers(allowlist)
   const errors = [
     ...validateTelemetryEvents(events),
+    ...checkTelemetrySourceUsage(repoRoot, events),
     ...checkPackageManifests(repoRoot),
   ]
 
