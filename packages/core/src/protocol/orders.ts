@@ -70,6 +70,19 @@ export type ParsedOrderMessage =
       payload: PaymentProofMessageSchema
     })
 
+export type OrderPaymentState =
+  | "awaiting_invoice"
+  | "invoice_available"
+  | "payment_in_progress"
+  | "payment_sent"
+  | "proof_sending"
+  | "proof_sent"
+  | "proof_delivery_failed"
+  | "awaiting_merchant_confirmation"
+  | "merchant_confirmed_paid"
+  | "payment_failed"
+  | "proof_disputed"
+
 function getTagValue(
   tags: string[][] | undefined,
   name: string
@@ -208,11 +221,14 @@ export function parseOrderMessageRumorEvent(
 
   if (type === "payment_proof") {
     const payload = paymentProofMessageSchema.parse({
+      ...(json ?? {}),
+      version: getNumber(json?.version),
       orderId,
       rail: getString(json?.rail),
       action: getString(json?.action),
       amount:
         parseNumericTag(event.tags ?? [], "amount") ?? getNumber(json?.amount),
+      amountMsats: getNumber(json?.amountMsats),
       currency:
         getTagValue(event.tags ?? [], "currency") ?? getString(json?.currency),
       invoice: getString(json?.invoice),
@@ -221,7 +237,9 @@ export function parseOrderMessageRumorEvent(
       feeMsats: getNumber(json?.feeMsats),
       zapRequestId: getString(json?.zapRequestId),
       zapReceiptId: getString(json?.zapReceiptId),
+      source: getString(json?.source),
       proofDeliveryStatus: getString(json?.proofDeliveryStatus),
+      verification: json?.verification,
       note: getString(json?.note),
     })
     return { ...messageBase(event, type, orderId), payload }
@@ -231,4 +249,80 @@ export function parseOrderMessageRumorEvent(
     ...messageBase(event, type, orderId),
     payload: json ?? { raw: event.content.trim() },
   }
+}
+
+export function buildLightningPaymentProofMessage(input: {
+  orderId: string
+  action: "zap" | "invoice" | "external_invoice"
+  amount?: number
+  amountMsats?: number
+  currency: string
+  invoice?: string
+  preimage?: string
+  paymentHash?: string
+  feeMsats?: number
+  zapRequestId?: string
+  zapReceiptId?: string
+  source?: "nwc" | "webln" | "external" | "buyer"
+  proofDeliveryStatus?: PaymentProofMessageSchema["proofDeliveryStatus"]
+  note?: string
+}): PaymentProofMessageSchema {
+  return paymentProofMessageSchema.parse({
+    version: 1,
+    rail: "lightning",
+    verification: {
+      state: "buyer_evidence_received",
+      checkedAt: Math.floor(Date.now() / 1000),
+      checks: [],
+    },
+    ...input,
+  })
+}
+
+export function deriveOrderPaymentState(
+  messages: readonly ParsedOrderMessage[]
+): OrderPaymentState {
+  const statusMessages = messages.filter(
+    (message) => message.type === "status_update"
+  )
+  if (
+    statusMessages.some(
+      (message) =>
+        message.type === "status_update" && message.payload.status === "paid"
+    )
+  ) {
+    return "merchant_confirmed_paid"
+  }
+
+  const proofMessages = messages.filter(
+    (message) => message.type === "payment_proof"
+  )
+  if (proofMessages.length > 0) {
+    const latestProof = proofMessages.sort(
+      (a, b) => b.createdAt - a.createdAt
+    )[0]
+    if (
+      latestProof.type === "payment_proof" &&
+      latestProof.payload.proofDeliveryStatus === "retry_needed"
+    ) {
+      return "proof_delivery_failed"
+    }
+    if (
+      latestProof.type === "payment_proof" &&
+      latestProof.payload.proofDeliveryStatus === "pending"
+    ) {
+      return "proof_sending"
+    }
+    return "proof_sent"
+  }
+
+  if (messages.some((message) => message.type === "payment_request")) {
+    return "invoice_available"
+  }
+
+  if (messages.some((message) => message.type === "order")) {
+    return "awaiting_invoice"
+  }
+
+  return "awaiting_invoice"
 }

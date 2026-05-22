@@ -238,31 +238,64 @@ export type ConversationMessageSchema = z.infer<
   typeof conversationMessageSchema
 >
 
+export const paymentProofDeliveryStatusSchema = z.enum([
+  "pending",
+  "sent",
+  "retry_needed",
+])
+
+export const paymentProofVerificationSchema = z.object({
+  state: z
+    .enum([
+      "buyer_evidence_received",
+      "verified",
+      "needs_merchant_verification",
+      "verification_failed",
+      "disputed",
+    ])
+    .default("buyer_evidence_received"),
+  checkedAt: z.number().optional(),
+  checks: z.array(z.string()).default([]),
+})
+
 /**
  * Payment proof message -- sent by the buyer after a successful Lightning payment.
- * Lets the merchant confirm payment without querying the Lightning node.
+ *
+ * Conduit emits versioned v1 payloads, but parsing remains permissive so older
+ * and foreign proofs can render as degraded evidence instead of crashing order
+ * views.
  */
-export const paymentProofMessageSchema = z.object({
-  orderId: z.string().optional(),
-  rail: z.literal("lightning").optional(),
-  action: z.enum(["zap", "invoice"]).optional(),
-  amount: z.number().min(0).optional(),
-  currency: z.string().min(1).optional(),
-  /** BOLT11 invoice that was paid. */
-  invoice: z.string().min(1),
-  /** Payment preimage (hex) returned by the wallet. */
-  preimage: z.string().min(1),
-  /** Payment hash (hex), if returned by the wallet. */
-  paymentHash: z.string().optional(),
-  /** Fees paid in msats, if returned by the wallet. */
-  feeMsats: z.number().optional(),
-  zapRequestId: z.string().optional(),
-  zapReceiptId: z.string().optional(),
-  proofDeliveryStatus: z.enum(["pending", "sent", "retry_needed"]).optional(),
-  /** Human-readable note. */
-  note: z.string().max(2000).optional(),
-})
+export const paymentProofMessageSchema = z
+  .object({
+    version: z.number().int().min(1).optional(),
+    orderId: z.string().optional(),
+    rail: z.literal("lightning").optional(),
+    action: z.enum(["zap", "invoice", "external_invoice"]).optional(),
+    amount: z.number().min(0).optional(),
+    amountMsats: z.number().int().min(0).optional(),
+    currency: z.string().min(1).optional(),
+    /** BOLT11 invoice that was paid. */
+    invoice: z.string().min(1).optional(),
+    /** Payment preimage (hex) returned by the wallet. */
+    preimage: z.string().min(1).optional(),
+    /** Payment hash (hex), if returned by the wallet. */
+    paymentHash: z.string().optional(),
+    /** Fees paid in msats, if returned by the wallet. */
+    feeMsats: z.number().optional(),
+    zapRequestId: z.string().optional(),
+    zapReceiptId: z.string().optional(),
+    source: z.enum(["nwc", "webln", "external", "buyer"]).optional(),
+    proofDeliveryStatus: paymentProofDeliveryStatusSchema.optional(),
+    verification: paymentProofVerificationSchema.optional(),
+    /** Human-readable note. */
+    note: z.string().max(2000).optional(),
+  })
+  .passthrough()
 
 export type PaymentProofMessageSchema = z.infer<
   typeof paymentProofMessageSchema
+>
+
+export type PaymentProofDeliveryStatusSchema = z.infer<
+  typeof paymentProofDeliveryStatusSchema
 >

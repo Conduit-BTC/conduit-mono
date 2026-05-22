@@ -17,6 +17,7 @@ import {
   EVENT_KINDS,
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
+  buildLightningPaymentProofMessage,
   config,
   fetchLnurlPayMetadata,
   fetchZapInvoice,
@@ -1090,20 +1091,21 @@ function CheckoutPage() {
       }
 
       setPaymentStage("sending_receipt")
-      const proofPayload = {
+      const proofPayload = buildLightningPaymentProofMessage({
         orderId,
-        rail: "lightning",
         action: "zap",
         amount: pricingIntent.totalSats,
+        amountMsats: pricingIntent.totalMsats,
         currency,
         invoice,
         preimage: payResult.preimage,
         paymentHash: payResult.paymentHash,
         feeMsats: payResult.feeMsats,
         zapRequestId: zapRequest.id,
+        source: payResult.rail,
         proofDeliveryStatus: "pending",
         note: `Payment for order ${orderId}`,
-      }
+      })
 
       const proofRumor = new NDKEvent(ndk)
       proofRumor.kind = EVENT_KINDS.ORDER
