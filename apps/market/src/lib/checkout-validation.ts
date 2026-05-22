@@ -133,6 +133,7 @@ export function isFastCheckoutEligible(params: {
   walletPayCapable: boolean
   merchantLud16: string | undefined | null
   lnurlAllowsNostr: boolean
+  requiresNostrZap?: boolean
   pricingReady?: boolean
   shippingEligible?: boolean
   shippingState?: ShippingCheckoutState
@@ -155,6 +156,7 @@ export function getFastCheckoutUnavailableReasons(params: {
   walletPayCapable: boolean
   merchantLud16: string | undefined | null
   lnurlAllowsNostr: boolean
+  requiresNostrZap?: boolean
   pricingReady?: boolean
   shippingEligible?: boolean
   shippingState?: ShippingCheckoutState
@@ -169,9 +171,13 @@ export function getFastCheckoutUnavailableReasons(params: {
     reasons.push("Merchant has not added a Lightning Address.")
   }
   if (params.merchantLud16 && !params.lnurlAllowsNostr) {
-    reasons.push(
-      "Merchant Lightning Address does not advertise Nostr zap support."
-    )
+    if (params.requiresNostrZap ?? true) {
+      reasons.push(
+        "Merchant Lightning Address does not advertise Nostr zap support."
+      )
+    } else {
+      reasons.push("Merchant Lightning Address could not be checked.")
+    }
   }
   if (params.pricingReady === false) {
     reasons.push("Refresh price conversion before paying.")
