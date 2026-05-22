@@ -1,8 +1,10 @@
 import {
+  classifyNwcPaymentError,
   hasWebLN,
   nwcPayInvoice,
   weblnSendPayment,
   type ConduitAppId,
+  type NwcDiagnostic,
   type NwcConnection,
 } from "@conduit/core"
 
@@ -19,6 +21,7 @@ export type CheckoutInvoicePaymentResult =
   | {
       status: "manual_required"
       reason: string
+      diagnostics?: NwcDiagnostic[]
     }
 
 type PaymentRailDependencies = {
@@ -35,10 +38,6 @@ const defaultDependencies: PaymentRailDependencies = {
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
-}
-
-function isNwcPrePaymentFailure(error: unknown): boolean {
-  return getErrorMessage(error, "").includes("Failed to connect to NWC relay")
 }
 
 function isWeblnAmbiguousProofFailure(error: unknown): boolean {
@@ -58,6 +57,7 @@ export async function payCheckoutInvoice(
   dependencies: PaymentRailDependencies = defaultDependencies
 ): Promise<CheckoutInvoicePaymentResult> {
   const failures: string[] = []
+  const diagnostics: NwcDiagnostic[] = []
 
   if (input.walletConnection && input.preferNwc) {
     try {
@@ -80,13 +80,12 @@ export async function payCheckoutInvoice(
         feeMsats: result.feeMsats,
       }
     } catch (error) {
-      const message = getErrorMessage(error, "Connected wallet payment failed")
-      if (!isNwcPrePaymentFailure(error)) {
-        throw new Error(
-          `${message} Check your wallet before trying another payment path.`
-        )
+      const diagnostic = classifyNwcPaymentError(error, input.walletConnection)
+      if (!diagnostic.safeManualFallback) {
+        throw new Error(`${diagnostic.detail} ${diagnostic.action}`)
       }
-      failures.push(message)
+      diagnostics.push(diagnostic)
+      failures.push(`${diagnostic.title}: ${diagnostic.action}`)
     }
   }
 
@@ -119,5 +118,6 @@ export async function payCheckoutInvoice(
       failures.length > 0
         ? failures.join(" ")
         : "No automatic Lightning payment rail is currently available.",
+    ...(diagnostics.length > 0 && { diagnostics }),
   }
 }

@@ -7,8 +7,11 @@
  */
 import { useCallback, useEffect, useState } from "react"
 import {
+  getInvalidNwcUriDiagnostic,
+  getNwcConnectionDiagnostics,
   parseNwcUri,
   nwcGetInfo,
+  type NwcDiagnostic,
   type NwcConnection,
   type NwcGetInfoResult,
 } from "@conduit/core"
@@ -39,6 +42,8 @@ export interface WalletState {
   lastProbeAt: number | null
   /** Plain-language reason the wallet cannot be used for fast checkout, if any. */
   unavailableReason: string | null
+  /** Sanitized diagnostics. Never includes the full NWC URI or secret. */
+  diagnostics: NwcDiagnostic[]
   error: string | null
 }
 
@@ -173,6 +178,7 @@ export function useWallet(): UseWalletReturn {
     info: null,
     reachability: "unchecked",
     lastProbeAt: null,
+    diagnostics: [],
     error: null,
   })
 
@@ -189,6 +195,11 @@ export function useWallet(): UseWalletReturn {
       info: cached?.info ?? null,
       status: "connecting",
       reachability: "checking",
+      diagnostics: getNwcConnectionDiagnostics({
+        connection: stored,
+        info: cached?.info ?? null,
+        status: "connecting",
+      }),
       error: null,
     }))
 
@@ -202,6 +213,11 @@ export function useWallet(): UseWalletReturn {
           status: resolved.status,
           reachability: "reachable",
           lastProbeAt: Date.now(),
+          diagnostics: getNwcConnectionDiagnostics({
+            connection: stored,
+            info,
+            status: resolved.status,
+          }),
         }))
       })
       .catch(() => {
@@ -214,6 +230,12 @@ export function useWallet(): UseWalletReturn {
           status: "unreachable",
           reachability: "unreachable",
           lastProbeAt: Date.now(),
+          diagnostics: getNwcConnectionDiagnostics({
+            connection: stored,
+            info: cached?.info ?? null,
+            status: "unreachable",
+            error: "Wallet saved, but its NWC relay is currently unreachable.",
+          }),
         }))
       })
   }, [])
@@ -232,7 +254,12 @@ export function useWallet(): UseWalletReturn {
       : deriveStatus(info, error, connection)
 
   const connect = useCallback(async (uri: string) => {
-    setState((s) => ({ ...s, status: "connecting", error: null }))
+    setState((s) => ({
+      ...s,
+      status: "connecting",
+      diagnostics: [],
+      error: null,
+    }))
 
     let conn: NwcConnection
     try {
@@ -242,6 +269,7 @@ export function useWallet(): UseWalletReturn {
         ...s,
         status: "error",
         error: e instanceof Error ? e.message : "Invalid NWC URI",
+        diagnostics: [getInvalidNwcUriDiagnostic()],
       }))
       return
     }
@@ -256,6 +284,11 @@ export function useWallet(): UseWalletReturn {
         status: resolved.status,
         reachability: "reachable",
         lastProbeAt: Date.now(),
+        diagnostics: getNwcConnectionDiagnostics({
+          connection: conn,
+          info,
+          status: resolved.status,
+        }),
         error: null,
       })
     } catch {
@@ -269,6 +302,12 @@ export function useWallet(): UseWalletReturn {
         reachability: "unreachable",
         lastProbeAt: Date.now(),
         error: "Wallet saved, but its NWC relay is currently unreachable.",
+        diagnostics: getNwcConnectionDiagnostics({
+          connection: conn,
+          info: null,
+          status: "unreachable",
+          error: "Wallet saved, but its NWC relay is currently unreachable.",
+        }),
       })
     }
   }, [])
@@ -281,11 +320,20 @@ export function useWallet(): UseWalletReturn {
       info: null,
       reachability: "unchecked",
       lastProbeAt: null,
+      diagnostics: [],
       error: null,
     })
   }, [])
 
   const unavailableReason = deriveUnavailableReason(status)
+  const diagnostics = connection
+    ? getNwcConnectionDiagnostics({
+        connection,
+        info,
+        status,
+        error,
+      })
+    : state.diagnostics
 
   return {
     status,
@@ -293,6 +341,7 @@ export function useWallet(): UseWalletReturn {
     info,
     reachability: state.reachability,
     lastProbeAt: state.lastProbeAt,
+    diagnostics,
     error,
     unavailableReason,
     connect,

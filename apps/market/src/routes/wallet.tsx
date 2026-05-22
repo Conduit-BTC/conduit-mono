@@ -9,6 +9,7 @@ import {
 } from "lucide-react"
 import { useState } from "react"
 import { Button, Input, Label, StatusPill } from "@conduit/ui"
+import type { NwcDiagnostic } from "@conduit/core"
 import { requireAuth } from "../lib/auth"
 import { useWallet, type WalletConnectionStatus } from "../hooks/useWallet"
 
@@ -57,6 +58,49 @@ function WalletStatusPill({ status }: { status: WalletConnectionStatus }) {
     default:
       return <StatusPill variant="neutral">Not connected</StatusPill>
   }
+}
+
+function WalletDiagnostics({
+  diagnostics,
+}: {
+  diagnostics: readonly NwcDiagnostic[]
+}) {
+  if (diagnostics.length === 0) return null
+
+  return (
+    <div className="mt-4 space-y-3">
+      {diagnostics.map((diagnostic) => (
+        <div
+          key={`${diagnostic.code}:${diagnostic.relayHosts?.join(",") ?? ""}`}
+          className={[
+            "rounded-2xl border p-4 text-sm leading-6",
+            diagnostic.severity === "error"
+              ? "border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_10%,transparent)] text-[var(--error)]"
+              : "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] text-[var(--warning)]",
+          ].join(" ")}
+        >
+          <div className="flex items-center gap-2 font-medium">
+            <AlertTriangle className="h-4 w-4" />
+            {diagnostic.title}
+          </div>
+          <p className="mt-2">{diagnostic.detail}</p>
+          {diagnostic.relayHosts && diagnostic.relayHosts.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {diagnostic.relayHosts.map((host) => (
+                <span
+                  key={host}
+                  className="rounded-full border border-current/30 px-2 py-0.5 font-mono text-[0.65rem]"
+                >
+                  {host}
+                </span>
+              ))}
+            </div>
+          )}
+          <p className="mt-3 font-medium">{diagnostic.action}</p>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function WalletPage() {
@@ -266,6 +310,8 @@ function WalletPage() {
                     now. Checkout can still offer a Lightning invoice fallback.
                   </div>
                 )}
+
+                <WalletDiagnostics diagnostics={wallet.diagnostics} />
 
                 {/* Disconnect */}
                 {isConnected && (

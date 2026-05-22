@@ -33,6 +33,7 @@ import {
   useAuth,
   useProfile,
   type PricingRateInput,
+  type NwcDiagnostic,
   type ParsedShippingOption,
   type ShippingAddressSchema,
 } from "@conduit/core"
@@ -93,6 +94,7 @@ type PendingManualInvoice = {
   invoice: string
   zapRequestId: string
   reason: string
+  diagnostics?: NwcDiagnostic[]
 }
 
 const DEFAULT_SHIPPING_FORM: ShippingFormState = {
@@ -1059,6 +1061,7 @@ function CheckoutPage() {
           invoice,
           zapRequestId: zapRequest.id,
           reason: payResult.reason,
+          diagnostics: payResult.diagnostics,
         })
         setSentOrderId(orderId)
         setError(null)
@@ -1962,6 +1965,27 @@ function CheckoutPage() {
                         {pendingManualInvoice.reason}
                       </p>
                     )}
+                    {pendingManualInvoice.diagnostics &&
+                      pendingManualInvoice.diagnostics.length > 0 && (
+                        <div className="mt-4 space-y-2">
+                          {pendingManualInvoice.diagnostics.map(
+                            (diagnostic) => (
+                              <div
+                                key={`${diagnostic.code}:${diagnostic.relayHosts?.join(",") ?? ""}`}
+                                className="rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-3 py-2 text-xs leading-5 text-[var(--warning)]"
+                              >
+                                <div className="font-medium">
+                                  {diagnostic.title}
+                                </div>
+                                <div className="mt-1">{diagnostic.detail}</div>
+                                <div className="mt-1 font-medium">
+                                  {diagnostic.action}
+                                </div>
+                              </div>
+                            )
+                          )}
+                        </div>
+                      )}
                     <div className="mt-4 flex flex-wrap gap-3">
                       <Button asChild className="h-10 px-4 text-sm">
                         <a
