@@ -39,7 +39,9 @@ import {
 import { Button, Combobox, Input, Label, Textarea } from "@conduit/ui"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
+import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
 import { useWallet } from "../hooks/useWallet"
+import { MerchantTrustSummary } from "../components/MerchantTrustSummary"
 import { requireAuth } from "../lib/auth"
 import {
   isFastCheckoutEligible,
@@ -509,12 +511,13 @@ function CheckoutPage() {
     [btcUsdRate, checkoutItems]
   )
 
-  const { data: merchantProfile } = useProfile(selectedMerchant ?? null)
+  const merchantTrust = useMerchantTrustContext({
+    merchantPubkey: selectedMerchant ?? null,
+    viewerPubkey: pubkey,
+  })
+  const merchantProfile = merchantTrust.profile
   const merchantLud16 = merchantProfile?.lud16
-  const merchantName =
-    merchantProfile?.displayName ||
-    merchantProfile?.name ||
-    (selectedMerchant ? formatPubkey(selectedMerchant, 8) : "this merchant")
+  const merchantName = merchantTrust.merchantName
 
   useEffect(() => {
     if (zapContentEdited || checkoutItems.length === 0) return
@@ -1763,6 +1766,8 @@ function CheckoutPage() {
                     : "Orders are sent to the merchant first. The merchant will reply with payment details after reviewing your order."}
                 </p>
               </div>
+
+              <MerchantTrustSummary trust={merchantTrust} variant="checkout" />
 
               <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
                 {/* Payment method picker */}
