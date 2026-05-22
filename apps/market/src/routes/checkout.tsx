@@ -60,6 +60,7 @@ import {
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
 import { useWallet } from "../hooks/useWallet"
+import { MerchantInvoiceQr } from "../components/MerchantInvoiceQr"
 import { requireAuth } from "../lib/auth"
 import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
 import { PaymentTracker } from "../components/PaymentTracker"
@@ -2387,6 +2388,13 @@ function CheckoutPage() {
                           )}
                         </div>
                       )}
+                    <div className="mt-4 flex justify-center sm:justify-start">
+                      <MerchantInvoiceQr
+                        invoice={pendingManualInvoice.invoice}
+                        merchantName={merchantName}
+                        merchantImageUrl={merchantProfile?.picture}
+                      />
+                    </div>
                     <div className="mt-4 flex flex-wrap gap-3">
                       <Button asChild className="h-10 px-4 text-sm">
                         <a
