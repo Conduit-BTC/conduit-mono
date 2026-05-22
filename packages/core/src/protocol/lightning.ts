@@ -124,6 +124,54 @@ export interface FetchZapInvoiceResult {
   invoice: string
 }
 
+export type FetchLnurlInvoiceOptions = {
+  /** Optional zap request event JSON. When omitted, this is a plain LNURL-pay invoice request. */
+  zapRequestJson?: string
+  /** Optional LNURL value for NIP-57 zap callbacks. */
+  lnurl?: string
+}
+
+/**
+ * Fetch a plain LNURL-pay invoice by calling the callback without NIP-57
+ * zap request metadata.
+ */
+export async function fetchLnurlInvoice(
+  lnurlCallback: string,
+  amountMsats: number,
+  options: FetchLnurlInvoiceOptions = {}
+): Promise<FetchZapInvoiceResult> {
+  const url = new URL(lnurlCallback)
+  url.searchParams.set("amount", String(amountMsats))
+  if (options.zapRequestJson)
+    url.searchParams.set("nostr", options.zapRequestJson)
+  if (options.lnurl) url.searchParams.set("lnurl", options.lnurl)
+
+  let data: Record<string, unknown>
+  try {
+    const res = await fetch(url.toString(), {
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!res.ok) throw new Error(`LNURL callback returned ${res.status}`)
+    data = (await res.json()) as Record<string, unknown>
+  } catch (e) {
+    throw new Error(
+      `Failed to fetch LNURL invoice: ${e instanceof Error ? e.message : "network error"}`
+    )
+  }
+
+  if (data.status === "ERROR") {
+    const reason =
+      typeof data.reason === "string" ? data.reason : "unknown LNURL error"
+    throw new Error(`LNURL error: ${reason}`)
+  }
+
+  const invoice = typeof data.pr === "string" ? data.pr : ""
+  if (!invoice)
+    throw new Error("LNURL callback did not return a BOLT11 invoice")
+
+  return { invoice }
+}
+
 /**
  * Fetch a zap invoice by calling the LNURL-pay callback with a NIP-57 zap
  * request event attached.
@@ -142,35 +190,10 @@ export async function fetchZapInvoice(
   zapRequestJson: string,
   lnurl?: string
 ): Promise<FetchZapInvoiceResult> {
-  const url = new URL(lnurlCallback)
-  url.searchParams.set("amount", String(amountMsats))
-  url.searchParams.set("nostr", zapRequestJson)
-  if (lnurl) url.searchParams.set("lnurl", lnurl)
-
-  let data: Record<string, unknown>
-  try {
-    const res = await fetch(url.toString(), {
-      signal: AbortSignal.timeout(15_000),
-    })
-    if (!res.ok) throw new Error(`LNURL callback returned ${res.status}`)
-    data = (await res.json()) as Record<string, unknown>
-  } catch (e) {
-    throw new Error(
-      `Failed to fetch zap invoice: ${e instanceof Error ? e.message : "network error"}`
-    )
-  }
-
-  if (data.status === "ERROR") {
-    const reason =
-      typeof data.reason === "string" ? data.reason : "unknown LNURL error"
-    throw new Error(`LNURL error: ${reason}`)
-  }
-
-  const invoice = typeof data.pr === "string" ? data.pr : ""
-  if (!invoice)
-    throw new Error("LNURL callback did not return a BOLT11 invoice")
-
-  return { invoice }
+  return fetchLnurlInvoice(lnurlCallback, amountMsats, {
+    zapRequestJson,
+    lnurl,
+  })
 }
 
 export type LightningInvoiceNetwork =

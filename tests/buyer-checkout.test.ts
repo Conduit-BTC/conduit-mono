@@ -20,6 +20,7 @@ import {
 import type { CartItem } from "../apps/market/src/hooks/useCart"
 import {
   fetchLnurlPayMetadata,
+  fetchLnurlInvoice,
   fetchZapInvoice,
 } from "../packages/core/src/protocol/lightning"
 import { parseNwcUri } from "../packages/core/src/protocol/nwc"
@@ -258,6 +259,28 @@ describe("isFastCheckoutEligible", () => {
     ).toEqual([
       "Merchant Lightning Address does not advertise Nostr zap support.",
     ])
+  })
+
+  it("does not require public zap support for private LNURL checkout", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        requiresNostrZap: false,
+      })
+    ).toEqual([])
+  })
+
+  it("shows a generic LNURL readiness reason for private checkout metadata failures", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: false,
+        requiresNostrZap: false,
+      })
+    ).toEqual(["Merchant Lightning Address could not be checked."])
   })
 
   it("blocks fast checkout when shipping cost is not fixed", () => {
@@ -998,5 +1021,19 @@ describe("fetchZapInvoice", () => {
     expect(capturedUrl).toContain("amount=50000")
     expect(capturedUrl).toContain("nostr=")
     expect(capturedUrl).toContain("lnurl=lnurl1test")
+  })
+
+  it("requests a plain LNURL invoice without public zap metadata", async () => {
+    let capturedUrl = ""
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      capturedUrl = url.toString()
+      return { ok: true, status: 200, json: async () => ({ pr: FAKE_INVOICE }) }
+    }) as unknown as typeof fetch
+
+    await fetchLnurlInvoice("https://wallet.example/cb", 50_000)
+
+    expect(capturedUrl).toContain("amount=50000")
+    expect(capturedUrl).not.toContain("nostr=")
+    expect(capturedUrl).not.toContain("lnurl=")
   })
 })
