@@ -424,8 +424,24 @@ describe("checkout payment helpers", () => {
       merchantName: "Merchant",
     })
     expect(content).toBe("Paid for 2 items from Merchant on Conduit.")
+    expect(content).not.toContain("Notebook")
     expect(content).not.toContain("order")
     expect(content).not.toContain("Phone")
+  })
+
+  it("uses generic item-count copy for single-item public zaps", () => {
+    const content = buildDefaultZapContent({
+      items: [
+        cartItem({
+          title: "Private Product Name",
+          quantity: 1,
+        }),
+      ],
+      merchantName: "Merchant",
+    })
+
+    expect(content).toBe("Paid for 1 item from Merchant on Conduit.")
+    expect(content).not.toContain("Private Product Name")
   })
 
   it("uses empty zap content for private checkout", () => {

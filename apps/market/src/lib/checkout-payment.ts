@@ -257,10 +257,8 @@ export function buildDefaultZapContent(params: {
   merchantName: string
 }): string {
   const itemCount = params.items.reduce((sum, item) => sum + item.quantity, 0)
-  if (params.items.length === 1 && itemCount === 1) {
-    return `Paid for ${params.items[0]!.title} from ${params.merchantName} on Conduit.`
-  }
-  return `Paid for ${itemCount} items from ${params.merchantName} on Conduit.`
+  const itemLabel = itemCount === 1 ? "item" : "items"
+  return `Paid for ${itemCount} ${itemLabel} from ${params.merchantName} on Conduit.`
 }
 
 export function sanitizePublicZapContent(content: string): string {

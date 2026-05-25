@@ -738,6 +738,14 @@ function CheckoutPage() {
     }
   }
 
+  function startOverPendingManualInvoice(): void {
+    setPendingManualInvoice(null)
+    setError(null)
+    setPaidNotice(null)
+    setSentOrderId(null)
+    setStep("payment")
+  }
+
   async function publishWrappedToMerchantAndSelf(
     rumor: NDKEvent,
     ndk: ReturnType<typeof getNdk>,
@@ -787,6 +795,7 @@ function CheckoutPage() {
 
   async function placeOrder(): Promise<void> {
     if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
+    if (pendingManualInvoice) return
 
     setError(null)
     setStep("signing")
@@ -890,6 +899,7 @@ function CheckoutPage() {
 
   async function payNow(): Promise<void> {
     if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
+    if (pendingManualInvoice) return
     if (!canAttemptLightningPayment) {
       setError("Connect a Lightning wallet or browser payment method.")
       return
@@ -1990,34 +2000,46 @@ function CheckoutPage() {
 
                 {/* Action buttons */}
                 <div className="mt-6 flex flex-wrap gap-3">
-                  <Button
-                    variant="outline"
-                    className="h-11 px-4 text-sm"
-                    onClick={() => setStep("shipping")}
-                  >
-                    Back to shipping
-                  </Button>
-                  {fastEligible && (
-                    <Button className="h-11 px-5 text-sm" onClick={payNow}>
-                      <LightningIcon className="h-4 w-4" />
-                      Pay now
+                  {pendingManualInvoice ? (
+                    <Button
+                      variant="outline"
+                      className="h-11 px-4 text-sm"
+                      onClick={startOverPendingManualInvoice}
+                    >
+                      Start over
                     </Button>
-                  )}
+                  ) : (
+                    <>
+                      <Button
+                        variant="outline"
+                        className="h-11 px-4 text-sm"
+                        onClick={() => setStep("shipping")}
+                      >
+                        Back to shipping
+                      </Button>
+                      {fastEligible && (
+                        <Button className="h-11 px-5 text-sm" onClick={payNow}>
+                          <LightningIcon className="h-4 w-4" />
+                          Pay now
+                        </Button>
+                      )}
 
-                  <Button
-                    variant={fastEligible ? "outline" : "primary"}
-                    className="h-11 px-5 text-sm"
-                    onClick={placeOrder}
-                  >
-                    {fastEligible ? (
-                      "Send order (pay later)"
-                    ) : (
-                      <>
-                        <LightningIcon className="h-4 w-4" />
-                        Send order
-                      </>
-                    )}
-                  </Button>
+                      <Button
+                        variant={fastEligible ? "outline" : "primary"}
+                        className="h-11 px-5 text-sm"
+                        onClick={placeOrder}
+                      >
+                        {fastEligible ? (
+                          "Send order (pay later)"
+                        ) : (
+                          <>
+                            <LightningIcon className="h-4 w-4" />
+                            Send order
+                          </>
+                        )}
+                      </Button>
+                    </>
+                  )}
                 </div>
               </div>
             </>
