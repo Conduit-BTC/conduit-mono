@@ -17,6 +17,7 @@ import {
   EVENT_KINDS,
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
+  cacheParsedOrderMessage,
   config,
   fetchLnurlPayMetadata,
   fetchZapInvoice,
@@ -27,6 +28,7 @@ import {
   getShippingOptions,
   getShippingDestinationEligibility,
   normalizeLightningInvoice,
+  parseOrderMessageRumorEvent,
   publishWithPlanner,
   validateLightningInvoiceForPayment,
   waitForZapReceipt,
@@ -93,6 +95,11 @@ type PendingManualInvoice = {
   invoice: string
   zapRequestId: string
   reason: string
+}
+
+type BuyerMessageDeliveryResult = {
+  buyerSelfCopyError: string | null
+  localCacheError: string | null
 }
 
 const DEFAULT_SHIPPING_FORM: ShippingFormState = {
@@ -754,12 +761,57 @@ function CheckoutPage() {
     setStep("payment")
   }
 
+  function getErrorMessage(error: unknown, fallback: string): string {
+    return error instanceof Error ? error.message : fallback
+  }
+
+  function prepareBuyerRumor(rumor: NDKEvent, buyerPubkey: string): void {
+    rumor.pubkey = buyerPubkey
+    if (rumor.id) return
+
+    try {
+      rumor.id = rumor.getEventHash()
+    } catch (error) {
+      console.warn("Failed to derive buyer order rumor id", error)
+    }
+  }
+
+  async function cacheBuyerOrderRumor(rumor: NDKEvent): Promise<string | null> {
+    try {
+      if (!rumor.id) throw new Error("Missing buyer order rumor id")
+      const parsed = parseOrderMessageRumorEvent(rumor)
+      await cacheParsedOrderMessage(parsed)
+      return null
+    } catch (error) {
+      console.warn("Failed to cache buyer order message", error)
+      return getErrorMessage(error, "Failed to cache buyer order message")
+    }
+  }
+
+  function getDeliveryNotice(
+    delivery: BuyerMessageDeliveryResult,
+    label: string
+  ): string | null {
+    if (delivery.localCacheError && delivery.buyerSelfCopyError) {
+      return `${label} reached the merchant, but order history recovery needs retry.`
+    }
+    if (delivery.localCacheError) {
+      return `${label} reached the merchant. Order history may update after relay sync.`
+    }
+    if (delivery.buyerSelfCopyError) {
+      return `${label} reached the merchant and was saved locally. Relay backup needs retry.`
+    }
+    return null
+  }
+
   async function publishWrappedToMerchantAndSelf(
     rumor: NDKEvent,
     ndk: ReturnType<typeof getNdk>,
     merchantPubkey: string,
     buyerPubkey: string
-  ): Promise<{ buyerSelfCopyError: string | null }> {
+  ): Promise<BuyerMessageDeliveryResult> {
+    prepareBuyerRumor(rumor, buyerPubkey)
+
     const merchantUser = new NDKUser({ pubkey: merchantPubkey })
     const buyerUser = new NDKUser({ pubkey: buyerPubkey })
     const [wrappedToMerchant, wrappedToSelf] = await Promise.all([
@@ -779,6 +831,7 @@ function CheckoutPage() {
       deliveryMode: "critical",
     })
 
+    let buyerSelfCopyError: string | null = null
     try {
       await publishWithPlanner(wrappedToSelf, {
         intent: "recipient_event",
@@ -787,16 +840,16 @@ function CheckoutPage() {
         refreshRelayLists: true,
         deliveryMode: "critical",
       })
-      return { buyerSelfCopyError: null }
     } catch (selfCopyError) {
       console.warn("Buyer self-copy publish failed", selfCopyError)
-      return {
-        buyerSelfCopyError:
-          selfCopyError instanceof Error
-            ? selfCopyError.message
-            : "Buyer self-copy publish failed",
-      }
+      buyerSelfCopyError = getErrorMessage(
+        selfCopyError,
+        "Buyer self-copy publish failed"
+      )
     }
+
+    const localCacheError = await cacheBuyerOrderRumor(rumor)
+    return { buyerSelfCopyError, localCacheError }
   }
 
   // ─── Order-first path (existing flow) ───────────────────────────────────
@@ -806,6 +859,7 @@ function CheckoutPage() {
     if (pendingManualInvoice) return
 
     setError(null)
+    setPaidNotice(null)
     setStep("signing")
 
     try {
@@ -869,10 +923,12 @@ function CheckoutPage() {
 
       setStep("sending")
 
-      await Promise.all([
+      const [delivery] = await Promise.all([
         publishWrappedToMerchantAndSelf(rumor, ndk, selectedMerchant, pubkey),
         new Promise((resolve) => window.setTimeout(resolve, 900)),
       ])
+      const deliveryNotice = getDeliveryNotice(delivery, "Order")
+      if (deliveryNotice) setPaidNotice(deliveryNotice)
 
       cart.clearMerchant(selectedMerchant)
       setSentOrderId(orderId)
@@ -930,6 +986,7 @@ function CheckoutPage() {
     let orderDelivered = false
     let paymentMoved = false
     let paidOrderId: string | null = null
+    let recoveryNotice: string | null = null
 
     try {
       if (hasUnpricedCheckoutItems) {
@@ -997,12 +1054,13 @@ function CheckoutPage() {
       orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
       orderRumor.content = JSON.stringify(orderPayload)
 
-      await publishWrappedToMerchantAndSelf(
+      const orderDelivery = await publishWrappedToMerchantAndSelf(
         orderRumor,
         ndk,
         selectedMerchant,
         pubkey
       )
+      recoveryNotice = getDeliveryNotice(orderDelivery, "Order")
       orderDelivered = true
 
       setPaymentStage("requesting_invoice")
@@ -1143,12 +1201,14 @@ function CheckoutPage() {
 
       let proofDelivered = true
       try {
-        await publishWrappedToMerchantAndSelf(
+        const proofDelivery = await publishWrappedToMerchantAndSelf(
           proofRumor,
           ndk,
           selectedMerchant,
           pubkey
         )
+        recoveryNotice =
+          getDeliveryNotice(proofDelivery, "Payment proof") ?? recoveryNotice
         await updatePaymentAttempt(orderId, {
           proofDeliveryStatus: "sent",
         }).catch((e) => {
@@ -1189,9 +1249,10 @@ function CheckoutPage() {
       setShowSentGlow(true)
       setPaidNotice(
         proofDelivered
-          ? receipt
-            ? "Payment sent, proof delivered, and the merchant zap receipt was observed."
-            : "Payment sent and proof delivered. Awaiting merchant confirmation."
+          ? (recoveryNotice ??
+              (receipt
+                ? "Payment sent, proof delivered, and the merchant zap receipt was observed."
+                : "Payment sent and proof delivered. Awaiting merchant confirmation."))
           : "Payment sent. Receipt delivery needs retry."
       )
       setStep("paid")
@@ -1353,8 +1414,8 @@ function CheckoutPage() {
           </h1>
           <div className="relative mx-auto mt-8 h-1 w-full max-w-sm rounded-full bg-secondary-500/50" />
           <p className="relative mx-auto mt-8 max-w-xl text-lg leading-9 text-[var(--text-primary)]">
-            Your order request has been sent to the merchant. They will review
-            it and follow up with confirmation and payment details.
+            {paidNotice ??
+              "Your order request has been sent to the merchant. They will review it and follow up with confirmation and payment details."}
           </p>
           <p className="relative mx-auto mt-4 max-w-lg text-sm leading-7 text-[var(--text-secondary)]">
             You can return to your cart, keep browsing products, or check back
