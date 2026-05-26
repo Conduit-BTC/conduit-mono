@@ -940,7 +940,7 @@ function ProductsPage() {
                       shippingCostSats: event.target.value,
                     }))
                   }
-                  placeholder={productIsDigital ? "Not required" : "Blank"}
+                  placeholder={productIsDigital ? "Not required" : "0"}
                 />
               </div>
               <div className="text-xs leading-5 text-[var(--text-muted)] sm:col-span-4">
