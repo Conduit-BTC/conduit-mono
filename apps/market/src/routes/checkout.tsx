@@ -1809,8 +1809,20 @@ function CheckoutPage() {
                   </div>
 
                   {!isAllDigital && (
-                    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-xs leading-5 text-[var(--text-secondary)]">
-                      {shippingStatusMessage}
+                    <div
+                      className={[
+                        "rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-xs leading-5 text-[var(--text-secondary)]",
+                        shippingCheckoutState === "loading"
+                          ? "animate-pulse"
+                          : "",
+                      ].join(" ")}
+                    >
+                      <div className="flex items-center gap-2">
+                        {shippingCheckoutState === "loading" && (
+                          <SpinnerIcon className="h-3.5 w-3.5 shrink-0 animate-spin text-secondary-400" />
+                        )}
+                        <span>{shippingStatusMessage}</span>
+                      </div>
                     </div>
                   )}
 

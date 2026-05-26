@@ -127,6 +127,27 @@ describe("commerce pricing", () => {
     })
   })
 
+  it("parses tag-only digital listings as not requiring shipping", () => {
+    const product = parseProductEvent({
+      id: "event-digital",
+      pubkey: "merchant",
+      created_at: 1_700_000_000,
+      content: "PDF guide",
+      tags: [
+        ["d", "pdf-guide"],
+        ["title", "PDF Guide"],
+        ["price", "25000", "SATS"],
+        ["type", "simple", "digital"],
+        ["image", "https://example.com/guide.png"],
+      ],
+    })
+
+    expect(product.type).toBe("simple")
+    expect(product.format).toBe("digital")
+    expect(product.shippingCostSats).toBeUndefined()
+    expect(product.shippingOptionId).toBeUndefined()
+  })
+
   it("preserves fiat source quotes and displays rate-backed sats", () => {
     const product = parseProductEvent({
       id: "event-3",

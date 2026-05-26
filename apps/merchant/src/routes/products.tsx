@@ -69,6 +69,7 @@ type ProductFormState = {
   summary: string
   price: string
   currency: string
+  format: "physical" | "digital"
   shippingCostSats: string
   usePresetShippingZone: boolean
   imageUrl: string
@@ -82,7 +83,8 @@ const EMPTY_FORM: ProductFormState = {
   summary: "",
   price: "0",
   currency: "USD",
-  shippingCostSats: "0",
+  format: "physical",
+  shippingCostSats: "",
   usePresetShippingZone: true,
   imageUrl: "",
   tags: "",
@@ -107,6 +109,7 @@ function productToForm(product: ProductSchema): ProductFormState {
     summary: product.summary ?? "",
     price: String(source?.amount ?? product.price),
     currency: source?.normalizedCurrency ?? product.currency,
+    format: product.format,
     shippingCostSats:
       typeof product.shippingCostSats === "number"
         ? String(product.shippingCostSats)
@@ -152,7 +155,14 @@ function parseTags(tagsCsv: string): string[] {
     .filter(Boolean)
 }
 
-function getShippingCostHelpText(value: string): string {
+function getShippingCostHelpText(
+  value: string,
+  format: ProductFormState["format"]
+): string {
+  if (format === "digital") {
+    return "Digital products do not need shipping details or preset shipping zones."
+  }
+
   const trimmed = value.trim()
   if (!trimmed) {
     return "Shipping is coordinated with the buyer after order request; direct pay is disabled for physical carts."
@@ -246,7 +256,8 @@ async function publishProduct(
   if (!title) throw new Error("Title is required")
 
   const price = Number(form.price)
-  const shippingCostInput = form.shippingCostSats.trim()
+  const isDigital = form.format === "digital"
+  const shippingCostInput = isDigital ? "" : form.shippingCostSats.trim()
   const shippingCostSats =
     shippingCostInput.length > 0 ? Number(shippingCostInput) : undefined
 
@@ -258,11 +269,11 @@ async function publishProduct(
   ) {
     throw new Error("Shipping must be a whole-number sats amount or blank.")
   }
-  const shippingMetadata = buildShippingMetadata(
-    signerPubkey,
-    form.usePresetShippingZone
-  )
+  const shippingMetadata = isDigital
+    ? {}
+    : buildShippingMetadata(signerPubkey, form.usePresetShippingZone)
   if (
+    !isDigital &&
     typeof shippingCostSats === "number" &&
     !shippingMetadata.shippingOptionId
   ) {
@@ -292,7 +303,7 @@ async function publishProduct(
     price,
     currency,
     type: "simple",
-    format: "physical",
+    format: form.format,
     shippingCostSats,
     ...shippingMetadata,
     visibility: "public",
@@ -312,6 +323,7 @@ async function publishProduct(
     ["d", dTag],
     ["title", product.title],
     ["price", String(price), currency],
+    ["type", product.type, product.format],
   ]
 
   if (product.summary) event.tags.push(["summary", product.summary])
@@ -516,6 +528,7 @@ function ProductsPage() {
     : `${visibleProducts.length} of ${merchantProducts.length} listings`
   const shippingConfig = loadShippingConfig()
   const hasPresetShippingZone = isShippingComplete(shippingConfig)
+  const productIsDigital = form.format === "digital"
 
   function closeProductDialog(): void {
     setProductDialogOpen(false)
@@ -845,7 +858,7 @@ function ProductsPage() {
               />
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-4">
               <div className="grid gap-1.5">
                 <Label htmlFor="product-price">Price</Label>
                 <Input
@@ -883,6 +896,36 @@ function ProductsPage() {
               </div>
 
               <div className="grid gap-1.5">
+                <Label htmlFor="product-format">Fulfillment</Label>
+                <Select
+                  value={form.format}
+                  onValueChange={(value) =>
+                    setForm((prev) => {
+                      const format = value as ProductFormState["format"]
+                      return {
+                        ...prev,
+                        format,
+                        shippingCostSats:
+                          format === "digital" ? "" : prev.shippingCostSats,
+                        usePresetShippingZone:
+                          format === "digital"
+                            ? false
+                            : prev.usePresetShippingZone,
+                      }
+                    })
+                  }
+                >
+                  <SelectTrigger id="product-format">
+                    <SelectValue placeholder="Choose fulfillment" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="physical">Physical</SelectItem>
+                    <SelectItem value="digital">Digital</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid gap-1.5">
                 <Label htmlFor="product-shipping">Shipping</Label>
                 <Input
                   id="product-shipping"
@@ -890,25 +933,31 @@ function ProductsPage() {
                   min="0"
                   step="1"
                   value={form.shippingCostSats}
+                  disabled={productIsDigital}
                   onChange={(event) =>
                     setForm((prev) => ({
                       ...prev,
                       shippingCostSats: event.target.value,
                     }))
                   }
-                  placeholder="Blank"
+                  placeholder={productIsDigital ? "Not required" : "Blank"}
                 />
               </div>
-              <div className="text-xs leading-5 text-[var(--text-muted)] sm:col-span-3">
-                Enter the shipping amount to charge for this item. Use 0 only if
-                shipping is included in the product price.{" "}
-                {getShippingCostHelpText(form.shippingCostSats)}
+              <div className="text-xs leading-5 text-[var(--text-muted)] sm:col-span-4">
+                {productIsDigital
+                  ? "Digital listings skip checkout shipping rules."
+                  : "Enter the shipping amount to charge for this item. Use 0 only if shipping is included in the product price."}{" "}
+                {getShippingCostHelpText(form.shippingCostSats, form.format)}
               </div>
-              <label className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm sm:col-span-3">
+              <label className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm sm:col-span-4">
                 <input
                   type="checkbox"
-                  checked={hasPresetShippingZone && form.usePresetShippingZone}
-                  disabled={!hasPresetShippingZone}
+                  checked={
+                    !productIsDigital &&
+                    hasPresetShippingZone &&
+                    form.usePresetShippingZone
+                  }
+                  disabled={productIsDigital || !hasPresetShippingZone}
                   onChange={(event) =>
                     setForm((prev) => ({
                       ...prev,
@@ -922,9 +971,11 @@ function ProductsPage() {
                     Use my preset shipping zone for this product
                   </span>
                   <span className="text-xs leading-5 text-[var(--text-muted)]">
-                    {hasPresetShippingZone
-                      ? "Direct checkout will use your published shipping countries and postal rules."
-                      : "Set up Shipping before direct checkout can use a fixed item shipping cost."}
+                    {productIsDigital
+                      ? "Digital products do not need shipping zones."
+                      : hasPresetShippingZone
+                        ? "Direct checkout will use your published shipping countries and postal rules."
+                        : "Set up Shipping before direct checkout can use a fixed item shipping cost."}
                   </span>
                 </span>
               </label>
