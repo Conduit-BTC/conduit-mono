@@ -159,6 +159,35 @@ describe("BuyerNwcSession", () => {
     expect(payCalls).toBe(1)
   })
 
+  it("creates a fresh client when retrying after a failed warm probe", async () => {
+    const clients: FakeNwcClient[] = []
+
+    __buyerNwcSessionTestInternals.__setClientFactory(() => {
+      const client = fakeClient({
+        getInfo:
+          clients.length === 0
+            ? async () => {
+                throw new Error("relay cold")
+              }
+            : async () => ({ methods: ["pay_invoice"] }),
+      })
+      clients.push(client)
+      return client
+    })
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await expect(session.warm()).resolves.toMatchObject({
+      status: "unreachable",
+    })
+    await expect(session.warm()).resolves.toMatchObject({
+      status: "reachable",
+    })
+
+    expect(clients.length).toBe(2)
+  })
+
   it("does not publish payment when fresh wallet info says pay_invoice is unsupported", async () => {
     let payCalls = 0
 

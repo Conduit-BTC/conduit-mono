@@ -92,7 +92,8 @@ function WalletPage() {
     wallet.status === "pay-capable" ||
     wallet.status === "unsupported" ||
     wallet.status === "unreachable" ||
-    wallet.status === "error"
+    wallet.status === "error" ||
+    (wallet.status === "connecting" && !!wallet.connection)
 
   return (
     <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
@@ -148,19 +149,7 @@ function WalletPage() {
 
                 {/* Connection detail card */}
                 {wallet.connection && (
-                  <div
-                    className={[
-                      "mt-4 rounded-2xl border-t-2 border border-[var(--border)] bg-[var(--surface-elevated)]",
-                      wallet.status === "pay-capable"
-                        ? "border-t-[var(--success)]"
-                        : wallet.status === "error"
-                          ? "border-t-[var(--error)]"
-                          : wallet.status === "unsupported" ||
-                              wallet.status === "unreachable"
-                            ? "border-t-[var(--warning)]"
-                            : "border-t-[var(--border)]",
-                    ].join(" ")}
-                  >
+                  <div className="mt-4 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)]">
                     <dl className="m-0">
                       <div className="flex items-center justify-between gap-4 px-4 py-3">
                         <dt className="shrink-0 text-xs text-[var(--text-muted)]">
@@ -262,8 +251,21 @@ function WalletPage() {
 
                 {wallet.status === "unreachable" && (
                   <div className="mt-4 rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] p-3 text-sm text-[var(--warning)]">
-                    Wallet saved, but Conduit cannot reach its NWC relay right
-                    now. Checkout can still offer a Lightning invoice fallback.
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <span>
+                        Wallet saved, but Conduit cannot reach its NWC relay
+                        right now. We will keep checking; checkout can still
+                        offer a Lightning invoice fallback.
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="shrink-0 border-[var(--warning)] text-[var(--warning)] hover:bg-[color-mix(in_srgb,var(--warning)_10%,transparent)]"
+                        onClick={() => void wallet.retry()}
+                      >
+                        Retry now
+                      </Button>
+                    </div>
                   </div>
                 )}
 

@@ -278,6 +278,7 @@ export class BuyerNwcSession {
       }
       this.notify()
     } catch (error) {
+      this.resetClient()
       this.snapshot = {
         status: "unreachable",
         connection,

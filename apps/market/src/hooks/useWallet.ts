@@ -18,6 +18,7 @@ import {
 
 const WALLET_STORAGE_KEY = "conduit:buyer-wallet-nwc"
 const WALLET_CAPABILITY_STORAGE_KEY = "conduit:buyer-wallet-nwc-capability"
+const WALLET_RETRY_POLL_MS = 12_000
 
 export type WalletConnectionStatus =
   | "disconnected"
@@ -54,6 +55,7 @@ type StoredWalletCapability = {
 
 export interface UseWalletReturn extends WalletState {
   connect: (uri: string) => Promise<void>
+  retry: () => Promise<void>
   disconnect: () => void
 }
 
@@ -240,6 +242,45 @@ export function useWallet(): UseWalletReturn {
     })
   }, [])
 
+  const retry = useCallback(async () => {
+    const connection = readStoredConnection() ?? state.connection
+    if (!connection) return
+
+    const cached = readStoredCapability(connection)
+    const session = getBuyerNwcSession()
+    session.setConnection(connection)
+
+    setState((s) => ({
+      ...s,
+      connection,
+      info: s.info ?? cached?.info ?? null,
+      status: "connecting",
+      reachability: "checking",
+      error: null,
+    }))
+
+    const snapshot = await session.warm()
+    if (snapshot.info) writeStoredCapability(connection, snapshot.info)
+    setState(getStateFromSessionSnapshot(snapshot, cached?.info ?? null))
+  }, [state.connection])
+
+  useEffect(() => {
+    if (
+      !state.connection ||
+      (state.status !== "unreachable" && state.status !== "error")
+    ) {
+      return
+    }
+
+    const intervalId = window.setInterval(() => {
+      void retry().catch((error: unknown) => {
+        console.warn("Failed to retry NWC wallet session", error)
+      })
+    }, WALLET_RETRY_POLL_MS)
+
+    return () => window.clearInterval(intervalId)
+  }, [retry, state.connection, state.status])
+
   // Probe an existing stored connection on mount
   useEffect(() => {
     const stored = readStoredConnection()
@@ -355,6 +396,7 @@ export function useWallet(): UseWalletReturn {
     error,
     unavailableReason,
     connect,
+    retry,
     disconnect,
   }
 }
