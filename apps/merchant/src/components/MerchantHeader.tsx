@@ -223,7 +223,11 @@ function UserMenu() {
       displayName={displayName}
       avatarUrl={profile?.picture}
       avatarFallback={<MerchantAvatarFallback iconClassName="h-4 w-4" />}
-      alertLabel={readiness.setupComplete ? undefined : "Needs completion"}
+      alertLabel={
+        readiness.setupComplete || readiness.missingAreas.length === 0
+          ? undefined
+          : "Needs completion"
+      }
       profileHref="/profile"
       onProfile={() => navigate({ to: "/profile" })}
       networkHref="/network"
@@ -267,8 +271,12 @@ function MobileNav() {
         <div className="mt-6 space-y-6">
           <MerchantNavLinks
             compact
-            profileIncomplete={!readiness.profileComplete}
-            paymentsIncomplete={!readiness.paymentsComplete}
+            profileIncomplete={
+              !readiness.profileComplete && !readiness.profileCheckPending
+            }
+            paymentsIncomplete={
+              !readiness.paymentsComplete && !readiness.paymentsCheckPending
+            }
             shippingIncomplete={!readiness.shippingComplete}
             networkIncomplete={!readiness.networkComplete}
           />
@@ -323,8 +331,12 @@ export function MerchantSidebar() {
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-5">
         <MerchantNavLinks
-          profileIncomplete={!readiness.profileComplete}
-          paymentsIncomplete={!readiness.paymentsComplete}
+          profileIncomplete={
+            !readiness.profileComplete && !readiness.profileCheckPending
+          }
+          paymentsIncomplete={
+            !readiness.paymentsComplete && !readiness.paymentsCheckPending
+          }
           shippingIncomplete={!readiness.shippingComplete}
           networkIncomplete={!readiness.networkComplete}
         />

@@ -23,6 +23,7 @@ export interface UseProfilesOptions {
   readPolicy?: CommerceReadPolicy
   relayHintsByPubkey?: Record<string, string[] | undefined>
   refetchUnresolvedMs?: number
+  skipCache?: boolean
   staleTime?: number
 }
 
@@ -138,12 +139,13 @@ export function useProfiles(
   }, [queryClient, unique])
 
   const query = useQuery({
-    queryKey: ["profiles", unique, priority, relayHintKey],
+    queryKey: ["profiles", unique, priority, relayHintKey, options.skipCache],
     enabled,
     queryFn: async () => {
       const result = await getProfiles({
         pubkeys: unique,
         priority,
+        skipCache: options.skipCache,
         readPolicy: defaultReadPolicy(priority, options.readPolicy),
         relayHintsByPubkey: options.relayHintsByPubkey,
         onProgress: (progress) => cacheResolvedProfiles(progress.data),

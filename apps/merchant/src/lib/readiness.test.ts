@@ -123,4 +123,22 @@ describe("merchant setup readiness", () => {
     expect(readiness.paymentCapability).toBe("not_ready")
     expect(readiness.missingAreas).toEqual(["network"])
   })
+
+  test("defers profile-derived missing areas while profile hydration is pending", () => {
+    const readiness = getMerchantSetupReadiness({
+      profile: null,
+      shippingConfig,
+      relaySettings: createDefaultRelaySettings(),
+      profileCheckPending: true,
+      paymentsCheckPending: true,
+    })
+
+    expect(readiness.profileComplete).toBe(false)
+    expect(readiness.profileCheckPending).toBe(true)
+    expect(readiness.paymentsComplete).toBe(false)
+    expect(readiness.paymentsCheckPending).toBe(true)
+    expect(readiness.setupCheckPending).toBe(true)
+    expect(readiness.setupComplete).toBe(false)
+    expect(readiness.missingAreas).toEqual([])
+  })
 })

@@ -151,11 +151,13 @@ function StatCard({
 function ReadinessRow({
   label,
   complete,
+  pending = false,
   to,
   icon: Icon,
 }: {
   label: string
   complete: boolean
+  pending?: boolean
   to: "/" | "/profile" | "/payments" | "/shipping" | "/network"
   icon: ComponentType<{ className?: string }>
 }) {
@@ -173,10 +175,10 @@ function ReadinessRow({
         </span>
       </span>
       <StatusPill
-        variant={complete ? "success" : "warning"}
+        variant={complete ? "success" : pending ? "info" : "warning"}
         className="text-[10px]"
       >
-        {complete ? "Ready" : "Needs completion"}
+        {complete ? "Ready" : pending ? "Checking" : "Needs completion"}
       </StatusPill>
     </Link>
   )
@@ -187,6 +189,9 @@ function MerchantReadinessPanel({
 }: {
   readiness: MerchantSetupReadiness
 }) {
+  const setupPending =
+    readiness.setupCheckPending && readiness.missingAreas.length === 0
+
   return (
     <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -195,14 +200,28 @@ function MerchantReadinessPanel({
             Merchant readiness
           </div>
           <h2 className="mt-2 text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
-            {readiness.setupComplete ? "Ready to sell" : "Finish setup"}
+            {readiness.setupComplete
+              ? "Ready to sell"
+              : setupPending
+                ? "Checking setup"
+                : "Finish setup"}
           </h2>
         </div>
         <StatusPill
-          variant={readiness.setupComplete ? "success" : "warning"}
+          variant={
+            readiness.setupComplete
+              ? "success"
+              : setupPending
+                ? "info"
+                : "warning"
+          }
           className="mt-0.5"
         >
-          {readiness.setupComplete ? "Complete" : "Incomplete"}
+          {readiness.setupComplete
+            ? "Complete"
+            : setupPending
+              ? "Checking"
+              : "Incomplete"}
         </StatusPill>
       </div>
 
@@ -210,12 +229,14 @@ function MerchantReadinessPanel({
         <ReadinessRow
           label="Profile"
           complete={readiness.profileComplete}
+          pending={readiness.profileCheckPending}
           to="/profile"
           icon={UserRound}
         />
         <ReadinessRow
           label="Payments"
           complete={readiness.paymentsComplete}
+          pending={readiness.paymentsCheckPending}
           to="/payments"
           icon={Wallet}
         />
