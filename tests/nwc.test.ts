@@ -38,6 +38,13 @@ type FakeNwcClient = {
     fees_paid: number
   }>
   close: () => void
+  pool?: {
+    maxWaitForConnection?: number
+    ensureRelay?: (
+      url: string,
+      params?: { connectionTimeout?: number }
+    ) => Promise<unknown>
+  }
 }
 
 const connection: NwcConnection = {
@@ -65,6 +72,12 @@ describe("NWC URI parsing", () => {
     expect(parsed).toEqual({
       ...connection,
       lud16: "buyer@example.com",
+      uri: [
+        `nostr+walletconnect://${connection.walletPubkey}`,
+        `?relay=${encodeURIComponent(connection.relays[0])}`,
+        `&secret=${connection.secret}`,
+        "&lud16=buyer%40example.com",
+      ].join(""),
     })
   })
 
@@ -77,7 +90,14 @@ describe("NWC URI parsing", () => {
       ].join("")
     )
 
-    expect(parsed).toEqual(connection)
+    expect(parsed).toEqual({
+      ...connection,
+      uri: [
+        `nostrwalletconnect://${connection.walletPubkey}`,
+        `?relay=${encodeURIComponent(connection.relays[0])}`,
+        `&secret=${connection.secret}`,
+      ].join(""),
+    })
   })
 
   it("rejects URIs without a secret", () => {
@@ -158,6 +178,87 @@ describe("NWC SDK adapter", () => {
       invoice: minimalBolt11Invoice("lnbc1110n"),
       metadata: { app: "conduit-market" },
     })
+  })
+
+  it("preconnects to the wallet relay before publishing a payment request", async () => {
+    const relayAttempts: Array<{
+      url: string
+      connectionTimeout: number | undefined
+    }> = []
+    let paymentAttempted = false
+
+    __nwcTestInternals.__setNwcClientFactory(() =>
+      fakeClient({
+        pool: {
+          maxWaitForConnection: 3_000,
+          ensureRelay: async (url, params) => {
+            relayAttempts.push({
+              url,
+              connectionTimeout: params?.connectionTimeout,
+            })
+          },
+        },
+        payInvoice: async () => {
+          paymentAttempted = true
+          return { preimage: "paid-preimage", fees_paid: 0 }
+        },
+      })
+    )
+
+    await nwcPayInvoice(
+      connection,
+      {
+        invoice: minimalBolt11Invoice("lnbc1110n"),
+        amountMsats: 111_000,
+      },
+      100,
+      "market"
+    )
+
+    expect(relayAttempts).toEqual([
+      {
+        url: "wss://wallet.example",
+        connectionTimeout: 10_000,
+      },
+    ])
+    expect(paymentAttempted).toBe(true)
+  })
+
+  it("retries relay bootstrap with a fresh client before publishing pay_invoice", async () => {
+    const paymentAttemptsByClient: number[] = []
+    const relayTimeouts: number[] = []
+    let clientIndex = 0
+
+    __nwcTestInternals.__setNwcClientFactory(() => {
+      const currentIndex = clientIndex++
+      paymentAttemptsByClient[currentIndex] = 0
+
+      return fakeClient({
+        pool: {
+          ensureRelay: async (_url, params) => {
+            relayTimeouts.push(params?.connectionTimeout ?? 0)
+            if (currentIndex === 0) throw new Error("relay unavailable")
+          },
+        },
+        payInvoice: async () => {
+          paymentAttemptsByClient[currentIndex] += 1
+          return { preimage: "paid-preimage", fees_paid: 0 }
+        },
+      })
+    })
+
+    await nwcPayInvoice(
+      connection,
+      {
+        invoice: minimalBolt11Invoice("lnbc1110n"),
+        amountMsats: 111_000,
+      },
+      100,
+      "market"
+    )
+
+    expect(relayTimeouts).toEqual([10_000, 15_000])
+    expect(paymentAttemptsByClient).toEqual([0, 1])
   })
 
   it("passes an amount only for amountless invoices", async () => {

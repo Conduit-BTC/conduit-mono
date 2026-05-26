@@ -33,6 +33,8 @@ export interface NwcConnection {
   secret: string
   relays: string[]
   lud16?: string
+  /** Original private NWC URI, preserved so SDK parsing/normalization matches wallet clients. */
+  uri?: string
 }
 
 export interface NwcMakeInvoiceParams {
@@ -78,11 +80,21 @@ type NwcClientLike = {
   makeInvoice(request: Nip47MakeInvoiceRequest): Promise<Nip47Transaction>
   payInvoice(request: Nip47PayInvoiceRequest): Promise<Nip47PayResponse>
   close(): void
+  pool?: {
+    maxWaitForConnection?: number
+    ensureRelay?(
+      url: string,
+      params?: { connectionTimeout?: number }
+    ): Promise<unknown>
+  }
 }
 
 type NwcClientFactory = (connection: NwcConnection) => NwcClientLike
 
 let testNwcClientFactory: NwcClientFactory | null = null
+
+const NWC_PROBE_RELAY_CONNECT_TIMEOUTS_MS = [10_000] as const
+const NWC_PAYMENT_RELAY_CONNECT_TIMEOUTS_MS = [10_000, 15_000, 20_000] as const
 
 /**
  * Parse a nostr+walletconnect:// URI into its components.
@@ -98,6 +110,7 @@ export function parseNwcUri(uri: string): NwcConnection {
     secret: parsed.secret ?? "",
     relays: parsed.relayUrls,
     lud16: parsed.lud16,
+    uri: uri.trim(),
   }
 }
 
@@ -113,7 +126,7 @@ export async function nwcMakeInvoice(
   clientAppId: ConduitAppId
 ): Promise<NwcMakeInvoiceResult> {
   void clientAppId
-  const client = createNwcClient(connection)
+  const client = await createPreparedNwcClient(connection, "probe")
 
   try {
     const request: Nip47MakeInvoiceRequest = {
@@ -172,7 +185,7 @@ export async function nwcPayInvoice(
   clientAppId: ConduitAppId
 ): Promise<NwcPayInvoiceResult> {
   void clientAppId
-  const client = createNwcClient(connection)
+  const client = await createPreparedNwcClient(connection, "payment")
 
   try {
     const request: Nip47PayInvoiceRequest = {
@@ -237,7 +250,7 @@ export async function nwcGetInfo(
   clientAppId: ConduitAppId
 ): Promise<NwcGetInfoResult> {
   void clientAppId
-  const client = createNwcClient(connection)
+  const client = await createPreparedNwcClient(connection, "probe")
 
   try {
     const result = await withNwcTimeout(client.getInfo(), timeoutMs, "get_info")
@@ -269,15 +282,79 @@ function parseGetInfoResult(result: Nip47GetInfoResponse): NwcGetInfoResult {
 function createNwcClient(connection: NwcConnection): NwcClientLike {
   if (testNwcClientFactory) return testNwcClientFactory(connection)
 
-  const options: NewNWCClientOptions = {
-    relayUrls: connection.relays,
-    secret: connection.secret,
-    walletPubkey: connection.walletPubkey,
-    lud16: connection.lud16,
-    requireSecret: true,
-  }
+  const options: NewNWCClientOptions = connection.uri
+    ? {
+        nostrWalletConnectUrl: connection.uri,
+        requireSecret: true,
+      }
+    : {
+        relayUrls: connection.relays,
+        secret: connection.secret,
+        walletPubkey: connection.walletPubkey,
+        lud16: connection.lud16,
+        requireSecret: true,
+      }
 
   return new NWCClient(options)
+}
+
+async function createPreparedNwcClient(
+  connection: NwcConnection,
+  mode: "probe" | "payment"
+): Promise<NwcClientLike> {
+  const timeouts =
+    mode === "payment"
+      ? NWC_PAYMENT_RELAY_CONNECT_TIMEOUTS_MS
+      : NWC_PROBE_RELAY_CONNECT_TIMEOUTS_MS
+  let lastError: unknown
+
+  for (const timeoutMs of timeouts) {
+    const client = createNwcClient(connection)
+
+    try {
+      await connectNwcRelaysBeforeRequest(client, connection, timeoutMs)
+      return client
+    } catch (error) {
+      lastError = error
+      client.close()
+    }
+  }
+
+  throw toNwcRelayConnectionError(lastError)
+}
+
+async function connectNwcRelaysBeforeRequest(
+  client: NwcClientLike,
+  connection: NwcConnection,
+  timeoutMs: number
+): Promise<void> {
+  const pool = client.pool
+  if (!pool || typeof pool.ensureRelay !== "function") return
+
+  pool.maxWaitForConnection = Math.max(
+    pool.maxWaitForConnection ?? 0,
+    timeoutMs
+  )
+
+  await withNwcTimeout(
+    Promise.any(
+      connection.relays.map((relay) =>
+        pool.ensureRelay!(relay, { connectionTimeout: timeoutMs })
+      )
+    ),
+    timeoutMs + 1_000,
+    "relay_connect"
+  )
+}
+
+function toNwcRelayConnectionError(error: unknown): Error {
+  const detail =
+    error instanceof Error &&
+    error.message &&
+    error.message !== "All promises were rejected"
+      ? ` ${error.message}`
+      : ""
+  return new Error(`Failed to connect to NWC relay(s).${detail}`.trim())
 }
 
 async function withNwcTimeout<T>(
