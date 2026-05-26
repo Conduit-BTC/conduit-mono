@@ -1,10 +1,13 @@
 import {
   hasWebLN,
-  nwcPayInvoice,
   weblnSendPayment,
   type ConduitAppId,
   type NwcConnection,
 } from "@conduit/core"
+import {
+  payInvoiceWithBuyerNwcSession,
+  type NwcSessionPaymentResult,
+} from "./buyer-nwc-session"
 
 export type CheckoutPaymentRail = "nwc" | "webln"
 
@@ -22,13 +25,13 @@ export type CheckoutInvoicePaymentResult =
     }
 
 type PaymentRailDependencies = {
-  nwcPayInvoice: typeof nwcPayInvoice
+  nwcSessionPayInvoice: typeof payInvoiceWithBuyerNwcSession
   hasWebLN: typeof hasWebLN
   weblnSendPayment: typeof weblnSendPayment
 }
 
 const defaultDependencies: PaymentRailDependencies = {
-  nwcPayInvoice,
+  nwcSessionPayInvoice: payInvoiceWithBuyerNwcSession,
   hasWebLN,
   weblnSendPayment,
 }
@@ -37,12 +40,17 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
 
-function isNwcPrePaymentFailure(error: unknown): boolean {
-  return getErrorMessage(error, "").includes("Failed to connect to NWC relay")
-}
-
 function isWeblnAmbiguousProofFailure(error: unknown): boolean {
   return getErrorMessage(error, "").includes("did not return a payment proof")
+}
+
+function isNwcPrePublishFailure(
+  result: NwcSessionPaymentResult
+): result is Extract<
+  NwcSessionPaymentResult,
+  { status: "pre_publish_failed" }
+> {
+  return result.status === "pre_publish_failed"
 }
 
 export async function payCheckoutInvoice(
@@ -50,7 +58,7 @@ export async function payCheckoutInvoice(
     invoice: string
     amountMsats: number
     walletConnection: NwcConnection | null
-    preferNwc: boolean
+    tryNwc: boolean
     timeoutMs: number
     appId: ConduitAppId
     metadata?: Record<string, unknown>
@@ -59,19 +67,19 @@ export async function payCheckoutInvoice(
 ): Promise<CheckoutInvoicePaymentResult> {
   const failures: string[] = []
 
-  if (input.walletConnection && input.preferNwc) {
-    try {
-      const result = await dependencies.nwcPayInvoice(
-        input.walletConnection,
-        {
-          invoice: input.invoice,
-          amountMsats: input.amountMsats,
-          metadata: input.metadata,
-        },
-        input.timeoutMs,
-        input.appId
-      )
+  if (input.walletConnection && input.tryNwc) {
+    const result = await dependencies.nwcSessionPayInvoice(
+      input.walletConnection,
+      {
+        invoice: input.invoice,
+        amountMsats: input.amountMsats,
+        timeoutMs: input.timeoutMs,
+        appId: input.appId,
+        metadata: input.metadata,
+      }
+    )
 
+    if (result.status === "paid") {
       return {
         status: "paid",
         rail: "nwc",
@@ -79,15 +87,15 @@ export async function payCheckoutInvoice(
         paymentHash: result.paymentHash,
         feeMsats: result.feeMsats,
       }
-    } catch (error) {
-      const message = getErrorMessage(error, "Connected wallet payment failed")
-      if (!isNwcPrePaymentFailure(error)) {
-        throw new Error(
-          `${message} Check your wallet before trying another payment path.`
-        )
-      }
-      failures.push(message)
     }
+
+    if (!isNwcPrePublishFailure(result)) {
+      throw new Error(
+        `${result.reason} Check your wallet before trying another payment path.`
+      )
+    }
+
+    failures.push(result.reason)
   }
 
   if (dependencies.hasWebLN()) {

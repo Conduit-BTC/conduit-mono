@@ -459,6 +459,7 @@ describe("payCheckoutInvoice", () => {
 
   it("uses NWC first when the saved wallet is live", async () => {
     const nwcPay = mock(async () => ({
+      status: "paid" as const,
       preimage: "preimage",
       paymentHash: "hash",
       feeMsats: 10,
@@ -472,12 +473,12 @@ describe("payCheckoutInvoice", () => {
         invoice: "lnbc1test",
         amountMsats: 1000,
         walletConnection: connection,
-        preferNwc: true,
+        tryNwc: true,
         timeoutMs: 60_000,
         appId: "market",
       },
       {
-        nwcPayInvoice: nwcPay as never,
+        nwcSessionPayInvoice: nwcPay as never,
         hasWebLN: () => true,
         weblnSendPayment: weblnPay as never,
       }
@@ -495,9 +496,11 @@ describe("payCheckoutInvoice", () => {
   })
 
   it("falls back to WebLN when NWC fails before payment moves", async () => {
-    const nwcPay = mock(async () => {
-      throw new Error("Failed to connect to NWC relay(s)")
-    })
+    const nwcPay = mock(async () => ({
+      status: "pre_publish_failed" as const,
+      phase: "before_publish" as const,
+      reason: "Failed to connect to NWC relay(s).",
+    }))
     const weblnPay = mock(async () => ({
       preimage: "webln-preimage",
       paymentHash: "webln-hash",
@@ -508,12 +511,12 @@ describe("payCheckoutInvoice", () => {
         invoice: "lnbc1test",
         amountMsats: 1000,
         walletConnection: connection,
-        preferNwc: true,
+        tryNwc: true,
         timeoutMs: 60_000,
         appId: "market",
       },
       {
-        nwcPayInvoice: nwcPay as never,
+        nwcSessionPayInvoice: nwcPay as never,
         hasWebLN: () => true,
         weblnSendPayment: weblnPay as never,
       }
@@ -535,12 +538,12 @@ describe("payCheckoutInvoice", () => {
         invoice: "lnbc1test",
         amountMsats: 1000,
         walletConnection: connection,
-        preferNwc: false,
+        tryNwc: false,
         timeoutMs: 60_000,
         appId: "market",
       },
       {
-        nwcPayInvoice: mock(async () => {
+        nwcSessionPayInvoice: mock(async () => {
           throw new Error("should not use NWC")
         }) as never,
         hasWebLN: () => false,
@@ -567,13 +570,17 @@ describe("payCheckoutInvoice", () => {
           invoice: "lnbc1test",
           amountMsats: 1000,
           walletConnection: connection,
-          preferNwc: true,
+          tryNwc: true,
           timeoutMs: 60_000,
           appId: "market",
         },
         {
-          nwcPayInvoice: mock(async () => {
-            throw new Error("NWC pay_invoice response timed out")
+          nwcSessionPayInvoice: mock(async () => {
+            return {
+              status: "published_timeout" as const,
+              phase: "after_publish" as const,
+              reason: "NWC pay_invoice response timed out",
+            }
           }) as never,
           hasWebLN: () => true,
           weblnSendPayment: weblnPay as never,
@@ -590,12 +597,12 @@ describe("payCheckoutInvoice", () => {
           invoice: "lnbc1test",
           amountMsats: 1000,
           walletConnection: null,
-          preferNwc: false,
+          tryNwc: false,
           timeoutMs: 60_000,
           appId: "market",
         },
         {
-          nwcPayInvoice: mock(async () => {
+          nwcSessionPayInvoice: mock(async () => {
             throw new Error("should not use NWC")
           }) as never,
           hasWebLN: () => true,

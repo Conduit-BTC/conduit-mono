@@ -524,7 +524,14 @@ function CheckoutPage() {
   }, [checkoutItems, merchantName, zapContentEdited])
 
   useEffect(() => {
-    setWeblnAvailable(hasWebLN())
+    const check = () => setWeblnAvailable(hasWebLN())
+    check()
+    const timer = window.setTimeout(check, 1000)
+    window.addEventListener("focus", check)
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener("focus", check)
+    }
   }, [])
 
   // Probe merchant's LNURL for Nostr zap support when merchant profile arrives
@@ -599,10 +606,11 @@ function CheckoutPage() {
     shippingCheckoutState === "not_required" ||
     shippingCheckoutState === "allowed"
 
-  const canAttemptLightningPayment =
-    wallet.status === "pay-capable" ||
-    wallet.status === "unreachable" ||
-    weblnAvailable
+  const canTrySavedNwcWallet =
+    !!wallet.connection &&
+    wallet.status !== "unsupported" &&
+    wallet.status !== "error"
+  const canAttemptLightningPayment = canTrySavedNwcWallet || weblnAvailable
   const fastEligibilityInput = {
     walletPayCapable: canAttemptLightningPayment,
     merchantLud16,
@@ -900,7 +908,11 @@ function CheckoutPage() {
   async function payNow(): Promise<void> {
     if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
     if (pendingManualInvoice) return
-    if (!canAttemptLightningPayment) {
+    const webLnAvailableNow = hasWebLN()
+    if (webLnAvailableNow !== weblnAvailable)
+      setWeblnAvailable(webLnAvailableNow)
+    const canAttemptPaymentNow = canTrySavedNwcWallet || webLnAvailableNow
+    if (!canAttemptPaymentNow) {
       setError("Connect a Lightning wallet or browser payment method.")
       return
     }
@@ -1050,7 +1062,7 @@ function CheckoutPage() {
         invoice,
         amountMsats: pricingIntent.totalMsats,
         walletConnection: wallet.connection,
-        preferNwc: wallet.status === "pay-capable",
+        tryNwc: canTrySavedNwcWallet,
         timeoutMs: 60_000,
         appId: "market",
         metadata: {

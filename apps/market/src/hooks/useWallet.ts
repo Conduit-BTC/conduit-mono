@@ -8,10 +8,13 @@
 import { useCallback, useEffect, useState } from "react"
 import {
   parseNwcUri,
-  nwcGetInfo,
   type NwcConnection,
   type NwcGetInfoResult,
 } from "@conduit/core"
+import {
+  getBuyerNwcSession,
+  type NwcSessionSnapshot,
+} from "../lib/buyer-nwc-session"
 
 const WALLET_STORAGE_KEY = "conduit:buyer-wallet-nwc"
 const WALLET_CAPABILITY_STORAGE_KEY = "conduit:buyer-wallet-nwc-capability"
@@ -156,13 +159,67 @@ function deriveUnavailableReason(
     case "error":
       return "Could not connect to wallet. Check the connection string."
     case "unreachable":
-      return "Wallet saved, but its NWC relay is currently unreachable."
+      return "Wallet saved, but its NWC relay is currently unreachable. Conduit will retry when you pay."
     case "unsupported":
       return "Your wallet does not support outgoing payments via NWC."
     case "connected":
       return "Verifying wallet payment support..."
     case "pay-capable":
       return null
+  }
+}
+
+function getStatusFromSessionSnapshot(
+  snapshot: NwcSessionSnapshot
+): WalletConnectionStatus {
+  switch (snapshot.status) {
+    case "disconnected":
+      return "disconnected"
+    case "warming":
+      return "connecting"
+    case "reachable":
+      return "pay-capable"
+    case "unsupported":
+      return "unsupported"
+    case "unreachable":
+      return "unreachable"
+    case "error":
+      return "error"
+  }
+}
+
+function getReachabilityFromSessionSnapshot(
+  snapshot: NwcSessionSnapshot
+): NwcReachability {
+  switch (snapshot.status) {
+    case "warming":
+      return "checking"
+    case "reachable":
+    case "unsupported":
+      return "reachable"
+    case "unreachable":
+    case "error":
+      return "unreachable"
+    case "disconnected":
+      return "unchecked"
+  }
+}
+
+function getStateFromSessionSnapshot(
+  snapshot: NwcSessionSnapshot,
+  fallbackInfo: NwcGetInfoResult | null = null
+): Omit<WalletState, "unavailableReason"> {
+  return {
+    connection: snapshot.connection,
+    info: snapshot.info ?? fallbackInfo,
+    status: getStatusFromSessionSnapshot(snapshot),
+    reachability: getReachabilityFromSessionSnapshot(snapshot),
+    lastProbeAt: snapshot.lastWarmAt,
+    error:
+      snapshot.status === "error" || snapshot.status === "unreachable"
+        ? (snapshot.error ??
+          "Wallet saved, but its NWC relay is currently unreachable.")
+        : null,
   }
 }
 
@@ -176,12 +233,21 @@ export function useWallet(): UseWalletReturn {
     error: null,
   })
 
+  useEffect(() => {
+    const session = getBuyerNwcSession()
+    return session.subscribe((snapshot) => {
+      setState(getStateFromSessionSnapshot(snapshot))
+    })
+  }, [])
+
   // Probe an existing stored connection on mount
   useEffect(() => {
     const stored = readStoredConnection()
     if (!stored) return
 
     const cached = readStoredCapability(stored)
+    const session = getBuyerNwcSession()
+    session.setConnection(stored)
 
     setState((s) => ({
       ...s,
@@ -192,19 +258,13 @@ export function useWallet(): UseWalletReturn {
       error: null,
     }))
 
-    nwcGetInfo(stored, 10_000, "market")
-      .then((info) => {
-        const resolved = writeStoredCapability(stored, info)
-        setState((s) => ({
-          ...s,
-          info,
-          error: null,
-          status: resolved.status,
-          reachability: "reachable",
-          lastProbeAt: Date.now(),
-        }))
+    session
+      .warm()
+      .then((snapshot) => {
+        if (snapshot.info) writeStoredCapability(stored, snapshot.info)
+        setState(getStateFromSessionSnapshot(snapshot, cached?.info ?? null))
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         // Keep cached capability visible as historical metadata, but do not
         // advertise the wallet as live when the current probe fails.
         setState((s) => ({
@@ -215,6 +275,7 @@ export function useWallet(): UseWalletReturn {
           reachability: "unreachable",
           lastProbeAt: Date.now(),
         }))
+        console.warn("Failed to warm NWC wallet session", error)
       })
   }, [])
 
@@ -246,25 +307,22 @@ export function useWallet(): UseWalletReturn {
       return
     }
 
+    const session = getBuyerNwcSession()
+    session.setConnection(conn)
+
     try {
-      const info = await nwcGetInfo(conn, 10_000, "market")
-      const resolved = writeStoredCapability(conn, info)
+      const snapshot = await session.warm()
+      if (snapshot.info) writeStoredCapability(conn, snapshot.info)
       writeStoredConnection(conn)
-      setState({
-        connection: conn,
-        info,
-        status: resolved.status,
-        reachability: "reachable",
-        lastProbeAt: Date.now(),
-        error: null,
-      })
+      setState(getStateFromSessionSnapshot(snapshot))
     } catch {
       // Capability probe failed but URI parsed - store without advertising it
       // as ready. Checkout can still fall back to WebLN or the invoice.
       writeStoredConnection(conn)
+      const snapshot = session.getSnapshot()
       setState({
         connection: conn,
-        info: null,
+        info: snapshot.info,
         status: "unreachable",
         reachability: "unreachable",
         lastProbeAt: Date.now(),
@@ -275,6 +333,7 @@ export function useWallet(): UseWalletReturn {
 
   const disconnect = useCallback(() => {
     clearStoredConnection()
+    getBuyerNwcSession().setConnection(null)
     setState({
       status: "disconnected",
       connection: null,
