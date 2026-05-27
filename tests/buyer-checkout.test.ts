@@ -413,6 +413,97 @@ describe("checkout payment helpers", () => {
     })
   })
 
+  it("keeps digital shipping ready while stale fiat pricing blocks direct payment", () => {
+    const now = 1_700_000_000_000
+    const items = [
+      cartItem({
+        format: "digital",
+        price: 1,
+        currency: "USD",
+        priceSats: 1_298,
+        sourcePrice: {
+          amount: 1,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+      }),
+    ]
+    const intent = buildCheckoutPricingIntent(
+      items,
+      {
+        rate: 77_041,
+        fetchedAt: now - CHECKOUT_QUOTE_MAX_AGE_MS - 1,
+        source: "mempool",
+      },
+      now
+    )
+    const shippingCost = getCheckoutShippingCost(items)
+
+    expect(shippingCost).toEqual({
+      status: "not_required",
+      totalSats: 0,
+      missingProductIds: [],
+    })
+    expect(intent).toMatchObject({
+      status: "error",
+      code: "stale_quote",
+    })
+    expect(
+      isFastCheckoutEligible({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        pricingReady: intent.status === "ok",
+        shippingEligible: true,
+        shippingState: "not_required",
+        shippingPriced: shippingCost.status !== "manual",
+      })
+    ).toBe(false)
+  })
+
+  it("allows fast checkout for a digital fiat item once pricing is fresh", () => {
+    const now = 1_700_000_000_000
+    const items = [
+      cartItem({
+        format: "digital",
+        price: 1,
+        currency: "USD",
+        priceSats: 999_999,
+        sourcePrice: {
+          amount: 1,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+      }),
+    ]
+    const intent = buildCheckoutPricingIntent(
+      items,
+      {
+        rate: 77_041,
+        fetchedAt: now,
+        source: "mempool",
+      },
+      now
+    )
+    const shippingCost = getCheckoutShippingCost(items)
+
+    expect(intent.status).toBe("ok")
+    if (intent.status !== "ok") return
+    expect(intent.totalSats).toBe(1_298)
+    expect(shippingCost.status).toBe("not_required")
+    expect(
+      isFastCheckoutEligible({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        pricingReady: true,
+        shippingEligible: true,
+        shippingState: "not_required",
+        shippingPriced: shippingCost.status !== "manual",
+      })
+    ).toBe(true)
+  })
+
   it("builds public zap content from basic cart details only", () => {
     const content = buildDefaultZapContent({
       items: [

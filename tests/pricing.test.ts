@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test"
 import {
+  BTC_USD_RATE_STALE_MS,
   type BtcUsdRateQuote,
   compareCommercePrices,
   getProductPriceDisplay,
+  isBtcUsdRateQuoteFresh,
   normalizeCommercePrice,
   orderSchema,
   parseProductEvent,
@@ -323,5 +325,52 @@ describe("commerce pricing", () => {
     expect(parsed.subtotal).toBe(250_000)
     expect(parsed.items[0]?.priceAtPurchase).toBe(250_000)
     expect(parsed.items[0]?.sourcePrice?.normalizedCurrency).toBe("BTC")
+  })
+
+  it("classifies BTC/USD quotes by their own fetchedAt age", () => {
+    const now = 1_700_000_000_000
+    expect(
+      isBtcUsdRateQuoteFresh(
+        {
+          rate: 100_000,
+          fetchedAt: now - BTC_USD_RATE_STALE_MS + 1,
+          source: "mempool",
+        },
+        now
+      )
+    ).toBe(true)
+    expect(
+      isBtcUsdRateQuoteFresh(
+        {
+          rate: 100_000,
+          fetchedAt: now - BTC_USD_RATE_STALE_MS - 1,
+          source: "mempool",
+        },
+        now
+      )
+    ).toBe(false)
+    expect(
+      isBtcUsdRateQuoteFresh(
+        {
+          rate: 100_000,
+          fetchedAt: now + 1,
+          source: "mempool",
+        },
+        now
+      )
+    ).toBe(false)
+  })
+
+  it("treats configured env BTC/USD quotes as always fresh", () => {
+    expect(
+      isBtcUsdRateQuoteFresh(
+        {
+          rate: 100_000,
+          fetchedAt: 1,
+          source: "env",
+        },
+        1_700_000_000_000
+      )
+    ).toBe(true)
   })
 })

@@ -29,9 +29,13 @@ export {
   normalizeCurrencyCode,
 } from "./pricing"
 export {
+  BTC_USD_RATE_QUERY_KEY,
+  BTC_USD_RATE_REFRESH_INTERVAL_MS,
+  BTC_USD_RATE_STALE_MS,
   fetchBtcUsdRate,
   getConfiguredBtcUsdRate,
   getConfiguredPricingRateQuote,
+  isBtcUsdRateQuoteFresh,
   useBtcUsdRate,
 } from "./pricing/rates"
 export type {

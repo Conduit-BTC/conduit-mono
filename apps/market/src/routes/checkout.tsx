@@ -10,7 +10,7 @@ import {
   Zap,
 } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { NDKEvent, NDKUser, giftWrap } from "@nostr-dev-kit/ndk"
 import {
@@ -86,6 +86,14 @@ type CheckoutSearch = {
 // persisted permanently to localStorage.
 const CHECKOUT_STORAGE_KEY = "conduit:checkout-shipping"
 const ZAP_RECEIPT_WAIT_MS = 5_000
+const CHECKOUT_PRICE_REFRESH_TIMEOUT_MS = 5_000
+const CHECKOUT_PRICE_REFRESH_RETRY_MS = 30_000
+
+type CheckoutPricingRefreshState =
+  | "ready"
+  | "refreshing"
+  | "stale_retryable"
+  | "unavailable"
 
 type PendingManualInvoice = {
   orderId: string
@@ -465,7 +473,13 @@ function CheckoutPage() {
   const [weblnAvailable, setWeblnAvailable] = useState(false)
   const [pendingManualInvoice, setPendingManualInvoice] =
     useState<PendingManualInvoice | null>(null)
+  const [pricingRefreshPending, setPricingRefreshPending] = useState(false)
+  const [pricingRefreshFailedAt, setPricingRefreshFailedAt] = useState<
+    number | null
+  >(null)
   const btcUsdRate = btcUsdRateQuery.data ?? null
+  const refetchBtcUsdRate = btcUsdRateQuery.refetch
+  const btcUsdRateIsFetching = btcUsdRateQuery.isFetching
 
   // LNURL probe state
   const [lnurlAllowsNostr, setLnurlAllowsNostr] = useState(false)
@@ -573,6 +587,68 @@ function CheckoutPage() {
     () => buildCheckoutPricingIntent(checkoutItems, btcUsdRate, Date.now()),
     [btcUsdRate, checkoutItems]
   )
+  const pricingPreviewIsStale =
+    pricingPreview.status === "error" && pricingPreview.code === "stale_quote"
+  const pricingRefreshState: CheckoutPricingRefreshState =
+    pricingPreview.status === "ok"
+      ? "ready"
+      : pricingPreview.code === "stale_quote"
+        ? pricingRefreshPending || btcUsdRateIsFetching
+          ? "refreshing"
+          : "stale_retryable"
+        : "unavailable"
+
+  const refreshCheckoutPricing = useCallback(
+    async (force = false): Promise<void> => {
+      if (pricingRefreshPending) return
+
+      const now = Date.now()
+      if (
+        !force &&
+        pricingRefreshFailedAt !== null &&
+        now - pricingRefreshFailedAt < CHECKOUT_PRICE_REFRESH_RETRY_MS
+      ) {
+        return
+      }
+
+      setPricingRefreshPending(true)
+      try {
+        const refetched = await Promise.race([
+          refetchBtcUsdRate().then((result) => result.data ?? null),
+          new Promise<null>((resolve) =>
+            window.setTimeout(
+              () => resolve(null),
+              CHECKOUT_PRICE_REFRESH_TIMEOUT_MS
+            )
+          ),
+        ])
+        const next = buildCheckoutPricingIntent(
+          checkoutItems,
+          refetched,
+          Date.now()
+        )
+        setPricingRefreshFailedAt(next.status === "ok" ? null : Date.now())
+      } catch {
+        setPricingRefreshFailedAt(Date.now())
+      } finally {
+        setPricingRefreshPending(false)
+      }
+    },
+    [
+      checkoutItems,
+      pricingRefreshFailedAt,
+      pricingRefreshPending,
+      refetchBtcUsdRate,
+    ]
+  )
+
+  useEffect(() => {
+    if (!pricingPreviewIsStale) {
+      if (pricingRefreshFailedAt !== null) setPricingRefreshFailedAt(null)
+      return
+    }
+    void refreshCheckoutPricing(false)
+  }, [pricingPreviewIsStale, pricingRefreshFailedAt, refreshCheckoutPricing])
 
   const productShippingOptions = useMemo(
     () => getCartShippingOptionSnapshots(checkoutItems),
@@ -630,6 +706,14 @@ function CheckoutPage() {
   const fastEligible = isFastCheckoutEligible(fastEligibilityInput)
   const fastUnavailableReasons =
     getFastCheckoutUnavailableReasons(fastEligibilityInput)
+  const fastUnavailableReasonsWithoutPricing =
+    getFastCheckoutUnavailableReasons({
+      ...fastEligibilityInput,
+      pricingReady: true,
+    })
+  const pricingOnlyFastCheckoutBlocker =
+    pricingPreviewIsStale && fastUnavailableReasonsWithoutPricing.length === 0
+  const showFastCheckoutSurface = fastEligible || pricingOnlyFastCheckoutBlocker
   const shippingStatusMessage = (() => {
     switch (shippingCheckoutState) {
       case "not_required":
@@ -954,7 +1038,10 @@ function CheckoutPage() {
     const refetched = await Promise.race([
       btcUsdRateQuery.refetch().then((result) => result.data ?? null),
       new Promise<null>((resolve) =>
-        window.setTimeout(() => resolve(null), 5000)
+        window.setTimeout(
+          () => resolve(null),
+          CHECKOUT_PRICE_REFRESH_TIMEOUT_MS
+        )
       ),
     ])
 
@@ -1855,7 +1942,9 @@ function CheckoutPage() {
                     ? wallet.status === "pay-capable"
                       ? "Your wallet is connected and ready. Pay now or send the order first and pay later."
                       : "Conduit can request a zap invoice now and fall back to your browser or wallet if the saved wallet is unreachable."
-                    : "Orders are sent to the merchant first. The merchant will reply with payment details after reviewing your order."}
+                    : pricingOnlyFastCheckoutBlocker
+                      ? "Conduit is refreshing the price conversion before offering instant Lightning payment."
+                      : "Orders are sent to the merchant first. The merchant will reply with payment details after reviewing your order."}
                 </p>
               </div>
 
@@ -1891,19 +1980,24 @@ function CheckoutPage() {
                   </div>
                 )}
 
-                {!lnurlProbing && fastEligible && (
+                {!lnurlProbing && showFastCheckoutSurface && (
                   <div className="mt-5 rounded-2xl border border-secondary-500/30 bg-secondary-500/8 p-5">
                     <div className="flex items-center gap-2">
-                      <LightningIcon className="h-4 w-4 text-secondary-400" />
+                      {pricingOnlyFastCheckoutBlocker ? (
+                        <SpinnerIcon className="h-4 w-4 animate-spin text-secondary-400" />
+                      ) : (
+                        <LightningIcon className="h-4 w-4 text-secondary-400" />
+                      )}
                       <div className="text-sm font-medium text-[var(--text-primary)]">
-                        Pay now with Lightning
+                        {pricingOnlyFastCheckoutBlocker
+                          ? "Refreshing Lightning total"
+                          : "Pay now with Lightning"}
                       </div>
                     </div>
                     <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                      Conduit will deliver the order, request a zap invoice, and
-                      try your connected wallet first. If that path is
-                      unreachable before funds move, you can still pay the
-                      invoice with another Lightning wallet.
+                      {pricingOnlyFastCheckoutBlocker
+                        ? "The cart total is visible, but direct payment needs a fresh conversion before funds can move. Conduit is refreshing it now."
+                        : "Conduit will deliver the order, request a zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."}
                     </p>
                   </div>
                 )}
@@ -1974,7 +2068,7 @@ function CheckoutPage() {
                 )}
 
                 {/* What happens next (order-first) */}
-                {!fastEligible && !lnurlProbing && (
+                {!showFastCheckoutSurface && !lnurlProbing && (
                   <div className="mt-6 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
                     <div className="text-sm font-medium text-[var(--text-primary)]">
                       What happens next
@@ -2108,9 +2202,32 @@ function CheckoutPage() {
                           Pay now
                         </Button>
                       )}
+                      {pricingOnlyFastCheckoutBlocker && !fastEligible && (
+                        <Button
+                          className="h-11 px-5 text-sm"
+                          disabled={pricingRefreshState === "refreshing"}
+                          onClick={() => void refreshCheckoutPricing(true)}
+                        >
+                          {pricingRefreshState === "refreshing" ? (
+                            <>
+                              <SpinnerIcon className="h-4 w-4 animate-spin" />
+                              Refreshing total...
+                            </>
+                          ) : (
+                            <>
+                              <LightningIcon className="h-4 w-4" />
+                              Refresh total
+                            </>
+                          )}
+                        </Button>
+                      )}
 
                       <Button
-                        variant={fastEligible ? "outline" : "primary"}
+                        variant={
+                          fastEligible || pricingOnlyFastCheckoutBlocker
+                            ? "outline"
+                            : "primary"
+                        }
                         className="h-11 px-5 text-sm"
                         onClick={placeOrder}
                       >
