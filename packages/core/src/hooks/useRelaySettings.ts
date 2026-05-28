@@ -4,8 +4,10 @@ import {
   assertSafeNip65RelayList,
   createDefaultRelaySettings,
   createRelaySettingsFromPreferences,
+  getPublishableRelaySettingsEntries,
   getRelaySettingsStorageKey,
   hasManualRelaySettings,
+  includeDefaultRelaySettingsEntries,
   loadRelaySettings,
   mergeRelayPreferencesIntoSettings,
   mergeNip65RelayUrls,
@@ -25,7 +27,7 @@ import {
 } from "../protocol/relay-settings"
 import { getRelayList } from "../protocol/relay-list"
 import { EVENT_KINDS } from "../protocol/kinds"
-import { requireNdkConnected } from "../protocol/ndk"
+import { getNdk } from "../protocol/ndk"
 import { publishWithPlanner } from "../protocol/relay-publish"
 
 export interface UseRelaySettingsOptions {
@@ -50,6 +52,7 @@ export interface UseRelaySettingsResult {
   reorderRelay: (sourceUrl: string, targetUrl: string) => void
   resetRelaySettings: () => void
   restoreDefaultRelaySettings: () => void
+  includeDefaultRelays: () => void
   publishRelayList: () => Promise<void>
 }
 
@@ -89,9 +92,10 @@ function isDefaultOnlyRelaySettings(settings: RelaySettingsState): boolean {
 
 function maskDefaultSettingsForIdentity(
   settings: RelaySettingsState,
-  pubkey: string | null
+  pubkey: string | null,
+  maskDefaults: boolean
 ): RelaySettingsState {
-  return pubkey && isDefaultOnlyRelaySettings(settings)
+  return pubkey && maskDefaults && isDefaultOnlyRelaySettings(settings)
     ? createEmptyRelaySettings()
     : settings
 }
@@ -104,9 +108,14 @@ export function useRelaySettings(
   const enabled = options.enabled ?? true
   const bootstrapRelayList = options.bootstrapRelayList ?? true
   const [settings, setSettings] = useState<RelaySettingsState>(() =>
-    maskDefaultSettingsForIdentity(loadRelaySettings(scope), pubkey)
+    maskDefaultSettingsForIdentity(
+      loadRelaySettings(scope),
+      pubkey,
+      bootstrapRelayList
+    )
   )
   const settingsRef = useRef(settings)
+  const autoScannedStaleKeyRef = useRef("")
   const [scanningUrls, setScanningUrls] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [isLoadingPublishedRelayList, setIsLoadingPublishedRelayList] =
@@ -128,13 +137,19 @@ export function useRelaySettings(
     }
 
     const loaded = loadRelaySettings(scope)
-    const next = maskDefaultSettingsForIdentity(loaded, pubkey)
+    const next = maskDefaultSettingsForIdentity(
+      loaded,
+      pubkey,
+      bootstrapRelayList
+    )
     settingsRef.current = next
     setSettings(next)
-    if (pubkey && isDefaultOnlyRelaySettings(loaded)) {
+    if (bootstrapRelayList && pubkey && isDefaultOnlyRelaySettings(loaded)) {
       setIsLoadingPublishedRelayList(true)
+    } else {
+      setIsLoadingPublishedRelayList(false)
     }
-  }, [enabled, pubkey, scope])
+  }, [bootstrapRelayList, enabled, pubkey, scope])
 
   useEffect(() => {
     if (!enabled) return
@@ -145,7 +160,8 @@ export function useRelaySettings(
       if (event.key !== storageKey) return
       const next = maskDefaultSettingsForIdentity(
         loadRelaySettings(scope),
-        pubkey
+        pubkey,
+        bootstrapRelayList
       )
       settingsRef.current = next
       setSettings(next)
@@ -162,7 +178,8 @@ export function useRelaySettings(
       if (changedScope !== targetScope) return
       const next = maskDefaultSettingsForIdentity(
         loadRelaySettings(scope),
-        pubkey
+        pubkey,
+        bootstrapRelayList
       )
       settingsRef.current = next
       setSettings(next)
@@ -231,6 +248,23 @@ export function useRelaySettings(
     },
     [persist]
   )
+
+  useEffect(() => {
+    if (!enabled) return
+
+    const staleUrls = settings.entries
+      .filter((entry) => entry.warnings.staleRelayInfo)
+      .map((entry) => entry.url)
+      .sort()
+
+    if (staleUrls.length === 0) return
+
+    const staleKey = staleUrls.join("|")
+    if (staleKey === autoScannedStaleKeyRef.current) return
+    autoScannedStaleKeyRef.current = staleKey
+
+    void scanImportedRelayUrls(staleUrls)
+  }, [enabled, scanImportedRelayUrls, settings.entries])
 
   useEffect(() => {
     if (!enabled || !bootstrapRelayList) return
@@ -401,7 +435,7 @@ export function useRelaySettings(
     setError(null)
     setPublishError(null)
     const defaults = saveRelaySettings(
-      pubkey ? createEmptyRelaySettings() : createDefaultRelaySettings(),
+      createManualDefaultRelaySettings(),
       scope
     )
     settingsRef.current = defaults
@@ -419,16 +453,32 @@ export function useRelaySettings(
     setSettings(defaults)
   }
 
+  function includeDefaultRelays(): void {
+    setError(null)
+    setPublishError(null)
+    persist((current) => includeDefaultRelaySettingsEntries(current))
+  }
+
   async function publishRelayList(): Promise<void> {
     setPublishError(null)
     setError(null)
+    setPublishingRelayList(true)
 
     try {
       if (!pubkey) throw new Error("Connect a signer before publishing relays")
 
-      assertSafeNip65RelayList(settingsRef.current.entries)
+      const publishableEntries = getPublishableRelaySettingsEntries(
+        settingsRef.current.entries
+      )
+      if (publishableEntries.length === 0) {
+        throw new Error(
+          "Choose relays for your published NIP-65 list first. Conduit defaults stay local until you add them to your list."
+        )
+      }
 
-      const ndk = await requireNdkConnected()
+      assertSafeNip65RelayList(publishableEntries)
+
+      const ndk = getNdk()
       if (!ndk.signer) throw new Error("Signer not connected")
 
       const user = await ndk.signer.user()
@@ -440,10 +490,12 @@ export function useRelaySettings(
       event.kind = EVENT_KINDS.RELAY_LIST
       event.created_at = Math.floor(Date.now() / 1000)
       event.content = ""
-      event.tags = serializeNip65RelayTags(settingsRef.current.entries)
+      event.tags = serializeNip65RelayTags(publishableEntries)
 
-      setPublishingRelayList(true)
       await event.sign(ndk.signer)
+      if (!event.sig?.trim()) {
+        throw new Error("Signer did not return a signature")
+      }
       await publishWithPlanner(event, {
         intent: "author_event",
         authorPubkey: pubkey,
@@ -475,6 +527,7 @@ export function useRelaySettings(
     reorderRelay,
     resetRelaySettings,
     restoreDefaultRelaySettings,
+    includeDefaultRelays,
     publishRelayList,
   }
 }

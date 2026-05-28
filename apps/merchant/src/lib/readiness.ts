@@ -6,6 +6,7 @@
  */
 import {
   isRelaySetupIncomplete,
+  isValidLud16Address,
   parseNwcUri,
   type NwcConnection,
   type Profile,
@@ -51,10 +52,13 @@ export type MerchantPaymentCapability =
 
 export interface MerchantSetupReadiness {
   profileComplete: boolean
+  profileCheckPending: boolean
   paymentsComplete: boolean
+  paymentsCheckPending: boolean
   shippingComplete: boolean
   networkComplete: boolean
   setupComplete: boolean
+  setupCheckPending: boolean
   operationalReady: boolean
   paymentCapability: MerchantPaymentCapability
   hasNwc: boolean
@@ -70,7 +74,7 @@ export function isPaymentsComplete(
   profile: Profile | null | undefined
 ): boolean {
   if (!profile) return false
-  return !!profile.lud16?.trim()
+  return profile.lud16 ? isValidLud16Address(profile.lud16) : false
 }
 
 export function parseStoredNwcConnection(
@@ -115,11 +119,15 @@ export function getMerchantSetupReadiness({
   shippingConfig,
   relaySettings,
   hasNwc = false,
+  profileCheckPending = false,
+  paymentsCheckPending = false,
 }: {
   profile: Profile | null | undefined
   shippingConfig: ShippingConfig
   relaySettings: RelaySettingsState
   hasNwc?: boolean
+  profileCheckPending?: boolean
+  paymentsCheckPending?: boolean
 }): MerchantSetupReadiness {
   const profileComplete = isProfileComplete(profile)
   const paymentsComplete = isPaymentsComplete(profile)
@@ -129,10 +137,11 @@ export function getMerchantSetupReadiness({
     profileComplete && paymentsComplete && shippingComplete && networkComplete
   const operationalReady =
     profileComplete && shippingComplete && networkComplete
+  const setupCheckPending = profileCheckPending || paymentsCheckPending
   const missingAreas: MerchantSetupReadiness["missingAreas"] = []
 
-  if (!profileComplete) missingAreas.push("profile")
-  if (!paymentsComplete) missingAreas.push("payments")
+  if (!profileComplete && !profileCheckPending) missingAreas.push("profile")
+  if (!paymentsComplete && !paymentsCheckPending) missingAreas.push("payments")
   if (!shippingComplete) missingAreas.push("shipping")
   if (!networkComplete) missingAreas.push("network")
 
@@ -144,10 +153,13 @@ export function getMerchantSetupReadiness({
 
   return {
     profileComplete,
+    profileCheckPending,
     paymentsComplete,
+    paymentsCheckPending,
     shippingComplete,
     networkComplete,
     setupComplete,
+    setupCheckPending,
     operationalReady,
     paymentCapability,
     hasNwc,

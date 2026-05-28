@@ -2,7 +2,9 @@ import { useQuery } from "@tanstack/react-query"
 import type { BtcUsdRateQuote } from "./index"
 
 const STORAGE_KEY = "conduit:btc-usd-rate"
-const STALE_MS = 5 * 60_000
+export const BTC_USD_RATE_QUERY_KEY = ["btc-usd-rate"] as const
+export const BTC_USD_RATE_STALE_MS = 5 * 60_000
+export const BTC_USD_RATE_REFRESH_INTERVAL_MS = 4 * 60_000
 const MEMPOOL_PRICE_URL = "https://mempool.space/api/v1/prices"
 const COINBASE_SPOT_URL = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
 const FRANKFURTER_USD_URL = "https://api.frankfurter.dev/v1/latest?base=USD"
@@ -271,12 +273,24 @@ export function getConfiguredPricingRateQuote(): BtcUsdRateQuote | null {
   return parseEnvRate()
 }
 
+export function isBtcUsdRateQuoteFresh(
+  quote: BtcUsdRateQuote | null | undefined,
+  nowMs = Date.now(),
+  maxAgeMs = BTC_USD_RATE_STALE_MS
+): boolean {
+  if (!quote) return false
+  if (quote.source === "env") return true
+  if (!Number.isFinite(quote.fetchedAt)) return false
+  const ageMs = nowMs - quote.fetchedAt
+  return ageMs >= 0 && ageMs <= maxAgeMs
+}
+
 export function useBtcUsdRate() {
   const env = parseEnvRate()
   const stored = env ?? readStoredRate()
 
   return useQuery({
-    queryKey: ["btc-usd-rate"],
+    queryKey: BTC_USD_RATE_QUERY_KEY,
     queryFn: async () => {
       try {
         const next = await fetchBtcUsdRate()
@@ -288,8 +302,12 @@ export function useBtcUsdRate() {
       }
     },
     initialData: stored ?? undefined,
-    staleTime: env ? Number.POSITIVE_INFINITY : STALE_MS,
+    initialDataUpdatedAt: stored?.fetchedAt,
+    staleTime: env ? Number.POSITIVE_INFINITY : BTC_USD_RATE_STALE_MS,
     gcTime: 30 * 60_000,
-    refetchOnWindowFocus: false,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+    refetchInterval: env ? false : BTC_USD_RATE_REFRESH_INTERVAL_MS,
   })
 }

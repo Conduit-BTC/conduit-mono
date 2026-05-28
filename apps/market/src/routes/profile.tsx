@@ -6,6 +6,7 @@ import {
   useAuth,
   useProfile,
   useUpdateProfile,
+  type Profile,
   type ProfileFormValues,
 } from "@conduit/core"
 import {
@@ -16,6 +17,8 @@ import {
   Button,
   Input,
   Label,
+  SignedActionStatus,
+  Textarea,
 } from "@conduit/ui"
 import { Check, Copy, Globe, PencilLine, UserRound, Zap } from "lucide-react"
 import { requireAuth } from "../lib/auth"
@@ -37,6 +40,20 @@ const EMPTY_FORM: ProfileFormValues = {
   nip05: "",
   lud16: "",
   website: "",
+}
+
+function profileToForm(profile: Profile | null | undefined): ProfileFormValues {
+  if (!profile) return EMPTY_FORM
+  return {
+    name: profile.name ?? "",
+    displayName: profile.displayName ?? "",
+    about: profile.about ?? "",
+    picture: profile.picture ?? "",
+    banner: profile.banner ?? "",
+    nip05: profile.nip05 ?? "",
+    lud16: profile.lud16 ?? "",
+    website: profile.website ?? "",
+  }
 }
 
 function Field({
@@ -68,19 +85,11 @@ function ProfilePage() {
   const [editing, setEditing] = useState(false)
   const [copied, setCopied] = useState(false)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_FORM)
+  const [profileSaveSucceeded, setProfileSaveSucceeded] = useState(false)
 
   useEffect(() => {
     if (!profileQuery.data) return
-    setForm({
-      name: profileQuery.data.name ?? "",
-      displayName: profileQuery.data.displayName ?? "",
-      about: profileQuery.data.about ?? "",
-      picture: profileQuery.data.picture ?? "",
-      banner: profileQuery.data.banner ?? "",
-      nip05: profileQuery.data.nip05 ?? "",
-      lud16: profileQuery.data.lud16 ?? "",
-      website: profileQuery.data.website ?? "",
-    })
+    setForm(profileToForm(profileQuery.data))
   }, [profileQuery.data])
 
   const displayName =
@@ -89,23 +98,36 @@ function ProfilePage() {
     "Your profile"
   const shortPubkey = useMemo(() => formatNpub(pubkey ?? "", 8), [pubkey])
   const fallbackLetter = (displayName?.[0] ?? pubkey?.[0] ?? "?").toUpperCase()
+  const savedProfileForm = useMemo(
+    () => profileToForm(profileQuery.data),
+    [profileQuery.data]
+  )
+  const hasProfileChanges = useMemo(
+    () => JSON.stringify(form) !== JSON.stringify(savedProfileForm),
+    [form, savedProfileForm]
+  )
+  const profileSaveStatus = updateMutation.isPending
+    ? "awaiting_signature"
+    : updateMutation.error
+      ? "error"
+      : hasProfileChanges
+        ? "dirty"
+        : profileSaveSucceeded
+          ? "success"
+          : "idle"
+
+  useEffect(() => {
+    if (hasProfileChanges) setProfileSaveSucceeded(false)
+  }, [hasProfileChanges])
 
   function resetForm(): void {
     setEditing(false)
+    setProfileSaveSucceeded(false)
     if (!profileQuery.data) {
       setForm(EMPTY_FORM)
       return
     }
-    setForm({
-      name: profileQuery.data.name ?? "",
-      displayName: profileQuery.data.displayName ?? "",
-      about: profileQuery.data.about ?? "",
-      picture: profileQuery.data.picture ?? "",
-      banner: profileQuery.data.banner ?? "",
-      nip05: profileQuery.data.nip05 ?? "",
-      lud16: profileQuery.data.lud16 ?? "",
-      website: profileQuery.data.website ?? "",
-    })
+    setForm(profileToForm(profileQuery.data))
   }
 
   async function copyPubkey(): Promise<void> {
@@ -121,6 +143,8 @@ function ProfilePage() {
 
   function handleSave(event: React.FormEvent): void {
     event.preventDefault()
+    if (!hasProfileChanges || updateMutation.isPending) return
+    setProfileSaveSucceeded(false)
     updateMutation.mutate(
       {
         name: form.name || undefined,
@@ -133,7 +157,10 @@ function ProfilePage() {
         website: form.website || undefined,
       },
       {
-        onSuccess: () => setEditing(false),
+        onSuccess: () => {
+          setProfileSaveSucceeded(true)
+          setEditing(false)
+        },
       }
     )
   }
@@ -212,33 +239,63 @@ function ProfilePage() {
                 </div>
               </div>
 
-              <div className="flex flex-wrap gap-3">
+              <div className="flex flex-col items-start gap-2 lg:items-end">
                 {editing ? (
                   <>
-                    <Button
-                      variant="outline"
-                      className="h-11 px-4 text-sm"
-                      onClick={resetForm}
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      type="submit"
-                      form="market-profile-form"
-                      className="h-11 px-4 text-sm"
-                      disabled={updateMutation.isPending}
-                    >
-                      {updateMutation.isPending ? "Saving…" : "Save profile"}
-                    </Button>
+                    <div className="flex flex-wrap gap-3">
+                      <Button
+                        variant="outline"
+                        className="h-11 px-4 text-sm"
+                        onClick={resetForm}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        type="submit"
+                        form="market-profile-form"
+                        className="h-11 px-4 text-sm"
+                        disabled={
+                          updateMutation.isPending || !hasProfileChanges
+                        }
+                      >
+                        {updateMutation.isPending
+                          ? "Waiting for signer…"
+                          : "Save changes"}
+                      </Button>
+                    </div>
+                    <SignedActionStatus
+                      state={profileSaveStatus}
+                      dirtyMessage="Save changes to publish your buyer profile."
+                      awaitingSignatureMessage="Confirm the profile update in your signer. It will show as saved after relay publish finishes."
+                      successMessage="Profile signed and saved."
+                      errorMessage={
+                        updateMutation.error instanceof Error
+                          ? updateMutation.error.message
+                          : "Failed to update profile"
+                      }
+                      className="lg:justify-end"
+                    />
                   </>
                 ) : (
-                  <Button
-                    className="h-11 px-4 text-sm"
-                    onClick={() => setEditing(true)}
-                  >
-                    <PencilLine className="h-4 w-4" />
-                    Edit profile
-                  </Button>
+                  <>
+                    <Button
+                      className="h-11 px-4 text-sm"
+                      onClick={() => {
+                        setEditing(true)
+                        setProfileSaveSucceeded(false)
+                      }}
+                    >
+                      <PencilLine className="h-4 w-4" />
+                      Edit profile
+                    </Button>
+                    {profileSaveSucceeded && (
+                      <SignedActionStatus
+                        state="success"
+                        successMessage="Profile signed and saved."
+                        className="lg:justify-end"
+                      />
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -325,7 +382,7 @@ function ProfilePage() {
 
                   <div className="grid gap-1.5 md:col-span-2">
                     <Label htmlFor="profile-about">About</Label>
-                    <textarea
+                    <Textarea
                       id="profile-about"
                       className="min-h-28 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
                       value={form.about}

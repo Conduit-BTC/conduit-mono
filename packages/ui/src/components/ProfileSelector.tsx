@@ -1,5 +1,11 @@
-import { ChevronDown, CircleUserRound, LogOut, Radio } from "lucide-react"
-import { useState, type ReactNode } from "react"
+import {
+  ChevronDown,
+  CircleUserRound,
+  LogOut,
+  Radio,
+  Wallet,
+} from "lucide-react"
+import { useState, type MouseEvent, type ReactNode } from "react"
 import { Avatar, AvatarFallback, AvatarImage } from "./Avatar"
 import {
   DropdownMenu,
@@ -19,8 +25,23 @@ export interface ProfileSelectorProps {
   alertLabel?: string
   className?: string
   onProfile?: () => void
+  profileHref?: string
   onNetwork?: () => void
+  networkHref?: string
+  onWallet?: () => void
+  walletHref?: string
+  walletStatusLabel?: string
   onDisconnect: () => void
+}
+
+function isModifiedLinkClick(event: MouseEvent<HTMLAnchorElement>): boolean {
+  return (
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  )
 }
 
 function SelectorItem({
@@ -28,28 +49,28 @@ function SelectorItem({
   label,
   pill,
   onSelect,
+  href,
   variant = "default",
 }: {
   icon: ReactNode
   label: string
   pill?: ReactNode
-  onSelect: () => void
+  onSelect?: () => void
+  href?: string
   variant?: "default" | "danger" | "warning"
 }) {
-  return (
-    <DropdownMenuItem
-      onSelect={onSelect}
-      className={cn(
-        "cursor-pointer rounded-xl px-3 text-[15px] font-medium",
-        pill ? "min-h-11 py-2" : "h-11",
-        variant === "default" &&
-          "text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_6%,transparent)] focus:text-[var(--text-primary)]",
-        variant === "warning" &&
-          "text-secondary-400 focus:bg-secondary-500/5 focus:text-secondary-300",
-        variant === "danger" &&
-          "text-[var(--error)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error)]"
-      )}
-    >
+  const className = cn(
+    "cursor-pointer rounded-xl px-3 text-[15px] font-medium",
+    pill ? "min-h-11 py-2" : "h-11",
+    variant === "default" &&
+      "text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_6%,transparent)] focus:text-[var(--text-primary)]",
+    variant === "warning" &&
+      "text-secondary-400 focus:bg-secondary-500/5 focus:text-secondary-300",
+    variant === "danger" &&
+      "text-[var(--error)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error)]"
+  )
+  const content = (
+    <>
       <span
         className={cn(
           "mr-3 inline-flex h-5 w-5 shrink-0 items-center justify-center",
@@ -62,6 +83,29 @@ function SelectorItem({
         <span>{label}</span>
         {pill}
       </span>
+    </>
+  )
+
+  if (href) {
+    return (
+      <DropdownMenuItem asChild className={className}>
+        <a
+          href={href}
+          onClick={(event) => {
+            if (!onSelect || isModifiedLinkClick(event)) return
+            event.preventDefault()
+            onSelect()
+          }}
+        >
+          {content}
+        </a>
+      </DropdownMenuItem>
+    )
+  }
+
+  return (
+    <DropdownMenuItem onSelect={onSelect} className={className}>
+      {content}
     </DropdownMenuItem>
   )
 }
@@ -74,7 +118,12 @@ export function ProfileSelector({
   alertLabel,
   className,
   onProfile,
+  profileHref,
   onNetwork,
+  networkHref,
+  onWallet,
+  walletHref,
+  walletStatusLabel,
   onDisconnect,
 }: ProfileSelectorProps) {
   const [open, setOpen] = useState(false)
@@ -128,21 +177,6 @@ export function ProfileSelector({
         }}
         className="w-[15rem] rounded-[1.35rem] border-0 bg-[var(--surface-overlay)] p-0 backdrop-blur-xl"
       >
-        <div className="rounded-t-[1.35rem] border-b border-[var(--border)] bg-[linear-gradient(135deg,color-mix(in_srgb,var(--primary-400)_88%,var(--primary-500))_0%,color-mix(in_srgb,var(--primary-300)_76%,var(--tertiary-500)_24%)_100%)] px-4 py-3 text-[var(--on-primary)]">
-          <div className="flex items-center gap-3">
-            <Avatar className="h-8 w-8 border border-[color-mix(in_srgb,var(--on-primary)_20%,transparent)]">
-              <AvatarImage src={avatarUrl ?? undefined} alt={displayName} />
-              <AvatarFallback className="bg-[var(--avatar-bg)] text-[var(--on-primary)]">
-                {avatarFallback ?? displayName.slice(0, 1).toUpperCase()}
-              </AvatarFallback>
-            </Avatar>
-            <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">
-              {displayName}
-            </span>
-            <ChevronDown className="h-5 w-5 rotate-180" />
-          </div>
-        </div>
-
         <div className="p-3">
           <div className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-[var(--text-secondary)]">
             <span className="h-2.5 w-2.5 rounded-full bg-success" />
@@ -155,6 +189,7 @@ export function ProfileSelector({
             <SelectorItem
               icon={<CircleUserRound className="h-4 w-4" />}
               label="Profile"
+              href={profileHref}
               pill={
                 alertLabel ? (
                   <StatusPill
@@ -177,6 +212,7 @@ export function ProfileSelector({
             <SelectorItem
               icon={<Radio className="h-4 w-4" />}
               label="Network"
+              href={networkHref}
               onSelect={() => {
                 setOpen(false)
                 onNetwork()
@@ -184,7 +220,26 @@ export function ProfileSelector({
             />
           ) : null}
 
-          {onProfile || onNetwork ? (
+          {onWallet ? (
+            <SelectorItem
+              icon={<Wallet className="h-4 w-4" />}
+              label="Wallet"
+              href={walletHref}
+              pill={
+                walletStatusLabel ? (
+                  <span className="text-[10px] text-[var(--text-muted)]">
+                    {walletStatusLabel}
+                  </span>
+                ) : undefined
+              }
+              onSelect={() => {
+                setOpen(false)
+                onWallet()
+              }}
+            />
+          ) : null}
+
+          {onProfile || onNetwork || onWallet ? (
             <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
           ) : null}
 

@@ -1,4 +1,10 @@
-import { useCallback, useMemo, useSyncExternalStore } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react"
 import {
   useAuth,
   useConduitSession,
@@ -12,9 +18,13 @@ import {
   MERCHANT_READINESS_STORAGE_EVENT,
   parseShippingConfig,
   SHIPPING_STORAGE_KEY,
+  isPaymentsComplete,
+  isProfileComplete,
 } from "../lib/readiness"
 
 const EMPTY_STORAGE_SNAPSHOT = JSON.stringify([null, null])
+const PROFILE_READINESS_POLL_MS = 2_500
+const PROFILE_READINESS_GRACE_MS = 10_000
 
 function getMerchantReadinessStorageSnapshot(
   nwcStorageKey: string | null
@@ -78,11 +88,23 @@ function subscribeToMerchantReadinessStorage(
 export function useMerchantReadiness() {
   const { pubkey } = useAuth()
   const session = useConduitSession()
-  const { data: profile } = useProfile(pubkey)
+  const profileQuery = useProfile(pubkey, {
+    skipCache: true,
+    staleTime: PROFILE_READINESS_POLL_MS,
+    refetchUnresolvedMs: PROFILE_READINESS_POLL_MS,
+    readPolicy: {
+      maxRelays: 16,
+      connectTimeoutMs: 2_000,
+      fetchTimeoutMs: 8_000,
+    },
+  })
+  const profile = profileQuery.data
+  const refetchProfile = profileQuery.refetch
   const { settings } = useRelaySettings(session.relayScope, {
     pubkey,
     bootstrapRelayList: false,
   })
+  const [profileCheckExpired, setProfileCheckExpired] = useState(false)
   const nwcStorageKey = useMemo(() => getNwcUriStorageKey(pubkey), [pubkey])
   const subscribeToStorage = useCallback(
     (onStoreChange: () => void) =>
@@ -107,11 +129,45 @@ export function useMerchantReadiness() {
     [rawShippingConfig]
   )
   const hasNwc = useMemo(() => hasNwcConfigured(rawNwcUri), [rawNwcUri])
+  const profileComplete = isProfileComplete(profile)
+  const paymentsComplete = isPaymentsComplete(profile)
+
+  useEffect(() => {
+    setProfileCheckExpired(false)
+  }, [pubkey])
+
+  useEffect(() => {
+    if (profileComplete) {
+      setProfileCheckExpired(false)
+      return
+    }
+    if (!pubkey || profileCheckExpired) return
+
+    const timeoutId = window.setTimeout(
+      () => setProfileCheckExpired(true),
+      PROFILE_READINESS_GRACE_MS
+    )
+    const intervalId = window.setInterval(() => {
+      void refetchProfile()
+    }, PROFILE_READINESS_POLL_MS)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+      window.clearInterval(intervalId)
+    }
+  }, [profileCheckExpired, profileComplete, pubkey, refetchProfile])
+
+  const profileCheckPending =
+    !!pubkey && !profileComplete && !profileCheckExpired
+  const paymentsCheckPending =
+    !!pubkey && !paymentsComplete && !profileComplete && !profileCheckExpired
 
   return getMerchantSetupReadiness({
     profile,
     shippingConfig,
     relaySettings: settings,
     hasNwc,
+    profileCheckPending,
+    paymentsCheckPending,
   })
 }

@@ -155,6 +155,12 @@ function settingsPlanOptions(input: {
   }
 }
 
+function defaultRecipientWriteFallbackRelayUrls(): string[] {
+  return config.publicRelayUrls.length > 0
+    ? config.publicRelayUrls
+    : config.defaultRelays
+}
+
 function hintReadRelaysForAuthors(
   authors: readonly string[],
   relayLists: ReadonlyMap<string, RelayList> | undefined
@@ -308,7 +314,9 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
   const missingRecipientFallback = recipients.some(
     (pubkey) => !input.relayLists?.get(pubkey)?.readRelayUrls.length
   )
-    ? userWriteRelays
+    ? userWriteRelays.length > 0
+      ? userWriteRelays
+      : defaultRecipientWriteFallbackRelayUrls()
     : []
 
   const primaryOrdered = dedupeOrdered([

@@ -1,4 +1,4 @@
-import { formatPubkey, hasNip07, useAuth } from "@conduit/core"
+import { formatPubkey, useAuth, useNip07Availability } from "@conduit/core"
 import { SignerSwitch as SharedSignerSwitch } from "@conduit/ui"
 
 type SignerSwitchProps = {
@@ -9,6 +9,7 @@ type SignerSwitchProps = {
 
 export function SignerSwitch(props: SignerSwitchProps = {}) {
   const { pubkey, status, error, connect, disconnect } = useAuth()
+  const extensionAvailable = useNip07Availability()
 
   return (
     <SharedSignerSwitch
@@ -17,7 +18,7 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
       pubkeyLabel={pubkey ? formatPubkey(pubkey) : null}
       pubkeyDetailLabel={pubkey ? formatPubkey(pubkey, 12) : null}
       error={error}
-      extensionAvailable={hasNip07()}
+      extensionAvailable={extensionAvailable}
       connectedDescription="Checkout, orders, and follow-up are ready."
       connectDescription="Use your Nostr signer to continue with Conduit."
       connectedUseDescription="This signer will be used for buyer actions in Conduit."

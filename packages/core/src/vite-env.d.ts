@@ -1,6 +1,8 @@
 interface ImportMetaEnv {
   readonly VITE_RELAY_URL?: string
+  readonly VITE_DEFAULT_RELAY_URL?: string
   readonly VITE_DEFAULT_RELAYS?: string
+  readonly VITE_APP_WRITE_RELAY_URLS?: string
   readonly VITE_PUBLIC_RELAY_URLS?: string
   readonly VITE_COMMERCE_RELAY_URLS?: string
   readonly VITE_LIGHTNING_NETWORK?: string

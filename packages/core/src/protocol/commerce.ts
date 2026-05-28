@@ -189,6 +189,10 @@ type RawMessageFetchResult = {
 type CommerceTestOverrides = {
   fetchEventsFanout?: typeof fetchEventsFanout
   requireNdkConnected?: typeof requireNdkConnected
+  giftUnwrap?: (
+    event: NDKEvent,
+    signer: NDKSigner
+  ) => Promise<Awaited<ReturnType<typeof giftUnwrap>> | null>
   now?: () => number
   getCachedProducts?: (merchantPubkey?: string) => Promise<CachedProduct[]>
   putCachedProducts?: (rows: CachedProduct[]) => Promise<void>
@@ -236,6 +240,7 @@ const READ_PLANS: Record<CommerceReadPlanName, CommerceReadSource[]> = {
 }
 
 let testOverrides: CommerceTestOverrides = {}
+const knownWrapIds = new Set<string>()
 
 function now(): number {
   return testOverrides.now?.() ?? Date.now()
@@ -371,6 +376,7 @@ export function __setCommerceTestOverrides(
 
 export function __resetCommerceTestOverrides(): void {
   testOverrides = {}
+  knownWrapIds.clear()
 }
 
 function createMeta(
@@ -568,6 +574,12 @@ function toCachedProduct(record: CommerceProductRecord) {
     priceSats: product.priceSats,
     sourcePrice: product.sourcePrice,
     type: product.type,
+    format: product.format,
+    shippingCostSats: product.shippingCostSats,
+    shippingOptionId: product.shippingOptionId,
+    shippingOptionDTag: product.shippingOptionDTag,
+    shippingCountries: product.shippingCountries,
+    shippingCountryRules: product.shippingCountryRules,
     visibility: product.visibility,
     stock: product.stock,
     images: product.images,
@@ -591,6 +603,12 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     priceSats: row.priceSats,
     sourcePrice: row.sourcePrice,
     type: row.type ?? "simple",
+    format: row.format ?? "physical",
+    shippingCostSats: row.shippingCostSats,
+    shippingOptionId: row.shippingOptionId,
+    shippingOptionDTag: row.shippingOptionDTag,
+    shippingCountries: row.shippingCountries,
+    shippingCountryRules: row.shippingCountryRules,
     visibility: row.visibility ?? "public",
     stock: row.stock,
     images: row.images ?? [],
@@ -855,6 +873,27 @@ async function storeCachedOrderMessages(
   }
 
   await db.orderMessages.bulkPut(rows)
+}
+
+function cachedOrderMessageRow(
+  message: ParsedOrderMessage
+): CachedOrderMessage {
+  return {
+    id: message.id,
+    orderId: message.orderId,
+    type: message.type,
+    senderPubkey: message.senderPubkey,
+    recipientPubkey: message.recipientPubkey,
+    createdAt: message.createdAt,
+    rawContent: JSON.stringify(message),
+    cachedAt: now(),
+  }
+}
+
+export async function cacheParsedOrderMessage(
+  message: ParsedOrderMessage
+): Promise<void> {
+  await storeCachedOrderMessages([cachedOrderMessageRow(message)])
 }
 
 type DeletionTimestamps = {
@@ -1803,6 +1842,14 @@ function raceTimeout<T>(
 
 async function tryUnwrap(event: NDKEvent, signer: NDKSigner) {
   try {
+    if (testOverrides.giftUnwrap) {
+      return await raceTimeout(
+        testOverrides.giftUnwrap(event, signer),
+        8_000,
+        null
+      )
+    }
+
     return await raceTimeout(
       (async () => {
         try {
@@ -1842,8 +1889,6 @@ async function unwrapBatch(
 
   return results
 }
-
-const knownWrapIds = new Set<string>()
 
 async function fetchParsedOrderMessages(
   principalPubkey: string,
@@ -1903,30 +1948,26 @@ async function fetchParsedOrderMessages(
       rawContent: string
       cachedAt: number
     }> = []
+    const parsedWrapIds = new Set<string>()
 
-    for (const rumor of unwrapped) {
+    for (const [index, rumor] of unwrapped.entries()) {
       if (!rumor || rumor.kind !== EVENT_KINDS.ORDER) continue
+      const wrapper = newWrapped[index]
+      if (!wrapper) continue
+
       try {
         const parsed = parseOrderMessageRumorEvent(rumor)
         if (!cachedById.has(parsed.id)) {
-          newRows.push({
-            id: parsed.id,
-            orderId: parsed.orderId,
-            type: parsed.type,
-            senderPubkey: parsed.senderPubkey,
-            recipientPubkey: parsed.recipientPubkey,
-            createdAt: parsed.createdAt,
-            rawContent: JSON.stringify(parsed),
-            cachedAt: now(),
-          })
+          newRows.push(cachedOrderMessageRow(parsed))
         }
         cachedById.set(parsed.id, parsed)
+        parsedWrapIds.add(wrapper.id)
       } catch {
         // ignore malformed order messages
       }
     }
 
-    for (const event of wrapped) knownWrapIds.add(event.id)
+    for (const id of parsedWrapIds) knownWrapIds.add(id)
 
     if (newRows.length > 0) {
       await storeCachedOrderMessages(newRows)

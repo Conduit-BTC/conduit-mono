@@ -3,7 +3,9 @@ import { hasNip07 } from "../context/AuthContext"
 
 /**
  * Some browsers/extensions inject `window.nostr` after initial render.
- * Poll briefly so connect surfaces can update without a manual refresh.
+ * Poll for a while so connect surfaces can update without a manual refresh.
+ * The connect action itself remains authoritative and should still attempt
+ * signer discovery even if this passive hint is stale.
  */
 export function useNip07Availability(): boolean {
   const [available, setAvailable] = useState(() => hasNip07())
@@ -21,7 +23,7 @@ export function useNip07Availability(): boolean {
       }
 
       attempts += 1
-      if (attempts >= 20) {
+      if (attempts >= 120) {
         window.clearInterval(intervalId)
       }
     }, 250)

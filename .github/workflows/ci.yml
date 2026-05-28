@@ -14,10 +14,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-env:
-  VITE_RELAY_URL: "wss://relay.primal.net"
-  VITE_DEFAULT_RELAYS: "wss://relay.primal.net,wss://relay.damus.io"
-
 jobs:
   format:
     if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'

@@ -3,6 +3,7 @@ export * from "./types"
 
 // Protocol
 export * from "./protocol"
+export * from "./protocol/countries"
 
 // Schemas
 export * from "./schemas"
@@ -14,6 +15,7 @@ export * from "./utils"
 export {
   MSATS_PER_SAT,
   SATS_PER_BTC,
+  SUPPORTED_PRODUCT_PRICE_CURRENCIES,
   canonicalizeProductPrice,
   compareCommercePrices,
   formatApproxUsdFromSats,
@@ -27,9 +29,13 @@ export {
   normalizeCurrencyCode,
 } from "./pricing"
 export {
+  BTC_USD_RATE_QUERY_KEY,
+  BTC_USD_RATE_REFRESH_INTERVAL_MS,
+  BTC_USD_RATE_STALE_MS,
   fetchBtcUsdRate,
   getConfiguredBtcUsdRate,
   getConfiguredPricingRateQuote,
+  isBtcUsdRateQuoteFresh,
   useBtcUsdRate,
 } from "./pricing/rates"
 export type {
@@ -39,11 +45,15 @@ export type {
   CommercePriceNormalization,
   PricingRateInput,
   SourcePriceQuote,
+  SupportedProductPriceCurrency,
 } from "./pricing"
 
 // Config
 export {
+  CANONICAL_APP_WRITE_RELAYS,
+  CANONICAL_DEFAULT_RELAYS,
   config,
+  isRetiredDefaultRelayUrl,
   isMockPayments,
   isSignet,
   isTestnet,
@@ -60,6 +70,7 @@ export {
   type CachedProduct,
   type CachedProfile,
   type CachedOrderMessage,
+  type StoredPaymentAttempt,
 } from "./db"
 
 // Billing

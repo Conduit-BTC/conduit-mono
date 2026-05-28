@@ -758,6 +758,12 @@ function StorefrontPage() {
                         sourcePrice: product.sourcePrice,
                         image: product.images[0]?.url,
                         tags: product.tags,
+                        format: product.format,
+                        shippingCostSats: product.shippingCostSats,
+                        shippingOptionId: product.shippingOptionId,
+                        shippingOptionDTag: product.shippingOptionDTag,
+                        shippingCountries: product.shippingCountries,
+                        shippingCountryRules: product.shippingCountryRules,
                       })
                     }
                     onIncrement={() =>
@@ -771,6 +777,12 @@ function StorefrontPage() {
                         sourcePrice: product.sourcePrice,
                         image: product.images[0]?.url,
                         tags: product.tags,
+                        format: product.format,
+                        shippingCostSats: product.shippingCostSats,
+                        shippingOptionId: product.shippingOptionId,
+                        shippingOptionDTag: product.shippingOptionDTag,
+                        shippingCountries: product.shippingCountries,
+                        shippingCountryRules: product.shippingCountryRules,
                       })
                     }
                     onDecrement={() => {

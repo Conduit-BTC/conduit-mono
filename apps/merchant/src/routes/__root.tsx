@@ -223,7 +223,7 @@ function ConnectGate() {
                 <div className="mt-6">
                   <Button
                     onClick={() => void handleConnect()}
-                    disabled={isWorking || authPending || !extensionAvailable}
+                    disabled={isWorking || authPending}
                     className="h-12 w-full justify-center gap-2 text-base"
                   >
                     <KeyRound className="h-5 w-5" />
@@ -263,6 +263,8 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/products") return "Products"
   if (pathname === "/orders") return "Orders"
   if (pathname === "/profile") return "Profile"
+  if (pathname === "/payments") return "Payments"
+  if (pathname === "/shipping") return "Shipping"
   if (pathname === "/network") return "Network"
   return "Not Found"
 }

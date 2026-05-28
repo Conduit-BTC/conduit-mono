@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
+  cacheParsedOrderMessage,
   getBuyerConversationList,
   getConversationDetail,
   getMarketplaceProducts,
@@ -407,6 +408,130 @@ describe("commerce gateway", () => {
     expect(listResult.data[0]?.totalSummary).toBe("25 USD")
     expect(detailResult.meta.source).toBe("local_cache")
     expect(detailResult.data?.messages).toHaveLength(2)
+  })
+
+  it("persists buyer-originated order messages into the conversation cache", async () => {
+    await cacheParsedOrderMessage({
+      id: "local-order-msg",
+      orderId: "order-2",
+      type: "order",
+      createdAt: FIXED_NOW - 1_000,
+      senderPubkey: "buyer",
+      recipientPubkey: "merchant",
+      rawContent: JSON.stringify({
+        id: "order-2",
+        merchantPubkey: "merchant",
+        buyerPubkey: "buyer",
+        items: [
+          {
+            productId: "30402:merchant:item",
+            quantity: 1,
+            priceAtPurchase: 1250,
+            currency: "SATS",
+          },
+        ],
+        subtotal: 1250,
+        currency: "SATS",
+        createdAt: FIXED_NOW - 1_000,
+      }),
+      payload: {
+        id: "order-2",
+        merchantPubkey: "merchant",
+        buyerPubkey: "buyer",
+        items: [
+          {
+            productId: "30402:merchant:item",
+            quantity: 1,
+            priceAtPurchase: 1250,
+            currency: "SATS",
+          },
+        ],
+        subtotal: 1250,
+        currency: "SATS",
+        createdAt: FIXED_NOW - 1_000,
+      },
+    })
+
+    __setCommerceTestOverrides({
+      requireNdkConnected: async () => ({ signer: undefined }) as never,
+    })
+
+    const result = await getBuyerConversationList({
+      principalPubkey: "buyer",
+      limit: 50,
+    })
+
+    expect(result.meta.source).toBe("local_cache")
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.orderId).toBe("order-2")
+    expect(result.data[0]?.merchantPubkey).toBe("merchant")
+  })
+
+  it("retries wrapped order messages that failed to unwrap before marking them seen", async () => {
+    let unwrapCalls = 0
+    const wrappedEvent = {
+      id: "wrap-1",
+      kind: EVENT_KINDS.GIFT_WRAP,
+      pubkey: "merchant",
+      created_at: 100,
+      content: "wrapped",
+      tags: [["p", "buyer"]],
+    }
+    const orderRumor = {
+      id: "order-rumor-1",
+      kind: EVENT_KINDS.ORDER,
+      pubkey: "buyer",
+      created_at: 101,
+      content: JSON.stringify({
+        id: "order-3",
+        merchantPubkey: "merchant",
+        buyerPubkey: "buyer",
+        items: [
+          {
+            productId: "30402:merchant:item",
+            quantity: 1,
+            priceAtPurchase: 2100,
+            currency: "SATS",
+          },
+        ],
+        subtotal: 2100,
+        currency: "SATS",
+        createdAt: FIXED_NOW,
+      }),
+      tags: [
+        ["p", "merchant"],
+        ["type", "order"],
+        ["order", "order-3"],
+        ["amount", "2100"],
+        ["currency", "SATS"],
+      ],
+    }
+
+    __setCommerceTestOverrides({
+      requireNdkConnected: async () => ({ signer: {} }) as never,
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
+          ? ([wrappedEvent] as never)
+          : [],
+      giftUnwrap: async () => {
+        unwrapCalls += 1
+        return unwrapCalls === 1 ? null : (orderRumor as never)
+      },
+    })
+
+    const first = await getBuyerConversationList({
+      principalPubkey: "buyer",
+      limit: 50,
+    })
+    const second = await getBuyerConversationList({
+      principalPubkey: "buyer",
+      limit: 50,
+    })
+
+    expect(first.data).toHaveLength(0)
+    expect(unwrapCalls).toBe(2)
+    expect(second.data).toHaveLength(1)
+    expect(second.data[0]?.orderId).toBe("order-3")
   })
 
   it("dedupes profile requests and serves cached profiles when relays fail later", async () => {

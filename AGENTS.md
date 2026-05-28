@@ -141,6 +141,21 @@ bun test                 # Run tests
 bun run clean            # Remove all node_modules
 ```
 
+### Local Dev Ports
+
+When agents start local app servers, prefer the 7000 port range so the repo has stable, predictable URLs:
+
+- Market: `7000`
+- Merchant Portal: `7001`
+- Store Builder: `7002`
+
+For remote browser access over Tailscale or a forwarded host, bind Vite to all interfaces and pass the port explicitly, for example:
+
+```bash
+bun run --filter @conduit/market dev --host 0.0.0.0 --port 7000
+bun run --filter @conduit/merchant dev --host 0.0.0.0 --port 7001
+```
+
 ## Code Style
 
 - **TypeScript strict mode** - All code must pass strict type checking
@@ -148,6 +163,14 @@ bun run clean            # Remove all node_modules
 - **2-space indentation**
 - **async/await** over .then() chains
 - **Explicit error handling** - No swallowed errors
+
+### UI Component Rules
+
+- Use shadcn-style primitives through `@conduit/ui` before adding app-local controls.
+- Do not hand-roll native `<select>`, custom listboxes/comboboxes, dialogs, dropdowns, tabs, sheets, or textareas in app routes when `@conduit/ui` already provides the primitive.
+- If a common primitive is missing, add it to `packages/ui/src/components`, export it from `@conduit/ui`, and consume it from apps.
+- Keep route files focused on workflow composition and state. Shared keyboard behavior, focus management, overlay behavior, and reusable control styling belong in `@conduit/ui`.
+- For UI/theming changes, read `docs/DESIGN.md` and keep tokens/components aligned with the shared design system.
 
 ### Import Order
 

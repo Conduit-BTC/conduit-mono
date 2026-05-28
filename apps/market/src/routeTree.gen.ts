@@ -9,9 +9,10 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as WalletRouteImport } from './routes/wallet'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as OrdersRouteImport } from './routes/orders'
+import { Route as NetworkRouteImport } from './routes/network'
 import { Route as MessagesRouteImport } from './routes/messages'
 import { Route as CheckoutRouteImport } from './routes/checkout'
 import { Route as CartRouteImport } from './routes/cart'
@@ -21,9 +22,9 @@ import { Route as UProfileRefRouteImport } from './routes/u/$profileRef'
 import { Route as StorePubkeyRouteImport } from './routes/store/$pubkey'
 import { Route as ProductsProductIdRouteImport } from './routes/products/$productId'
 
-const SettingsRoute = SettingsRouteImport.update({
-  id: '/settings',
-  path: '/settings',
+const WalletRoute = WalletRouteImport.update({
+  id: '/wallet',
+  path: '/wallet',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProfileRoute = ProfileRouteImport.update({
@@ -34,6 +35,11 @@ const ProfileRoute = ProfileRouteImport.update({
 const OrdersRoute = OrdersRouteImport.update({
   id: '/orders',
   path: '/orders',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const NetworkRoute = NetworkRouteImport.update({
+  id: '/network',
+  path: '/network',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MessagesRoute = MessagesRouteImport.update({
@@ -82,9 +88,10 @@ export interface FileRoutesByFullPath {
   '/cart': typeof CartRoute
   '/checkout': typeof CheckoutRoute
   '/messages': typeof MessagesRoute
+  '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
-  '/settings': typeof SettingsRoute
+  '/wallet': typeof WalletRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
@@ -95,9 +102,10 @@ export interface FileRoutesByTo {
   '/cart': typeof CartRoute
   '/checkout': typeof CheckoutRoute
   '/messages': typeof MessagesRoute
+  '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
-  '/settings': typeof SettingsRoute
+  '/wallet': typeof WalletRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
@@ -109,9 +117,10 @@ export interface FileRoutesById {
   '/cart': typeof CartRoute
   '/checkout': typeof CheckoutRoute
   '/messages': typeof MessagesRoute
+  '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
-  '/settings': typeof SettingsRoute
+  '/wallet': typeof WalletRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
@@ -124,9 +133,10 @@ export interface FileRouteTypes {
     | '/cart'
     | '/checkout'
     | '/messages'
+    | '/network'
     | '/orders'
     | '/profile'
-    | '/settings'
+    | '/wallet'
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
@@ -137,9 +147,10 @@ export interface FileRouteTypes {
     | '/cart'
     | '/checkout'
     | '/messages'
+    | '/network'
     | '/orders'
     | '/profile'
-    | '/settings'
+    | '/wallet'
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
@@ -150,9 +161,10 @@ export interface FileRouteTypes {
     | '/cart'
     | '/checkout'
     | '/messages'
+    | '/network'
     | '/orders'
     | '/profile'
-    | '/settings'
+    | '/wallet'
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
@@ -164,9 +176,10 @@ export interface RootRouteChildren {
   CartRoute: typeof CartRoute
   CheckoutRoute: typeof CheckoutRoute
   MessagesRoute: typeof MessagesRoute
+  NetworkRoute: typeof NetworkRoute
   OrdersRoute: typeof OrdersRoute
   ProfileRoute: typeof ProfileRoute
-  SettingsRoute: typeof SettingsRoute
+  WalletRoute: typeof WalletRoute
   ProductsProductIdRoute: typeof ProductsProductIdRoute
   StorePubkeyRoute: typeof StorePubkeyRoute
   UProfileRefRoute: typeof UProfileRefRoute
@@ -175,11 +188,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/settings': {
-      id: '/settings'
-      path: '/settings'
-      fullPath: '/settings'
-      preLoaderRoute: typeof SettingsRouteImport
+    '/wallet': {
+      id: '/wallet'
+      path: '/wallet'
+      fullPath: '/wallet'
+      preLoaderRoute: typeof WalletRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/profile': {
@@ -194,6 +207,13 @@ declare module '@tanstack/react-router' {
       path: '/orders'
       fullPath: '/orders'
       preLoaderRoute: typeof OrdersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/network': {
+      id: '/network'
+      path: '/network'
+      fullPath: '/network'
+      preLoaderRoute: typeof NetworkRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/messages': {
@@ -260,9 +280,10 @@ const rootRouteChildren: RootRouteChildren = {
   CartRoute: CartRoute,
   CheckoutRoute: CheckoutRoute,
   MessagesRoute: MessagesRoute,
+  NetworkRoute: NetworkRoute,
   OrdersRoute: OrdersRoute,
   ProfileRoute: ProfileRoute,
-  SettingsRoute: SettingsRoute,
+  WalletRoute: WalletRoute,
   ProductsProductIdRoute: ProductsProductIdRoute,
   StorePubkeyRoute: StorePubkeyRoute,
   UProfileRefRoute: UProfileRefRoute,

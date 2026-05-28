@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test"
 import {
+  BTC_USD_RATE_STALE_MS,
   type BtcUsdRateQuote,
   compareCommercePrices,
   getProductPriceDisplay,
+  isBtcUsdRateQuoteFresh,
   normalizeCommercePrice,
   orderSchema,
   parseProductEvent,
@@ -88,6 +90,7 @@ describe("commerce pricing", () => {
         ["d", "clip"],
         ["title", "Extra Pocket Clip"],
         ["price", "250000", "SAT"],
+        ["shipping_cost", "5000"],
         ["image", "https://example.com/clip.png"],
       ],
     })
@@ -95,6 +98,7 @@ describe("commerce pricing", () => {
     expect(product.price).toBe(250_000)
     expect(product.currency).toBe("SATS")
     expect(product.priceSats).toBe(250_000)
+    expect(product.shippingCostSats).toBe(5_000)
     expect(product.sourcePrice).toEqual({
       amount: 250_000,
       currency: "SAT",
@@ -123,6 +127,27 @@ describe("commerce pricing", () => {
       primary: "250,000 sats",
       secondary: "about $250.00 USD",
     })
+  })
+
+  it("parses tag-only digital listings as not requiring shipping", () => {
+    const product = parseProductEvent({
+      id: "event-digital",
+      pubkey: "merchant",
+      created_at: 1_700_000_000,
+      content: "PDF guide",
+      tags: [
+        ["d", "pdf-guide"],
+        ["title", "PDF Guide"],
+        ["price", "25000", "SATS"],
+        ["type", "simple", "digital"],
+        ["image", "https://example.com/guide.png"],
+      ],
+    })
+
+    expect(product.type).toBe("simple")
+    expect(product.format).toBe("digital")
+    expect(product.shippingCostSats).toBeUndefined()
+    expect(product.shippingOptionId).toBeUndefined()
   })
 
   it("preserves fiat source quotes and displays rate-backed sats", () => {
@@ -300,5 +325,52 @@ describe("commerce pricing", () => {
     expect(parsed.subtotal).toBe(250_000)
     expect(parsed.items[0]?.priceAtPurchase).toBe(250_000)
     expect(parsed.items[0]?.sourcePrice?.normalizedCurrency).toBe("BTC")
+  })
+
+  it("classifies BTC/USD quotes by their own fetchedAt age", () => {
+    const now = 1_700_000_000_000
+    expect(
+      isBtcUsdRateQuoteFresh(
+        {
+          rate: 100_000,
+          fetchedAt: now - BTC_USD_RATE_STALE_MS + 1,
+          source: "mempool",
+        },
+        now
+      )
+    ).toBe(true)
+    expect(
+      isBtcUsdRateQuoteFresh(
+        {
+          rate: 100_000,
+          fetchedAt: now - BTC_USD_RATE_STALE_MS - 1,
+          source: "mempool",
+        },
+        now
+      )
+    ).toBe(false)
+    expect(
+      isBtcUsdRateQuoteFresh(
+        {
+          rate: 100_000,
+          fetchedAt: now + 1,
+          source: "mempool",
+        },
+        now
+      )
+    ).toBe(false)
+  })
+
+  it("treats configured env BTC/USD quotes as always fresh", () => {
+    expect(
+      isBtcUsdRateQuoteFresh(
+        {
+          rate: 100_000,
+          fetchedAt: 1,
+          source: "env",
+        },
+        1_700_000_000_000
+      )
+    ).toBe(true)
   })
 })

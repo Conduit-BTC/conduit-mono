@@ -50,6 +50,69 @@ function parsePriceTag(
   return null
 }
 
+function parseShippingCostTag(
+  tags: string[][] | undefined
+): number | undefined {
+  const raw = getTagValue(tags, "shipping_cost")
+  if (raw === null) return undefined
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value < 0) return undefined
+  return value
+}
+
+function parseShippingOptionTag(tags: string[][] | undefined): {
+  shippingOptionId?: string
+  shippingOptionDTag?: string
+} {
+  const ref = getTagValue(tags, "shipping_option")
+  if (!ref) return {}
+  const parts = ref.split(":")
+  return {
+    shippingOptionId: ref,
+    shippingOptionDTag:
+      parts.length >= 3 ? parts.slice(2).join(":") : undefined,
+  }
+}
+
+function parseShippingCountryRules(tags: string[][] | undefined): {
+  shippingCountries?: string[]
+  shippingCountryRules?: ProductSchema["shippingCountryRules"]
+} {
+  if (!tags) return {}
+  const shippingCountries = Array.from(
+    new Set(
+      tags
+        .filter((t) => t[0] === "shipping_country")
+        .flatMap((t) => t.slice(1))
+        .map((country) => country.trim().toUpperCase())
+        .filter(Boolean)
+    )
+  )
+  if (shippingCountries.length === 0) return {}
+
+  return {
+    shippingCountries,
+    shippingCountryRules: shippingCountries.map((code) => ({
+      code,
+      name: code,
+      restrictTo:
+        tags
+          .find(
+            (t) => t[0] === "shipping_restrict" && t[1]?.toUpperCase() === code
+          )
+          ?.slice(2)
+          .filter(Boolean) ?? [],
+      exclude:
+        tags
+          .find(
+            (t) => t[0] === "shipping_exclude" && t[1]?.toUpperCase() === code
+          )
+          ?.slice(2)
+          .filter(Boolean) ?? [],
+    })),
+  }
+}
+
 /**
  * Best-effort parser for kind-30402 product events.
  *
@@ -96,8 +159,16 @@ export function parseProductEvent(
     "Untitled"
 
   const priceInfo = parsePriceTag(event.tags)
+  const shippingCostSats = parseShippingCostTag(event.tags)
+  const shippingOption = parseShippingOptionTag(event.tags)
+  const shippingRules = parseShippingCountryRules(event.tags)
   const summaryTag = getTagValue(event.tags, "summary")
   const locationTag = getTagValue(event.tags, "location")
+
+  // market-spec: ["type", "simple|variable|variation", "digital|physical"]
+  const typeTag = event.tags?.find((t) => t[0] === "type")
+  const format: "physical" | "digital" =
+    typeTag?.[2] === "digital" ? "digital" : "physical"
 
   const images = getTagValues(event.tags, "image")
     .filter((url) => url.startsWith("http://") || url.startsWith("https://"))
@@ -114,6 +185,10 @@ export function parseProductEvent(
         summaryTag ?? (fromContent ? fromContent.slice(0, 5000) : undefined),
       price: priceInfo?.price ?? 0,
       currency: priceInfo?.currency ?? "USD",
+      format,
+      shippingCostSats,
+      ...shippingOption,
+      ...shippingRules,
       images,
       tags,
       location: locationTag ?? undefined,

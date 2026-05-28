@@ -1,8 +1,9 @@
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   canMockInvoice,
+  cacheParsedOrderMessage,
   convertCommerceAmountToSats,
   decodeLightningInvoiceAmount,
   EVENT_KINDS,
@@ -19,6 +20,7 @@ import {
   isInvoiceCompatibleWithCurrentNetwork,
   mockMakeInvoice,
   nwcMakeInvoice,
+  parseOrderMessageRumorEvent,
   publishWithPlanner,
   weblnMakeInvoice,
   type ParsedOrderMessage,
@@ -122,6 +124,30 @@ function formatProductReference(productId: string): {
   return { title, detail: normalized }
 }
 
+function prepareMerchantConversationRumor(
+  rumor: NDKEvent,
+  merchantPubkey: string
+): void {
+  rumor.pubkey = merchantPubkey
+  if (rumor.id) return
+
+  try {
+    rumor.id = rumor.getEventHash()
+  } catch (error) {
+    console.warn("Failed to derive merchant message rumor id", error)
+  }
+}
+
+async function cacheMerchantConversationRumor(rumor: NDKEvent): Promise<void> {
+  try {
+    if (!rumor.id) throw new Error("Missing merchant message rumor id")
+    const parsed = parseOrderMessageRumorEvent(rumor)
+    await cacheParsedOrderMessage(parsed)
+  } catch (error) {
+    console.warn("Failed to cache merchant message", error)
+  }
+}
+
 async function publishOrderConversationMessage(params: {
   merchantPubkey: string
   buyerPubkey: string
@@ -157,31 +183,41 @@ async function publishOrderConversationMessage(params: {
     buyerPubkey: params.buyerPubkey,
     createdAt: Date.now(),
   })
+  prepareMerchantConversationRumor(rumor, params.merchantPubkey)
 
   const buyerUser = new NDKUser({ pubkey: params.buyerPubkey })
   const merchantUser = new NDKUser({ pubkey: params.merchantPubkey })
 
-  const wrappedToBuyer = await giftWrap(rumor, buyerUser, ndk.signer, {
-    rumorKind: EVENT_KINDS.ORDER,
-  })
-  const wrappedToMerchant = await giftWrap(rumor, merchantUser, ndk.signer, {
-    rumorKind: EVENT_KINDS.ORDER,
+  const [wrappedToBuyer, wrappedToMerchant] = await Promise.all([
+    giftWrap(rumor, buyerUser, ndk.signer, {
+      rumorKind: EVENT_KINDS.ORDER,
+    }),
+    giftWrap(rumor, merchantUser, ndk.signer, {
+      rumorKind: EVENT_KINDS.ORDER,
+    }),
+  ])
+
+  await publishWithPlanner(wrappedToBuyer, {
+    intent: "recipient_event",
+    authorPubkey: params.merchantPubkey,
+    recipientPubkeys: [params.buyerPubkey],
+    refreshRelayLists: true,
+    deliveryMode: "critical",
   })
 
-  await Promise.all([
-    publishWithPlanner(wrappedToBuyer, {
-      intent: "recipient_event",
-      authorPubkey: params.merchantPubkey,
-      recipientPubkeys: [params.buyerPubkey],
-      refreshRelayLists: true,
-    }),
-    publishWithPlanner(wrappedToMerchant, {
+  try {
+    await publishWithPlanner(wrappedToMerchant, {
       intent: "recipient_event",
       authorPubkey: params.merchantPubkey,
       recipientPubkeys: [params.merchantPubkey],
       refreshRelayLists: true,
-    }),
-  ])
+      deliveryMode: "critical",
+    })
+  } catch (error) {
+    console.warn("Merchant message self-copy publish failed", error)
+  }
+
+  await cacheMerchantConversationRumor(rumor)
 }
 
 function MessageCard({
@@ -816,8 +852,8 @@ function OrdersPage() {
   })
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
+    <div className="space-y-6 xl:flex xl:h-[calc(100vh-8.5rem)] xl:flex-col xl:overflow-hidden">
+      <div className="flex flex-wrap items-start justify-between gap-4 xl:shrink-0">
         <div>
           <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">
             Orders
@@ -887,33 +923,9 @@ function OrdersPage() {
             </Button>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            asChild
-            variant={
-              canMockInvoice() || weblnAvailable || nwc.connection
-                ? "outline"
-                : "muted"
-            }
-            size="sm"
-          >
-            <Link to="/payments">
-              {canMockInvoice()
-                ? "Mock mode"
-                : weblnAvailable
-                  ? "Alby detected"
-                  : nwc.connection
-                    ? "Wallet connected"
-                    : "Payment settings"}
-            </Link>
-          </Button>
-          <Button asChild variant="muted">
-            <Link to="/">Home</Link>
-          </Button>
-        </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-3 xl:shrink-0">
         <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
           <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
             Open threads
@@ -971,12 +983,12 @@ function OrdersPage() {
         )}
 
       {signerConnected && conversations.length > 0 && (
-        <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
-          <aside className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-2">
-            <div className="mb-2 px-2 text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+        <div className="grid gap-4 xl:min-h-0 xl:flex-1 xl:grid-cols-[320px_minmax(0,1fr)]">
+          <aside className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-2 xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:overflow-hidden">
+            <div className="mb-2 px-2 text-xs uppercase tracking-wide text-[var(--text-secondary)] xl:shrink-0">
               Conversations
             </div>
-            <div className="space-y-1">
+            <div className="space-y-1 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
               {conversations.map((conversation) => {
                 const active = conversation.id === selectedConversationId
                 const buyerProfile =
@@ -1028,16 +1040,23 @@ function OrdersPage() {
             </div>
           </aside>
 
-          <section className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+          <section className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:overflow-hidden">
             {selected && orderSummary ? (
-              <Tabs value={activeTab} onValueChange={setActiveTab}>
-                <TabsList>
+              <Tabs
+                value={activeTab}
+                onValueChange={setActiveTab}
+                className="xl:flex xl:h-full xl:min-h-0 xl:flex-col"
+              >
+                <TabsList className="xl:shrink-0">
                   <TabsTrigger value="details">Details</TabsTrigger>
                   <TabsTrigger value="actions">Actions</TabsTrigger>
                   <TabsTrigger value="messages">Messages</TabsTrigger>
                 </TabsList>
 
-                <TabsContent value="details">
+                <TabsContent
+                  value="details"
+                  className="xl:min-h-0 xl:overflow-auto xl:pr-1"
+                >
                   <OrderDetailCard
                     orderId={selected.orderId}
                     status={selected.status}
@@ -1060,7 +1079,10 @@ function OrdersPage() {
                   />
                 </TabsContent>
 
-                <TabsContent value="actions">
+                <TabsContent
+                  value="actions"
+                  className="xl:min-h-0 xl:overflow-auto xl:pr-1"
+                >
                   <div className="space-y-4">
                     {successFlash && (
                       <div className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-400">
@@ -1244,23 +1266,27 @@ function OrdersPage() {
                         <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
                           Status update
                         </div>
-                        <select
-                          className="h-10 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--text-primary)]"
+                        <Select
                           value={orderStatus}
-                          onChange={(event) =>
+                          onValueChange={(value) =>
                             setOrderStatus(
-                              event.target
-                                .value as StatusUpdateMessageSchema["status"]
+                              value as StatusUpdateMessageSchema["status"]
                             )
                           }
                         >
-                          <option value="">Choose status</option>
-                          <option value="paid">paid</option>
-                          <option value="processing">processing</option>
-                          <option value="shipped">shipped</option>
-                          <option value="complete">complete</option>
-                          <option value="cancelled">cancelled</option>
-                        </select>
+                          <SelectTrigger aria-label="Choose status">
+                            <SelectValue placeholder="Choose status" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="paid">paid</SelectItem>
+                            <SelectItem value="processing">
+                              processing
+                            </SelectItem>
+                            <SelectItem value="shipped">shipped</SelectItem>
+                            <SelectItem value="complete">complete</SelectItem>
+                            <SelectItem value="cancelled">cancelled</SelectItem>
+                          </SelectContent>
+                        </Select>
                         <Input
                           value={statusNote}
                           onChange={(event) =>
@@ -1352,9 +1378,12 @@ function OrdersPage() {
                   </div>
                 </TabsContent>
 
-                <TabsContent value="messages">
-                  <div className="space-y-4">
-                    <div className="max-h-[44vh] space-y-3 overflow-auto pr-1">
+                <TabsContent
+                  value="messages"
+                  className="xl:flex xl:min-h-0 xl:flex-1 xl:flex-col"
+                >
+                  <div className="space-y-4 xl:flex xl:min-h-0 xl:flex-1 xl:flex-col xl:space-y-0 xl:gap-4">
+                    <div className="max-h-[44vh] space-y-3 overflow-auto pr-1 xl:max-h-none xl:min-h-0 xl:flex-1">
                       {(selected.messages ?? []).map((message) => (
                         <MessageCard
                           key={message.id}
@@ -1365,7 +1394,7 @@ function OrdersPage() {
                       ))}
                     </div>
                     <form
-                      className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
+                      className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3 xl:shrink-0"
                       onSubmit={(event) => {
                         event.preventDefault()
                         noteMutation.mutate()

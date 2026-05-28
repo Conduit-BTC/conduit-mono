@@ -10,9 +10,17 @@ import {
   Upload,
   WifiOff,
 } from "lucide-react"
-import { type DragEvent, type FormEvent, type ReactNode, useState } from "react"
+import {
+  type DragEvent,
+  type FormEvent,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useState,
+} from "react"
 import { Button } from "./Button"
 import { Input } from "./Input"
+import { SignedActionStatus } from "./SignedActionStatus"
 import { StatusPill } from "./StatusPill"
 import { cn } from "../utils"
 
@@ -66,6 +74,7 @@ export interface RelaySettingsPanelProps {
   onReorderCommerceRelay?: (sourceUrl: string, targetUrl: string) => void
   onReset?: () => void
   onRestoreDefaults?: () => void
+  onIncludeDefaults?: () => void
   onPublishRelayList?: () => void | Promise<void>
   className?: string
 }
@@ -82,7 +91,7 @@ const sectionMeta: Record<
   }
 > = {
   commerce: {
-    label: "Commerce Enabled Relays",
+    label: "Commerce Relays",
     description:
       "Relays that Conduit can use for commerce events like products, stock updates, orders, and merchant messages.",
     labelClassName: "text-[var(--primary-500)]",
@@ -93,7 +102,7 @@ const sectionMeta: Record<
       "No verified commerce relays yet. Add a relay and Conduit will verify whether it belongs here.",
   },
   public: {
-    label: "Other Public Relays",
+    label: "Public Relays",
     description:
       "General Nostr relays used for broader network reading, publishing, and discovery.",
     labelClassName: "text-[var(--accent-500)]",
@@ -137,7 +146,7 @@ function getRelayWarningText(entry: RelaySettingsPanelEntry): string | null {
     return "DM relay without auth. Conduit may limit DM use here because access controls may be weaker."
   }
   if (entry.warnings.commercePartialSupport) {
-    return "Some commerce signals were detected, but this relay does not meet the full commerce profile."
+    return "Some commerce signals were detected, but this relay does not meet the full profile: NIP-33, NIP-65, NIP-99, NIP-17, and NIP-42."
   }
   if (entry.warnings.staleRelayInfo) {
     return "Relay information is cached or seeded. Refresh to verify current capabilities."
@@ -153,7 +162,7 @@ function getRelayCompatibilityText(entry: RelaySettingsPanelEntry): string {
     return "Commerce compatible. Conduit can prioritize this relay for products, stock, orders, and merchant messages."
   }
   if (entry.warnings.commercePartialSupport) {
-    return "Partial commerce signals detected. Conduit keeps this relay public until full commerce checks pass."
+    return "Partial commerce signals detected. Conduit keeps this relay public until NIP-33, NIP-65, NIP-99, NIP-17, and NIP-42 are advertised."
   }
   if (entry.capabilities.nip11) {
     return "Public relay verified. Conduit can use it for general Nostr reads or writes when enabled."
@@ -162,6 +171,23 @@ function getRelayCompatibilityText(entry: RelaySettingsPanelEntry): string {
     return "Compatibility has not been freshly verified. Refresh this relay to update detected capabilities."
   }
   return "Compatibility has not been scanned yet."
+}
+
+function getRelaySourceMeta(entry: RelaySettingsPanelEntry): {
+  label: string
+  variant: "success" | "info" | "neutral"
+} {
+  switch (entry.source) {
+    case "published":
+      return { label: "Published", variant: "success" }
+    case "signer":
+      return { label: "Signer", variant: "info" }
+    case "manual":
+      return { label: "Manual", variant: "info" }
+    case "default":
+    default:
+      return { label: "Conduit default", variant: "neutral" }
+  }
 }
 
 function CapabilityTooltip({
@@ -174,7 +200,7 @@ function CapabilityTooltip({
   children: ReactNode
 }) {
   return (
-    <span className="group/tooltip relative inline-flex">
+    <span className="group/tooltip relative inline-flex rounded-md">
       {children}
       <span className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 w-64 max-w-[calc(100vw-3rem)] rounded-xl border border-[var(--border)] bg-[var(--surface-dialog)] px-3 py-2 text-left text-xs leading-5 text-[var(--text-secondary)] opacity-0 shadow-[var(--shadow-dialog)] transition-opacity group-focus-within/tooltip:opacity-100 group-hover/tooltip:opacity-100 sm:left-1/2 sm:-translate-x-1/2">
         <span className="block font-semibold text-[var(--text-primary)]">
@@ -223,38 +249,31 @@ function CapabilityIcon({
   active,
   icon: Icon,
   label,
-  shortLabel,
   description,
   warning = false,
 }: {
   active: boolean
   icon: typeof Search
   label: string
-  shortLabel: string
   description: string
   warning?: boolean
 }) {
   return (
     <CapabilityTooltip label={label} description={description}>
-      <span className="inline-flex flex-col items-center gap-1">
-        <span
-          tabIndex={0}
-          title={label}
-          aria-label={label}
-          className={cn(
-            "inline-flex h-8 w-8 items-center justify-center rounded-full border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
-            warning
-              ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_18%,transparent)] text-[var(--warning)]"
-              : active
-                ? "border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_18%,transparent)] text-[var(--success)]"
-                : "border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)]"
-          )}
-        >
-          <Icon className="h-3.5 w-3.5" />
-        </span>
-        <span className="hidden text-[0.56rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)] lg:block">
-          {shortLabel}
-        </span>
+      <span
+        tabIndex={0}
+        title={label}
+        aria-label={`${label}: ${description}`}
+        className={cn(
+          "relative inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+          warning
+            ? "text-[var(--warning)]"
+            : active
+              ? "text-[var(--success)]"
+              : "text-[var(--text-secondary)]"
+        )}
+      >
+        <Icon className="h-3 w-3" />
       </span>
     </CapabilityTooltip>
   )
@@ -285,10 +304,13 @@ function RelayRow({
   onToggleRead: (url: string, enabled: boolean) => void
   onToggleWrite: (url: string, enabled: boolean) => void
 }) {
-  const warningText = getRelayWarningText(entry)
+  const warningText = scanning ? null : getRelayWarningText(entry)
   const compatibilityText = getRelayCompatibilityText(entry)
   const isDisabled = entry.warnings.unreachable || scanning
+  const isDefaultEntry = entry.source === "default"
   const draggable = section === "commerce" && !!onDropRelay
+  const statusLabel = scanning ? "Checking" : getRelayStatusLabel(entry)
+  const sourceMeta = getRelaySourceMeta(entry)
 
   function handleDragStart(event: DragEvent<HTMLDivElement>): void {
     if (!draggable) return
@@ -349,7 +371,7 @@ function RelayRow({
               {entry.url}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
-              <span>{getRelayStatusLabel(entry)}</span>
+              <span>{statusLabel}</span>
               <CapabilityTooltip
                 label={
                   entry.capabilities.commerce
@@ -379,11 +401,13 @@ function RelayRow({
                 </StatusPill>
               </CapabilityTooltip>
               {entry.relayName ? <span>{entry.relayName}</span> : null}
-              {warningText ? (
-                <span className="text-warning" title={warningText}>
-                  {warningText}
-                </span>
-              ) : null}
+              <StatusPill
+                variant={sourceMeta.variant}
+                noIcon
+                className="cursor-default py-0.5 text-[0.68rem]"
+              >
+                {sourceMeta.label}
+              </StatusPill>
             </div>
           </div>
         </div>
@@ -409,11 +433,10 @@ function RelayRow({
 
         <div className="h-5 w-px shrink-0 bg-[var(--border)] lg:hidden" />
 
-        <div className="flex items-center gap-1.5 lg:flex-nowrap lg:justify-center">
+        <div className="flex items-center gap-2.5 lg:flex-nowrap lg:justify-center">
           <CapabilityIcon
             active={entry.capabilities.search}
             icon={Search}
-            shortLabel="Search"
             label={
               entry.capabilities.search
                 ? "Search supported"
@@ -428,7 +451,6 @@ function RelayRow({
           <CapabilityIcon
             active={entry.capabilities.dm}
             icon={Send}
-            shortLabel="DM"
             label={
               entry.capabilities.dm
                 ? "DM support detected"
@@ -443,7 +465,6 @@ function RelayRow({
           <CapabilityIcon
             active={entry.capabilities.auth || entry.warnings.dmWithoutAuth}
             icon={LockKeyhole}
-            shortLabel="Auth"
             label={
               entry.warnings.dmWithoutAuth
                 ? "DM relay without auth"
@@ -464,7 +485,6 @@ function RelayRow({
             <CapabilityIcon
               active
               icon={entry.warnings.unreachable ? WifiOff : AlertTriangle}
-              shortLabel="Warn"
               label={warningText ?? "Relay warning"}
               description={`${warningText ?? "Conduit detected a relay warning."} ${compatibilityText}`}
               warning
@@ -484,15 +504,27 @@ function RelayRow({
             title="Refresh relay verification"
           >
             <RefreshCw
-              className={cn("h-3.5 w-3.5", scanning && "animate-spin")}
+              className={cn(
+                "h-3.5 w-3.5 hover-spin-once",
+                scanning && "animate-spin"
+              )}
             />
           </button>
           <button
             type="button"
             onClick={() => onRemoveRelay(entry.url)}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)] opacity-100 transition-colors hover:border-[var(--error)] hover:bg-[color-mix(in_srgb,var(--error)_12%,transparent)] hover:text-[var(--error)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 lg:opacity-0 lg:group-hover:opacity-100"
-            aria-label={`Remove ${entry.url}`}
-            title="Remove relay"
+            disabled={isDefaultEntry}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border-overlay)] bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] text-[var(--text-secondary)] opacity-100 transition-colors hover:border-[var(--error)] hover:bg-[color-mix(in_srgb,var(--error)_12%,transparent)] hover:text-[var(--error)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:border-[var(--border-overlay)] disabled:hover:bg-[color-mix(in_srgb,var(--neutral-500)_10%,transparent)] disabled:hover:text-[var(--text-secondary)] lg:opacity-0 lg:group-hover:opacity-100"
+            aria-label={
+              isDefaultEntry
+                ? `${entry.url} is a default fallback`
+                : `Remove ${entry.url}`
+            }
+            title={
+              isDefaultEntry
+                ? "Default fallbacks stay visible unless you edit them into your list."
+                : "Remove relay"
+            }
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
@@ -601,25 +633,53 @@ export function RelaySettingsPanel({
   onReorderCommerceRelay,
   onReset,
   onRestoreDefaults,
+  onIncludeDefaults,
   onPublishRelayList,
   className,
 }: RelaySettingsPanelProps) {
   const [newRelayUrl, setNewRelayUrl] = useState("")
   const [isAdding, setIsAdding] = useState(false)
   const [isPublishing, setIsPublishing] = useState(false)
+  const [relayPublishSucceeded, setRelayPublishSucceeded] = useState(false)
   const [draggedUrl, setDraggedUrl] = useState<string | null>(null)
   const commerceEntries = sortSectionEntries(settings.entries, "commerce")
   const publicEntries = sortSectionEntries(settings.entries, "public")
-  const activeRelayCount = settings.entries.filter(
+  const publishableEntries = settings.entries.filter(
+    (entry) =>
+      entry.source !== "default" && (entry.readEnabled || entry.writeEnabled)
+  )
+  const defaultRelayCount = settings.entries.filter(
+    (entry) => entry.source === "default"
+  ).length
+  const activeRelayCount = publishableEntries.length
+  const localActiveRelayCount = settings.entries.filter(
     (entry) => entry.readEnabled || entry.writeEnabled
   ).length
-  const publishedLabel = publishedRelayListUpdatedAt
-    ? `Published relays loaded ${new Date(
-        publishedRelayListUpdatedAt * 1000
-      ).toLocaleDateString()}`
-    : isLoadingPublishedRelayList
-      ? "Checking published relays"
-      : "Local relay changes"
+  const readRelayCount = publishableEntries.filter(
+    (entry) => entry.readEnabled
+  ).length
+  const writeRelayCount = publishableEntries.filter(
+    (entry) => entry.writeEnabled
+  ).length
+  const canPublishRelayList = activeRelayCount > 1 && writeRelayCount > 0
+  const relaySettingsFingerprint = useMemo(
+    () =>
+      settings.entries
+        .map((entry) =>
+          [
+            entry.url,
+            entry.readEnabled ? "read" : "no-read",
+            entry.writeEnabled ? "write" : "no-write",
+          ].join(":")
+        )
+        .sort()
+        .join("|"),
+    [settings.entries]
+  )
+
+  useEffect(() => {
+    setRelayPublishSucceeded(false)
+  }, [relaySettingsFingerprint])
 
   async function handleAddRelay(event: FormEvent): Promise<void> {
     event.preventDefault()
@@ -639,8 +699,12 @@ export function RelaySettingsPanel({
     if (!onPublishRelayList || isPublishing || publishingRelayList) return
 
     setIsPublishing(true)
+    setRelayPublishSucceeded(false)
     try {
       await onPublishRelayList()
+      setRelayPublishSucceeded(true)
+    } catch {
+      setRelayPublishSucceeded(false)
     } finally {
       setIsPublishing(false)
     }
@@ -656,21 +720,20 @@ export function RelaySettingsPanel({
       <div className="space-y-8">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
-              Network
-            </div>
-            <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
-              Relay Settings
+            <h1 className="font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
+              Network Settings
             </h1>
             <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
               Relays store and deliver data across the Nostr network.
             </p>
           </div>
-          <div className="flex flex-col items-start gap-1 pt-1 sm:items-end">
-            <span className="text-[0.65rem] uppercase tracking-[0.18em] text-[var(--text-muted)]">
-              {publishedLabel}
-            </span>
-          </div>
+          {isLoadingPublishedRelayList || publishedRelayListUpdatedAt ? (
+            <div className="flex min-h-7 items-center pt-1 text-xs text-[var(--text-muted)]">
+              {isLoadingPublishedRelayList
+                ? "Checking relays"
+                : "Published relays loaded"}
+            </div>
+          ) : null}
         </div>
 
         <RelaySection
@@ -768,40 +831,86 @@ export function RelaySettingsPanel({
         </form>
 
         {onReset || onPublishRelayList ? (
-          <div className="flex flex-wrap justify-end gap-2">
-            {onReset ? (
-              <Button type="button" variant="ghost" onClick={onReset}>
-                {onPublishRelayList ? "Reset local draft" : "Reset to defaults"}
-              </Button>
-            ) : null}
-            {onRestoreDefaults && settings.entries.length > 0 ? (
-              <Button type="button" variant="ghost" onClick={onRestoreDefaults}>
-                Replace with defaults
-              </Button>
-            ) : null}
+          <div className="space-y-3">
             {onPublishRelayList ? (
-              <Button
-                type="button"
-                variant="outline"
-                disabled={
-                  activeRelayCount <= 1 ||
-                  isLoadingPublishedRelayList ||
-                  isPublishing ||
-                  publishingRelayList
-                }
-                onClick={() => void handlePublishRelayList()}
-              >
-                <Upload className="h-4 w-4" />
-                {isPublishing || publishingRelayList
-                  ? "Publishing..."
-                  : "Publish relays"}
-              </Button>
+              <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs leading-5 text-[var(--text-secondary)]">
+                Publishing signs a NIP-65 event with {activeRelayCount} saved{" "}
+                relay {activeRelayCount === 1 ? "tag" : "tags"}:{" "}
+                {readRelayCount} IN, {writeRelayCount} OUT.
+                {defaultRelayCount > 0
+                  ? ` ${defaultRelayCount} Conduit default ${defaultRelayCount === 1 ? "relay is" : "relays are"} shown as local fallback and excluded until added to your list.`
+                  : ""}
+                {writeRelayCount === 0
+                  ? " Enable OUT on at least one relay before publishing."
+                  : " Signers may show empty content because relay URLs live in tags, and may auto-approve if this site already has signing permission."}
+              </div>
             ) : null}
-          </div>
-        ) : null}
-        {publishError ? (
-          <div className="rounded-xl border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
-            {publishError}
+            <div className="flex flex-wrap justify-end gap-2">
+              {onReset ? (
+                <Button type="button" variant="ghost" onClick={onReset}>
+                  {onPublishRelayList
+                    ? "Replace with default relays"
+                    : "Reset to defaults"}
+                </Button>
+              ) : null}
+              {onIncludeDefaults && defaultRelayCount > 0 ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={onIncludeDefaults}
+                >
+                  <Plus className="h-4 w-4" />
+                  Add defaults to my list
+                </Button>
+              ) : null}
+              {onRestoreDefaults &&
+              settings.entries.length > 0 &&
+              !onPublishRelayList ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={onRestoreDefaults}
+                >
+                  Replace with defaults
+                </Button>
+              ) : null}
+              {onPublishRelayList ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={
+                    !canPublishRelayList ||
+                    localActiveRelayCount === 0 ||
+                    isLoadingPublishedRelayList ||
+                    isPublishing ||
+                    publishingRelayList
+                  }
+                  onClick={() => void handlePublishRelayList()}
+                >
+                  <Upload className="h-4 w-4" />
+                  {isPublishing || publishingRelayList
+                    ? "Waiting for signer..."
+                    : "Publish relays"}
+                </Button>
+              ) : null}
+            </div>
+            {onPublishRelayList ? (
+              <SignedActionStatus
+                state={
+                  isPublishing || publishingRelayList
+                    ? "awaiting_signature"
+                    : publishError
+                      ? "error"
+                      : relayPublishSucceeded
+                        ? "success"
+                        : "idle"
+                }
+                awaitingSignatureMessage="Confirm the relay list in your signer. It will show as published after relay delivery finishes."
+                successMessage="Relay list signed and published."
+                errorMessage={publishError ?? undefined}
+                className="justify-end"
+              />
+            ) : null}
           </div>
         ) : null}
       </div>

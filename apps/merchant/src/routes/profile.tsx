@@ -1,7 +1,16 @@
-import { useEffect, useState } from "react"
-import { AlertCircle, Link2, UserRound } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
+import {
+  AlertCircle,
+  Check,
+  Copy,
+  ExternalLink,
+  Link2,
+  Store,
+  UserRound,
+} from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import {
+  pubkeyToNpub,
   useAuth,
   useProfile,
   useUpdateProfile,
@@ -14,7 +23,9 @@ import {
   Button,
   Input,
   Label,
+  SignedActionStatus,
   StatusPill,
+  Textarea,
   cn,
 } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
@@ -47,12 +58,43 @@ function RequiredMark() {
   )
 }
 
+function inferMarketOrigin(): string {
+  if (typeof window === "undefined") return "https://conduit.market"
+
+  const { hostname, protocol, port } = window.location
+  const previewHostReplacements: [string, string][] = [
+    [".conduit-merchant-33n.pages.dev", ".conduit-market-coo.pages.dev"],
+    [".conduit-merchant-signet.pages.dev", ".conduit-market-signet.pages.dev"],
+  ]
+
+  for (const [merchantSuffix, marketSuffix] of previewHostReplacements) {
+    if (hostname.endsWith(merchantSuffix)) {
+      return `${protocol}//${hostname.slice(0, -merchantSuffix.length)}${marketSuffix}`
+    }
+  }
+
+  if (hostname === "localhost" || hostname === "127.0.0.1") {
+    const localMarketPort =
+      port === "7001" ? "7000" : port === "5174" ? "5173" : ""
+    if (localMarketPort) return `${protocol}//${hostname}:${localMarketPort}`
+  }
+
+  return "https://conduit.market"
+}
+
+function getStorefrontUrl(pubkey: string): string {
+  return `${inferMarketOrigin()}/store/${encodeURIComponent(pubkey)}`
+}
+
 function ProfilePage() {
   const { pubkey } = useAuth()
   const profileQuery = useProfile(pubkey)
   const updateMutation = useUpdateProfile("merchant")
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState<ProfileFormValues>(EMPTY_PROFILE_FORM)
+  const [copiedPubkey, setCopiedPubkey] = useState(false)
+  const [copiedStoreLink, setCopiedStoreLink] = useState(false)
+  const [profileSaveSucceeded, setProfileSaveSucceeded] = useState(false)
 
   useEffect(() => {
     if (profileQuery.data) {
@@ -63,12 +105,62 @@ function ProfilePage() {
   const profileData = profileQuery.data
   const complete = isProfileComplete(profileData)
   const displayName = profileData?.displayName || profileData?.name
+  const npub = pubkey ? pubkeyToNpub(pubkey) : ""
+  const storefrontUrl = pubkey ? getStorefrontUrl(pubkey) : ""
+  const savedProfileForm = useMemo(
+    () => (profileData ? profileToFormValues(profileData) : EMPTY_PROFILE_FORM),
+    [profileData]
+  )
+  const hasProfileChanges = useMemo(
+    () => JSON.stringify(form) !== JSON.stringify(savedProfileForm),
+    [form, savedProfileForm]
+  )
+  const profileSaveStatus = updateMutation.isPending
+    ? "awaiting_signature"
+    : updateMutation.error
+      ? "error"
+      : hasProfileChanges
+        ? "dirty"
+        : profileSaveSucceeded
+          ? "success"
+          : "idle"
+
+  useEffect(() => {
+    if (hasProfileChanges) setProfileSaveSucceeded(false)
+  }, [hasProfileChanges])
 
   function handleSave(e: React.FormEvent) {
     e.preventDefault()
+    if (!hasProfileChanges || updateMutation.isPending) return
+    setProfileSaveSucceeded(false)
     updateMutation.mutate(profileFormToUpdatePayload(form), {
-      onSuccess: () => setEditing(false),
+      onSuccess: () => {
+        setProfileSaveSucceeded(true)
+        setEditing(false)
+      },
     })
+  }
+
+  async function copyNpub() {
+    if (!npub) return
+    try {
+      await navigator.clipboard.writeText(npub)
+      setCopiedPubkey(true)
+      window.setTimeout(() => setCopiedPubkey(false), 1400)
+    } catch {
+      setCopiedPubkey(false)
+    }
+  }
+
+  async function copyStorefrontLink() {
+    if (!storefrontUrl) return
+    try {
+      await navigator.clipboard.writeText(storefrontUrl)
+      setCopiedStoreLink(true)
+      window.setTimeout(() => setCopiedStoreLink(false), 1400)
+    } catch {
+      setCopiedStoreLink(false)
+    }
   }
 
   return (
@@ -89,6 +181,13 @@ function ProfilePage() {
                   Edit the merchant profile buyers see across Market and your
                   storefront surfaces.
                 </p>
+                {!editing && profileSaveSucceeded && (
+                  <SignedActionStatus
+                    state="success"
+                    successMessage="Profile signed and saved."
+                    className="mt-3"
+                  />
+                )}
               </div>
             </div>
 
@@ -188,7 +287,10 @@ function ProfilePage() {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => setEditing(true)}
+                          onClick={() => {
+                            setEditing(true)
+                            setProfileSaveSucceeded(false)
+                          }}
                         >
                           Edit
                         </Button>
@@ -233,13 +335,88 @@ function ProfilePage() {
                           </a>
                         </div>
                       )}
+                      {storefrontUrl && (
+                        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
+                          <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--text-secondary)]">
+                            <Store className="h-3.5 w-3.5" />
+                            Conduit Store
+                          </div>
+                          <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-start">
+                            <a
+                              href={storefrontUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title="Open Conduit store in a new tab"
+                              className="min-w-0 flex-1 break-all font-mono text-xs leading-5 text-[var(--accent)] underline-offset-2 hover:underline"
+                            >
+                              {storefrontUrl}
+                            </a>
+                            <div className="flex shrink-0 items-center gap-2">
+                              <button
+                                type="button"
+                                aria-label={
+                                  copiedStoreLink
+                                    ? "Copied store link"
+                                    : "Copy store link"
+                                }
+                                onClick={copyStorefrontLink}
+                                className={[
+                                  "inline-flex h-8 w-8 items-center justify-center rounded-full border transition-colors",
+                                  copiedStoreLink
+                                    ? "border-[var(--success)]/40 bg-[color-mix(in_srgb,var(--success)_12%,transparent)] text-[var(--success)]"
+                                    : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+                                ].join(" ")}
+                              >
+                                {copiedStoreLink ? (
+                                  <Check className="h-3.5 w-3.5" />
+                                ) : (
+                                  <Copy className="h-3.5 w-3.5" />
+                                )}
+                              </button>
+                              <a
+                                href={storefrontUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title="Open Conduit store in a new tab"
+                                aria-label="Open Conduit store"
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] transition-colors hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                              >
+                                <ExternalLink className="h-3.5 w-3.5" />
+                              </a>
+                            </div>
+                          </div>
+                          <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
+                            Share this direct Market storefront link with buyers
+                            even before relay discovery catches up.
+                          </p>
+                        </div>
+                      )}
                       <div className="border-t border-[var(--border)] pt-4">
                         <div className="text-xs font-medium text-[var(--text-secondary)]">
                           Pubkey
                         </div>
-                        <p className="mt-1 break-all font-mono text-xs text-[var(--text-secondary)]">
-                          {pubkey}
-                        </p>
+                        <div className="mt-1 flex items-start gap-2">
+                          <p className="break-all font-mono text-xs text-[var(--text-secondary)]">
+                            {npub}
+                          </p>
+                          <button
+                            type="button"
+                            aria-label={copiedPubkey ? "Copied" : "Copy npub"}
+                            onClick={copyNpub}
+                            className={[
+                              "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors",
+                              copiedPubkey
+                                ? "border-[var(--success)]/40 bg-[color-mix(in_srgb,var(--success)_12%,transparent)] text-[var(--success)]"
+                                : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+                            ].join(" ")}
+                          >
+                            {copiedPubkey ? (
+                              <Check className="h-3.5 w-3.5" />
+                            ) : (
+                              <Copy className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -271,6 +448,7 @@ function ProfilePage() {
                       size="sm"
                       onClick={() => {
                         setEditing(false)
+                        setProfileSaveSucceeded(false)
                         if (profileQuery.data) {
                           setForm(profileToFormValues(profileQuery.data))
                         }
@@ -330,10 +508,10 @@ function ProfilePage() {
                         About
                         <RequiredMark />
                       </Label>
-                      <textarea
+                      <Textarea
                         id="profile-about"
                         className={cn(
-                          "min-h-24 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-primary/20 transition focus:ring-2",
+                          "min-h-24 ring-primary/20 transition",
                           REQUIRED_FIELDS.includes("about") && !form.about
                             ? "border-[var(--warning)]/40 focus:ring-[var(--warning)]/30"
                             : ""
@@ -497,11 +675,27 @@ function ProfilePage() {
                       </div>
                     )}
 
-                    <div className="flex items-center justify-end gap-2 md:col-span-2">
-                      <Button type="submit" disabled={updateMutation.isPending}>
+                    <div className="flex flex-col items-start gap-3 md:col-span-2 md:flex-row md:items-center md:justify-end">
+                      <SignedActionStatus
+                        state={profileSaveStatus}
+                        dirtyMessage="Save changes to publish your merchant profile."
+                        awaitingSignatureMessage="Confirm the profile update in your signer. It will show as saved after relay publish finishes."
+                        successMessage="Profile signed and saved."
+                        errorMessage={
+                          updateMutation.error instanceof Error
+                            ? updateMutation.error.message
+                            : "Failed to update profile"
+                        }
+                      />
+                      <Button
+                        type="submit"
+                        disabled={
+                          updateMutation.isPending || !hasProfileChanges
+                        }
+                      >
                         {updateMutation.isPending
-                          ? "Saving..."
-                          : "Save profile"}
+                          ? "Waiting for signer..."
+                          : "Save changes"}
                       </Button>
                     </div>
                   </form>

@@ -1,18 +1,25 @@
-const DEFAULT_RELAYS = [
-  // Bootstrap read relays for product discovery. Capability scans determine
-  // trust/commerce status; inclusion here does not grant write authority.
-  "wss://relay.conduit.market",
+export const CANONICAL_DEFAULT_RELAYS = [
+  // Canonical in-app relay reset list. Deploy env may add relays, but this
+  // source list stays visible in the browser console for public verification.
   "wss://conduitl2.fly.dev",
   "wss://relay.plebeian.market",
   "wss://relay.primal.net",
   "wss://relay.damus.io",
   "wss://nos.lol",
-  "wss://purplepag.es",
+  "wss://nostr.mom",
+  "wss://relay.nostr.net",
+  "wss://relay.minibits.cash",
 ]
+export const CANONICAL_APP_WRITE_RELAYS = ["wss://conduitl2.fly.dev"]
+const RETIRED_DEFAULT_RELAYS = new Set(["wss://relay.conduit.market"])
+const FALLBACK_RELAY_URL = "wss://relay.primal.net"
+const PUBLIC_REPO_ISSUES_URL =
+  "https://github.com/Conduit-BTC/conduit-mono/issues"
 
 export interface ConduitConfig {
   relayUrl: string
   defaultRelays: string[]
+  appWriteRelayUrls: string[]
   commerceRelayUrls: string[]
   publicRelayUrls: string[]
   cacheApiUrl: string | null
@@ -29,10 +36,11 @@ export interface ConduitConfig {
 // Use direct access for each variable so Vite can inline them at build time.
 function getViteEnv(): {
   relayUrl: string
-  defaultRelays: string
   defaultRelayUrl: string
-  commerceRelayUrls: string
+  defaultRelays: string
+  appWriteRelayUrls: string
   publicRelayUrls: string
+  commerceRelayUrls: string
   cacheApiUrl: string
   lightningNetwork: string
   nip89RelayHint: string
@@ -44,10 +52,11 @@ function getViteEnv(): {
   if (typeof import.meta !== "undefined" && import.meta.env) {
     return {
       relayUrl: import.meta.env.VITE_RELAY_URL ?? "",
-      defaultRelays: import.meta.env.VITE_DEFAULT_RELAYS ?? "",
       defaultRelayUrl: import.meta.env.VITE_DEFAULT_RELAY_URL ?? "",
-      commerceRelayUrls: import.meta.env.VITE_COMMERCE_RELAY_URLS ?? "",
+      defaultRelays: import.meta.env.VITE_DEFAULT_RELAYS ?? "",
+      appWriteRelayUrls: import.meta.env.VITE_APP_WRITE_RELAY_URLS ?? "",
       publicRelayUrls: import.meta.env.VITE_PUBLIC_RELAY_URLS ?? "",
+      commerceRelayUrls: import.meta.env.VITE_COMMERCE_RELAY_URLS ?? "",
       cacheApiUrl: import.meta.env.VITE_CACHE_API_URL ?? "",
       lightningNetwork: import.meta.env.VITE_LIGHTNING_NETWORK ?? "",
       nip89RelayHint: import.meta.env.VITE_NIP89_RELAY_HINT ?? "",
@@ -59,10 +68,11 @@ function getViteEnv(): {
   }
   return {
     relayUrl: "",
-    defaultRelays: "",
     defaultRelayUrl: "",
-    commerceRelayUrls: "",
+    defaultRelays: "",
+    appWriteRelayUrls: "",
     publicRelayUrls: "",
+    commerceRelayUrls: "",
     cacheApiUrl: "",
     lightningNetwork: "",
     nip89RelayHint: "",
@@ -73,52 +83,216 @@ function getViteEnv(): {
   }
 }
 
-function parseRelayList(raw: string): string[] {
-  return raw
-    .split(",")
-    .map((r) => r.trim())
-    .filter(Boolean)
-    .filter((v, i, a) => a.indexOf(v) === i)
+function normalizeConfiguredRelayUrl(input: string): string | null {
+  const trimmed = input.trim()
+  if (!trimmed) return null
+
+  try {
+    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
+      ? trimmed
+      : `wss://${trimmed}`
+    const parsed = new URL(withScheme)
+    if (parsed.protocol === "http:") parsed.protocol = "ws:"
+    if (parsed.protocol === "https:") parsed.protocol = "wss:"
+    if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") return null
+    if (!parsed.hostname) return null
+
+    parsed.hash = ""
+    parsed.search = ""
+    const pathname =
+      parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "")
+    return `${parsed.protocol}//${parsed.host.toLowerCase()}${pathname}`
+  } catch {
+    return null
+  }
 }
 
-function getDefaultRelays(env: ReturnType<typeof getViteEnv>): string[] {
-  const raw = env.defaultRelays.trim() || env.defaultRelayUrl.trim()
-  if (!raw) return DEFAULT_RELAYS
-  return [...parseRelayList(raw), ...DEFAULT_RELAYS].filter(
-    (url, index, all) => all.indexOf(url) === index
+export function isRetiredDefaultRelayUrl(input: string): boolean {
+  const normalized = normalizeConfiguredRelayUrl(input)
+  return !!normalized && RETIRED_DEFAULT_RELAYS.has(normalized)
+}
+
+function uniqueConfiguredRelayUrls(urls: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const url of urls) {
+    const normalized = normalizeConfiguredRelayUrl(url)
+    if (!normalized) continue
+    if (RETIRED_DEFAULT_RELAYS.has(normalized)) continue
+    if (seen.has(normalized)) continue
+    seen.add(normalized)
+    out.push(normalized)
+  }
+  return out
+}
+
+function parseRelayList(raw: string): string[] {
+  return uniqueConfiguredRelayUrls(raw.split(","))
+}
+
+function getConfiguredRelayUrl(raw: string, fallback: string): string {
+  return uniqueConfiguredRelayUrls([raw])[0] ?? fallback
+}
+
+function formatRelayDebugList(relays: readonly string[]): string {
+  return relays.length > 0
+    ? relays.map((url) => `  - ${url}`).join("\n")
+    : "  - (none)"
+}
+
+function formatInlineRelayDebugList(relays: readonly string[]): string {
+  return relays.length > 0 ? relays.join(", ") : "(none)"
+}
+
+function formatEnvRelayDebugSource(input: {
+  label: string
+  raw: string
+  relays: readonly string[]
+}): string {
+  return [
+    `  ${input.label}`,
+    `    raw: ${input.raw.trim() || "(empty)"}`,
+    `    normalized: ${formatInlineRelayDebugList(input.relays)}`,
+  ].join("\n")
+}
+
+function logRelayDebugConfig(input: {
+  codeDefaults: readonly string[]
+  envSources: readonly {
+    label: string
+    raw: string
+    relays: readonly string[]
+  }[]
+  resolved: {
+    relayUrl: string
+    defaultRelays: readonly string[]
+    appWriteRelayUrls: readonly string[]
+    publicRelayUrls: readonly string[]
+    commerceRelayUrls: readonly string[]
+  }
+}): void {
+  if (typeof window === "undefined") return
+
+  console.log(
+    [
+      "   .----------------------------------------.",
+      "  /  C O N D U I T   R E L A Y   M A P     \\",
+      "  \\________________________________________/",
+      "",
+      "Code defaults:",
+      formatRelayDebugList(input.codeDefaults),
+      "",
+      "Env relay vars loaded by this build:",
+      ...input.envSources.map(formatEnvRelayDebugSource),
+      "",
+      "Resolved relay config:",
+      `  relayUrl hint: ${input.resolved.relayUrl}`,
+      "  appWriteRelayUrls:",
+      formatRelayDebugList(input.resolved.appWriteRelayUrls),
+      "  defaultRelays:",
+      formatRelayDebugList(input.resolved.defaultRelays),
+      "  publicRelayUrls:",
+      formatRelayDebugList(input.resolved.publicRelayUrls),
+      "  commerceRelayUrls:",
+      formatRelayDebugList(input.resolved.commerceRelayUrls),
+      "",
+      `Have feedback? Submit an issue: ${PUBLIC_REPO_ISSUES_URL}`,
+    ].join("\n")
   )
 }
 
 const env = getViteEnv()
 
-const relayUrl = env.relayUrl || "wss://relay.primal.net"
-const legacyRelays = getDefaultRelays(env)
-const commerceRelayUrls = parseRelayList(env.commerceRelayUrls)
-const configuredPublicRelayUrls = parseRelayList(env.publicRelayUrls)
-const publicRelayUrls =
-  configuredPublicRelayUrls.length > 0
-    ? configuredPublicRelayUrls
-    : legacyRelays
-const defaultRelays = [
+const relayUrl = getConfiguredRelayUrl(env.relayUrl, FALLBACK_RELAY_URL)
+const envRelayUrl = uniqueConfiguredRelayUrls([env.relayUrl])
+const envDefaultRelayUrl = uniqueConfiguredRelayUrls([env.defaultRelayUrl])
+const envDefaultRelays = parseRelayList(env.defaultRelays)
+const envAppWriteRelayUrls = parseRelayList(env.appWriteRelayUrls)
+const envPublicRelayUrls = parseRelayList(env.publicRelayUrls)
+const envCommerceRelayUrls = parseRelayList(env.commerceRelayUrls)
+const envGeneralRelayUrls = uniqueConfiguredRelayUrls([
+  ...envRelayUrl,
+  ...envDefaultRelayUrl,
+  ...envDefaultRelays,
+])
+const defaultRelays = uniqueConfiguredRelayUrls(CANONICAL_DEFAULT_RELAYS)
+const appWriteRelayUrls = uniqueConfiguredRelayUrls([
+  ...CANONICAL_APP_WRITE_RELAYS,
+  ...envAppWriteRelayUrls,
+])
+const commerceRelayUrls = uniqueConfiguredRelayUrls([
+  ...appWriteRelayUrls,
+  ...envCommerceRelayUrls,
+])
+const publicRelayUrls = uniqueConfiguredRelayUrls([
+  ...envPublicRelayUrls,
+  ...envGeneralRelayUrls,
+  ...defaultRelays,
+])
+const resolvedDefaultRelays = uniqueConfiguredRelayUrls([
   ...commerceRelayUrls,
   ...publicRelayUrls,
-  relayUrl,
-].filter((url, index, all) => url && all.indexOf(url) === index)
+])
+const nip89RelayHint = getConfiguredRelayUrl(env.nip89RelayHint, relayUrl)
 
 export const config: ConduitConfig = {
   relayUrl,
-  defaultRelays,
+  defaultRelays: resolvedDefaultRelays,
+  appWriteRelayUrls,
   commerceRelayUrls,
   publicRelayUrls,
   cacheApiUrl: env.cacheApiUrl.trim() || null,
   lightningNetwork: (env.lightningNetwork ||
     "mainnet") as ConduitConfig["lightningNetwork"],
-  nip89RelayHint: env.nip89RelayHint.trim() || relayUrl,
+  nip89RelayHint,
   nip89MarketPubkey: env.nip89MarketPubkey.trim() || null,
   nip89MerchantPubkey: env.nip89MerchantPubkey.trim() || null,
   nip89MarketDTag: env.nip89MarketDTag.trim() || "conduit-market",
   nip89MerchantDTag: env.nip89MerchantDTag.trim() || "conduit-merchant",
 }
+
+logRelayDebugConfig({
+  codeDefaults: defaultRelays,
+  envSources: [
+    {
+      label: "VITE_RELAY_URL",
+      raw: env.relayUrl,
+      relays: envRelayUrl,
+    },
+    {
+      label: "VITE_DEFAULT_RELAY_URL",
+      raw: env.defaultRelayUrl,
+      relays: envDefaultRelayUrl,
+    },
+    {
+      label: "VITE_DEFAULT_RELAYS",
+      raw: env.defaultRelays,
+      relays: envDefaultRelays,
+    },
+    {
+      label: "VITE_APP_WRITE_RELAY_URLS",
+      raw: env.appWriteRelayUrls,
+      relays: envAppWriteRelayUrls,
+    },
+    {
+      label: "VITE_PUBLIC_RELAY_URLS",
+      raw: env.publicRelayUrls,
+      relays: envPublicRelayUrls,
+    },
+    {
+      label: "VITE_COMMERCE_RELAY_URLS",
+      raw: env.commerceRelayUrls,
+      relays: envCommerceRelayUrls,
+    },
+  ],
+  resolved: {
+    relayUrl: config.relayUrl,
+    defaultRelays: config.defaultRelays,
+    appWriteRelayUrls: config.appWriteRelayUrls,
+    publicRelayUrls: config.publicRelayUrls,
+    commerceRelayUrls: config.commerceRelayUrls,
+  },
+})
 
 export function isMockPayments(): boolean {
   return config.lightningNetwork === "mock"

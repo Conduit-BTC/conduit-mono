@@ -1,8 +1,16 @@
-import { getData } from "country-list"
-import { useCallback, useEffect, useState } from "react"
-import { AlertCircle, Plus, Trash2, X } from "lucide-react"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { AlertCircle, Loader2, Trash2, X } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
-import { Button, Input, Label, Badge } from "@conduit/ui"
+import { useQuery } from "@tanstack/react-query"
+import {
+  SHIPPING_COUNTRIES,
+  getShippingOptions,
+  publishShippingOptions,
+  useAuth,
+  type CountryOption,
+  type ParsedShippingOption,
+} from "@conduit/core"
+import { Badge, Button, Combobox, Label, SignedActionStatus } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import {
   loadShippingConfig,
@@ -18,46 +26,6 @@ export const Route = createFileRoute("/shipping")({
   },
   component: ShippingPage,
 })
-
-// ---------------------------------------------------------------------------
-// Country data -- ISO 3166-1 via country-list, with common-name overrides
-// ---------------------------------------------------------------------------
-
-const COUNTRY_NAME_OVERRIDES: Record<string, string> = {
-  AE: "United Arab Emirates",
-  BO: "Bolivia",
-  BS: "Bahamas",
-  CD: "DR Congo",
-  CG: "Congo",
-  DO: "Dominican Republic",
-  FK: "Falkland Islands",
-  FM: "Micronesia",
-  FO: "Faroe Islands",
-  GB: "United Kingdom",
-  GM: "Gambia",
-  IR: "Iran",
-  KP: "North Korea",
-  KR: "South Korea",
-  LA: "Laos",
-  MD: "Moldova",
-  NL: "Netherlands",
-  NE: "Niger",
-  PH: "Philippines",
-  RU: "Russia",
-  SD: "Sudan",
-  SY: "Syria",
-  TW: "Taiwan",
-  US: "United States",
-  VA: "Vatican City",
-  VE: "Venezuela",
-}
-
-const COUNTRIES: { code: string; name: string }[] = getData()
-  .map((c) => ({
-    code: c.code,
-    name: COUNTRY_NAME_OVERRIDES[c.code] ?? c.name,
-  }))
-  .sort((a, b) => a.name.localeCompare(b.name))
 
 // ---------------------------------------------------------------------------
 // Summary helper
@@ -78,6 +46,37 @@ function buildSummary(countries: ShippingCountryConfig[]): string {
       return parts.join(" ")
     })
     .join(" . ")
+}
+
+function shippingOptionToConfig(option: ParsedShippingOption): ShippingConfig {
+  return {
+    countries: option.countryRules.map((rule) => {
+      const country = SHIPPING_COUNTRIES.find(
+        (item) => item.code === rule.code.toUpperCase()
+      )
+      return {
+        code: rule.code.toUpperCase(),
+        name: country?.name ?? rule.name,
+        restrictTo: rule.restrictTo,
+        exclude: rule.exclude,
+      }
+    }),
+  }
+}
+
+type SaveState =
+  | { status: "idle" }
+  | { status: "saving" }
+  | { status: "saved" }
+  | { status: "error"; message: string }
+
+function serializeShippingConfig(config: ShippingConfig): string {
+  return JSON.stringify(config)
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message
+  return "Failed to save shipping settings."
 }
 
 // ---------------------------------------------------------------------------
@@ -210,63 +209,36 @@ function CountrySelector({
   onAdd,
 }: {
   selected: string[]
-  onAdd: (country: { code: string; name: string }) => void
+  onAdd: (country: CountryOption) => void
 }) {
-  const [search, setSearch] = useState("")
-  const [open, setOpen] = useState(false)
-
-  const filtered = COUNTRIES.filter(
-    (c) =>
-      !selected.includes(c.code) &&
-      c.name.toLowerCase().includes(search.toLowerCase())
+  const options = useMemo(
+    () =>
+      SHIPPING_COUNTRIES.filter(
+        (country) => !selected.includes(country.code)
+      ).map((country) => ({
+        value: country.code,
+        label: country.name,
+        meta: country.code,
+        searchText: `${country.code} ${country.name}`,
+      })),
+    [selected]
   )
 
   return (
-    <div className="relative">
-      <div className="flex gap-2">
-        <Input
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value)
-            setOpen(true)
-          }}
-          onFocus={() => setOpen(true)}
-          placeholder="Search countries to add..."
-          className="h-9 text-sm"
-        />
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="shrink-0"
-          onClick={() => setOpen((o) => !o)}
-          aria-label="Toggle country list"
-        >
-          <Plus className="h-4 w-4" />
-        </Button>
-      </div>
-      {open && filtered.length > 0 && (
-        <div className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-xl border border-[var(--border-overlay)] bg-[var(--surface-overlay)] shadow-[var(--shadow-dialog)] backdrop-blur-xl">
-          {filtered.map((c) => (
-            <button
-              key={c.code}
-              type="button"
-              className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[var(--text-primary)] hover:bg-[var(--surface)] transition-colors text-left"
-              onClick={() => {
-                onAdd(c)
-                setSearch("")
-                setOpen(false)
-              }}
-            >
-              <span className="text-xs font-mono text-[var(--text-muted)]">
-                {c.code}
-              </span>
-              {c.name}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <Combobox
+      options={options}
+      onValueChange={(countryCode) => {
+        const country = SHIPPING_COUNTRIES.find(
+          (item) => item.code === countryCode
+        )
+        if (country) onAdd(country)
+      }}
+      placeholder="Search countries to add..."
+      searchPlaceholder="Search countries to add..."
+      emptyText="No countries available."
+      triggerClassName="h-9 text-sm"
+      contentClassName="max-h-64 overflow-hidden rounded-xl border-[var(--border-overlay)] bg-[var(--surface-overlay)]"
+    />
   )
 }
 
@@ -275,22 +247,37 @@ function CountrySelector({
 // ---------------------------------------------------------------------------
 
 function ShippingPage() {
-  const [config, setConfig] = useState<ShippingConfig>(() =>
-    loadShippingConfig()
-  )
-  const [saved, setSaved] = useState(false)
+  const { pubkey } = useAuth()
+  const [initialConfig] = useState<ShippingConfig>(() => loadShippingConfig())
+  const [config, setConfig] = useState<ShippingConfig>(initialConfig)
+  const [lastSavedConfig, setLastSavedConfig] =
+    useState<ShippingConfig>(initialConfig)
+  const [saveState, setSaveState] = useState<SaveState>({ status: "idle" })
+  const remoteShippingQuery = useQuery({
+    queryKey: ["merchant-shipping-options", pubkey ?? "none"],
+    enabled: !!pubkey,
+    queryFn: () => getShippingOptions(pubkey!),
+    staleTime: 60_000,
+  })
 
   const complete = isShippingComplete(config)
   const summary = buildSummary(config.countries)
+  const hasUnsavedChanges = useMemo(
+    () =>
+      serializeShippingConfig(config) !==
+      serializeShippingConfig(lastSavedConfig),
+    [config, lastSavedConfig]
+  )
+  const isSaving = saveState.status === "saving"
 
-  const addCountry = useCallback((country: { code: string; name: string }) => {
+  const addCountry = useCallback((country: CountryOption) => {
     setConfig((prev) => ({
       countries: [
         ...prev.countries,
         { code: country.code, name: country.name, restrictTo: [], exclude: [] },
       ],
     }))
-    setSaved(false)
+    setSaveState({ status: "idle" })
   }, [])
 
   const updateCountry = useCallback(
@@ -300,7 +287,7 @@ function ShippingPage() {
         countries[index] = updated
         return { countries }
       })
-      setSaved(false)
+      setSaveState({ status: "idle" })
     },
     []
   )
@@ -309,21 +296,40 @@ function ShippingPage() {
     setConfig((prev) => ({
       countries: prev.countries.filter((_, i) => i !== index),
     }))
-    setSaved(false)
+    setSaveState({ status: "idle" })
   }, [])
 
-  function handleSave(e: React.FormEvent) {
+  async function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    saveShippingConfig(config)
-    setSaved(true)
+    if (!hasUnsavedChanges || isSaving) return
+
+    setSaveState({ status: "saving" })
+
+    try {
+      await publishShippingOptions(config, "merchant")
+      saveShippingConfig(config)
+      setLastSavedConfig(config)
+      setSaveState({ status: "saved" })
+    } catch (err: unknown) {
+      console.warn("[shipping] Failed to publish kind-30406:", err)
+      setSaveState({ status: "error", message: getErrorMessage(err) })
+    }
   }
 
-  // Persist on unmount to avoid data loss
   useEffect(() => {
-    return () => {
-      saveShippingConfig(config)
-    }
-  }, [config])
+    if (config.countries.length > 0) return
+    if (hasUnsavedChanges) return
+    const latest = remoteShippingQuery.data?.[0]
+    if (!latest) return
+
+    const remoteConfig = shippingOptionToConfig(latest)
+    if (remoteConfig.countries.length === 0) return
+
+    setConfig(remoteConfig)
+    saveShippingConfig(remoteConfig)
+    setLastSavedConfig(remoteConfig)
+    setSaveState({ status: "saved" })
+  }, [config.countries.length, hasUnsavedChanges, remoteShippingQuery.data])
 
   return (
     <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
@@ -339,6 +345,18 @@ function ShippingPage() {
                 <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
                   Shipping
                 </h1>
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  {hasUnsavedChanges ? (
+                    <Badge variant="warning">Unsaved changes</Badge>
+                  ) : saveState.status === "saved" ? (
+                    <Badge variant="success">Saved</Badge>
+                  ) : (
+                    <Badge variant="secondary">No changes to save</Badge>
+                  )}
+                  {remoteShippingQuery.isFetching && (
+                    <Badge variant="outline">Checking published settings</Badge>
+                  )}
+                </div>
                 <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
                   Define where you ship. Buyers outside your configured
                   destinations will not see your products as available.
@@ -410,11 +428,33 @@ function ShippingPage() {
                 </div>
               </section>
 
-              <div className="flex items-center gap-3">
-                <Button type="submit">Save shipping settings</Button>
-                {saved && (
-                  <span className="text-sm text-[var(--success)]">Saved</span>
-                )}
+              <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
+                <Button
+                  type="submit"
+                  disabled={!pubkey || !hasUnsavedChanges || isSaving}
+                >
+                  {isSaving && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {isSaving ? "Waiting for signer..." : "Save changes"}
+                </Button>
+                <SignedActionStatus
+                  state={
+                    isSaving
+                      ? "awaiting_signature"
+                      : saveState.status === "error"
+                        ? "error"
+                        : hasUnsavedChanges
+                          ? "dirty"
+                          : saveState.status === "saved"
+                            ? "success"
+                            : "idle"
+                  }
+                  dirtyMessage="Save changes to publish your shipping settings."
+                  awaitingSignatureMessage="Confirm the shipping update in your signer. It will show as saved after signing and relay publish finish."
+                  successMessage="Signed and saved."
+                  errorMessage={
+                    saveState.status === "error" ? saveState.message : undefined
+                  }
+                />
               </div>
             </form>
           </div>

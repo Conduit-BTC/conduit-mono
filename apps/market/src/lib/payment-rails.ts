@@ -1,0 +1,131 @@
+import {
+  hasWebLN,
+  weblnSendPayment,
+  type ConduitAppId,
+  type NwcConnection,
+} from "@conduit/core"
+import {
+  payInvoiceWithBuyerNwcSession,
+  type NwcSessionPaymentResult,
+} from "./buyer-nwc-session"
+
+export type CheckoutPaymentRail = "nwc" | "webln"
+
+export type CheckoutInvoicePaymentResult =
+  | {
+      status: "paid"
+      rail: CheckoutPaymentRail
+      preimage: string
+      paymentHash?: string
+      feeMsats?: number
+    }
+  | {
+      status: "manual_required"
+      reason: string
+    }
+
+type PaymentRailDependencies = {
+  nwcSessionPayInvoice: typeof payInvoiceWithBuyerNwcSession
+  hasWebLN: typeof hasWebLN
+  weblnSendPayment: typeof weblnSendPayment
+}
+
+const defaultDependencies: PaymentRailDependencies = {
+  nwcSessionPayInvoice: payInvoiceWithBuyerNwcSession,
+  hasWebLN,
+  weblnSendPayment,
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback
+}
+
+function isWeblnAmbiguousProofFailure(error: unknown): boolean {
+  return getErrorMessage(error, "").includes("did not return a payment proof")
+}
+
+function isNwcPrePublishFailure(
+  result: NwcSessionPaymentResult
+): result is Extract<
+  NwcSessionPaymentResult,
+  { status: "pre_publish_failed" }
+> {
+  return result.status === "pre_publish_failed"
+}
+
+export async function payCheckoutInvoice(
+  input: {
+    invoice: string
+    amountMsats: number
+    walletConnection: NwcConnection | null
+    tryNwc: boolean
+    timeoutMs: number
+    appId: ConduitAppId
+    metadata?: Record<string, unknown>
+  },
+  dependencies: PaymentRailDependencies = defaultDependencies
+): Promise<CheckoutInvoicePaymentResult> {
+  const failures: string[] = []
+
+  if (input.walletConnection && input.tryNwc) {
+    const result = await dependencies.nwcSessionPayInvoice(
+      input.walletConnection,
+      {
+        invoice: input.invoice,
+        amountMsats: input.amountMsats,
+        timeoutMs: input.timeoutMs,
+        appId: input.appId,
+        metadata: input.metadata,
+      }
+    )
+
+    if (result.status === "paid") {
+      return {
+        status: "paid",
+        rail: "nwc",
+        preimage: result.preimage,
+        paymentHash: result.paymentHash,
+        feeMsats: result.feeMsats,
+      }
+    }
+
+    if (!isNwcPrePublishFailure(result)) {
+      throw new Error(
+        `${result.reason} Check your wallet before trying another payment path.`
+      )
+    }
+
+    failures.push(result.reason)
+  }
+
+  if (dependencies.hasWebLN()) {
+    try {
+      const result = await dependencies.weblnSendPayment({
+        invoice: input.invoice,
+      })
+
+      return {
+        status: "paid",
+        rail: "webln",
+        preimage: result.preimage,
+        paymentHash: result.paymentHash,
+      }
+    } catch (error) {
+      const message = getErrorMessage(error, "Browser wallet payment failed")
+      if (isWeblnAmbiguousProofFailure(error)) {
+        throw new Error(
+          `${message} Check your wallet before trying another payment path.`
+        )
+      }
+      failures.push(message)
+    }
+  }
+
+  return {
+    status: "manual_required",
+    reason:
+      failures.length > 0
+        ? failures.join(" ")
+        : "No automatic Lightning payment rail is currently available.",
+  }
+}

@@ -597,6 +597,33 @@ function CartPage() {
     relatedProducts.length === 0 &&
     relatedProductsQuery.isLoading &&
     cachedRelatedProductsQuery.isLoading
+  const clearCartDialog = (
+    <Dialog
+      open={confirmClearTarget !== null}
+      onOpenChange={(open) => !open && setConfirmClearTarget(null)}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>
+            {confirmClearTarget === "all"
+              ? "Clear all carts?"
+              : "Clear this cart?"}
+          </DialogTitle>
+          <DialogDescription className="text-[var(--text-secondary)]">
+            {confirmClearTarget === "all"
+              ? "This will remove every item from all store carts."
+              : "This will remove every item from the current store cart."}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setConfirmClearTarget(null)}>
+            Cancel
+          </Button>
+          <Button onClick={handleConfirmClear}>Clear cart</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 
   if (cart.items.length === 0) {
     return (
@@ -749,6 +776,12 @@ function CartPage() {
                           sourcePrice: product.sourcePrice,
                           image: product.images[0]?.url,
                           tags: product.tags,
+                          format: product.format,
+                          shippingCostSats: product.shippingCostSats,
+                          shippingOptionId: product.shippingOptionId,
+                          shippingOptionDTag: product.shippingOptionDTag,
+                          shippingCountries: product.shippingCountries,
+                          shippingCountryRules: product.shippingCountryRules,
                         })
                       }
                     />
@@ -776,6 +809,7 @@ function CartPage() {
           }}
           hideTrigger
         />
+        {clearCartDialog}
       </div>
     )
   }
@@ -868,6 +902,12 @@ function CartPage() {
                       sourcePrice: item.sourcePrice,
                       image: item.image,
                       tags: item.tags,
+                      format: item.format,
+                      shippingCostSats: item.shippingCostSats,
+                      shippingOptionId: item.shippingOptionId,
+                      shippingOptionDTag: item.shippingOptionDTag,
+                      shippingCountries: item.shippingCountries,
+                      shippingCountryRules: item.shippingCountryRules,
                     },
                     1
                   )
@@ -995,6 +1035,12 @@ function CartPage() {
                         sourcePrice: product.sourcePrice,
                         image: product.images[0]?.url,
                         tags: product.tags,
+                        format: product.format,
+                        shippingCostSats: product.shippingCostSats,
+                        shippingOptionId: product.shippingOptionId,
+                        shippingOptionDTag: product.shippingOptionDTag,
+                        shippingCountries: product.shippingCountries,
+                        shippingCountryRules: product.shippingCountryRules,
                       })
                     }
                   />
@@ -1012,34 +1058,7 @@ function CartPage() {
         </aside>
       </div>
 
-      <Dialog
-        open={confirmClearTarget !== null}
-        onOpenChange={(open) => !open && setConfirmClearTarget(null)}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {confirmClearTarget === "all"
-                ? "Clear all carts?"
-                : "Clear this cart?"}
-            </DialogTitle>
-            <DialogDescription className="text-[var(--text-secondary)]">
-              {confirmClearTarget === "all"
-                ? "This will remove every item from all store carts."
-                : "This will remove every item from the current store cart."}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setConfirmClearTarget(null)}
-            >
-              Cancel
-            </Button>
-            <Button onClick={handleConfirmClear}>Clear cart</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {clearCartDialog}
 
       <SignerSwitch
         open={connectOpen}

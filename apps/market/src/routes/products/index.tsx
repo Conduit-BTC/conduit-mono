@@ -745,6 +745,12 @@ function ProductsPage() {
                         sourcePrice: product.sourcePrice,
                         image: product.images[0]?.url,
                         tags: product.tags,
+                        format: product.format,
+                        shippingCostSats: product.shippingCostSats,
+                        shippingOptionId: product.shippingOptionId,
+                        shippingOptionDTag: product.shippingOptionDTag,
+                        shippingCountries: product.shippingCountries,
+                        shippingCountryRules: product.shippingCountryRules,
                       },
                       1
                     )
@@ -761,6 +767,12 @@ function ProductsPage() {
                         sourcePrice: product.sourcePrice,
                         image: product.images[0]?.url,
                         tags: product.tags,
+                        format: product.format,
+                        shippingCostSats: product.shippingCostSats,
+                        shippingOptionId: product.shippingOptionId,
+                        shippingOptionDTag: product.shippingOptionDTag,
+                        shippingCountries: product.shippingCountries,
+                        shippingCountryRules: product.shippingCountryRules,
                       },
                       1
                     )

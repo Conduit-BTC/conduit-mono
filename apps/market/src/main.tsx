@@ -12,6 +12,7 @@ import {
   AuthProvider,
   ConduitSessionProvider,
   pruneCommerceCaches,
+  useBtcUsdRate,
   useConduitSession,
 } from "@conduit/core"
 import bricolageMediumUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-Medium.ttf?url"
@@ -73,6 +74,11 @@ function MarketAuthQueryBoundary({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
+function MarketPricingWarmup() {
+  useBtcUsdRate()
+  return null
+}
+
 declare module "@tanstack/react-router" {
   interface Register {
     router: typeof router
@@ -88,6 +94,7 @@ createRoot(document.getElementById("root")!).render(
       <AuthProvider>
         <ConduitSessionProvider appId="market">
           <MarketAuthQueryBoundary>
+            <MarketPricingWarmup />
             <RouterProvider router={router} />
           </MarketAuthQueryBoundary>
         </ConduitSessionProvider>

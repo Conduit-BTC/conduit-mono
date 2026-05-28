@@ -1,16 +1,23 @@
 import { describe, expect, it } from "bun:test"
 import {
   assertSafeNip65RelayList,
+  CANONICAL_APP_WRITE_RELAYS,
+  CANONICAL_DEFAULT_RELAYS,
+  config,
+  createDefaultRelaySettings,
   createRelaySettingsEntryFromScan,
   createRelaySettingsFromPreferences,
   createUnreachableRelaySettingsEntry,
   deriveRelayScanResult,
   getCommerceReadRelayUrls,
   getGeneralWriteRelayUrls,
+  getPublishableRelaySettingsEntries,
+  includeDefaultRelaySettingsEntries,
   mergeRelayPreferencesIntoSettings,
   normalizeRelaySettingsState,
   normalizeRelayUrl,
   parseNip65RelayTags,
+  saveRelaySettings,
   scanRelaySettingsEntry,
   serializeNip65RelayTags,
   type RelaySettingsEntry,
@@ -52,6 +59,37 @@ function entry(
 }
 
 describe("relay settings protocol helpers", () => {
+  it("keeps relay defaults canonical and excludes retired relay domains", () => {
+    expect(CANONICAL_DEFAULT_RELAYS).toEqual([
+      "wss://conduitl2.fly.dev",
+      "wss://relay.plebeian.market",
+      "wss://relay.primal.net",
+      "wss://relay.damus.io",
+      "wss://nos.lol",
+      "wss://nostr.mom",
+      "wss://relay.nostr.net",
+      "wss://relay.minibits.cash",
+    ])
+    for (const relay of CANONICAL_DEFAULT_RELAYS) {
+      expect(config.defaultRelays).toContain(relay)
+    }
+    expect(CANONICAL_APP_WRITE_RELAYS).toEqual(["wss://conduitl2.fly.dev"])
+    expect(config.appWriteRelayUrls).toEqual(CANONICAL_APP_WRITE_RELAYS)
+    expect(config.commerceRelayUrls).toContain("wss://conduitl2.fly.dev")
+    expect(config.defaultRelays).not.toContain("wss://relay.conduit.market")
+
+    const settings = createDefaultRelaySettings({
+      ...config,
+      defaultRelays: ["wss://relay.conduit.market", "wss://relay.primal.net"],
+    })
+
+    expect(settings.entries.map((relay) => relay.url)).toEqual([
+      "wss://relay.primal.net",
+    ])
+    expect(settings.entries.every((relay) => relay.readEnabled)).toBe(true)
+    expect(settings.entries.every((relay) => relay.writeEnabled)).toBe(true)
+  })
+
   it("normalizes relay urls before deduplication", () => {
     expect(normalizeRelayUrl("relay.example.com/")).toBe(
       "wss://relay.example.com"
@@ -150,6 +188,15 @@ describe("relay settings protocol helpers", () => {
 
     expect(partial.capabilities.commerce).toBe(false)
     expect(partial.warnings.commercePartialSupport).toBe(true)
+  })
+
+  it("does not mark configured relays as commerce without NIP-11 evidence", () => {
+    const scanned = deriveRelayScanResult("wss://relay.conduit.market", {
+      supported_nips: [17, 42, 50],
+    })
+
+    expect(scanned.capabilities.commerce).toBe(false)
+    expect(scanned.warnings.commercePartialSupport).toBe(true)
   })
 
   it("keeps unreachable relays disabled instead of silently discarding them", () => {
@@ -375,6 +422,59 @@ describe("relay settings protocol helpers", () => {
     expect(next.entries[0]?.source).toBe("published")
   })
 
+  it("upgrades persisted default relays to IN and OUT controls", () => {
+    const settings = normalizeRelaySettingsState({
+      version: 1,
+      updatedAt: 1,
+      entries: [
+        entry("wss://relay.example", {
+          readEnabled: true,
+          writeEnabled: false,
+          source: "default",
+        }),
+      ],
+    })
+
+    expect(settings.entries[0]?.readEnabled).toBe(true)
+    expect(settings.entries[0]?.writeEnabled).toBe(true)
+  })
+
+  it("keeps Conduit defaults visible but out of NIP-65 publishes until included", () => {
+    const settings = saveRelaySettings(
+      createRelaySettingsFromPreferences(
+        [
+          {
+            url: "wss://published.example",
+            readEnabled: true,
+            writeEnabled: true,
+          },
+        ],
+        "published"
+      ),
+      "test:relays"
+    )
+
+    expect(settings.entries.map((relay) => relay.url)).toContain(
+      "wss://published.example"
+    )
+    for (const relay of config.defaultRelays) {
+      expect(settings.entries.map((entry) => entry.url)).toContain(relay)
+    }
+
+    expect(
+      getPublishableRelaySettingsEntries(settings.entries).map(
+        (relay) => relay.url
+      )
+    ).toEqual(["wss://published.example"])
+
+    const included = includeDefaultRelaySettingsEntries(settings)
+    expect(
+      getPublishableRelaySettingsEntries(included.entries).map(
+        (relay) => relay.url
+      )
+    ).toEqual(["wss://published.example", ...config.defaultRelays])
+  })
+
   it("blocks unsafe tiny NIP-65 publishes", () => {
     expect(() =>
       assertSafeNip65RelayList(
@@ -404,6 +504,25 @@ describe("relay settings protocol helpers", () => {
         ]).entries
       )
     ).not.toThrow()
+  })
+
+  it("blocks NIP-65 publishes without an OUT relay", () => {
+    expect(() =>
+      assertSafeNip65RelayList(
+        createRelaySettingsFromPreferences([
+          {
+            url: "wss://one.example",
+            readEnabled: true,
+            writeEnabled: false,
+          },
+          {
+            url: "wss://two.example",
+            readEnabled: true,
+            writeEnabled: false,
+          },
+        ]).entries
+      )
+    ).toThrow("without an OUT relay")
   })
 
   it("applies safe defaults when creating an entry from a scan", () => {
