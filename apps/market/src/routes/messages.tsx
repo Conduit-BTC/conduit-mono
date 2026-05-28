@@ -6,9 +6,11 @@ import { MessageCircleMore, Search, Store } from "lucide-react"
 import {
   EVENT_KINDS,
   appendConduitClientTag,
+  cacheParsedOrderMessage,
   formatNpub,
   getNdk,
   formatPubkey,
+  parseOrderMessageRumorEvent,
   publishWithPlanner,
   useAuth,
   useProfile,
@@ -36,6 +38,30 @@ type MessagesSearch = {
   tab?: "dms" | "merchants"
   thread?: string
   merchant?: string
+}
+
+function prepareBuyerConversationRumor(
+  rumor: NDKEvent,
+  buyerPubkey: string
+): void {
+  rumor.pubkey = buyerPubkey
+  if (rumor.id) return
+
+  try {
+    rumor.id = rumor.getEventHash()
+  } catch (error) {
+    console.warn("Failed to derive buyer message rumor id", error)
+  }
+}
+
+async function cacheBuyerConversationRumor(rumor: NDKEvent): Promise<void> {
+  try {
+    if (!rumor.id) throw new Error("Missing buyer message rumor id")
+    const parsed = parseOrderMessageRumorEvent(rumor)
+    await cacheParsedOrderMessage(parsed)
+  } catch (error) {
+    console.warn("Failed to cache buyer message", error)
+  }
 }
 
 export const Route = createFileRoute("/messages")({
@@ -276,35 +302,42 @@ function MessagesPage() {
         buyerPubkey: pubkey,
         createdAt: Date.now(),
       })
+      prepareBuyerConversationRumor(rumor, pubkey)
 
       const merchantUser = new NDKUser({
         pubkey: selectedConversation.merchantPubkey,
       })
       const buyerUser = new NDKUser({ pubkey })
-      const wrappedToMerchant = await giftWrap(
-        rumor,
-        merchantUser,
-        ndk.signer,
-        {
+      const [wrappedToMerchant, wrappedToBuyer] = await Promise.all([
+        giftWrap(rumor, merchantUser, ndk.signer, {
           rumorKind: EVENT_KINDS.ORDER,
-        }
-      )
-      const wrappedToBuyer = await giftWrap(rumor, buyerUser, ndk.signer, {
-        rumorKind: EVENT_KINDS.ORDER,
+        }),
+        giftWrap(rumor, buyerUser, ndk.signer, {
+          rumorKind: EVENT_KINDS.ORDER,
+        }),
+      ])
+
+      await publishWithPlanner(wrappedToMerchant, {
+        intent: "recipient_event",
+        authorPubkey: pubkey,
+        recipientPubkeys: [selectedConversation.merchantPubkey],
+        refreshRelayLists: true,
+        deliveryMode: "critical",
       })
 
-      await Promise.all([
-        publishWithPlanner(wrappedToMerchant, {
-          intent: "recipient_event",
-          authorPubkey: pubkey,
-          recipientPubkeys: [selectedConversation.merchantPubkey],
-        }),
-        publishWithPlanner(wrappedToBuyer, {
+      try {
+        await publishWithPlanner(wrappedToBuyer, {
           intent: "recipient_event",
           authorPubkey: pubkey,
           recipientPubkeys: [pubkey],
-        }),
-      ])
+          refreshRelayLists: true,
+          deliveryMode: "critical",
+        })
+      } catch (error) {
+        console.warn("Buyer message self-copy publish failed", error)
+      }
+
+      await cacheBuyerConversationRumor(rumor)
     },
     onSuccess: async () => {
       setReplyText("")

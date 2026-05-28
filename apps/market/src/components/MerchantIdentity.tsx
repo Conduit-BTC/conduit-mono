@@ -29,7 +29,7 @@ export function MerchantAvatarFallback({
   iconClassName = "h-6 w-6",
 }: MerchantAvatarFallbackProps) {
   return (
-    <div className="flex h-full w-full items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-sm)]">
+    <div className="flex h-full w-full items-center justify-center rounded-full bg-[var(--avatar-bg)]">
       <img
         src="/images/logo/logo-icon.svg"
         alt=""
