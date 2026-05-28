@@ -1,11 +1,24 @@
-import { CircleHelp, Github, RadioTower, type LucideIcon } from "lucide-react"
+import { CircleHelp, Github, type LucideIcon } from "lucide-react"
 import { cn } from "../utils"
 
-export interface LegalFooterIconLink {
+interface LegalFooterBaseIconLink {
   href: string
   label: string
-  icon: LucideIcon
 }
+
+export interface LegalFooterLucideIconLink extends LegalFooterBaseIconLink {
+  icon: LucideIcon
+  imageSrc?: never
+}
+
+export interface LegalFooterImageIconLink extends LegalFooterBaseIconLink {
+  icon?: never
+  imageSrc: string
+}
+
+export type LegalFooterIconLink =
+  | LegalFooterLucideIconLink
+  | LegalFooterImageIconLink
 
 export interface LegalFooterProps {
   className?: string
@@ -25,7 +38,7 @@ const DEFAULT_ICON_LINKS: LegalFooterIconLink[] = [
   {
     href: "https://njump.me/npub1nkfqwlz7xkhhdaa3ekz88qqqk7a0ks7jpv9zdsv0u206swxjw9rq0g2svu",
     label: "Nostr",
-    icon: RadioTower,
+    imageSrc: "/images/logo/nostr-n-logo-white.png",
   },
   {
     href: "https://github.com/Conduit-BTC/conduit-mono/issues",
@@ -36,7 +49,7 @@ const DEFAULT_ICON_LINKS: LegalFooterIconLink[] = [
 
 export function LegalFooter({
   className,
-  logoHref = "/",
+  logoHref = "https://conduit.market/",
   logoSrc = "/images/logo/logo-full.svg",
   privacyHref = "https://conduit.market/privacy-policy",
   termsHref = "https://conduit.market/terms-of-service",
@@ -55,7 +68,7 @@ export function LegalFooter({
         <a
           href={logoHref}
           className="flex shrink-0 items-center"
-          aria-label="Conduit home"
+          aria-label="Conduit landing page"
         >
           <img
             src={logoSrc}
@@ -89,7 +102,6 @@ export function LegalFooter({
 
         <nav className="flex items-center gap-1.5" aria-label="Resource links">
           {iconLinks.map((link) => {
-            const Icon = link.icon
             return (
               <a
                 key={link.href}
@@ -98,9 +110,9 @@ export function LegalFooter({
                 rel="noopener noreferrer"
                 aria-label={link.label}
                 title={link.label}
-                className="grid h-8 w-8 place-items-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                className="grid size-8 place-items-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
               >
-                <Icon className="h-4 w-4" />
+                <LegalFooterIcon link={link} />
               </a>
             )
           })}
@@ -108,4 +120,21 @@ export function LegalFooter({
       </div>
     </footer>
   )
+}
+
+function LegalFooterIcon({ link }: { link: LegalFooterIconLink }) {
+  if ("imageSrc" in link) {
+    return (
+      <img
+        src={link.imageSrc}
+        alt=""
+        aria-hidden="true"
+        className="size-4 select-none object-contain"
+        draggable="false"
+      />
+    )
+  }
+
+  const Icon = link.icon
+  return <Icon className="size-4" />
 }
