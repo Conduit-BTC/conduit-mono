@@ -93,12 +93,12 @@ function InvoiceCard({
         )}
       </div>
 
-      <div className="flex items-start gap-3">
-        <div className="shrink-0 rounded-md border border-[var(--border)] bg-white p-3">
+      <div className="grid gap-3 sm:grid-cols-[180px_minmax(0,1fr)]">
+        <div className="w-fit rounded-md border border-[var(--border)] bg-white p-3">
           <QRCodeSVG value={bolt11} size={156} level="M" />
         </div>
         <div className="min-w-0 flex-1 space-y-2">
-          <div className="max-h-24 overflow-auto break-all rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-xs text-[var(--text-secondary)]">
+          <div className="break-all rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-xs leading-5 text-[var(--text-secondary)]">
             {invoice}
           </div>
           <div className="flex gap-2">
