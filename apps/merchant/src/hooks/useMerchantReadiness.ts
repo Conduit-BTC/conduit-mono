@@ -5,7 +5,9 @@ import {
   useState,
   useSyncExternalStore,
 } from "react"
+import { useQuery } from "@tanstack/react-query"
 import {
+  getShippingOptions,
   useAuth,
   useConduitSession,
   useProfile,
@@ -13,13 +15,18 @@ import {
 } from "@conduit/core"
 import {
   getNwcUriStorageKey,
+  getShippingStorageKey,
   getMerchantSetupReadiness,
   hasNwcConfigured,
   MERCHANT_READINESS_STORAGE_EVENT,
   parseShippingConfig,
+  saveShippingConfig,
   SHIPPING_STORAGE_KEY,
+  shippingOptionToConfig,
   isPaymentsComplete,
   isProfileComplete,
+  isShippingComplete,
+  serializeShippingConfig,
 } from "../lib/readiness"
 
 const EMPTY_STORAGE_SNAPSHOT = JSON.stringify([null, null])
@@ -27,13 +34,20 @@ const PROFILE_READINESS_POLL_MS = 2_500
 const PROFILE_READINESS_GRACE_MS = 10_000
 
 function getMerchantReadinessStorageSnapshot(
-  nwcStorageKey: string | null
+  nwcStorageKey: string | null,
+  shippingStorageKey: string
 ): string {
   if (typeof window === "undefined") return EMPTY_STORAGE_SNAPSHOT
 
   try {
+    const scopedShippingConfig = window.localStorage.getItem(shippingStorageKey)
+    const legacyShippingConfig =
+      shippingStorageKey === SHIPPING_STORAGE_KEY
+        ? null
+        : window.localStorage.getItem(SHIPPING_STORAGE_KEY)
+
     return JSON.stringify([
-      window.localStorage.getItem(SHIPPING_STORAGE_KEY),
+      scopedShippingConfig ?? legacyShippingConfig,
       nwcStorageKey ? window.localStorage.getItem(nwcStorageKey) : null,
     ])
   } catch {
@@ -60,13 +74,15 @@ function parseMerchantReadinessStorageSnapshot(
 
 function subscribeToMerchantReadinessStorage(
   onStoreChange: () => void,
-  nwcStorageKey: string | null
+  nwcStorageKey: string | null,
+  shippingStorageKey: string
 ) {
   if (typeof window === "undefined") return () => {}
 
   function handleStorageChange(event: StorageEvent): void {
     if (
       event.key &&
+      event.key !== shippingStorageKey &&
       event.key !== SHIPPING_STORAGE_KEY &&
       event.key !== nwcStorageKey
     ) {
@@ -106,14 +122,23 @@ export function useMerchantReadiness() {
   })
   const [profileCheckExpired, setProfileCheckExpired] = useState(false)
   const nwcStorageKey = useMemo(() => getNwcUriStorageKey(pubkey), [pubkey])
+  const shippingStorageKey = useMemo(
+    () => getShippingStorageKey(pubkey),
+    [pubkey]
+  )
   const subscribeToStorage = useCallback(
     (onStoreChange: () => void) =>
-      subscribeToMerchantReadinessStorage(onStoreChange, nwcStorageKey),
-    [nwcStorageKey]
+      subscribeToMerchantReadinessStorage(
+        onStoreChange,
+        nwcStorageKey,
+        shippingStorageKey
+      ),
+    [nwcStorageKey, shippingStorageKey]
   )
   const getStorageSnapshot = useCallback(
-    () => getMerchantReadinessStorageSnapshot(nwcStorageKey),
-    [nwcStorageKey]
+    () =>
+      getMerchantReadinessStorageSnapshot(nwcStorageKey, shippingStorageKey),
+    [nwcStorageKey, shippingStorageKey]
   )
   const storageSnapshot = useSyncExternalStore(
     subscribeToStorage,
@@ -128,9 +153,42 @@ export function useMerchantReadiness() {
     () => parseShippingConfig(rawShippingConfig),
     [rawShippingConfig]
   )
+  const localShippingComplete = isShippingComplete(shippingConfig)
+  const remoteShippingQuery = useQuery({
+    queryKey: ["merchant-shipping-options", pubkey ?? "none"],
+    enabled: !!pubkey && !localShippingComplete,
+    queryFn: () => getShippingOptions(pubkey!),
+    staleTime: 60_000,
+  })
+  const remoteShippingConfig = useMemo(() => {
+    const latest = remoteShippingQuery.data?.[0]
+    return latest ? shippingOptionToConfig(latest) : null
+  }, [remoteShippingQuery.data])
+  const remoteShippingComplete = remoteShippingConfig
+    ? isShippingComplete(remoteShippingConfig)
+    : false
+  const effectiveShippingConfig =
+    !localShippingComplete && remoteShippingComplete && remoteShippingConfig
+      ? remoteShippingConfig
+      : shippingConfig
   const hasNwc = useMemo(() => hasNwcConfigured(rawNwcUri), [rawNwcUri])
   const profileComplete = isProfileComplete(profile)
   const paymentsComplete = isPaymentsComplete(profile)
+  const shippingCheckPending =
+    !!pubkey && !localShippingComplete && remoteShippingQuery.isFetching
+
+  useEffect(() => {
+    if (!pubkey || localShippingComplete || !remoteShippingConfig) return
+    if (!isShippingComplete(remoteShippingConfig)) return
+    if (
+      serializeShippingConfig(remoteShippingConfig) ===
+      serializeShippingConfig(shippingConfig)
+    ) {
+      return
+    }
+
+    saveShippingConfig(remoteShippingConfig, pubkey)
+  }, [localShippingComplete, pubkey, remoteShippingConfig, shippingConfig])
 
   useEffect(() => {
     setProfileCheckExpired(false)
@@ -164,10 +222,11 @@ export function useMerchantReadiness() {
 
   return getMerchantSetupReadiness({
     profile,
-    shippingConfig,
+    shippingConfig: effectiveShippingConfig,
     relaySettings: settings,
     hasNwc,
     profileCheckPending,
     paymentsCheckPending,
+    shippingCheckPending,
   })
 }

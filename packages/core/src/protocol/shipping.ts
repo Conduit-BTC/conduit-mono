@@ -7,14 +7,11 @@
  * "conduit-default" to represent the merchant's current shipping config.
  */
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
-import { config } from "../config"
 import { EVENT_KINDS } from "./kinds"
 import { fetchEventsFanout, requireNdkConnected } from "./ndk"
-import {
-  getCommerceReadRelayUrls,
-  getGeneralReadRelayUrls,
-} from "./relay-settings"
 import { publishWithPlanner } from "./relay-publish"
+import { getRelayLists } from "./relay-list"
+import { planRelayReads } from "./relay-planner"
 import type { ConduitAppId } from "./nip89"
 import { appendConduitClientTag } from "./nip89"
 
@@ -67,26 +64,6 @@ export interface ParsedShippingOption {
 }
 
 // ---------------------------------------------------------------------------
-// Internal relay helpers (mirrors pattern in commerce.ts)
-// ---------------------------------------------------------------------------
-
-function commerceReadRelayUrls(): string[] {
-  return getCommerceReadRelayUrls({
-    fallbackRelayUrls:
-      config.commerceRelayUrls.length > 0
-        ? config.commerceRelayUrls
-        : config.publicRelayUrls,
-  })
-}
-
-function publicReadRelayUrls(): string[] {
-  return getGeneralReadRelayUrls({
-    fallbackRelayUrls:
-      config.publicRelayUrls.length > 0 ? config.publicRelayUrls : undefined,
-  })
-}
-
-// ---------------------------------------------------------------------------
 // Parse
 // ---------------------------------------------------------------------------
 
@@ -121,7 +98,7 @@ export function parseShippingOptionEvent(
     )
   )
 
-  if (!dTag || countries.length === 0) return null
+  if (!dTag) return null
 
   const countryRules = countries.map((code) => ({
     code,
@@ -159,21 +136,34 @@ export function parseShippingOptionEvent(
 export async function getShippingOptions(
   merchantPubkey: string
 ): Promise<ParsedShippingOption[]> {
+  const relayLists = await getRelayLists([merchantPubkey], {
+    cacheOnly: false,
+  })
+  const readPlan = planRelayReads({
+    intent: "author_products",
+    authors: [merchantPubkey],
+    relayLists,
+    maxRelays: 12,
+  })
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
     authors: [merchantPubkey],
   }
 
-  const relayUrls = [
-    ...new Set([...commerceReadRelayUrls(), ...publicReadRelayUrls()]),
-  ]
+  const events = (await fetchEventsFanout(filter, {
+    relayUrls: readPlan.relayUrls,
+  })) as NDKEvent[]
 
-  const events = (await fetchEventsFanout(filter, { relayUrls })) as NDKEvent[]
-
-  return events
+  const latestByDTag = new Map<string, ParsedShippingOption>()
+  for (const option of events
     .map((e) => parseShippingOptionEvent(e))
     .filter((o): o is ParsedShippingOption => o !== null)
-    .sort((a, b) => b.createdAt - a.createdAt)
+    .sort((a, b) => b.createdAt - a.createdAt)) {
+    if (latestByDTag.has(option.dTag)) continue
+    latestByDTag.set(option.dTag, option)
+  }
+
+  return Array.from(latestByDTag.values())
 }
 
 // ---------------------------------------------------------------------------

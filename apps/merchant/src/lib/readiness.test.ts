@@ -5,10 +5,13 @@ import {
 } from "@conduit/core"
 import {
   getNwcUriStorageKey,
+  getShippingStorageKey,
   getMerchantSetupReadiness,
   hasNwcConfigured,
   parseShippingConfig,
   parseStoredNwcConnection,
+  serializeShippingConfig,
+  shippingOptionToConfig,
 } from "./readiness"
 
 declare function describe(name: string, fn: () => void): void
@@ -62,11 +65,68 @@ test("scopes stored NWC URIs to the active merchant pubkey", () => {
   expect(hasNwcConfigured()).toBe(false)
 })
 
+test("scopes stored shipping configs to the active merchant pubkey", () => {
+  expect(getShippingStorageKey("merchant-pubkey")).toBe(
+    "conduit:merchant:shipping_config:merchant-pubkey"
+  )
+  expect(getShippingStorageKey("")).toBe("conduit:merchant:shipping_config")
+})
+
 test("parses stored shipping config defensively", () => {
   expect(parseShippingConfig(JSON.stringify(shippingConfig))).toEqual(
     shippingConfig
   )
   expect(parseShippingConfig("not-json")).toEqual({ countries: [] })
+  expect(
+    parseShippingConfig(
+      JSON.stringify({ countries: [{ code: " us ", restrictTo: [123] }] })
+    )
+  ).toEqual({
+    countries: [
+      {
+        code: "US",
+        name: "United States",
+        restrictTo: [],
+        exclude: [],
+      },
+    ],
+  })
+  expect(serializeShippingConfig(shippingConfig)).toBe(
+    JSON.stringify(shippingConfig)
+  )
+})
+
+test("maps published shipping options back into readiness config", () => {
+  expect(
+    shippingOptionToConfig({
+      id: "30406:merchant:conduit-default",
+      pubkey: "merchant",
+      dTag: "conduit-default",
+      title: "Standard Shipping",
+      currency: "USD",
+      price: 0,
+      countries: ["US"],
+      countryRules: [
+        {
+          code: "US",
+          name: "US",
+          restrictTo: ["787**"],
+          exclude: ["78799"],
+        },
+      ],
+      service: "standard",
+      createdAt: 1,
+    })
+  ).toEqual({
+    countries: [
+      {
+        code: "US",
+        name: "United States",
+        restrictTo: ["787**"],
+        exclude: ["78799"],
+      },
+    ],
+  })
 })
 
 describe("merchant setup readiness", () => {
@@ -139,6 +199,20 @@ describe("merchant setup readiness", () => {
     expect(readiness.paymentsCheckPending).toBe(true)
     expect(readiness.setupCheckPending).toBe(true)
     expect(readiness.setupComplete).toBe(false)
+    expect(readiness.missingAreas).toEqual([])
+  })
+
+  test("defers shipping missing area while published settings are loading", () => {
+    const readiness = getMerchantSetupReadiness({
+      profile: completeProfile,
+      shippingConfig: { countries: [] },
+      relaySettings: createDefaultRelaySettings(),
+      shippingCheckPending: true,
+    })
+
+    expect(readiness.shippingComplete).toBe(false)
+    expect(readiness.shippingCheckPending).toBe(true)
+    expect(readiness.setupCheckPending).toBe(true)
     expect(readiness.missingAreas).toEqual([])
   })
 })

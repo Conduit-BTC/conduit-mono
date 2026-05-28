@@ -277,7 +277,9 @@ function MobileNav() {
             paymentsIncomplete={
               !readiness.paymentsComplete && !readiness.paymentsCheckPending
             }
-            shippingIncomplete={!readiness.shippingComplete}
+            shippingIncomplete={
+              !readiness.shippingComplete && !readiness.shippingCheckPending
+            }
             networkIncomplete={!readiness.networkComplete}
           />
 
@@ -337,7 +339,9 @@ export function MerchantSidebar() {
           paymentsIncomplete={
             !readiness.paymentsComplete && !readiness.paymentsCheckPending
           }
-          shippingIncomplete={!readiness.shippingComplete}
+          shippingIncomplete={
+            !readiness.shippingComplete && !readiness.shippingCheckPending
+          }
           networkIncomplete={!readiness.networkComplete}
         />
       </div>

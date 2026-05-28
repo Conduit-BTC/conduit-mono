@@ -967,6 +967,21 @@ describe("shipping destination eligibility", () => {
     ).toBeNull()
   })
 
+  it("parses empty replacement shipping options as no destinations", () => {
+    const parsed = parseShippingOptionEvent({
+      id: "shipping-event",
+      pubkey: FAKE_PUBKEY,
+      created_at: 2,
+      tags: [["d", "conduit-default"], ["price", "0", "SATS"], ["country"]],
+    })
+
+    expect(parsed).toMatchObject({
+      countries: [],
+      countryRules: [],
+      dTag: "conduit-default",
+    })
+  })
+
   it("matches country include, postal include, postal exclude, and unknown readiness", () => {
     const parsed = parseShippingOptionEvent({
       id: "shipping-event",

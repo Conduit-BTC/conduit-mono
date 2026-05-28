@@ -5,9 +5,11 @@
  * helpers to compute readiness state from profile / localStorage data.
  */
 import {
+  SHIPPING_COUNTRIES,
   isRelaySetupIncomplete,
   isValidLud16Address,
   parseNwcUri,
+  type ParsedShippingOption,
   type NwcConnection,
   type Profile,
   type RelaySettingsState,
@@ -56,6 +58,7 @@ export interface MerchantSetupReadiness {
   paymentsComplete: boolean
   paymentsCheckPending: boolean
   shippingComplete: boolean
+  shippingCheckPending: boolean
   networkComplete: boolean
   setupComplete: boolean
   setupCheckPending: boolean
@@ -121,6 +124,7 @@ export function getMerchantSetupReadiness({
   hasNwc = false,
   profileCheckPending = false,
   paymentsCheckPending = false,
+  shippingCheckPending = false,
 }: {
   profile: Profile | null | undefined
   shippingConfig: ShippingConfig
@@ -128,6 +132,7 @@ export function getMerchantSetupReadiness({
   hasNwc?: boolean
   profileCheckPending?: boolean
   paymentsCheckPending?: boolean
+  shippingCheckPending?: boolean
 }): MerchantSetupReadiness {
   const profileComplete = isProfileComplete(profile)
   const paymentsComplete = isPaymentsComplete(profile)
@@ -137,12 +142,13 @@ export function getMerchantSetupReadiness({
     profileComplete && paymentsComplete && shippingComplete && networkComplete
   const operationalReady =
     profileComplete && shippingComplete && networkComplete
-  const setupCheckPending = profileCheckPending || paymentsCheckPending
+  const setupCheckPending =
+    profileCheckPending || paymentsCheckPending || shippingCheckPending
   const missingAreas: MerchantSetupReadiness["missingAreas"] = []
 
   if (!profileComplete && !profileCheckPending) missingAreas.push("profile")
   if (!paymentsComplete && !paymentsCheckPending) missingAreas.push("payments")
-  if (!shippingComplete) missingAreas.push("shipping")
+  if (!shippingComplete && !shippingCheckPending) missingAreas.push("shipping")
   if (!networkComplete) missingAreas.push("network")
 
   const paymentCapability: MerchantPaymentCapability = !operationalReady
@@ -157,6 +163,7 @@ export function getMerchantSetupReadiness({
     paymentsComplete,
     paymentsCheckPending,
     shippingComplete,
+    shippingCheckPending,
     networkComplete,
     setupComplete,
     setupCheckPending,
@@ -188,11 +195,71 @@ export interface ShippingConfig {
   countries: ShippingCountryConfig[]
 }
 
-export function loadShippingConfig(): ShippingConfig {
+export function getShippingStorageKey(
+  pubkey: string | null | undefined
+): string {
+  const normalizedPubkey = pubkey?.trim()
+  return normalizedPubkey
+    ? `${SHIPPING_STORAGE_KEY}:${normalizedPubkey}`
+    : SHIPPING_STORAGE_KEY
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) =>
+    typeof item === "string" && item.trim() ? [item.trim()] : []
+  )
+}
+
+function normalizeShippingConfig(value: unknown): ShippingConfig {
+  if (!value || typeof value !== "object") return { countries: [] }
+  const maybeConfig = value as { countries?: unknown }
+  if (!Array.isArray(maybeConfig.countries)) return { countries: [] }
+
+  return {
+    countries: maybeConfig.countries.flatMap(
+      (item): ShippingCountryConfig[] => {
+        if (!item || typeof item !== "object") return []
+        const maybeCountry = item as {
+          code?: unknown
+          name?: unknown
+          restrictTo?: unknown
+          exclude?: unknown
+        }
+        if (typeof maybeCountry.code !== "string") return []
+        const code = maybeCountry.code.trim().toUpperCase()
+        if (!code) return []
+        const country = SHIPPING_COUNTRIES.find((entry) => entry.code === code)
+        return [
+          {
+            code,
+            name:
+              typeof maybeCountry.name === "string" && maybeCountry.name.trim()
+                ? maybeCountry.name.trim()
+                : (country?.name ?? code),
+            restrictTo: toStringArray(maybeCountry.restrictTo),
+            exclude: toStringArray(maybeCountry.exclude),
+          },
+        ]
+      }
+    ),
+  }
+}
+
+export function loadShippingConfig(
+  pubkey?: string | null | undefined
+): ShippingConfig {
   try {
     if (typeof localStorage === "undefined") return { countries: [] }
-    const raw = localStorage.getItem(SHIPPING_STORAGE_KEY)
-    return parseShippingConfig(raw)
+    const storageKey = getShippingStorageKey(pubkey)
+    const raw = localStorage.getItem(storageKey)
+    if (raw) return parseShippingConfig(raw)
+
+    if (storageKey !== SHIPPING_STORAGE_KEY) {
+      return parseShippingConfig(localStorage.getItem(SHIPPING_STORAGE_KEY))
+    }
+
+    return { countries: [] }
   } catch {
     return { countries: [] }
   }
@@ -204,18 +271,46 @@ export function parseShippingConfig(
   if (!raw) return { countries: [] }
 
   try {
-    return JSON.parse(raw) as ShippingConfig
+    return normalizeShippingConfig(JSON.parse(raw) as unknown)
   } catch {
     return { countries: [] }
   }
 }
 
-export function saveShippingConfig(config: ShippingConfig): void {
+export function saveShippingConfig(
+  config: ShippingConfig,
+  pubkey?: string | null | undefined
+): void {
   if (typeof localStorage === "undefined") return
-  localStorage.setItem(SHIPPING_STORAGE_KEY, JSON.stringify(config))
+  localStorage.setItem(
+    getShippingStorageKey(pubkey),
+    serializeShippingConfig(config)
+  )
   notifyMerchantReadinessStorageChange()
 }
 
 export function isShippingComplete(config: ShippingConfig): boolean {
   return config.countries.length > 0
+}
+
+export function shippingOptionToConfig(
+  option: ParsedShippingOption
+): ShippingConfig {
+  return {
+    countries: option.countryRules.map((rule) => {
+      const country = SHIPPING_COUNTRIES.find(
+        (item) => item.code === rule.code.toUpperCase()
+      )
+      return {
+        code: rule.code.toUpperCase(),
+        name: country?.name ?? rule.name,
+        restrictTo: rule.restrictTo,
+        exclude: rule.exclude,
+      }
+    }),
+  }
+}
+
+export function serializeShippingConfig(config: ShippingConfig): string {
+  return JSON.stringify(normalizeShippingConfig(config))
 }

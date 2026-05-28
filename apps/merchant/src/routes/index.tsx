@@ -248,6 +248,7 @@ function MerchantReadinessPanel({
         <ReadinessRow
           label="Shipping"
           complete={readiness.shippingComplete}
+          pending={readiness.shippingCheckPending}
           to="/shipping"
           icon={Truck}
         />
