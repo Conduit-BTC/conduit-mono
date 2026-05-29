@@ -20,7 +20,7 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
       error={error}
       extensionAvailable={extensionAvailable}
       connectedDescription="Your merchant workspace is ready."
-      connectDescription="Use your Nostr signer to open the merchant workspace."
+      connectDescription="Use your Nostr signer to open your merchant workspace."
       connectedUseDescription="This signer will be used for listings, orders, and merchant messages."
       unlockItems={[
         "Publish listings tied to your pubkey.",

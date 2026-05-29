@@ -26,6 +26,18 @@ describe("no-signer onboarding", () => {
     expect(sharedSigner).toContain('target="_blank"')
     expect(sharedSigner).toContain('rel="noopener noreferrer"')
     expect(sharedSigner).toContain("<NoSignerSetupGuide />")
-    expect(merchantRoot).toContain("<NoSignerSetupGuide")
+    expect(merchantRoot).toContain("<SignerConnectPanel")
+    expect(merchantRoot).toContain(
+      "Use your Nostr signer to open your merchant workspace."
+    )
+    expect(merchantRoot).toContain(
+      "Conduit currently supports external signers only."
+    )
+    expect(merchantRoot).toContain("UNLOCK YOUR COMMAND CENTER")
+    expect(merchantRoot).toContain(
+      "Create your store and start publishing products."
+    )
+    expect(merchantRoot).not.toContain("without managing separate shops")
+    expect(merchantRoot).not.toContain("Connect your signer to run your store")
   })
 })

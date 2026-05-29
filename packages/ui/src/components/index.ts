@@ -89,7 +89,10 @@ export {
 } from "./ProductCard"
 export {
   NoSignerSetupGuide,
+  SignerConnectPanel,
   SignerSwitch,
+  SignerUnlockCard,
+  type SignerConnectPanelProps,
   type SignerSwitchProps,
   type SignerSwitchStatus,
 } from "./SignerSwitch"

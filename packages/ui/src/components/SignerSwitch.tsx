@@ -1,5 +1,5 @@
 import { Check, ExternalLink, KeyRound, ShieldCheck } from "lucide-react"
-import { useMemo, useRef, useState, type Ref } from "react"
+import { useId, useMemo, useRef, useState, type Ref } from "react"
 import { Badge } from "./Badge"
 import { Button } from "./Button"
 import {
@@ -37,6 +37,23 @@ export interface SignerSwitchProps {
   onDisconnect: () => void
 }
 
+export interface SignerConnectPanelProps {
+  title?: string
+  description: string
+  helperText: string
+  unlockLabel?: string
+  unlockItems: readonly string[]
+  error?: string | null
+  pendingSwitch?: boolean
+  extensionNotice?: string | null
+  mobileSignerUnavailable?: boolean
+  connectPending?: boolean
+  connectDisabled?: boolean
+  className?: string
+  bodyClassName?: string
+  onConnect: () => Promise<void> | void
+}
+
 function ConduitLogoLockup({ className = "h-10" }: { className?: string }) {
   return (
     <div className="mb-5 flex justify-center">
@@ -57,6 +74,8 @@ function SignerGlyph({ className = "h-5 w-5" }: { className?: string }) {
 const NSTART_URL = "https://nstart.me"
 const ALBY_URL = "https://getalby.com/"
 const NOSTR_GET_STARTED_URL = "https://grownostr.org/get-started"
+const signerConnectButtonClassName =
+  "h-14 w-full justify-center gap-3 rounded-xl bg-[linear-gradient(90deg,var(--primary-500),var(--primary-600))] text-base font-semibold text-[var(--on-primary)] shadow-[0_18px_38px_color-mix(in_srgb,var(--primary-500)_32%,transparent)] hover:brightness-110 focus-visible:ring-primary-400 disabled:brightness-75"
 
 function isMobileBrowser(): boolean {
   if (typeof navigator === "undefined") return false
@@ -86,6 +105,28 @@ function SignerHeader({
         {description}
       </DialogDescription>
     </DialogHeader>
+  )
+}
+
+function SignerConnectButton({
+  connectPending,
+  connectDisabled,
+  onConnect,
+}: {
+  connectPending: boolean
+  connectDisabled: boolean
+  onConnect: () => Promise<void> | void
+}) {
+  return (
+    <Button
+      type="button"
+      onClick={() => void onConnect()}
+      disabled={connectDisabled}
+      className={signerConnectButtonClassName}
+    >
+      <SignerGlyph />
+      {connectPending ? "Connecting..." : "Connect signer"}
+    </Button>
   )
 }
 
@@ -164,6 +205,173 @@ export function NoSignerSetupGuide({ className }: { className?: string }) {
   )
 }
 
+export function SignerUnlockCard({
+  label = "What this unlocks",
+  unlockItems,
+  className,
+}: {
+  label?: string
+  unlockItems: readonly string[]
+  className?: string
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-5 sm:p-6",
+        className
+      )}
+    >
+      <div className="flex items-center gap-2 text-xs uppercase text-[var(--text-muted)]">
+        <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+        {label}
+      </div>
+      <ul className="mt-5 space-y-4 text-[15px] leading-6 text-[var(--text-secondary)]">
+        {unlockItems.map((item) => (
+          <li key={item} className="flex items-start gap-4">
+            <Check
+              className="mt-0.5 h-5 w-5 shrink-0 text-primary-400"
+              aria-hidden="true"
+            />
+            <span>{item}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function SignerDisconnectedContent({
+  helperText,
+  unlockLabel,
+  unlockItems,
+  error,
+  pendingSwitch = false,
+  extensionNotice,
+  mobileSignerUnavailable = false,
+  connectPending = false,
+  connectDisabled = false,
+  bodyClassName,
+  onConnect,
+}: Omit<SignerConnectPanelProps, "title" | "description" | "className">) {
+  return (
+    <>
+      <div
+        className={cn("mx-auto mt-6 w-full max-w-md space-y-3", bodyClassName)}
+      >
+        {!mobileSignerUnavailable && (
+          <SignerConnectButton
+            connectPending={connectPending}
+            connectDisabled={connectDisabled}
+            onConnect={onConnect}
+          />
+        )}
+
+        <p className="px-4 pt-2 text-center text-[15px] italic leading-6 text-[var(--text-secondary)]">
+          {helperText}
+        </p>
+
+        <NoSignerSetupGuide />
+      </div>
+
+      <div className={cn("mx-auto mt-4 grid max-w-md gap-4", bodyClassName)}>
+        <SignerUnlockCard label={unlockLabel} unlockItems={unlockItems} />
+      </div>
+
+      {pendingSwitch && (
+        <div
+          className={cn(
+            "mx-auto mt-4 max-w-md rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]",
+            bodyClassName
+          )}
+        >
+          Change the active account in your browser extension, then reconnect
+          here.
+        </div>
+      )}
+
+      {error && (
+        <div
+          className={cn(
+            "mx-auto mt-4 max-w-md rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error",
+            bodyClassName
+          )}
+        >
+          {error}
+        </div>
+      )}
+
+      {extensionNotice && (
+        <div
+          className={cn(
+            "mx-auto mt-4 max-w-md rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]",
+            bodyClassName
+          )}
+        >
+          {extensionNotice}
+        </div>
+      )}
+    </>
+  )
+}
+
+export function SignerConnectPanel({
+  title = "Connect a signer",
+  description,
+  helperText,
+  unlockLabel,
+  unlockItems,
+  error,
+  pendingSwitch,
+  extensionNotice,
+  mobileSignerUnavailable,
+  connectPending,
+  connectDisabled,
+  className,
+  bodyClassName,
+  onConnect,
+}: SignerConnectPanelProps) {
+  const titleId = useId()
+
+  return (
+    <section
+      aria-labelledby={titleId}
+      className={cn(
+        "rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface-dialog)] text-[var(--text-primary)] shadow-[var(--shadow-dialog)]",
+        className
+      )}
+    >
+      <div className="relative px-5 py-5 sm:px-6 sm:py-6">
+        <div className="mx-auto max-w-md text-center">
+          <ConduitLogoLockup className="h-11" />
+          <h1
+            id={titleId}
+            className="mt-4 text-2xl font-semibold text-balance text-[var(--text-primary)] sm:text-[2rem]"
+          >
+            {title}
+          </h1>
+          <p className="mt-2 text-[15px] leading-6 text-pretty text-[var(--text-secondary)]">
+            {description}
+          </p>
+        </div>
+
+        <SignerDisconnectedContent
+          helperText={helperText}
+          unlockLabel={unlockLabel}
+          unlockItems={unlockItems}
+          error={error}
+          pendingSwitch={pendingSwitch}
+          extensionNotice={extensionNotice}
+          mobileSignerUnavailable={mobileSignerUnavailable}
+          connectPending={connectPending}
+          connectDisabled={connectDisabled}
+          bodyClassName={bodyClassName}
+          onConnect={onConnect}
+        />
+      </div>
+    </section>
+  )
+}
+
 export function SignerSwitch({
   status,
   pubkeyLabel,
@@ -193,6 +401,10 @@ export function SignerSwitch({
   const signerHelperText = mobileSignerUnavailable
     ? "Try a desktop browser with a signer extension, or a mobile browser that already exposes one."
     : "Conduit currently supports external signers only."
+  const extensionNotice =
+    !extensionAvailable && !mobileSignerUnavailable
+      ? "No signer extension detected. Install a NIP-07 signer such as Alby or nos2x, then refresh and connect."
+      : null
 
   function setOpen(nextOpen: boolean): void {
     if (!isControlled) setInternalOpen(nextOpen)
@@ -331,67 +543,17 @@ export function SignerSwitch({
                   titleRef={titleRef}
                 />
 
-                <div className="mx-auto mt-6 w-full max-w-md space-y-3">
-                  {!mobileSignerUnavailable && (
-                    <Button
-                      type="button"
-                      onClick={() => void handleConnect()}
-                      disabled={isWorking || authPending}
-                      className="h-14 w-full justify-center gap-3 rounded-xl bg-[linear-gradient(90deg,var(--primary-500),var(--primary-600))] text-base font-semibold text-[var(--on-primary)] shadow-[0_18px_38px_color-mix(in_srgb,var(--primary-500)_32%,transparent)] hover:brightness-110 focus-visible:ring-primary-400 disabled:brightness-75"
-                    >
-                      <SignerGlyph />
-                      {authPending || isWorking
-                        ? "Connecting..."
-                        : "Connect signer"}
-                    </Button>
-                  )}
-
-                  <p className="px-4 pt-2 text-center text-[15px] italic leading-6 text-[var(--text-secondary)]">
-                    {signerHelperText}
-                  </p>
-
-                  <NoSignerSetupGuide />
-                </div>
-
-                <div className="mx-auto mt-4 grid max-w-md gap-4">
-                  <div className="rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-5 sm:p-6">
-                    <div className="flex items-center gap-2 text-xs uppercase text-[var(--text-muted)]">
-                      <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-                      What this unlocks
-                    </div>
-                    <ul className="mt-5 space-y-4 text-[15px] leading-6 text-[var(--text-secondary)]">
-                      {unlockItems.map((item) => (
-                        <li key={item} className="flex items-start gap-4">
-                          <Check
-                            className="mt-0.5 h-5 w-5 shrink-0 text-primary-400"
-                            aria-hidden="true"
-                          />
-                          <span>{item}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-
-                {pendingSwitch && (
-                  <div className="mx-auto mt-4 max-w-md rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
-                    Change the active account in your browser extension, then
-                    reconnect here.
-                  </div>
-                )}
-
-                {error && (
-                  <div className="mx-auto mt-4 max-w-md rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error">
-                    {error}
-                  </div>
-                )}
-
-                {!extensionAvailable && !mobileSignerUnavailable && (
-                  <div className="mx-auto mt-4 max-w-md rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
-                    No signer extension detected. Install a NIP-07 signer such
-                    as Alby or nos2x, then refresh and connect.
-                  </div>
-                )}
+                <SignerDisconnectedContent
+                  helperText={signerHelperText}
+                  unlockItems={unlockItems}
+                  error={error}
+                  pendingSwitch={pendingSwitch}
+                  extensionNotice={extensionNotice}
+                  mobileSignerUnavailable={mobileSignerUnavailable}
+                  connectPending={authPending || isWorking}
+                  connectDisabled={isWorking || authPending}
+                  onConnect={handleConnect}
+                />
               </>
             )}
           </div>
