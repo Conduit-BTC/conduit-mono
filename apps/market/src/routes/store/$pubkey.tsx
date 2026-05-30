@@ -34,7 +34,9 @@ import {
   getCommerceReadRelayUrls,
   getProfileDisplayLabel,
   getProfileName,
+  normalizePubkey,
   publishWithPlanner,
+  pubkeyToNpub,
   requireNdkConnected,
   useAuth,
   useProfile,
@@ -117,7 +119,8 @@ function sortProducts(
 }
 
 function StorefrontPage() {
-  const { pubkey } = Route.useParams()
+  const { pubkey: pubkeyParam } = Route.useParams()
+  const pubkey = normalizePubkey(pubkeyParam) ?? pubkeyParam
   const search = Route.useSearch()
   const navigate = Route.useNavigate()
   const queryClient = useQueryClient()
@@ -358,10 +361,14 @@ function StorefrontPage() {
   }
 
   async function handleShareStore(): Promise<void> {
+    const canonicalStorePath = `/store/${encodeURIComponent(pubkeyToNpub(pubkey))}`
     const shareUrl =
       typeof window !== "undefined"
-        ? window.location.href
-        : `https://conduit.market/store/${pubkey}`
+        ? new URL(
+            `${canonicalStorePath}${window.location.search}`,
+            window.location.origin
+          ).toString()
+        : `https://conduit.market${canonicalStorePath}`
     const canUseNativeShare =
       typeof navigator !== "undefined" &&
       typeof navigator.share === "function" &&

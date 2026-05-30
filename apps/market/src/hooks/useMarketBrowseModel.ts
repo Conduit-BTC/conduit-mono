@@ -1,5 +1,5 @@
 import { useMemo } from "react"
-import { useAuth, type PricingRateInput } from "@conduit/core"
+import { normalizePubkey, useAuth, type PricingRateInput } from "@conduit/core"
 import {
   filterProductsByFacets,
   getCategoryFacetOptions,
@@ -36,7 +36,10 @@ export function useMarketBrowseModel({
 }: UseMarketBrowseModelInput) {
   const { pubkey, status } = useAuth()
   const selectedMerchants = useMemo(
-    () => search.merchant ?? [],
+    () =>
+      (search.merchant ?? []).map((merchant) => {
+        return normalizePubkey(merchant) ?? merchant
+      }),
     [search.merchant]
   )
   const selectedMerchantSet = useMemo(

@@ -83,7 +83,7 @@ function inferMarketOrigin(): string {
 }
 
 function getStorefrontUrl(pubkey: string): string {
-  return `${inferMarketOrigin()}/store/${encodeURIComponent(pubkey)}`
+  return `${inferMarketOrigin()}/store/${encodeURIComponent(pubkeyToNpub(pubkey))}`
 }
 
 function ProfilePage() {

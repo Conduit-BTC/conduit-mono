@@ -2,9 +2,12 @@ import { useMemo } from "react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
-import { formatPubkey, useProfile } from "@conduit/core"
+import { formatNpub, pubkeyToNpub, useProfile } from "@conduit/core"
 import { Globe, Store, UserRound, Zap } from "lucide-react"
-import { MerchantAvatarFallback, getMerchantDisplayName } from "../../components/MerchantIdentity"
+import {
+  MerchantAvatarFallback,
+  getMerchantDisplayName,
+} from "../../components/MerchantIdentity"
 import { RichProfileText } from "../../components/RichProfileText"
 import { resolveProfileReference } from "../../lib/profileRefs"
 import { fetchStoreProducts } from "../../lib/storeProducts"
@@ -15,7 +18,10 @@ export const Route = createFileRoute("/u/$profileRef")({
 
 function PublicProfilePage() {
   const { profileRef } = Route.useParams()
-  const resolved = useMemo(() => resolveProfileReference(profileRef), [profileRef])
+  const resolved = useMemo(
+    () => resolveProfileReference(profileRef),
+    [profileRef]
+  )
   const pubkey = resolved?.pubkey
   const profileQuery = useProfile(pubkey)
   const productsQuery = useQuery({
@@ -27,7 +33,9 @@ function PublicProfilePage() {
   if (!pubkey) {
     return (
       <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8">
-        <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Profile not found</h1>
+        <h1 className="text-2xl font-semibold text-[var(--text-primary)]">
+          Profile not found
+        </h1>
         <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
           This profile reference could not be resolved inside Conduit.
         </p>
@@ -37,12 +45,16 @@ function PublicProfilePage() {
 
   const profile = profileQuery.data
   const displayName = getMerchantDisplayName(profile, pubkey)
+  const npub = pubkeyToNpub(pubkey)
   const hasStorefront = (productsQuery.data?.data.length ?? 0) > 0
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
-        <Link to="/products" className="transition-colors hover:text-[var(--text-primary)]">
+        <Link
+          to="/products"
+          className="transition-colors hover:text-[var(--text-primary)]"
+        >
           Shop
         </Link>
         <span>/</span>
@@ -60,22 +72,33 @@ function PublicProfilePage() {
             </Avatar>
 
             <div className="min-w-0">
-              <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">Profile</div>
+              <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
+                Profile
+              </div>
               <h1 className="mt-2 break-words text-3xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-[2.4rem]">
                 {displayName}
               </h1>
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 {profile?.nip05?.trim() ? (
-                  <Badge variant="outline" className="border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]">
+                  <Badge
+                    variant="outline"
+                    className="border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]"
+                  >
                     {profile.nip05.trim()}
                   </Badge>
                 ) : null}
-                <Badge variant="outline" className="border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]">
-                  {formatPubkey(pubkey, 8)}
+                <Badge
+                  variant="outline"
+                  className="border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]"
+                >
+                  {formatNpub(pubkey, 8)}
                 </Badge>
               </div>
               <RichProfileText
-                text={profile?.about?.trim() || "No public profile note has been added yet."}
+                text={
+                  profile?.about?.trim() ||
+                  "No public profile note has been added yet."
+                }
                 className="mt-4 max-w-3xl text-sm leading-7 text-[var(--text-secondary)]"
               />
             </div>
@@ -83,7 +106,7 @@ function PublicProfilePage() {
 
           {hasStorefront && (
             <Button asChild className="h-11 px-4 text-sm">
-              <Link to="/store/$pubkey" params={{ pubkey }}>
+              <Link to="/store/$pubkey" params={{ pubkey: npub }}>
                 <Store className="h-4 w-4" />
                 View storefront
               </Link>
@@ -97,8 +120,12 @@ function PublicProfilePage() {
           <div className="flex items-start gap-3">
             <UserRound className="mt-0.5 h-4 w-4 text-secondary-300" />
             <div>
-              <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Pubkey</div>
-              <div className="mt-2 break-all font-mono text-xs leading-6 text-[var(--text-secondary)]">{pubkey}</div>
+              <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                Npub
+              </div>
+              <div className="mt-2 break-all font-mono text-xs leading-6 text-[var(--text-secondary)]">
+                {npub}
+              </div>
             </div>
           </div>
         </div>
@@ -106,9 +133,13 @@ function PublicProfilePage() {
           <div className="flex items-start gap-3">
             <Zap className="mt-0.5 h-4 w-4 text-secondary-300" />
             <div>
-              <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Lightning</div>
+              <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                Lightning
+              </div>
               <RichProfileText
-                text={profile?.lud16?.trim() || "No lightning address published."}
+                text={
+                  profile?.lud16?.trim() || "No lightning address published."
+                }
                 className="mt-2 text-sm text-[var(--text-secondary)]"
               />
             </div>
@@ -118,7 +149,9 @@ function PublicProfilePage() {
           <div className="flex items-start gap-3">
             <Globe className="mt-0.5 h-4 w-4 text-secondary-300" />
             <div>
-              <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Website</div>
+              <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                Website
+              </div>
               <RichProfileText
                 text={profile?.website?.trim() || "No website published."}
                 className="mt-2 text-sm text-[var(--text-secondary)]"

@@ -8,6 +8,7 @@ import {
   Zap,
 } from "lucide-react"
 import { useState } from "react"
+import { pubkeyToNpub } from "@conduit/core"
 import { Button, Input, Label, StatusPill } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import { useWallet, type WalletConnectionStatus } from "../hooks/useWallet"
@@ -64,6 +65,9 @@ function WalletPage() {
   const [uriInput, setUriInput] = useState("")
   const [pending, setPending] = useState(false)
   const [inputError, setInputError] = useState<string | null>(null)
+  const walletNpub = wallet.connection
+    ? pubkeyToNpub(wallet.connection.walletPubkey)
+    : null
 
   async function handleConnect(): Promise<void> {
     const trimmed = uriInput.trim()
@@ -158,15 +162,15 @@ function WalletPage() {
                         <dd className="group/pubkey relative min-w-0 cursor-default font-mono text-xs text-[var(--text-secondary)]">
                           {/* Middle-ellipsis abbreviation - no title attr to avoid double tooltip */}
                           <span>
-                            {wallet.connection.walletPubkey.slice(0, 20)}
+                            {walletNpub?.slice(0, 20)}
                             <span className="text-[var(--text-muted)]">
                               ...
                             </span>
-                            {wallet.connection.walletPubkey.slice(-20)}
+                            {walletNpub?.slice(-20)}
                           </span>
                           {/* Tooltip with full key - rendered outside overflow context */}
                           <span className="pointer-events-none absolute -top-1 right-0 z-50 mb-2 hidden w-max max-w-[min(26rem,calc(100vw-2rem))] -translate-y-full rounded-xl border border-[var(--border)] bg-[var(--surface-dialog)] px-3 py-2 font-mono text-[0.65rem] leading-5 break-all text-[var(--text-secondary)] shadow-[var(--shadow-dialog)] group-hover/pubkey:block">
-                            {wallet.connection.walletPubkey}
+                            {walletNpub}
                           </span>
                         </dd>
                       </div>

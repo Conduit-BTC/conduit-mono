@@ -1,4 +1,4 @@
-import { formatPubkey, useAuth, useNip07Availability } from "@conduit/core"
+import { formatNpub, useAuth, useNip07Availability } from "@conduit/core"
 import { SignerSwitch as SharedSignerSwitch } from "@conduit/ui"
 
 type SignerSwitchProps = {
@@ -15,8 +15,8 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
     <SharedSignerSwitch
       {...props}
       status={status}
-      pubkeyLabel={pubkey ? formatPubkey(pubkey) : null}
-      pubkeyDetailLabel={pubkey ? formatPubkey(pubkey, 12) : null}
+      pubkeyLabel={pubkey ? formatNpub(pubkey) : null}
+      pubkeyDetailLabel={pubkey ? formatNpub(pubkey, 12) : null}
       error={error}
       extensionAvailable={extensionAvailable}
       connectedDescription="Your merchant workspace is ready."

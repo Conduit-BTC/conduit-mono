@@ -6,6 +6,7 @@ import {
   formatNpub,
   formatPubkey,
   getProductPriceDisplay,
+  pubkeyToNpub,
   useAuth,
   useProfile,
   useProfiles,
@@ -157,7 +158,7 @@ function OrderHero({ conversation }: { conversation: BuyerConversation }) {
             <div className="flex flex-wrap items-center gap-2">
               <Link
                 to="/store/$pubkey"
-                params={{ pubkey: conversation.merchantPubkey }}
+                params={{ pubkey: pubkeyToNpub(conversation.merchantPubkey) }}
                 className="truncate text-lg font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
               >
                 {merchantName}
@@ -207,7 +208,7 @@ function OrderHero({ conversation }: { conversation: BuyerConversation }) {
         <Button asChild variant="outline" className="h-11 px-4 text-sm">
           <Link
             to="/store/$pubkey"
-            params={{ pubkey: conversation.merchantPubkey }}
+            params={{ pubkey: pubkeyToNpub(conversation.merchantPubkey) }}
           >
             Visit store
           </Link>

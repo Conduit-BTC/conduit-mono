@@ -9,7 +9,7 @@ import {
   EVENT_KINDS,
   appendConduitClientTag,
   extractOrderSummary,
-  formatPubkey,
+  formatNpub,
   getCachedMerchantConversationList,
   getNdk,
   getProductPriceDisplay,
@@ -89,7 +89,7 @@ function normalizeTrackingUrl(raw: string): string | undefined {
 }
 
 function getDisplayName(profile: Profile | undefined, pubkey: string): string {
-  return getProfileName(profile) || formatPubkey(pubkey, 8)
+  return getProfileName(profile) || formatNpub(pubkey, 8)
 }
 
 const MESSAGE_TYPE_LABELS: Record<string, string> = {
@@ -1058,7 +1058,7 @@ function OrdersPage() {
                       Buyer: {buyerName}
                     </div>
                     <div className="mt-1 font-mono text-[11px] text-[var(--text-muted)]">
-                      {formatPubkey(conversation.buyerPubkey, 8)}
+                      {formatNpub(conversation.buyerPubkey, 8)}
                     </div>
                     <div className="mt-1 text-xs text-[var(--text-secondary)]">
                       {conversation.status
@@ -1098,7 +1098,10 @@ function OrdersPage() {
                     status={selected.status}
                     counterpartyLabel="Buyer"
                     counterpartyName={selectedBuyerName ?? undefined}
-                    counterpartyPubkey={selected.buyerPubkey}
+                    counterpartyPubkeyLabel={formatNpub(
+                      selected.buyerPubkey,
+                      8
+                    )}
                     items={orderSummary.items}
                     subtotal={orderSummary.subtotal}
                     currency={orderSummary.currency}

@@ -9,6 +9,7 @@ import { createFileRoute, Link } from "@tanstack/react-router"
 import {
   formatNpub,
   getProfileName,
+  pubkeyToNpub,
   useProfile,
   type Product,
 } from "@conduit/core"
@@ -218,7 +219,7 @@ function ProductPage() {
             <>
               <Link
                 to="/store/$pubkey"
-                params={{ pubkey: product.pubkey }}
+                params={{ pubkey: pubkeyToNpub(product.pubkey) }}
                 className="transition-colors hover:text-[var(--text-primary)]"
               >
                 {merchantIdentityPending ? (
@@ -386,7 +387,7 @@ function ProductPage() {
                   <div className="min-w-0 flex-1">
                     <Link
                       to="/store/$pubkey"
-                      params={{ pubkey: product.pubkey }}
+                      params={{ pubkey: pubkeyToNpub(product.pubkey) }}
                       className="block min-w-0 rounded-md transition-colors hover:text-secondary-300"
                     >
                       {merchantIdentityPending ? (
@@ -404,7 +405,7 @@ function ProductPage() {
                     <div className="mt-1 flex min-w-0 items-center gap-2">
                       <Link
                         to="/store/$pubkey"
-                        params={{ pubkey: product.pubkey }}
+                        params={{ pubkey: pubkeyToNpub(product.pubkey) }}
                         className="truncate font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
                       >
                         {formatNpub(product.pubkey, 10)}
@@ -642,7 +643,10 @@ function ProductPage() {
                 </h2>
               </div>
               <Button asChild variant="outline" className="h-11 px-4 text-sm">
-                <Link to="/store/$pubkey" params={{ pubkey: product.pubkey }}>
+                <Link
+                  to="/store/$pubkey"
+                  params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                >
                   <Store className="h-[18px] w-[18px]" />
                   Browse store
                 </Link>

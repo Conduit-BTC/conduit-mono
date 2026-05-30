@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
   db,
-  formatPubkey,
+  formatNpub,
   getCachedMerchantStorefront,
   getMerchantStorefront,
   useAuth,
@@ -306,7 +306,7 @@ function DashboardPage() {
               variant="secondary"
               className="border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]"
             >
-              {formatPubkey(pubkey, 10)}
+              {formatNpub(pubkey, 10)}
             </Badge>
           )}
           <Badge

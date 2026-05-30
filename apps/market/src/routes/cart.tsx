@@ -2,12 +2,14 @@ import { RefreshCw, ShoppingCart, Store, Trash2, Zap } from "lucide-react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
-  formatPubkey,
+  formatNpub,
   getCachedMarketplaceProducts,
   getCachedMerchantStorefront,
   getPriceSats,
   getMarketplaceProducts,
   getMerchantStorefront,
+  normalizePubkey,
+  pubkeyToNpub,
   useAuth,
   useProfile,
   type PricingRateInput,
@@ -44,7 +46,10 @@ type MerchantCartGroup = {
 
 export const Route = createFileRoute("/cart")({
   validateSearch: (search: Record<string, unknown>): CartSearch => ({
-    merchant: typeof search.merchant === "string" ? search.merchant : undefined,
+    merchant:
+      typeof search.merchant === "string"
+        ? (normalizePubkey(search.merchant) ?? search.merchant)
+        : undefined,
   }),
   component: CartPage,
 })
@@ -188,17 +193,17 @@ function MerchantIdentity({
         )}
         <Link
           to="/store/$pubkey"
-          params={{ pubkey: merchantPubkey }}
+          params={{ pubkey: pubkeyToNpub(merchantPubkey) }}
           className="block truncate text-xl font-semibold leading-tight text-[var(--text-primary)] transition-colors hover:text-secondary-300"
         >
           {merchantName}
         </Link>
         <Link
           to="/store/$pubkey"
-          params={{ pubkey: merchantPubkey }}
+          params={{ pubkey: pubkeyToNpub(merchantPubkey) }}
           className="mt-1 block truncate font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
         >
-          {formatPubkey(merchantPubkey, 10)}
+          {formatNpub(merchantPubkey, 10)}
         </Link>
       </div>
     </div>
@@ -245,7 +250,10 @@ function MerchantOverviewCard({
               </span>
             </Button>
             <Button asChild variant="outline" className="min-w-[10rem]">
-              <Link to="/cart" search={{ merchant: group.merchantPubkey }}>
+              <Link
+                to="/cart"
+                search={{ merchant: pubkeyToNpub(group.merchantPubkey) }}
+              >
                 <CartIcon className="h-4 w-4" />
                 View cart
               </Link>
@@ -303,7 +311,7 @@ function RelatedProductRow({
           {product.title}
         </Link>
         <div className="mt-1 truncate text-xs text-[var(--text-muted)]">
-          {merchantLabel} / {formatPubkey(product.pubkey, 6)}
+          {merchantLabel} / {formatNpub(product.pubkey, 6)}
         </div>
         <div className="mt-2 text-sm font-semibold text-secondary-400">
           {price.primary}
@@ -499,7 +507,7 @@ function CartPage() {
     (merchant: string): void => {
       navigate({
         to: "/checkout",
-        search: { merchant },
+        search: { merchant: pubkeyToNpub(merchant) },
       })
     },
     [navigate]
@@ -875,7 +883,9 @@ function CartPage() {
               >
                 <Link
                   to="/store/$pubkey"
-                  params={{ pubkey: selectedGroup.merchantPubkey }}
+                  params={{
+                    pubkey: pubkeyToNpub(selectedGroup.merchantPubkey),
+                  }}
                 >
                   <Store className="h-4 w-4" />
                   Visit store

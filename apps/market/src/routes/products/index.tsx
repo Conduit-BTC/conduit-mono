@@ -7,7 +7,7 @@ import {
 } from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { ChevronDown, LoaderCircle, X } from "lucide-react"
-import { EVENT_KINDS } from "@conduit/core"
+import { EVENT_KINDS, normalizePubkey, pubkeyToNpub } from "@conduit/core"
 import {
   Badge,
   Button,
@@ -54,7 +54,9 @@ export type ProductSearch = MarketBrowseSearch
 export const Route = createFileRoute("/products/")({
   component: ProductsPage,
   validateSearch: (raw: Record<string, unknown>): ProductSearch => {
-    const merchants = normalizeFacetValues(raw.merchant)
+    const merchants = normalizeFacetValues(raw.merchant).map(
+      (merchant) => normalizePubkey(merchant) ?? merchant
+    )
     const tags = normalizeFacetValues(raw.tag).map((tag) => tag.toLowerCase())
 
     const authRequired =
@@ -217,6 +219,11 @@ function ProductsPage() {
             ) {
               delete next[key]
             }
+          }
+          if (next.merchant) {
+            next.merchant = next.merchant.map((merchant) =>
+              pubkeyToNpub(merchant)
+            )
           }
           return next
         },
