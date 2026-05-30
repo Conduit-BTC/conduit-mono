@@ -2,11 +2,13 @@
 
 ## Goal
 
-Add deterministic automated coverage for the Market + Merchant + Relay core loop without blocking MVP delivery velocity.
+Maintain deterministic automated coverage for the Market + Merchant + Relay core loop without blocking current Phase 2 delivery velocity.
+
+Open Phase 2 work is expected to add Playwright smoke coverage. This spec defines the desired coverage shape; package scripts and CI wiring should be read from `package.json` and `.github/workflows/*` after that PR lands.
 
 ## Scope
 
-### In scope (initial)
+### In scope
 
 - Local relay lifecycle for tests (`start`, `seed`, `stop`)
 - Merchant product CRUD smoke coverage
@@ -16,7 +18,7 @@ Add deterministic automated coverage for the Market + Merchant + Relay core loop
   - checkout order send
   - merchant order visibility
 
-### Out of scope (initial)
+### Out of scope
 
 - Browser-extension signer UX automation (NIP-07 popup interactions)
 - Full visual regression
@@ -57,10 +59,9 @@ Add deterministic automated coverage for the Market + Merchant + Relay core loop
 - Keep first CI suite small and reliable (single happy-path smoke)
 - Expand coverage after stability is proven
 
-## Commands (planned)
+## Commands
 
-- `bun run test:e2e:local` - run local end-to-end smoke suite
-- `bun run test:e2e:ci` - CI-targeted smoke suite
+Use the scripts defined in `package.json` after the Playwright smoke PR lands. Do not document commands here that do not exist in the repo.
 
 ## Exit Criteria (v0)
 

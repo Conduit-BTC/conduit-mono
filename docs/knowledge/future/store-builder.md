@@ -1,5 +1,8 @@
 # Store Builder Specification
 
+> Future note, not a current `conduit-mono` implementation contract.
+> The current Store Builder app is a placeholder surface. This document captures a possible generated-store product direction and should not be used to expand current Phase 2 Market or Merchant scope.
+
 ## Overview
 
 Store Builder enables merchants to generate standalone, protocol-native storefronts that interoperate with Market and Portal. Stores are created via AI-driven generation from templates.
@@ -7,6 +10,7 @@ Store Builder enables merchants to generate standalone, protocol-native storefro
 ## Core Flows
 
 ### Store Creation
+
 1. Merchant authenticates (NIP-07/46)
 2. Select template
 3. AI generates store from merchant data
@@ -14,24 +18,26 @@ Store Builder enables merchants to generate standalone, protocol-native storefro
 5. Publish/deploy
 
 ### Store Management
+
 1. Edit store configuration
 2. Preview changes
 3. Manage custom domain (future)
 
 ## Pages
 
-| Route | Component | Description |
-|-------|-----------|-------------|
-| `/` | BuilderHomePage | Template gallery |
-| `/templates` | TemplatesPage | Browse templates |
-| `/templates/:id` | TemplatePreview | Template details |
-| `/editor` | EditorPage | Store configuration |
-| `/preview` | PreviewPage | Live preview |
-| `/stores` | MyStoresPage | Merchant's stores |
+| Route            | Component       | Description         |
+| ---------------- | --------------- | ------------------- |
+| `/`              | BuilderHomePage | Template gallery    |
+| `/templates`     | TemplatesPage   | Browse templates    |
+| `/templates/:id` | TemplatePreview | Template details    |
+| `/editor`        | EditorPage      | Store configuration |
+| `/preview`       | PreviewPage     | Live preview        |
+| `/stores`        | MyStoresPage    | Merchant's stores   |
 
 ## Template System
 
 ### Template Structure
+
 ```
 template/
 ├── layout.tsx        # Page layout component
@@ -41,6 +47,7 @@ template/
 ```
 
 ### AI Generation Process
+
 1. Fetch merchant profile (Kind 0)
 2. Fetch merchant products (Kind 30402)
 3. Apply template layout
@@ -50,6 +57,7 @@ template/
 ## Store Architecture
 
 Generated stores are static React apps that:
+
 - Connect to Nostr relays for live data
 - Support buyer authentication (NIP-07/46)
 - Enable direct checkout (NWC)
@@ -58,28 +66,29 @@ Generated stores are static React apps that:
 ## Protocol Events
 
 ### Read (Store Visitor)
+
 - Kind 0: Merchant profile
 - Kind 30402: Products
 
 ### Publish (Store Visitor)
-- Kind 4/44: DMs to merchant
+
+- Kind 1059: NIP-17 gift-wrapped messages to merchant
 - Kind 9734: Zap requests
 
 ## State Management
 
-### Stores
-- `useAccountStore` - Merchant auth
-- `useStoreStore` - Store configuration
-- `useTemplateStore` - Template catalog
+### State
+
+This future note predates current repo state-management rules. Any future implementation must use the current `conduit-mono` model: React Context for auth, TanStack Query for remote state, Dexie/localStorage for persistence, and local React state for ephemeral UI. Do not introduce Zustand/Jotai/Redux-style stores without a new accepted architecture decision.
 
 ## Deployment
 
 ### Store Builder App
 
-| Environment | URL |
-|-------------|-----|
-| Production | `build.conduit.market` |
-| Preview | `<branch>.conduit-store-builder.pages.dev` |
+| Environment | URL                                        |
+| ----------- | ------------------------------------------ |
+| Production  | `build.conduit.market`                     |
+| Preview     | `<branch>.conduit-store-builder.pages.dev` |
 
 Same deployment pattern as Market/Merchant - Cloudflare Pages with automatic preview deployments.
 
@@ -91,11 +100,11 @@ All generated storefronts are hosted on Cloudflare Pages via the Conduit account
 
 ### Hosting Tiers
 
-| Tier | Domain | Price | Features |
-|------|--------|-------|----------|
-| **Subdomain** | `{store-name}.conduit.market` | $12/mo | SSL, CDN, Blossom media |
-| **Custom Domain** | Merchant's domain | $21/mo | All above + DNS management |
-| **Self-Host** | Merchant hosts | Free | Export static bundle, no managed hosting |
+| Tier              | Domain                        | Price  | Features                                 |
+| ----------------- | ----------------------------- | ------ | ---------------------------------------- |
+| **Subdomain**     | `{store-name}.conduit.market` | $12/mo | SSL, CDN, Blossom media                  |
+| **Custom Domain** | Merchant's domain             | $21/mo | All above + DNS management               |
+| **Self-Host**     | Merchant hosts                | Free   | Export static bundle, no managed hosting |
 
 ### Architecture
 
@@ -149,6 +158,7 @@ Example: `conduit-store-abc123` → `abc123.conduit.market`
 ### Cloudflare Pages API Usage
 
 **Create Store Project:**
+
 ```typescript
 // POST https://api.cloudflare.com/client/v4/accounts/{account_id}/pages/projects
 {
@@ -158,6 +168,7 @@ Example: `conduit-store-abc123` → `abc123.conduit.market`
 ```
 
 **Deploy Store:**
+
 ```typescript
 // POST https://api.cloudflare.com/client/v4/accounts/{account_id}/pages/projects/{project_name}/deployments
 // Content-Type: multipart/form-data
@@ -165,6 +176,7 @@ Example: `conduit-store-abc123` → `abc123.conduit.market`
 ```
 
 **Set Environment Variables:**
+
 ```typescript
 // PATCH https://api.cloudflare.com/client/v4/accounts/{account_id}/pages/projects/{project_name}
 {
@@ -172,7 +184,7 @@ Example: `conduit-store-abc123` → `abc123.conduit.market`
     "production": {
       "env_vars": {
         "VITE_MERCHANT_PUBKEY": { "value": "npub1..." },
-        "VITE_RELAY_URL": { "value": "wss://relay.conduit.market" },
+        "VITE_RELAY_URL": { "value": "wss://conduitl2.fly.dev" },
         "VITE_STORE_ID": { "value": "abc123" }
       }
     }
@@ -185,6 +197,7 @@ Example: `conduit-store-abc123` → `abc123.conduit.market`
 For `{store-name}.conduit.market`:
 
 1. **DNS Record** (Cloudflare DNS for conduit.market zone):
+
    ```
    Type: CNAME
    Name: {store-name}
@@ -207,6 +220,7 @@ For merchant-owned domains (Premium tier):
 1. **Merchant provides domain** in Store Builder UI
 
 2. **Conduit adds custom domain to Pages project:**
+
    ```typescript
    // POST .../pages/projects/{project_name}/domains
    {
@@ -215,6 +229,7 @@ For merchant-owned domains (Premium tier):
    ```
 
 3. **Cloudflare returns required DNS records:**
+
    ```json
    {
      "result": {
@@ -229,6 +244,7 @@ For merchant-owned domains (Premium tier):
    ```
 
 4. **Display DNS instructions to merchant:**
+
    ```
    Add these records to your domain's DNS:
 
@@ -242,6 +258,7 @@ For merchant-owned domains (Premium tier):
    ```
 
 5. **Poll for verification:**
+
    ```typescript
    // GET .../pages/projects/{project_name}/domains/{domain_name}
    // Check status: "pending" → "active"
@@ -261,10 +278,10 @@ For merchant-owned domains (Premium tier):
 interface StoreDeployRequest {
   storeId: string
   merchantPubkey: string
-  storeName: string  // Subdomain: "my-store" → my-store.conduit.market
+  storeName: string // Subdomain: "my-store" → my-store.conduit.market
   template: string
   config: StoreConfig
-  customDomain?: string  // Optional: "shop.example.com"
+  customDomain?: string // Optional: "shop.example.com"
 }
 
 interface StoreConfig {
@@ -292,8 +309,8 @@ export async function handleDeploy(request: StoreDeployRequest) {
     envVars: {
       VITE_MERCHANT_PUBKEY: merchantPubkey,
       VITE_STORE_ID: storeId,
-      VITE_RELAY_URL: config.relays[0] || "wss://relay.conduit.market",
-    }
+      VITE_RELAY_URL: config.relays[0] || "wss://conduitl2.fly.dev",
+    },
   })
 
   // 2. Create/update Cloudflare Pages project
@@ -388,16 +405,16 @@ async function generateStoreBundle(options: GenerateOptions): Promise<Buffer> {
 
 ```typescript
 interface Store {
-  id: string                    // Unique store ID
-  merchantPubkey: string        // Owner's Nostr pubkey
-  name: string                  // Subdomain name
-  template: string              // Template ID
-  config: StoreConfig           // Branding, layout, etc.
+  id: string // Unique store ID
+  merchantPubkey: string // Owner's Nostr pubkey
+  name: string // Subdomain name
+  template: string // Template ID
+  config: StoreConfig // Branding, layout, etc.
 
   // Hosting
   cloudflareProjectId: string
-  subdomain: string             // {name}.conduit.market
-  customDomain?: string         // merchant's domain
+  subdomain: string // {name}.conduit.market
+  customDomain?: string // merchant's domain
   customDomainStatus?: "pending" | "active" | "failed"
 
   // Billing
@@ -422,8 +439,8 @@ interface Store {
 # Injected at build time
 VITE_MERCHANT_PUBKEY=npub1...           # Store owner
 VITE_STORE_ID=abc123                    # Store identifier
-VITE_RELAY_URL=wss://relay.conduit.market
-VITE_DEFAULT_RELAYS=wss://relay.conduit.market,wss://relay.damus.io
+VITE_RELAY_URL=wss://conduitl2.fly.dev
+VITE_DEFAULT_RELAYS=wss://conduitl2.fly.dev,wss://relay.damus.io
 
 # Optional
 VITE_BLOSSOM_SERVER=https://blossom.conduit.market
@@ -447,7 +464,9 @@ For merchants who want to host their own store:
 # Hosting Your Conduit Store
 
 ## Static Files
+
 Upload the contents of `dist/` to any static hosting provider:
+
 - Cloudflare Pages
 - Vercel
 - Netlify
@@ -455,11 +474,14 @@ Upload the contents of `dist/` to any static hosting provider:
 - Any web server (nginx, Apache, Caddy)
 
 ## Environment Variables
+
 Set these in your hosting provider:
+
 - VITE_MERCHANT_PUBKEY=your-npub
 - VITE_RELAY_URL=wss://your-relay.com
 
 ## Updates
+
 Re-export from Store Builder when you want to update your store.
 ```
 
@@ -470,6 +492,7 @@ Re-export from Store Builder when you want to update your store.
 ### API Authentication
 
 Store deployment API requires:
+
 - Valid merchant signature (NIP-07/46)
 - Merchant owns the store being modified
 - Rate limiting per pubkey

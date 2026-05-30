@@ -6,7 +6,7 @@ Conduit is a decentralized commerce platform built on Nostr protocol. This monor
 
 - **Market** (`apps/market`) - Buyer-facing marketplace for product discovery and purchase
 - **Merchant Portal** (`apps/merchant`) - Seller dashboard for product management, orders, and communications
-- **Store Builder** (`apps/store-builder`) - Tool for creating standalone merchant storefronts
+- **Store Builder** (`apps/store-builder`) - Placeholder app for future standalone merchant storefront work
 
 ## Architecture
 
@@ -17,7 +17,7 @@ conduit-mono/
 ├── apps/
 │   ├── market/           # Buyer marketplace
 │   ├── merchant/         # Seller dashboard
-│   └── store-builder/    # Storefront generator
+│   └── store-builder/    # Future storefront placeholder
 ├── packages/
 │   ├── core/             # Types, protocol, schemas, utilities
 │   └── ui/               # Shared React components
@@ -32,21 +32,21 @@ conduit-mono/
 
 ### Tech Stack
 
-| Layer        | Technology                                    |
-| ------------ | --------------------------------------------- |
-| Runtime      | Bun                                           |
-| Build        | Vite 6 + SWC                                  |
-| Framework    | React 19                                      |
-| Routing      | TanStack Router (file-based, type-safe)       |
-| Server State | TanStack Query + NDK                          |
-| Client State | React Context (auth only)                     |
-| Persistence  | localStorage (cart, preferences)              |
-| Database     | Dexie (IndexedDB) for orders, messages, cache |
-| UI           | shadcn/ui + Tailwind CSS                      |
-| Forms        | react-hook-form + Zod                         |
-| Validation   | Zod schemas in `@conduit/core`                |
-| Protocol     | Nostr via NDK                                 |
-| Analytics    | Plausible (traffic) + PostHog (events/errors) |
+| Layer        | Technology                                                         |
+| ------------ | ------------------------------------------------------------------ |
+| Runtime      | Bun                                                                |
+| Build        | Vite 6 + SWC                                                       |
+| Framework    | React 19                                                           |
+| Routing      | TanStack Router (file-based, type-safe)                            |
+| Server State | TanStack Query over shared Nostr protocol helpers                  |
+| Client State | React Context (auth only)                                          |
+| Persistence  | localStorage (cart, preferences)                                   |
+| Database     | Dexie (IndexedDB) for orders, messages, cache                      |
+| UI           | shadcn/ui + Tailwind CSS                                           |
+| Forms        | react-hook-form + Zod                                              |
+| Validation   | Zod schemas in `@conduit/core`                                     |
+| Protocol     | Nostr via `@conduit/core` helpers; NDK is the current edge library |
+| Analytics    | Privacy-constrained optional telemetry only                        |
 
 **No Zustand. No Jotai. No state management library.**
 
@@ -75,12 +75,12 @@ Payments: NWC-based Lightning payments (NIP-47).
 2. **Before building**: Read the relevant `docs/specs/*.md` for feature details
    - For UI/theming work, also read `docs/DESIGN.md`
 
-3. **Plan before implementing**: For non-trivial implementation work, write a concise plan from the relevant spec/docs and get user approval before editing code.
+3. **Plan before implementing**: For non-trivial implementation work, write a concise plan from the relevant spec/docs. If the user has already asked for implementation, proceed after the plan unless the work hits a stop condition.
 
 4. **Spec-first rule**:
    - If work changes product requirements, protocol behavior, or shared implementation expectations, land the relevant docs/spec PR to `main` before starting the implementation `feat/*` branch
 
-5. **End**: Update deliverable checkboxes in `docs/plans/IMPLEMENTATION.md` with user confirmation
+5. **End**: Report validation and any doc/status follow-ups. Do not edit planning status checkboxes unless the user explicitly asks; live execution status belongs in Linear.
 
 ## Protected Files
 
@@ -92,7 +92,7 @@ Do not modify without explicit confirmation:
 
 ## Public Repo Posture
 
-Treat `conduit-mono` as a future public client/shared-code repository.
+Treat `conduit-mono` as a public client/shared-code repository.
 
 When writing:
 
@@ -184,7 +184,7 @@ bun run --filter @conduit/merchant dev --host 0.0.0.0 --port 7001
 
 ### Import Order
 
-1. External dependencies (react, zustand, etc)
+1. External dependencies (react, TanStack, etc)
 2. @conduit/core imports
 3. @conduit/ui imports
 4. Relative imports (./components, ../utils)
@@ -201,12 +201,14 @@ apps/market/src/
 │   │   └── $productId.tsx  # Product detail (/products/:id)
 │   ├── cart.tsx         # Cart page
 │   ├── checkout.tsx     # Checkout (auth required)
-│   ├── orders/
-│   │   ├── index.tsx    # Order history
-│   │   └── $orderId.tsx # Order detail
+│   ├── orders.tsx       # Order history and details surface
 │   ├── messages.tsx     # DM inbox
+│   ├── network.tsx      # Relay/network settings
+│   ├── wallet.tsx       # Buyer wallet setup
 │   ├── store/
 │   │   └── $pubkey.tsx  # Merchant storefront
+│   ├── u/
+│   │   └── $profileRef.tsx # Profile reference view
 │   └── profile.tsx      # User profile
 ├── components/          # Shared app components
 ├── hooks/               # App-specific hooks (useCart, etc)
@@ -223,7 +225,7 @@ apps/market     ─┬─> @conduit/core
                  └─> @conduit/ui
 apps/merchant   ─┬─> @conduit/core
                  └─> @conduit/ui
-packages/ui     ───> @conduit/core
+packages/ui     ───> (external + React only)
 packages/core   ───> (external only)
 ```
 
@@ -231,13 +233,15 @@ packages/core   ───> (external only)
 
 ```bash
 # .env.local (gitignored)
-VITE_DEFAULT_RELAY_URL=wss://relay.conduit.market
+VITE_DEFAULT_RELAYS=
 VITE_BLOSSOM_SERVER_URL=https://blossom.conduit.market
 ```
 
+The canonical relay reset list lives in `packages/core/src/config.ts` and currently starts with `wss://conduitl2.fly.dev`. Do not add retired Conduit relay hosts to active docs or examples.
+
 ## GitHub CI/CD
 
-Pipeline stages: lint → typecheck → test → build → deploy
+Pipeline stages include changed-file formatting, PR title, lint, typecheck, tests, color policy, signet/mainnet builds, and preview-link automation. See `CONTRIBUTING.md` and `.github/workflows/ci.yml` for the current gates.
 
 Protected branches: `main`
 Pull request required for all changes.

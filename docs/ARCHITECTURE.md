@@ -1,473 +1,242 @@
 # Conduit Architecture
 
-System architecture and technical design for the Conduit commerce platform.
+System architecture and technical design for the current `conduit-mono` client repository.
+
+Execution sequencing lives in Linear. This document describes repo-local architecture and should not be used to pull future service, billing, or generated-store scope into current Market and Merchant milestones.
 
 ---
 
 ## System Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              CONDUIT PLATFORM                                │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐                    │
-│  │    Market    │   │   Merchant   │   │    Store     │                    │
-│  │  (Buyers)    │   │   Portal     │   │   Builder    │                    │
-│  │              │   │  (Sellers)   │   │ (Storefronts)│                    │
-│  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘                    │
-│         │                  │                  │                             │
-│         └──────────────────┼──────────────────┘                             │
-│                            │                                                │
-│                   ┌────────▼────────┐                                       │
-│                   │  Shared Layer   │                                       │
-│                   │                 │                                       │
-│                   │  @conduit/core  │ ← Types, Protocol, Schemas, Utils     │
-│                   │  @conduit/ui    │ ← Components, Hooks, Styles           │
-│                   └────────┬────────┘                                       │
-│                            │                                                │
-└────────────────────────────┼────────────────────────────────────────────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              │              │              │
-              ▼              ▼              ▼
-       ┌───────────┐  ┌───────────┐  ┌───────────┐
-       │   Nostr   │  │  Blossom  │  │ Lightning │
-       │   Relays  │  │  (Media)  │  │   (NWC)   │
-       └───────────┘  └───────────┘  └───────────┘
+Market ─────────┐
+                ├── @conduit/core ── Nostr relays, Lightning/NWC/WebLN, Dexie
+Merchant ───────┤
+                └── @conduit/ui ─── shared components, tokens, styles
+Store Builder ──┘
 ```
 
-### Domain Structure
+| App                  | Current role                                                                                           |
+| -------------------- | ------------------------------------------------------------------------------------------------------ |
+| `apps/market`        | Buyer marketplace: browse, cart, checkout, orders, messages, wallet, network settings                  |
+| `apps/merchant`      | Seller workspace: readiness dashboard, products, orders, profile, payments, shipping, network settings |
+| `apps/store-builder` | Placeholder app for future standalone storefront work                                                  |
 
-| Domain | Purpose |
-|--------|---------|
-| `conduit.market` | Marketing / landing page |
-| `shop.conduit.market` | Market app (buyers) |
-| `sell.conduit.market` | Merchant Portal (sellers) |
-| `build.conduit.market` | Store Builder app |
-| `relay.conduit.market` | Nostr relay |
-| `blossom.conduit.market` | Media hosting (Blossom) |
-| `{store}.conduit.market` | Generated merchant stores |
+| Package         | Current role                                                                                                             |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `@conduit/core` | Types, schemas, Nostr protocol helpers, relay planning/settings, Dexie persistence, pricing/payment helpers, React hooks |
+| `@conduit/ui`   | Shared shadcn-style components, design tokens, typography, theme styles                                                  |
+
+`@conduit/ui` does not depend on `@conduit/core`. Apps may depend on both shared packages. Shared protocol and business behavior belongs in `@conduit/core`; reusable controls and interaction primitives belong in `@conduit/ui`.
 
 ---
 
-## App Architecture
+## Public Domains
 
-### Market (Buyer-Facing)
+| Domain                   | Purpose                      |
+| ------------------------ | ---------------------------- |
+| `conduit.market`         | Marketing / landing page     |
+| `shop.conduit.market`    | Market app                   |
+| `sell.conduit.market`    | Merchant Portal              |
+| `build.conduit.market`   | Future Store Builder surface |
+| `blossom.conduit.market` | Blossom media hosting        |
 
-```
-market/src/
-├── routes/                  # TanStack Router (file-based)
-│   ├── __root.tsx           # Layout shell
-│   ├── index.tsx            # Home (/)
-│   ├── products/
-│   │   ├── index.tsx        # Browse (/products)
-│   │   └── $productId.tsx   # Detail (/products/:id)
-│   ├── cart.tsx             # Cart review
-│   ├── checkout.tsx         # Order + payment
-│   ├── orders/
-│   │   ├── index.tsx        # History
-│   │   └── $orderId.tsx     # Detail
-│   ├── messages.tsx         # NIP-17 DMs
-│   ├── store/
-│   │   └── $pubkey.tsx      # Merchant storefront
-│   └── profile.tsx          # User profile
-├── components/              # App-specific components
-├── hooks/                   # useCart, useCheckout, etc.
-└── lib/                     # Query client, guards
-```
-
-### Merchant Portal (Seller Dashboard)
-
-```
-merchant/src/
-├── routes/
-│   ├── __root.tsx           # Dashboard layout
-│   ├── index.tsx            # Overview metrics
-│   ├── products/
-│   │   ├── index.tsx        # Product list
-│   │   ├── new.tsx          # Create product
-│   │   └── $productId.tsx   # Edit product
-│   ├── orders/
-│   │   ├── index.tsx        # Order list
-│   │   └── $orderId.tsx     # Order detail + state transitions
-│   ├── messages.tsx         # Buyer conversations
-│   └── settings.tsx         # Profile, relays, wallet
-├── components/
-├── hooks/
-└── lib/
-```
-
-### Store Builder (Storefronts)
-
-```
-store-builder/src/
-├── routes/
-│   ├── __root.tsx
-│   ├── index.tsx            # Store home
-│   ├── products/
-│   ├── cart.tsx
-│   └── checkout.tsx
-├── components/
-└── templates/               # Store templates
-```
+The canonical relay reset list is code-owned in `packages/core/src/config.ts` and currently starts with `wss://conduitl2.fly.dev`. Retired Conduit relay hosts should not appear in active docs or examples.
 
 ---
 
-## Protocol Layer
+## App Routes
+
+### Market
+
+```
+apps/market/src/routes/
+├── __root.tsx
+├── index.tsx
+├── products/
+│   ├── index.tsx
+│   └── $productId.tsx
+├── cart.tsx
+├── checkout.tsx
+├── orders.tsx
+├── messages.tsx
+├── network.tsx
+├── wallet.tsx
+├── profile.tsx
+├── store/
+│   └── $pubkey.tsx
+└── u/
+    └── $profileRef.tsx
+```
+
+### Merchant
+
+```
+apps/merchant/src/routes/
+├── __root.tsx
+├── index.tsx
+├── products.tsx
+├── orders.tsx
+├── profile.tsx
+├── payments.tsx
+├── shipping.tsx
+└── network.tsx
+```
+
+### Store Builder
+
+```
+apps/store-builder/src/routes/
+├── __root.tsx
+└── index.tsx
+```
+
+Do not document Store Builder as a generated-store platform until that scope has an accepted spec and implementation plan.
+
+---
+
+## Protocol Surface
 
 ### Nostr Event Kinds
 
-| Kind | Purpose | NIP | Used By |
-|------|---------|-----|---------|
-| 0 | Profile metadata | NIP-01 | All apps |
-| 5 | Deletion request | NIP-09 | Merchant Portal |
-| 10002 | Relay list | NIP-65 | All apps |
-| 30402 | Product listing | NIP-15 | Market, Portal |
-| 16 | Order message | Custom | Market, Portal |
-| 1059 | Gift wrap (NIP-17 DMs) | NIP-17 | All apps |
+| Kind    | Purpose                      | Notes                             |
+| ------- | ---------------------------- | --------------------------------- |
+| `0`     | Profile metadata             | NIP-01                            |
+| `3`     | Contact list / follow graph  | NIP-02                            |
+| `5`     | Event deletion               | NIP-09                            |
+| `13`    | Seal                         | NIP-59 / NIP-17 message wrapping  |
+| `14`    | Private direct message       | NIP-17                            |
+| `16`    | Order message payload        | Conduit payload wrapped in NIP-17 |
+| `1059`  | Gift wrap                    | NIP-17                            |
+| `9734`  | Zap request                  | NIP-57                            |
+| `9735`  | Zap receipt                  | NIP-57                            |
+| `10002` | Relay list                   | NIP-65                            |
+| `30402` | Product listing              | NIP-99 + GammaMarkets market-spec |
+| `30406` | Shipping option              | Conduit commerce extension        |
+| `31989` | Application recommendation   | NIP-89                            |
+| `31990` | Application handler metadata | NIP-89                            |
 
-### Event Flow: Product Discovery
+Authentication is external-signer-only. The repo policy allows NIP-07 and NIP-46 style external signers, but broad NIP-46 UX is not a Phase 2A blocker.
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Product Discovery                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  Merchant Portal              Relay Network                Market       │
-│  ┌─────────────┐              ┌───────────┐           ┌─────────────┐   │
-│  │ Create      │  publish     │ Store     │  query    │ Discover    │   │
-│  │ Product     │────────────► │ Kind      │◄──────────│ Products    │   │
-│  │ (Form)      │  Kind 30402  │ 30402     │  filter   │ (Grid/List) │   │
-│  └─────────────┘              └───────────┘           └─────────────┘   │
-│                                                                         │
-│  NDK handles signing via NIP-07/NIP-46 external signer                  │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+### Product Discovery
 
-### Event Flow: Order Checkout
+Product listings are replaceable addressable events:
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Order Flow                                     │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  Buyer (Market)                                    Merchant (Portal)    │
-│                                                                         │
-│  1. Add to cart                                                         │
-│     └─► localStorage (grouped by merchant)                              │
-│                                                                         │
-│  2. Checkout                                                            │
-│     └─► Create Kind 16 order event                                      │
-│         ├─ tags: p (merchant), subject, type, order, amount             │
-│         ├─ items: productId, quantity, price                            │
-│         └─ shipping: address, phone, email                              │
-│                                                                         │
-│  3. Wrap in NIP-17                                                      │
-│     └─► Kind 1059 (gift wrap) + Kind 13 (seal)                          │
-│         └─► Send to merchant's relays                                   │
-│                                                                         │
-│  4. Merchant receives DM                                                │
-│     └─► Unwrap, view order details ─────────────────────► See order     │
-│                                                                         │
-│  5. Generate Lightning invoice                                          │
-│     └─► NWC invoice creation ◄──────────────────────────┤               │
-│                                                                         │
-│  6. Send payment request                                                │
-│     └─► NIP-17 DM with invoice ─────────────────────────► Receive       │
-│                                                                         │
-│  7. Buyer pays invoice                                                  │
-│     └─► Lightning payment ──────────────────────────────► Confirm       │
-│                                                                         │
-│  8. Order state updates                                                 │
-│     └─► NIP-17 DMs for status changes                                   │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+```text
+30402:<merchant_pubkey>:<d_tag>
 ```
 
----
+Routes should prefer shared product parsing, dedupe, relay-planning, and cache helpers instead of inventing per-route event semantics. Current code may still use NDK as the edge library. Future Phase 2B architecture is expected to move more relay execution/source-health behavior behind an explicit shared boundary, but current closeout work should not introduce a broad custom substrate before that architecture is accepted.
 
-## State Machines
+### Orders And Messages
 
-### Order States
+Order communication uses NIP-17 encrypted messages. A Conduit order message payload is kind `16`, encrypted/sealed/wrapped before publishing.
 
-```
-                  ┌─────────────────────────────────────────┐
-                  │             Order Created               │
-                  │          (Kind 16 + NIP-17)             │
-                  └─────────────────┬───────────────────────┘
-                                    │
-                                    ▼
-                           ┌────────────────┐
-                     ┌─────│    PENDING     │─────┐
-                     │     │ (awaiting pay) │     │
-                     │     └───────┬────────┘     │
-                     │             │              │
-                     │ buyer       │ payment      │ merchant
-                     │ cancels     │ received     │ cancels
-                     │             ▼              │
-                     │     ┌────────────────┐     │
-                     │     │     PAID       │     │
-                     │     │ (processing)   │     │
-                     │     └───────┬────────┘     │
-                     │             │              │
-                     ▼             │ merchant     ▼
-                ┌────────────┐     │ ships   ┌────────────┐
-                │ CANCELLED  │     │         │ CANCELLED  │
-                └────────────┘     ▼         └────────────┘
-                           ┌────────────────┐
-                           │  FULFILLED     │
-                           │  (shipped)     │
-                           └────────────────┘
+Standard order message types:
+
+| Type              | Direction         | Meaning                           |
+| ----------------- | ----------------- | --------------------------------- |
+| `order`           | buyer -> merchant | Initial order intent/details      |
+| `payment_request` | merchant -> buyer | Lightning invoice/payment request |
+| `payment_proof`   | buyer -> merchant | Buyer payment evidence            |
+| `status_update`   | merchant -> buyer | Order state transition            |
+| `shipping_update` | merchant -> buyer | Tracking or shipping update       |
+| `receipt`         | merchant -> buyer | Final receipt/confirmation        |
+
+Order status values currently include:
+
+```text
+pending -> invoiced -> paid -> processing -> shipped -> complete
 ```
 
-**State storage:**
-- Protocol state: Derived from NIP-17 message history
-- Local annotations: Stored in Dexie (notes, internal tracking)
-
-### Authentication States
-
-```
-                    ┌─────────────────────────┐
-                    │      NO SIGNER          │
-                    │  (anonymous browsing)   │
-                    └───────────┬─────────────┘
-                                │ user clicks "Connect"
-                                ▼
-                    ┌─────────────────────────┐
-                    │   SIGNER REQUESTED      │
-                    │  (awaiting NIP-07/46)   │
-                    └───────────┬─────────────┘
-                                │
-              ┌─────────────────┼─────────────────┐
-              │ approved        │ rejected        │ timeout
-              ▼                 ▼                 ▼
-    ┌──────────────────┐  ┌──────────────┐  ┌──────────────┐
-    │   CONNECTED      │  │   REJECTED   │  │   TIMEOUT    │
-    │  (has pubkey)    │  │              │  │              │
-    └────────┬─────────┘  └──────────────┘  └──────────────┘
-             │
-             │ user disconnects
-             ▼
-    ┌──────────────────┐
-    │   DISCONNECTED   │
-    └──────────────────┘
-```
-
-**No key custody**: Apps never generate, store, or manage private keys.
+`cancelled` may occur from pending or later operational states. Product copy should distinguish unpaid, proof received, and confirmed paid where that distinction affects buyer or merchant decisions.
 
 ---
 
 ## Data Layer
 
-### TanStack Query + NDK
+### React State
 
-```typescript
-// Product query example
-const { data: products, isLoading } = useQuery({
-  queryKey: ["products", { category, relay }],
-  queryFn: () => ndk.fetchEvents({
-    kinds: [30402],
-    "#t": category ? [category] : undefined,
-  }),
-  staleTime: 1000 * 60 * 5, // 5 minutes
-})
+- TanStack Query handles remote/server-like relay state.
+- React Context owns auth state.
+- App-local `useState` / `useReducer` owns ephemeral UI state.
+- No Zustand, Jotai, Redux, or equivalent global state library.
 
-// Profile query with caching
-const { data: profile } = useQuery({
-  queryKey: ["profile", pubkey],
-  queryFn: () => ndk.fetchEvent({
-    kinds: [0],
-    authors: [pubkey],
-  }),
-})
-```
+### Dexie
 
-### Dexie (IndexedDB) Schema
+Dexie is used for local-first persistence and recovery:
 
-```typescript
-// packages/core/src/db/schema.ts
-class ConduitDB extends Dexie {
-  orders!: Table<Order>
-  messages!: Table<Message>
-  productCache!: Table<CachedProduct>
+| Table                    | Purpose                                       |
+| ------------------------ | --------------------------------------------- |
+| `orders`                 | Buyer/merchant order records and local status |
+| `messages`               | Message cache                                 |
+| `products`               | Product cache                                 |
+| `profiles`               | Profile cache                                 |
+| `orderMessages`          | Order-linked message history                  |
+| `relayLists`             | NIP-65 relay list cache                       |
+| `productSocialSummaries` | Product trust/social summary cache            |
+| `paymentAttempts`        | Buyer payment attempt history                 |
 
-  constructor() {
-    super("conduit")
-    this.version(1).stores({
-      orders: "id, status, merchantPubkey, createdAt",
-      messages: "id, conversationId, timestamp",
-      productCache: "id, merchantPubkey, updatedAt",
-    })
-  }
-}
-```
+Cache data is evidence for fast paint and recovery. It should not be presented as proof that relay discovery is complete.
 
-**Why Dexie:**
-- Orders need offline access and state tracking
-- Messages need local history (NIP-17 DMs are ephemeral on relays)
-- Product cache improves cold-start performance
+### localStorage
 
-### localStorage (Cart)
-
-```typescript
-// Cart structure - grouped by merchant
-interface Cart {
-  merchants: {
-    [pubkey: string]: {
-      items: CartItem[]
-      updatedAt: number
-    }
-  }
-}
-
-interface CartItem {
-  productId: string
-  eventId: string
-  name: string
-  price: number
-  currency: string
-  quantity: number
-  image?: string
-}
-```
+localStorage is used for small local preferences and cart state. Sensitive order/message/payment contents should stay in the encrypted message flow or local IndexedDB records designed for that purpose.
 
 ---
 
-## Authentication Flow
+## Relay Architecture
 
-### NIP-07 (Browser Extension)
+Conduit treats relays as Nostr infrastructure, not fixed app roles.
 
-```
-User                   Browser Extension          App
-  │                         │                      │
-  │  Click "Connect"        │                      │
-  │ ────────────────────────┼─────────────────────►│
-  │                         │                      │
-  │                         │◄─── getPublicKey() ──│
-  │                         │                      │
-  │  Approve in extension   │                      │
-  │ ───────────────────────►│                      │
-  │                         │                      │
-  │                         │──── pubkey ─────────►│
-  │                         │                      │
-  │                         │                      │ Store in AuthContext
-  │                         │                      │
-  │  Sign event (on action) │                      │
-  │                         │◄─── signEvent() ─────│
-  │ ───────────────────────►│                      │
-  │                         │──── signed event ───►│
+User-facing relay settings expose:
+
+- `IN`: relays Conduit may read from
+- `OUT`: relays Conduit may publish to
+- Commerce priority: Conduit-local ordering for commerce-compatible relays
+- Capability/warning indicators derived from NIP-11, probes, and local observations
+
+The current canonical fallback/reset relay list lives in `packages/core/src/config.ts`:
+
+```text
+wss://conduitl2.fly.dev
+wss://relay.plebeian.market
+wss://relay.primal.net
+wss://relay.damus.io
+wss://nos.lol
+wss://nostr.mom
+wss://relay.nostr.net
+wss://relay.minibits.cash
 ```
 
-### NIP-46 (Remote Signer)
+Conduit-hosted deploys should leave relay env vars empty unless an operator intentionally needs an override. This keeps the public code defaults auditable.
 
-```
-User                   Remote Signer              App
-  │                         │                      │
-  │  Scan QR / Enter URI    │                      │
-  │ ────────────────────────┼─────────────────────►│
-  │                         │                      │
-  │                         │◄─── connect req ─────│
-  │                         │     (via relay)      │
-  │  Approve on device      │                      │
-  │ ───────────────────────►│                      │
-  │                         │──── ack ────────────►│
-  │                         │                      │
-  │  Sign request           │                      │
-  │                         │◄─── sign_event ──────│
-  │ ───────────────────────►│                      │
-  │                         │──── signature ──────►│
-```
+Future Phase 2B work is expected to add a more explicit source-aware read frontier, relay health model, and local-first performance layer. Current Phase 2A work should keep relay behavior typed and recoverable without making that future architecture a milestone blocker.
 
 ---
 
-## Payment Flow
+## Payments
 
-### MVP: Manual Merchant Flow
+Conduit is non-custodial. Apps never hold balances or process refunds.
 
-In MVP, merchants manually handle invoice generation and payment confirmation. No server-side automation.
+Current payment model:
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    MVP Payment Flow (Manual)                             │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  Buyer (Market)                                Merchant (Portal)        │
-│                                                                         │
-│  1. Checkout                                                            │
-│     └─► Create order (Kind 16)                                          │
-│     └─► Wrap in NIP-17                                                  │
-│     └─► Send to merchant's relays ─────────────► 2. Order appears       │
-│                                                     in inbox            │
-│                                                                         │
-│                                                  3. Merchant manually   │
-│                                                     generates invoice   │
-│                                                     └─► NWC makeInvoice │
-│                                                                         │
-│  4. Invoice received ◄───────────────────────────── Send via NIP-17 DM  │
-│     └─► Display QR + copy button                                        │
-│     └─► Countdown timer                                                 │
-│                                                                         │
-│  5. Pay with wallet ─────── Lightning ──────────► 6. Payment received   │
-│                                                     └─► Check wallet    │
-│                                                     └─► Or poll NWC     │
-│                                                                         │
-│                                                  7. Manually mark       │
-│  8. Status update received ◄─────────────────────── order "Paid"        │
-│     └─► Show "Paid" status                         └─► Send NIP-17 DM   │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+1. Buyer creates an order.
+2. If merchant/buyer readiness allows fast checkout, buyer can initiate payment from checkout using NWC/WebLN-compatible rails.
+3. Otherwise the order-first/manual invoice path remains the fallback baseline.
+4. Payment request and payment proof messages stay linked to the order conversation.
+5. Merchant verifies payment independently or through their own wallet tooling and updates order state.
 
-**MVP Tradeoffs:**
-- Merchant must be online to process orders
-- Manual invoice generation per order
-- Manual payment confirmation
-- Works for low-volume merchants, common for marketplace MVPs
+Payment proof is receipt-style evidence, not custody. Product UI should avoid collapsing these states:
 
----
+- payment requested
+- payment sent
+- proof sent
+- proof received
+- confirmed paid
+- mismatch/unverified/disputed
 
-### Post-MVP: Automated Conduit Services Flow
-
-With Conduit services (Phase 6), payment flow is fully automated server-side.
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│               Automated Payment Flow (Conduit Services)                 │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  Buyer (Market)          Conduit Services            Merchant Wallet    │
-│                                                                         │
-│  1. Checkout                                                            │
-│     └─► Order event ──────► 2. Receive order                            │
-│                                └─► Validate                             │
-│                                └─► Auto-generate ────► 3. NWC invoice   │
-│                                    invoice                              │
-│                                                                         │
-│  4. Invoice received ◄─────── Send via NIP-17                           │
-│     └─► Display + pay                                                   │
-│                                                                         │
-│  5. Payment ─────────────────────────────────────► 6. Wallet receives   │
-│                                                                         │
-│                             7. Detect payment                           │
-│                                └─► Subscribe to                         │
-│  8. Confirmation ◄───────────    zap receipts                           │
-│     └─► Order complete          └─► Update order                        │
-│                                    └─► Notify buyer                     │
-│                                    └─► Update inventory                 │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-**Conduit Services Benefits:**
-- Merchant doesn't need to be online
-- Instant invoice generation
-- Automatic payment confirmation
-- Inventory sync
-- Scales to high-volume merchants
-
-See `docs/specs/conduit-services.md` for full specification.
+Future service automation may improve offline merchant availability, but it belongs outside current `conduit-mono` scope unless a service repo/spec is accepted.
 
 ---
 
@@ -475,104 +244,57 @@ See `docs/specs/conduit-services.md` for full specification.
 
 ### Local Development
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Local Development                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  Vite Dev Server (:5173)           Public Relays                        │
-│  ┌─────────────────┐               ┌─────────────────┐                  │
-│  │  bun run dev    │──────────────►│ relay.damus.io  │                  │
-│  │  (hot reload)   │               │ nos.lol         │                  │
-│  └─────────────────┘               └─────────────────┘                  │
-│                                                                         │
-│  Payment: Mock (no real Lightning)                                      │
-│  Auth: NIP-07 extension (real keys) or test keypair                     │
-│                                                                         │
-│  .env.local:                                                            │
-│    VITE_LIGHTNING_NETWORK=mock                                          │
-│    VITE_DEFAULT_RELAYS=wss://relay.damus.io,wss://nos.lol               │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+Root commands:
+
+```bash
+bun run dev
+bun run dev:mock
+bun run dev:market
+bun run dev:merchant
+bun run dev:store-builder
 ```
 
-### Preview Environment
+Default Vite ports are:
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                       Preview (Cloudflare Pages)                         │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  <branch>.conduit-market.pages.dev                                      │
-│  ┌─────────────────┐               ┌─────────────────┐                  │
-│  │  Cloudflare     │──────────────►│ Public relays   │                  │
-│  │  Pages (auto)   │               │ + test relay    │                  │
-│  └─────────────────┘               └─────────────────┘                  │
-│                                                                         │
-│  Payment: Mutinynet (testnet Lightning)                                 │
-│  Auth: Real NIP-07/NIP-46 signers                                       │
-│                                                                         │
-│  Environment variables (Cloudflare):                                    │
-│    VITE_LIGHTNING_NETWORK=mutinynet                                     │
-│    VITE_DEFAULT_RELAYS=wss://relay.damus.io,wss://nos.lol               │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+| App           | Port   |
+| ------------- | ------ |
+| Market        | `3000` |
+| Merchant      | `3001` |
+| Store Builder | `3002` |
+
+Agents may use the 7000 range when they need stable side-by-side local servers:
+
+| App           | Agent port |
+| ------------- | ---------- |
+| Market        | `7000`     |
+| Merchant      | `7001`     |
+| Store Builder | `7002`     |
+
+### Environment Variables
+
+```bash
+VITE_RELAY_URL=
+VITE_DEFAULT_RELAY_URL=
+VITE_DEFAULT_RELAYS=
+VITE_APP_WRITE_RELAY_URLS=
+VITE_PUBLIC_RELAY_URLS=
+VITE_COMMERCE_RELAY_URLS=
+VITE_CACHE_API_URL=
+VITE_LIGHTNING_NETWORK=mainnet # mainnet | signet | testnet | mock
+VITE_BLOSSOM_SERVER_URL=https://blossom.conduit.market
 ```
 
-### Production
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Production                                     │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  shop.conduit.market               Conduit Relay                        │
-│  sell.conduit.market               ┌─────────────────┐                  │
-│  ┌─────────────────┐               │ relay.conduit   │                  │
-│  │  Cloudflare     │──────────────►│ .market         │                  │
-│  │  Pages          │               │ (primary)       │                  │
-│  └─────────────────┘               └─────────────────┘                  │
-│                                           │                             │
-│                                           │ + public relays             │
-│                                           ▼                             │
-│                                    ┌─────────────────┐                  │
-│                                    │ relay.damus.io  │                  │
-│                                    │ nos.lol         │                  │
-│                                    │ (fallback)      │                  │
-│                                    └─────────────────┘                  │
-│                                                                         │
-│  Payment: Mainnet Lightning                                             │
-│  Auth: Real NIP-07/NIP-46 signers                                       │
-│                                                                         │
-│  Environment variables:                                                 │
-│    VITE_RELAY_URL=wss://relay.conduit.market                            │
-│    VITE_LIGHTNING_NETWORK=mainnet                                       │
-│    VITE_BLOSSOM_SERVER_URL=https://blossom.conduit.market               │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+`VITE_RELAY_URL` is a legacy/default relay hint and NIP-89 relay hint fallback. It is not a user-facing relay role.
 
 ---
 
-## Future Components
+## Future Direction Notes
 
-### Conduit Services (Post-MVP)
+These notes are directional, not current-phase blockers:
 
-Server-side bot that automates checkout flow:
-- Automated invoice generation
-- Payment confirmation
-- Inventory sync
-- Order state management
-
-See `docs/specs/conduit-services.md` for full specification.
-
-### Relay (Post-MVP)
-
-Custom Nostr relay optimized for commerce:
-- Product indexing
-- Fast search
-- Merchant verification
-- Spam filtering
+- Phase 2B should introduce an accepted local-first app architecture before route code is broadly refactored around a new commerce substrate.
+- NDK may remain useful at the edges, but future source-aware relay execution may be better served by Nostrify or a Conduit-owned adapter around signed events and relay outcomes.
+- Future service, billing, monetization, and generated-store concepts live under `docs/knowledge/future/` until they have their own accepted repo boundary and implementation contract.
 
 ---
 
@@ -581,5 +303,6 @@ Custom Nostr relay optimized for commerce:
 - [PLAN.md](../PLAN.md) - Current planning index
 - [IMPLEMENTATION.md](./plans/IMPLEMENTATION.md) - Current implementation status
 - [ROADMAP.md](./plans/ROADMAP.md) - Strategic epochs
+- [Protocol spec](./specs/protocol.md) - Protocol and message contracts
+- [Relay spec](./specs/relay.md) - Relay compatibility and settings model
 - [Nostr NIPs](https://github.com/nostr-protocol/nips) - Protocol specifications
-- [NDK](https://github.com/nostr-dev-kit/ndk) - Nostr Development Kit

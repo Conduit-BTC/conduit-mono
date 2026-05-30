@@ -17,13 +17,13 @@ Prioritize in this order:
 - External signer auth only (NIP-07, NIP-46). Never generate or store private keys.
 - No behavioral tracking or profiling.
 - No message content inspection.
-- Payments are invoice generation only (no custody, no balance management).
+- Payments are non-custodial Lightning payment requests, NWC/WebLN payment rails, and payment proofs. No custody or balance management.
 - No Zustand/Jotai/Redux style state libraries. Use React Context + TanStack Query + Dexie patterns.
 
 ## Monorepo Boundaries
 
 - Apps may depend on `@conduit/core` and `@conduit/ui`.
-- `@conduit/ui` may depend on `@conduit/core`.
+- `@conduit/ui` should not depend on `@conduit/core`; it provides reusable components, styles, and interaction primitives.
 - `@conduit/core` must not depend on app code.
 - Avoid circular dependencies.
 
@@ -61,4 +61,6 @@ bun run typecheck
 bun run lint
 bun run telemetry:check
 bun test
+bun run build # when shared packages, env/config, routing, or build output are affected
+bun run telemetry:check # when telemetry/analytics surfaces are touched, after the telemetry PR lands
 ```

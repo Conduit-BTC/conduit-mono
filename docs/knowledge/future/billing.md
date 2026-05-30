@@ -1,13 +1,17 @@
 # Billing Infrastructure Specification
 
+> Future note, not a current `conduit-mono` implementation contract.
+> This document was moved out of `docs/specs` because the billing/service scope belongs to a future service boundary and should not block current Market or Merchant milestones.
+
 ## Overview
 
 Server-side billing infrastructure for membership management, credit system, and entitlement checks. Uses Supabase as the authoritative source of truth, with edge caching for fast entitlement lookups.
 
 **Related specs:**
+
 - [monetization.md](./monetization.md) - Business model, tiers, pricing
 - [store-builder.md](./store-builder.md) - Store hosting billing
-- [privacy-observability.md](./privacy-observability.md) - Privacy-safe telemetry policy
+- [privacy-observability.md](../../specs/privacy-observability.md) - Privacy-safe telemetry policy
 
 ---
 
@@ -56,20 +60,21 @@ Server-side billing infrastructure for membership management, credit system, and
 
 ## Data Storage Strategy
 
-| Data Type | Storage | Reason |
-|-----------|---------|--------|
-| Membership state | Supabase | Authoritative, transactional |
-| Credit balances | Supabase | Must be tamper-proof |
-| Transaction history | Supabase | Audit log, compliance |
-| Store records | Supabase | Billing + deployment state |
-| Entitlement cache | Cloudflare KV | Fast edge lookups |
-| Usage events | PostHog | Analytics, not billing |
+| Data Type           | Storage       | Reason                       |
+| ------------------- | ------------- | ---------------------------- |
+| Membership state    | Supabase      | Authoritative, transactional |
+| Credit balances     | Supabase      | Must be tamper-proof         |
+| Transaction history | Supabase      | Audit log, compliance        |
+| Store records       | Supabase      | Billing + deployment state   |
+| Entitlement cache   | Cloudflare KV | Fast edge lookups            |
+| Usage events        | PostHog       | Analytics, not billing       |
 
 ### Billing Privacy Boundary
 
 Supabase is used for billing/accounting and entitlements, not user behavior surveillance.
 
 Required constraints:
+
 - No storage of message content, order item details, or payment payloads in analytics tools.
 - No user-level behavior timelines for product analytics.
 - Billing data may be aggregated for investor reporting (MRR, churn, top-ups, credits spent).
@@ -282,7 +287,7 @@ interface EntitlementResponse {
     priorityRelay: boolean
   }
   limits: {
-    aiMessagesPerDay: number | null  // null = unlimited
+    aiMessagesPerDay: number | null // null = unlimited
     analyticsQueriesPerDay: number | null
   }
   subscription: {
@@ -303,14 +308,14 @@ const TIER_FEATURES = {
   side_hustle: {
     adFree: true,
     automatedOrders: true,
-    aiMessaging: true,  // Limited
+    aiMessaging: true, // Limited
     premiumAnalytics: false,
     priorityRelay: false,
   },
   pro_hustle: {
     adFree: true,
     automatedOrders: true,
-    aiMessaging: true,  // Unlimited
+    aiMessaging: true, // Unlimited
     premiumAnalytics: true,
     priorityRelay: true,
   },
@@ -342,8 +347,7 @@ export async function getEntitlements(
   }
 
   // 2. Fetch from Supabase
-  const { data: membership } = await env.SUPABASE
-    .from("memberships")
+  const { data: membership } = await env.SUPABASE.from("memberships")
     .select("*")
     .eq("pubkey", pubkey)
     .single()
@@ -420,7 +424,12 @@ export async function getEntitlements(
 interface SpendCreditsRequest {
   pubkey: string
   amount: number
-  service: "automated_order" | "ai_message" | "analytics_query" | "ai_generation" | "notification"
+  service:
+    | "automated_order"
+    | "ai_message"
+    | "analytics_query"
+    | "ai_generation"
+    | "notification"
   referenceType?: string
   referenceId?: string
 }
@@ -438,7 +447,7 @@ async function spendCredits(request: SpendCreditsRequest): Promise<boolean> {
   })
 
   if (error || !data.success) {
-    return false  // Insufficient credits or error
+    return false // Insufficient credits or error
   }
 
   // Invalidate cache
@@ -600,7 +609,7 @@ function getCreditCost(
   monthlyUsage: number
 ): number {
   const baseCosts = {
-    automated_order: 100,    // sats
+    automated_order: 100, // sats
     ai_message: 10,
     analytics_query: 50,
     ai_generation: 500,
@@ -661,16 +670,14 @@ async function handleLightningWebhook(payload: LightningWebhook) {
     .eq("id", invoice.id)
 
   // Update membership
-  await supabase
-    .from("memberships")
-    .upsert({
-      pubkey: invoice.pubkey,
-      tier: invoice.tier,
-      started_at: invoice.period_start,
-      expires_at: invoice.period_end,
-      monthly_credits: TIER_MONTHLY_CREDITS[invoice.tier],
-      updated_at: new Date().toISOString(),
-    })
+  await supabase.from("memberships").upsert({
+    pubkey: invoice.pubkey,
+    tier: invoice.tier,
+    started_at: invoice.period_start,
+    expires_at: invoice.period_end,
+    monthly_credits: TIER_MONTHLY_CREDITS[invoice.tier],
+    updated_at: new Date().toISOString(),
+  })
 
   // Add initial credit allotment
   await supabase.rpc("add_credits", {
@@ -703,11 +710,13 @@ export function useEntitlements() {
     queryKey: ["entitlements", pubkey],
     queryFn: () => fetchEntitlements(pubkey),
     enabled: !!pubkey,
-    staleTime: 5 * 60 * 1000,  // 5 minutes (matches server cache)
+    staleTime: 5 * 60 * 1000, // 5 minutes (matches server cache)
   })
 }
 
-export function useCanUseFeature(feature: keyof EntitlementResponse["features"]) {
+export function useCanUseFeature(
+  feature: keyof EntitlementResponse["features"]
+) {
   const { data: entitlements } = useEntitlements()
   return entitlements?.features[feature] ?? false
 }
@@ -759,7 +768,7 @@ export function getEntitlements(pubkey: string): EntitlementResponse {
   return {
     pubkey,
     tier: "pro_hustle",
-    creditBalance: 999999,  // Effectively unlimited
+    creditBalance: 999999, // Effectively unlimited
     features: {
       adFree: true,
       automatedOrders: true,
@@ -780,6 +789,7 @@ export function getEntitlements(pubkey: string): EntitlementResponse {
 ```
 
 **MVP tracking (for future pricing):**
+
 - PostHog tracks all potentially-billable actions
 - No actual charges or credit deductions
 - Data informs pricing decisions

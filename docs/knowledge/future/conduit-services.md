@@ -1,15 +1,19 @@
 # Conduit Services Specification
 
+> Future note, not a current `conduit-mono` implementation contract.
+> This document describes a possible external service layer. Do not treat it as Phase 2 scope or as a requirement for current client milestones.
+
 ## Overview
 
 A Conduit-operated services layer that automates merchant operations. It monitors commerce events and handles checkout, inventory, payments, and fulfillment without requiring merchants to be constantly online.
 
-**Status**: Post-MVP (Phase 5+)
+**Status**: Future external-service concept
 **Repo**: TBD (`conduit-services`)
 
 ## Purpose
 
 Without Conduit services, merchants must:
+
 - Manually monitor for zap receipts
 - Send order confirmations manually
 - Track inventory in spreadsheets
@@ -20,27 +24,32 @@ Conduit services automate this flow, providing 24/7 merchant availability.
 ## Core Functions
 
 ### 1. Checkout Automation
+
 ```
 Zap Receipt (9735) → Validate → Send Order Confirmation DM
 ```
+
 - Listens for zap receipts to merchant pubkey
 - Validates payment amount matches product price
 - Sends encrypted DM (NIP-17) confirming order
 - Creates order record for merchant dashboard
 
 ### 2. Inventory Management
+
 - Tracks product quantities from Kind 30402 events
 - Decrements on confirmed purchase
 - Publishes updated product event with new quantity
 - Optional: Auto-unpublish when out of stock
 
 ### 3. Payment Processing
+
 - Monitors NWC wallet for incoming payments
 - Matches payments to pending orders
 - Handles partial payments (reject or hold)
 - Timeout handling for expired invoices
 
 ### 4. Fulfillment Notifications
+
 - Sends shipping confirmation DMs
 - Publishes fulfillment status events
 - Optional: Integrates with shipping APIs (future)
@@ -75,23 +84,27 @@ Zap Receipt (9735) → Validate → Send Order Confirmation DM
 ## Security Model
 
 ### Key Management
+
 - **NO private key storage** in Conduit services
 - Uses NIP-46 remote signing (Nostr Connect)
 - Merchant authorizes a Conduit services pubkey
 - Limited permissions (sign specific event kinds only)
 
 ### Permissions
+
 ```typescript
 // Conduit services request only necessary permissions
 const permissions = [
-  "sign_event:4",      // Encrypted DMs
-  "sign_event:30402",  // Product updates
-  "nip04_encrypt",     // DM encryption
-  "nip04_decrypt",     // DM decryption
+  "sign_event:1059", // NIP-17 gift wraps
+  "sign_event:13", // NIP-17 seals
+  "sign_event:30402", // Product updates
+  "nip04_encrypt", // DM encryption
+  "nip04_decrypt", // DM decryption
 ]
 ```
 
 ### Trust Model
+
 - Conduit services are trusted infrastructure (run by Conduit)
 - Merchants opt-in by connecting NIP-46 signer
 - All actions auditable via Nostr events
@@ -99,24 +112,26 @@ const permissions = [
 
 ## Tech Stack
 
-| Component | Technology |
-|-----------|------------|
-| Runtime | Bun or Node.js |
-| Nostr | NDK |
-| State | PostgreSQL or SQLite |
-| Queue | BullMQ (Redis) or in-process |
-| Deploy | Docker / Fly.io / Railway |
+| Component | Technology                                                                            |
+| --------- | ------------------------------------------------------------------------------------- |
+| Runtime   | Bun or Node.js                                                                        |
+| Nostr     | TBD; may use NDK, Nostrify, or a service-owned adapter after architecture is accepted |
+| State     | PostgreSQL or SQLite                                                                  |
+| Queue     | BullMQ (Redis) or in-process                                                          |
+| Deploy    | Docker / Fly.io / Railway                                                             |
 
 ## Features
 
-### Phase 5 (MVP Conduit Services)
+### Initial External Service Concept
+
 - [ ] Zap receipt → order confirmation flow
 - [ ] Basic inventory decrement
 - [ ] NIP-46 signer integration
 - [ ] Order state persistence
 - [ ] Merchant dashboard API
 
-### Phase 6+ (Enhanced)
+### Later External Service Concepts
+
 - [ ] Multi-merchant support (SaaS model)
 - [ ] Shipping integration (ShipStation API)
 - [ ] Refund processing assistance
@@ -143,14 +158,17 @@ const permissions = [
 ## Deployment
 
 ### Self-Hosted (Merchants)
+
 Not recommended for MVP. Complexity of key management, uptime requirements.
 
 ### Conduit-Managed
+
 - Single Conduit services deployment for all merchants
 - Horizontal scaling as needed
 - 99.9% uptime SLA (future)
 
 ### Infrastructure
+
 ```yaml
 # docker-compose.yml
 services:
@@ -158,7 +176,7 @@ services:
     build: .
     environment:
       - DATABASE_URL=postgres://...
-      - RELAY_URL=wss://relay.conduit.market
+      - RELAY_URL=wss://conduitl2.fly.dev
     depends_on:
       - postgres
       - redis
@@ -183,33 +201,37 @@ services:
 ## Best Practices
 
 ### Idempotency
+
 - Process each zap receipt exactly once
 - Use event ID as deduplication key
 - Handle relay reconnection gracefully
 
 ### Error Handling
+
 - Retry transient failures (relay disconnect)
 - Alert on persistent failures
 - Never lose order data
 
 ### Monitoring
+
 - Health check endpoint
 - Order processing latency metrics
 - Failed order alerts
 
 ### Testing
+
 - Mock NIP-46 signer for tests
 - Simulate various payment scenarios
 - Test inventory edge cases (0, negative, concurrent)
 
 ## Integration with Other Components
 
-| Component | Integration |
-|-----------|-------------|
-| **Market** | Conduit services confirm orders initiated from Market |
-| **Merchant Portal** | Dashboard reads from the services order database |
-| **Relay** | Conduit services subscribe to Conduit relay primarily |
-| **Store Builder** | Same order flow as Market |
+| Component           | Integration                                           |
+| ------------------- | ----------------------------------------------------- |
+| **Market**          | Conduit services confirm orders initiated from Market |
+| **Merchant Portal** | Dashboard reads from the services order database      |
+| **Relay**           | Conduit services subscribe to Conduit relay primarily |
+| **Store Builder**   | Same order flow as Market                             |
 
 ## Success Metrics
 

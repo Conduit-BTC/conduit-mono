@@ -21,9 +21,10 @@ Apply these instructions when generating pull request reviews.
 
 - Auth flow remains external-signer-only
 - Order/message actions are signer-gated
-- Payment flow remains non-custodial
+- Payment flow remains non-custodial and does not introduce balance management
 - No new behavioral tracking/profiling
 - Shared package dependency boundaries preserved
+- Telemetry/analytics changes preserve the privacy allowlist and do not add behavioral tracking
 
 ## If No Findings
 

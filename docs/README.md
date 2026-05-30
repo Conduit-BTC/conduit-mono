@@ -7,8 +7,9 @@ This directory is organized by document intent so the team can keep execution in
 - `docs/ARCHITECTURE.md`: system design, protocol boundaries, and data flow
 - `docs/DESIGN.md`: shared design system and theming guidance
 - `docs/plans/*`: roadmap and execution plans
-- `docs/specs/*`: feature, protocol, and product requirements
-- `docs/knowledge/*`: supporting notes, research, references, and working context that may inform implementation but do not replace the source-of-truth docs above
+- `docs/specs/*`: active feature, protocol, and product requirements
+- `docs/knowledge/*`: supporting notes, research, references, future concepts, and working context that may inform implementation but do not replace the source-of-truth docs above
+- `docs/knowledge/future/*`: parked future product/service ideas that are intentionally not current `conduit-mono` implementation contracts
 
 ## Working Model
 
@@ -23,7 +24,7 @@ This directory is organized by document intent so the team can keep execution in
 - Add new phase or delivery planning material under `docs/plans/`.
 - Add stable feature or protocol requirements under `docs/specs/`.
 - Add shared visual and theming guidance to `docs/DESIGN.md`.
-- Add research notes, interop references, and non-authoritative supporting context under `docs/knowledge/`.
+- Add research notes, interop references, future ideas, and non-authoritative supporting context under `docs/knowledge/`.
 
 ## Public Repo Posture
 
@@ -31,4 +32,4 @@ Tracked docs should remain safe for a public `conduit-mono` repo:
 
 - keep language centered on Market, Merchant, Store Builder, shared packages, and protocol/spec implementation
 - avoid private company planning language in tracked docs
-- keep future `conduit-services` discussion clearly separate from the current repo unless the repo structure changes
+- keep future services, billing, monetization, and generated-store discussions out of active specs unless the repo structure and accepted scope change

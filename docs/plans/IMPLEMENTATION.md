@@ -2,19 +2,25 @@
 
 ## Current Status
 
-Phase 1 / MVP is complete.
+Phase 1 / MVP is complete. Current work is Phase 2 closeout and launch-readiness hardening.
 
 Current planning and execution should use:
+
 - [Phase 2 Implementation](./PHASE_2_IMPLEMENTATION.md)
 
+Linear remains the source of truth for issue ownership, sequencing, and merge order. This file points to repo-local scope documents and should not duplicate live ticket status.
+
 Archived MVP planning and delivery record:
+
 - [Phase 1 Implementation (March 2026)](./archive/PHASE_1_IMPLEMENTATION_2026-03.md)
 - [Hi-Fi Checklist (MVP)](./archive/HI_FI_CHECKLIST.md)
 
 Strategic roadmap:
+
 - [Roadmap](./ROADMAP.md)
 
 Root plan index:
+
 - [PLAN.md](../../PLAN.md)
 
 ---
@@ -29,10 +35,11 @@ These are still valuable, but they are no longer blockers for MVP scope completi
 
 ---
 
-## Next Phase
+## Current Phase
 
 Phase 2 focuses on:
-- P0 launch readiness and merchant hardening
-- P1 trust, signer, and open-source follow-through
+
+- Phase 2A closeout: launch safety, merchant readiness, relay settings, checkout/payment proof clarity, trust context, legal/support, provenance, and automation guardrails
+- Phase 2B preparation: local-first performance and app architecture direction without making that future architecture a blocker for current milestones
 
 See [Phase 2 Implementation](./PHASE_2_IMPLEMENTATION.md) for the current deliverables.

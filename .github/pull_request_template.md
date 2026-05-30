@@ -11,7 +11,8 @@
 ## Tracking
 
 - Linear issue:
-- Phase 2 Track: `A` | `B` | `C` | `D` | `E` | `F` | `G` | `H` | `Support`
+- Workstream:
+- Phase: `Phase 2A` | `Phase 2B` | `Support` | `Future`
 - Source docs/specs:
 - Docs/spec PR:
 
@@ -23,8 +24,7 @@
 ## Scope
 
 - App/Package:
-- Layer: `UX` | `Protocol/App Logic` | `Infra/Relay` | `Business/Policy`
-- Phase: `P0 Launch Readiness` | `P1 Follow-through` | `Support`
+- Layer: `UX` | `Protocol/App Logic` | `Infra/Relay` | `Docs/Policy` | `Support`
 
 ## Risk Review
 
@@ -45,6 +45,8 @@
 - [ ] `bun run typecheck` passes
 - [ ] `bun run lint` passes
 - [ ] `bun test` passes
+- [ ] `bun run build` passes, or build is not required for this change
+- [ ] `bun run telemetry:check` passes, or telemetry is not affected
 - [ ] Tested locally with mock Lightning
 - [ ] Verified on preview deploy (if applicable)
 

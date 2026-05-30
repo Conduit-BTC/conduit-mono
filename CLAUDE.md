@@ -10,7 +10,7 @@ This is the Conduit monorepo - a decentralized Nostr-based commerce platform. Se
 - **Architecture**: `docs/ARCHITECTURE.md` - System diagrams, protocol, data flow
 - **Design**: `docs/DESIGN.md` - Shared design system and theming guidance
 - **Roadmap**: `docs/plans/ROADMAP.md` - Strategic epochs (no checkboxes)
-- **Implementation**: `docs/plans/IMPLEMENTATION.md` - Build phases with deliverables (checkboxes)
+- **Implementation**: `docs/plans/IMPLEMENTATION.md` - Current implementation index
 - **Specs**: `docs/specs/*.md` - Feature specifications
 
 ## Before Starting Implementation
@@ -46,8 +46,8 @@ This is the Conduit monorepo - a decentralized Nostr-based commerce platform. Se
 
 ### Payments
 
-- NWC-based Lightning (no custody)
-- Invoice generation, not balance management
+- Non-custodial Lightning payment requests, NWC/WebLN payment rails, and payment proofs
+- No balance management
 - No refund processing in-app
 
 ## Nostr Event Handling
@@ -68,49 +68,50 @@ export const EVENT_KINDS = {
 } as const
 ```
 
-### NDK Usage
+### Nostr Client Usage
 
-NDK singleton lives in `packages/core`. Apps import and use:
+NDK is the current edge library used by shared protocol helpers in `packages/core`. Apps should prefer shared `@conduit/core` hooks/helpers over direct route-local NDK calls:
 
 ```typescript
 import { getNdk, connectNdk } from "@conduit/core/protocol"
 ```
+
+Current Phase 2 work may continue using NDK where it is the established repo pattern. For new relay-heavy, source-aware, or performance-critical behavior, call out in the PR if NDK appears to constrain the design and a future Nostrify/custom adapter boundary should be considered. Do not introduce a broad custom relay substrate without an accepted architecture spec.
 
 ## Shared Packages
 
 ### @conduit/core
 
 - `types/` - TypeScript interfaces (Product, Order, Profile, etc)
-- `protocol/` - NDK service, event builders, relay utilities
+- `protocol/` - Nostr client helpers, event builders, relay utilities
 - `schemas/` - Zod validators for Nostr events
 - `utils/` - formatPrice, formatPubkey, cn()
 
 ### @conduit/ui
 
 - `components/` - Button, Card, Dialog, Form, etc
-- `hooks/` - useViewport, useBreakpoint
 - `styles/` - Tailwind config, theme tokens
 
 ## Tech Stack
 
-| Layer        | Choice                                      |
-| ------------ | ------------------------------------------- |
-| Runtime      | Bun                                         |
-| Build        | Vite 6 + SWC                                |
-| Framework    | React 19                                    |
-| Routing      | TanStack Router                             |
-| Server State | TanStack Query + NDK                        |
-| Client State | React Context (auth only)                   |
-| Persistence  | localStorage (cart, preferences)            |
-| Database     | Dexie (IndexedDB) - orders, messages, cache |
-| Forms        | react-hook-form + Zod                       |
-| Validation   | Zod schemas in `@conduit/core`              |
-| UI           | shadcn/ui + Tailwind                        |
-| Analytics    | Plausible + PostHog (privacy configured)    |
+| Layer        | Choice                                            |
+| ------------ | ------------------------------------------------- |
+| Runtime      | Bun                                               |
+| Build        | Vite 6 + SWC                                      |
+| Framework    | React 19                                          |
+| Routing      | TanStack Router                                   |
+| Server State | TanStack Query over shared Nostr protocol helpers |
+| Client State | React Context (auth only)                         |
+| Persistence  | localStorage (cart, preferences)                  |
+| Database     | Dexie (IndexedDB) - orders, messages, cache       |
+| Forms        | react-hook-form + Zod                             |
+| Validation   | Zod schemas in `@conduit/core`                    |
+| UI           | shadcn/ui + Tailwind                              |
+| Analytics    | Privacy-constrained optional telemetry only       |
 
 **No state management library.** TanStack Query handles all relay data. Dexie handles local persistence.
 
-## Current Operational Notes (March 2026)
+## Current Operational Notes
 
 ### Cloudflare Pages projects
 
@@ -131,13 +132,7 @@ import { getNdk, connectNdk } from "@conduit/core/protocol"
 
 ### GitHub CI / merge checks
 
-- Required checks on `main` currently include:
-  - `lint`, `typecheck`, `test`, `build-signet`, `preview-links`
-  - `Cloudflare Pages: conduit-market`
-  - `Cloudflare Pages: conduit-merchant`
-  - `Cloudflare Pages: conduit-market-signet`
-  - `Cloudflare Pages: conduit-merchant-signet`
-- `preview-links` is expected to proceed once Cloudflare checks are complete, even if some URL comments arrive late.
+Use `CONTRIBUTING.md` and `.github/workflows/ci.yml` as the canonical merge-check sources. Current GitHub-owned gates include changed-file format, PR title, lint, typecheck, test, color policy, signet/mainnet builds, and preview-link automation. Direct Cloudflare Pages checks are useful signals, but they are not branch-protection gates because fork PRs cannot reliably produce them.
 
 ### Orders auth gate behavior
 
@@ -234,7 +229,7 @@ export function ProductCard({ product, className }: ProductCardProps) {
 
 ## Public Repo Posture
 
-Treat `conduit-mono` as a future public client/shared-code repository.
+Treat `conduit-mono` as a public client/shared-code repository.
 
 When writing commit messages, PR descriptions, or tracked public-facing docs:
 

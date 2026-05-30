@@ -2,7 +2,7 @@
 
 ## Goal
 
-Provide investor-grade proof of product usage and business health without user surveillance.
+Provide aggregate proof of product usage, reliability, and business health without user surveillance.
 
 ## Principles
 
@@ -10,13 +10,14 @@ Provide investor-grade proof of product usage and business health without user s
 2. Aggregate metrics over user-level tracking.
 3. No persistent identifiers for product analytics.
 4. No storage of message/order/payment content in telemetry systems.
-5. Centralized billing is allowed for accounting and entitlements only.
+5. Future centralized billing, if accepted under a separate service boundary, is allowed for accounting and entitlements only.
 
 ## Data Classes
 
 ### Public Protocol Metrics (preferred)
 
 Computed from public relay events and app-level public data:
+
 - Total product listings
 - Active merchants (count of unique merchant pubkeys over period)
 - Order event volume
@@ -27,15 +28,18 @@ These metrics are aggregate-only and require no private profile of users.
 ### Operational Metrics (optional, default-off)
 
 Anonymous reliability and performance counters:
+
 - App load success/failure counts
 - Relay connect/publish success rates
 - Latency buckets (`<100ms`, `100-500ms`, `>500ms`)
 - Error counts by category
 
 Allowed fields:
+
 - `event_name`, `app`, `network`, `status`, `latency_bucket`, `count`, `time_bucket`
 
 Disallowed fields:
+
 - pubkey/npub/nsec
 - message content
 - order items or titles
@@ -43,15 +47,17 @@ Disallowed fields:
 - contact/address data
 - IP address or fingerprint fields
 
-### Billing & Revenue Metrics (centralized, allowed)
+### Future Billing & Revenue Metrics
 
-Centralized data for monetization and accounting:
+Centralized data for monetization and accounting is future service scope, not a current `conduit-mono` client requirement:
+
 - Active subscriptions by tier
 - MRR/ARR
 - Credit top-ups and credit spend totals
 - Churn and renewal rates
 
 Constraint:
+
 - Billing tables must not be used to reconstruct behavior timelines of specific users for product analytics.
 
 ## Allowed Tooling
@@ -60,9 +66,10 @@ Constraint:
 - `PostHog` (optional): operational events and feature flags only; self-hosted preferred.
 - Self-hosted stack strongly preferred for both.
 
-## Investor Dashboard Requirements
+## Aggregate Reporting Requirements
 
 Expose only aggregate KPIs:
+
 - Weekly active merchants (aggregate)
 - Weekly order-event count
 - Product catalog growth

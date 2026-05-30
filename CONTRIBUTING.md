@@ -99,6 +99,7 @@ bun run format:check # Must pass - no Prettier changes needed
 bun run typecheck   # Must pass — no TS errors
 bun run lint        # Must pass — no lint errors
 bun test            # Must pass
+bun run telemetry:check # Must pass when telemetry/analytics surfaces are affected, after telemetry guardrails land
 ```
 
 ### Pull Requests
@@ -196,7 +197,7 @@ export function ProductCard({ product, className }: ProductCardProps) {
 
 ### Data Fetching
 
-All relay data goes through TanStack Query hooks in `@conduit/core`:
+Relay data should go through shared TanStack Query hooks or protocol helpers in `@conduit/core`. NDK is the current edge library, but routes should not invent new relay fanout or source-resolution behavior when shared helpers already exist:
 
 ```typescript
 import { useQuery } from "@tanstack/react-query"
@@ -249,8 +250,8 @@ These are non-negotiable across all code:
 
 ### Payments
 
-- NWC-based Lightning invoicing (NIP-47)
-- Invoice generation only — no balance management
+- Non-custodial Lightning payment requests, NWC/WebLN payment rails, and payment proofs
+- No balance management
 - No fund custody
 
 ## File Organization
@@ -264,7 +265,7 @@ app/src/
 
 packages/core/src/
 ├── types/          # TypeScript interfaces
-├── protocol/       # NDK singleton, event builders
+├── protocol/       # Nostr client helpers, event builders
 ├── schemas/        # Zod validators
 ├── hooks/          # Shared React Query hooks
 ├── context/        # Auth context
@@ -273,7 +274,6 @@ packages/core/src/
 
 packages/ui/src/
 ├── components/     # shadcn/ui + custom components
-├── hooks/          # UI hooks (useViewport, etc.)
 └── styles/         # CSS, theme tokens, typography
 ```
 

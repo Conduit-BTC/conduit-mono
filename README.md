@@ -10,18 +10,18 @@ Conduit code is MIT-licensed. Conduit trademarks, names, and logos are reserved.
 
 ## Apps
 
-| App                                      | Port | Description                                                               |
-| ---------------------------------------- | ---- | ------------------------------------------------------------------------- |
-| **Market** (`apps/market`)               | 3000 | Buyer marketplace: browse products, cart, checkout, order tracking        |
-| **Merchant Portal** (`apps/merchant`)    | 3001 | Seller dashboard: product CRUD, order management, invoicing, DM workspace |
-| **Store Builder** (`apps/store-builder`) | 3002 | Standalone merchant storefronts (WIP)                                     |
+| App                                      | Port | Description                                                              |
+| ---------------------------------------- | ---- | ------------------------------------------------------------------------ |
+| **Market** (`apps/market`)               | 3000 | Buyer marketplace: browse products, cart, checkout, order tracking       |
+| **Merchant Portal** (`apps/merchant`)    | 3001 | Seller dashboard: product CRUD, order management, payments, DM workspace |
+| **Store Builder** (`apps/store-builder`) | 3002 | Placeholder app for future standalone merchant storefront work           |
 
 ## Shared Packages
 
-| Package         | Description                                                                  |
-| --------------- | ---------------------------------------------------------------------------- |
-| `@conduit/core` | Types, protocol (NDK), schemas (Zod), React Query hooks, Dexie DB, utilities |
-| `@conduit/ui`   | shadcn/ui components, design tokens, theme styles                            |
+| Package         | Description                                                                          |
+| --------------- | ------------------------------------------------------------------------------------ |
+| `@conduit/core` | Types, Nostr protocol helpers, schemas (Zod), React Query hooks, Dexie DB, utilities |
+| `@conduit/ui`   | shadcn/ui components, design tokens, theme styles                                    |
 
 ---
 
@@ -29,7 +29,7 @@ Conduit code is MIT-licensed. Conduit trademarks, names, and logos are reserved.
 
 - [Bun](https://bun.sh) v1.1+
 - A Nostr signer browser extension ([Alby](https://getalby.com), [nos2x](https://github.com/nicely/nos2x), or similar NIP-07 extension)
-- (Optional) [NWC](https://nwc.dev) wallet connection for Lightning invoicing
+- (Optional) [NWC](https://nwc.dev) wallet connection for Lightning payment requests and proofs
 
 ## Quick Start
 
@@ -45,7 +45,7 @@ bun run dev
 
 This starts Market on http://localhost:3000, Merchant Portal on http://localhost:3001, and Store Builder on http://localhost:3002.
 
-By default, dev mode uses **mock Lightning** (fake invoices) and points to a **local relay** on port 7777.
+The plain `dev` command uses each app's normal Vite environment resolution. Use the `:mock` scripts with the local relay when you want isolated fake Lightning invoices and local-only relay traffic.
 
 ```bash
 # Or start individually
@@ -83,7 +83,7 @@ bun run relay:local:start:bun
 
 ### 2. Environment Variables
 
-Each app reads `VITE_`-prefixed env vars via Vite. A root `.env.example` shows available options. For local dev, apps ship with `.env.local` files that point to the local relay in mock mode.
+Each app reads `VITE_`-prefixed env vars via Vite. A root `.env.example` shows available options. For isolated local dev, start the local relay and use the committed `mock` mode files.
 
 For shared network switching, Market and Merchant also support committed mode files:
 
@@ -109,8 +109,9 @@ bun run dev:merchant:mainnet
 | `VITE_APP_WRITE_RELAY_URLS`  | —                     | Optional comma-separated app write relay additions       |
 | `VITE_PUBLIC_RELAY_URLS`     | —                     | Optional comma-separated public relay override/additions |
 | `VITE_COMMERCE_RELAY_URLS`   | —                     | Optional comma-separated commerce relay additions        |
-| `VITE_LIGHTNING_NETWORK`     | `mock`                | `mock`, `signet`, or `mainnet`                           |
+| `VITE_LIGHTNING_NETWORK`     | `mainnet`             | `mainnet`, `signet`, `testnet`, or `mock`                |
 | `VITE_BLOSSOM_SERVER_URL`    | —                     | Blossom media server for product images                  |
+| `VITE_CACHE_API_URL`         | —                     | Optional cache/acceleration API endpoint                 |
 | `VITE_NIP89_RELAY_HINT`      | `VITE_RELAY_URL`      | Relay hint for Conduit NIP-89 handler metadata           |
 | `VITE_NIP89_MARKET_PUBKEY`   | —                     | Official Conduit Market handler pubkey                   |
 | `VITE_NIP89_MERCHANT_PUBKEY` | —                     | Official Conduit Merchant Portal handler pubkey          |
@@ -139,7 +140,7 @@ Browser builds print a relay map in DevTools showing the code defaults, raw/norm
 **Modes:**
 
 - **mock** — Fake `lnbcrt` invoices, yellow badge in header. Use for local dev.
-- **signet** — Real Lightning testnet, blue badge. Use for integration testing.
+- **signet** / **testnet** — Real Lightning test networks. Use for integration testing.
 - **mainnet** — Production Lightning, no badge.
 
 ### 3. Seed Test Products
@@ -190,8 +191,8 @@ target relay(s): pubkey, `d`, `k`, `web`, and replaceable-event address.
 2. Open **Merchant Portal** (http://localhost:3001) in a different browser profile — connect a different signer as merchant
 3. **Merchant**: Products > New Product > publish
 4. **Buyer**: Products > Add to Cart > Checkout > Place Order
-5. **Merchant**: Orders > select order > Send Invoice (mock mode auto-generates)
-6. **Buyer**: Orders > see invoice QR, status updates, shipping info
+5. **Merchant**: Orders > send payment request or confirm payment state
+6. **Buyer**: Orders > see payment request/proof state, status updates, shipping info
 
 ---
 
@@ -217,7 +218,7 @@ conduit-mono/
 ├── apps/
 │   ├── market/              # Buyer marketplace
 │   ├── merchant/            # Seller portal
-│   └── store-builder/       # Merchant storefronts (WIP)
+│   └── store-builder/       # Future merchant storefront surface
 ├── packages/
 │   ├── core/                # Types, protocol, schemas, hooks, DB, utils
 │   └── ui/                  # Components, theme, styles
@@ -228,29 +229,29 @@ conduit-mono/
 │   ├── plans/
 │   │   ├── ROADMAP.md       # Strategic epochs
 │   │   ├── IMPLEMENTATION.md # Current implementation index
-│   │   └── PHASE_2_IMPLEMENTATION.md # Current post-MVP deliverables
-│   ├── specs/               # Feature specifications
-│   └── knowledge/           # Supporting notes and references
+│   │   └── PHASE_2_IMPLEMENTATION.md # Current Phase 2 closeout deliverables
+│   ├── specs/               # Active feature specifications
+│   └── knowledge/           # Supporting notes, references, and future concepts
 ├── PLAN.md                  # Current planning index
 └── scripts/                 # Dev tooling, CI helpers, seed data
 ```
 
 ## Tech Stack
 
-| Layer         | Choice                                        |
-| ------------- | --------------------------------------------- |
-| Runtime       | Bun                                           |
-| Build         | Vite 6 + SWC                                  |
-| Framework     | React 19                                      |
-| Routing       | TanStack Router (file-based, type-safe)       |
-| Server State  | TanStack Query + NDK                          |
-| Client State  | React Context (auth only)                     |
-| Local Storage | Dexie (IndexedDB) for orders, messages, cache |
-| Forms         | react-hook-form + Zod                         |
-| UI            | shadcn/ui + Tailwind CSS                      |
-| Protocol      | Nostr via NDK                                 |
-| Payments      | Lightning via NWC (NIP-47)                    |
-| Messaging     | NIP-17 gift-wrapped encrypted DMs             |
+| Layer         | Choice                                                             |
+| ------------- | ------------------------------------------------------------------ |
+| Runtime       | Bun                                                                |
+| Build         | Vite 6 + SWC                                                       |
+| Framework     | React 19                                                           |
+| Routing       | TanStack Router (file-based, type-safe)                            |
+| Server State  | TanStack Query over shared Nostr protocol helpers                  |
+| Client State  | React Context (auth only)                                          |
+| Local Storage | Dexie (IndexedDB) for orders, messages, cache                      |
+| Forms         | react-hook-form + Zod                                              |
+| UI            | shadcn/ui + Tailwind CSS                                           |
+| Protocol      | Nostr via `@conduit/core` helpers; NDK is the current edge library |
+| Payments      | Lightning via NWC (NIP-47), WebLN, invoices, and payment proofs    |
+| Messaging     | NIP-17 gift-wrapped encrypted DMs                                  |
 
 ## Open Source
 
@@ -266,7 +267,7 @@ See [OPEN_SOURCE.md](./OPEN_SOURCE.md) for reproducible-build notes and [TRADEMA
 - **Authentication**: External signers only (NIP-07, NIP-46). No key generation or custody.
 - **Products**: Kind 30402 replaceable events (NIP-99)
 - **Orders**: NIP-17 gift-wrapped encrypted DMs between buyer and merchant
-- **Payments**: NWC-based Lightning invoicing (NIP-47). No fund custody.
+- **Payments**: Non-custodial Lightning payment requests, NWC/WebLN payment rails, and payment proofs. No fund custody.
 - **Profiles**: Kind 0 metadata events (NIP-01)
 
 See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for system diagrams and protocol details.
@@ -275,13 +276,14 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for system diagrams and protocol det
 
 See [PLAN.md](PLAN.md) for the current planning index, [ROADMAP.md](docs/plans/ROADMAP.md) for strategic epochs, and [IMPLEMENTATION.md](docs/plans/IMPLEMENTATION.md) for the current implementation index.
 
-| Epoch         | Focus                                    | Target       |
-| ------------- | ---------------------------------------- | ------------ |
-| Genesis       | Architecture, infrastructure, wireframes | Feb 12, 2026 |
-| Core Function | Market + Merchant Portal MVP             | Mar 12, 2026 |
-| Added Value   | Social features, enhanced UX             | TBD          |
-| Monetization  | Premium tiers, ads                       | TBD          |
-| Scale         | Multi-language, enterprise               | TBD          |
+| Epoch         | Status   | Focus                                        |
+| ------------- | -------- | -------------------------------------------- |
+| Genesis       | Complete | Architecture, infrastructure, wireframes     |
+| Core Function | Complete | Market + Merchant Portal MVP                 |
+| Phase 2A      | Active   | Closeout, launch safety, readiness, trust    |
+| Phase 2B      | Planned  | Local-first performance and app architecture |
+| Added Value   | Future   | Social features and enhanced discovery       |
+| Scale         | Future   | Multi-language and enterprise readiness      |
 
 ## Docs
 
