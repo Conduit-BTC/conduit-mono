@@ -99,6 +99,11 @@ export {
 export { OrderDetailCard, type OrderDetailCardProps } from "./OrderDetailCard"
 export { ErrorPage } from "./ErrorPage"
 export { NotFoundPage } from "./NotFoundPage"
+export {
+  LegalFooter,
+  type LegalFooterIconLink,
+  type LegalFooterProps,
+} from "./LegalFooter"
 
 export { ProfileSelector, type ProfileSelectorProps } from "./ProfileSelector"
 export {

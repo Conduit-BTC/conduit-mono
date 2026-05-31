@@ -9,7 +9,12 @@ import { KeyRound } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
 import { useAuth, useNip07Availability } from "@conduit/core"
-import { ErrorPage, NotFoundPage, SignerConnectPanel } from "@conduit/ui"
+import {
+  ErrorPage,
+  LegalFooter,
+  NotFoundPage,
+  SignerConnectPanel,
+} from "@conduit/ui"
 import { MerchantHeader, MerchantSidebar } from "../components/MerchantHeader"
 
 export const Route = createRootRoute({
@@ -29,10 +34,11 @@ function RootShell({ children }: { children: ReactNode }) {
           <MerchantHeader />
           <main
             data-merchant-main-scroll
-            className="px-4 py-6 sm:px-6 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-8 lg:py-8"
+            className="px-4 pb-28 pt-6 sm:px-6 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-8 lg:pb-28 lg:pt-8"
           >
             <div className="mx-auto w-full max-w-[1280px]">{children}</div>
           </main>
+          <LegalFooter className="lg:left-[260px]" />
         </div>
       </div>
       {import.meta.env.DEV && <TanStackRouterDevtools />}
@@ -168,8 +174,8 @@ function ConnectGate() {
   }
 
   return (
-    <div className="min-h-dvh bg-[var(--background)] text-[var(--text-primary)]">
-      <main className="mx-auto flex min-h-dvh w-full max-w-4xl items-center justify-center px-4 py-8 sm:px-6 lg:px-8">
+    <div className="min-h-dvh bg-[var(--background)] pb-24 text-[var(--text-primary)] sm:pb-16">
+      <main className="mx-auto flex min-h-dvh w-full max-w-4xl items-center justify-center px-4 pb-20 pt-8 sm:px-6 lg:px-8">
         <SignerConnectPanel
           title={
             mobileSignerUnavailable
@@ -200,6 +206,7 @@ function ConnectGate() {
           onConnect={handleConnect}
         />
       </main>
+      <LegalFooter />
       {import.meta.env.DEV && <TanStackRouterDevtools />}
     </div>
   )

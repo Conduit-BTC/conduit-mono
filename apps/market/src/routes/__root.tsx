@@ -6,7 +6,7 @@ import {
 } from "@tanstack/react-router"
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { useEffect } from "react"
-import { ErrorPage, NotFoundPage } from "@conduit/ui"
+import { ErrorPage, LegalFooter, NotFoundPage } from "@conduit/ui"
 import { MarketHeader } from "../components/MarketHeader"
 
 export const Route = createRootRoute({
@@ -17,11 +17,12 @@ export const Route = createRootRoute({
 
 function RootShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="flex min-h-screen flex-col pb-24 sm:pb-16">
       <MarketHeader />
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6">
+      <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-12 pt-6">
         {children}
       </main>
+      <LegalFooter />
       {import.meta.env.DEV && <TanStackRouterDevtools />}
     </div>
   )
