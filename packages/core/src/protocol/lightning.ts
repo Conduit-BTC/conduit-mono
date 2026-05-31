@@ -134,9 +134,10 @@ export type FetchLnurlInvoiceOptions = {
 /**
  * Fetch an LNURL-pay invoice by calling the callback.
  *
- * By default this sends a plain LNURL-pay request with only the amount. When
- * `options.zapRequestJson` and `options.lnurl` are provided, the request also
- * includes the optional NIP-57 metadata required by zap callbacks.
+ * By default this sends a plain LNURL-pay request by adding `amount` to the
+ * callback URL while stripping any `nostr` or `lnurl` query params already on
+ * the callback. When `options.zapRequestJson` or `options.lnurl` are provided,
+ * those NIP-57 params are added explicitly for zap callbacks.
  */
 export async function fetchLnurlInvoice(
   lnurlCallback: string,

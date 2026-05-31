@@ -1203,6 +1203,27 @@ describe("fetchZapInvoice", () => {
     expect(capturedUrl).toContain("lnurl=lnurl1test")
   })
 
+  it("replaces pre-existing NIP-57 params for public zap callbacks", async () => {
+    let capturedUrl = ""
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      capturedUrl = url.toString()
+      return { ok: true, status: 200, json: async () => ({ pr: FAKE_INVOICE }) }
+    }) as unknown as typeof fetch
+
+    await fetchZapInvoice(
+      "https://wallet.example/cb?tag=payRequest&nostr=leak&lnurl=leak",
+      50_000,
+      FAKE_ZAP_REQUEST,
+      "lnurl1test"
+    )
+
+    const callback = new URL(capturedUrl)
+    expect(callback.searchParams.get("amount")).toBe("50000")
+    expect(callback.searchParams.get("tag")).toBe("payRequest")
+    expect(callback.searchParams.get("nostr")).toBe(FAKE_ZAP_REQUEST)
+    expect(callback.searchParams.get("lnurl")).toBe("lnurl1test")
+  })
+
   it("requests a plain LNURL invoice without public zap metadata", async () => {
     let capturedUrl = ""
     globalThis.fetch = mock(async (url: string | URL | Request) => {
