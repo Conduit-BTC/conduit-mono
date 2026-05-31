@@ -892,13 +892,13 @@ function CheckoutPage() {
     label: string
   ): string | null {
     if (delivery.localCacheError && delivery.buyerSelfCopyError) {
-      return `${label} reached the merchant, but order history recovery needs retry.`
+      return `${label} was accepted by Nostr delivery relays for merchant pickup, but order history recovery needs retry.`
     }
     if (delivery.localCacheError) {
-      return `${label} reached the merchant. Order history may update after relay sync.`
+      return `${label} was accepted by Nostr delivery relays for merchant pickup. Order history may update after relay sync.`
     }
     if (delivery.buyerSelfCopyError) {
-      return `${label} reached the merchant and was saved locally. Relay backup needs retry.`
+      return `${label} was accepted by Nostr delivery relays for merchant pickup and saved locally. Buyer relay backup needs retry.`
     }
     return null
   }
@@ -1366,10 +1366,10 @@ function CheckoutPage() {
         proofDelivered
           ? (recoveryNotice ??
               (receipt
-                ? "Payment sent, proof delivered, and the merchant zap receipt was observed."
+                ? "Payment sent, proof accepted by Nostr delivery relays for merchant pickup, and the merchant zap receipt was observed."
                 : isPublicZapPayment
-                  ? "Payment sent and proof delivered. Awaiting merchant confirmation."
-                  : "Payment sent and private proof delivered. Awaiting merchant confirmation."))
+                  ? "Payment sent and proof accepted by Nostr delivery relays for merchant pickup. Awaiting merchant confirmation."
+                  : "Payment sent and private proof accepted by Nostr delivery relays for merchant pickup. Awaiting merchant confirmation."))
           : "Payment sent. Proof delivery needs retry."
       )
       setStep("paid")
@@ -1383,7 +1383,7 @@ function CheckoutPage() {
         const message = e instanceof Error ? e.message : "Payment failed"
         setError(
           orderDelivered
-            ? `Order delivered, but payment did not complete. ${message}`
+            ? `Order accepted by Nostr delivery relays for merchant pickup, but payment did not complete. ${message}`
             : message
         )
         setStep("payment")
@@ -1431,9 +1431,9 @@ function CheckoutPage() {
             <div className="h-full w-1/2 animate-pulse rounded-full bg-white" />
           </div>
           <p className="mx-auto mt-8 max-w-md text-sm leading-7 text-white/85">
-            Your order is being delivered to the merchant through Nostr. This
-            may take a few seconds depending on your signer and relay
-            connection.
+            Your order is being sent to Nostr delivery relays for merchant
+            pickup. This may take a few seconds depending on your signer and
+            relay connection.
           </p>
         </section>
       </div>
@@ -1482,7 +1482,7 @@ function CheckoutPage() {
           <div className="relative mx-auto mt-8 h-1 w-full max-w-sm rounded-full bg-secondary-500/50" />
           <p className="relative mx-auto mt-8 max-w-xl text-lg leading-9 text-[var(--text-primary)]">
             {paidNotice ??
-              "Your Lightning payment was sent and the order has been delivered to the merchant."}
+              "Your Lightning payment was sent and the order was accepted by Nostr delivery relays for merchant pickup."}
           </p>
           <p className="relative mx-auto mt-4 max-w-lg text-sm leading-7 text-[var(--text-secondary)]">
             The merchant will confirm receipt and send fulfillment updates
@@ -2174,14 +2174,14 @@ function CheckoutPage() {
                     <div className="flex items-center gap-2">
                       <LightningIcon className="h-4 w-4 text-secondary-400" />
                       <div className="text-sm font-medium text-[var(--text-primary)]">
-                        Order delivered. Pay the Lightning invoice to finish.
+                        Order accepted by Nostr delivery relays for merchant
+                        pickup. Pay the Lightning invoice to finish.
                       </div>
                     </div>
                     <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                      The order is with the merchant, but automatic payment did
-                      not complete. Open or copy this invoice with your wallet;
-                      Conduit will not mark the order paid until payment proof
-                      is available.
+                      Automatic payment did not complete. Open or copy this
+                      invoice with your wallet; Conduit will not mark the order
+                      paid until payment proof is available.
                     </p>
                     {pendingManualInvoice.reason && (
                       <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">

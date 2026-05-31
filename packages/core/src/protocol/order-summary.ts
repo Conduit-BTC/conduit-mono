@@ -28,6 +28,10 @@ export type OrderSummary = {
   invoiceCount: number
   invoiceAmount: number | null
   invoiceCurrency: string | null
+  paymentProofReceived: boolean
+  paymentProofCount: number
+  paymentProofAmount: number | null
+  paymentProofCurrency: string | null
   trackingCarrier: string | null
   trackingNumber: string | null
   trackingUrl: string | null
@@ -37,8 +41,8 @@ export type OrderSummary = {
  * Extract a structured order summary from a list of parsed order messages.
  *
  * Finds the first `order` message for items/shipping, the latest
- * `payment_request` for invoice info, and the latest `shipping_update`
- * for tracking details.
+ * `payment_request` for invoice info, the latest `payment_proof` for
+ * buyer-paid confirmation, and the latest `shipping_update` for tracking.
  */
 export function extractOrderSummary(
   messages: ParsedOrderMessage[]
@@ -49,6 +53,12 @@ export function extractOrderSummary(
     .find((m) => m.type === "payment_request")
   const invoiceCount = messages.filter(
     (message) => message.type === "payment_request"
+  ).length
+  const latestPaymentProof = [...messages]
+    .reverse()
+    .find((m) => m.type === "payment_proof")
+  const paymentProofCount = messages.filter(
+    (message) => message.type === "payment_proof"
   ).length
   const latestShipping = [...messages]
     .reverse()
@@ -103,6 +113,15 @@ export function extractOrderSummary(
     latestInvoice?.type === "payment_request"
       ? (decodedInvoice?.currency ?? latestInvoice.payload.currency ?? null)
       : null
+  const paymentProofReceived = latestPaymentProof?.type === "payment_proof"
+  const paymentProofAmount =
+    latestPaymentProof?.type === "payment_proof"
+      ? (latestPaymentProof.payload.amount ?? null)
+      : null
+  const paymentProofCurrency =
+    latestPaymentProof?.type === "payment_proof"
+      ? (latestPaymentProof.payload.currency ?? null)
+      : null
 
   const trackingCarrier =
     latestShipping?.type === "shipping_update"
@@ -127,6 +146,10 @@ export function extractOrderSummary(
     invoiceCount,
     invoiceAmount,
     invoiceCurrency,
+    paymentProofReceived,
+    paymentProofCount,
+    paymentProofAmount,
+    paymentProofCurrency,
     trackingCarrier,
     trackingNumber,
     trackingUrl,

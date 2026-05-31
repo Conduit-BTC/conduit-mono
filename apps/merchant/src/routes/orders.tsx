@@ -418,9 +418,42 @@ function MessageCard({
         )}
 
         {message.type === "payment_proof" && (
-          <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
-            {JSON.stringify(message.payload, null, 2)}
-          </pre>
+          <div className="space-y-2">
+            <div className="text-[var(--text-primary)]">
+              Lightning payment proof received
+              {message.payload.amount != null
+                ? ` - ${message.payload.amount.toLocaleString()}`
+                : ""}
+              {message.payload.currency ? ` ${message.payload.currency}` : ""}
+            </div>
+            <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs">
+              <div className="min-w-0">
+                <div className="text-[var(--text-muted)]">Invoice</div>
+                <div className="max-h-16 overflow-hidden break-all font-mono leading-5 text-[var(--text-secondary)]">
+                  {message.payload.invoice}
+                </div>
+              </div>
+              <div className="min-w-0 border-t border-[var(--border)] pt-2">
+                <div className="text-[var(--text-muted)]">Payment preimage</div>
+                <div className="break-all font-mono leading-5 text-[var(--text-secondary)]">
+                  {message.payload.preimage}
+                </div>
+              </div>
+              {message.payload.paymentHash && (
+                <div className="min-w-0 border-t border-[var(--border)] pt-2">
+                  <div className="text-[var(--text-muted)]">Payment hash</div>
+                  <div className="break-all font-mono leading-5 text-[var(--text-secondary)]">
+                    {message.payload.paymentHash}
+                  </div>
+                </div>
+              )}
+              {message.payload.feeMsats != null && (
+                <div className="border-t border-[var(--border)] pt-2 text-[var(--text-secondary)]">
+                  Fee: {message.payload.feeMsats} msats
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
     </div>
@@ -631,6 +664,9 @@ function OrdersPage() {
         (conversation) =>
           !(conversation.messages ?? []).some(
             (message) => message.type === "payment_request"
+          ) &&
+          !(conversation.messages ?? []).some(
+            (message) => message.type === "payment_proof"
           )
       ).length,
     [conversations]
@@ -1072,6 +1108,10 @@ function OrdersPage() {
                     invoiceCount={orderSummary.invoiceCount}
                     invoiceAmount={orderSummary.invoiceAmount}
                     invoiceCurrency={orderSummary.invoiceCurrency}
+                    paymentProofReceived={orderSummary.paymentProofReceived}
+                    paymentProofCount={orderSummary.paymentProofCount}
+                    paymentProofAmount={orderSummary.paymentProofAmount}
+                    paymentProofCurrency={orderSummary.paymentProofCurrency}
                     trackingCarrier={orderSummary.trackingCarrier}
                     trackingNumber={orderSummary.trackingNumber}
                     trackingUrl={orderSummary.trackingUrl}
