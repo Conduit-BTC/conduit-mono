@@ -245,7 +245,7 @@ export type ConversationMessageSchema = z.infer<
 export const paymentProofMessageSchema = z.object({
   orderId: z.string().optional(),
   rail: z.literal("lightning").optional(),
-  action: z.enum(["zap", "invoice"]).optional(),
+  action: z.enum(["zap", "invoice", "private_checkout"]).optional(),
   amount: z.number().min(0).optional(),
   currency: z.string().min(1).optional(),
   /** BOLT11 invoice that was paid. */

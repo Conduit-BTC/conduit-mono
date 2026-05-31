@@ -1,9 +1,14 @@
 import {
+  EVENT_KINDS,
+  appendConduitClientTag,
+  fetchLnurlInvoice,
+  fetchZapInvoice,
   getPriceSats,
   isBtcLikeCurrency,
   isMsatsLikeCurrency,
   isSatsLikeCurrency,
   normalizeCommercePrice,
+  type FetchZapInvoiceResult,
   type BtcUsdRateQuote,
   type PricingRateInput,
   type SourcePriceQuote,
@@ -275,4 +280,126 @@ export function buildZapRequestContent(
 ): string {
   if (visibility === "private_checkout") return ""
   return sanitizePublicZapContent(content)
+}
+
+export function getLnurlReadyForCheckoutPayment(params: {
+  visibility: CheckoutZapVisibility
+  lnurlPayAvailable: boolean
+  lnurlAllowsNostr: boolean
+}): boolean {
+  return params.visibility === "public_zap"
+    ? params.lnurlAllowsNostr
+    : params.lnurlPayAvailable
+}
+
+export type CheckoutZapRequestDraft = {
+  kind: number
+  createdAt: number
+  content: string
+  tags: string[][]
+}
+
+export type SignedCheckoutZapRequest = {
+  id: string
+  rawEvent: unknown
+}
+
+export type CheckoutInvoiceRequestResult = {
+  invoice: string
+  zapRelayUrls: string[]
+  zapRequestId?: string
+  shouldWaitForZapReceipt: boolean
+}
+
+export type PendingCheckoutManualInvoice = {
+  orderId: string
+  merchantPubkey: string
+  amountMsats: number
+  amountSats: number
+  invoice: string
+  zapRequestId?: string
+  reason: string
+  deliveryNotice: string | null
+}
+
+export function buildPendingCheckoutManualInvoice(
+  input: PendingCheckoutManualInvoice
+): PendingCheckoutManualInvoice {
+  return input
+}
+
+type CheckoutInvoiceRequestDependencies = {
+  fetchLnurlInvoice: typeof fetchLnurlInvoice
+  fetchZapInvoice: typeof fetchZapInvoice
+  signZapRequest: (
+    draft: CheckoutZapRequestDraft
+  ) => Promise<SignedCheckoutZapRequest>
+}
+
+const defaultCheckoutInvoiceRequestDependencies: CheckoutInvoiceRequestDependencies =
+  {
+    fetchLnurlInvoice,
+    fetchZapInvoice,
+    signZapRequest: async () => {
+      throw new Error("Zap signing dependency was not configured.")
+    },
+  }
+
+export async function requestCheckoutLnurlInvoice(
+  params: {
+    visibility: CheckoutZapVisibility
+    lnurlCallback: string
+    amountMsats: number
+    lnurl: string
+    recipientPubkey: string
+    zapContent: string
+    explicitRelayUrls: readonly string[]
+    publicRelayUrls: readonly string[]
+    nowSeconds?: number
+  },
+  dependencies: CheckoutInvoiceRequestDependencies = defaultCheckoutInvoiceRequestDependencies
+): Promise<CheckoutInvoiceRequestResult> {
+  if (params.visibility === "private_checkout") {
+    const { invoice } = await dependencies.fetchLnurlInvoice(
+      params.lnurlCallback,
+      params.amountMsats
+    )
+    return {
+      invoice,
+      zapRelayUrls: [],
+      shouldWaitForZapReceipt: false,
+    }
+  }
+
+  const zapRelayUrls = Array.from(
+    new Set([...params.explicitRelayUrls, ...params.publicRelayUrls])
+  )
+  const draft: CheckoutZapRequestDraft = {
+    kind: EVENT_KINDS.ZAP_REQUEST,
+    createdAt: params.nowSeconds ?? Math.floor(Date.now() / 1000),
+    content: buildZapRequestContent(params.visibility, params.zapContent),
+    tags: appendConduitClientTag(
+      [
+        ["p", params.recipientPubkey],
+        ["amount", String(params.amountMsats)],
+        ["lnurl", params.lnurl],
+        ["relays", ...zapRelayUrls],
+      ],
+      "market"
+    ),
+  }
+  const signed = await dependencies.signZapRequest(draft)
+  const result: FetchZapInvoiceResult = await dependencies.fetchZapInvoice(
+    params.lnurlCallback,
+    params.amountMsats,
+    JSON.stringify(signed.rawEvent),
+    params.lnurl
+  )
+
+  return {
+    invoice: result.invoice,
+    zapRelayUrls,
+    zapRequestId: signed.id,
+    shouldWaitForZapReceipt: true,
+  }
 }

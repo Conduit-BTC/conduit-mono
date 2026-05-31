@@ -58,9 +58,12 @@ import {
 import {
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
-  buildZapRequestContent,
+  buildPendingCheckoutManualInvoice,
+  getLnurlReadyForCheckoutPayment,
   getCheckoutShippingCost,
+  requestCheckoutLnurlInvoice,
   type CheckoutPaymentStage,
+  type PendingCheckoutManualInvoice,
   type CheckoutZapVisibility,
 } from "../lib/checkout-payment"
 import {
@@ -95,16 +98,6 @@ type CheckoutPricingRefreshState =
   | "refreshing"
   | "stale_retryable"
   | "unavailable"
-
-type PendingManualInvoice = {
-  orderId: string
-  merchantPubkey: string
-  amountMsats: number
-  amountSats: number
-  invoice: string
-  zapRequestId?: string
-  reason: string
-}
 
 type BuyerMessageDeliveryResult = {
   buyerSelfCopyError: string | null
@@ -473,7 +466,7 @@ function CheckoutPage() {
   const [zapContentEdited, setZapContentEdited] = useState(false)
   const [weblnAvailable, setWeblnAvailable] = useState(false)
   const [pendingManualInvoice, setPendingManualInvoice] =
-    useState<PendingManualInvoice | null>(null)
+    useState<PendingCheckoutManualInvoice | null>(null)
   const [pricingRefreshPending, setPricingRefreshPending] = useState(false)
   const [pricingRefreshFailedAt, setPricingRefreshFailedAt] = useState<
     number | null
@@ -710,9 +703,11 @@ function CheckoutPage() {
     wallet.status !== "error"
   const canAttemptLightningPayment = canTrySavedNwcWallet || weblnAvailable
   const requiresPublicZap = zapVisibility === "public_zap"
-  const lnurlReadyForSelectedPayment = requiresPublicZap
-    ? lnurlAllowsNostr
-    : lnurlPayAvailable
+  const lnurlReadyForSelectedPayment = getLnurlReadyForCheckoutPayment({
+    visibility: zapVisibility,
+    lnurlPayAvailable,
+    lnurlAllowsNostr,
+  })
   const fastEligibilityInput = {
     walletPayCapable: canAttemptLightningPayment,
     merchantLud16,
@@ -1190,43 +1185,36 @@ function CheckoutPage() {
         )
       }
 
-      const zapRelayUrls = isPublicZapPayment
-        ? Array.from(
-            new Set([
-              ...(ndk.explicitRelayUrls ?? []),
-              ...config.publicRelayUrls,
-            ])
-          )
-        : []
-      let zapRequestId: string | undefined
-      const { invoice } = isPublicZapPayment
-        ? await (async () => {
+      const invoiceRequest = await requestCheckoutLnurlInvoice(
+        {
+          visibility: zapVisibility,
+          lnurlCallback: lnurlMeta.callback,
+          amountMsats: pricingIntent.totalMsats,
+          lnurl: lnurlMeta.lnurl,
+          recipientPubkey: selectedMerchant,
+          zapContent,
+          explicitRelayUrls: ndk.explicitRelayUrls ?? [],
+          publicRelayUrls: config.publicRelayUrls,
+        },
+        {
+          fetchLnurlInvoice,
+          fetchZapInvoice,
+          signZapRequest: async (draft) => {
             const zapRequest = new NDKEvent(ndk)
-            zapRequest.kind = EVENT_KINDS.ZAP_REQUEST
-            zapRequest.created_at = Math.floor(Date.now() / 1000)
-            zapRequest.content = buildZapRequestContent(
-              zapVisibility,
-              zapContent
-            )
-            zapRequest.tags = [
-              ["p", selectedMerchant],
-              ["amount", String(pricingIntent.totalMsats)],
-              ["lnurl", lnurlMeta.lnurl],
-              ["relays", ...zapRelayUrls],
-            ]
-            zapRequest.tags = appendConduitClientTag(zapRequest.tags, "market")
+            zapRequest.kind = draft.kind
+            zapRequest.created_at = draft.createdAt
+            zapRequest.content = draft.content
+            zapRequest.tags = draft.tags
 
             await zapRequest.sign(ndk.signer)
-            zapRequestId = zapRequest.id
-
-            return fetchZapInvoice(
-              lnurlMeta.callback,
-              pricingIntent.totalMsats,
-              JSON.stringify(zapRequest.rawEvent()),
-              lnurlMeta.lnurl
-            )
-          })()
-        : await fetchLnurlInvoice(lnurlMeta.callback, pricingIntent.totalMsats)
+            return {
+              id: zapRequest.id,
+              rawEvent: zapRequest.rawEvent(),
+            }
+          },
+        }
+      )
+      const { invoice, zapRelayUrls, zapRequestId } = invoiceRequest
 
       const invoiceValidation = validateLightningInvoiceForPayment({
         invoice,
@@ -1252,15 +1240,18 @@ function CheckoutPage() {
       })
 
       if (payResult.status === "manual_required") {
-        setPendingManualInvoice({
-          orderId,
-          merchantPubkey: selectedMerchant,
-          amountMsats: pricingIntent.totalMsats,
-          amountSats: pricingIntent.totalSats,
-          invoice,
-          zapRequestId,
-          reason: payResult.reason,
-        })
+        setPendingManualInvoice(
+          buildPendingCheckoutManualInvoice({
+            orderId,
+            merchantPubkey: selectedMerchant,
+            amountMsats: pricingIntent.totalMsats,
+            amountSats: pricingIntent.totalSats,
+            invoice,
+            zapRequestId,
+            reason: payResult.reason,
+            deliveryNotice: recoveryNotice,
+          })
+        )
         setSentOrderId(orderId)
         setError(null)
         setStep("payment")
@@ -1345,7 +1336,7 @@ function CheckoutPage() {
       }
 
       let receipt = null
-      if (isPublicZapPayment && zapRequestId) {
+      if (invoiceRequest.shouldWaitForZapReceipt && zapRequestId) {
         setPaymentStage("checking_receipt")
         receipt = await waitForZapReceipt({
           zapRequestId,
@@ -2196,6 +2187,11 @@ function CheckoutPage() {
                       <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
                         Automatic payment fallback reason:{" "}
                         {pendingManualInvoice.reason}
+                      </p>
+                    )}
+                    {pendingManualInvoice.deliveryNotice && (
+                      <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
+                        {pendingManualInvoice.deliveryNotice}
                       </p>
                     )}
                     <div className="mt-4 flex flex-wrap gap-3">

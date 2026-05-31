@@ -132,8 +132,11 @@ export type FetchLnurlInvoiceOptions = {
 }
 
 /**
- * Fetch a plain LNURL-pay invoice by calling the callback without NIP-57
- * zap request metadata.
+ * Fetch an LNURL-pay invoice by calling the callback.
+ *
+ * By default this sends a plain LNURL-pay request with only the amount. When
+ * `options.zapRequestJson` and `options.lnurl` are provided, the request also
+ * includes the optional NIP-57 metadata required by zap callbacks.
  */
 export async function fetchLnurlInvoice(
   lnurlCallback: string,
@@ -142,6 +145,8 @@ export async function fetchLnurlInvoice(
 ): Promise<FetchZapInvoiceResult> {
   const url = new URL(lnurlCallback)
   url.searchParams.set("amount", String(amountMsats))
+  url.searchParams.delete("nostr")
+  url.searchParams.delete("lnurl")
   if (options.zapRequestJson)
     url.searchParams.set("nostr", options.zapRequestJson)
   if (options.lnurl) url.searchParams.set("lnurl", options.lnurl)
@@ -190,10 +195,16 @@ export async function fetchZapInvoice(
   zapRequestJson: string,
   lnurl?: string
 ): Promise<FetchZapInvoiceResult> {
-  return fetchLnurlInvoice(lnurlCallback, amountMsats, {
-    zapRequestJson,
-    lnurl,
-  })
+  try {
+    return await fetchLnurlInvoice(lnurlCallback, amountMsats, {
+      zapRequestJson,
+      lnurl,
+    })
+  } catch (e) {
+    throw new Error(
+      `Failed to fetch zap invoice: ${e instanceof Error ? e.message : "network error"}`
+    )
+  }
 }
 
 export type LightningInvoiceNetwork =
