@@ -13,13 +13,17 @@ import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
 import {
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
+  buildPendingCheckoutManualInvoice,
   buildZapRequestContent,
   CHECKOUT_QUOTE_MAX_AGE_MS,
+  getLnurlReadyForCheckoutPayment,
   getCheckoutShippingCost,
+  requestCheckoutLnurlInvoice,
 } from "../apps/market/src/lib/checkout-payment"
 import type { CartItem } from "../apps/market/src/hooks/useCart"
 import {
   fetchLnurlPayMetadata,
+  fetchLnurlInvoice,
   fetchZapInvoice,
 } from "../packages/core/src/protocol/lightning"
 import { parseNwcUri } from "../packages/core/src/protocol/nwc"
@@ -28,6 +32,7 @@ import {
   parseShippingOptionEvent,
 } from "../packages/core/src/protocol/shipping"
 import { parseProductEvent } from "../packages/core/src/protocol/products"
+import { paymentProofMessageSchema } from "../packages/core/src/schemas"
 
 const FAKE_PUBKEY = "a".repeat(64)
 const FAKE_SECRET = "b".repeat(64)
@@ -258,6 +263,45 @@ describe("isFastCheckoutEligible", () => {
     ).toEqual([
       "Merchant Lightning Address does not advertise Nostr zap support.",
     ])
+  })
+
+  it("does not require public zap support for private LNURL checkout", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        requiresNostrZap: false,
+      })
+    ).toEqual([])
+  })
+
+  it("enables private checkout but disables public zap when LNURL-pay lacks NIP-57", () => {
+    expect(
+      getLnurlReadyForCheckoutPayment({
+        visibility: "private_checkout",
+        lnurlPayAvailable: true,
+        lnurlAllowsNostr: false,
+      })
+    ).toBe(true)
+    expect(
+      getLnurlReadyForCheckoutPayment({
+        visibility: "public_zap",
+        lnurlPayAvailable: true,
+        lnurlAllowsNostr: false,
+      })
+    ).toBe(false)
+  })
+
+  it("shows a generic LNURL readiness reason for private checkout metadata failures", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: false,
+        requiresNostrZap: false,
+      })
+    ).toEqual(["Merchant Lightning Address could not be checked."])
   })
 
   it("blocks fast checkout when shipping cost is not fixed", () => {
@@ -540,6 +584,152 @@ describe("checkout payment helpers", () => {
     expect(buildZapRequestContent("public_zap", "hello\npublic")).toBe(
       "hello public"
     )
+  })
+
+  it("requests a private LNURL invoice without signing a zap request or waiting for receipts", async () => {
+    const fetchLnurl = mock(async () => ({ invoice: "lnbc1private" }))
+    const fetchZap = mock(async () => {
+      throw new Error("should not fetch zap invoice")
+    })
+    const signZapRequest = mock(async () => {
+      throw new Error("should not sign zap request")
+    })
+
+    const result = await requestCheckoutLnurlInvoice(
+      {
+        visibility: "private_checkout",
+        lnurlCallback: "https://wallet.example/cb",
+        amountMsats: 50_000,
+        lnurl: "lnurl1test",
+        recipientPubkey: FAKE_PUBKEY,
+        zapContent: "public note",
+        explicitRelayUrls: ["wss://explicit.example"],
+        publicRelayUrls: ["wss://public.example"],
+      },
+      {
+        fetchLnurlInvoice: fetchLnurl as never,
+        fetchZapInvoice: fetchZap as never,
+        signZapRequest: signZapRequest as never,
+      }
+    )
+
+    expect(result).toEqual({
+      invoice: "lnbc1private",
+      zapRelayUrls: [],
+      shouldWaitForZapReceipt: false,
+    })
+    expect(fetchLnurl).toHaveBeenCalledWith("https://wallet.example/cb", 50_000)
+    expect(fetchZap).toHaveBeenCalledTimes(0)
+    expect(signZapRequest).toHaveBeenCalledTimes(0)
+  })
+
+  it("requests public zap invoices with a signed request and receipt path", async () => {
+    const fetchLnurl = mock(async () => {
+      throw new Error("should not fetch plain invoice")
+    })
+    const fetchZap = mock(async () => ({ invoice: "lnbc1public" }))
+    const signZapRequest = mock(async (draft) => ({
+      id: "zap-request-id",
+      rawEvent: {
+        kind: draft.kind,
+        content: draft.content,
+        tags: draft.tags,
+      },
+    }))
+
+    const result = await requestCheckoutLnurlInvoice(
+      {
+        visibility: "public_zap",
+        lnurlCallback: "https://wallet.example/cb",
+        amountMsats: 50_000,
+        lnurl: "lnurl1test",
+        recipientPubkey: FAKE_PUBKEY,
+        zapContent: "hello\npublic",
+        explicitRelayUrls: ["wss://relay.example", "wss://dup.example"],
+        publicRelayUrls: ["wss://dup.example", "wss://public.example"],
+        nowSeconds: 123,
+      },
+      {
+        fetchLnurlInvoice: fetchLnurl as never,
+        fetchZapInvoice: fetchZap as never,
+        signZapRequest: signZapRequest as never,
+      }
+    )
+
+    expect(result).toEqual({
+      invoice: "lnbc1public",
+      zapRelayUrls: [
+        "wss://relay.example",
+        "wss://dup.example",
+        "wss://public.example",
+      ],
+      zapRequestId: "zap-request-id",
+      shouldWaitForZapReceipt: true,
+    })
+    expect(signZapRequest).toHaveBeenCalledTimes(1)
+    expect(signZapRequest.mock.calls[0]?.[0]).toMatchObject({
+      kind: 9734,
+      createdAt: 123,
+      content: "hello public",
+      tags: [
+        ["p", FAKE_PUBKEY],
+        ["amount", "50000"],
+        ["lnurl", "lnurl1test"],
+        [
+          "relays",
+          "wss://relay.example",
+          "wss://dup.example",
+          "wss://public.example",
+        ],
+      ],
+    })
+    expect(fetchZap).toHaveBeenCalledWith(
+      "https://wallet.example/cb",
+      50_000,
+      expect.stringContaining('"kind":9734'),
+      "lnurl1test"
+    )
+    expect(fetchLnurl).toHaveBeenCalledTimes(0)
+  })
+
+  it("preserves invoice, amount, and recovery state for manual invoice fallback", () => {
+    expect(
+      buildPendingCheckoutManualInvoice({
+        orderId: "order-1",
+        merchantPubkey: FAKE_PUBKEY,
+        amountMsats: 50_000,
+        amountSats: 50,
+        invoice: "lnbc1manual",
+        reason: "No automatic Lightning payment rail is currently available.",
+        deliveryNotice: "Order delivered to merchant relay only.",
+      })
+    ).toEqual({
+      orderId: "order-1",
+      merchantPubkey: FAKE_PUBKEY,
+      amountMsats: 50_000,
+      amountSats: 50,
+      invoice: "lnbc1manual",
+      reason: "No automatic Lightning payment rail is currently available.",
+      deliveryNotice: "Order delivered to merchant relay only.",
+    })
+  })
+})
+
+// ─── payment proof payload ──────────────────────────────────────────────────
+
+describe("payment proof payload", () => {
+  it("accepts private checkout proof without a zap request id", () => {
+    expect(
+      paymentProofMessageSchema.parse({
+        action: "private_checkout",
+        invoice: "lnbc1private",
+        preimage: "preimage",
+      })
+    ).toMatchObject({
+      action: "private_checkout",
+      invoice: "lnbc1private",
+      preimage: "preimage",
+    })
   })
 })
 
@@ -970,6 +1160,19 @@ describe("fetchZapInvoice", () => {
     ).rejects.toThrow(/Amount too low/)
   })
 
+  it("preserves zap context on invoice request failures", async () => {
+    mockFetch({}, false)
+    await expect(
+      fetchZapInvoice(
+        "https://wallet.example/lnurlp/callback",
+        100_000,
+        FAKE_ZAP_REQUEST
+      )
+    ).rejects.toThrow(
+      /Failed to fetch zap invoice: Failed to fetch LNURL invoice/
+    )
+  })
+
   it("throws when pr field is missing", async () => {
     mockFetch({ status: "OK" })
     await expect(
@@ -998,5 +1201,59 @@ describe("fetchZapInvoice", () => {
     expect(capturedUrl).toContain("amount=50000")
     expect(capturedUrl).toContain("nostr=")
     expect(capturedUrl).toContain("lnurl=lnurl1test")
+  })
+
+  it("replaces pre-existing NIP-57 params for public zap callbacks", async () => {
+    let capturedUrl = ""
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      capturedUrl = url.toString()
+      return { ok: true, status: 200, json: async () => ({ pr: FAKE_INVOICE }) }
+    }) as unknown as typeof fetch
+
+    await fetchZapInvoice(
+      "https://wallet.example/cb?tag=payRequest&nostr=leak&lnurl=leak",
+      50_000,
+      FAKE_ZAP_REQUEST,
+      "lnurl1test"
+    )
+
+    const callback = new URL(capturedUrl)
+    expect(callback.searchParams.get("amount")).toBe("50000")
+    expect(callback.searchParams.get("tag")).toBe("payRequest")
+    expect(callback.searchParams.get("nostr")).toBe(FAKE_ZAP_REQUEST)
+    expect(callback.searchParams.get("lnurl")).toBe("lnurl1test")
+  })
+
+  it("requests a plain LNURL invoice without public zap metadata", async () => {
+    let capturedUrl = ""
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      capturedUrl = url.toString()
+      return { ok: true, status: 200, json: async () => ({ pr: FAKE_INVOICE }) }
+    }) as unknown as typeof fetch
+
+    await fetchLnurlInvoice("https://wallet.example/cb", 50_000)
+
+    expect(capturedUrl).toContain("amount=50000")
+    expect(capturedUrl).not.toContain("nostr=")
+    expect(capturedUrl).not.toContain("lnurl=")
+  })
+
+  it("strips pre-existing NIP-57 params from plain LNURL invoice callbacks", async () => {
+    let capturedUrl = ""
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      capturedUrl = url.toString()
+      return { ok: true, status: 200, json: async () => ({ pr: FAKE_INVOICE }) }
+    }) as unknown as typeof fetch
+
+    await fetchLnurlInvoice(
+      "https://wallet.example/cb?tag=payRequest&nostr=leak&lnurl=leak",
+      50_000
+    )
+
+    const callback = new URL(capturedUrl)
+    expect(callback.searchParams.get("amount")).toBe("50000")
+    expect(callback.searchParams.get("tag")).toBe("payRequest")
+    expect(callback.searchParams.has("nostr")).toBe(false)
+    expect(callback.searchParams.has("lnurl")).toBe(false)
   })
 })

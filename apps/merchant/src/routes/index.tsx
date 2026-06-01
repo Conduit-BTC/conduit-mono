@@ -91,11 +91,14 @@ async function fetchDashboardStatsFromCacheOnly(
     const hasPaymentRequest = messages.some(
       (message) => message.type === "payment_request"
     )
+    const hasPaymentProof = messages.some(
+      (message) => message.type === "payment_proof"
+    )
     const latestStatus = [...messages]
       .reverse()
       .find((message) => message.type === "status_update")
 
-    if (!hasPaymentRequest) awaitingPayment += 1
+    if (!hasPaymentRequest && !hasPaymentProof) awaitingPayment += 1
     if (latestStatus?.type === "status_update") {
       if (
         latestStatus.payload.status === "paid" ||
@@ -103,6 +106,8 @@ async function fetchDashboardStatsFromCacheOnly(
       ) {
         awaitingFulfillment += 1
       }
+    } else if (hasPaymentProof) {
+      awaitingFulfillment += 1
     }
   }
 

@@ -37,6 +37,10 @@ export type OrderDetailCardProps = {
   invoiceCount: number
   invoiceAmount: number | null
   invoiceCurrency: string | null
+  paymentProofReceived?: boolean
+  paymentProofCount?: number
+  paymentProofAmount?: number | null
+  paymentProofCurrency?: string | null
   trackingCarrier: string | null
   trackingNumber: string | null
   trackingUrl: string | null
@@ -66,6 +70,10 @@ export function OrderDetailCard({
   invoiceCount,
   invoiceAmount,
   invoiceCurrency,
+  paymentProofReceived = false,
+  paymentProofCount = 0,
+  paymentProofAmount = null,
+  paymentProofCurrency = null,
   trackingCarrier,
   trackingNumber,
   trackingUrl,
@@ -160,9 +168,25 @@ export function OrderDetailCard({
 
         <div className="space-y-1">
           <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
-            Invoice
+            Payment
           </div>
-          {invoiceSent ? (
+          {paymentProofReceived ? (
+            <div className="space-y-1">
+              <div className="text-sm text-[var(--text-primary)]">
+                Lightning payment proof received
+                {paymentProofAmount != null
+                  ? ` - ${paymentProofAmount.toLocaleString()}`
+                  : ""}
+                {paymentProofCurrency ? ` ${paymentProofCurrency}` : ""}
+              </div>
+              <div className="text-xs text-[var(--text-secondary)]">
+                Buyer payment proof is attached.
+                {paymentProofCount > 1
+                  ? ` ${paymentProofCount} payment proofs are attached to this order.`
+                  : ""}
+              </div>
+            </div>
+          ) : invoiceSent ? (
             <div className="space-y-1">
               <div className="text-sm text-[var(--text-primary)]">
                 Sent{invoiceAmount != null ? ` — ${invoiceAmount}` : ""}

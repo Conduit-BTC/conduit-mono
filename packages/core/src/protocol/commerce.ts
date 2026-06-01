@@ -33,6 +33,7 @@ import { planRelayReads, type RelayReadIntent } from "./relay-planner"
 
 const PRODUCT_CACHE_TTL_MS = 24 * 60 * 60_000
 const BROAD_AUTHOR_HINT_LIMIT = 16
+const DM_INBOX_READ_FANOUT = 24
 // Keep author-scoped product filters small enough for public relays that
 // reject or truncate very large authors arrays. This is a transport batch
 // size, not a product truth cap.
@@ -1927,6 +1928,8 @@ async function fetchParsedOrderMessages(
     const dmRelayUrls = await planCommerceReadRelays({
       intent: "dm_inbox",
       recipients: [principalPubkey],
+      maxRelays: DM_INBOX_READ_FANOUT,
+      extraRelayUrls: config.appWriteRelayUrls,
     })
 
     const wrapped = await runFetchEventsFanout(filter, {
@@ -1967,11 +1970,11 @@ async function fetchParsedOrderMessages(
       }
     }
 
-    for (const id of parsedWrapIds) knownWrapIds.add(id)
-
     if (newRows.length > 0) {
       await storeCachedOrderMessages(newRows)
     }
+
+    for (const id of parsedWrapIds) knownWrapIds.add(id)
 
     const messages = Array.from(cachedById.values()).sort(
       (a, b) => a.createdAt - b.createdAt
@@ -2009,6 +2012,9 @@ function buildBuyerConversationSummaries(
     const latestStatus = [...bucket]
       .reverse()
       .find((message) => message.type === "status_update")
+    const latestPaymentProof = [...bucket]
+      .reverse()
+      .find((message) => message.type === "payment_proof")
     const otherParticipants = Array.from(
       new Set(
         bucket
@@ -2032,7 +2038,9 @@ function buildBuyerConversationSummaries(
       status:
         latestStatus?.type === "status_update"
           ? latestStatus.payload.status
-          : null,
+          : latestPaymentProof?.type === "payment_proof"
+            ? "paid"
+            : null,
       totalSummary:
         summary.items.length > 0
           ? `${summary.subtotal} ${summary.currency}`
@@ -2068,6 +2076,9 @@ function buildMerchantConversationSummaries(
     const latestStatus = [...bucket]
       .reverse()
       .find((message) => message.type === "status_update")
+    const latestPaymentProof = [...bucket]
+      .reverse()
+      .find((message) => message.type === "payment_proof")
     const otherParticipants = Array.from(
       new Set(
         bucket
@@ -2091,7 +2102,9 @@ function buildMerchantConversationSummaries(
       status:
         latestStatus?.type === "status_update"
           ? latestStatus.payload.status
-          : null,
+          : latestPaymentProof?.type === "payment_proof"
+            ? "paid"
+            : null,
       totalSummary:
         summary.items.length > 0
           ? `${summary.subtotal} ${summary.currency}`

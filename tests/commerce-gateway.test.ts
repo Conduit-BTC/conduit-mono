@@ -6,8 +6,12 @@ import {
   getBuyerConversationList,
   getConversationDetail,
   getMarketplaceProducts,
+  getMerchantConversationList,
   getMerchantStorefront,
   getProfiles,
+  __resetRelayListTestOverrides,
+  __setRelayListTestOverrides,
+  CANONICAL_APP_WRITE_RELAYS,
 } from "@conduit/core"
 import { EVENT_KINDS } from "@conduit/core"
 import type {
@@ -62,6 +66,7 @@ function makeProductEvent(params: {
 
 beforeEach(async () => {
   __resetCommerceTestOverrides()
+  __resetRelayListTestOverrides()
   cachedProducts = []
   cachedProfiles = new Map()
   cachedOrderMessages = []
@@ -105,6 +110,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   __resetCommerceTestOverrides()
+  __resetRelayListTestOverrides()
   cachedProducts = []
   cachedProfiles = new Map()
   cachedOrderMessages = []
@@ -532,6 +538,183 @@ describe("commerce gateway", () => {
     expect(unwrapCalls).toBe(2)
     expect(second.data).toHaveLength(1)
     expect(second.data[0]?.orderId).toBe("order-3")
+  })
+
+  it("shows merchant payment-proof-only conversations as paid", async () => {
+    const merchantPubkey = "merchant"
+    const buyerPubkey = "buyer"
+    const wrappedEvent = {
+      id: "wrap-proof-1",
+      kind: EVENT_KINDS.GIFT_WRAP,
+      pubkey: buyerPubkey,
+      created_at: 100,
+      content: "wrapped-proof",
+      tags: [["p", merchantPubkey]],
+    }
+    const proofRumor = {
+      id: "proof-rumor-1",
+      kind: EVENT_KINDS.ORDER,
+      pubkey: buyerPubkey,
+      created_at: 101,
+      content: JSON.stringify({
+        orderId: "order-proof-1",
+        rail: "lightning",
+        action: "private_checkout",
+        amount: 2100,
+        currency: "SATS",
+        invoice: "lnbc2100n1proof",
+        preimage: "paid-preimage",
+        paymentHash: "paid-hash",
+        proofDeliveryStatus: "pending",
+      }),
+      tags: [
+        ["p", merchantPubkey],
+        ["type", "payment_proof"],
+        ["order", "order-proof-1"],
+        ["amount", "2100"],
+        ["currency", "SATS"],
+      ],
+    }
+
+    __setCommerceTestOverrides({
+      requireNdkConnected: async () => ({ signer: {} }) as never,
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
+          ? ([wrappedEvent] as never)
+          : [],
+      giftUnwrap: async () => proofRumor as never,
+    })
+
+    const result = await getMerchantConversationList({
+      principalPubkey: merchantPubkey,
+      limit: 50,
+    })
+
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.orderId).toBe("order-proof-1")
+    expect(result.data[0]?.buyerPubkey).toBe(buyerPubkey)
+    expect(result.data[0]?.latestType).toBe("payment_proof")
+    expect(result.data[0]?.status).toBe("paid")
+  })
+
+  it("queries expanded merchant inbox relays for gift-wrapped orders", async () => {
+    const merchantPubkey = "merchant"
+    const merchantReadRelays = Array.from(
+      { length: 8 },
+      (_, index) => `wss://merchant-read-${index}.example`
+    )
+    let seenRelayUrls: string[] | undefined
+
+    __setRelayListTestOverrides({
+      now: () => FIXED_NOW,
+      loadCached: async (pubkey) =>
+        pubkey === merchantPubkey
+          ? {
+              pubkey,
+              readRelayUrls: merchantReadRelays,
+              writeRelayUrls: [],
+              eventCreatedAt: 1,
+              cachedAt: FIXED_NOW,
+            }
+          : undefined,
+    })
+    __setCommerceTestOverrides({
+      requireNdkConnected: async () => ({ signer: {} }) as never,
+      fetchEventsFanout: async (filter, options) => {
+        if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
+          seenRelayUrls = options?.relayUrls
+        }
+        return []
+      },
+    })
+
+    await getMerchantConversationList({
+      principalPubkey: merchantPubkey,
+      limit: 50,
+    })
+
+    expect(seenRelayUrls).toContain(CANONICAL_APP_WRITE_RELAYS[0])
+    expect(seenRelayUrls).toContain("wss://merchant-read-7.example")
+  })
+
+  it("retries parsed wrapped order messages when cache persistence fails", async () => {
+    let unwrapCalls = 0
+    let putCalls = 0
+    const wrappedEvent = {
+      id: "wrap-cache-fail-1",
+      kind: EVENT_KINDS.GIFT_WRAP,
+      pubkey: "buyer",
+      created_at: 100,
+      content: "wrapped",
+      tags: [["p", "merchant"]],
+    }
+    const orderRumor = {
+      id: "order-rumor-cache-fail-1",
+      kind: EVENT_KINDS.ORDER,
+      pubkey: "buyer",
+      created_at: 101,
+      content: JSON.stringify({
+        id: "order-cache-fail-1",
+        merchantPubkey: "merchant",
+        buyerPubkey: "buyer",
+        items: [
+          {
+            productId: "30402:merchant:item",
+            quantity: 1,
+            priceAtPurchase: 2100,
+            currency: "SATS",
+          },
+        ],
+        subtotal: 2100,
+        currency: "SATS",
+        createdAt: FIXED_NOW,
+      }),
+      tags: [
+        ["p", "merchant"],
+        ["type", "order"],
+        ["order", "order-cache-fail-1"],
+        ["amount", "2100"],
+        ["currency", "SATS"],
+      ],
+    }
+
+    __setCommerceTestOverrides({
+      requireNdkConnected: async () => ({ signer: {} }) as never,
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
+          ? ([wrappedEvent] as never)
+          : [],
+      giftUnwrap: async () => {
+        unwrapCalls += 1
+        return orderRumor as never
+      },
+      putCachedOrderMessages: async (rows) => {
+        putCalls += 1
+        if (putCalls === 1) {
+          throw new Error("cache unavailable")
+        }
+        for (const row of rows) {
+          cachedOrderMessages = [
+            ...cachedOrderMessages.filter((existing) => existing.id !== row.id),
+            row,
+          ]
+        }
+      },
+    })
+
+    const first = await getMerchantConversationList({
+      principalPubkey: "merchant",
+      limit: 50,
+    })
+    const second = await getMerchantConversationList({
+      principalPubkey: "merchant",
+      limit: 50,
+    })
+
+    expect(first.data).toHaveLength(1)
+    expect(second.data).toHaveLength(1)
+    expect(unwrapCalls).toBe(2)
+    expect(cachedOrderMessages).toHaveLength(1)
   })
 
   it("dedupes profile requests and serves cached profiles when relays fail later", async () => {

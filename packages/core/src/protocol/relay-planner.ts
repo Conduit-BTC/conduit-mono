@@ -268,13 +268,14 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
  *   Broadcast empty by default.
  * - `recipient_event`: primary = union of each recipient's read relays
  *   (from cached NIP-65). If a recipient has no cached list, we fall back
- *   to the user's general write relays for that recipient — best-effort
- *   delivery rather than dropping the message. Broadcast = user's write
- *   relays so the event is also seeded into our outbox.
+ *   to shared app/public recipient relays instead of sender-only outbox
+ *   relays. Broadcast = user's write relays so the event is also seeded into
+ *   our outbox.
  *
  * Recipient-aware writes always include at least one of the user's write
  * relays in `broadcastRelayUrls`, so an event sent to a recipient with no
- * known inbox is still eventually discoverable via the sender's outbox.
+ * known inbox still has a sender-side backup without treating that backup as
+ * recipient delivery.
  */
 export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
   const settingsOpts = settingsPlanOptions(input)
@@ -308,15 +309,14 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
     input.relayLists
   )
 
-  // Recipients with no cached list contribute nothing; fall back to user
-  // write relays for those recipients so the event is at least seeded
-  // somewhere both parties can discover it.
+  // Recipients with no cached list contribute nothing. Use the shared
+  // app/public relay fallback as recipient delivery, not the sender's private
+  // outbox relays; otherwise a buyer-only write ACK can look deliverable while
+  // the recipient inbox has no reason to read that relay.
   const missingRecipientFallback = recipients.some(
     (pubkey) => !input.relayLists?.get(pubkey)?.readRelayUrls.length
   )
-    ? userWriteRelays.length > 0
-      ? userWriteRelays
-      : defaultRecipientWriteFallbackRelayUrls()
+    ? defaultRecipientWriteFallbackRelayUrls()
     : []
 
   const primaryOrdered = dedupeOrdered([

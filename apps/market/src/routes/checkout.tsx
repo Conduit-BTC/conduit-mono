@@ -19,6 +19,7 @@ import {
   appendConduitClientTag,
   cacheParsedOrderMessage,
   config,
+  fetchLnurlInvoice,
   fetchLnurlPayMetadata,
   fetchZapInvoice,
   formatPubkey,
@@ -57,9 +58,12 @@ import {
 import {
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
-  buildZapRequestContent,
+  buildPendingCheckoutManualInvoice,
+  getLnurlReadyForCheckoutPayment,
   getCheckoutShippingCost,
+  requestCheckoutLnurlInvoice,
   type CheckoutPaymentStage,
+  type PendingCheckoutManualInvoice,
   type CheckoutZapVisibility,
 } from "../lib/checkout-payment"
 import {
@@ -94,16 +98,6 @@ type CheckoutPricingRefreshState =
   | "refreshing"
   | "stale_retryable"
   | "unavailable"
-
-type PendingManualInvoice = {
-  orderId: string
-  merchantPubkey: string
-  amountMsats: number
-  amountSats: number
-  invoice: string
-  zapRequestId: string
-  reason: string
-}
 
 type BuyerMessageDeliveryResult = {
   buyerSelfCopyError: string | null
@@ -472,7 +466,7 @@ function CheckoutPage() {
   const [zapContentEdited, setZapContentEdited] = useState(false)
   const [weblnAvailable, setWeblnAvailable] = useState(false)
   const [pendingManualInvoice, setPendingManualInvoice] =
-    useState<PendingManualInvoice | null>(null)
+    useState<PendingCheckoutManualInvoice | null>(null)
   const [pricingRefreshPending, setPricingRefreshPending] = useState(false)
   const [pricingRefreshFailedAt, setPricingRefreshFailedAt] = useState<
     number | null
@@ -482,6 +476,7 @@ function CheckoutPage() {
   const btcUsdRateIsFetching = btcUsdRateQuery.isFetching
 
   // LNURL probe state
+  const [lnurlPayAvailable, setLnurlPayAvailable] = useState(false)
   const [lnurlAllowsNostr, setLnurlAllowsNostr] = useState(false)
   const [lnurlProbing, setLnurlProbing] = useState(false)
 
@@ -557,6 +552,7 @@ function CheckoutPage() {
 
   // Probe merchant's LNURL for Nostr zap support when merchant profile arrives
   useEffect(() => {
+    setLnurlPayAvailable(false)
     setLnurlAllowsNostr(false)
 
     if (!merchantLud16) {
@@ -569,10 +565,16 @@ function CheckoutPage() {
 
     fetchLnurlPayMetadata(merchantLud16)
       .then((meta) => {
-        if (!cancelled) setLnurlAllowsNostr(meta.allowsNostr)
+        if (!cancelled) {
+          setLnurlPayAvailable(true)
+          setLnurlAllowsNostr(meta.allowsNostr)
+        }
       })
       .catch(() => {
-        if (!cancelled) setLnurlAllowsNostr(false)
+        if (!cancelled) {
+          setLnurlPayAvailable(false)
+          setLnurlAllowsNostr(false)
+        }
       })
       .finally(() => {
         if (!cancelled) setLnurlProbing(false)
@@ -582,6 +584,12 @@ function CheckoutPage() {
       cancelled = true
     }
   }, [merchantLud16])
+
+  useEffect(() => {
+    if (lnurlPayAvailable && !lnurlAllowsNostr) {
+      setZapVisibility("private_checkout")
+    }
+  }, [lnurlAllowsNostr, lnurlPayAvailable])
 
   const pricingPreview = useMemo(
     () => buildCheckoutPricingIntent(checkoutItems, btcUsdRate, Date.now()),
@@ -694,10 +702,17 @@ function CheckoutPage() {
     wallet.status !== "unsupported" &&
     wallet.status !== "error"
   const canAttemptLightningPayment = canTrySavedNwcWallet || weblnAvailable
+  const requiresPublicZap = zapVisibility === "public_zap"
+  const lnurlReadyForSelectedPayment = getLnurlReadyForCheckoutPayment({
+    visibility: zapVisibility,
+    lnurlPayAvailable,
+    lnurlAllowsNostr,
+  })
   const fastEligibilityInput = {
     walletPayCapable: canAttemptLightningPayment,
     merchantLud16,
-    lnurlAllowsNostr,
+    lnurlAllowsNostr: lnurlReadyForSelectedPayment,
+    requiresNostrZap: requiresPublicZap,
     pricingReady: pricingPreview.status === "ok",
     shippingEligible: shippingEligibleForFastCheckout,
     shippingState: shippingCheckoutState,
@@ -877,13 +892,13 @@ function CheckoutPage() {
     label: string
   ): string | null {
     if (delivery.localCacheError && delivery.buyerSelfCopyError) {
-      return `${label} reached the merchant, but order history recovery needs retry.`
+      return `${label} was accepted by Nostr delivery relays for merchant pickup, but order history recovery needs retry.`
     }
     if (delivery.localCacheError) {
-      return `${label} reached the merchant. Order history may update after relay sync.`
+      return `${label} was accepted by Nostr delivery relays for merchant pickup. Order history may update after relay sync.`
     }
     if (delivery.buyerSelfCopyError) {
-      return `${label} reached the merchant and was saved locally. Relay backup needs retry.`
+      return `${label} was accepted by Nostr delivery relays for merchant pickup and saved locally. Buyer relay backup needs retry.`
     }
     return null
   }
@@ -1153,15 +1168,13 @@ function CheckoutPage() {
       setPaymentStage("requesting_invoice")
 
       const lnurlMeta = await fetchLnurlPayMetadata(merchantLud16)
-      if (!lnurlMeta.allowsNostr) {
+      const isPublicZapPayment = zapVisibility === "public_zap"
+      if (isPublicZapPayment && !lnurlMeta.allowsNostr) {
         throw new Error(
           "Merchant Lightning Address does not advertise Nostr zap support."
         )
       }
 
-      const zapRelayUrls = Array.from(
-        new Set([...(ndk.explicitRelayUrls ?? []), ...config.publicRelayUrls])
-      )
       if (
         pricingIntent.totalMsats < lnurlMeta.minSendable ||
         pricingIntent.totalMsats > lnurlMeta.maxSendable
@@ -1172,27 +1185,36 @@ function CheckoutPage() {
         )
       }
 
-      const zapRequest = new NDKEvent(ndk)
-      zapRequest.kind = EVENT_KINDS.ZAP_REQUEST
-      zapRequest.created_at = Math.floor(Date.now() / 1000)
-      zapRequest.content = buildZapRequestContent(zapVisibility, zapContent)
-      zapRequest.tags = [
-        ["p", selectedMerchant],
-        ["amount", String(pricingIntent.totalMsats)],
-        ["lnurl", lnurlMeta.lnurl],
-        ["relays", ...zapRelayUrls],
-      ]
-      zapRequest.tags = appendConduitClientTag(zapRequest.tags, "market")
+      const invoiceRequest = await requestCheckoutLnurlInvoice(
+        {
+          visibility: zapVisibility,
+          lnurlCallback: lnurlMeta.callback,
+          amountMsats: pricingIntent.totalMsats,
+          lnurl: lnurlMeta.lnurl,
+          recipientPubkey: selectedMerchant,
+          zapContent,
+          explicitRelayUrls: ndk.explicitRelayUrls ?? [],
+          publicRelayUrls: config.publicRelayUrls,
+        },
+        {
+          fetchLnurlInvoice,
+          fetchZapInvoice,
+          signZapRequest: async (draft) => {
+            const zapRequest = new NDKEvent(ndk)
+            zapRequest.kind = draft.kind
+            zapRequest.created_at = draft.createdAt
+            zapRequest.content = draft.content
+            zapRequest.tags = draft.tags
 
-      await zapRequest.sign(ndk.signer)
-      const zapRequestJson = JSON.stringify(zapRequest.rawEvent())
-
-      const { invoice } = await fetchZapInvoice(
-        lnurlMeta.callback,
-        pricingIntent.totalMsats,
-        zapRequestJson,
-        lnurlMeta.lnurl
+            await zapRequest.sign(ndk.signer)
+            return {
+              id: zapRequest.id,
+              rawEvent: zapRequest.rawEvent(),
+            }
+          },
+        }
       )
+      const { invoice, zapRelayUrls, zapRequestId } = invoiceRequest
 
       const invoiceValidation = validateLightningInvoiceForPayment({
         invoice,
@@ -1212,21 +1234,24 @@ function CheckoutPage() {
         appId: "market",
         metadata: {
           app: "conduit-market",
-          action: "checkout-zap",
+          action: isPublicZapPayment ? "checkout-zap" : "private-checkout",
           amountMsats: pricingIntent.totalMsats,
         },
       })
 
       if (payResult.status === "manual_required") {
-        setPendingManualInvoice({
-          orderId,
-          merchantPubkey: selectedMerchant,
-          amountMsats: pricingIntent.totalMsats,
-          amountSats: pricingIntent.totalSats,
-          invoice,
-          zapRequestId: zapRequest.id,
-          reason: payResult.reason,
-        })
+        setPendingManualInvoice(
+          buildPendingCheckoutManualInvoice({
+            orderId,
+            merchantPubkey: selectedMerchant,
+            amountMsats: pricingIntent.totalMsats,
+            amountSats: pricingIntent.totalSats,
+            invoice,
+            zapRequestId,
+            reason: payResult.reason,
+            deliveryNotice: recoveryNotice,
+          })
+        )
         setSentOrderId(orderId)
         setError(null)
         setStep("payment")
@@ -1247,7 +1272,7 @@ function CheckoutPage() {
           paymentHash: payResult.paymentHash,
           preimage: payResult.preimage,
           feeMsats: payResult.feeMsats,
-          zapRequestId: zapRequest.id,
+          zapRequestId,
           proofDeliveryStatus: "pending",
           createdAt: Date.now(),
           updatedAt: Date.now(),
@@ -1260,14 +1285,14 @@ function CheckoutPage() {
       const proofPayload = {
         orderId,
         rail: "lightning",
-        action: "zap",
+        action: isPublicZapPayment ? "zap" : "private_checkout",
         amount: pricingIntent.totalSats,
         currency,
         invoice,
         preimage: payResult.preimage,
         paymentHash: payResult.paymentHash,
         feeMsats: payResult.feeMsats,
-        zapRequestId: zapRequest.id,
+        ...(zapRequestId ? { zapRequestId } : {}),
         proofDeliveryStatus: "pending",
         note: `Payment for order ${orderId}`,
       }
@@ -1310,25 +1335,28 @@ function CheckoutPage() {
         })
       }
 
-      setPaymentStage("checking_receipt")
-      const receipt = await waitForZapReceipt({
-        zapRequestId: zapRequest.id,
-        recipientPubkey: selectedMerchant,
-        expectedAmountMsats: pricingIntent.totalMsats,
-        expectedLnurl: lnurlMeta.lnurl,
-        lnurlNostrPubkey: lnurlMeta.nostrPubkey,
-        relayUrls: zapRelayUrls,
-        timeoutMs: ZAP_RECEIPT_WAIT_MS,
-      }).catch((e) => {
-        console.warn("Failed to observe zap receipt", e)
-        return null
-      })
-      if (receipt) {
-        await updatePaymentAttempt(orderId, {
-          zapReceiptId: receipt.id,
+      let receipt = null
+      if (invoiceRequest.shouldWaitForZapReceipt && zapRequestId) {
+        setPaymentStage("checking_receipt")
+        receipt = await waitForZapReceipt({
+          zapRequestId,
+          recipientPubkey: selectedMerchant,
+          expectedAmountMsats: pricingIntent.totalMsats,
+          expectedLnurl: lnurlMeta.lnurl,
+          lnurlNostrPubkey: lnurlMeta.nostrPubkey,
+          relayUrls: zapRelayUrls,
+          timeoutMs: ZAP_RECEIPT_WAIT_MS,
         }).catch((e) => {
-          console.warn("Failed to persist zap receipt id", e)
+          console.warn("Failed to observe zap receipt", e)
+          return null
         })
+        if (receipt) {
+          await updatePaymentAttempt(orderId, {
+            zapReceiptId: receipt.id,
+          }).catch((e) => {
+            console.warn("Failed to persist zap receipt id", e)
+          })
+        }
       }
 
       cart.clearMerchant(selectedMerchant)
@@ -1338,22 +1366,24 @@ function CheckoutPage() {
         proofDelivered
           ? (recoveryNotice ??
               (receipt
-                ? "Payment sent, proof delivered, and the merchant zap receipt was observed."
-                : "Payment sent and proof delivered. Awaiting merchant confirmation."))
-          : "Payment sent. Receipt delivery needs retry."
+                ? "Payment sent, proof accepted by Nostr delivery relays for merchant pickup, and the merchant zap receipt was observed."
+                : isPublicZapPayment
+                  ? "Payment sent and proof accepted by Nostr delivery relays for merchant pickup. Awaiting merchant confirmation."
+                  : "Payment sent and private proof accepted by Nostr delivery relays for merchant pickup. Awaiting merchant confirmation."))
+          : "Payment sent. Proof delivery needs retry."
       )
       setStep("paid")
     } catch (e) {
       if (paymentMoved) {
         if (paidOrderId) setSentOrderId(paidOrderId)
-        setPaidNotice("Payment sent. Receipt delivery needs retry.")
+        setPaidNotice("Payment sent. Proof delivery needs retry.")
         setShowSentGlow(true)
         setStep("paid")
       } else {
         const message = e instanceof Error ? e.message : "Payment failed"
         setError(
           orderDelivered
-            ? `Order delivered, but payment did not complete. ${message}`
+            ? `Order accepted by Nostr delivery relays for merchant pickup, but payment did not complete. ${message}`
             : message
         )
         setStep("payment")
@@ -1401,9 +1431,9 @@ function CheckoutPage() {
             <div className="h-full w-1/2 animate-pulse rounded-full bg-white" />
           </div>
           <p className="mx-auto mt-8 max-w-md text-sm leading-7 text-white/85">
-            Your order is being delivered to the merchant through Nostr. This
-            may take a few seconds depending on your signer and relay
-            connection.
+            Your order is being sent to Nostr delivery relays for merchant
+            pickup. This may take a few seconds depending on your signer and
+            relay connection.
           </p>
         </section>
       </div>
@@ -1452,7 +1482,7 @@ function CheckoutPage() {
           <div className="relative mx-auto mt-8 h-1 w-full max-w-sm rounded-full bg-secondary-500/50" />
           <p className="relative mx-auto mt-8 max-w-xl text-lg leading-9 text-[var(--text-primary)]">
             {paidNotice ??
-              "Your Lightning payment was sent and the order has been delivered to the merchant."}
+              "Your Lightning payment was sent and the order was accepted by Nostr delivery relays for merchant pickup."}
           </p>
           <p className="relative mx-auto mt-4 max-w-lg text-sm leading-7 text-[var(--text-secondary)]">
             The merchant will confirm receipt and send fulfillment updates
@@ -1997,7 +2027,9 @@ function CheckoutPage() {
                     <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
                       {pricingOnlyFastCheckoutBlocker
                         ? "The cart total is visible, but direct payment needs a fresh conversion before funds can move. Conduit is refreshing it now."
-                        : "Conduit will deliver the order, request a zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."}
+                        : requiresPublicZap
+                          ? "Conduit will deliver the order, request a public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."
+                          : "Conduit will deliver the order, request a private LNURL invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."}
                     </p>
                   </div>
                 )}
@@ -2011,17 +2043,22 @@ function CheckoutPage() {
                       <button
                         type="button"
                         aria-pressed={zapVisibility === "public_zap"}
+                        disabled={!lnurlAllowsNostr}
                         onClick={() => setZapVisibility("public_zap")}
                         className={[
                           "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
                           zapVisibility === "public_zap"
                             ? "border-secondary-500/60 bg-secondary-500/10 text-[var(--text-primary)]"
-                            : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+                            : !lnurlAllowsNostr
+                              ? "cursor-not-allowed border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] opacity-70"
+                              : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
                         ].join(" ")}
                       >
                         <span className="block font-medium">Public zap</span>
                         <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
-                          Include an editable public zap comment.
+                          {lnurlAllowsNostr
+                            ? "Include an editable public zap comment."
+                            : "This merchant wallet does not advertise public zap receipts."}
                         </span>
                       </button>
                       <button
@@ -2039,7 +2076,8 @@ function CheckoutPage() {
                           Private checkout
                         </span>
                         <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
-                          Send no public zap comment.
+                          Request a normal LNURL invoice without a public zap
+                          request or public zap receipt.
                         </span>
                       </button>
                     </div>
@@ -2136,19 +2174,24 @@ function CheckoutPage() {
                     <div className="flex items-center gap-2">
                       <LightningIcon className="h-4 w-4 text-secondary-400" />
                       <div className="text-sm font-medium text-[var(--text-primary)]">
-                        Order delivered. Pay the Lightning invoice to finish.
+                        Order accepted by Nostr delivery relays for merchant
+                        pickup. Pay the Lightning invoice to finish.
                       </div>
                     </div>
                     <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                      The order is with the merchant, but automatic payment did
-                      not complete. Open or copy this invoice with your wallet;
-                      Conduit will not mark the order paid until payment proof
-                      is available.
+                      Automatic payment did not complete. Open or copy this
+                      invoice with your wallet; Conduit will not mark the order
+                      paid until payment proof is available.
                     </p>
                     {pendingManualInvoice.reason && (
                       <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
                         Automatic payment fallback reason:{" "}
                         {pendingManualInvoice.reason}
+                      </p>
+                    )}
+                    {pendingManualInvoice.deliveryNotice && (
+                      <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
+                        {pendingManualInvoice.deliveryNotice}
                       </p>
                     )}
                     <div className="mt-4 flex flex-wrap gap-3">

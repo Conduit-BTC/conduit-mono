@@ -627,7 +627,7 @@ function OrdersPage() {
 
                     <CollapsibleInfo
                       title="Order details"
-                      summary={`${orderSummary.invoiceSent ? "Invoice sent" : "Awaiting merchant"}${orderSummary.trackingNumber ? ` · Tracking ${orderSummary.trackingNumber}` : ""}`}
+                      summary={`${orderSummary.paymentProofReceived ? "Payment sent" : orderSummary.invoiceSent ? "Invoice sent" : "Awaiting merchant"}${orderSummary.trackingNumber ? ` · Tracking ${orderSummary.trackingNumber}` : ""}`}
                       defaultOpen={false}
                     >
                       <div className="space-y-3 text-sm">
@@ -653,12 +653,14 @@ function OrdersPage() {
                         </div>
                         <div className="flex items-center justify-between gap-3">
                           <span className="text-[var(--text-secondary)]">
-                            Invoice
+                            Payment
                           </span>
                           <span className="text-[var(--text-primary)]">
-                            {orderSummary.invoiceSent
+                            {orderSummary.paymentProofReceived
                               ? "Sent"
-                              : "Awaiting merchant"}
+                              : orderSummary.invoiceSent
+                                ? "Sent"
+                                : "Awaiting merchant"}
                           </span>
                         </div>
                         <div className="flex items-center justify-between gap-3">
