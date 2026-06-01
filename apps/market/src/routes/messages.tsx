@@ -10,8 +10,10 @@ import {
   formatNpub,
   getNdk,
   formatPubkey,
+  normalizePubkey,
   parseOrderMessageRumorEvent,
   publishWithPlanner,
+  pubkeyToNpub,
   useAuth,
   useProfile,
   useProfiles,
@@ -71,7 +73,10 @@ export const Route = createFileRoute("/messages")({
   validateSearch: (raw: Record<string, unknown>): MessagesSearch => ({
     tab: raw.tab === "dms" || raw.tab === "merchants" ? raw.tab : undefined,
     thread: typeof raw.thread === "string" ? raw.thread : undefined,
-    merchant: typeof raw.merchant === "string" ? raw.merchant : undefined,
+    merchant:
+      typeof raw.merchant === "string"
+        ? (normalizePubkey(raw.merchant) ?? raw.merchant)
+        : undefined,
   }),
   component: MessagesPage,
 })
@@ -535,7 +540,9 @@ function MessagesPage() {
                           <Link
                             to="/store/$pubkey"
                             params={{
-                              pubkey: selectedConversation.merchantPubkey,
+                              pubkey: pubkeyToNpub(
+                                selectedConversation.merchantPubkey
+                              ),
                             }}
                             className="truncate text-lg font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
                           >

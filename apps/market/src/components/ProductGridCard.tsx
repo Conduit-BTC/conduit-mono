@@ -1,6 +1,7 @@
 import { useNavigate } from "@tanstack/react-router"
 import {
   getProductImageCandidates,
+  pubkeyToNpub,
   type PricingRateInput,
   type Product,
 } from "@conduit/core"
@@ -67,7 +68,7 @@ export function ProductGridCard({
       onMerchantActivate={() =>
         navigate({
           to: "/store/$pubkey",
-          params: { pubkey: product.pubkey },
+          params: { pubkey: pubkeyToNpub(product.pubkey) },
         })
       }
       onInvalidImage={() => onInvalidImage?.(product.id)}

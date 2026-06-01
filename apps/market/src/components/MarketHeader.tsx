@@ -10,7 +10,7 @@ import {
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 import {
   config,
-  formatPubkey,
+  formatNpub,
   useAuth,
   useNdkState,
   useProfile,
@@ -106,7 +106,7 @@ function UserMenu() {
   if (!pubkey || status !== "connected") return null
 
   const displayName =
-    profile?.displayName ?? profile?.name ?? formatPubkey(pubkey, 6)
+    profile?.displayName ?? profile?.name ?? formatNpub(pubkey, 6)
 
   const walletStatusLabel =
     wallet.status === "pay-capable"

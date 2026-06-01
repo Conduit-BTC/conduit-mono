@@ -22,12 +22,13 @@ import {
   fetchLnurlInvoice,
   fetchLnurlPayMetadata,
   fetchZapInvoice,
-  formatPubkey,
+  formatNpub,
   getPriceSats,
   hasWebLN,
   getNdk,
   getShippingOptions,
   getShippingDestinationEligibility,
+  normalizePubkey,
   normalizeLightningInvoice,
   parseOrderMessageRumorEvent,
   publishWithPlanner,
@@ -157,7 +158,10 @@ export const Route = createFileRoute("/checkout")({
     requireAuth()
   },
   validateSearch: (search: Record<string, unknown>): CheckoutSearch => ({
-    merchant: typeof search.merchant === "string" ? search.merchant : undefined,
+    merchant:
+      typeof search.merchant === "string"
+        ? (normalizePubkey(search.merchant) ?? search.merchant)
+        : undefined,
   }),
   component: CheckoutPage,
 })
@@ -274,7 +278,7 @@ function OrderSummary({
   const merchantName =
     merchantProfile?.displayName ||
     merchantProfile?.name ||
-    formatPubkey(merchantPubkey, 8)
+    formatNpub(merchantPubkey, 8)
   const shippingCost = getCheckoutShippingCost(items)
   const itemSubtotalSats = items.reduce((sum, item) => {
     const sats = getPriceSats(item, btcUsdRate)
@@ -530,7 +534,7 @@ function CheckoutPage() {
   const merchantName =
     merchantProfile?.displayName ||
     merchantProfile?.name ||
-    (selectedMerchant ? formatPubkey(selectedMerchant, 8) : "this merchant")
+    (selectedMerchant ? formatNpub(selectedMerchant, 8) : "this merchant")
 
   useEffect(() => {
     if (zapContentEdited || checkoutItems.length === 0) return

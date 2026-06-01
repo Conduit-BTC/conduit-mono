@@ -97,6 +97,7 @@ function ProfilePage() {
     profileQuery.data?.name?.trim() ||
     "Your profile"
   const shortPubkey = useMemo(() => formatNpub(pubkey ?? "", 8), [pubkey])
+  const npub = useMemo(() => (pubkey ? pubkeyToNpub(pubkey) : ""), [pubkey])
   const fallbackLetter = (displayName?.[0] ?? pubkey?.[0] ?? "?").toUpperCase()
   const savedProfileForm = useMemo(
     () => profileToForm(profileQuery.data),
@@ -498,10 +499,10 @@ function ProfilePage() {
                     <UserRound className="mt-0.5 h-4 w-4 text-secondary-300" />
                     <div>
                       <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                        Pubkey
+                        Npub
                       </div>
                       <div className="mt-2 font-mono text-xs leading-6 text-[var(--text-secondary)] break-all">
-                        {pubkey}
+                        {npub}
                       </div>
                     </div>
                   </div>
