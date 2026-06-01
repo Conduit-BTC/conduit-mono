@@ -276,7 +276,7 @@ describe("planRelayWrites", () => {
     expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.example.com"])
   })
 
-  it("falls back to user write relays as primary when recipient has no cached list", () => {
+  it("uses shared recipient fallback relays when recipient has no cached list", () => {
     const state = settings([
       entry("wss://outbox.example.com", {
         section: "commerce",
@@ -296,9 +296,9 @@ describe("planRelayWrites", () => {
       relayLists: new Map(),
       settings: state,
     })
-    expect(plan.primaryRelayUrls).toEqual(["wss://outbox.example.com"])
-    // Broadcast is empty here because the only outbox relay is already in primary.
-    expect(plan.broadcastRelayUrls).toEqual([])
+    expect(plan.primaryRelayUrls).toEqual(config.publicRelayUrls.slice(0, 4))
+    expect(plan.primaryRelayUrls).not.toContain("wss://outbox.example.com")
+    expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.example.com"])
   })
 
   it("uses default public relays for recipient delivery when the signer has no write relays", () => {
