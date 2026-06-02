@@ -12,6 +12,10 @@ interface ImportMetaEnv {
   readonly VITE_NIP89_MERCHANT_PUBKEY?: string
   readonly VITE_NIP89_MARKET_D_TAG?: string
   readonly VITE_NIP89_MERCHANT_D_TAG?: string
+  readonly VITE_ENABLE_TELEMETRY?: string
+  readonly VITE_PLAUSIBLE_SCRIPT_URL?: string
+  readonly VITE_POSTHOG_KEY?: string
+  readonly VITE_POSTHOG_HOST?: string
   readonly [key: string]: string | undefined
 }
 

@@ -8,7 +8,11 @@ import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { KeyRound } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
-import { useAuth, useNip07Availability } from "@conduit/core"
+import {
+  useAnonymousPageviewTelemetry,
+  useAuth,
+  useNip07Availability,
+} from "@conduit/core"
 import {
   ErrorPage,
   LegalFooter,
@@ -55,8 +59,19 @@ function RootLayout() {
   const signerConnected = status === "connected" && !!pubkey
   const signerRestoring =
     !!pubkey && (status === "restoring" || status === "connecting")
+  const telemetrySignerConnected =
+    !!pubkey ||
+    status === "connecting" ||
+    status === "restoring" ||
+    status === "connected"
   const shouldDelayAuthFallback =
     !!pubkey && !signerConnected && !authFallbackReady
+
+  useAnonymousPageviewTelemetry({
+    appId: "merchant",
+    pathname,
+    signerConnected: telemetrySignerConnected,
+  })
 
   useEffect(() => {
     if (!pubkey || signerConnected) {

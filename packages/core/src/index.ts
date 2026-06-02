@@ -11,6 +11,15 @@ export * from "./schemas"
 // Utils
 export * from "./utils"
 
+// Analytics
+export {
+  canCaptureAnonymousTelemetry,
+  sanitizeAnalyticsPath,
+  useAnonymousPageviewTelemetry,
+  type AnonymousPageviewInput,
+  type ConduitAnalyticsApp,
+} from "./analytics"
+
 // Pricing
 export {
   MSATS_PER_SAT,

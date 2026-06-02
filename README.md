@@ -111,6 +111,12 @@ bun run dev:merchant:mainnet
 | `VITE_COMMERCE_RELAY_URLS`  | —             | Optional comma-separated commerce relay additions        |
 | `VITE_LIGHTNING_NETWORK`    | `mock`        | `mock`, `signet`, or `mainnet`                           |
 | `VITE_BLOSSOM_SERVER_URL`   | —             | Blossom media server for product images                  |
+| `VITE_ENABLE_TELEMETRY`     | `false`       | Enables anonymous aggregate route telemetry              |
+| `VITE_PLAUSIBLE_SCRIPT_URL` | Plausible URL | Optional Plausible script URL override                   |
+| `VITE_POSTHOG_KEY`          | —             | Optional PostHog project key for anonymous pageviews     |
+| `VITE_POSTHOG_HOST`         | PostHog US    | Optional PostHog host override                           |
+
+Telemetry is disabled unless `VITE_ENABLE_TELEMETRY=true`. When enabled, Conduit captures only sanitized anonymous route pageviews. Signer-connected sessions are not tracked without explicit consent, and telemetry must not include pubkeys, order data, invoice strings, addresses, message content, or contact fields.
 
 The canonical fallback/reset relay list is code-owned in `packages/core/src/config.ts` and currently starts from:
 

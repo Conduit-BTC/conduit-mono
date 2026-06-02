@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-router"
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { useEffect } from "react"
+import { useAuth, useAnonymousPageviewTelemetry } from "@conduit/core"
 import { ErrorPage, LegalFooter, NotFoundPage } from "@conduit/ui"
 import { MarketHeader } from "../components/MarketHeader"
 
@@ -29,8 +30,20 @@ function RootShell({ children }: { children: React.ReactNode }) {
 }
 
 function RootLayout() {
+  const { pubkey, status } = useAuth()
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
+  })
+  const signerConnected =
+    !!pubkey ||
+    status === "connecting" ||
+    status === "restoring" ||
+    status === "connected"
+
+  useAnonymousPageviewTelemetry({
+    appId: "market",
+    pathname,
+    signerConnected,
   })
 
   useEffect(() => {
