@@ -129,6 +129,22 @@ export function getInvalidNwcUriDiagnostic(): NwcDiagnostic {
   }
 }
 
+function getNwcRelayUnreachableDiagnostic(
+  connection: Pick<NwcConnection, "relays">
+): NwcDiagnostic {
+  return {
+    code: "relay_unreachable",
+    severity: "warning",
+    title: "NWC relay unreachable",
+    detail:
+      "Conduit could not confirm this wallet connection through its NWC relay.",
+    action:
+      "Retry after the wallet relay is online or replace this wallet connection.",
+    relayHosts: sanitizeNwcRelayHosts(connection.relays),
+    safeManualFallback: true,
+  }
+}
+
 export function classifyNwcPaymentError(
   error: unknown,
   connection?: NwcConnection | null
@@ -145,6 +161,23 @@ export function classifyNwcPaymentError(
       detail:
         "The Lightning invoice amount did not match the checkout quote, so Conduit did not ask the wallet to pay it.",
       action: "Refresh checkout and request a new invoice before paying.",
+      safeManualFallback: true,
+    }
+  }
+
+  if (
+    normalized.includes("does not support outgoing payments") ||
+    (normalized.includes("pay_invoice") && normalized.includes("support"))
+  ) {
+    return {
+      code: "unsupported_pay_invoice",
+      severity: "warning",
+      title: "Wallet cannot pay invoices through NWC",
+      detail:
+        "This app connection does not advertise pay_invoice support, so fast checkout cannot use it for outgoing payments.",
+      action:
+        "Create a wallet app connection with outgoing payment permission enabled.",
+      relayHosts,
       safeManualFallback: true,
     }
   }
@@ -251,7 +284,9 @@ export function getNwcConnectionDiagnostics({
     })
   }
 
-  if (connection && (status === "unreachable" || error)) {
+  if (connection && status === "unreachable") {
+    diagnostics.push(getNwcRelayUnreachableDiagnostic(connection))
+  } else if (connection && error) {
     diagnostics.push(classifyNwcPaymentError(error ?? "", connection))
   }
 
