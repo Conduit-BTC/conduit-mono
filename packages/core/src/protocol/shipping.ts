@@ -99,6 +99,12 @@ export function parseShippingOptionEvent(
   )
 
   if (!dTag) return null
+  if (
+    countries.length === 0 &&
+    dTag !== CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG
+  ) {
+    return null
+  }
 
   const countryRules = countries.map((code) => ({
     code,

@@ -21,7 +21,6 @@ import {
   MERCHANT_READINESS_STORAGE_EVENT,
   parseShippingConfig,
   saveShippingConfig,
-  SHIPPING_STORAGE_KEY,
   shippingOptionToConfig,
   isPaymentsComplete,
   isProfileComplete,
@@ -40,14 +39,8 @@ function getMerchantReadinessStorageSnapshot(
   if (typeof window === "undefined") return EMPTY_STORAGE_SNAPSHOT
 
   try {
-    const scopedShippingConfig = window.localStorage.getItem(shippingStorageKey)
-    const legacyShippingConfig =
-      shippingStorageKey === SHIPPING_STORAGE_KEY
-        ? null
-        : window.localStorage.getItem(SHIPPING_STORAGE_KEY)
-
     return JSON.stringify([
-      scopedShippingConfig ?? legacyShippingConfig,
+      window.localStorage.getItem(shippingStorageKey),
       nwcStorageKey ? window.localStorage.getItem(nwcStorageKey) : null,
     ])
   } catch {
@@ -83,7 +76,6 @@ function subscribeToMerchantReadinessStorage(
     if (
       event.key &&
       event.key !== shippingStorageKey &&
-      event.key !== SHIPPING_STORAGE_KEY &&
       event.key !== nwcStorageKey
     ) {
       return

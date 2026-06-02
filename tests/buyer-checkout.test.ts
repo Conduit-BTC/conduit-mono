@@ -982,6 +982,20 @@ describe("shipping destination eligibility", () => {
     })
   })
 
+  it("ignores empty non-default shipping options", () => {
+    expect(
+      parseShippingOptionEvent({
+        id: "shipping-event",
+        pubkey: FAKE_PUBKEY,
+        created_at: 2,
+        tags: [
+          ["d", "custom-option"],
+          ["price", "0", "SATS"],
+        ],
+      })
+    ).toBeNull()
+  })
+
   it("matches country include, postal include, postal exclude, and unknown readiness", () => {
     const parsed = parseShippingOptionEvent({
       id: "shipping-event",

@@ -255,10 +255,6 @@ export function loadShippingConfig(
     const raw = localStorage.getItem(storageKey)
     if (raw) return parseShippingConfig(raw)
 
-    if (storageKey !== SHIPPING_STORAGE_KEY) {
-      return parseShippingConfig(localStorage.getItem(SHIPPING_STORAGE_KEY))
-    }
-
     return { countries: [] }
   } catch {
     return { countries: [] }
