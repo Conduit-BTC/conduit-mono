@@ -141,6 +141,26 @@ bun test                 # Run tests
 bun run clean            # Remove all node_modules
 ```
 
+### Token-Efficient Shell Commands
+
+When `rtk` is installed on the machine, prefer it for noisy inspection and verification commands to keep agent sessions compact:
+
+```bash
+rtk git status
+rtk git diff
+rtk gh pr list --repo Conduit-BTC/conduit-mono
+rtk gh pr view <number> --repo Conduit-BTC/conduit-mono
+rtk read <path>
+rtk grep "<pattern>" .
+rtk find "<pattern>" .
+rtk err bun run typecheck
+rtk err bun run lint
+rtk test bun test
+rtk gain
+```
+
+Use the normal command directly when exact raw output is required, or `rtk proxy <command>` when you want raw output with RTK tracking.
+
 ### Local Dev Ports
 
 When agents start local app servers, prefer the 7000 port range so the repo has stable, predictable URLs:
