@@ -107,7 +107,12 @@ export async function payCheckoutInvoice(
         )
       }
 
-      failures.push(result.reason)
+      const diagnostic = classifyNwcPaymentError(
+        result.reason,
+        input.walletConnection
+      )
+      diagnostics.push(diagnostic)
+      failures.push(`${diagnostic.title}: ${diagnostic.action}`)
     }
   }
 
