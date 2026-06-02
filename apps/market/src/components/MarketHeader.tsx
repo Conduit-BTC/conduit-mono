@@ -82,7 +82,7 @@ function Logo({
         fetchPriority={variant === "full" ? "high" : "auto"}
         className={cn("shrink-0 object-contain", logo.className)}
       />
-      <span className="hidden border-l border-[var(--border)] pl-3 font-display text-2xl font-medium tracking-tight text-[var(--text-primary)] md:block">
+      <span className="border-l border-[var(--border)] pl-3 font-display text-2xl font-medium tracking-tight text-[var(--text-primary)]">
         market
       </span>
     </Link>
@@ -340,7 +340,7 @@ export function MarketHeader() {
             <Button
               asChild
               variant="ghost"
-              className="hidden h-10 px-3 lg:inline-flex"
+              className="hidden h-10 px-3 md:inline-flex"
             >
               <Link
                 to="/messages"
@@ -356,7 +356,7 @@ export function MarketHeader() {
             <Button
               asChild
               variant="ghost"
-              className="hidden h-10 px-3 lg:inline-flex"
+              className="hidden h-10 px-3 md:inline-flex"
             >
               <Link
                 to="/orders"
@@ -372,7 +372,7 @@ export function MarketHeader() {
             asChild
             variant={pathname === "/cart" ? "muted" : "ghost"}
             size="sm"
-            className="h-10 px-2.5 text-xs sm:px-3 sm:text-sm"
+            className="hidden h-10 px-2.5 text-xs sm:inline-flex sm:px-3 sm:text-sm"
           >
             <Link to="/cart">
               <ShoppingCart className="h-3.5 w-3.5" />
@@ -383,11 +383,17 @@ export function MarketHeader() {
             </Link>
           </Button>
 
-          <div className="hidden min-w-[7rem] items-center justify-end lg:flex">
-            {status === "connected" && pubkey ? <UserMenu /> : <SignerSwitch />}
-          </div>
+          {status === "connected" && pubkey ? (
+            <div className="hidden min-w-[7rem] items-center justify-end md:flex">
+              <UserMenu />
+            </div>
+          ) : (
+            <div className="flex shrink-0 items-center justify-end">
+              <SignerSwitch />
+            </div>
+          )}
 
-          <div className="lg:hidden">
+          <div className="md:hidden">
             <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
               <SheetTrigger asChild>
                 <button
