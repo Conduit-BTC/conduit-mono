@@ -134,7 +134,7 @@ function CategoryFacetButton({
       onClick={onToggle}
       aria-pressed={option.selected}
       className={[
-        "inline-flex min-w-0 items-center rounded-full border px-3 py-2 text-left text-sm font-medium capitalize transition-colors",
+        "inline-flex min-w-0 max-w-full items-center rounded-full border px-3 py-2 text-left text-sm font-medium capitalize transition-colors",
         option.selected
           ? "border-primary-500/70 bg-primary-500 font-semibold text-white shadow-[0_12px_28px_color-mix(in_srgb,var(--primary-500)_24%,transparent)]"
           : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
@@ -451,8 +451,8 @@ function StorefrontPage() {
       <section className="max-w-full overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)]">
         <div className="relative px-5 py-6 sm:px-6 sm:py-7">
           <div className="relative space-y-5">
-            <div className="flex flex-wrap items-start gap-x-6 gap-y-5">
-              <div className="flex min-w-[min(100%,42rem)] flex-[1_1_42rem] items-start gap-3 sm:gap-4">
+            <div className="flex min-w-0 flex-wrap items-start gap-x-6 gap-y-5">
+              <div className="flex min-w-0 flex-1 basis-full items-start gap-3 sm:basis-[28rem] sm:gap-4 lg:basis-[34rem]">
                 <Avatar className="h-20 w-20 shrink-0 self-start border border-[var(--border)] shadow-[var(--shadow-lg)] sm:h-28 sm:w-28">
                   <AvatarImage
                     src={profile?.picture}
@@ -467,13 +467,13 @@ function StorefrontPage() {
                 <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 items-center gap-2">
                     {merchantIdentityPending ? (
-                      <h1 className="min-w-0 truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
+                      <h1 className="min-w-0 max-w-full truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
                         <span className="inline-block max-w-full animate-pulse truncate pb-1 leading-[1.16]">
                           {merchantName}
                         </span>
                       </h1>
                     ) : (
-                      <h1 className="min-w-0 truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
+                      <h1 className="min-w-0 max-w-full truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
                         {merchantName}
                       </h1>
                     )}
@@ -509,7 +509,7 @@ function StorefrontPage() {
                 </div>
               </div>
 
-              <div className="ml-auto flex min-w-0 max-w-full flex-[0_1_auto] flex-wrap items-center justify-end gap-3">
+              <div className="flex w-full min-w-0 max-w-full flex-wrap items-center justify-start gap-3 sm:ml-auto sm:w-auto sm:justify-end">
                 <Button
                   variant="outline"
                   className="h-11 max-w-full shrink-0 border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]"
