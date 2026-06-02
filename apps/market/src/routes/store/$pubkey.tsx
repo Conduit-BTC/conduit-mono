@@ -142,7 +142,12 @@ function CategoryFacetButton({
       ].join(" ")}
     >
       <span className="min-w-0 truncate">{option.label}</span>
-      <span className="ml-1.5 shrink-0 self-center text-[0.82em] font-medium leading-none tabular-nums text-[var(--text-muted)]">
+      <span
+        className={[
+          "ml-1.5 shrink-0 self-center text-[0.82em] font-medium leading-none tabular-nums",
+          option.selected ? "text-white/80" : "text-[var(--text-muted)]",
+        ].join(" ")}
+      >
         [{option.count}]
       </span>
     </button>

@@ -44,6 +44,17 @@ const headerActionClassName =
 const accountControlClassName =
   "inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-2xl bg-primary-500 px-3 text-sm font-semibold text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
 
+function accountMenuItemClassName(
+  variant: "default" | "danger" = "default"
+): string {
+  return cn(
+    "min-h-11 cursor-pointer rounded-xl px-3 py-2 text-[15px] font-medium",
+    variant === "danger"
+      ? "text-[var(--error)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error)]"
+      : "text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_6%,transparent)] focus:text-[var(--text-primary)]"
+  )
+}
+
 function Logo() {
   return (
     <Link to="/" className="flex shrink-0 select-none items-center gap-2">
@@ -123,12 +134,7 @@ function AccountMenuItem({
   return (
     <DropdownMenuItem
       onSelect={onSelect}
-      className={cn(
-        "min-h-11 cursor-pointer rounded-xl px-3 py-2 text-[15px] font-medium",
-        variant === "danger"
-          ? "text-[var(--error)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error)]"
-          : "text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_6%,transparent)] focus:text-[var(--text-primary)]"
-      )}
+      className={accountMenuItemClassName(variant)}
     >
       <span className="mr-3 inline-flex size-5 shrink-0 items-center justify-center">
         {icon}
@@ -145,6 +151,38 @@ function AccountMenuItem({
   )
 }
 
+function AccountMenuLink({
+  icon,
+  label,
+  detail,
+  to,
+  onClick,
+}: {
+  icon: ReactNode
+  label: string
+  detail?: string
+  to: "/profile" | "/network" | "/wallet"
+  onClick: () => void
+}) {
+  return (
+    <DropdownMenuItem asChild className={accountMenuItemClassName()}>
+      <Link to={to} onClick={onClick}>
+        <span className="mr-3 inline-flex size-5 shrink-0 items-center justify-center">
+          {icon}
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate">{label}</span>
+          {detail ? (
+            <span className="block truncate text-[10px] font-medium text-[var(--text-muted)]">
+              {detail}
+            </span>
+          ) : null}
+        </span>
+      </Link>
+    </DropdownMenuItem>
+  )
+}
+
 function AccountControl({
   connected,
   displayName,
@@ -152,9 +190,6 @@ function AccountControl({
   walletStatusLabel,
   authPending,
   onConnect,
-  onProfile,
-  onNetwork,
-  onWallet,
   onDisconnect,
 }: {
   connected: boolean
@@ -163,9 +198,6 @@ function AccountControl({
   walletStatusLabel?: string
   authPending: boolean
   onConnect: () => void
-  onProfile: () => void
-  onNetwork: () => void
-  onWallet: () => void
   onDisconnect: () => void
 }) {
   const [open, setOpen] = useState(false)
@@ -215,30 +247,24 @@ function AccountControl({
         sideOffset={10}
         className="w-[14rem] rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-overlay)] p-3 shadow-[var(--shadow-dialog)]"
       >
-        <AccountMenuItem
+        <AccountMenuLink
           icon={<CircleUser className="size-4" />}
           label="Profile"
-          onSelect={() => {
-            setOpen(false)
-            onProfile()
-          }}
+          to="/profile"
+          onClick={() => setOpen(false)}
         />
-        <AccountMenuItem
+        <AccountMenuLink
           icon={<Radio className="size-4" />}
           label="Network"
-          onSelect={() => {
-            setOpen(false)
-            onNetwork()
-          }}
+          to="/network"
+          onClick={() => setOpen(false)}
         />
-        <AccountMenuItem
+        <AccountMenuLink
           icon={<Wallet className="size-4" />}
           label="Wallet"
           detail={walletStatusLabel}
-          onSelect={() => {
-            setOpen(false)
-            onWallet()
-          }}
+          to="/wallet"
+          onClick={() => setOpen(false)}
         />
         <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
         <AccountMenuItem
@@ -521,9 +547,6 @@ export function MarketHeader() {
             walletStatusLabel={walletStatusLabel}
             authPending={authPending}
             onConnect={() => setConnectOpen(true)}
-            onProfile={() => void navigate({ to: "/profile" })}
-            onNetwork={() => void navigate({ to: "/network" })}
-            onWallet={() => void navigate({ to: "/wallet" })}
             onDisconnect={disconnect}
           />
         </div>
