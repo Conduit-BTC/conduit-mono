@@ -226,6 +226,50 @@ describe("commerce gateway", () => {
     expect(result.data).toHaveLength(0)
   })
 
+  it("lets storefront reads skip broad deletion fallback for faster first paint", async () => {
+    const merchantPubkey = "merchant"
+    const productEvent = makeProductEvent({
+      pubkey: merchantPubkey,
+      dTag: "live-item",
+      id: "event-live",
+      createdAt: 100,
+      title: "Live Item",
+    })
+    const deletionFilters: Array<Record<string, unknown>> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          return [productEvent as never]
+        }
+
+        if (filter.kinds?.includes(EVENT_KINDS.DELETION)) {
+          deletionFilters.push(filter as Record<string, unknown>)
+        }
+
+        return []
+      },
+    })
+
+    const result = await getMerchantStorefront({
+      merchantPubkey,
+      limit: 10,
+      deletionReadPolicy: {
+        maxRelays: 4,
+        connectTimeoutMs: 250,
+        fetchTimeoutMs: 500,
+      },
+      deletionFallbackWhenEmpty: false,
+    })
+
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.product.title).toBe("Live Item")
+    expect(deletionFilters).toHaveLength(2)
+    expect(
+      deletionFilters.every((filter) => "#e" in filter || "#a" in filter)
+    ).toBe(true)
+  })
+
   it("does not let an empty merchant live read blank cached products", async () => {
     cachedProducts.push({
       id: "30402:merchant:cached-item",
