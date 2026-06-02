@@ -22,6 +22,7 @@ import {
   parseShippingConfig,
   saveShippingConfig,
   shippingOptionToConfig,
+  selectConduitShippingOption,
   isPaymentsComplete,
   isProfileComplete,
   isShippingComplete,
@@ -153,7 +154,7 @@ export function useMerchantReadiness() {
     staleTime: 60_000,
   })
   const remoteShippingConfig = useMemo(() => {
-    const latest = remoteShippingQuery.data?.[0]
+    const latest = selectConduitShippingOption(remoteShippingQuery.data)
     return latest ? shippingOptionToConfig(latest) : null
   }, [remoteShippingQuery.data])
   const remoteShippingComplete = remoteShippingConfig

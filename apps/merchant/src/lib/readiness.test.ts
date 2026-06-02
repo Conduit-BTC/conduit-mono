@@ -1,5 +1,6 @@
 import {
   createDefaultRelaySettings,
+  type ParsedShippingOption,
   type Profile,
   type RelaySettingsState,
 } from "@conduit/core"
@@ -11,6 +12,7 @@ import {
   loadShippingConfig,
   parseShippingConfig,
   parseStoredNwcConnection,
+  selectConduitShippingOption,
   serializeShippingConfig,
   shippingOptionToConfig,
 } from "./readiness"
@@ -174,6 +176,48 @@ test("maps published shipping options back into readiness config", () => {
       },
     ],
   })
+})
+
+test("selects the Conduit default shipping option before other published options", () => {
+  const customOption = {
+    id: "30406:merchant:custom-zone",
+    pubkey: "merchant",
+    dTag: "custom-zone",
+    title: "Custom zone",
+    currency: "USD",
+    price: 0,
+    countries: ["CA"],
+    countryRules: [
+      {
+        code: "CA",
+        name: "CA",
+        restrictTo: [],
+        exclude: [],
+      },
+    ],
+    service: "standard",
+    createdAt: 2,
+  } satisfies ParsedShippingOption
+  const conduitOption = {
+    ...customOption,
+    id: "30406:merchant:conduit-default",
+    dTag: "conduit-default",
+    countries: ["US"],
+    countryRules: [
+      {
+        code: "US",
+        name: "US",
+        restrictTo: [],
+        exclude: [],
+      },
+    ],
+  } satisfies ParsedShippingOption
+
+  expect(selectConduitShippingOption([customOption, conduitOption])).toBe(
+    conduitOption
+  )
+  expect(selectConduitShippingOption([customOption])).toBe(customOption)
+  expect(selectConduitShippingOption([])).toBe(null)
 })
 
 describe("merchant setup readiness", () => {

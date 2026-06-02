@@ -5,6 +5,7 @@
  * helpers to compute readiness state from profile / localStorage data.
  */
 import {
+  CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   SHIPPING_COUNTRIES,
   isRelaySetupIncomplete,
   isValidLud16Address,
@@ -305,6 +306,19 @@ export function shippingOptionToConfig(
       }
     }),
   }
+}
+
+export function selectConduitShippingOption(
+  options: readonly ParsedShippingOption[] | null | undefined
+): ParsedShippingOption | null {
+  if (!options || options.length === 0) return null
+  return (
+    options.find(
+      (option) => option.dTag === CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG
+    ) ??
+    options[0] ??
+    null
+  )
 }
 
 export function serializeShippingConfig(config: ShippingConfig): string {

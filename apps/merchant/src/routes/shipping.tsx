@@ -17,6 +17,7 @@ import {
   isShippingComplete,
   serializeShippingConfig,
   shippingOptionToConfig,
+  selectConduitShippingOption,
   type ShippingConfig,
   type ShippingCountryConfig,
 } from "../lib/readiness"
@@ -309,7 +310,7 @@ function ShippingPage() {
   useEffect(() => {
     if (config.countries.length > 0) return
     if (hasUnsavedChanges) return
-    const latest = remoteShippingQuery.data?.[0]
+    const latest = selectConduitShippingOption(remoteShippingQuery.data)
     if (!latest) return
 
     const remoteConfig = shippingOptionToConfig(latest)
