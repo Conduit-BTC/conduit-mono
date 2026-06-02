@@ -1,7 +1,9 @@
 import {
+  classifyNwcPaymentError,
   hasWebLN,
   weblnSendPayment,
   type ConduitAppId,
+  type NwcDiagnostic,
   type NwcConnection,
 } from "@conduit/core"
 import {
@@ -22,6 +24,7 @@ export type CheckoutInvoicePaymentResult =
   | {
       status: "manual_required"
       reason: string
+      diagnostics?: NwcDiagnostic[]
     }
 
 type PaymentRailDependencies = {
@@ -66,36 +69,51 @@ export async function payCheckoutInvoice(
   dependencies: PaymentRailDependencies = defaultDependencies
 ): Promise<CheckoutInvoicePaymentResult> {
   const failures: string[] = []
+  const diagnostics: NwcDiagnostic[] = []
 
   if (input.walletConnection && input.tryNwc) {
-    const result = await dependencies.nwcSessionPayInvoice(
-      input.walletConnection,
-      {
+    let result: NwcSessionPaymentResult | null = null
+    try {
+      result = await dependencies.nwcSessionPayInvoice(input.walletConnection, {
         invoice: input.invoice,
         amountMsats: input.amountMsats,
         timeoutMs: input.timeoutMs,
         appId: input.appId,
         metadata: input.metadata,
+      })
+    } catch (error) {
+      const diagnostic = classifyNwcPaymentError(error, input.walletConnection)
+      if (!diagnostic.safeManualFallback) {
+        throw new Error(`${diagnostic.detail} ${diagnostic.action}`)
       }
-    )
-
-    if (result.status === "paid") {
-      return {
-        status: "paid",
-        rail: "nwc",
-        preimage: result.preimage,
-        paymentHash: result.paymentHash,
-        feeMsats: result.feeMsats,
-      }
+      diagnostics.push(diagnostic)
+      failures.push(`${diagnostic.title}: ${diagnostic.action}`)
     }
 
-    if (!isNwcPrePublishFailure(result)) {
-      throw new Error(
-        `${result.reason} Check your wallet before trying another payment path.`
+    if (result) {
+      if (result.status === "paid") {
+        return {
+          status: "paid",
+          rail: "nwc",
+          preimage: result.preimage,
+          paymentHash: result.paymentHash,
+          feeMsats: result.feeMsats,
+        }
+      }
+
+      if (!isNwcPrePublishFailure(result)) {
+        throw new Error(
+          `${result.reason} Check your wallet before trying another payment path.`
+        )
+      }
+
+      const diagnostic = classifyNwcPaymentError(
+        result.reason,
+        input.walletConnection
       )
+      diagnostics.push(diagnostic)
+      failures.push(`${diagnostic.title}: ${diagnostic.action}`)
     }
-
-    failures.push(result.reason)
   }
 
   if (dependencies.hasWebLN()) {
@@ -127,5 +145,6 @@ export async function payCheckoutInvoice(
       failures.length > 0
         ? failures.join(" ")
         : "No automatic Lightning payment rail is currently available.",
+    ...(diagnostics.length > 0 && { diagnostics }),
   }
 }

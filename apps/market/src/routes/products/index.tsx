@@ -106,47 +106,12 @@ function FilterRemoveButton({
 function CatalogSourceControl({
   catalogSource,
   connected,
-  fallbackAuthorCount,
-  firstDegreeAuthorCount,
-  followLookupStatus,
   onSelect,
 }: {
   catalogSource: ProductCatalogSourceMode
   connected: boolean
-  fallbackAuthorCount: number
-  firstDegreeAuthorCount: number
-  followLookupStatus: "idle" | "loading" | "ready" | "error"
   onSelect: (source: ProductCatalogSourceMode) => void
 }) {
-  const statusContent = (() => {
-    if (!connected) {
-      return "Conduit list"
-    }
-
-    if (followLookupStatus === "loading") {
-      return (
-        <>
-          <LoaderCircle className="size-3 animate-spin text-secondary-300" />
-          Loading follows
-        </>
-      )
-    }
-
-    if (followLookupStatus === "error") {
-      return "Using Conduit fallback"
-    }
-
-    if (catalogSource === "conduit") {
-      return `${fallbackAuthorCount} Conduit stores`
-    }
-
-    if (firstDegreeAuthorCount > 0) {
-      return `${firstDegreeAuthorCount} followed stores`
-    }
-
-    return "No followed stores yet"
-  })()
-
   return (
     <section className="flex min-h-10 flex-col gap-2 text-xs sm:flex-row sm:items-center">
       <div className="shrink-0 font-medium uppercase tracking-wider text-[var(--text-muted)]">
@@ -176,12 +141,6 @@ function CatalogSourceControl({
               </button>
             )
           })}
-        </div>
-        <div
-          className="inline-flex min-h-7 items-center gap-1.5 font-medium text-[var(--text-muted)]"
-          aria-live="polite"
-        >
-          {statusContent}
         </div>
       </div>
     </section>
@@ -409,9 +368,6 @@ function ProductsPage() {
       <CatalogSourceControl
         catalogSource={catalogSource}
         connected={connected}
-        fallbackAuthorCount={productsQuery.fallbackAuthorCount}
-        firstDegreeAuthorCount={productsQuery.firstDegreeAuthorCount}
-        followLookupStatus={productsQuery.followLookupStatus}
         onSelect={(source) =>
           updateSearch({
             source: source === "combined" ? undefined : source,
@@ -671,7 +627,7 @@ function ProductsPage() {
 
       {/* Loading */}
       {productsQuery.isInitialLoading && (
-        <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-4">
+        <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
           {Array.from({ length: PAGE_SIZE }).map((_, idx) => (
             <li key={idx} className="h-full">
               <ProductGridCardSkeleton />
@@ -726,7 +682,7 @@ function ProductsPage() {
 
       {/* Product grid */}
       {productCards.length > 0 && (
-        <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-4">
+        <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
           {productCards.map(({ product, merchant }, index) => {
             return (
               <li key={product.id} className="h-full">

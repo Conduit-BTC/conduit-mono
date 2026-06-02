@@ -104,6 +104,9 @@ export interface MerchantStorefrontQuery {
   limit?: number
   cursor?: string
   includeMarketHidden?: boolean
+  readPolicy?: CommerceReadPolicy
+  deletionReadPolicy?: CommerceReadPolicy
+  deletionFallbackWhenEmpty?: boolean
 }
 
 export interface ProductDetailQuery {
@@ -924,7 +927,11 @@ function collectProductAddresses(events: NDKEvent[]): string[] {
 async function fetchDeletionTimestamps(
   merchantPubkey: string,
   productEventIds: string[],
-  productAddresses: string[]
+  productAddresses: string[],
+  options: {
+    readPolicy?: CommerceReadPolicy
+    fallbackWhenEmpty?: boolean
+  } = {}
 ): Promise<DeletionTimestamps> {
   const byEventId = new Map<string, number>()
   const byAddressId = new Map<string, number>()
@@ -951,28 +958,26 @@ async function fetchDeletionTimestamps(
   const deletionRelayUrls = await planCommerceReadRelays({
     intent: "author_products",
     authors: [merchantPubkey],
+    maxRelays: options.readPolicy?.maxRelays,
   })
+  const fanoutOptions = {
+    relayUrls: deletionRelayUrls,
+    connectTimeoutMs: options.readPolicy?.connectTimeoutMs ?? 4_000,
+    fetchTimeoutMs: options.readPolicy?.fetchTimeoutMs ?? 10_000,
+  }
   for (const filter of filters) {
-    const fetched = await runFetchEventsFanout(filter, {
-      relayUrls: deletionRelayUrls,
-      connectTimeoutMs: 4_000,
-      fetchTimeoutMs: 10_000,
-    })
+    const fetched = await runFetchEventsFanout(filter, fanoutOptions)
     deletionEvents.push(...fetched)
   }
 
-  if (deletionEvents.length === 0) {
+  if (deletionEvents.length === 0 && options.fallbackWhenEmpty !== false) {
     const fallback = await runFetchEventsFanout(
       {
         kinds: [EVENT_KINDS.DELETION],
         authors: [merchantPubkey],
         limit: 300,
       },
-      {
-        relayUrls: deletionRelayUrls,
-        connectTimeoutMs: 4_000,
-        fetchTimeoutMs: 10_000,
-      }
+      fanoutOptions
     )
     deletionEvents.push(...fallback)
   }
@@ -1439,8 +1444,8 @@ export async function getMerchantStorefront(
 
     const rawEvents = await runFetchEventsFanout(productFilter, {
       relayUrls,
-      connectTimeoutMs: 4_000,
-      fetchTimeoutMs: 10_000,
+      connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
+      fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 10_000,
     })
 
     const deletionTimestamps = await fetchDeletionTimestamps(
@@ -1449,7 +1454,11 @@ export async function getMerchantStorefront(
       uniqueStrings([
         ...collectProductAddresses(rawEvents),
         ...cached.map((record) => record.addressId),
-      ])
+      ]),
+      {
+        readPolicy: query.deletionReadPolicy,
+        fallbackWhenEmpty: query.deletionFallbackWhenEmpty,
+      }
     )
 
     const liveRecords = dedupeProductEvents(rawEvents, deletionTimestamps, {

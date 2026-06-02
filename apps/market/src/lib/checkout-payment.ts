@@ -10,6 +10,7 @@ import {
   normalizeCommercePrice,
   type FetchZapInvoiceResult,
   type BtcUsdRateQuote,
+  type NwcDiagnostic,
   type PricingRateInput,
   type SourcePriceQuote,
 } from "@conduit/core"
@@ -320,6 +321,7 @@ export type PendingCheckoutManualInvoice = {
   zapRequestId?: string
   reason: string
   deliveryNotice: string | null
+  diagnostics?: NwcDiagnostic[]
 }
 
 export function buildPendingCheckoutManualInvoice(
