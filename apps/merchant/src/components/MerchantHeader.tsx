@@ -90,7 +90,7 @@ type MerchantResourceLink = {
 
 const merchantResourceLinks: readonly MerchantResourceLink[] = [
   {
-    label: "Conduit home",
+    label: "conduit.market",
     href: "https://conduit.market/",
     icon: ExternalLink,
   },
