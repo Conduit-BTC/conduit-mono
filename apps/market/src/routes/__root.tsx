@@ -17,9 +17,9 @@ export const Route = createRootRoute({
 
 function RootShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex min-h-screen flex-col pb-24 sm:pb-16">
+    <div className="flex min-h-screen min-w-0 flex-col overflow-x-hidden pb-24 sm:pb-16">
       <MarketHeader />
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-12 pt-6">
+      <main className="mx-auto min-w-0 w-full max-w-7xl flex-1 px-4 pb-12 pt-6">
         {children}
       </main>
       <LegalFooter />

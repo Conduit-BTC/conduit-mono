@@ -33,9 +33,14 @@ export function useGuestMarketDiscovery(input: {
   useEffect(() => {
     const pubkeys = followRefreshQuery.data?.data
     if (!pubkeys || pubkeys.length === 0) return
-    storeDefaultMarketPerspectiveFollowPubkeys(pubkeys)
-    setGuestFollowPubkeys(pubkeys)
-  }, [followRefreshQuery.data?.data])
+    const acceptedPubkeys = storeDefaultMarketPerspectiveFollowPubkeys(
+      pubkeys,
+      undefined,
+      { previousPubkeys: guestFollowPubkeys }
+    )
+    if (!acceptedPubkeys) return
+    setGuestFollowPubkeys(acceptedPubkeys)
+  }, [followRefreshQuery.data?.data, guestFollowPubkeys])
 
   return {
     usesGuestMarket: input.enabled,

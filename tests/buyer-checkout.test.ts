@@ -840,6 +840,43 @@ describe("payCheckoutInvoice", () => {
     })
   })
 
+  it("returns sanitized NWC diagnostics when relay failure falls back to manual invoice", async () => {
+    const result = await payCheckoutInvoice(
+      {
+        invoice: "lnbc1test",
+        amountMsats: 1000,
+        walletConnection: connection,
+        tryNwc: true,
+        timeoutMs: 60_000,
+        appId: "market",
+      },
+      {
+        nwcSessionPayInvoice: mock(async () => ({
+          status: "pre_publish_failed" as const,
+          phase: "before_publish" as const,
+          reason: "Failed to connect to NWC relay(s).",
+        })) as never,
+        hasWebLN: () => false,
+        weblnSendPayment: mock(async () => {
+          throw new Error("should not use WebLN")
+        }) as never,
+      }
+    )
+
+    expect(result).toMatchObject({
+      status: "manual_required",
+      diagnostics: [
+        {
+          code: "relay_unreachable",
+          relayHosts: ["relay.example.com"],
+          safeManualFallback: true,
+        },
+      ],
+    })
+    expect(result.reason).toContain("NWC relay unreachable")
+    expect(result.reason).not.toContain(connection.secret)
+  })
+
   it("does not fall back after an ambiguous NWC request failure", async () => {
     const weblnPay = mock(async () => ({
       preimage: "should-not-pay",
@@ -962,6 +999,35 @@ describe("shipping destination eligibility", () => {
           ["d", "conduit-default"],
           ["price", "Infinity", "SATS"],
           ["country", "US"],
+        ],
+      })
+    ).toBeNull()
+  })
+
+  it("parses empty replacement shipping options as no destinations", () => {
+    const parsed = parseShippingOptionEvent({
+      id: "shipping-event",
+      pubkey: FAKE_PUBKEY,
+      created_at: 2,
+      tags: [["d", "conduit-default"], ["price", "0", "SATS"], ["country"]],
+    })
+
+    expect(parsed).toMatchObject({
+      countries: [],
+      countryRules: [],
+      dTag: "conduit-default",
+    })
+  })
+
+  it("ignores empty non-default shipping options", () => {
+    expect(
+      parseShippingOptionEvent({
+        id: "shipping-event",
+        pubkey: FAKE_PUBKEY,
+        created_at: 2,
+        tags: [
+          ["d", "custom-option"],
+          ["price", "0", "SATS"],
         ],
       })
     ).toBeNull()

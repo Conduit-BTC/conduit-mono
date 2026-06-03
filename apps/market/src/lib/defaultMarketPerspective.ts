@@ -5,6 +5,8 @@ export const DEFAULT_MARKET_PERSPECTIVE_PUBKEY =
   "9d92077c5e35af76f7b1cd84738000b7bafb43d20b0a26c18fe29fa838d27146"
 
 export const DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT = 1776654859
+export const DEFAULT_MARKET_PERSPECTIVE_MIN_REFRESH_FOLLOWS = 25
+export const DEFAULT_MARKET_PERSPECTIVE_MIN_REFRESH_RETENTION = 0.1
 
 const DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS_RAW = `
 c4eabae1be3cf657bc1855ee05e69de9f059cb7a059227168b80b89761cbc4e0 088436cd039ff89074468fd327facf62784eeb37490e0a118ab9f14c9d2646cc 787338757fc25d65cd929394d5e7713cf43638e8d259e8dcf5c73b834eb851f2 ef151c7a380f40a75d7d1493ac347b6777a9d9b5fa0aa3cddb47fc78fab69a8b 99bb5591c9116600f845107d31f9b59e2f7c7e09a1ff802e84f1d43da557ca64 58937958036cede955b25b9295838140ba2deacb8d1939ed91a41be2545e6994 9267545d2917b80f707ffdb44a8ff979182568ef7baa04ee756b1f01d4e3688a 725f8be0246fb6f730dabb747372b25814cae667bc5864ab1d97d89aadd267ef 7e0c255fd3d0f9b48789a944baf19bf42c205a9c55199805eb13573b32137488 04c915daefee38317fa734444acee390a8269fe5810b2241e5e6dd343dfbecc9
@@ -39,6 +41,7 @@ export const DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS =
   DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS_RAW.trim().split(/\s+/)
 
 const CACHE_KEY = "conduit.market.defaultPerspectiveFollows.v1"
+const HEX_PUBKEY = /^[0-9a-f]{64}$/i
 
 type CachedDefaultPerspectiveFollows = {
   createdAt: number
@@ -57,6 +60,41 @@ function isValidCachedFollows(
   )
 }
 
+function normalizeFollowPubkeys(pubkeys: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const normalized: string[] = []
+
+  for (const pubkey of pubkeys) {
+    const value = pubkey.trim().toLowerCase()
+    if (!HEX_PUBKEY.test(value) || seen.has(value)) continue
+    seen.add(value)
+    normalized.push(value)
+  }
+
+  return normalized
+}
+
+export function getDefaultMarketPerspectiveRefreshThreshold(
+  previousPubkeys: readonly string[] = DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS
+): number {
+  const previousCount = normalizeFollowPubkeys(previousPubkeys).length
+  return Math.max(
+    DEFAULT_MARKET_PERSPECTIVE_MIN_REFRESH_FOLLOWS,
+    Math.ceil(previousCount * DEFAULT_MARKET_PERSPECTIVE_MIN_REFRESH_RETENTION)
+  )
+}
+
+export function resolveSafeDefaultMarketPerspectiveFollowRefresh(
+  pubkeys: readonly string[],
+  previousPubkeys: readonly string[] = DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS
+): string[] | null {
+  const normalized = normalizeFollowPubkeys(pubkeys)
+  const minimumCount =
+    getDefaultMarketPerspectiveRefreshThreshold(previousPubkeys)
+
+  return normalized.length >= minimumCount ? normalized : null
+}
+
 export function getDefaultMarketPerspectiveFollowPubkeys(): string[] {
   if (typeof window === "undefined") {
     return DEFAULT_MARKET_PERSPECTIVE_FOLLOW_PUBKEYS
@@ -71,7 +109,9 @@ export function getDefaultMarketPerspectiveFollowPubkeys(): string[] {
       parsed.createdAt >= DEFAULT_MARKET_PERSPECTIVE_FOLLOWS_CREATED_AT &&
       parsed.pubkeys.length > 0
     ) {
-      return parsed.pubkeys
+      const safeCachedPubkeys =
+        resolveSafeDefaultMarketPerspectiveFollowRefresh(parsed.pubkeys)
+      if (safeCachedPubkeys) return safeCachedPubkeys
     }
   } catch {
     // Seed remains the cold-start fallback.
@@ -82,16 +122,25 @@ export function getDefaultMarketPerspectiveFollowPubkeys(): string[] {
 
 export function storeDefaultMarketPerspectiveFollowPubkeys(
   pubkeys: string[],
-  createdAt = Math.floor(Date.now() / 1000)
-): void {
-  if (typeof window === "undefined" || pubkeys.length === 0) return
+  createdAt = Math.floor(Date.now() / 1000),
+  options: { previousPubkeys?: readonly string[] } = {}
+): string[] | null {
+  const safePubkeys = resolveSafeDefaultMarketPerspectiveFollowRefresh(
+    pubkeys,
+    options.previousPubkeys
+  )
+  if (!safePubkeys) return null
+
+  if (typeof window === "undefined") return safePubkeys
 
   try {
     window.localStorage.setItem(
       CACHE_KEY,
-      JSON.stringify({ createdAt, pubkeys })
+      JSON.stringify({ createdAt, pubkeys: safePubkeys })
     )
   } catch {
     // Anonymous discovery still works from the bundled seed.
   }
+
+  return safePubkeys
 }

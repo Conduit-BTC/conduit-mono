@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it } from "bun:test"
 
 import {
   __nwcTestInternals,
+  classifyNwcPaymentError,
+  getNwcConnectionDiagnostics,
+  getNwcRelayDiagnostics,
   nwcGetInfo,
   nwcMakeInvoice,
   nwcPayInvoice,
@@ -108,6 +111,86 @@ describe("NWC URI parsing", () => {
         )}`
       )
     ).toThrow("missing secret")
+  })
+})
+
+describe("NWC diagnostics", () => {
+  it("classifies localhost and non-wss relays without exposing secrets", () => {
+    const diagnostics = getNwcRelayDiagnostics({
+      relays: ["ws://localhost:8080/nwc", "wss://192.168.1.4/relay"],
+    })
+
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "non_wss_relay",
+      "private_relay",
+      "private_relay",
+    ])
+    expect(
+      diagnostics.flatMap((diagnostic) => diagnostic.relayHosts ?? [])
+    ).toEqual(["localhost:8080", "localhost:8080", "192.168.1.4"])
+  })
+
+  it("classifies unsupported pay_invoice capability", () => {
+    const diagnostics = getNwcConnectionDiagnostics({
+      connection,
+      info: { methods: ["get_balance"] },
+      status: "unsupported",
+    })
+
+    expect(diagnostics.some((d) => d.code === "unsupported_pay_invoice")).toBe(
+      true
+    )
+  })
+
+  it("uses connection-specific diagnostics for unreachable saved wallets", () => {
+    const diagnostics = getNwcConnectionDiagnostics({
+      connection,
+      info: null,
+      status: "unreachable",
+      error: "NWC get_info timed out after 10000ms",
+    })
+
+    expect(diagnostics).toMatchObject([
+      {
+        code: "relay_unreachable",
+        detail:
+          "Conduit could not confirm this wallet connection through its NWC relay.",
+        relayHosts: ["wallet.example"],
+        safeManualFallback: true,
+      },
+    ])
+    expect(diagnostics[0]?.title).not.toContain("payment")
+  })
+
+  it("marks relay failures as safe for manual invoice fallback", () => {
+    const diagnostic = classifyNwcPaymentError(
+      new Error("Failed to connect to NWC relay(s)"),
+      connection
+    )
+
+    expect(diagnostic.code).toBe("relay_unreachable")
+    expect(diagnostic.safeManualFallback).toBe(true)
+    expect(diagnostic.relayHosts).toEqual(["wallet.example"])
+  })
+
+  it("marks payment timeouts as ambiguous to avoid duplicate payment prompts", () => {
+    const diagnostic = classifyNwcPaymentError(
+      new Error("NWC pay_invoice response timed out"),
+      connection
+    )
+
+    expect(diagnostic.code).toBe("ambiguous_timeout")
+    expect(diagnostic.safeManualFallback).toBe(false)
+  })
+
+  it("classifies unsupported pay_invoice payment failures as safe fallback", () => {
+    const diagnostic = classifyNwcPaymentError(
+      new Error("Saved wallet does not support outgoing payments via NWC."),
+      connection
+    )
+
+    expect(diagnostic.code).toBe("unsupported_pay_invoice")
+    expect(diagnostic.safeManualFallback).toBe(true)
   })
 })
 

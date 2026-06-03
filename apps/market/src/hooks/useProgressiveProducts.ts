@@ -37,6 +37,11 @@ const CATALOG_COMPLETION_READ_POLICY: CommerceReadPolicy = {
   connectTimeoutMs: 4_000,
   fetchTimeoutMs: 8_000,
 }
+const STOREFRONT_DELETION_READ_POLICY: CommerceReadPolicy = {
+  maxRelays: 8,
+  connectTimeoutMs: 800,
+  fetchTimeoutMs: 1_200,
+}
 const FOLLOW_CACHE_PREFIX = "conduit.market.perspectiveFollows.v1:"
 
 type SortOption = "newest" | "price_asc" | "price_desc"
@@ -217,6 +222,8 @@ async function fetchNetworkList(
     tag: input.tag,
     sort: input.sort,
     limit: input.limit,
+    deletionReadPolicy: STOREFRONT_DELETION_READ_POLICY,
+    deletionFallbackWhenEmpty: false,
   })
 }
 
