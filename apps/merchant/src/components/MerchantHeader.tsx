@@ -6,11 +6,11 @@ import {
   CreditCard,
   ExternalLink,
   Github,
-  Grid2x2,
   LogOut,
   Menu,
   Package,
   ShoppingBag,
+  Store,
   Truck,
   UserRound,
   Wifi,
@@ -68,7 +68,7 @@ type NavItem = {
 }
 
 const mainNavItems: NavItem[] = [
-  { to: "/", label: "Home", icon: Grid2x2 },
+  { to: "/", label: "Home", icon: Store },
   { to: "/orders", label: "Orders", icon: ShoppingBag },
   { to: "/products", label: "Products", icon: Package },
 ]
