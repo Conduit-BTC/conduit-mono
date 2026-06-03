@@ -8,7 +8,6 @@ import {
   publishShippingOptions,
   useAuth,
   type CountryOption,
-  type ParsedShippingOption,
 } from "@conduit/core"
 import { Badge, Button, Combobox, Label, SignedActionStatus } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
@@ -16,6 +15,9 @@ import {
   loadShippingConfig,
   saveShippingConfig,
   isShippingComplete,
+  serializeShippingConfig,
+  shippingOptionToConfig,
+  selectConduitShippingOption,
   type ShippingConfig,
   type ShippingCountryConfig,
 } from "../lib/readiness"
@@ -48,31 +50,11 @@ function buildSummary(countries: ShippingCountryConfig[]): string {
     .join(" . ")
 }
 
-function shippingOptionToConfig(option: ParsedShippingOption): ShippingConfig {
-  return {
-    countries: option.countryRules.map((rule) => {
-      const country = SHIPPING_COUNTRIES.find(
-        (item) => item.code === rule.code.toUpperCase()
-      )
-      return {
-        code: rule.code.toUpperCase(),
-        name: country?.name ?? rule.name,
-        restrictTo: rule.restrictTo,
-        exclude: rule.exclude,
-      }
-    }),
-  }
-}
-
 type SaveState =
   | { status: "idle" }
   | { status: "saving" }
   | { status: "saved" }
   | { status: "error"; message: string }
-
-function serializeShippingConfig(config: ShippingConfig): string {
-  return JSON.stringify(config)
-}
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message
@@ -248,7 +230,9 @@ function CountrySelector({
 
 function ShippingPage() {
   const { pubkey } = useAuth()
-  const [initialConfig] = useState<ShippingConfig>(() => loadShippingConfig())
+  const [initialConfig] = useState<ShippingConfig>(() =>
+    loadShippingConfig(pubkey)
+  )
   const [config, setConfig] = useState<ShippingConfig>(initialConfig)
   const [lastSavedConfig, setLastSavedConfig] =
     useState<ShippingConfig>(initialConfig)
@@ -269,6 +253,13 @@ function ShippingPage() {
     [config, lastSavedConfig]
   )
   const isSaving = saveState.status === "saving"
+
+  useEffect(() => {
+    const storedConfig = loadShippingConfig(pubkey)
+    setConfig(storedConfig)
+    setLastSavedConfig(storedConfig)
+    setSaveState({ status: "idle" })
+  }, [pubkey])
 
   const addCountry = useCallback((country: CountryOption) => {
     setConfig((prev) => ({
@@ -307,7 +298,7 @@ function ShippingPage() {
 
     try {
       await publishShippingOptions(config, "merchant")
-      saveShippingConfig(config)
+      saveShippingConfig(config, pubkey)
       setLastSavedConfig(config)
       setSaveState({ status: "saved" })
     } catch (err: unknown) {
@@ -319,17 +310,22 @@ function ShippingPage() {
   useEffect(() => {
     if (config.countries.length > 0) return
     if (hasUnsavedChanges) return
-    const latest = remoteShippingQuery.data?.[0]
+    const latest = selectConduitShippingOption(remoteShippingQuery.data)
     if (!latest) return
 
     const remoteConfig = shippingOptionToConfig(latest)
     if (remoteConfig.countries.length === 0) return
 
     setConfig(remoteConfig)
-    saveShippingConfig(remoteConfig)
+    saveShippingConfig(remoteConfig, pubkey)
     setLastSavedConfig(remoteConfig)
     setSaveState({ status: "saved" })
-  }, [config.countries.length, hasUnsavedChanges, remoteShippingQuery.data])
+  }, [
+    config.countries.length,
+    hasUnsavedChanges,
+    pubkey,
+    remoteShippingQuery.data,
+  ])
 
   return (
     <div className="mx-auto max-w-[54rem] py-2 sm:py-6">

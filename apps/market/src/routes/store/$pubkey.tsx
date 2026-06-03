@@ -66,6 +66,7 @@ import {
 } from "../../lib/facets"
 
 type SortOption = "newest" | "price_asc" | "price_desc"
+type CategoryFacetOption = ReturnType<typeof getCategoryFacetOptions>[number]
 
 function isPriceSort(sort: SortOption | undefined): boolean {
   return sort === "price_asc" || sort === "price_desc"
@@ -116,6 +117,41 @@ function sortProducts(
     default:
       return [...products].sort((a, b) => b.createdAt - a.createdAt)
   }
+}
+
+function CategoryFacetButton({
+  option,
+  onToggle,
+  className = "",
+}: {
+  option: CategoryFacetOption
+  onToggle: () => void
+  className?: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={option.selected}
+      className={[
+        "inline-flex min-w-0 max-w-full items-center rounded-full border px-3 py-2 text-left text-sm font-medium capitalize transition-colors",
+        option.selected
+          ? "border-primary-500/70 bg-primary-500 font-semibold text-white shadow-[0_12px_28px_color-mix(in_srgb,var(--primary-500)_24%,transparent)]"
+          : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+        className,
+      ].join(" ")}
+    >
+      <span className="min-w-0 truncate">{option.label}</span>
+      <span
+        className={[
+          "ml-1.5 shrink-0 self-center text-[0.82em] font-medium leading-none tabular-nums",
+          option.selected ? "text-white/80" : "text-[var(--text-muted)]",
+        ].join(" ")}
+      >
+        [{option.count}]
+      </span>
+    </button>
+  )
 }
 
 function StorefrontPage() {
@@ -222,7 +258,6 @@ function StorefrontPage() {
     [navigate]
   )
 
-  const productCount = storeProducts.length
   const isFollowing = followOverride ?? followQuery.data === true
   const isFollowBusy = followState !== "idle"
 
@@ -407,7 +442,7 @@ function StorefrontPage() {
           Shop
         </Link>
         <span>/</span>
-        <span className="text-[var(--text-primary)]">
+        <span className="block min-w-0 max-w-full truncate text-[var(--text-primary)]">
           {merchantIdentityPending ? (
             <span className="inline-block max-w-full animate-pulse truncate align-middle">
               {merchantName}
@@ -418,12 +453,12 @@ function StorefrontPage() {
         </span>
       </div>
 
-      <section className="overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)]">
+      <section className="max-w-full overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)]">
         <div className="relative px-5 py-6 sm:px-6 sm:py-7">
           <div className="relative space-y-5">
-            <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-              <div className="flex min-w-0 items-start gap-4">
-                <Avatar className="h-24 w-24 self-start border border-[var(--border)] shadow-[var(--shadow-lg)] sm:h-28 sm:w-28">
+            <div className="flex min-w-0 flex-wrap items-start gap-x-6 gap-y-5">
+              <div className="flex min-w-0 flex-1 basis-full items-start gap-3 sm:basis-[28rem] sm:gap-4 lg:basis-[34rem]">
+                <Avatar className="h-20 w-20 shrink-0 self-start border border-[var(--border)] shadow-[var(--shadow-lg)] sm:h-28 sm:w-28">
                   <AvatarImage
                     src={profile?.picture}
                     alt={merchantName}
@@ -434,108 +469,100 @@ function StorefrontPage() {
                   </AvatarFallback>
                 </Avatar>
 
-                <div className="min-w-0">
-                  <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
-                    Store
-                  </div>
-                  {merchantIdentityPending ? (
-                    <h1 className="mt-2 truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
-                      <span className="inline-block max-w-full animate-pulse truncate pb-1 leading-[1.16]">
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 items-center gap-2">
+                    {merchantIdentityPending ? (
+                      <h1 className="min-w-0 max-w-full truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
+                        <span className="inline-block max-w-full animate-pulse truncate pb-1 leading-[1.16]">
+                          {merchantName}
+                        </span>
+                      </h1>
+                    ) : (
+                      <h1 className="min-w-0 max-w-full truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
                         {merchantName}
+                      </h1>
+                    )}
+                    <button
+                      type="button"
+                      className="inline-flex size-10 shrink-0 items-center justify-center text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
+                      onClick={handleShareStore}
+                      aria-label={
+                        shareCopied ? "Store link copied" : "Copy store link"
+                      }
+                      title={shareCopied ? "Copied" : "Copy store link"}
+                    >
+                      {shareCopied ? (
+                        <Check className="h-[18px] w-[18px] text-success" />
+                      ) : (
+                        <LinkIcon className="h-[18px] w-[18px]" />
+                      )}
+                    </button>
+                  </div>
+                  <div className="mt-2 flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-2 text-sm text-[var(--text-secondary)]">
+                    <span className="inline-flex min-w-0 max-w-[18rem] items-center gap-1 font-medium text-[var(--text-primary)] sm:max-w-[22rem]">
+                      <span className="block min-w-0 truncate">
+                        {profile?.nip05 || formatNpub(pubkey, 8)}
                       </span>
-                    </h1>
-                  ) : (
-                    <h1 className="mt-2 truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
-                      {merchantName}
-                    </h1>
-                  )}
-                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-[var(--text-secondary)]">
-                    <span className="inline-flex items-center gap-1 font-medium text-[var(--text-primary)]">
-                      {profile?.nip05 || formatNpub(pubkey, 8)}
-                      <CopyButton value={pubkey} label="Copy pubkey" />
+                      <span className="shrink-0">
+                        <CopyButton value={pubkey} label="Copy pubkey" />
+                      </span>
                     </span>
-                    <span className="hidden text-[var(--text-muted)] sm:inline">
+                    <span className="text-[var(--text-muted)]">
                       Created Apr 2024
                     </span>
                   </div>
                 </div>
               </div>
 
-              <div className="flex flex-col items-start gap-4 xl:items-end">
-                <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-left xl:min-w-[132px] xl:text-right">
-                  <div className="text-lg font-semibold leading-none text-[var(--text-primary)]">
-                    {productCount}
-                  </div>
-                  <div className="mt-2 text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                    Listings
-                  </div>
-                </div>
-
-                <div className="flex flex-nowrap items-center gap-3 xl:justify-end">
-                  <Button
-                    variant="outline"
-                    className="h-11 shrink-0 whitespace-nowrap border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]"
-                    onClick={handleSendMessage}
-                  >
-                    <MessageCircle className="h-4 w-4" />
-                    Send message
-                  </Button>
-                  <Button
-                    variant={isFollowing ? "outline" : "primary"}
-                    className={[
-                      "group h-11 shrink-0 whitespace-nowrap px-4 text-sm",
-                      isFollowing
-                        ? "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]"
-                        : "",
-                    ].join(" ")}
-                    onClick={() => void handleFollow()}
-                    disabled={isFollowBusy}
-                  >
-                    {isFollowBusy ? (
-                      <LoaderCircle className="h-4 w-4 animate-spin" />
-                    ) : isFollowing ? (
-                      <span className="relative grid h-4 w-4 place-items-center">
-                        <UserCheck className="col-start-1 row-start-1 h-4 w-4 transition-opacity duration-150 group-hover:opacity-0" />
-                        <UserMinus className="col-start-1 row-start-1 h-4 w-4 opacity-0 transition-opacity duration-150 group-hover:opacity-100" />
+              <div className="flex w-full min-w-0 max-w-full flex-wrap items-center justify-start gap-3 sm:ml-auto sm:w-auto sm:justify-end">
+                <Button
+                  variant="outline"
+                  className="h-11 max-w-full shrink-0 border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]"
+                  onClick={handleSendMessage}
+                >
+                  <MessageCircle className="h-4 w-4" />
+                  Send message
+                </Button>
+                <Button
+                  variant={isFollowing ? "outline" : "primary"}
+                  className={[
+                    "group h-11 max-w-full shrink-0 px-4 text-sm",
+                    isFollowing
+                      ? "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]"
+                      : "",
+                  ].join(" ")}
+                  onClick={() => void handleFollow()}
+                  disabled={isFollowBusy}
+                >
+                  {isFollowBusy ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : isFollowing ? (
+                    <span className="relative grid h-4 w-4 place-items-center">
+                      <UserCheck className="col-start-1 row-start-1 h-4 w-4 transition-opacity duration-150 group-hover:opacity-0" />
+                      <UserMinus className="col-start-1 row-start-1 h-4 w-4 opacity-0 transition-opacity duration-150 group-hover:opacity-100" />
+                    </span>
+                  ) : (
+                    <UserPlus className="h-4 w-4" />
+                  )}
+                  {isFollowBusy ? (
+                    followState === "saving_unfollow" ? (
+                      "Unfollowing…"
+                    ) : (
+                      "Following…"
+                    )
+                  ) : isFollowing ? (
+                    <span className="grid">
+                      <span className="col-start-1 row-start-1 transition-opacity duration-150 group-hover:opacity-0">
+                        Following
                       </span>
-                    ) : (
-                      <UserPlus className="h-4 w-4" />
-                    )}
-                    {isFollowBusy ? (
-                      followState === "saving_unfollow" ? (
-                        "Unfollowing…"
-                      ) : (
-                        "Following…"
-                      )
-                    ) : isFollowing ? (
-                      <span className="grid">
-                        <span className="col-start-1 row-start-1 transition-opacity duration-150 group-hover:opacity-0">
-                          Following
-                        </span>
-                        <span className="col-start-1 row-start-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
-                          Unfollow
-                        </span>
+                      <span className="col-start-1 row-start-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+                        Unfollow
                       </span>
-                    ) : (
-                      "Follow"
-                    )}
-                  </Button>
-                  <button
-                    type="button"
-                    className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
-                    onClick={handleShareStore}
-                    aria-label={
-                      shareCopied ? "Store link copied" : "Copy store link"
-                    }
-                    title={shareCopied ? "Copied" : "Copy store link"}
-                  >
-                    {shareCopied ? (
-                      <Check className="h-[18px] w-[18px] text-success" />
-                    ) : (
-                      <LinkIcon className="h-[18px] w-[18px]" />
-                    )}
-                  </button>
-                </div>
+                    </span>
+                  ) : (
+                    "Follow"
+                  )}
+                </Button>
               </div>
             </div>
 
@@ -543,7 +570,7 @@ function StorefrontPage() {
               <RichProfileText
                 text={
                   merchantAbout ||
-                  "Browse this merchant's current listings and add products directly to your cart."
+                  "Browse this merchant's current listings and add items directly to your cart."
                 }
                 className="max-w-4xl text-sm leading-7 text-[var(--text-secondary)]"
               />
@@ -551,13 +578,13 @@ function StorefrontPage() {
           </div>
         </div>
       </section>
-      <div className="grid items-start gap-6 xl:grid-cols-[220px_minmax(0,1fr)]">
-        <aside className="xl:sticky xl:top-24 xl:self-start">
-          <div className="space-y-5 xl:max-h-[calc(100vh-7rem)] xl:overflow-y-auto xl:pr-1">
+      <div className="grid min-w-0 max-w-full items-start gap-5 md:grid-cols-[200px_minmax(0,1fr)] lg:grid-cols-[220px_minmax(0,1fr)] lg:gap-6">
+        <aside className="hidden md:sticky md:top-24 md:block md:self-start">
+          <div className="space-y-5 md:max-h-[calc(100vh-7rem)] md:overflow-y-auto md:pr-1">
             <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
               <div className="flex items-center justify-between gap-3">
                 <div className="text-sm font-medium text-[var(--text-primary)]">
-                  Filters
+                  Categories
                 </div>
                 {(selectedTags.length > 0 || search.q || search.sort) && (
                   <button
@@ -578,33 +605,16 @@ function StorefrontPage() {
               </div>
 
               <div className="mt-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                    Category
-                  </div>
-                </div>
-
-                <div className="relative mt-3">
+                <div className="relative">
                   <div className="max-h-96 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
-                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5 xl:flex-col xl:items-stretch">
+                    <div className="flex flex-col items-stretch gap-1.5 pt-0.5">
                       {categoryFacetOptions.map((option) => (
-                        <button
+                        <CategoryFacetButton
                           key={option.value}
-                          type="button"
-                          onClick={() => toggleTag(option.value)}
-                          aria-pressed={option.selected}
-                          className={[
-                            "inline-flex items-center rounded-full border px-3 py-2 text-left text-sm font-medium capitalize transition-colors xl:rounded-xl",
-                            option.selected
-                              ? "border-primary-500/70 bg-primary-500 font-semibold text-white shadow-[0_12px_28px_color-mix(in_srgb,var(--primary-500)_24%,transparent)]"
-                              : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
-                          ].join(" ")}
-                        >
-                          <span>{option.label}</span>
-                          <span className="ml-1.5 self-center text-[0.82em] font-medium leading-none tabular-nums text-[var(--text-muted)]">
-                            [{option.count}]
-                          </span>
-                        </button>
+                          option={option}
+                          onToggle={() => toggleTag(option.value)}
+                          className="w-full rounded-xl"
+                        />
                       ))}
                     </div>
                   </div>
@@ -614,8 +624,38 @@ function StorefrontPage() {
           </div>
         </aside>
 
-        <section className="space-y-4">
-          <div className="grid gap-3 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
+        <section className="min-w-0 max-w-full self-start overflow-hidden">
+          {categoryFacetOptions.length > 0 && (
+            <div className="mb-4 min-w-0 max-w-full overflow-hidden rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface)] p-4 md:hidden">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div className="text-sm font-medium text-[var(--text-primary)]">
+                  Categories
+                </div>
+                {selectedTags.length > 0 && (
+                  <button
+                    type="button"
+                    className="shrink-0 text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+                    onClick={() => updateSearch({ tag: undefined })}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <div className="max-h-[4.75rem] max-w-full overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+                <div className="flex max-w-full flex-wrap items-center gap-1.5 pt-0.5">
+                  {categoryFacetOptions.map((option) => (
+                    <CategoryFacetButton
+                      key={option.value}
+                      option={option}
+                      onToggle={() => toggleTag(option.value)}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="grid min-w-0 max-w-full gap-3 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
             <form
               className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3"
               onSubmit={submitSearch}
@@ -662,10 +702,10 @@ function StorefrontPage() {
             </div>
           </div>
 
-          <div className="relative min-h-[1.625rem] pr-32 sm:pr-36">
+          <div className="relative mt-4 min-h-[1.625rem] pr-32 sm:pr-36">
             <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
               <span>
-                {filteredProducts.length} product
+                {filteredProducts.length} listing
                 {filteredProducts.length === 1 ? "" : "s"}
               </span>
               {selectedTags.length > 0 && (
@@ -696,7 +736,7 @@ function StorefrontPage() {
           </div>
 
           {productsQuery.isInitialLoading && (
-            <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-4">
+            <ul className="mt-4 grid min-w-0 max-w-full auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))]">
               {Array.from({ length: 6 }).map((_, index) => (
                 <li key={index} className="h-full">
                   <ProductGridCardSkeleton />
@@ -706,7 +746,7 @@ function StorefrontPage() {
           )}
 
           {!!productsQuery.error && (
-            <div className="rounded-xl border border-error/20 bg-error/10 p-4 text-sm text-error">
+            <div className="mt-4 rounded-xl border border-error/20 bg-error/10 p-4 text-sm text-error">
               Failed to load this storefront.
             </div>
           )}
@@ -714,9 +754,9 @@ function StorefrontPage() {
           {!productsQuery.isInitialLoading &&
             storeProducts.length > 0 &&
             filteredProducts.length === 0 && (
-              <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6">
+              <div className="mt-4 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6">
                 <div className="text-lg font-semibold text-[var(--text-primary)]">
-                  No products match this store view
+                  No listings match this store view
                 </div>
                 <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
                   Try clearing the store search or category filter to see the
@@ -741,7 +781,7 @@ function StorefrontPage() {
             )}
 
           {filteredProducts.length > 0 && (
-            <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 lg:grid-cols-4">
+            <ul className="mt-4 grid min-w-0 max-w-full auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))]">
               {filteredProducts.map((product, index) => (
                 <li key={product.id} className="h-full">
                   <ProductGridCard
