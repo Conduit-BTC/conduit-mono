@@ -45,7 +45,6 @@ function RootShell({ children }: { children: ReactNode }) {
             >
               <div className="mx-auto w-full max-w-[1280px]">{children}</div>
             </main>
-            <LegalFooter className="lg:left-[260px]" />
           </div>
         </div>
       </MerchantReadinessProvider>

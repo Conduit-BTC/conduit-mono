@@ -1,6 +1,11 @@
 import {
+  ChevronDown,
+  CircleHelp,
   CreditCard,
+  ExternalLink,
+  Github,
   Grid2x2,
+  LogOut,
   Menu,
   Package,
   ShoppingBag,
@@ -9,17 +14,25 @@ import {
   Wifi,
 } from "lucide-react"
 import type { ComponentType } from "react"
-import { Link, useNavigate } from "@tanstack/react-router"
+import { Link } from "@tanstack/react-router"
 import {
   config,
+  formatNpub,
   getProfileDisplayLabel,
   useAuth,
   useProfile,
 } from "@conduit/core"
 import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
   Badge,
   Button,
-  ProfileSelector,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -64,6 +77,39 @@ const setupNavItems: NavItem[] = [
   { to: "/shipping", label: "Shipping", icon: Truck, hasReadiness: true },
   { to: "/network", label: "Network", icon: Wifi, hasReadiness: true },
 ]
+
+const merchantResourceLinks = [
+  {
+    label: "Conduit home",
+    href: "https://conduit.market/",
+    icon: ExternalLink,
+  },
+  {
+    label: "GitHub",
+    href: "https://github.com/Conduit-BTC/conduit-mono",
+    icon: Github,
+  },
+  {
+    label: "Support",
+    href: "https://github.com/Conduit-BTC/conduit-mono/issues",
+    icon: CircleHelp,
+  },
+  {
+    label: "Nostr",
+    href: "https://njump.me/npub1nkfqwlz7xkhhdaa3ekz88qqqk7a0ks7jpv9zdsv0u206swxjw9rq0g2svu",
+    icon: ExternalLink,
+  },
+  {
+    label: "Terms",
+    href: "https://conduit.market/terms-of-service",
+    icon: ExternalLink,
+  },
+  {
+    label: "Privacy",
+    href: "https://conduit.market/privacy-policy",
+    icon: ExternalLink,
+  },
+] as const
 
 // ---------------------------------------------------------------------------
 // Avatar / logo helpers
@@ -205,7 +251,6 @@ function MerchantNavLinks({
 
 function UserMenu({ className }: { className?: string } = {}) {
   const { pubkey, status, disconnect } = useAuth()
-  const navigate = useNavigate()
   const profileQuery = useProfile(pubkey)
   const profile = profileQuery.data
   const readiness = useMerchantReadinessState()
@@ -217,24 +262,106 @@ function UserMenu({ className }: { className?: string } = {}) {
     pendingLabel: "Loading profile",
     chars: 6,
   })
+  const npub = formatNpub(pubkey, 12)
+  const setupIncomplete =
+    !readiness.setupComplete && readiness.missingAreas.length > 0
 
   return (
-    <ProfileSelector
-      displayName={displayName}
-      avatarUrl={profile?.picture}
-      avatarFallback={<MerchantAvatarFallback iconClassName="h-4 w-4" />}
-      alertLabel={
-        readiness.setupComplete || readiness.missingAreas.length === 0
-          ? undefined
-          : "Needs completion"
-      }
-      profileHref="/profile"
-      onProfile={() => navigate({ to: "/profile" })}
-      networkHref="/network"
-      onNetwork={() => navigate({ to: "/network" })}
-      onDisconnect={disconnect}
-      className={cn("h-12 min-w-[12.75rem] rounded-[16px] px-3", className)}
-    />
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex h-12 min-w-[12.75rem] items-center gap-3 rounded-[16px] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 text-left text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
+            className
+          )}
+        >
+          <span className="relative shrink-0">
+            <Avatar className="h-8 w-8 border border-[var(--border)]">
+              <AvatarImage
+                src={profile?.picture ?? undefined}
+                alt={displayName}
+              />
+              <AvatarFallback className="bg-[var(--avatar-bg)] text-[var(--on-primary)]">
+                <MerchantAvatarFallback iconClassName="h-4 w-4" />
+              </AvatarFallback>
+            </Avatar>
+            {setupIncomplete ? (
+              <span
+                aria-hidden="true"
+                className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-[var(--surface-elevated)] bg-[var(--warning)]"
+              />
+            ) : null}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-semibold">
+              {displayName}
+            </span>
+            <span className="block truncate text-[11px] text-[var(--text-secondary)]">
+              {npub}
+            </span>
+          </span>
+          <ChevronDown className="h-4 w-4 shrink-0 text-[var(--text-secondary)]" />
+        </button>
+      </DropdownMenuTrigger>
+
+      <DropdownMenuContent
+        align="start"
+        side="top"
+        sideOffset={12}
+        className="w-[16rem] rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-overlay)] p-2 text-[var(--text-primary)] shadow-[var(--shadow-dialog)]"
+      >
+        <div className="px-2 py-2">
+          <div className="text-sm font-semibold">{displayName}</div>
+          <div className="mt-1 break-all text-xs leading-5 text-[var(--text-secondary)]">
+            {formatNpub(pubkey)}
+          </div>
+          {setupIncomplete ? (
+            <StatusPill variant="warning" className="mt-3 text-[10px]">
+              Needs completion
+            </StatusPill>
+          ) : (
+            <StatusPill variant="success" className="mt-3 text-[10px]">
+              Ready to sell
+            </StatusPill>
+          )}
+        </div>
+
+        <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
+
+        {merchantResourceLinks.map((link) => {
+          const Icon = link.icon
+
+          return (
+            <DropdownMenuItem
+              key={link.href}
+              asChild
+              className="h-10 rounded-xl px-2 text-sm font-medium text-[var(--text-primary)] focus:bg-[var(--surface-elevated)]"
+            >
+              <a href={link.href} target="_blank" rel="noopener noreferrer">
+                <Icon className="mr-2 h-4 w-4 text-[var(--text-secondary)]" />
+                <span>{link.label}</span>
+              </a>
+            </DropdownMenuItem>
+          )
+        })}
+
+        <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
+
+        <div className="p-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-full justify-start border-error/35 text-error hover:bg-error/10"
+            onClick={disconnect}
+          >
+            <LogOut className="h-4 w-4" />
+            Disconnect
+          </Button>
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
