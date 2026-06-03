@@ -57,16 +57,23 @@ const appDefinitions: Record<ConduitAppId, ConduitNip89AppDefinition> = {
     dTag: config.nip89MarketDTag,
     pubkey: config.nip89MarketPubkey,
     relayHint: config.nip89RelayHint,
-    supportedKinds: [EVENT_KINDS.PROFILE, 3, EVENT_KINDS.ORDER],
+    supportedKinds: [
+      EVENT_KINDS.PROFILE,
+      EVENT_KINDS.CONTACT_LIST,
+      EVENT_KINDS.ORDER,
+      EVENT_KINDS.PRODUCT,
+    ],
     web: [
-      { url: "https://shop.conduit.market/e/<bech32>" },
-      { url: "https://shop.conduit.market/p/<bech32>", entity: "nprofile" },
-      { url: "https://shop.conduit.market/a/<bech32>", entity: "naddr" },
+      { url: "https://shop.conduit.market/u/<bech32>", entity: "nprofile" },
+      {
+        url: "https://shop.conduit.market/products/<bech32>",
+        entity: "naddr",
+      },
     ],
   }),
   merchant: createAppDefinition({
     id: "merchant",
-    name: "Conduit Merchant",
+    name: "Conduit Merchant Portal",
     about:
       "Seller app for listings, invoices, fulfillment, and buyer conversations.",
     dTag: config.nip89MerchantDTag,
@@ -79,11 +86,7 @@ const appDefinitions: Record<ConduitAppId, ConduitNip89AppDefinition> = {
       EVENT_KINDS.PRODUCT,
       23194,
     ],
-    web: [
-      { url: "https://sell.conduit.market/e/<bech32>" },
-      { url: "https://sell.conduit.market/p/<bech32>", entity: "nprofile" },
-      { url: "https://sell.conduit.market/a/<bech32>", entity: "naddr" },
-    ],
+    web: [],
   }),
 }
 

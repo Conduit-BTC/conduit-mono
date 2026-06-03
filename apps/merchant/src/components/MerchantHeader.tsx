@@ -6,6 +6,7 @@ import {
   CreditCard,
   ExternalLink,
   Github,
+  Info,
   LogOut,
   Menu,
   Package,
@@ -58,6 +59,7 @@ type NavRoute =
   | "/payments"
   | "/shipping"
   | "/network"
+  | "/about"
 
 type NavItem = {
   to: NavRoute
@@ -71,6 +73,7 @@ const mainNavItems: NavItem[] = [
   { to: "/", label: "Home", icon: Store },
   { to: "/orders", label: "Orders", icon: ShoppingBag },
   { to: "/products", label: "Products", icon: Package },
+  { to: "/about", label: "About", icon: Info },
 ]
 
 const setupNavItems: NavItem[] = [
@@ -202,6 +205,7 @@ function MerchantNavLinks({
     "/payments": paymentsIncomplete,
     "/shipping": shippingIncomplete,
     "/network": networkIncomplete,
+    "/about": false,
     "/": false,
     "/orders": false,
     "/products": false,

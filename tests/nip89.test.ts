@@ -12,6 +12,7 @@ import {
   appendConduitClientTag,
   buildConduitHandlerEventTags,
   buildNip89ClientTag,
+  getConduitNip89AppDefinition,
 } from "@conduit/core"
 
 describe("nip89 helpers", () => {
@@ -65,6 +66,38 @@ describe("nip89 helpers", () => {
       )
     ).toBe(true)
     expect(tags.some((tag) => tag[0] === "k" && tag[1] === "23194")).toBe(true)
+  })
+
+  it("uses official app source names for client tags", () => {
+    expect(getConduitNip89AppDefinition("market").name).toBe("Conduit Market")
+    expect(getConduitNip89AppDefinition("merchant").name).toBe(
+      "Conduit Merchant Portal"
+    )
+  })
+
+  it("advertises real Market web handlers for profiles and product naddr links", () => {
+    const tags = buildConduitHandlerEventTags("market")
+    expect(
+      tags.some(
+        (tag) => tag[0] === "k" && tag[1] === String(EVENT_KINDS.PRODUCT)
+      )
+    ).toBe(true)
+    expect(tags).toContainEqual([
+      "web",
+      "https://shop.conduit.market/u/<bech32>",
+      "nprofile",
+    ])
+    expect(tags).toContainEqual([
+      "web",
+      "https://shop.conduit.market/products/<bech32>",
+      "naddr",
+    ])
+    expect(tags.some((tag) => tag[1]?.includes("/e/<bech32>"))).toBe(false)
+  })
+
+  it("does not publish fake Merchant entity handler URLs", () => {
+    const tags = buildConduitHandlerEventTags("merchant")
+    expect(tags.some((tag) => tag[0] === "web")).toBe(false)
   })
 })
 
