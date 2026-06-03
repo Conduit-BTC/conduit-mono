@@ -1,6 +1,8 @@
 import {
   ChevronDown,
+  Check,
   CircleHelp,
+  Copy,
   CreditCard,
   ExternalLink,
   Github,
@@ -13,7 +15,7 @@ import {
   UserRound,
   Wifi,
 } from "lucide-react"
-import type { ComponentType } from "react"
+import { useState, type ComponentType } from "react"
 import { Link } from "@tanstack/react-router"
 import {
   config,
@@ -78,7 +80,15 @@ const setupNavItems: NavItem[] = [
   { to: "/network", label: "Network", icon: Wifi, hasReadiness: true },
 ]
 
-const merchantResourceLinks = [
+type MerchantResourceLink = {
+  label: string
+  href: string
+} & (
+  | { icon: ComponentType<{ className?: string }>; imageSrc?: never }
+  | { imageSrc: string; icon?: never }
+)
+
+const merchantResourceLinks: readonly MerchantResourceLink[] = [
   {
     label: "Conduit home",
     href: "https://conduit.market/",
@@ -97,7 +107,7 @@ const merchantResourceLinks = [
   {
     label: "Nostr",
     href: "https://njump.me/npub1nkfqwlz7xkhhdaa3ekz88qqqk7a0ks7jpv9zdsv0u206swxjw9rq0g2svu",
-    icon: ExternalLink,
+    imageSrc: "/images/logo/nostr-n-logo-white.png",
   },
   {
     label: "Terms",
@@ -251,6 +261,7 @@ function MerchantNavLinks({
 
 function UserMenu({ className }: { className?: string } = {}) {
   const { pubkey, status, disconnect } = useAuth()
+  const [npubCopied, setNpubCopied] = useState(false)
   const profileQuery = useProfile(pubkey)
   const profile = profileQuery.data
   const readiness = useMerchantReadinessState()
@@ -263,8 +274,19 @@ function UserMenu({ className }: { className?: string } = {}) {
     chars: 6,
   })
   const npub = formatNpub(pubkey, 12)
+  const fullNpub = formatNpub(pubkey)
   const setupIncomplete =
     !readiness.setupComplete && readiness.missingAreas.length > 0
+
+  async function handleCopyNpub(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(fullNpub)
+      setNpubCopied(true)
+      window.setTimeout(() => setNpubCopied(false), 1_200)
+    } catch {
+      setNpubCopied(false)
+    }
+  }
 
   return (
     <DropdownMenu>
@@ -313,8 +335,27 @@ function UserMenu({ className }: { className?: string } = {}) {
       >
         <div className="px-2 py-2">
           <div className="text-sm font-semibold">{displayName}</div>
-          <div className="mt-1 break-all text-xs leading-5 text-[var(--text-secondary)]">
-            {formatNpub(pubkey)}
+          <div className="mt-1 flex items-start gap-2">
+            <div className="min-w-0 flex-1 break-all text-xs leading-5 text-[var(--text-secondary)]">
+              {fullNpub}
+            </div>
+            <button
+              type="button"
+              aria-label={npubCopied ? "Npub copied" : "Copy npub"}
+              title={npubCopied ? "Copied" : "Copy npub"}
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                void handleCopyNpub()
+              }}
+            >
+              {npubCopied ? (
+                <Check className="h-3.5 w-3.5 text-[var(--success)]" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
+            </button>
           </div>
           {setupIncomplete ? (
             <StatusPill variant="warning" className="mt-3 text-[10px]">
@@ -330,7 +371,7 @@ function UserMenu({ className }: { className?: string } = {}) {
         <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
 
         {merchantResourceLinks.map((link) => {
-          const Icon = link.icon
+          const Icon = "icon" in link ? link.icon : null
 
           return (
             <DropdownMenuItem
@@ -339,7 +380,17 @@ function UserMenu({ className }: { className?: string } = {}) {
               className="h-10 rounded-xl px-2 text-sm font-medium text-[var(--text-primary)] focus:bg-[var(--surface-elevated)]"
             >
               <a href={link.href} target="_blank" rel="noopener noreferrer">
-                <Icon className="mr-2 h-4 w-4 text-[var(--text-secondary)]" />
+                {"imageSrc" in link ? (
+                  <img
+                    src={link.imageSrc}
+                    alt=""
+                    aria-hidden="true"
+                    className="mr-2 h-4 w-4 object-contain opacity-75"
+                    draggable="false"
+                  />
+                ) : Icon ? (
+                  <Icon className="mr-2 h-4 w-4 text-[var(--text-secondary)]" />
+                ) : null}
                 <span>{link.label}</span>
               </a>
             </DropdownMenuItem>
@@ -348,18 +399,13 @@ function UserMenu({ className }: { className?: string } = {}) {
 
         <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
 
-        <div className="p-1">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="w-full justify-start border-error/35 text-error hover:bg-error/10"
-            onClick={disconnect}
-          >
-            <LogOut className="h-4 w-4" />
-            Disconnect
-          </Button>
-        </div>
+        <DropdownMenuItem
+          className="h-10 rounded-xl px-2 text-sm font-medium text-error focus:bg-[var(--surface-elevated)] focus:text-error"
+          onSelect={disconnect}
+        >
+          <LogOut className="mr-2 h-4 w-4" />
+          <span>Disconnect</span>
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   )
