@@ -434,9 +434,7 @@ export function getPaymentTrackerOutcome(
  * One-line headline for the tracker. Intentionally never claims funds moved
  * before the payment-confirmation row is complete.
  */
-export function getPaymentTrackerHeadline(
-  input: PaymentTrackerInput
-): string {
+export function getPaymentTrackerHeadline(input: PaymentTrackerInput): string {
   switch (getPaymentTrackerOutcome(input)) {
     case "in_progress":
       if (input.stage === "sending_receipt") return "Sending payment receipt"

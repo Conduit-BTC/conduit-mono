@@ -464,8 +464,9 @@ function CheckoutPage() {
   >([])
   const [sentOrderId, setSentOrderId] = useState<string | null>(null)
   const [showSentGlow, setShowSentGlow] = useState(false)
-  const [paymentStage, setPaymentStage] =
-    useState<CheckoutPaymentStage | null>(null)
+  const [paymentStage, setPaymentStage] = useState<CheckoutPaymentStage | null>(
+    null
+  )
   // paidNotice is retained as a state setter for future surfaces (e.g.
   // showing the merchant zap-receipt observation in an order detail view).
   // The buyer-facing tracker conveys success/retry-needed via per-step
