@@ -5,8 +5,13 @@ import { resolveProfileReference } from "../lib/profileRefs"
 
 const LINK_PATTERN =
   /((?:https?:\/\/|web\+nostr:|nostr:)[^\s]+|(?:npub|nprofile|note|nevent)1[023456789acdefghjklmnpqrstuvwxyz]+)/giu
+const LINK_CLASS_NAME =
+  "break-words [overflow-wrap:anywhere] underline decoration-white/20 underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:decoration-white/40"
 
-function stripTrailingPunctuation(value: string): { core: string; trailing: string } {
+function stripTrailingPunctuation(value: string): {
+  core: string
+  trailing: string
+} {
   const match = value.match(/^(.*?)([),.;!?]+)?$/)
   return {
     core: match?.[1] ?? value,
@@ -45,7 +50,7 @@ function renderLine(line: string, lineIndex: number): ReactNode {
       parts.push(
         <span key={`text-${lineIndex}-${index}`}>
           {line.slice(lastIndex, index)}
-        </span>,
+        </span>
       )
     }
 
@@ -59,10 +64,10 @@ function renderLine(line: string, lineIndex: number): ReactNode {
           key={`profile-${lineIndex}-${index}`}
           to="/u/$profileRef"
           params={{ profileRef: core }}
-          className="underline decoration-white/20 underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:decoration-white/40"
+          className={LINK_CLASS_NAME}
         >
           {core}
-        </Link>,
+        </Link>
       )
     } else if (href) {
       parts.push(
@@ -71,28 +76,24 @@ function renderLine(line: string, lineIndex: number): ReactNode {
           href={href}
           target="_blank"
           rel="noreferrer noopener"
-          className="underline decoration-white/20 underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:decoration-white/40"
+          className={LINK_CLASS_NAME}
         >
           {core}
-        </a>,
+        </a>
       )
     } else {
       parts.push(<span key={`raw-${lineIndex}-${index}`}>{core}</span>)
     }
 
     if (trailing) {
-      parts.push(
-        <span key={`trail-${lineIndex}-${index}`}>{trailing}</span>,
-      )
+      parts.push(<span key={`trail-${lineIndex}-${index}`}>{trailing}</span>)
     }
 
     lastIndex = index + matched.length
   }
 
   if (lastIndex < line.length) {
-    parts.push(
-      <span key={`tail-${lineIndex}`}>{line.slice(lastIndex)}</span>,
-    )
+    parts.push(<span key={`tail-${lineIndex}`}>{line.slice(lastIndex)}</span>)
   }
 
   return parts
@@ -108,9 +109,16 @@ export function RichProfileText({
   const lines = text.split(/\r?\n/)
 
   return (
-    <div className={cn("break-words whitespace-pre-wrap", className)}>
+    <div
+      className={cn(
+        "min-w-0 max-w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere]",
+        className
+      )}
+    >
       {lines.map((line, index) => (
-        <div key={index}>{renderLine(line, index)}</div>
+        <div key={index} className="min-w-0 max-w-full">
+          {renderLine(line, index)}
+        </div>
       ))}
     </div>
   )

@@ -212,9 +212,11 @@ export function ProductCartAction({
         className={cn(
           "h-7 shrink-0 gap-1 rounded-md px-2.5 text-xs font-medium transition-all duration-200",
           cartQuantity > 0
-            ? "border border-secondary-400/40 bg-secondary-500/10 text-secondary-300 hover:bg-secondary-500/16 md:group-hover:opacity-0"
+            ? "border border-secondary-400/40 bg-secondary-500/10 text-secondary-300 hover:bg-secondary-500/16 [@media(hover:none)]:pointer-events-none [@media(hover:none)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-0 group-focus-within:opacity-0"
             : "",
-          cartQuantity > 0 ? "md:group-hover:pointer-events-none" : "",
+          cartQuantity > 0
+            ? "[@media(hover:hover)]:group-hover:pointer-events-none group-focus-within:pointer-events-none"
+            : "",
           didJustAdd ? "scale-[1.06]" : "scale-100"
         )}
         onClick={(event) => {
@@ -232,7 +234,7 @@ export function ProductCartAction({
       </Button>
 
       {cartQuantity > 0 && onIncrement && onDecrement && (
-        <div className="pointer-events-none absolute inset-0 hidden items-center justify-center opacity-0 transition-all duration-200 md:flex md:group-hover:pointer-events-auto md:group-hover:opacity-100">
+        <div className="pointer-events-auto absolute inset-0 flex items-center justify-center opacity-100 transition-all duration-200 [@media(hover:hover)]:pointer-events-none [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:pointer-events-auto [@media(hover:hover)]:group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
           <div className="flex h-7 items-center overflow-hidden rounded-md border border-secondary-400/40 bg-[var(--surface)] shadow-md">
             <button
               type="button"

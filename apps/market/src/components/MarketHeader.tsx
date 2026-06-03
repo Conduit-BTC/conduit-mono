@@ -1,12 +1,16 @@
 import {
+  ChevronDown,
   CircleUser,
   LoaderCircle,
+  LogOut,
   MessagesSquare,
+  Radio,
   ReceiptText,
   Search,
   ShoppingCart,
   Wallet,
 } from "lucide-react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 import {
   config,
@@ -16,17 +20,17 @@ import {
   useProfile,
 } from "@conduit/core"
 import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
   Badge,
-  Button,
-  ProfileSelector,
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
   cn,
 } from "@conduit/ui"
-import { useEffect, useMemo, useRef, useState } from "react"
 
 import { SignerSwitch } from "./SignerSwitch"
 import { useCart } from "../hooks/useCart"
@@ -34,107 +38,254 @@ import { useWallet } from "../hooks/useWallet"
 
 type NavState = "top" | "scrolled" | "hidden"
 
-function Logo({
-  variant = "full",
-  className,
-}: {
-  variant?: "full" | "bg" | "icon"
-  className?: string
-}) {
-  const logo = (() => {
-    switch (variant) {
-      case "bg":
-        return {
-          src: "/images/logo/logo-full-bg.svg",
-          width: 410,
-          height: 139,
-          className: "h-8 w-[5.875rem]",
-        }
-      case "icon":
-        return {
-          src: "/images/logo/logo-icon.svg",
-          width: 78,
-          height: 115,
-          className: "h-8 w-[1.375rem]",
-        }
-      case "full":
-      default:
-        return {
-          src: "/images/logo/logo-full.svg",
-          width: 386,
-          height: 115,
-          className: "h-8 w-[6.75rem]",
-        }
-    }
-  })()
+const headerActionClassName =
+  "inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-2xl px-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40 sm:px-3"
 
+const accountControlClassName =
+  "inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-2xl bg-primary-500 px-3 text-sm font-semibold text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+
+function accountMenuItemClassName(
+  variant: "default" | "danger" = "default"
+): string {
+  return cn(
+    "min-h-11 cursor-pointer rounded-xl px-3 py-2 text-[15px] font-medium",
+    variant === "danger"
+      ? "text-[var(--error)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error)]"
+      : "text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_6%,transparent)] focus:text-[var(--text-primary)]"
+  )
+}
+
+function Logo() {
   return (
-    <Link
-      to="/"
-      className={cn("flex items-center gap-3 select-none", className)}
-    >
+    <Link to="/" className="flex shrink-0 select-none items-center gap-2">
       <img
-        src={logo.src}
+        src="/images/logo/logo-full.svg"
         alt="Conduit"
-        width={logo.width}
-        height={logo.height}
+        width={386}
+        height={115}
         decoding="async"
-        fetchPriority={variant === "full" ? "high" : "auto"}
-        className={cn("shrink-0 object-contain", logo.className)}
+        fetchPriority="high"
+        className="h-8 w-[6.75rem] shrink-0 object-contain"
       />
-      <span className="hidden border-l border-[var(--border)] pl-3 font-display text-2xl font-medium tracking-tight text-[var(--text-primary)] md:block">
+      <span className="border-l border-[var(--border)] pl-2 font-display text-2xl font-medium text-[var(--text-primary)]">
         market
       </span>
     </Link>
   )
 }
 
-function UserMenu() {
-  const { pubkey, status, disconnect } = useAuth()
-  const { status: ndkStatus } = useNdkState()
-  const { data: profile, refetch } = useProfile(pubkey)
-  const wallet = useWallet()
-  const navigate = useNavigate()
+function HeaderAction({
+  label,
+  icon,
+  active = false,
+  enabled = true,
+  className,
+  labelClassName = "hidden xl:inline",
+  count,
+  onClick,
+}: {
+  label: string
+  icon: ReactNode
+  active?: boolean
+  enabled?: boolean
+  className?: string
+  labelClassName?: string
+  count?: number
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      aria-disabled={!enabled}
+      title={enabled ? label : `Connect to use ${label.toLowerCase()}`}
+      onClick={onClick}
+      className={cn(
+        headerActionClassName,
+        active && enabled
+          ? "bg-[var(--surface-elevated)] text-[var(--text-primary)]"
+          : "text-[var(--text-primary)] hover:bg-[var(--surface-elevated)]",
+        !enabled &&
+          "text-[var(--text-muted)] opacity-60 hover:bg-transparent hover:text-[var(--text-muted)]",
+        className
+      )}
+    >
+      {icon}
+      <span className={labelClassName}>{label}</span>
+      {typeof count === "number" ? (
+        <span className="tabular-nums text-[var(--text-muted)]">({count})</span>
+      ) : null}
+    </button>
+  )
+}
 
-  // Refetch from relays once NDK connects (market has no local cache on first visit)
-  useEffect(() => {
-    if (ndkStatus === "connected" && pubkey) {
-      void refetch()
-    }
-  }, [ndkStatus, pubkey, refetch])
+function AccountMenuItem({
+  icon,
+  label,
+  detail,
+  variant = "default",
+  onSelect,
+}: {
+  icon: ReactNode
+  label: string
+  detail?: string
+  variant?: "default" | "danger"
+  onSelect: () => void
+}) {
+  return (
+    <DropdownMenuItem
+      onSelect={onSelect}
+      className={accountMenuItemClassName(variant)}
+    >
+      <span className="mr-3 inline-flex size-5 shrink-0 items-center justify-center">
+        {icon}
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate">{label}</span>
+        {detail ? (
+          <span className="block truncate text-[10px] font-medium text-[var(--text-muted)]">
+            {detail}
+          </span>
+        ) : null}
+      </span>
+    </DropdownMenuItem>
+  )
+}
 
-  if (!pubkey || status !== "connected") return null
+function AccountMenuLink({
+  icon,
+  label,
+  detail,
+  to,
+  onClick,
+}: {
+  icon: ReactNode
+  label: string
+  detail?: string
+  to: "/profile" | "/network" | "/wallet"
+  onClick: () => void
+}) {
+  return (
+    <DropdownMenuItem asChild className={accountMenuItemClassName()}>
+      <Link to={to} onClick={onClick}>
+        <span className="mr-3 inline-flex size-5 shrink-0 items-center justify-center">
+          {icon}
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate">{label}</span>
+          {detail ? (
+            <span className="block truncate text-[10px] font-medium text-[var(--text-muted)]">
+              {detail}
+            </span>
+          ) : null}
+        </span>
+      </Link>
+    </DropdownMenuItem>
+  )
+}
 
-  const displayName =
-    profile?.displayName ?? profile?.name ?? formatNpub(pubkey, 6)
+function AccountControl({
+  connected,
+  displayName,
+  avatarUrl,
+  walletStatusLabel,
+  authPending,
+  onConnect,
+  onDisconnect,
+}: {
+  connected: boolean
+  displayName: string
+  avatarUrl?: string | null
+  walletStatusLabel?: string
+  authPending: boolean
+  onConnect: () => void
+  onDisconnect: () => void
+}) {
+  const [open, setOpen] = useState(false)
 
-  const walletStatusLabel =
-    wallet.status === "pay-capable"
-      ? "Ready"
-      : wallet.status === "unreachable"
-        ? "Saved"
-        : wallet.status === "disconnected"
-          ? "Not connected"
-          : undefined
+  if (!connected) {
+    return (
+      <button
+        type="button"
+        className={cn(accountControlClassName, "min-w-[5.25rem]")}
+        aria-busy={authPending}
+        onClick={onConnect}
+      >
+        Connect
+      </button>
+    )
+  }
 
   return (
-    <ProfileSelector
-      displayName={displayName}
-      avatarUrl={profile?.picture}
-      profileHref="/profile"
-      onProfile={() => navigate({ to: "/profile" })}
-      networkHref="/network"
-      onNetwork={() => navigate({ to: "/network" })}
-      walletHref="/wallet"
-      onWallet={() => navigate({ to: "/wallet" })}
-      walletStatusLabel={walletStatusLabel}
-      onDisconnect={disconnect}
-    />
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className={cn(accountControlClassName, "sm:min-w-[10.5rem]")}
+          aria-label="Open account menu"
+        >
+          <Avatar className="size-7 shrink-0 border border-[color-mix(in_srgb,var(--on-primary)_24%,transparent)]">
+            <AvatarImage src={avatarUrl ?? undefined} alt={displayName} />
+            <AvatarFallback className="bg-primary-600 text-xs text-white">
+              {displayName.slice(0, 1).toUpperCase()}
+            </AvatarFallback>
+          </Avatar>
+          <span className="hidden min-w-0 max-w-[8rem] truncate sm:block">
+            {displayName}
+          </span>
+          <ChevronDown
+            className={cn(
+              "size-4 shrink-0 transition-transform duration-150",
+              open && "rotate-180"
+            )}
+            aria-hidden="true"
+          />
+        </button>
+      </DropdownMenuTrigger>
+
+      <DropdownMenuContent
+        align="end"
+        sideOffset={10}
+        className="w-[14rem] rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-overlay)] p-3 shadow-[var(--shadow-dialog)]"
+      >
+        <AccountMenuLink
+          icon={<CircleUser className="size-4" />}
+          label="Profile"
+          to="/profile"
+          onClick={() => setOpen(false)}
+        />
+        <AccountMenuLink
+          icon={<Radio className="size-4" />}
+          label="Network"
+          to="/network"
+          onClick={() => setOpen(false)}
+        />
+        <AccountMenuLink
+          icon={<Wallet className="size-4" />}
+          label="Wallet"
+          detail={walletStatusLabel}
+          to="/wallet"
+          onClick={() => setOpen(false)}
+        />
+        <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
+        <AccountMenuItem
+          icon={<LogOut className="size-4" />}
+          label="Disconnect"
+          variant="danger"
+          onSelect={() => {
+            setOpen(false)
+            onDisconnect()
+          }}
+        />
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
 export function MarketHeader() {
-  const { pubkey, status } = useAuth()
+  const { pubkey, status, disconnect } = useAuth()
+  const { status: ndkStatus } = useNdkState()
+  const { data: profile, refetch } = useProfile(pubkey)
+  const wallet = useWallet()
   const cart = useCart()
   const navigate = useNavigate()
   const { pathname, search } = useRouterState({
@@ -145,11 +296,24 @@ export function MarketHeader() {
   })
   const [searchValue, setSearchValue] = useState("")
   const [searchDirty, setSearchDirty] = useState(false)
-  const [menuOpen, setMenuOpen] = useState(false)
+  const [connectOpen, setConnectOpen] = useState(false)
   const [navState, setNavState] = useState<NavState>("top")
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const currentQuery = typeof search.q === "string" ? search.q : ""
   const isBrowseRoute = pathname === "/products"
+  const connected = status === "connected" && !!pubkey
+  const authPending = status === "connecting" || status === "restoring"
+  const displayName = connected
+    ? (profile?.displayName ?? profile?.name ?? formatNpub(pubkey, 6))
+    : "Connect"
+  const walletStatusLabel =
+    wallet.status === "pay-capable"
+      ? "Ready"
+      : wallet.status === "unreachable"
+        ? "Saved"
+        : wallet.status === "disconnected"
+          ? "Not connected"
+          : undefined
   const normalizedSearchValue = searchValue.trim()
   const pendingSearch = useMemo(
     () =>
@@ -158,16 +322,17 @@ export function MarketHeader() {
   )
 
   useEffect(() => {
+    if (ndkStatus === "connected" && pubkey) {
+      void refetch()
+    }
+  }, [ndkStatus, pubkey, refetch])
+
+  useEffect(() => {
     setSearchValue(currentQuery)
     setSearchDirty(false)
   }, [currentQuery, pathname])
 
   useEffect(() => {
-    if (menuOpen) {
-      setNavState("top")
-      return
-    }
-
     let lastScrollY = window.scrollY
     let ticking = false
     let currentState: NavState = window.scrollY <= 12 ? "top" : "scrolled"
@@ -204,7 +369,7 @@ export function MarketHeader() {
 
     window.addEventListener("scroll", onScroll, { passive: true })
     return () => window.removeEventListener("scroll", onScroll)
-  }, [menuOpen])
+  }, [])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -269,33 +434,42 @@ export function MarketHeader() {
     setSearchDirty(false)
   }
 
+  function handleProtectedRoute(to: "/messages" | "/orders"): void {
+    if (!connected) {
+      setConnectOpen(true)
+      return
+    }
+
+    void navigate({ to })
+  }
+
   return (
     <header
       className={cn(
         "sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur transition-transform duration-300 ease-out",
-        navState === "hidden" && !menuOpen
-          ? "-translate-y-full"
-          : "translate-y-0",
+        navState === "hidden" ? "-translate-y-full" : "translate-y-0",
         navState === "scrolled" ? "shadow-md" : ""
       )}
     >
-      <div className="mx-auto flex min-h-16 max-w-7xl flex-wrap items-center gap-3 px-4 py-3 lg:flex-nowrap">
-        <Logo />
-        {config.lightningNetwork !== "mainnet" && (
-          <Badge
-            variant="secondary"
-            className={cn(
-              "text-[10px] uppercase tracking-wider border",
-              config.lightningNetwork === "mock"
-                ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
-                : "border-blue-500/30 bg-blue-500/10 text-blue-400"
-            )}
-          >
-            {config.lightningNetwork}
-          </Badge>
-        )}
+      <div className="market-header-layout mx-auto min-h-16 max-w-7xl px-4 py-3">
+        <div className="market-header-brand flex min-w-0 items-center gap-2">
+          <Logo />
+          {config.lightningNetwork !== "mainnet" && (
+            <Badge
+              variant="secondary"
+              className={cn(
+                "border text-[10px] uppercase tracking-wider",
+                config.lightningNetwork === "mock"
+                  ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-400"
+                  : "border-blue-500/30 bg-blue-500/10 text-blue-400"
+              )}
+            >
+              {config.lightningNetwork}
+            </Badge>
+          )}
+        </div>
 
-        <div className="order-last w-full pb-5 lg:order-none lg:ml-2 lg:flex-1 lg:pb-0">
+        <div className="market-header-search w-full min-w-0">
           <form
             className="relative"
             onSubmit={(event) => {
@@ -303,12 +477,12 @@ export function MarketHeader() {
               submitSearch()
             }}
           >
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--text-muted)]" />
             <input
               ref={searchInputRef}
               value={searchValue}
-              onChange={(e) => {
-                setSearchValue(e.target.value)
+              onChange={(event) => {
+                setSearchValue(event.target.value)
                 setSearchDirty(true)
               }}
               placeholder="Search"
@@ -317,7 +491,7 @@ export function MarketHeader() {
             />
             <div className="pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-2 text-[var(--text-muted)]">
               {pendingSearch ? (
-                <LoaderCircle className="h-4 w-4 animate-spin" />
+                <LoaderCircle className="size-4 animate-spin" />
               ) : null}
               {!pendingSearch && (
                 <span className="inline-flex h-5 min-w-5 items-center justify-center rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 text-[10px] font-medium text-[var(--text-muted)]">
@@ -335,151 +509,56 @@ export function MarketHeader() {
           </form>
         </div>
 
-        <div className="ml-auto flex items-center gap-1.5 lg:ml-0">
-          {status === "connected" && (
-            <Button
-              asChild
-              variant="ghost"
-              className="hidden h-10 px-3 lg:inline-flex"
-            >
-              <Link
-                to="/messages"
-                activeProps={{ className: "text-[var(--text-primary)]" }}
-              >
-                <MessagesSquare className="h-4 w-4" />
-                Messages
-              </Link>
-            </Button>
-          )}
+        <nav
+          aria-label="Market navigation"
+          className="market-header-utility-nav flex min-w-0 items-center gap-1.5"
+        >
+          <HeaderAction
+            label="Messages"
+            icon={<MessagesSquare className="size-4" aria-hidden="true" />}
+            enabled={connected}
+            active={pathname === "/messages"}
+            labelClassName="hidden lg:inline"
+            onClick={() => handleProtectedRoute("/messages")}
+          />
+          <HeaderAction
+            label="Orders"
+            icon={<ReceiptText className="size-4" aria-hidden="true" />}
+            enabled={connected}
+            active={pathname === "/orders"}
+            labelClassName="hidden lg:inline"
+            onClick={() => handleProtectedRoute("/orders")}
+          />
+          <HeaderAction
+            label="Cart"
+            icon={<ShoppingCart className="size-4" aria-hidden="true" />}
+            active={pathname === "/cart"}
+            labelClassName="hidden sm:inline"
+            count={cart.totals.count}
+            onClick={() => void navigate({ to: "/cart" })}
+          />
+        </nav>
 
-          {status === "connected" && (
-            <Button
-              asChild
-              variant="ghost"
-              className="hidden h-10 px-3 lg:inline-flex"
-            >
-              <Link
-                to="/orders"
-                activeProps={{ className: "text-[var(--text-primary)]" }}
-              >
-                <ReceiptText className="h-4 w-4" />
-                Orders
-              </Link>
-            </Button>
-          )}
-
-          <Button
-            asChild
-            variant={pathname === "/cart" ? "muted" : "ghost"}
-            size="sm"
-            className="h-10 px-2.5 text-xs sm:px-3 sm:text-sm"
-          >
-            <Link to="/cart">
-              <ShoppingCart className="h-3.5 w-3.5" />
-              Cart
-              <span className="text-[var(--text-muted)]">
-                ({cart.totals.count})
-              </span>
-            </Link>
-          </Button>
-
-          <div className="hidden min-w-[7rem] items-center justify-end lg:flex">
-            {status === "connected" && pubkey ? <UserMenu /> : <SignerSwitch />}
-          </div>
-
-          <div className="lg:hidden">
-            <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
-              <SheetTrigger asChild>
-                <button
-                  type="button"
-                  aria-label={menuOpen ? "Close menu" : "Open menu"}
-                  aria-expanded={menuOpen}
-                  className="relative inline-flex h-10 w-10 items-center justify-center rounded-md border border-[var(--border)] bg-transparent text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40"
-                >
-                  <span
-                    className={cn(
-                      "absolute block h-0.5 w-[18px] rounded-full bg-current transition-transform duration-300 ease-out",
-                      menuOpen
-                        ? "translate-y-0 rotate-45"
-                        : "-translate-y-[6px]"
-                    )}
-                  />
-                  <span
-                    className={cn(
-                      "absolute block h-0.5 w-[18px] rounded-full bg-current transition-all duration-300 ease-out",
-                      menuOpen ? "opacity-0" : "opacity-100"
-                    )}
-                  />
-                  <span
-                    className={cn(
-                      "absolute block h-0.5 w-[18px] rounded-full bg-current transition-transform duration-300 ease-out",
-                      menuOpen
-                        ? "translate-y-0 -rotate-45"
-                        : "translate-y-[6px]"
-                    )}
-                  />
-                </button>
-              </SheetTrigger>
-              <SheetContent side="right" className="w-[340px]">
-                <SheetHeader>
-                  <SheetTitle>
-                    <Logo variant="icon" className="justify-start" />
-                  </SheetTitle>
-                </SheetHeader>
-
-                <div className="mt-6 grid gap-2">
-                  <Button asChild variant="ghost" className="justify-start">
-                    <Link to="/cart" onClick={() => setMenuOpen(false)}>
-                      <ShoppingCart className="h-4 w-4" />
-                      Cart ({cart.totals.count})
-                    </Link>
-                  </Button>
-                  {status === "connected" && (
-                    <Button asChild variant="ghost" className="justify-start">
-                      <Link to="/messages" onClick={() => setMenuOpen(false)}>
-                        <MessagesSquare className="h-4 w-4" />
-                        Messages
-                      </Link>
-                    </Button>
-                  )}
-                  {status === "connected" && (
-                    <Button asChild variant="ghost" className="justify-start">
-                      <Link to="/orders" onClick={() => setMenuOpen(false)}>
-                        <ReceiptText className="h-4 w-4" />
-                        Orders
-                      </Link>
-                    </Button>
-                  )}
-                  {status === "connected" && (
-                    <Button asChild variant="ghost" className="justify-start">
-                      <Link to="/profile" onClick={() => setMenuOpen(false)}>
-                        <CircleUser className="h-4 w-4" />
-                        Profile
-                      </Link>
-                    </Button>
-                  )}
-                  {status === "connected" && (
-                    <Button asChild variant="ghost" className="justify-start">
-                      <Link to="/wallet" onClick={() => setMenuOpen(false)}>
-                        <Wallet className="h-4 w-4" />
-                        Wallet
-                      </Link>
-                    </Button>
-                  )}
-                </div>
-
-                <div className="mt-6 border-t border-[var(--border)] pt-4">
-                  {status === "connected" && pubkey ? (
-                    <UserMenu />
-                  ) : (
-                    <SignerSwitch />
-                  )}
-                </div>
-              </SheetContent>
-            </Sheet>
-          </div>
+        <div className="market-header-account-slot">
+          <AccountControl
+            connected={connected}
+            displayName={displayName}
+            avatarUrl={profile?.picture}
+            walletStatusLabel={walletStatusLabel}
+            authPending={authPending}
+            onConnect={() => setConnectOpen(true)}
+            onDisconnect={disconnect}
+          />
         </div>
       </div>
+
+      {!connected && (
+        <SignerSwitch
+          open={connectOpen}
+          onOpenChange={setConnectOpen}
+          hideTrigger
+        />
+      )}
     </header>
   )
 }

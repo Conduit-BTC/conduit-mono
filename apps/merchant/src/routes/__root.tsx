@@ -15,7 +15,11 @@ import {
   NotFoundPage,
   SignerConnectPanel,
 } from "@conduit/ui"
-import { MerchantHeader, MerchantSidebar } from "../components/MerchantHeader"
+import {
+  MerchantMobileNav,
+  MerchantSidebar,
+} from "../components/MerchantHeader"
+import { MerchantReadinessProvider } from "../hooks/useMerchantReadinessContext"
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -28,19 +32,22 @@ const AUTH_GATE_GRACE_MS = 650
 function RootShell({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen bg-[var(--background)] text-[var(--text-primary)] lg:h-screen lg:overflow-hidden">
-      <div className="lg:grid lg:h-full lg:grid-cols-[260px_minmax(0,1fr)]">
-        <MerchantSidebar />
-        <div className="min-h-screen lg:flex lg:min-h-0 lg:flex-col lg:overflow-hidden">
-          <MerchantHeader />
-          <main
-            data-merchant-main-scroll
-            className="px-4 pb-28 pt-6 sm:px-6 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-8 lg:pb-28 lg:pt-8"
-          >
-            <div className="mx-auto w-full max-w-[1280px]">{children}</div>
-          </main>
-          <LegalFooter className="lg:left-[260px]" />
+      <MerchantReadinessProvider>
+        <div className="lg:grid lg:h-full lg:grid-cols-[260px_minmax(0,1fr)]">
+          <MerchantSidebar />
+          <div className="min-h-screen lg:flex lg:min-h-0 lg:flex-col lg:overflow-hidden">
+            <div className="fixed left-4 top-4 z-40 lg:hidden">
+              <MerchantMobileNav />
+            </div>
+            <main
+              data-merchant-main-scroll
+              className="px-4 pb-28 pt-20 sm:px-6 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-8 lg:pb-28 lg:pt-8"
+            >
+              <div className="mx-auto w-full max-w-[1280px]">{children}</div>
+            </main>
+          </div>
         </div>
-      </div>
+      </MerchantReadinessProvider>
       {import.meta.env.DEV && <TanStackRouterDevtools />}
     </div>
   )
