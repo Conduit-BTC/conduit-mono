@@ -19,6 +19,10 @@ import {
   getLnurlReadyForCheckoutPayment,
   getCheckoutShippingCost,
   requestCheckoutLnurlInvoice,
+  getPaymentTrackerHeadline,
+  getPaymentTrackerOutcome,
+  getPaymentTrackerRows,
+  type PaymentTrackerInput,
 } from "../apps/market/src/lib/checkout-payment"
 import type { CartItem } from "../apps/market/src/hooks/useCart"
 import {
@@ -1292,5 +1296,280 @@ describe("fetchZapInvoice", () => {
     expect(callback.searchParams.get("tag")).toBe("payRequest")
     expect(callback.searchParams.has("nostr")).toBe(false)
     expect(callback.searchParams.has("lnurl")).toBe(false)
+  })
+})
+
+describe("payment tracker state mapping", () => {
+  const baseInput = (
+    overrides: Partial<PaymentTrackerInput> = {}
+  ): PaymentTrackerInput => ({
+    stage: null,
+    orderDelivered: false,
+    paymentMoved: false,
+    finished: false,
+    ...overrides,
+  })
+
+  describe("getPaymentTrackerRows - stage progression", () => {
+    it("checking_order_delivery -> only order row in_progress", () => {
+      const rows = getPaymentTrackerRows(
+        baseInput({ stage: "checking_order_delivery" })
+      )
+      expect(rows.order_delivered).toBe("in_progress")
+      expect(rows.wallet_connecting).toBe("waiting")
+      expect(rows.payment_confirmation).toBe("waiting")
+      expect(rows.receipt_sent).toBe("waiting")
+    })
+
+    it("requesting_invoice -> order complete, wallet in_progress", () => {
+      const rows = getPaymentTrackerRows(
+        baseInput({ stage: "requesting_invoice", orderDelivered: true })
+      )
+      expect(rows.order_delivered).toBe("complete")
+      expect(rows.wallet_connecting).toBe("in_progress")
+      expect(rows.payment_confirmation).toBe("waiting")
+      expect(rows.receipt_sent).toBe("waiting")
+    })
+
+    it("paying_invoice -> order+wallet complete, payment in_progress", () => {
+      const rows = getPaymentTrackerRows(
+        baseInput({ stage: "paying_invoice", orderDelivered: true })
+      )
+      expect(rows.order_delivered).toBe("complete")
+      expect(rows.wallet_connecting).toBe("complete")
+      expect(rows.payment_confirmation).toBe("in_progress")
+      expect(rows.receipt_sent).toBe("waiting")
+    })
+
+    it("sending_receipt -> first three complete, receipt in_progress", () => {
+      const rows = getPaymentTrackerRows(
+        baseInput({
+          stage: "sending_receipt",
+          orderDelivered: true,
+          paymentMoved: true,
+          proofStatus: "pending",
+        })
+      )
+      expect(rows.order_delivered).toBe("complete")
+      expect(rows.wallet_connecting).toBe("complete")
+      expect(rows.payment_confirmation).toBe("complete")
+      expect(rows.receipt_sent).toBe("in_progress")
+    })
+
+    it("checking_receipt with proof sent -> all four complete", () => {
+      const rows = getPaymentTrackerRows(
+        baseInput({
+          stage: "checking_receipt",
+          orderDelivered: true,
+          paymentMoved: true,
+          proofStatus: "sent",
+        })
+      )
+      expect(rows.order_delivered).toBe("complete")
+      expect(rows.wallet_connecting).toBe("complete")
+      expect(rows.payment_confirmation).toBe("complete")
+      expect(rows.receipt_sent).toBe("complete")
+    })
+
+    it("terminal success -> all four complete", () => {
+      const rows = getPaymentTrackerRows(
+        baseInput({
+          stage: null,
+          orderDelivered: true,
+          paymentMoved: true,
+          proofStatus: "sent",
+          finished: true,
+        })
+      )
+      expect(rows.order_delivered).toBe("complete")
+      expect(rows.wallet_connecting).toBe("complete")
+      expect(rows.payment_confirmation).toBe("complete")
+      expect(rows.receipt_sent).toBe("complete")
+    })
+  })
+
+  describe("getPaymentTrackerRows - failure modes", () => {
+    it("pre-delivery failure -> order row failed", () => {
+      const rows = getPaymentTrackerRows(
+        baseInput({
+          stage: "checking_order_delivery",
+          orderDelivered: false,
+          paymentMoved: false,
+          finished: true,
+          errorMessage: "relay error",
+        })
+      )
+      expect(rows.order_delivered).toBe("failed")
+      expect(rows.wallet_connecting).toBe("waiting")
+      expect(rows.payment_confirmation).toBe("waiting")
+      expect(rows.receipt_sent).toBe("waiting")
+    })
+
+    it("post-delivery, pre-payment failure (during invoice fetch) -> wallet row failed", () => {
+      const rows = getPaymentTrackerRows(
+        baseInput({
+          stage: "requesting_invoice",
+          orderDelivered: true,
+          paymentMoved: false,
+          finished: true,
+          errorMessage: "lnurl timeout",
+        })
+      )
+      expect(rows.order_delivered).toBe("complete")
+      expect(rows.wallet_connecting).toBe("failed")
+      expect(rows.payment_confirmation).toBe("waiting")
+      expect(rows.receipt_sent).toBe("waiting")
+    })
+
+    it("post-delivery, pre-payment failure (during pay) -> payment row failed", () => {
+      const rows = getPaymentTrackerRows(
+        baseInput({
+          stage: "paying_invoice",
+          orderDelivered: true,
+          paymentMoved: false,
+          finished: true,
+          errorMessage: "nwc rejected",
+        })
+      )
+      expect(rows.order_delivered).toBe("complete")
+      expect(rows.wallet_connecting).toBe("complete")
+      expect(rows.payment_confirmation).toBe("failed")
+      expect(rows.receipt_sent).toBe("waiting")
+    })
+
+    it("payment moved but proof failed -> receipt retry_needed", () => {
+      const rows = getPaymentTrackerRows(
+        baseInput({
+          stage: null,
+          orderDelivered: true,
+          paymentMoved: true,
+          proofStatus: "retry_needed",
+          finished: true,
+        })
+      )
+      expect(rows.order_delivered).toBe("complete")
+      expect(rows.wallet_connecting).toBe("complete")
+      expect(rows.payment_confirmation).toBe("complete")
+      expect(rows.receipt_sent).toBe("retry_needed")
+    })
+  })
+
+  describe("getPaymentTrackerOutcome", () => {
+    it("returns in_progress while not finished", () => {
+      expect(
+        getPaymentTrackerOutcome(baseInput({ stage: "paying_invoice" }))
+      ).toBe("in_progress")
+    })
+
+    it("returns succeeded when payment moved and proof sent", () => {
+      expect(
+        getPaymentTrackerOutcome(
+          baseInput({
+            paymentMoved: true,
+            proofStatus: "sent",
+            finished: true,
+          })
+        )
+      ).toBe("succeeded")
+    })
+
+    it("returns proof_retry_needed when payment moved but proof failed", () => {
+      expect(
+        getPaymentTrackerOutcome(
+          baseInput({
+            paymentMoved: true,
+            proofStatus: "retry_needed",
+            finished: true,
+          })
+        )
+      ).toBe("proof_retry_needed")
+    })
+
+    it("returns failed_pre_payment when order delivered but payment did not move", () => {
+      expect(
+        getPaymentTrackerOutcome(
+          baseInput({
+            orderDelivered: true,
+            paymentMoved: false,
+            finished: true,
+          })
+        )
+      ).toBe("failed_pre_payment")
+    })
+
+    it("returns failed_pre_delivery when order never delivered", () => {
+      expect(
+        getPaymentTrackerOutcome(
+          baseInput({
+            orderDelivered: false,
+            paymentMoved: false,
+            finished: true,
+          })
+        )
+      ).toBe("failed_pre_delivery")
+    })
+  })
+
+  describe("getPaymentTrackerHeadline - never claims funds moved before nwcPayInvoice", () => {
+    const fundsMovedClaims = /payment\s+sent|funds\s+moved|paid/i
+
+    it("does not claim funds moved during checking_order_delivery", () => {
+      const headline = getPaymentTrackerHeadline(
+        baseInput({ stage: "checking_order_delivery" })
+      )
+      expect(headline).not.toMatch(fundsMovedClaims)
+    })
+
+    it("does not claim funds moved during requesting_invoice", () => {
+      const headline = getPaymentTrackerHeadline(
+        baseInput({ stage: "requesting_invoice", orderDelivered: true })
+      )
+      expect(headline).not.toMatch(fundsMovedClaims)
+    })
+
+    it("does not claim funds moved during paying_invoice", () => {
+      const headline = getPaymentTrackerHeadline(
+        baseInput({ stage: "paying_invoice", orderDelivered: true })
+      )
+      expect(headline).not.toMatch(fundsMovedClaims)
+    })
+
+    it("does not claim funds moved on pre-payment failure", () => {
+      const headline = getPaymentTrackerHeadline(
+        baseInput({
+          stage: "paying_invoice",
+          orderDelivered: true,
+          paymentMoved: false,
+          finished: true,
+          errorMessage: "nwc rejected",
+        })
+      )
+      expect(headline).not.toMatch(fundsMovedClaims)
+      expect(headline).toMatch(/order delivered/i)
+      expect(headline).toMatch(/payment did not complete/i)
+    })
+
+    it("claims payment sent only after paymentMoved", () => {
+      const headline = getPaymentTrackerHeadline(
+        baseInput({
+          paymentMoved: true,
+          proofStatus: "sent",
+          finished: true,
+        })
+      )
+      expect(headline).toMatch(/payment sent/i)
+    })
+
+    it("flags proof retry needed while still acknowledging payment sent", () => {
+      const headline = getPaymentTrackerHeadline(
+        baseInput({
+          paymentMoved: true,
+          proofStatus: "retry_needed",
+          finished: true,
+        })
+      )
+      expect(headline).toMatch(/payment sent/i)
+      expect(headline).toMatch(/receipt|retry/i)
+    })
   })
 })

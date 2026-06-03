@@ -45,6 +45,8 @@ import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
 import { useWallet } from "../hooks/useWallet"
 import { requireAuth } from "../lib/auth"
+import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
+import { PaymentTracker } from "../components/PaymentTracker"
 import {
   isFastCheckoutEligible,
   getFastCheckoutUnavailableReasons,
@@ -462,8 +464,27 @@ function CheckoutPage() {
   >([])
   const [sentOrderId, setSentOrderId] = useState<string | null>(null)
   const [showSentGlow, setShowSentGlow] = useState(false)
-  const [, setPaymentStage] = useState<CheckoutPaymentStage | null>(null)
+  const [paymentStage, setPaymentStage] =
+    useState<CheckoutPaymentStage | null>(null)
+  // paidNotice is retained as a state setter for future surfaces (e.g.
+  // showing the merchant zap-receipt observation in an order detail view).
+  // The buyer-facing tracker conveys success/retry-needed via per-step
+  // status, so we don't render the raw notice string here.
   const [paidNotice, setPaidNotice] = useState<string | null>(null)
+  // -- Payment tracker state (CND-2A) -------------------------------------
+  // Booleans mirror the async boundaries inside `payNow()` so the in-page
+  // PaymentTracker can render explicit per-step status (waiting/in-progress/
+  // complete/failed/retry_needed). Kept as discrete state rather than
+  // derived from `paymentStage` because the buyer-visible "funds moved"
+  // claim must only flip after `nwcPayInvoice` resolves.
+  const [overlayPlaying, setOverlayPlaying] = useState(false)
+  const [trackerOrderDelivered, setTrackerOrderDelivered] = useState(false)
+  const [trackerPaymentMoved, setTrackerPaymentMoved] = useState(false)
+  const [trackerProofStatus, setTrackerProofStatus] = useState<
+    "pending" | "sent" | "retry_needed" | undefined
+  >(undefined)
+  const [trackerFinished, setTrackerFinished] = useState(false)
+  const [trackerError, setTrackerError] = useState<string | null>(null)
   const [zapVisibility, setZapVisibility] =
     useState<CheckoutZapVisibility>("public_zap")
   const [zapContent, setZapContent] = useState("")
@@ -755,7 +776,10 @@ function CheckoutPage() {
   const summaryStep: Exclude<
     CheckoutStep,
     "signing" | "sending" | "sent" | "paying" | "paid"
-  > = step === "payment" ? "payment" : "shipping"
+  > =
+    step === "payment" || step === "paying" || step === "paid"
+      ? "payment"
+      : "shipping"
 
   function updateShipping<K extends keyof ShippingFormState>(
     field: K,
@@ -1087,6 +1111,11 @@ function CheckoutPage() {
     setPaidNotice(null)
     setPendingManualInvoice(null)
     setPaymentStage("checking_order_delivery")
+    setTrackerOrderDelivered(false)
+    setTrackerPaymentMoved(false)
+    setTrackerProofStatus(undefined)
+    setTrackerFinished(false)
+    setTrackerError(null)
     setStep("paying")
 
     let orderDelivered = false
@@ -1168,6 +1197,7 @@ function CheckoutPage() {
       )
       recoveryNotice = getDeliveryNotice(orderDelivery, "Order")
       orderDelivered = true
+      setTrackerOrderDelivered(true)
 
       setPaymentStage("requesting_invoice")
 
@@ -1264,6 +1294,8 @@ function CheckoutPage() {
       }
 
       paymentMoved = true
+      setTrackerPaymentMoved(true)
+      setTrackerProofStatus("pending")
 
       try {
         await savePaymentAttempt({
@@ -1326,6 +1358,7 @@ function CheckoutPage() {
         )
         recoveryNotice =
           getDeliveryNotice(proofDelivery, "Payment proof") ?? recoveryNotice
+        setTrackerProofStatus("sent")
         await updatePaymentAttempt(orderId, {
           proofDeliveryStatus: "sent",
         }).catch((e) => {
@@ -1333,6 +1366,7 @@ function CheckoutPage() {
         })
       } catch {
         proofDelivered = false
+        setTrackerProofStatus("retry_needed")
         await updatePaymentAttempt(orderId, {
           proofDeliveryStatus: "retry_needed",
         }).catch((e) => {
@@ -1377,50 +1411,39 @@ function CheckoutPage() {
                   : "Payment sent and private proof accepted by Nostr delivery relays for merchant pickup. Awaiting merchant confirmation."))
           : "Payment sent. Proof delivery needs retry."
       )
+      setTrackerFinished(true)
       setStep("paid")
     } catch (e) {
+      const message = e instanceof Error ? e.message : "Payment failed"
       if (paymentMoved) {
+        // Funds moved but proof publish (or another tail step) threw. Treat
+        // as proof retry needed so the tracker reflects reality.
         if (paidOrderId) setSentOrderId(paidOrderId)
         setPaidNotice("Payment sent. Proof delivery needs retry.")
         setShowSentGlow(true)
+        setTrackerProofStatus("retry_needed")
+        setTrackerFinished(true)
         setStep("paid")
       } else {
-        const message = e instanceof Error ? e.message : "Payment failed"
-        setError(
+        // No funds moved -- keep the tracker visible (step stays "paying")
+        // so the buyer can read the failed step + retry. Recovery actions on
+        // the tracker can either retry payment or fall back to order-first.
+        setTrackerError(
           orderDelivered
             ? `Order accepted by Nostr delivery relays for merchant pickup, but payment did not complete. ${message}`
             : message
         )
-        setStep("payment")
+        setTrackerFinished(true)
       }
     } finally {
       setPaymentStage(null)
     }
   }
 
-  // ─── Full-screen transition states ──────────────────────────────────────
-
-  if (step === "paying") {
-    return (
-      <div className="flex min-h-[70vh] items-center justify-center">
-        <section className="w-full max-w-3xl rounded-[2rem] bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--secondary-500)_35%,transparent),transparent_55%),linear-gradient(180deg,var(--primary-500),var(--primary-600))] px-8 py-14 text-center text-white shadow-[0_24px_60px_color-mix(in_srgb,var(--primary-500)_40%,transparent)] sm:px-12">
-          <div
-            className="mx-auto flex h-24 w-24 animate-pulse items-center justify-center rounded-full border border-[color-mix(in_srgb,var(--text-inverse)_25%,transparent)] bg-[color-mix(in_srgb,var(--text-inverse)_12%,transparent)] shadow-[0_0_55px_color-mix(in_srgb,var(--secondary-500)_55%,transparent)]"
-            aria-hidden="true"
-          >
-            <LightningIcon className="h-12 w-12" />
-          </div>
-          <h1 className="mt-8 text-4xl font-semibold tracking-tight">
-            Lightning payment started
-          </h1>
-          <p className="mx-auto mt-8 max-w-md text-sm leading-7 text-white/85">
-            Your click registered. Conduit is safely delivering the order before
-            funds move, then completing the payment in the background.
-          </p>
-        </section>
-      </div>
-    )
-  }
+  // --- Full-screen transition states --------------------------------------
+  // Note: `paying` and `paid` are NOT handled here. They render inline inside
+  // the main checkout grid so the OrderSummary stays visible alongside the
+  // PaymentTracker (CND-2A: replace dead-air interrupt with in-page tracker).
 
   if (step === "sending") {
     return (
@@ -1468,53 +1491,9 @@ function CheckoutPage() {
   }
 
   if (step === "paid") {
-    return (
-      <div className="flex min-h-[70vh] items-center justify-center">
-        <section className="relative w-full max-w-3xl overflow-hidden rounded-[2rem] border border-[var(--border)] bg-[var(--surface)] px-8 py-14 text-center sm:px-12">
-          <div
-            aria-hidden="true"
-            className={[
-              "pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--secondary-500)_35%,transparent),transparent_55%),linear-gradient(180deg,color-mix(in_srgb,var(--primary-500)_22%,transparent),color-mix(in_srgb,var(--primary-600)_18%,transparent))] transition-opacity duration-700",
-              showSentGlow ? "opacity-100" : "opacity-0",
-            ].join(" ")}
-          />
-          <div className="relative mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-secondary-500/30 bg-secondary-500/10 text-secondary-300">
-            <CheckIcon className="h-8 w-8" />
-          </div>
-          <h1 className="relative mt-8 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Payment sent
-          </h1>
-          <div className="relative mx-auto mt-8 h-1 w-full max-w-sm rounded-full bg-secondary-500/50" />
-          <p className="relative mx-auto mt-8 max-w-xl text-lg leading-9 text-[var(--text-primary)]">
-            {paidNotice ??
-              "Your Lightning payment was sent and the order was accepted by Nostr delivery relays for merchant pickup."}
-          </p>
-          <p className="relative mx-auto mt-4 max-w-lg text-sm leading-7 text-[var(--text-secondary)]">
-            The merchant will confirm receipt and send fulfillment updates
-            through your Nostr messages.
-          </p>
-          {sentOrderId && (
-            <div className="relative mt-6 text-xs font-mono text-[var(--text-muted)]">
-              {sentOrderId}
-            </div>
-          )}
-          <div className="relative mt-8 flex flex-wrap justify-center gap-3">
-            <Button asChild variant="outline" className="h-11 px-5 text-sm">
-              <Link to="/cart">
-                <CartIcon className="h-4 w-4" />
-                Back to cart
-              </Link>
-            </Button>
-            <Button asChild className="h-11 px-5 text-sm">
-              <Link to="/products">
-                <Store className="h-4 w-4" />
-                Browse more products
-              </Link>
-            </Button>
-          </div>
-        </section>
-      </div>
-    )
+    // Render inline (within the main grid) -- handled below alongside the
+    // active payment tracker so OrderSummary remains visible. We intentionally
+    // do not early-return here.
   }
 
   if (step === "sent") {
@@ -1675,7 +1654,7 @@ function CheckoutPage() {
         <span>/</span>
         <span
           className={
-            step === "payment"
+            step === "payment" || step === "paying" || step === "paid"
               ? "text-[var(--text-primary)]"
               : "text-[var(--text-muted)]"
           }
@@ -2266,7 +2245,16 @@ function CheckoutPage() {
                         Back to shipping
                       </Button>
                       {fastEligible && (
-                        <Button className="h-11 px-5 text-sm" onClick={payNow}>
+                        <Button
+                          className="h-11 px-5 text-sm"
+                          onClick={() => {
+                            // Show the lightning-strike animation immediately
+                            // so the buyer gets click feedback within ~100ms
+                            // while order publish + invoice flow runs.
+                            setOverlayPlaying(true)
+                            void payNow()
+                          }}
+                        >
                           <LightningIcon className="h-4 w-4" />
                           Pay now
                         </Button>
@@ -2315,6 +2303,53 @@ function CheckoutPage() {
               </div>
             </>
           )}
+
+          {/* Inline payment tracker -- replaces the old purple full-page
+              interrupt. Renders in the left column so the OrderSummary on
+              the right stays visible during payment. (CND-2A) */}
+          {(step === "paying" || step === "paid") && (
+            <PaymentTracker
+              input={{
+                stage: paymentStage,
+                orderDelivered: trackerOrderDelivered,
+                paymentMoved: trackerPaymentMoved,
+                proofStatus: trackerProofStatus,
+                finished: trackerFinished,
+                errorMessage: trackerError,
+              }}
+              amountLabel={
+                total > 0 ? `${total.toLocaleString()} sats` : undefined
+              }
+              busy={!trackerFinished}
+              onTryAgain={
+                !trackerPaymentMoved && trackerFinished
+                  ? () => {
+                      setOverlayPlaying(true)
+                      void payNow()
+                    }
+                  : undefined
+              }
+              onPayLater={
+                !trackerPaymentMoved && trackerFinished
+                  ? () => {
+                      setTrackerError(null)
+                      setTrackerFinished(false)
+                      void placeOrder()
+                    }
+                  : undefined
+              }
+              onBackToCheckout={
+                !trackerPaymentMoved && trackerFinished
+                  ? () => {
+                      setError(trackerError)
+                      setTrackerError(null)
+                      setTrackerFinished(false)
+                      setStep("payment")
+                    }
+                  : undefined
+              }
+            />
+          )}
         </section>
 
         <OrderSummary
@@ -2324,6 +2359,11 @@ function CheckoutPage() {
           btcUsdRate={btcUsdRate}
         />
       </div>
+
+      <LightningStrikeOverlay
+        open={overlayPlaying}
+        onComplete={() => setOverlayPlaying(false)}
+      />
     </div>
   )
 }

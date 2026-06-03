@@ -258,6 +258,230 @@ export function getCheckoutPaymentStageLabel(
   }
 }
 
+// --- Payment tracker row mapping ------------------------------------------
+//
+// Pure helper: maps the payNow async-boundary state into the four buyer-facing
+// rows defined in the CND-2A ticket. Kept side-effect-free so it can be unit
+// tested without rendering the route.
+
+export type PaymentTrackerRowKey =
+  | "order_delivered"
+  | "wallet_connecting"
+  | "payment_confirmation"
+  | "receipt_sent"
+
+export type PaymentTrackerRowStatus =
+  | "waiting"
+  | "in_progress"
+  | "complete"
+  | "failed"
+  | "retry_needed"
+
+export type PaymentTrackerOutcome =
+  | "in_progress"
+  | "succeeded"
+  | "failed_pre_delivery"
+  | "failed_pre_payment"
+  | "proof_retry_needed"
+
+export interface PaymentTrackerInput {
+  /** The most recent stage reported by `payNow()`. `null` means not started or finished. */
+  stage: CheckoutPaymentStage | null
+  /** True after the order rumor publish has resolved. */
+  orderDelivered: boolean
+  /** True after `nwcPayInvoice` has resolved (funds have moved). */
+  paymentMoved: boolean
+  /**
+   * Payment proof delivery status as persisted by `payment-attempts`.
+   * `undefined` while we have not yet attempted proof delivery.
+   */
+  proofStatus?: "pending" | "sent" | "retry_needed"
+  /** Whether `payNow()` has reached a terminal state (success or failure). */
+  finished: boolean
+  /** The most recent error message (only meaningful when `finished` and not paid). */
+  errorMessage?: string | null
+}
+
+export type PaymentTrackerRows = Record<
+  PaymentTrackerRowKey,
+  PaymentTrackerRowStatus
+>
+
+/**
+ * Map the payNow state machine into the 4 buyer-facing tracker rows.
+ *
+ * Stage progression (matches `setPaymentStage` calls in `payNow`):
+ *
+ * | stage                     | order delivered | wallet connecting | payment confirm | receipt sent |
+ * | ------------------------- | --------------- | ----------------- | --------------- | ------------ |
+ * | checking_order_delivery   | in_progress     | waiting           | waiting         | waiting      |
+ * | requesting_invoice        | complete        | in_progress       | waiting         | waiting      |
+ * | paying_invoice            | complete        | complete          | in_progress     | waiting      |
+ * | sending_receipt           | complete        | complete          | complete        | in_progress  |
+ * | checking_receipt / done   | complete        | complete          | complete        | complete     |
+ *
+ * Failure overlays:
+ *  - terminal failure pre-delivery: "order delivered" -> failed
+ *  - terminal failure post-delivery, pre-payment: "wallet connecting" or
+ *    "payment confirmation" -> failed (whichever was active)
+ *  - proof delivery failed after payment moved: "receipt sent" -> retry_needed
+ */
+export function getPaymentTrackerRows(
+  input: PaymentTrackerInput
+): PaymentTrackerRows {
+  const rows: PaymentTrackerRows = {
+    order_delivered: "waiting",
+    wallet_connecting: "waiting",
+    payment_confirmation: "waiting",
+    receipt_sent: "waiting",
+  }
+
+  // Active-stage progression
+  switch (input.stage) {
+    case "checking_order_delivery":
+      rows.order_delivered = "in_progress"
+      break
+    case "requesting_invoice":
+      rows.order_delivered = "complete"
+      rows.wallet_connecting = "in_progress"
+      break
+    case "paying_invoice":
+      rows.order_delivered = "complete"
+      rows.wallet_connecting = "complete"
+      rows.payment_confirmation = "in_progress"
+      break
+    case "sending_receipt":
+      rows.order_delivered = "complete"
+      rows.wallet_connecting = "complete"
+      rows.payment_confirmation = "complete"
+      rows.receipt_sent = "in_progress"
+      break
+    case "checking_receipt":
+      rows.order_delivered = "complete"
+      rows.wallet_connecting = "complete"
+      rows.payment_confirmation = "complete"
+      // Receipt row reflects proof status, not the merchant-receipt observer.
+      rows.receipt_sent =
+        input.proofStatus === "sent"
+          ? "complete"
+          : input.proofStatus === "retry_needed"
+            ? "retry_needed"
+            : "in_progress"
+      break
+    case null:
+      // Not started yet, or terminal. Resolved below by `finished`.
+      break
+  }
+
+  // Force-promote rows when boolean evidence outpaces stage (e.g. once the
+  // tracker is finished and payment moved, every prior row must be complete).
+  if (input.orderDelivered) rows.order_delivered = "complete"
+  if (input.paymentMoved) {
+    rows.order_delivered = "complete"
+    rows.wallet_connecting = "complete"
+    rows.payment_confirmation = "complete"
+  }
+
+  if (!input.finished) return rows
+
+  // Terminal: paid + proof delivered
+  if (input.paymentMoved) {
+    if (input.proofStatus === "sent") {
+      rows.receipt_sent = "complete"
+    } else if (input.proofStatus === "retry_needed") {
+      rows.receipt_sent = "retry_needed"
+    } else if (rows.receipt_sent === "waiting") {
+      // Payment moved but proof was never attempted (catch unexpected flow).
+      rows.receipt_sent = "retry_needed"
+    }
+    return rows
+  }
+
+  // Terminal failure with no funds movement: mark the active row as failed.
+  if (rows.payment_confirmation === "in_progress") {
+    rows.payment_confirmation = "failed"
+  } else if (rows.wallet_connecting === "in_progress") {
+    rows.wallet_connecting = "failed"
+  } else if (rows.order_delivered === "in_progress") {
+    rows.order_delivered = "failed"
+  } else if (input.orderDelivered) {
+    // Order delivered but later stage failed before reaching `paying_invoice`.
+    rows.wallet_connecting = "failed"
+  } else {
+    rows.order_delivered = "failed"
+  }
+
+  return rows
+}
+
+/**
+ * Coarse outcome derived from the same input. Useful for choosing recovery
+ * actions (e.g. only show "Try payment again" when no funds moved).
+ */
+export function getPaymentTrackerOutcome(
+  input: PaymentTrackerInput
+): PaymentTrackerOutcome {
+  if (!input.finished) return "in_progress"
+  if (input.paymentMoved) {
+    if (input.proofStatus === "retry_needed") return "proof_retry_needed"
+    return "succeeded"
+  }
+  if (input.orderDelivered) return "failed_pre_payment"
+  return "failed_pre_delivery"
+}
+
+/**
+ * One-line headline for the tracker. Intentionally never claims funds moved
+ * before the payment-confirmation row is complete.
+ */
+export function getPaymentTrackerHeadline(
+  input: PaymentTrackerInput
+): string {
+  switch (getPaymentTrackerOutcome(input)) {
+    case "in_progress":
+      if (input.stage === "sending_receipt") return "Sending payment receipt"
+      if (input.stage === "paying_invoice") return "Confirming payment"
+      if (input.stage === "requesting_invoice")
+        return "Connecting to your wallet"
+      if (input.stage === "checking_receipt") return "Finalizing payment"
+      return "Delivering order to merchant"
+    case "succeeded":
+      return "Payment sent"
+    case "proof_retry_needed":
+      return "Payment sent. Receipt delivery needs retry."
+    case "failed_pre_payment":
+      return "Order delivered, payment did not complete"
+    case "failed_pre_delivery":
+    default:
+      return "Payment failed"
+  }
+}
+
+/**
+ * Per-row title + subtitle copy. Consumers can override per-row.
+ */
+export const PAYMENT_TRACKER_ROW_COPY: Record<
+  PaymentTrackerRowKey,
+  { title: string; subtitle: string }
+> = {
+  order_delivered: {
+    title: "Order delivered to merchant",
+    subtitle: "Encrypted order sent through Nostr",
+  },
+  wallet_connecting: {
+    title: "Connecting to wallet",
+    subtitle: "Requesting Lightning invoice via NWC",
+  },
+  payment_confirmation: {
+    title: "Payment confirmation",
+    subtitle: "Wallet pays the invoice over Lightning",
+  },
+  receipt_sent: {
+    title: "Receipt sent to merchant",
+    subtitle: "Payment proof delivered through Nostr",
+  },
+}
+
 export function buildDefaultZapContent(params: {
   items: CartItem[]
   merchantName: string
