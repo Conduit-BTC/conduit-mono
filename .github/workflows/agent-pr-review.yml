@@ -1,0 +1,88 @@
+name: Agent PR Review
+
+on:
+  pull_request:
+    types: [opened, reopened, edited, synchronize, ready_for_review]
+    branches: [main]
+  pull_request_review_comment:
+    types: [created, edited]
+  issue_comment:
+    types: [created, edited]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to review"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: >-
+      github.event.pull_request ||
+      (github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        contains(github.event.comment.body, '/agent review') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review_comment' &&
+        contains(github.event.comment.body, '/agent review') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUDDEN_AGENT_API_KEY: ${{ secrets.SUDDEN_AGENT_API_KEY }}
+    steps:
+      - name: Skip when Sudden Agent secret is unavailable
+        if: env.SUDDEN_AGENT_API_KEY == ''
+        run: echo "SUDDEN_AGENT_API_KEY is not configured; skipping agent review."
+
+      - uses: actions/checkout@v4
+        if: env.SUDDEN_AGENT_API_KEY != ''
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run Sudden Agent review
+        if: env.SUDDEN_AGENT_API_KEY != ''
+        uses: sudden-network/agent@326a428887a4ae4736a17ebf75a416944a04c0ab
+        with:
+          agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
+          github_token: ${{ github.token }}
+          resume: true
+          prompt: |
+            You are reviewing Conduit public repository changes.
+
+            Stay read-only. Do not edit files, push commits, create branches, or
+            change labels. If the author asks for fixes, explain that the
+            separate Agent PR Harden workflow must be triggered after maintainer
+            gating.
+
+            Review priorities:
+            1. Functional correctness and regressions.
+            2. Protocol/auth/privacy/payment constraints.
+            3. Reliability and failure-mode handling.
+            4. Test coverage and verifiability.
+            5. Maintainability.
+
+            Mandatory constraints:
+            - external signer auth only; no key custody
+            - no behavioral tracking or profiling
+            - no message, order, payment, address, signer, or wallet secret inspection
+            - payments remain non-custodial
+            - telemetry must follow docs/analytics/events.md
+            - public repo content must not include private runbooks, credentials,
+              dashboard exports, or private company planning context
+
+            Output findings first with P0/P1/P2 severity and concrete file/line
+            references. If there are no blocking findings, say so explicitly and
+            list residual test or preview risks.

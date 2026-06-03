@@ -11,6 +11,14 @@ export * from "./schemas"
 // Utils
 export * from "./utils"
 
+// Build provenance
+export {
+  conduitBuildInfo,
+  getCommitUrl,
+  normalizeRepositoryUrl,
+  type ConduitBuildInfo,
+} from "./build-info"
+
 // Pricing
 export {
   MSATS_PER_SAT,
@@ -21,6 +29,7 @@ export {
   formatApproxUsdFromSats,
   formatFiatPrice,
   getPriceSats,
+  getShippingCostSats,
   isBtcLikeCurrency,
   isMsatsLikeCurrency,
   isSatsLikeCurrency,
@@ -40,6 +49,7 @@ export {
 } from "./pricing/rates"
 export type {
   BtcUsdRateQuote,
+  CommerceShippingCostLike,
   CommercePriceSortDirection,
   CommercePriceLike,
   CommercePriceNormalization,

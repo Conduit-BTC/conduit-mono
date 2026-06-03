@@ -423,6 +423,67 @@ describe("checkout payment helpers", () => {
     expect(intent.items[0]?.shippingCostSats).toBe(500)
   })
 
+  it("converts fiat shipping costs before adding them to checkout totals", () => {
+    const now = 1_700_000_000_000
+    const intent = buildCheckoutPricingIntent(
+      [
+        cartItem({
+          shippingCostSats: undefined,
+          sourceShippingCost: {
+            amount: 10,
+            currency: "USD",
+            normalizedCurrency: "USD",
+          },
+        }),
+      ],
+      {
+        rate: 50_000,
+        fetchedAt: now,
+        source: "mempool",
+      },
+      now
+    )
+
+    expect(intent.status).toBe("ok")
+    if (intent.status !== "ok") return
+    expect(intent.itemSubtotalSats).toBe(1_000)
+    expect(intent.shippingCost).toEqual({
+      status: "priced",
+      totalSats: 20_000,
+      missingProductIds: [],
+    })
+    expect(intent.totalSats).toBe(21_000)
+    expect(intent.items[0]).toMatchObject({
+      shippingCostSats: 20_000,
+      sourceShippingCost: {
+        amount: 10,
+        currency: "USD",
+        normalizedCurrency: "USD",
+      },
+    })
+  })
+
+  it("blocks checkout pricing when source shipping costs cannot be converted", () => {
+    const intent = buildCheckoutPricingIntent(
+      [
+        cartItem({
+          shippingCostSats: undefined,
+          sourceShippingCost: {
+            amount: 10,
+            currency: "USD",
+            normalizedCurrency: "USD",
+          },
+        }),
+      ],
+      null
+    )
+
+    expect(intent).toMatchObject({
+      status: "error",
+      code: "unpriced_items",
+    })
+  })
+
   it("summarizes shipping as manual until every physical item is priced", () => {
     expect(getCheckoutShippingCost([cartItem()])).toEqual({
       status: "manual",
@@ -1003,6 +1064,35 @@ describe("shipping destination eligibility", () => {
           ["d", "conduit-default"],
           ["price", "Infinity", "SATS"],
           ["country", "US"],
+        ],
+      })
+    ).toBeNull()
+  })
+
+  it("parses empty replacement shipping options as no destinations", () => {
+    const parsed = parseShippingOptionEvent({
+      id: "shipping-event",
+      pubkey: FAKE_PUBKEY,
+      created_at: 2,
+      tags: [["d", "conduit-default"], ["price", "0", "SATS"], ["country"]],
+    })
+
+    expect(parsed).toMatchObject({
+      countries: [],
+      countryRules: [],
+      dTag: "conduit-default",
+    })
+  })
+
+  it("ignores empty non-default shipping options", () => {
+    expect(
+      parseShippingOptionEvent({
+        id: "shipping-event",
+        pubkey: FAKE_PUBKEY,
+        created_at: 2,
+        tags: [
+          ["d", "custom-option"],
+          ["price", "0", "SATS"],
         ],
       })
     ).toBeNull()

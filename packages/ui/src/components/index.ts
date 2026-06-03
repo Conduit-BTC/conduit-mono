@@ -104,6 +104,12 @@ export {
   type LegalFooterIconLink,
   type LegalFooterProps,
 } from "./LegalFooter"
+export {
+  AppProvenancePanel,
+  type AppProvenanceBuildInfo,
+  type AppProvenanceIdentity,
+  type AppProvenancePanelProps,
+} from "./AppProvenancePanel"
 
 export { ProfileSelector, type ProfileSelectorProps } from "./ProfileSelector"
 export {

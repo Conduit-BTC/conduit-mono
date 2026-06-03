@@ -1,25 +1,41 @@
 import {
+  ChevronDown,
+  Check,
+  CircleHelp,
+  Copy,
   CreditCard,
-  Grid2x2,
+  ExternalLink,
+  Github,
+  Info,
+  LogOut,
   Menu,
   Package,
   ShoppingBag,
+  Store,
   Truck,
   UserRound,
   Wifi,
 } from "lucide-react"
-import type { ComponentType } from "react"
-import { Link, useNavigate } from "@tanstack/react-router"
+import { useState, type ComponentType } from "react"
+import { Link } from "@tanstack/react-router"
 import {
   config,
+  formatNpub,
   getProfileDisplayLabel,
   useAuth,
   useProfile,
 } from "@conduit/core"
 import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
   Badge,
   Button,
-  ProfileSelector,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -29,7 +45,7 @@ import {
   cn,
 } from "@conduit/ui"
 import { SignerSwitch } from "./SignerSwitch"
-import { useMerchantReadiness } from "../hooks/useMerchantReadiness"
+import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,6 +59,7 @@ type NavRoute =
   | "/payments"
   | "/shipping"
   | "/network"
+  | "/about"
 
 type NavItem = {
   to: NavRoute
@@ -53,9 +70,10 @@ type NavItem = {
 }
 
 const mainNavItems: NavItem[] = [
-  { to: "/", label: "Home", icon: Grid2x2 },
+  { to: "/", label: "Home", icon: Store },
   { to: "/orders", label: "Orders", icon: ShoppingBag },
   { to: "/products", label: "Products", icon: Package },
+  { to: "/about", label: "About", icon: Info },
 ]
 
 const setupNavItems: NavItem[] = [
@@ -64,6 +82,47 @@ const setupNavItems: NavItem[] = [
   { to: "/shipping", label: "Shipping", icon: Truck, hasReadiness: true },
   { to: "/network", label: "Network", icon: Wifi, hasReadiness: true },
 ]
+
+type MerchantResourceLink = {
+  label: string
+  href: string
+} & (
+  | { icon: ComponentType<{ className?: string }>; imageSrc?: never }
+  | { imageSrc: string; icon?: never }
+)
+
+const merchantResourceLinks: readonly MerchantResourceLink[] = [
+  {
+    label: "conduit.market",
+    href: "https://conduit.market/",
+    icon: ExternalLink,
+  },
+  {
+    label: "GitHub",
+    href: "https://github.com/Conduit-BTC/conduit-mono",
+    icon: Github,
+  },
+  {
+    label: "Support",
+    href: "https://github.com/Conduit-BTC/conduit-mono/issues",
+    icon: CircleHelp,
+  },
+  {
+    label: "Nostr",
+    href: "https://njump.me/npub1nkfqwlz7xkhhdaa3ekz88qqqk7a0ks7jpv9zdsv0u206swxjw9rq0g2svu",
+    imageSrc: "/images/logo/nostr-n-logo-white.png",
+  },
+  {
+    label: "Terms",
+    href: "https://conduit.market/terms-of-service",
+    icon: ExternalLink,
+  },
+  {
+    label: "Privacy",
+    href: "https://conduit.market/privacy-policy",
+    icon: ExternalLink,
+  },
+] as const
 
 // ---------------------------------------------------------------------------
 // Avatar / logo helpers
@@ -146,6 +205,7 @@ function MerchantNavLinks({
     "/payments": paymentsIncomplete,
     "/shipping": shippingIncomplete,
     "/network": networkIncomplete,
+    "/about": false,
     "/": false,
     "/orders": false,
     "/products": false,
@@ -203,12 +263,12 @@ function MerchantNavLinks({
 // UserMenu
 // ---------------------------------------------------------------------------
 
-function UserMenu() {
+function UserMenu({ className }: { className?: string } = {}) {
   const { pubkey, status, disconnect } = useAuth()
-  const navigate = useNavigate()
+  const [npubCopied, setNpubCopied] = useState(false)
   const profileQuery = useProfile(pubkey)
   const profile = profileQuery.data
-  const readiness = useMerchantReadiness()
+  const readiness = useMerchantReadinessState()
 
   if (!pubkey || status !== "connected") return null
 
@@ -217,24 +277,141 @@ function UserMenu() {
     pendingLabel: "Loading profile",
     chars: 6,
   })
+  const npub = formatNpub(pubkey, 12)
+  const fullNpub = formatNpub(pubkey)
+  const setupIncomplete =
+    !readiness.setupComplete && readiness.missingAreas.length > 0
+
+  async function handleCopyNpub(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(fullNpub)
+      setNpubCopied(true)
+      window.setTimeout(() => setNpubCopied(false), 1_200)
+    } catch {
+      setNpubCopied(false)
+    }
+  }
 
   return (
-    <ProfileSelector
-      displayName={displayName}
-      avatarUrl={profile?.picture}
-      avatarFallback={<MerchantAvatarFallback iconClassName="h-4 w-4" />}
-      alertLabel={
-        readiness.setupComplete || readiness.missingAreas.length === 0
-          ? undefined
-          : "Needs completion"
-      }
-      profileHref="/profile"
-      onProfile={() => navigate({ to: "/profile" })}
-      networkHref="/network"
-      onNetwork={() => navigate({ to: "/network" })}
-      onDisconnect={disconnect}
-      className="h-12 min-w-[12.75rem] rounded-[16px] px-3"
-    />
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex h-12 min-w-[12.75rem] items-center gap-3 rounded-[16px] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 text-left text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
+            className
+          )}
+        >
+          <span className="relative shrink-0">
+            <Avatar className="h-8 w-8 border border-[var(--border)]">
+              <AvatarImage
+                src={profile?.picture ?? undefined}
+                alt={displayName}
+              />
+              <AvatarFallback className="bg-[var(--avatar-bg)] text-[var(--on-primary)]">
+                <MerchantAvatarFallback iconClassName="h-4 w-4" />
+              </AvatarFallback>
+            </Avatar>
+            {setupIncomplete ? (
+              <span
+                aria-hidden="true"
+                className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-[var(--surface-elevated)] bg-[var(--warning)]"
+              />
+            ) : null}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-semibold">
+              {displayName}
+            </span>
+            <span className="block truncate text-[11px] text-[var(--text-secondary)]">
+              {npub}
+            </span>
+          </span>
+          <ChevronDown className="h-4 w-4 shrink-0 text-[var(--text-secondary)]" />
+        </button>
+      </DropdownMenuTrigger>
+
+      <DropdownMenuContent
+        align="start"
+        side="top"
+        sideOffset={12}
+        className="w-[16rem] rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-overlay)] p-2 text-[var(--text-primary)] shadow-[var(--shadow-dialog)]"
+      >
+        <div className="px-2 py-2">
+          <div className="text-sm font-semibold">{displayName}</div>
+          <div className="mt-1 flex items-start gap-2">
+            <div className="min-w-0 flex-1 break-all text-xs leading-5 text-[var(--text-secondary)]">
+              {fullNpub}
+            </div>
+            <button
+              type="button"
+              aria-label={npubCopied ? "Npub copied" : "Copy npub"}
+              title={npubCopied ? "Copied" : "Copy npub"}
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                void handleCopyNpub()
+              }}
+            >
+              {npubCopied ? (
+                <Check className="h-3.5 w-3.5 text-[var(--success)]" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
+            </button>
+          </div>
+          {setupIncomplete ? (
+            <StatusPill variant="warning" className="mt-3 text-[10px]">
+              Needs completion
+            </StatusPill>
+          ) : (
+            <StatusPill variant="success" className="mt-3 text-[10px]">
+              Ready to sell
+            </StatusPill>
+          )}
+        </div>
+
+        <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
+
+        {merchantResourceLinks.map((link) => {
+          const Icon = "icon" in link ? link.icon : null
+
+          return (
+            <DropdownMenuItem
+              key={link.href}
+              asChild
+              className="h-10 rounded-xl px-2 text-sm font-medium text-[var(--text-primary)] focus:bg-[var(--surface-elevated)]"
+            >
+              <a href={link.href} target="_blank" rel="noopener noreferrer">
+                {"imageSrc" in link ? (
+                  <img
+                    src={link.imageSrc}
+                    alt=""
+                    aria-hidden="true"
+                    className="mr-2 h-4 w-4 object-contain opacity-75"
+                    draggable="false"
+                  />
+                ) : Icon ? (
+                  <Icon className="mr-2 h-4 w-4 text-[var(--text-secondary)]" />
+                ) : null}
+                <span>{link.label}</span>
+              </a>
+            </DropdownMenuItem>
+          )
+        })}
+
+        <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
+
+        <DropdownMenuItem
+          className="h-10 rounded-xl px-2 text-sm font-medium text-error focus:bg-[var(--surface-elevated)] focus:text-error"
+          onSelect={disconnect}
+        >
+          <LogOut className="mr-2 h-4 w-4" />
+          <span>Disconnect</span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -242,9 +419,9 @@ function UserMenu() {
 // Mobile nav
 // ---------------------------------------------------------------------------
 
-function MobileNav() {
+export function MerchantMobileNav() {
   const { pubkey, status } = useAuth()
-  const readiness = useMerchantReadiness()
+  const readiness = useMerchantReadinessState()
 
   return (
     <Sheet>
@@ -260,28 +437,32 @@ function MobileNav() {
       </SheetTrigger>
       <SheetContent
         side="left"
-        className="w-[320px] border-r border-[var(--border)] bg-[var(--surface-dialog)]"
+        className="flex h-dvh w-[320px] flex-col border-r border-[var(--border)] bg-[var(--surface-dialog)]"
       >
-        <SheetHeader>
+        <SheetHeader className="shrink-0">
           <SheetTitle>
             <Logo variant="full" className="justify-start" />
           </SheetTitle>
         </SheetHeader>
 
-        <div className="mt-6 space-y-6">
-          <MerchantNavLinks
-            compact
-            profileIncomplete={
-              !readiness.profileComplete && !readiness.profileCheckPending
-            }
-            paymentsIncomplete={
-              !readiness.paymentsComplete && !readiness.paymentsCheckPending
-            }
-            shippingIncomplete={!readiness.shippingComplete}
-            networkIncomplete={!readiness.networkComplete}
-          />
+        <div className="mt-6 flex min-h-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <MerchantNavLinks
+              compact
+              profileIncomplete={
+                !readiness.profileComplete && !readiness.profileCheckPending
+              }
+              paymentsIncomplete={
+                !readiness.paymentsComplete && !readiness.paymentsCheckPending
+              }
+              shippingIncomplete={
+                !readiness.shippingComplete && !readiness.shippingCheckPending
+              }
+              networkIncomplete={!readiness.networkComplete}
+            />
+          </div>
 
-          <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+          <div className="mt-6 shrink-0 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
             {config.lightningNetwork !== "mainnet" && (
               <Badge
                 variant="secondary"
@@ -295,7 +476,11 @@ function MobileNav() {
                 {config.lightningNetwork}
               </Badge>
             )}
-            {status === "connected" && pubkey ? <UserMenu /> : <SignerSwitch />}
+            {status === "connected" && pubkey ? (
+              <UserMenu className="w-full min-w-0" />
+            ) : (
+              <SignerSwitch />
+            )}
           </div>
         </div>
       </SheetContent>
@@ -308,25 +493,13 @@ function MobileNav() {
 // ---------------------------------------------------------------------------
 
 export function MerchantSidebar() {
-  const readiness = useMerchantReadiness()
+  const { pubkey, status } = useAuth()
+  const readiness = useMerchantReadinessState()
 
   return (
     <aside className="hidden h-screen min-h-0 flex-col border-r border-[var(--border)] bg-[var(--surface)] lg:flex">
       <div className="shrink-0 border-b border-[var(--border)] px-5 py-5">
         <Logo />
-        {config.lightningNetwork !== "mainnet" && (
-          <Badge
-            variant="secondary"
-            className={cn(
-              "mt-4 border",
-              config.lightningNetwork === "mock"
-                ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] text-[var(--warning)]"
-                : "border-[var(--info)] bg-[color-mix(in_srgb,var(--info)_10%,transparent)] text-[var(--info)]"
-            )}
-          >
-            {config.lightningNetwork}
-          </Badge>
-        )}
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-5">
@@ -337,35 +510,33 @@ export function MerchantSidebar() {
           paymentsIncomplete={
             !readiness.paymentsComplete && !readiness.paymentsCheckPending
           }
-          shippingIncomplete={!readiness.shippingComplete}
+          shippingIncomplete={
+            !readiness.shippingComplete && !readiness.shippingCheckPending
+          }
           networkIncomplete={!readiness.networkComplete}
         />
       </div>
-    </aside>
-  )
-}
 
-// ---------------------------------------------------------------------------
-// Header
-// ---------------------------------------------------------------------------
-
-export function MerchantHeader() {
-  const { pubkey, status } = useAuth()
-  const signerConnected = status === "connected" && !!pubkey
-
-  return (
-    <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_84%,transparent)] backdrop-blur">
-      <div className="flex h-20 items-center gap-3 px-4 sm:px-6">
-        <MobileNav />
-
-        <div className="flex-1" />
-
-        <div className="flex items-center gap-2">
-          <div className="hidden lg:block">
-            {signerConnected ? <UserMenu /> : <SignerSwitch />}
-          </div>
-        </div>
+      <div className="shrink-0 border-t border-[var(--border)] px-4 py-4">
+        {config.lightningNetwork !== "mainnet" && (
+          <Badge
+            variant="secondary"
+            className={cn(
+              "mb-3 border",
+              config.lightningNetwork === "mock"
+                ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] text-[var(--warning)]"
+                : "border-[var(--info)] bg-[color-mix(in_srgb,var(--info)_10%,transparent)] text-[var(--info)]"
+            )}
+          >
+            {config.lightningNetwork}
+          </Badge>
+        )}
+        {status === "connected" && pubkey ? (
+          <UserMenu className="w-full min-w-0" />
+        ) : (
+          <SignerSwitch />
+        )}
       </div>
-    </header>
+    </aside>
   )
 }

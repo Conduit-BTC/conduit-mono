@@ -132,7 +132,7 @@ function buildShippingMetadata(
 > {
   if (!usePresetShippingZone) return {}
 
-  const shippingConfig = loadShippingConfig()
+  const shippingConfig = loadShippingConfig(merchantPubkey)
   if (!isShippingComplete(shippingConfig)) return {}
 
   return {
@@ -526,7 +526,7 @@ function ProductsPage() {
   const productStatusLabel = productsQuery.isFetching
     ? "Updating listings"
     : `${visibleProducts.length} of ${merchantProducts.length} listings`
-  const shippingConfig = loadShippingConfig()
+  const shippingConfig = loadShippingConfig(pubkey)
   const hasPresetShippingZone = isShippingComplete(shippingConfig)
   const productIsDigital = form.format === "digital"
 

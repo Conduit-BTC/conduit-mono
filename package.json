@@ -42,6 +42,7 @@
     "build:packages": "bun run --filter @conduit/core build && bun run --filter @conduit/ui build",
     "typecheck": "bun run --filter '*' typecheck",
     "lint": "bun run --filter '*' lint",
+    "telemetry:check": "bun scripts/ci/check_telemetry_policy.ts",
     "test": "bun test",
     "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules"
   },

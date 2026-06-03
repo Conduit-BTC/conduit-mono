@@ -22,6 +22,11 @@ export interface Product {
   format: "physical" | "digital"
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
   shippingCostSats?: number
+  sourceShippingCost?: {
+    amount: number
+    currency: string
+    normalizedCurrency: string
+  }
   /** Addressable kind-30406 shipping option reference attached by the merchant. */
   shippingOptionId?: string
   shippingOptionDTag?: string
@@ -89,6 +94,11 @@ export interface OrderItem {
   priceAtPurchase: number
   currency: string
   shippingCostSats?: number
+  sourceShippingCost?: {
+    amount: number
+    currency: string
+    normalizedCurrency: string
+  }
   shippingOptionId?: string
   shippingOptionDTag?: string
   shippingCountries?: string[]

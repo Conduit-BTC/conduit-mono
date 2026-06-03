@@ -1,0 +1,111 @@
+name: Agent PR Harden
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to harden"
+        required: true
+        type: string
+      task:
+        description: "Specific fix or hardening task"
+        required: true
+        type: string
+      risk_class:
+        description: "Risk class for the work"
+        required: true
+        default: "B"
+        type: choice
+        options:
+          - A
+          - B
+          - C
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SUDDEN_AGENT_API_KEY: ${{ secrets.SUDDEN_AGENT_API_KEY }}
+    steps:
+      - name: Skip when Sudden Agent secret is unavailable
+        if: env.SUDDEN_AGENT_API_KEY == ''
+        run: echo "SUDDEN_AGENT_API_KEY is not configured; skipping agent hardening."
+
+      - uses: actions/checkout@v4
+        if: env.SUDDEN_AGENT_API_KEY != ''
+        with:
+          fetch-depth: 0
+
+      - name: Validate maintainer gate
+        if: env.SUDDEN_AGENT_API_KEY != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          metadata="$(gh pr view "${{ inputs.pr_number }}" --json isCrossRepository,labels)"
+          is_cross_repo="$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.isCrossRepository ? "true" : "false")' "$metadata")"
+          has_gate_label="$(node -e 'const data = JSON.parse(process.argv[1]); const labels = data.labels.map((label) => label.name); console.log(labels.includes("agent-ready") || labels.includes("agent-fix") ? "true" : "false")' "$metadata")"
+
+          if [[ "${{ inputs.risk_class }}" == "C" ]]; then
+            echo "Risk class C requires human-owned planning before agent code changes."
+            exit 1
+          fi
+
+          if [[ "$is_cross_repo" == "true" ]]; then
+            echo "Agent hardening is disabled for cross-repository pull requests."
+            exit 1
+          fi
+
+          if [[ "$has_gate_label" != "true" ]]; then
+            echo "Add agent-ready or agent-fix before running code-changing agent hardening."
+            exit 1
+          fi
+
+      - name: Check out pull request branch
+        if: env.SUDDEN_AGENT_API_KEY != ''
+        run: gh pr checkout "${{ inputs.pr_number }}"
+
+      - name: Run Sudden Agent hardening
+        if: env.SUDDEN_AGENT_API_KEY != ''
+        uses: sudden-network/agent@326a428887a4ae4736a17ebf75a416944a04c0ab
+        with:
+          agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
+          github_token: ${{ github.token }}
+          resume: true
+          sudo: true
+          prompt: |
+            You are hardening PR #${{ inputs.pr_number }} for Conduit.
+
+            Task:
+            ${{ inputs.task }}
+
+            Risk class: ${{ inputs.risk_class }}
+
+            You may edit files and push commits to the PR branch. Keep the
+            change narrowly scoped to the requested task. Do not change workflow
+            files. Do not handle high-risk protocol, auth, payment, privacy,
+            security, or release-policy decisions beyond the explicitly
+            approved task.
+
+            Required validation before final comment:
+            - bun run format:check
+            - bun run typecheck
+            - bun run lint
+            - bun run telemetry:check
+            - relevant focused tests, or bun test if broad behavior changed
+
+            Never add secrets, private runbooks, telemetry payloads, dashboard
+            exports, message/order/payment contents, signer codes, Nostr secret
+            keys, NWC URIs, or wallet credentials to tracked files.
