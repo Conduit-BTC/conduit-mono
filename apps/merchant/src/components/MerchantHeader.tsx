@@ -29,7 +29,7 @@ import {
   cn,
 } from "@conduit/ui"
 import { SignerSwitch } from "./SignerSwitch"
-import { useMerchantReadiness } from "../hooks/useMerchantReadiness"
+import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -203,12 +203,12 @@ function MerchantNavLinks({
 // UserMenu
 // ---------------------------------------------------------------------------
 
-function UserMenu() {
+function UserMenu({ className }: { className?: string } = {}) {
   const { pubkey, status, disconnect } = useAuth()
   const navigate = useNavigate()
   const profileQuery = useProfile(pubkey)
   const profile = profileQuery.data
-  const readiness = useMerchantReadiness()
+  const readiness = useMerchantReadinessState()
 
   if (!pubkey || status !== "connected") return null
 
@@ -233,7 +233,7 @@ function UserMenu() {
       networkHref="/network"
       onNetwork={() => navigate({ to: "/network" })}
       onDisconnect={disconnect}
-      className="h-12 min-w-[12.75rem] rounded-[16px] px-3"
+      className={cn("h-12 min-w-[12.75rem] rounded-[16px] px-3", className)}
     />
   )
 }
@@ -242,9 +242,9 @@ function UserMenu() {
 // Mobile nav
 // ---------------------------------------------------------------------------
 
-function MobileNav() {
+export function MerchantMobileNav() {
   const { pubkey, status } = useAuth()
-  const readiness = useMerchantReadiness()
+  const readiness = useMerchantReadinessState()
 
   return (
     <Sheet>
@@ -260,30 +260,32 @@ function MobileNav() {
       </SheetTrigger>
       <SheetContent
         side="left"
-        className="w-[320px] border-r border-[var(--border)] bg-[var(--surface-dialog)]"
+        className="flex h-dvh w-[320px] flex-col border-r border-[var(--border)] bg-[var(--surface-dialog)]"
       >
-        <SheetHeader>
+        <SheetHeader className="shrink-0">
           <SheetTitle>
             <Logo variant="full" className="justify-start" />
           </SheetTitle>
         </SheetHeader>
 
-        <div className="mt-6 space-y-6">
-          <MerchantNavLinks
-            compact
-            profileIncomplete={
-              !readiness.profileComplete && !readiness.profileCheckPending
-            }
-            paymentsIncomplete={
-              !readiness.paymentsComplete && !readiness.paymentsCheckPending
-            }
-            shippingIncomplete={
-              !readiness.shippingComplete && !readiness.shippingCheckPending
-            }
-            networkIncomplete={!readiness.networkComplete}
-          />
+        <div className="mt-6 flex min-h-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <MerchantNavLinks
+              compact
+              profileIncomplete={
+                !readiness.profileComplete && !readiness.profileCheckPending
+              }
+              paymentsIncomplete={
+                !readiness.paymentsComplete && !readiness.paymentsCheckPending
+              }
+              shippingIncomplete={
+                !readiness.shippingComplete && !readiness.shippingCheckPending
+              }
+              networkIncomplete={!readiness.networkComplete}
+            />
+          </div>
 
-          <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+          <div className="mt-6 shrink-0 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
             {config.lightningNetwork !== "mainnet" && (
               <Badge
                 variant="secondary"
@@ -297,7 +299,11 @@ function MobileNav() {
                 {config.lightningNetwork}
               </Badge>
             )}
-            {status === "connected" && pubkey ? <UserMenu /> : <SignerSwitch />}
+            {status === "connected" && pubkey ? (
+              <UserMenu className="w-full min-w-0" />
+            ) : (
+              <SignerSwitch />
+            )}
           </div>
         </div>
       </SheetContent>
@@ -310,25 +316,13 @@ function MobileNav() {
 // ---------------------------------------------------------------------------
 
 export function MerchantSidebar() {
-  const readiness = useMerchantReadiness()
+  const { pubkey, status } = useAuth()
+  const readiness = useMerchantReadinessState()
 
   return (
     <aside className="hidden h-screen min-h-0 flex-col border-r border-[var(--border)] bg-[var(--surface)] lg:flex">
       <div className="shrink-0 border-b border-[var(--border)] px-5 py-5">
         <Logo />
-        {config.lightningNetwork !== "mainnet" && (
-          <Badge
-            variant="secondary"
-            className={cn(
-              "mt-4 border",
-              config.lightningNetwork === "mock"
-                ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] text-[var(--warning)]"
-                : "border-[var(--info)] bg-[color-mix(in_srgb,var(--info)_10%,transparent)] text-[var(--info)]"
-            )}
-          >
-            {config.lightningNetwork}
-          </Badge>
-        )}
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-5">
@@ -345,31 +339,27 @@ export function MerchantSidebar() {
           networkIncomplete={!readiness.networkComplete}
         />
       </div>
-    </aside>
-  )
-}
 
-// ---------------------------------------------------------------------------
-// Header
-// ---------------------------------------------------------------------------
-
-export function MerchantHeader() {
-  const { pubkey, status } = useAuth()
-  const signerConnected = status === "connected" && !!pubkey
-
-  return (
-    <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_84%,transparent)] backdrop-blur">
-      <div className="flex h-20 items-center gap-3 px-4 sm:px-6">
-        <MobileNav />
-
-        <div className="flex-1" />
-
-        <div className="flex items-center gap-2">
-          <div className="hidden lg:block">
-            {signerConnected ? <UserMenu /> : <SignerSwitch />}
-          </div>
-        </div>
+      <div className="shrink-0 border-t border-[var(--border)] px-4 py-4">
+        {config.lightningNetwork !== "mainnet" && (
+          <Badge
+            variant="secondary"
+            className={cn(
+              "mb-3 border",
+              config.lightningNetwork === "mock"
+                ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] text-[var(--warning)]"
+                : "border-[var(--info)] bg-[color-mix(in_srgb,var(--info)_10%,transparent)] text-[var(--info)]"
+            )}
+          >
+            {config.lightningNetwork}
+          </Badge>
+        )}
+        {status === "connected" && pubkey ? (
+          <UserMenu className="w-full min-w-0" />
+        ) : (
+          <SignerSwitch />
+        )}
       </div>
-    </header>
+    </aside>
   )
 }

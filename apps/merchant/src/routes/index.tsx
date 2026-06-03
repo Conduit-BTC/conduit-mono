@@ -18,9 +18,9 @@ import {
   Wallet,
   Wifi,
 } from "lucide-react"
-import type { ComponentType } from "react"
-import { Badge, Button, StatusPill } from "@conduit/ui"
-import { useMerchantReadiness } from "../hooks/useMerchantReadiness"
+import { useEffect, useRef, useState, type ComponentType } from "react"
+import { Badge, Button, StatusPill, cn } from "@conduit/ui"
+import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
 import type { MerchantSetupReadiness } from "../lib/readiness"
 
 export const Route = createFileRoute("/")({
@@ -153,6 +153,62 @@ function StatCard({
   )
 }
 
+function RelayStatusBadge({ status }: { status: string }) {
+  const previousStatusRef = useRef(status)
+  const [recentlyConnected, setRecentlyConnected] = useState(false)
+  const isConnecting = status === "connecting"
+  const isConnected = status === "connected"
+  const isError = status === "error"
+
+  useEffect(() => {
+    if (status === "connected" && previousStatusRef.current !== "connected") {
+      setRecentlyConnected(true)
+      const timeoutId = window.setTimeout(() => {
+        setRecentlyConnected(false)
+      }, 1_200)
+
+      previousStatusRef.current = status
+      return () => window.clearTimeout(timeoutId)
+    }
+
+    previousStatusRef.current = status
+    return undefined
+  }, [status])
+
+  return (
+    <Badge
+      variant="secondary"
+      className={cn(
+        "gap-1.5 border transition-colors duration-500",
+        isConnecting &&
+          "animate-pulse border-[var(--info)] bg-[color-mix(in_srgb,var(--info)_10%,transparent)] text-[var(--info)]",
+        recentlyConnected &&
+          "border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_10%,transparent)] text-[var(--success)] shadow-[0_0_16px_color-mix(in_srgb,var(--success)_18%,transparent)]",
+        isConnected &&
+          !recentlyConnected &&
+          "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]",
+        isError && "border-error/30 bg-error/10 text-error",
+        !isConnecting &&
+          !isConnected &&
+          !isError &&
+          "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-secondary)]"
+      )}
+    >
+      <span
+        aria-hidden="true"
+        className={cn(
+          "h-1.5 w-1.5 rounded-full",
+          isConnecting && "bg-[var(--info)]",
+          isConnected && "bg-[var(--success)]",
+          isError && "bg-error",
+          !isConnecting && !isConnected && !isError && "bg-[var(--text-muted)]"
+        )}
+      />
+      Relay {status}
+    </Badge>
+  )
+}
+
 function ReadinessRow({
   label,
   complete,
@@ -266,7 +322,7 @@ function MerchantReadinessPanel({
 function DashboardPage() {
   const { pubkey, error } = useAuth()
   const ndk = useNdkState()
-  const readiness = useMerchantReadiness()
+  const readiness = useMerchantReadinessState()
   const statsQuery = useQuery({
     queryKey: ["merchant-dashboard-live", pubkey ?? "none"],
     enabled: !!pubkey,
@@ -310,12 +366,7 @@ function DashboardPage() {
               {formatNpub(pubkey, 10)}
             </Badge>
           )}
-          <Badge
-            variant="secondary"
-            className="border-[var(--border)] bg-[var(--surface-elevated)]"
-          >
-            Relay {ndk.status}
-          </Badge>
+          <RelayStatusBadge status={ndk.status} />
         </div>
       </div>
 
