@@ -39,6 +39,11 @@ export type CommercePriceLike = {
   sourcePrice?: SourcePriceQuote
 }
 
+export type CommerceShippingCostLike = {
+  shippingCostSats?: number
+  sourceShippingCost?: SourcePriceQuote
+}
+
 export type CommercePriceSortDirection = "asc" | "desc"
 
 export const SUPPORTED_PRODUCT_PRICE_CURRENCIES = [
@@ -173,6 +178,13 @@ function toSafeIntegerSats(
   if (!Number.isSafeInteger(rounded)) return null
   if (rounded < minimum) return null
   return rounded
+}
+
+function toSafeShippingSats(value: unknown): number | null {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+    return value
+  }
+  return null
 }
 
 export function normalizeCommercePrice(
@@ -333,6 +345,29 @@ export function getPriceSats(
   )
   if (normalized.status !== "ok") return null
   return { sats: normalized.sats, approximate: normalized.approximate }
+}
+
+export function getShippingCostSats(
+  shipping: CommerceShippingCostLike,
+  rateInput: PricingRateInput = null
+): { sats: number; approximate: boolean } | null {
+  const source = shipping.sourceShippingCost
+  if (source) {
+    if (!Number.isFinite(source.amount) || source.amount < 0) return null
+    if (source.amount === 0) return { sats: 0, approximate: false }
+
+    const normalized = normalizeCommercePrice(
+      source.amount,
+      source.normalizedCurrency || source.currency,
+      rateInput
+    )
+    if (normalized.status !== "ok") return null
+    return { sats: normalized.sats, approximate: normalized.approximate }
+  }
+
+  const cached = toSafeShippingSats(shipping.shippingCostSats)
+  if (cached === null) return null
+  return { sats: cached, approximate: false }
 }
 
 export function formatFiatPrice(

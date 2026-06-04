@@ -4,6 +4,7 @@ import {
   fetchLnurlInvoice,
   fetchZapInvoice,
   getPriceSats,
+  getShippingCostSats,
   isBtcLikeCurrency,
   isMsatsLikeCurrency,
   isSatsLikeCurrency,
@@ -33,6 +34,7 @@ export type CheckoutPricingItem = {
   priceAtPurchase: number
   currency: "SATS"
   shippingCostSats?: number
+  sourceShippingCost?: SourcePriceQuote
   shippingOptionId?: string
   shippingOptionDTag?: string
   shippingCountries?: string[]
@@ -90,16 +92,30 @@ function itemNeedsFreshQuote(item: CartItem, approximate: boolean): boolean {
   )
 }
 
-function getKnownShippingCostSats(item: CartItem): number | null {
-  const value = item.shippingCostSats
-  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
-    return value
-  }
-  return null
+function shippingCostNeedsFreshQuote(
+  item: CartItem,
+  approximate: boolean
+): boolean {
+  const sourceCurrency = item.sourceShippingCost?.normalizedCurrency
+  return (
+    approximate &&
+    !!sourceCurrency &&
+    !isSatsLikeCurrency(sourceCurrency) &&
+    !isMsatsLikeCurrency(sourceCurrency) &&
+    !isBtcLikeCurrency(sourceCurrency)
+  )
+}
+
+function getKnownShippingCostSats(
+  item: CartItem,
+  rateInput: PricingRateInput = null
+): { sats: number; approximate: boolean } | null {
+  return getShippingCostSats(item, rateInput)
 }
 
 export function getCheckoutShippingCost(
-  items: CartItem[]
+  items: CartItem[],
+  rateInput: PricingRateInput = null
 ): CheckoutShippingCostSummary {
   const physicalItems = items.filter((item) => item.format !== "digital")
   if (physicalItems.length === 0) {
@@ -111,7 +127,7 @@ export function getCheckoutShippingCost(
   }
 
   const missingProductIds = physicalItems
-    .filter((item) => getKnownShippingCostSats(item) === null)
+    .filter((item) => getKnownShippingCostSats(item, rateInput) === null)
     .map((item) => item.productId)
 
   if (missingProductIds.length > 0) {
@@ -123,7 +139,9 @@ export function getCheckoutShippingCost(
   }
 
   const totalSats = physicalItems.reduce(
-    (sum, item) => sum + (getKnownShippingCostSats(item) ?? 0) * item.quantity,
+    (sum, item) =>
+      sum +
+      (getKnownShippingCostSats(item, rateInput)?.sats ?? 0) * item.quantity,
     0
   )
 
@@ -194,13 +212,45 @@ export function buildCheckoutPricingIntent(
       itemSats = normalized.sats
     }
 
+    const shippingSats = getKnownShippingCostSats(item, rateInput)
+    if (!shippingSats && item.sourceShippingCost) {
+      return {
+        status: "error",
+        code: "unpriced_items",
+        reason:
+          "One or more items cannot be converted to sats right now. Refresh prices before checkout.",
+      }
+    }
+    if (
+      shippingSats &&
+      shippingCostNeedsFreshQuote(item, shippingSats.approximate)
+    ) {
+      needsFreshQuote = true
+      if (!isQuoteObject(rateInput)) {
+        return {
+          status: "error",
+          code: "stale_quote",
+          reason: "Refresh price conversion before paying.",
+        }
+      }
+
+      if (nowMs - rateInput.fetchedAt > CHECKOUT_QUOTE_MAX_AGE_MS) {
+        return {
+          status: "error",
+          code: "stale_quote",
+          reason: "Refresh price conversion before paying.",
+        }
+      }
+    }
+
     itemSubtotalSats += itemSats * item.quantity
     pricedItems.push({
       productId: item.productId,
       quantity: item.quantity,
       priceAtPurchase: itemSats,
       currency: "SATS",
-      shippingCostSats: getKnownShippingCostSats(item) ?? undefined,
+      shippingCostSats: shippingSats?.sats,
+      sourceShippingCost: item.sourceShippingCost,
       shippingOptionId: item.shippingOptionId,
       shippingOptionDTag: item.shippingOptionDTag,
       shippingCountries: item.shippingCountries,
@@ -209,7 +259,7 @@ export function buildCheckoutPricingIntent(
     })
   }
 
-  const shippingCost = getCheckoutShippingCost(items)
+  const shippingCost = getCheckoutShippingCost(items, rateInput)
   const totalSats = itemSubtotalSats + shippingCost.totalSats
 
   if (!Number.isSafeInteger(totalSats) || totalSats <= 0) {

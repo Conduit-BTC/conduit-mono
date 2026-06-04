@@ -478,6 +478,7 @@ function ProductPage() {
                           currency: product.currency,
                           priceSats: product.priceSats,
                           sourcePrice: product.sourcePrice,
+                          sourceShippingCost: product.sourceShippingCost,
                           image: product.images[0]?.url,
                           tags: product.tags,
                           format: product.format,
@@ -698,6 +699,8 @@ function ProductPage() {
                               currency: relatedProduct.currency,
                               priceSats: relatedProduct.priceSats,
                               sourcePrice: relatedProduct.sourcePrice,
+                              sourceShippingCost:
+                                relatedProduct.sourceShippingCost,
                               image: relatedProduct.images[0]?.url,
                               tags: relatedProduct.tags,
                               format: relatedProduct.format,
@@ -723,6 +726,8 @@ function ProductPage() {
                               currency: relatedProduct.currency,
                               priceSats: relatedProduct.priceSats,
                               sourcePrice: relatedProduct.sourcePrice,
+                              sourceShippingCost:
+                                relatedProduct.sourceShippingCost,
                               image: relatedProduct.images[0]?.url,
                               tags: relatedProduct.tags,
                               format: relatedProduct.format,

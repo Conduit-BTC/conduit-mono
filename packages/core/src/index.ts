@@ -29,6 +29,7 @@ export {
   formatApproxUsdFromSats,
   formatFiatPrice,
   getPriceSats,
+  getShippingCostSats,
   isBtcLikeCurrency,
   isMsatsLikeCurrency,
   isSatsLikeCurrency,
@@ -48,6 +49,7 @@ export {
 } from "./pricing/rates"
 export type {
   BtcUsdRateQuote,
+  CommerceShippingCostLike,
   CommercePriceSortDirection,
   CommercePriceLike,
   CommercePriceNormalization,

@@ -18,6 +18,11 @@ export type CartItem = {
   format?: "physical" | "digital"
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
   shippingCostSats?: number
+  sourceShippingCost?: {
+    amount: number
+    currency: string
+    normalizedCurrency: string
+  }
   shippingOptionId?: string
   shippingOptionDTag?: string
   shippingCountries?: string[]
