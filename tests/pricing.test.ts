@@ -4,6 +4,7 @@ import {
   type BtcUsdRateQuote,
   compareCommercePrices,
   getProductPriceDisplay,
+  getShippingCostSats,
   isBtcUsdRateQuoteFresh,
   normalizeCommercePrice,
   orderSchema,
@@ -103,6 +104,33 @@ describe("commerce pricing", () => {
       amount: 250_000,
       currency: "SAT",
       normalizedCurrency: "SAT",
+    })
+  })
+
+  it("preserves fiat shipping source quotes and converts them with rate input", () => {
+    const product = parseProductEvent({
+      id: "event-usd-shipping",
+      pubkey: "merchant",
+      created_at: 1_700_000_000,
+      content: "Notebook",
+      tags: [
+        ["d", "notebook"],
+        ["title", "Notebook"],
+        ["price", "1000", "SATS"],
+        ["shipping_cost", "10", "USD"],
+        ["image", "https://example.com/notebook.png"],
+      ],
+    })
+
+    expect(product.shippingCostSats).toBeUndefined()
+    expect(product.sourceShippingCost).toEqual({
+      amount: 10,
+      currency: "USD",
+      normalizedCurrency: "USD",
+    })
+    expect(getShippingCostSats(product, testRates)).toEqual({
+      sats: 10_000,
+      approximate: true,
     })
   })
 

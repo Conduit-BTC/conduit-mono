@@ -24,6 +24,7 @@ import {
   fetchZapInvoice,
   formatNpub,
   getPriceSats,
+  getShippingCostSats,
   hasWebLN,
   getNdk,
   getShippingOptions,
@@ -249,8 +250,8 @@ function getCartShippingOptionSnapshots(
       pubkey: item.merchantPubkey,
       dTag: item.shippingOptionDTag!,
       title: "Product shipping zone",
-      currency: "SATS",
-      price: item.shippingCostSats ?? 0,
+      currency: item.sourceShippingCost?.normalizedCurrency ?? "SATS",
+      price: item.sourceShippingCost?.amount ?? item.shippingCostSats ?? 0,
       countries:
         item.shippingCountries ??
         item.shippingCountryRules?.map((rule) => rule.code) ??
@@ -279,7 +280,7 @@ function OrderSummary({
     merchantProfile?.displayName ||
     merchantProfile?.name ||
     formatNpub(merchantPubkey, 8)
-  const shippingCost = getCheckoutShippingCost(items)
+  const shippingCost = getCheckoutShippingCost(items, btcUsdRate)
   const itemSubtotalSats = items.reduce((sum, item) => {
     const sats = getPriceSats(item, btcUsdRate)
     return sats ? sum + sats.sats * item.quantity : sum
@@ -514,8 +515,8 @@ function CheckoutPage() {
   const merchantShippingOptions = shippingOptionsQuery.data ?? []
 
   const checkoutShippingCost = useMemo(
-    () => getCheckoutShippingCost(checkoutItems),
-    [checkoutItems]
+    () => getCheckoutShippingCost(checkoutItems, btcUsdRate),
+    [btcUsdRate, checkoutItems]
   )
   const total = useMemo(() => {
     const itemSubtotal = checkoutItems.reduce((sum, item) => {
@@ -979,7 +980,8 @@ function CheckoutPage() {
         quantity: item.quantity,
         priceAtPurchase: getPriceSats(item, btcUsdRate)?.sats ?? 0,
         currency,
-        shippingCostSats: item.shippingCostSats,
+        shippingCostSats: getShippingCostSats(item, btcUsdRate)?.sats,
+        sourceShippingCost: item.sourceShippingCost,
         shippingOptionId: item.shippingOptionId,
         shippingOptionDTag: item.shippingOptionDTag,
         shippingCountries: item.shippingCountries,

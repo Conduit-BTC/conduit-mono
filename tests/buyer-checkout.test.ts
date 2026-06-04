@@ -419,6 +419,67 @@ describe("checkout payment helpers", () => {
     expect(intent.items[0]?.shippingCostSats).toBe(500)
   })
 
+  it("converts fiat shipping costs before adding them to checkout totals", () => {
+    const now = 1_700_000_000_000
+    const intent = buildCheckoutPricingIntent(
+      [
+        cartItem({
+          shippingCostSats: undefined,
+          sourceShippingCost: {
+            amount: 10,
+            currency: "USD",
+            normalizedCurrency: "USD",
+          },
+        }),
+      ],
+      {
+        rate: 50_000,
+        fetchedAt: now,
+        source: "mempool",
+      },
+      now
+    )
+
+    expect(intent.status).toBe("ok")
+    if (intent.status !== "ok") return
+    expect(intent.itemSubtotalSats).toBe(1_000)
+    expect(intent.shippingCost).toEqual({
+      status: "priced",
+      totalSats: 20_000,
+      missingProductIds: [],
+    })
+    expect(intent.totalSats).toBe(21_000)
+    expect(intent.items[0]).toMatchObject({
+      shippingCostSats: 20_000,
+      sourceShippingCost: {
+        amount: 10,
+        currency: "USD",
+        normalizedCurrency: "USD",
+      },
+    })
+  })
+
+  it("blocks checkout pricing when source shipping costs cannot be converted", () => {
+    const intent = buildCheckoutPricingIntent(
+      [
+        cartItem({
+          shippingCostSats: undefined,
+          sourceShippingCost: {
+            amount: 10,
+            currency: "USD",
+            normalizedCurrency: "USD",
+          },
+        }),
+      ],
+      null
+    )
+
+    expect(intent).toMatchObject({
+      status: "error",
+      code: "unpriced_items",
+    })
+  })
+
   it("summarizes shipping as manual until every physical item is priced", () => {
     expect(getCheckoutShippingCost([cartItem()])).toEqual({
       status: "manual",

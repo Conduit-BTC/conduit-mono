@@ -11,6 +11,11 @@ export interface StoredOrder {
     priceAtPurchase: number
     currency: string
     shippingCostSats?: number
+    sourceShippingCost?: {
+      amount: number
+      currency: string
+      normalizedCurrency: string
+    }
     shippingOptionId?: string
     shippingOptionDTag?: string
     shippingCountries?: string[]
@@ -68,6 +73,11 @@ export interface CachedProduct {
   type?: "simple" | "variable"
   format?: "physical" | "digital"
   shippingCostSats?: number
+  sourceShippingCost?: {
+    amount: number
+    currency: string
+    normalizedCurrency: string
+  }
   shippingOptionId?: string
   shippingOptionDTag?: string
   shippingCountries?: string[]

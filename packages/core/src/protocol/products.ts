@@ -1,5 +1,10 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
-import { canonicalizeProductPrice } from "../pricing"
+import {
+  canonicalizeProductPrice,
+  normalizeCommercePrice,
+  normalizeCurrencyCode,
+  type SourcePriceQuote,
+} from "../pricing"
 import { productSchema, type ProductSchema } from "../schemas"
 
 const PRODUCT_IMAGE_URL_PATTERN = /^https?:\/\//i
@@ -50,14 +55,37 @@ function parsePriceTag(
   return null
 }
 
-function parseShippingCostTag(
-  tags: string[][] | undefined
-): number | undefined {
-  const raw = getTagValue(tags, "shipping_cost")
-  if (raw === null) return undefined
-  const value = Number(raw)
-  if (!Number.isSafeInteger(value) || value < 0) return undefined
-  return value
+function parseShippingCostTag(tags: string[][] | undefined): {
+  shippingCostSats?: number
+  sourceShippingCost?: SourcePriceQuote
+} {
+  const tag = tags?.find((t) => t[0] === "shipping_cost")
+  const raw = tag?.[1]
+  if (typeof raw !== "string") return {}
+
+  const amount = Number(raw)
+  const currency = typeof tag?.[2] === "string" ? tag[2] : "SATS"
+  if (!Number.isFinite(amount) || amount < 0) return {}
+
+  const sourceShippingCost = {
+    amount,
+    currency,
+    normalizedCurrency: normalizeCurrencyCode(currency),
+  }
+
+  if (amount === 0) {
+    return { shippingCostSats: 0, sourceShippingCost }
+  }
+
+  const normalized = normalizeCommercePrice(amount, currency)
+  if (normalized.status === "ok" && !normalized.approximate) {
+    return {
+      shippingCostSats: normalized.sats,
+      sourceShippingCost,
+    }
+  }
+
+  return { sourceShippingCost }
 }
 
 function parseShippingOptionTag(tags: string[][] | undefined): {
@@ -159,7 +187,7 @@ export function parseProductEvent(
     "Untitled"
 
   const priceInfo = parsePriceTag(event.tags)
-  const shippingCostSats = parseShippingCostTag(event.tags)
+  const shippingCost = parseShippingCostTag(event.tags)
   const shippingOption = parseShippingOptionTag(event.tags)
   const shippingRules = parseShippingCountryRules(event.tags)
   const summaryTag = getTagValue(event.tags, "summary")
@@ -186,7 +214,7 @@ export function parseProductEvent(
       price: priceInfo?.price ?? 0,
       currency: priceInfo?.currency ?? "USD",
       format,
-      shippingCostSats,
+      ...shippingCost,
       ...shippingOption,
       ...shippingRules,
       images,
