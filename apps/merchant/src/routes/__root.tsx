@@ -8,11 +8,7 @@ import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { KeyRound } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
-import {
-  buildBugReportUrl,
-  useAuth,
-  useNip07Availability,
-} from "@conduit/core"
+import { buildBugReportUrl, useAuth, useNip07Availability } from "@conduit/core"
 import {
   ErrorPage,
   LegalFooter,
