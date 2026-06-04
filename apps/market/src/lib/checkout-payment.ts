@@ -14,6 +14,7 @@ import {
   type NwcDiagnostic,
   type PricingRateInput,
   type SourcePriceQuote,
+  type StoredPaymentAttempt,
 } from "@conduit/core"
 import type { CartItem } from "../hooks/useCart"
 
@@ -502,6 +503,29 @@ export function getPaymentTrackerHeadline(input: PaymentTrackerInput): string {
     case "failed_pre_delivery":
     default:
       return "Payment failed"
+  }
+}
+
+/**
+ * Build a `PaymentTrackerInput` from a persisted `StoredPaymentAttempt`. Used
+ * by views that render the tracker after the original checkout session has
+ * ended (e.g. the orders page reopening an in-flight fast-zap order).
+ *
+ * Persisted attempts are saved AFTER the wallet returns a preimage, so funds
+ * are guaranteed to have moved -- the only remaining variance is whether the
+ * payment proof DM successfully reached the merchant. The returned input is
+ * therefore "finished + paymentMoved", with `proofStatus` mirroring the
+ * stored field.
+ */
+export function getPaymentTrackerInputForStoredAttempt(
+  attempt: StoredPaymentAttempt
+): PaymentTrackerInput {
+  return {
+    stage: null,
+    orderDelivered: true,
+    paymentMoved: true,
+    proofStatus: attempt.proofDeliveryStatus,
+    finished: true,
   }
 }
 

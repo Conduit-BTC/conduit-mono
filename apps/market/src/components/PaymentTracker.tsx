@@ -36,6 +36,12 @@ export interface PaymentTrackerProps {
   onBackToCheckout?: () => void
   /** Whether a recovery action is currently submitting. Disables buttons. */
   busy?: boolean
+  /**
+   * Hide the recovery action footer entirely. Useful when the tracker is
+   * rendered in a context that already provides equivalent navigation
+   * (e.g. the orders page, where "View order" would be redundant).
+   */
+  hideRecoveryActions?: boolean
 }
 
 function pillVariantForOutcome(
@@ -90,6 +96,7 @@ export function PaymentTracker({
   onResendReceipt,
   onBackToCheckout,
   busy = false,
+  hideRecoveryActions = false,
 }: PaymentTrackerProps) {
   const rows = getPaymentTrackerRows(input)
   const outcome = getPaymentTrackerOutcome(input)
@@ -167,69 +174,70 @@ export function PaymentTracker({
         )}
 
       {/* Recovery actions */}
-      {(showTryAgain ||
-        showPayLater ||
-        showResendReceipt ||
-        showBackToCheckout ||
-        outcome === "succeeded" ||
-        outcome === "proof_retry_needed") && (
-        <footer className="mt-6 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-4">
-          {showTryAgain && onTryAgain && (
-            <Button
-              type="button"
-              variant="primary"
-              onClick={onTryAgain}
-              disabled={busy}
-            >
-              <RefreshCw className="mr-2 h-4 w-4" />
-              Try payment again
-            </Button>
-          )}
-          {showResendReceipt && onResendReceipt && (
-            <Button
-              type="button"
-              variant="primary"
-              onClick={onResendReceipt}
-              disabled={busy}
-            >
-              <Send className="mr-2 h-4 w-4" />
-              Resend receipt
-            </Button>
-          )}
-          {showPayLater && onPayLater && (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={onPayLater}
-              disabled={busy}
-            >
-              <Send className="mr-2 h-4 w-4" />
-              Send order, pay later
-            </Button>
-          )}
-          {(outcome === "succeeded" || outcome === "proof_retry_needed") && (
-            // NOTE(CND-2A follow-up): no /orders/$orderId route yet, so we
-            // route to the flat order list. Replace once order detail lands.
-            <Button asChild variant="outline">
-              <Link to="/orders">
-                <ExternalLink className="mr-2 h-4 w-4" />
-                View order
-              </Link>
-            </Button>
-          )}
-          {showBackToCheckout && onBackToCheckout && (
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={onBackToCheckout}
-              disabled={busy}
-            >
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              Back to checkout
-            </Button>
-          )}
-        </footer>
-      )}
+      {!hideRecoveryActions &&
+        (showTryAgain ||
+          showPayLater ||
+          showResendReceipt ||
+          showBackToCheckout ||
+          outcome === "succeeded" ||
+          outcome === "proof_retry_needed") && (
+          <footer className="mt-6 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-4">
+            {showTryAgain && onTryAgain && (
+              <Button
+                type="button"
+                variant="primary"
+                onClick={onTryAgain}
+                disabled={busy}
+              >
+                <RefreshCw className="mr-2 h-4 w-4" />
+                Try payment again
+              </Button>
+            )}
+            {showResendReceipt && onResendReceipt && (
+              <Button
+                type="button"
+                variant="primary"
+                onClick={onResendReceipt}
+                disabled={busy}
+              >
+                <Send className="mr-2 h-4 w-4" />
+                Resend receipt
+              </Button>
+            )}
+            {showPayLater && onPayLater && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onPayLater}
+                disabled={busy}
+              >
+                <Send className="mr-2 h-4 w-4" />
+                Send order, pay later
+              </Button>
+            )}
+            {(outcome === "succeeded" || outcome === "proof_retry_needed") && (
+              // NOTE(CND-2A follow-up): no /orders/$orderId route yet, so we
+              // route to the flat order list. Replace once order detail lands.
+              <Button asChild variant="outline">
+                <Link to="/orders">
+                  <ExternalLink className="mr-2 h-4 w-4" />
+                  View order
+                </Link>
+              </Button>
+            )}
+            {showBackToCheckout && onBackToCheckout && (
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={onBackToCheckout}
+                disabled={busy}
+              >
+                <ArrowLeft className="mr-2 h-4 w-4" />
+                Back to checkout
+              </Button>
+            )}
+          </footer>
+        )}
     </section>
   )
 }
