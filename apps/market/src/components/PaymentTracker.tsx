@@ -142,7 +142,7 @@ export function PaymentTracker({
               {headline}
             </h2>
             {amountLabel && (
-              <p className="mt-0.5 text-xs text-[var(--text-muted)]">
+              <p className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
                 {amountLabel}
               </p>
             )}

@@ -472,6 +472,9 @@ export function getPaymentTrackerRows(
 export function getPaymentTrackerOutcome(
   input: PaymentTrackerInput
 ): PaymentTrackerOutcome {
+  // If payment moved and proof was delivered, treat as succeeded even while
+  // waiting for a zap receipt observation (which is a non-blocking tail step).
+  if (input.paymentMoved && input.proofStatus === "sent") return "succeeded"
   if (!input.finished) return "in_progress"
   if (input.paymentMoved) {
     if (input.proofStatus === "retry_needed") return "proof_retry_needed"
