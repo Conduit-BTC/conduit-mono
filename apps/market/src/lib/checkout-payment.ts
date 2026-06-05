@@ -530,6 +530,59 @@ export function getPaymentTrackerInputForStoredAttempt(
 }
 
 /**
+ * Parsed form of an NDK relay-publish failure message.
+ * Used to render the error as a structured relay list instead of a wall of text.
+ */
+export interface RelayFailureInfo {
+  /** Short human-readable summary (omits the raw relay lists). */
+  summary: string
+  /** Each relay that was attempted and the reason it failed, if parseable. */
+  failures: Array<{ url: string; reason: string }>
+}
+
+/**
+ * Attempt to parse an NDK-style relay failure message into structured info.
+ *
+ * NDK format (as of 2.x):
+ *   "Could not publish because no primary relay accepted the event.
+ *    Attempted: wss://a, wss://b, ....
+ *    ACKed: none.
+ *    Failed: wss://a (Timeout: 15000ms), wss://b (Error: auth-required), ...."
+ *
+ * Returns `null` when the message does not match the expected pattern so the
+ * caller can fall back to displaying the raw string.
+ */
+export function parseRelayFailureMessage(
+  message: string
+): RelayFailureInfo | null {
+  if (!message) return null
+
+  // Extract the "Failed: ..." section
+  const failedMatch = message.match(/Failed:\s*(.+?)(?:\s*$)/s)
+  if (!failedMatch) return null
+
+  const failedSection = failedMatch[1]
+  // Match each relay entry: wss://host (Reason text)
+  const entryRe = /(wss?:\/\/[^\s(,]+)(?:\s*\(([^)]+)\))?/g
+  const failures: Array<{ url: string; reason: string }> = []
+  let m: RegExpExecArray | null
+  while ((m = entryRe.exec(failedSection)) !== null) {
+    failures.push({
+      url: m[1],
+      reason: m[2] ?? "Failed",
+    })
+  }
+
+  if (failures.length === 0) return null
+
+  // Build a short summary from the preamble (first sentence before "Attempted:")
+  const preamble = message.split(/\s+Attempted:/)[0].trim()
+  const summary = preamble || "Relay publish failed."
+
+  return { summary, failures }
+}
+
+/**
  * Per-row title + subtitle copy. Consumers can override per-row.
  */
 export const PAYMENT_TRACKER_ROW_COPY: Record<

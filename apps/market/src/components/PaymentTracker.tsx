@@ -11,6 +11,7 @@ import {
   getPaymentTrackerHeadline,
   getPaymentTrackerOutcome,
   getPaymentTrackerRows,
+  parseRelayFailureMessage,
   type PaymentTrackerInput,
   type PaymentTrackerRowKey,
 } from "../lib/checkout-payment"
@@ -164,14 +165,43 @@ export function PaymentTracker({
       {input.errorMessage &&
         (outcome === "failed_pre_delivery" ||
           outcome === "failed_pre_payment" ||
-          outcome === "proof_retry_needed") && (
-          <div
-            role="alert"
-            className="mt-4 rounded-lg border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_10%,transparent)] px-3 py-2 text-sm text-[var(--text-primary)]"
-          >
-            {input.errorMessage}
-          </div>
-        )}
+          outcome === "proof_retry_needed") &&
+        (() => {
+          const parsed = parseRelayFailureMessage(input.errorMessage)
+          if (parsed) {
+            return (
+              <div
+                role="alert"
+                className="mt-4 rounded-lg border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_10%,transparent)] px-3 py-3 text-sm text-[var(--text-primary)]"
+              >
+                <p className="font-medium">{parsed.summary}</p>
+                <ul className="mt-2 space-y-1">
+                  {parsed.failures.map(({ url, reason }) => (
+                    <li
+                      key={url}
+                      className="flex items-baseline justify-between gap-3"
+                    >
+                      <span className="font-mono text-xs text-[var(--text-secondary)] break-all">
+                        {url}
+                      </span>
+                      <span className="shrink-0 text-xs text-[var(--text-muted)]">
+                        {reason}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )
+          }
+          return (
+            <div
+              role="alert"
+              className="mt-4 rounded-lg border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_10%,transparent)] px-3 py-2 text-sm text-[var(--text-primary)]"
+            >
+              {input.errorMessage}
+            </div>
+          )
+        })()}
 
       {/* Recovery actions */}
       {!hideRecoveryActions &&
