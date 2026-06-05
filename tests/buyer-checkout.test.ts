@@ -22,6 +22,7 @@ import {
   getPaymentTrackerHeadline,
   getPaymentTrackerOutcome,
   getPaymentTrackerRows,
+  parseRelayFailureMessage,
   type PaymentTrackerInput,
 } from "../apps/market/src/lib/checkout-payment"
 import type { CartItem } from "../apps/market/src/hooks/useCart"
@@ -1661,5 +1662,116 @@ describe("payment tracker state mapping", () => {
       expect(headline).toMatch(/payment sent/i)
       expect(headline).toMatch(/receipt|retry/i)
     })
+  })
+})
+
+// --- NDK relay failure message parsing ----------------------------------------
+
+const NDK_RELAY_FAILURE =
+  "Could not publish because no primary relay accepted the event. " +
+  "Attempted: wss://localhost:3334, wss://premium.primal.net, wss://relay.damus.io, " +
+  "wss://purplepag.es, wss://nos.lol. " +
+  "ACKed: none. " +
+  "Failed: wss://localhost:3334 (Timeout: 15000ms), " +
+  "wss://premium.primal.net (Timeout: 15000ms), " +
+  "wss://relay.damus.io (Timeout: 15000ms), " +
+  "wss://purplepag.es (Timeout: 15000ms), " +
+  "wss://nos.lol (Timeout: 15000ms)"
+
+describe("parseRelayFailureMessage", () => {
+  it("returns null for empty string", () => {
+    expect(parseRelayFailureMessage("")).toBeNull()
+  })
+
+  it("returns null for a plain non-relay error message", () => {
+    expect(
+      parseRelayFailureMessage("Merchant Lightning Address not found.")
+    ).toBeNull()
+  })
+
+  it("returns null when the message has no Failed: section", () => {
+    expect(
+      parseRelayFailureMessage(
+        "Could not publish. Attempted: wss://relay.example. ACKed: none."
+      )
+    ).toBeNull()
+  })
+
+  it("returns null when Failed: section contains no relay URLs", () => {
+    expect(
+      parseRelayFailureMessage("Could not publish. Failed: unknown error.")
+    ).toBeNull()
+  })
+
+  it("parses a typical NDK multi-relay timeout error", () => {
+    const result = parseRelayFailureMessage(NDK_RELAY_FAILURE)
+    expect(result).not.toBeNull()
+    expect(result!.failures).toHaveLength(5)
+  })
+
+  it("extracts correct relay URLs from the Failed: section", () => {
+    const result = parseRelayFailureMessage(NDK_RELAY_FAILURE)!
+    const urls = result.failures.map((f) => f.url)
+    expect(urls).toContain("wss://localhost:3334")
+    expect(urls).toContain("wss://premium.primal.net")
+    expect(urls).toContain("wss://relay.damus.io")
+    expect(urls).toContain("wss://purplepag.es")
+    expect(urls).toContain("wss://nos.lol")
+  })
+
+  it("extracts the reason for each failed relay", () => {
+    const result = parseRelayFailureMessage(NDK_RELAY_FAILURE)!
+    for (const failure of result.failures) {
+      expect(failure.reason).toBe("Timeout: 15000ms")
+    }
+  })
+
+  it("handles mixed error reasons (Timeout, auth-required)", () => {
+    const msg =
+      "Could not publish. Attempted: wss://a, wss://b. ACKed: none. " +
+      "Failed: wss://a (Timeout: 15000ms), wss://b (Error: auth-required)"
+    const result = parseRelayFailureMessage(msg)!
+    expect(result.failures).toHaveLength(2)
+    expect(result.failures.find((f) => f.url === "wss://a")?.reason).toBe(
+      "Timeout: 15000ms"
+    )
+    expect(result.failures.find((f) => f.url === "wss://b")?.reason).toBe(
+      "Error: auth-required"
+    )
+  })
+
+  it("defaults reason to 'Failed' when no parenthetical is present", () => {
+    const msg =
+      "Could not publish. Attempted: wss://a. ACKed: none. Failed: wss://a"
+    const result = parseRelayFailureMessage(msg)!
+    expect(result.failures[0].reason).toBe("Failed")
+  })
+
+  it("extracts the preamble as the summary (before 'Attempted:')", () => {
+    const result = parseRelayFailureMessage(NDK_RELAY_FAILURE)!
+    expect(result.summary).toBe(
+      "Could not publish because no primary relay accepted the event."
+    )
+  })
+
+  it("parses a single-relay failure correctly", () => {
+    const msg =
+      "Could not publish. Attempted: wss://relay.example. ACKed: none. " +
+      "Failed: wss://relay.example (Timeout: 5000ms)"
+    const result = parseRelayFailureMessage(msg)!
+    expect(result.failures).toHaveLength(1)
+    expect(result.failures[0].url).toBe("wss://relay.example")
+    expect(result.failures[0].reason).toBe("Timeout: 5000ms")
+  })
+
+  it("does not include relays from the Attempted: section in failures", () => {
+    // A relay listed in Attempted but not in Failed should not appear
+    const msg =
+      "Could not publish. Attempted: wss://ok.relay, wss://bad.relay. ACKed: none. " +
+      "Failed: wss://bad.relay (Timeout: 15000ms)"
+    const result = parseRelayFailureMessage(msg)!
+    const urls = result.failures.map((f) => f.url)
+    expect(urls).not.toContain("wss://ok.relay")
+    expect(urls).toContain("wss://bad.relay")
   })
 })

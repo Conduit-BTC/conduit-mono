@@ -2035,7 +2035,7 @@ function CheckoutPage() {
                         className={[
                           "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
                           zapVisibility === "public_zap"
-                            ? "border-secondary-500/60 bg-secondary-500/10 text-[var(--text-primary)]"
+                            ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
                             : !lnurlAllowsNostr
                               ? "cursor-not-allowed border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] opacity-70"
                               : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
@@ -2055,7 +2055,7 @@ function CheckoutPage() {
                         className={[
                           "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
                           zapVisibility === "private_checkout"
-                            ? "border-primary-500/60 bg-primary-500/10 text-[var(--text-primary)]"
+                            ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
                             : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
                         ].join(" ")}
                       >
