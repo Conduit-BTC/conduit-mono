@@ -11,55 +11,176 @@ export interface LightningStrikeOverlayProps {
    */
   onComplete: () => void
   /**
-   * Total visible duration in ms (entrance + hold). Defaults to 1200ms which
-   * gives the electric storm enough time to read before dismissing.
+   * Total visible duration in ms (entrance + hold). Defaults to 1300ms which
+   * gives the electric storm enough time to strobe and fade.
    */
   durationMs?: number
 }
 
+interface BoltPath {
+  d: string
+}
+
+/**
+ * Recursively generate a jagged lightning bolt with random branching forks.
+ * Each segment is offset perpendicular to the main axis with sin-tapered
+ * jitter so the endpoints stay anchored. Branches recurse twice for natural
+ * organic-looking forks (e.g. main strike -> sub-branch -> small spark).
+ */
+function generateLightningBolt(
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+  segments: number,
+  jitter: number,
+  depth: number = 0
+): BoltPath[] {
+  const result: BoltPath[] = []
+  const points: { x: number; y: number }[] = []
+
+  const dx = endX - startX
+  const dy = endY - startY
+  const stepX = dx / segments
+  const stepY = dy / segments
+  const baseAngle = Math.atan2(dy, dx)
+  const perpAngle = baseAngle + Math.PI / 2
+
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments
+    // Sin-taper keeps endpoints anchored, peaks jitter at the midpoint.
+    const taper = Math.sin(t * Math.PI)
+    const offset = (Math.random() - 0.5) * jitter * taper
+    points.push({
+      x: startX + stepX * i + Math.cos(perpAngle) * offset,
+      y: startY + stepY * i + Math.sin(perpAngle) * offset,
+    })
+  }
+
+  result.push({
+    d: points
+      .map(
+        (p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`
+      )
+      .join(" "),
+  })
+
+  if (depth < 2) {
+    // Main strikes branch more aggressively than sub-branches.
+    const branchCount =
+      depth === 0
+        ? 3 + Math.floor(Math.random() * 3)
+        : Math.floor(Math.random() * 2) + 1
+    const totalLen = Math.hypot(dx, dy)
+
+    for (let b = 0; b < branchCount; b++) {
+      // Pick a random middle vertex as the branch root.
+      const branchIdx = 1 + Math.floor(Math.random() * (points.length - 2))
+      const root = points[branchIdx]
+      const branchAngle = baseAngle + (Math.random() - 0.5) * 1.4
+      const branchLength = totalLen * (0.18 + Math.random() * 0.45)
+      const ex = root.x + Math.cos(branchAngle) * branchLength
+      const ey = root.y + Math.sin(branchAngle) * branchLength
+      result.push(
+        ...generateLightningBolt(
+          root.x,
+          root.y,
+          ex,
+          ey,
+          Math.max(4, Math.floor(segments * 0.6)),
+          jitter * 0.65,
+          depth + 1
+        )
+      )
+    }
+  }
+
+  return result
+}
+
 /**
  * LightningStrikeOverlay -- the "click registered" moment for the fast zap
- * checkout flow. Renders a darkened, click-blocking backdrop with electric
- * lightning bolts striking from ALL SIDES toward a central Zap icon, then
- * auto-dismisses by calling `onComplete()`.
+ * checkout flow. Renders a full-viewport storm of branching purple lightning
+ * bolts radiating from a glowing central aura, then auto-dismisses by
+ * calling `onComplete()`.
  *
- * Token-driven:
- *  - backdrop: `bg-black/80 backdrop-blur-sm`
- *  - all elements: `--primary-*` scale (brand purple)
+ * Token-driven (`--primary-*` scale only):
+ *  - backdrop: `bg-black/85 backdrop-blur-sm`
+ *  - bolts: layered soft-glow + mid + bright-core for realistic light bleed
+ *  - center: aura halo + ringed bolt icon
  *
- * Reduced motion: skips turbulence/scale/strike animations and shows a static
- * bolt + glow before still calling `onComplete()` after `durationMs`.
+ * Reduced motion: hides the procedural lightning storm and shows a static
+ * ringed bolt before still calling `onComplete()` after `durationMs`.
  */
 export function LightningStrikeOverlay({
   open,
   onComplete,
-  durationMs = 1200,
+  durationMs = 1300,
 }: LightningStrikeOverlayProps) {
-  const turbulenceId = useId()
-  const strikeId = useId()
+  const filterId = useId()
   const completedRef = useRef(false)
+  const onCompleteRef = useRef(onComplete)
   const [exiting, setExiting] = useState(false)
+  const [bolts, setBolts] = useState<BoltPath[]>([])
+  const [size, setSize] = useState({ w: 1280, h: 800 })
+
+  // Keep onComplete fresh without re-running the main effect (parents
+  // commonly pass `() => setX(false)` which is a new function each render).
+  useEffect(() => {
+    onCompleteRef.current = onComplete
+  })
 
   useEffect(() => {
     if (!open) {
       completedRef.current = false
       setExiting(false)
+      setBolts([])
       return
     }
     completedRef.current = false
     setExiting(false)
-    const exitAt = Math.max(durationMs - 220, 100)
+
+    const w = window.innerWidth
+    const h = window.innerHeight
+    setSize({ w, h })
+
+    // Start strikes from just outside the central aura so they look like
+    // they emerge from the orb. Reach overshoots the viewport so branches
+    // never end abruptly mid-screen.
+    const cx = w / 2
+    const cy = h / 2
+    const startRadius = 70
+    const maxReach = Math.max(w, h) * 1.05
+    const strikeCount = 13
+    const newBolts: BoltPath[] = []
+
+    for (let i = 0; i < strikeCount; i++) {
+      const baseAngle =
+        (i / strikeCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.5
+      const reach = maxReach * (0.55 + Math.random() * 0.5)
+      const sx = cx + Math.cos(baseAngle) * startRadius
+      const sy = cy + Math.sin(baseAngle) * startRadius
+      const ex = cx + Math.cos(baseAngle) * reach
+      const ey = cy + Math.sin(baseAngle) * reach
+      const segments = 9 + Math.floor(Math.random() * 5)
+      const jitter = Math.min(w, h) * 0.05
+      newBolts.push(...generateLightningBolt(sx, sy, ex, ey, segments, jitter))
+    }
+
+    setBolts(newBolts)
+
+    const exitAt = Math.max(durationMs - 280, 100)
     const exitTimer = window.setTimeout(() => setExiting(true), exitAt)
     const doneTimer = window.setTimeout(() => {
       if (completedRef.current) return
       completedRef.current = true
-      onComplete()
+      onCompleteRef.current()
     }, durationMs)
     return () => {
       window.clearTimeout(exitTimer)
       window.clearTimeout(doneTimer)
     }
-  }, [open, durationMs, onComplete])
+  }, [open, durationMs])
 
   if (!open) return null
 
@@ -68,248 +189,176 @@ export function LightningStrikeOverlay({
       role="presentation"
       aria-hidden="true"
       className={[
-        "fixed inset-0 z-50 flex items-center justify-center",
-        "bg-black/80 backdrop-blur-sm",
-        "transition-opacity duration-220 motion-reduce:transition-none",
+        "fixed inset-0 z-50 flex items-center justify-center overflow-hidden",
+        "bg-black/85 backdrop-blur-sm",
+        "transition-opacity duration-300 motion-reduce:transition-none",
         exiting ? "opacity-0" : "opacity-100",
       ].join(" ")}
     >
-      {/* Outer shockwave ring -- massive expanding pulse */}
-      <span
-        aria-hidden="true"
-        className={[
-          "absolute h-96 w-96 rounded-full",
-          "bg-[radial-gradient(circle,color-mix(in_srgb,var(--primary-400)_30%,transparent)_0%,transparent_65%)]",
-          "animate-[lso-shockwave_1100ms_cubic-bezier(0.1,0.6,0.3,1)_forwards]",
-          "motion-reduce:animate-none motion-reduce:opacity-60",
-        ].join(" ")}
-      />
-
-      {/* Mid halo -- sharp snap-in then sustain */}
-      <span
-        aria-hidden="true"
-        className={[
-          "absolute h-56 w-56 rounded-full",
-          "bg-[radial-gradient(circle,color-mix(in_sgrb,var(--primary-500)_60%,transparent)_0%,color-mix(in_srgb,var(--primary-600)_25%,transparent)_45%,transparent_75%)]",
-          "animate-[lso-halo_900ms_ease-out_forwards]",
-          "motion-reduce:animate-none motion-reduce:opacity-80",
-        ].join(" ")}
-      />
-
-      {/* Inner core -- bright tight burst */}
-      <span
-        aria-hidden="true"
-        className={[
-          "absolute h-28 w-28 rounded-full",
-          "bg-[radial-gradient(circle,color-mix(in_sgrb,var(--primary-300)_80%,transparent)_0%,transparent_70%)]",
-          "animate-[lso-core_700ms_ease-out_forwards]",
-          "motion-reduce:animate-none",
-        ].join(" ")}
-      />
-
-      {/* Lightning bolts from ALL SIDES -- distorted by feTurbulence */}
+      {/* Full-viewport lightning storm */}
       <svg
         aria-hidden="true"
-        viewBox="-140 -140 280 280"
-        className="absolute h-[520px] w-[520px] motion-reduce:hidden"
+        viewBox={`0 0 ${size.w} ${size.h}`}
+        preserveAspectRatio="xMidYMid slice"
+        className="absolute inset-0 h-full w-full motion-reduce:hidden"
       >
         <defs>
-          {/* Turbulence displacement for jagged crackle effect */}
           <filter
-            id={`${turbulenceId}-crack`}
-            x="-60%"
-            y="-60%"
-            width="220%"
-            height="220%"
+            id={`${filterId}-soft`}
+            x="-10%"
+            y="-10%"
+            width="120%"
+            height="120%"
           >
-            <feTurbulence
-              type="fractalNoise"
-              baseFrequency="0.65"
-              numOctaves="3"
-              seed="7"
-            >
-              <animate
-                attributeName="baseFrequency"
-                values="0.65;0.9;0.75"
-                dur="500ms"
-                repeatCount="1"
-                fill="freeze"
-              />
-              <animate
-                attributeName="seed"
-                values="7;13;3;19"
-                dur="800ms"
-                repeatCount="1"
-                fill="freeze"
-              />
-            </feTurbulence>
-            <feDisplacementMap in="SourceGraphic" scale="9" />
+            <feGaussianBlur stdDeviation="5" />
           </filter>
-
-          {/* Glow filter for the strike arms */}
           <filter
-            id={`${strikeId}-glow`}
-            x="-40%"
-            y="-40%"
-            width="180%"
-            height="180%"
+            id={`${filterId}-bright`}
+            x="-5%"
+            y="-5%"
+            width="110%"
+            height="110%"
           >
-            <feGaussianBlur stdDeviation="2.5" result="blur" />
-            <feMerge>
-              <feMergeNode in="blur" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-
-          {/* Bright core glow */}
-          <filter
-            id={`${strikeId}-coreglow`}
-            x="-80%"
-            y="-80%"
-            width="260%"
-            height="260%"
-          >
-            <feGaussianBlur stdDeviation="5" result="blur" />
-            <feMerge>
-              <feMergeNode in="blur" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
+            <feGaussianBlur stdDeviation="0.8" />
           </filter>
         </defs>
 
-        {/* Primary strike arms -- thick main channels from all 8 directions */}
+        {/* Soft outer glow -- large blurred halo behind each bolt */}
+        <g
+          stroke="var(--primary-500)"
+          strokeWidth="5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          fill="none"
+          opacity="0"
+          filter={`url(#${filterId}-soft)`}
+          className="animate-[lso-soft_1100ms_ease-out_30ms_forwards]"
+        >
+          {bolts.map((b, i) => (
+            <path key={`s-${i}`} d={b.d} />
+          ))}
+        </g>
+
+        {/* Mid layer -- visible bolt body */}
         <g
           stroke="var(--primary-300)"
-          strokeWidth="2.2"
+          strokeWidth="1.6"
           strokeLinecap="round"
+          strokeLinejoin="round"
           fill="none"
-          filter={`url(#${turbulenceId}-crack)`}
           opacity="0"
-          className="animate-[lso-strikes_800ms_ease-out_50ms_forwards]"
+          className="animate-[lso-mid_1100ms_ease-out_60ms_forwards]"
         >
-          {/* Top */}
-          <path d="M 0 0 L -8 -55 L 4 -80 L -5 -125" />
-          {/* Bottom */}
-          <path d="M 0 0 L 6 52 L -4 78 L 8 122" />
-          {/* Left */}
-          <path d="M 0 0 L -55 8 L -80 -3 L -128 5" />
-          {/* Right */}
-          <path d="M 0 0 L 52 -6 L 78 4 L 125 -8" />
-          {/* Top-right */}
-          <path d="M 0 0 L 38 -40 L 52 -62 L 88 -88" />
-          {/* Bottom-right */}
-          <path d="M 0 0 L 42 38 L 60 55 L 90 85" />
-          {/* Bottom-left */}
-          <path d="M 0 0 L -38 42 L -58 58 L -86 90" />
-          {/* Top-left */}
-          <path d="M 0 0 L -40 -38 L -60 -55 L -92 -84" />
+          {bolts.map((b, i) => (
+            <path key={`m-${i}`} d={b.d} />
+          ))}
         </g>
 
-        {/* Secondary crackle branches -- thinner, more chaotic */}
+        {/* Bright core -- the hot white-purple thread inside */}
         <g
-          stroke="var(--primary-400)"
-          strokeWidth="1.3"
+          stroke="var(--primary-100)"
+          strokeWidth="0.7"
           strokeLinecap="round"
+          strokeLinejoin="round"
           fill="none"
-          filter={`url(#${turbulenceId}-crack)`}
           opacity="0"
-          className="animate-[lso-crackle_900ms_ease-out_100ms_forwards]"
+          filter={`url(#${filterId}-bright)`}
+          className="animate-[lso-core_1100ms_ease-out_80ms_forwards]"
         >
-          {/* Branching off main axes */}
-          <path d="M 0 0 L -12 -45 L 18 -70" />
-          <path d="M 0 0 L 15 48 L -20 65" />
-          <path d="M 0 0 L -48 12 L -68 -22" />
-          <path d="M 0 0 L 45 -15 L 70 18" />
-          <path d="M 0 0 L 28 -50 L 10 -90" />
-          <path d="M 0 0 L -50 -28 L -88 -12" />
-          <path d="M 0 0 L 48 30 L 75 12" />
-          <path d="M 0 0 L -28 50 L -10 88" />
-          {/* Short sparks in-between */}
-          <path d="M 0 0 L 20 -25 L 35 -18" />
-          <path d="M 0 0 L -22 20 L -30 38" />
-          <path d="M 0 0 L 25 18 L 42 8" />
-          <path d="M 0 0 L -18 -28 L -8 -48" />
-        </g>
-
-        {/* Glowing bright spine overlay -- pure primary-200 for the hottest core */}
-        <g
-          stroke="var(--primary-200)"
-          strokeWidth="1"
-          strokeLinecap="round"
-          fill="none"
-          filter={`url(#${strikeId}-glow)`}
-          opacity="0"
-          className="animate-[lso-spine_700ms_ease-out_80ms_forwards]"
-        >
-          <path d="M 0 0 L -6 -54 L 3 -78" />
-          <path d="M 0 0 L 5 51 L -3 76" />
-          <path d="M 0 0 L -54 6 L -78 -2" />
-          <path d="M 0 0 L 51 -5 L 76 3" />
-          <path d="M 0 0 L 37 -39 L 50 -60" />
-          <path d="M 0 0 L 40 37 L 58 53" />
-          <path d="M 0 0 L -37 40 L -57 56" />
-          <path d="M 0 0 L -39 -37 L -59 -53" />
+          {bolts.map((b, i) => (
+            <path key={`c-${i}`} d={b.d} />
+          ))}
         </g>
       </svg>
 
-      {/* Bolt icon -- scales in with electric snap */}
+      {/* Central aura -- large glowing orb behind the ring */}
       <span
+        aria-hidden="true"
         className={[
-          "relative z-10 flex h-24 w-24 items-center justify-center rounded-full",
-          "border-2 border-[color-mix(in_srgb,var(--primary-300)_70%,transparent)]",
-          "bg-[color-mix(in_srgb,var(--primary-600)_35%,transparent)]",
-          "text-[var(--primary-200)]",
-          "shadow-[0_0_80px_color-mix(in_srgb,var(--primary-500)_80%,transparent),0_0_160px_color-mix(in_srgb,var(--primary-600)_40%,transparent)]",
-          "animate-[lso-bolt_900ms_cubic-bezier(0.15,0.9,0.25,1)_forwards]",
+          "absolute h-72 w-72 rounded-full",
+          "bg-[radial-gradient(circle,color-mix(in_srgb,var(--primary-400)_55%,transparent)_0%,color-mix(in_srgb,var(--primary-600)_25%,transparent)_45%,transparent_75%)]",
+          "animate-[lso-aura_1200ms_ease-out_forwards]",
+          "motion-reduce:animate-none motion-reduce:opacity-70",
+        ].join(" ")}
+      />
+
+      {/* Bright ring -- the magenta-purple disc the bolt sits inside */}
+      <span
+        aria-hidden="true"
+        className={[
+          "absolute h-36 w-36 rounded-full",
+          "border-2 border-[color-mix(in_srgb,var(--primary-300)_85%,transparent)]",
+          "bg-[radial-gradient(circle,color-mix(in_srgb,var(--primary-300)_25%,transparent)_0%,transparent_70%)]",
+          "shadow-[0_0_50px_color-mix(in_srgb,var(--primary-400)_75%,transparent),0_0_120px_color-mix(in_srgb,var(--primary-500)_50%,transparent)]",
+          "animate-[lso-ring_1100ms_cubic-bezier(0.15,0.9,0.3,1)_forwards]",
+          "motion-reduce:animate-none motion-reduce:scale-100",
+        ].join(" ")}
+      />
+
+      {/* Bolt icon -- bright center */}
+      <span
+        aria-hidden="true"
+        className={[
+          "relative z-10 flex h-20 w-20 items-center justify-center",
+          "text-[var(--primary-100)]",
+          "drop-shadow-[0_0_18px_color-mix(in_srgb,var(--primary-300)_85%,transparent)]",
+          "animate-[lso-bolt_1100ms_cubic-bezier(0.15,0.9,0.25,1)_forwards]",
           "motion-reduce:animate-none motion-reduce:scale-100",
         ].join(" ")}
       >
-        <Zap className="h-12 w-12 fill-current" strokeWidth={1} />
+        <Zap
+          className="h-12 w-12 fill-[var(--primary-100)]"
+          strokeWidth={1.5}
+        />
       </span>
 
-      {/* Inline keyframes scoped to this overlay */}
+      {/* Inline keyframes -- strobing flicker simulates real lightning */}
       <style>{`
         @keyframes lso-bolt {
-          0%   { transform: scale(0.3) rotate(-15deg); opacity: 0; }
+          0%   { transform: scale(0.4) rotate(-12deg); opacity: 0; }
           25%  { transform: scale(1.25) rotate(3deg);  opacity: 1; }
-          50%  { transform: scale(0.95) rotate(-1deg); opacity: 1; }
-          75%  { transform: scale(1.05) rotate(0deg);  opacity: 1; }
-          100% { transform: scale(1) rotate(0deg);     opacity: 0.9; }
+          45%  { transform: scale(0.95) rotate(-1deg); opacity: 1; }
+          70%  { transform: scale(1.05);               opacity: 1; }
+          100% { transform: scale(1);                  opacity: 1; }
         }
-        @keyframes lso-shockwave {
-          0%   { transform: scale(0.3);  opacity: 0; }
-          20%  { transform: scale(0.7);  opacity: 0.85; }
-          60%  { transform: scale(1.2);  opacity: 0.5; }
-          100% { transform: scale(1.9);  opacity: 0; }
+        @keyframes lso-aura {
+          0%   { transform: scale(0.5);  opacity: 0; }
+          25%  { transform: scale(1.1);  opacity: 1; }
+          70%  { transform: scale(1);    opacity: 0.85; }
+          100% { transform: scale(1.15); opacity: 0; }
         }
-        @keyframes lso-halo {
+        @keyframes lso-ring {
           0%   { transform: scale(0.4);  opacity: 0; }
-          30%  { transform: scale(1.05); opacity: 0.9; }
-          70%  { transform: scale(1.1);  opacity: 0.7; }
-          100% { transform: scale(1.25); opacity: 0; }
+          20%  { transform: scale(1.15); opacity: 1; }
+          50%  { transform: scale(0.95); opacity: 1; }
+          80%  { transform: scale(1.05); opacity: 0.9; }
+          100% { transform: scale(1.1);  opacity: 0; }
+        }
+        @keyframes lso-soft {
+          0%   { opacity: 0; }
+          12%  { opacity: 1; }
+          22%  { opacity: 0.55; }
+          32%  { opacity: 1; }
+          50%  { opacity: 0.7; }
+          80%  { opacity: 0.35; }
+          100% { opacity: 0; }
+        }
+        @keyframes lso-mid {
+          0%   { opacity: 0; }
+          10%  { opacity: 1; }
+          20%  { opacity: 0.65; }
+          30%  { opacity: 1; }
+          55%  { opacity: 0.5; }
+          80%  { opacity: 0.25; }
+          100% { opacity: 0; }
         }
         @keyframes lso-core {
-          0%   { transform: scale(0);    opacity: 0; }
-          15%  { transform: scale(1.3);  opacity: 1; }
-          50%  { transform: scale(1.0);  opacity: 0.6; }
-          100% { transform: scale(1.2);  opacity: 0; }
-        }
-        @keyframes lso-strikes {
-          0%   { opacity: 0; stroke-dashoffset: 1; }
-          15%  { opacity: 1; }
-          70%  { opacity: 0.8; }
-          100% { opacity: 0; }
-        }
-        @keyframes lso-crackle {
           0%   { opacity: 0; }
-          20%  { opacity: 0.85; }
-          65%  { opacity: 0.6; }
-          100% { opacity: 0; }
-        }
-        @keyframes lso-spine {
-          0%   { opacity: 0; }
-          10%  { opacity: 0.9; }
-          50%  { opacity: 0.5; }
+          8%   { opacity: 1; }
+          18%  { opacity: 0.6; }
+          28%  { opacity: 1; }
+          50%  { opacity: 0.55; }
+          80%  { opacity: 0.25; }
           100% { opacity: 0; }
         }
       `}</style>
