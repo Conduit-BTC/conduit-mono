@@ -19,6 +19,12 @@ export interface LightningStrikeOverlayProps {
 
 interface BoltPath {
   d: string
+  /**
+   * Hero bolts are the 1-2 dominant main strikes; they render with thicker
+   * stroke widths and a white-hot core. All branches inherit the parent
+   * strike's hero-ness so a hero strike is bright all the way to its tips.
+   */
+  isHero: boolean
 }
 
 /**
@@ -26,6 +32,9 @@ interface BoltPath {
  * Each segment is offset perpendicular to the main axis with sin-tapered
  * jitter so the endpoints stay anchored. Branches recurse twice for natural
  * organic-looking forks (e.g. main strike -> sub-branch -> small spark).
+ *
+ * `isHero` propagates to all sub-branches: a hero strike's children are
+ * also hero, so the entire dominant channel renders thick + white-hot.
  */
 function generateLightningBolt(
   startX: number,
@@ -34,6 +43,7 @@ function generateLightningBolt(
   endY: number,
   segments: number,
   jitter: number,
+  isHero: boolean,
   depth: number = 0
 ): BoltPath[] {
   const result: BoltPath[] = []
@@ -63,14 +73,19 @@ function generateLightningBolt(
         (p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`
       )
       .join(" "),
+    isHero,
   })
 
   if (depth < 2) {
-    // Main strikes branch more aggressively than sub-branches.
-    const branchCount =
-      depth === 0
-        ? 3 + Math.floor(Math.random() * 3)
-        : Math.floor(Math.random() * 2) + 1
+    // Hero strikes branch noticeably more aggressively to feel like the
+    // dominant electrical channel; secondary bolts stay sparser.
+    const branchCount = isHero
+      ? depth === 0
+        ? 5 + Math.floor(Math.random() * 3) // 5-7 at top of hero
+        : 1 + Math.floor(Math.random() * 3) // 1-3 at hero sub-branches
+      : depth === 0
+        ? 2 + Math.floor(Math.random() * 3) // 2-4 at top of normal
+        : Math.floor(Math.random() * 2) + 1 // 1-2 at normal sub-branches
     const totalLen = Math.hypot(dx, dy)
 
     for (let b = 0; b < branchCount; b++) {
@@ -89,6 +104,7 @@ function generateLightningBolt(
           ey,
           Math.max(4, Math.floor(segments * 0.6)),
           jitter * 0.65,
+          isHero,
           depth + 1
         )
       )
@@ -105,8 +121,10 @@ function generateLightningBolt(
  * calling `onComplete()`.
  *
  * Token-driven (`--primary-*` scale only):
- *  - backdrop: `bg-black/85 backdrop-blur-sm`
- *  - bolts: layered soft-glow + mid + bright-core for realistic light bleed
+ *  - backdrop: `bg-black/60 backdrop-blur-sm` (page UI stays partly visible)
+ *  - bolts: layered soft-glow + mid + bright-core; 1-2 hero strikes get a
+ *    thicker stroke and a white-hot `--primary-50` core for natural
+ *    real-lightning hierarchy where one channel dominates.
  *  - center: aura halo + ringed bolt icon
  *
  * Reduced motion: hides the procedural lightning storm and shows a static
@@ -154,17 +172,33 @@ export function LightningStrikeOverlay({
     const strikeCount = 13
     const newBolts: BoltPath[] = []
 
+    // Pick two hero strike indices spaced apart so the dominant channels
+    // don't overlap. Hero strikes form the "main flash" of the storm.
+    const heroIdx1 = Math.floor(Math.random() * strikeCount)
+    const offset = 4 + Math.floor(Math.random() * 5)
+    const heroIdx2 = (heroIdx1 + offset) % strikeCount
+
     for (let i = 0; i < strikeCount; i++) {
+      const isHero = i === heroIdx1 || i === heroIdx2
       const baseAngle =
         (i / strikeCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.5
-      const reach = maxReach * (0.55 + Math.random() * 0.5)
+      // Hero strikes reach further; the dominant channel is longer.
+      const reach = isHero
+        ? maxReach * (0.85 + Math.random() * 0.25)
+        : maxReach * (0.5 + Math.random() * 0.45)
       const sx = cx + Math.cos(baseAngle) * startRadius
       const sy = cy + Math.sin(baseAngle) * startRadius
       const ex = cx + Math.cos(baseAngle) * reach
       const ey = cy + Math.sin(baseAngle) * reach
-      const segments = 9 + Math.floor(Math.random() * 5)
-      const jitter = Math.min(w, h) * 0.05
-      newBolts.push(...generateLightningBolt(sx, sy, ex, ey, segments, jitter))
+      // Hero strikes use slightly tighter jitter so the spine reads as a
+      // strong, mostly-straight discharge channel; normal bolts wobble more.
+      const segments = isHero
+        ? 12 + Math.floor(Math.random() * 4)
+        : 9 + Math.floor(Math.random() * 5)
+      const jitter = isHero ? Math.min(w, h) * 0.04 : Math.min(w, h) * 0.055
+      newBolts.push(
+        ...generateLightningBolt(sx, sy, ex, ey, segments, jitter, isHero)
+      )
     }
 
     setBolts(newBolts)
@@ -184,13 +218,16 @@ export function LightningStrikeOverlay({
 
   if (!open) return null
 
+  const heroBolts = bolts.filter((b) => b.isHero)
+  const normalBolts = bolts.filter((b) => !b.isHero)
+
   return (
     <div
       role="presentation"
       aria-hidden="true"
       className={[
         "fixed inset-0 z-50 flex items-center justify-center overflow-hidden",
-        "bg-black/85 backdrop-blur-sm",
+        "bg-black/60 backdrop-blur-sm",
         "transition-opacity duration-300 motion-reduce:transition-none",
         exiting ? "opacity-0" : "opacity-100",
       ].join(" ")}
@@ -213,6 +250,15 @@ export function LightningStrikeOverlay({
             <feGaussianBlur stdDeviation="5" />
           </filter>
           <filter
+            id={`${filterId}-soft-hero`}
+            x="-15%"
+            y="-15%"
+            width="130%"
+            height="130%"
+          >
+            <feGaussianBlur stdDeviation="9" />
+          </filter>
+          <filter
             id={`${filterId}-bright`}
             x="-5%"
             y="-5%"
@@ -223,10 +269,10 @@ export function LightningStrikeOverlay({
           </filter>
         </defs>
 
-        {/* Soft outer glow -- large blurred halo behind each bolt */}
+        {/* Soft outer glow -- normal bolts (large blurred halo behind body) */}
         <g
           stroke="var(--primary-500)"
-          strokeWidth="5"
+          strokeWidth="4"
           strokeLinecap="round"
           strokeLinejoin="round"
           fill="none"
@@ -234,30 +280,61 @@ export function LightningStrikeOverlay({
           filter={`url(#${filterId}-soft)`}
           className="animate-[lso-soft_1100ms_ease-out_30ms_forwards]"
         >
-          {bolts.map((b, i) => (
+          {normalBolts.map((b, i) => (
             <path key={`s-${i}`} d={b.d} />
           ))}
         </g>
 
-        {/* Mid layer -- visible bolt body */}
+        {/* Soft outer glow -- hero bolts (fatter halo, deeper blur) */}
+        <g
+          stroke="var(--primary-500)"
+          strokeWidth="9"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          fill="none"
+          opacity="0"
+          filter={`url(#${filterId}-soft-hero)`}
+          className="animate-[lso-soft-hero_1100ms_ease-out_20ms_forwards]"
+        >
+          {heroBolts.map((b, i) => (
+            <path key={`sh-${i}`} d={b.d} />
+          ))}
+        </g>
+
+        {/* Mid layer -- normal bolt body (lavender) */}
         <g
           stroke="var(--primary-300)"
-          strokeWidth="1.6"
+          strokeWidth="1.4"
           strokeLinecap="round"
           strokeLinejoin="round"
           fill="none"
           opacity="0"
           className="animate-[lso-mid_1100ms_ease-out_60ms_forwards]"
         >
-          {bolts.map((b, i) => (
+          {normalBolts.map((b, i) => (
             <path key={`m-${i}`} d={b.d} />
           ))}
         </g>
 
-        {/* Bright core -- the hot white-purple thread inside */}
+        {/* Mid layer -- hero bolt body (brighter lavender, thicker spine) */}
+        <g
+          stroke="var(--primary-200)"
+          strokeWidth="2.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          fill="none"
+          opacity="0"
+          className="animate-[lso-mid-hero_1100ms_ease-out_50ms_forwards]"
+        >
+          {heroBolts.map((b, i) => (
+            <path key={`mh-${i}`} d={b.d} />
+          ))}
+        </g>
+
+        {/* Bright core -- normal bolts (pale lavender thread) */}
         <g
           stroke="var(--primary-100)"
-          strokeWidth="0.7"
+          strokeWidth="0.6"
           strokeLinecap="round"
           strokeLinejoin="round"
           fill="none"
@@ -265,8 +342,24 @@ export function LightningStrikeOverlay({
           filter={`url(#${filterId}-bright)`}
           className="animate-[lso-core_1100ms_ease-out_80ms_forwards]"
         >
-          {bolts.map((b, i) => (
+          {normalBolts.map((b, i) => (
             <path key={`c-${i}`} d={b.d} />
+          ))}
+        </g>
+
+        {/* Bright core -- hero bolts (white-hot, thicker, dominant flash) */}
+        <g
+          stroke="var(--primary-50)"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          fill="none"
+          opacity="0"
+          filter={`url(#${filterId}-bright)`}
+          className="animate-[lso-core-hero_1100ms_ease-out_70ms_forwards]"
+        >
+          {heroBolts.map((b, i) => (
+            <path key={`ch-${i}`} d={b.d} />
           ))}
         </g>
       </svg>
@@ -300,16 +393,13 @@ export function LightningStrikeOverlay({
         aria-hidden="true"
         className={[
           "relative z-10 flex h-20 w-20 items-center justify-center",
-          "text-[var(--primary-100)]",
-          "drop-shadow-[0_0_18px_color-mix(in_srgb,var(--primary-300)_85%,transparent)]",
+          "text-[var(--primary-50)]",
+          "drop-shadow-[0_0_18px_color-mix(in_srgb,var(--primary-200)_85%,transparent)]",
           "animate-[lso-bolt_1100ms_cubic-bezier(0.15,0.9,0.25,1)_forwards]",
           "motion-reduce:animate-none motion-reduce:scale-100",
         ].join(" ")}
       >
-        <Zap
-          className="h-12 w-12 fill-[var(--primary-100)]"
-          strokeWidth={1.5}
-        />
+        <Zap className="h-12 w-12 fill-[var(--primary-50)]" strokeWidth={1.5} />
       </span>
 
       {/* Inline keyframes -- strobing flicker simulates real lightning */}
@@ -336,29 +426,56 @@ export function LightningStrikeOverlay({
         }
         @keyframes lso-soft {
           0%   { opacity: 0; }
-          12%  { opacity: 1; }
-          22%  { opacity: 0.55; }
+          12%  { opacity: 0.85; }
+          22%  { opacity: 0.45; }
+          32%  { opacity: 0.85; }
+          50%  { opacity: 0.55; }
+          80%  { opacity: 0.25; }
+          100% { opacity: 0; }
+        }
+        @keyframes lso-soft-hero {
+          0%   { opacity: 0; }
+          10%  { opacity: 1; }
+          20%  { opacity: 0.7; }
           32%  { opacity: 1; }
-          50%  { opacity: 0.7; }
+          50%  { opacity: 0.75; }
           80%  { opacity: 0.35; }
           100% { opacity: 0; }
         }
         @keyframes lso-mid {
           0%   { opacity: 0; }
-          10%  { opacity: 1; }
-          20%  { opacity: 0.65; }
-          30%  { opacity: 1; }
-          55%  { opacity: 0.5; }
-          80%  { opacity: 0.25; }
+          10%  { opacity: 0.85; }
+          20%  { opacity: 0.55; }
+          30%  { opacity: 0.85; }
+          55%  { opacity: 0.4; }
+          80%  { opacity: 0.2; }
+          100% { opacity: 0; }
+        }
+        @keyframes lso-mid-hero {
+          0%   { opacity: 0; }
+          8%   { opacity: 1; }
+          18%  { opacity: 0.7; }
+          28%  { opacity: 1; }
+          55%  { opacity: 0.55; }
+          80%  { opacity: 0.3; }
           100% { opacity: 0; }
         }
         @keyframes lso-core {
           0%   { opacity: 0; }
-          8%   { opacity: 1; }
-          18%  { opacity: 0.6; }
-          28%  { opacity: 1; }
-          50%  { opacity: 0.55; }
-          80%  { opacity: 0.25; }
+          8%   { opacity: 0.9; }
+          18%  { opacity: 0.5; }
+          28%  { opacity: 0.9; }
+          50%  { opacity: 0.45; }
+          80%  { opacity: 0.2; }
+          100% { opacity: 0; }
+        }
+        @keyframes lso-core-hero {
+          0%   { opacity: 0; }
+          6%   { opacity: 1; }
+          16%  { opacity: 0.65; }
+          26%  { opacity: 1; }
+          50%  { opacity: 0.6; }
+          80%  { opacity: 0.3; }
           100% { opacity: 0; }
         }
       `}</style>
