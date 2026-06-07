@@ -89,7 +89,7 @@ function getStatusMeta(status: StatusStepperRowStatus): {
  * StepIndicator -- the circular status node rendered in the left rail.
  *
  * Each status reads at a glance from the ring itself rather than only the icon:
- *  - complete:     solid success-filled disc with a check
+ *  - complete:     success-toned outline ring (low-opacity fill) with a check
  *  - in_progress:  an animated arc that sweeps *around* the circle (progress
  *                  shown on the ring as the step runs); a static partial arc
  *                  under `prefers-reduced-motion`
@@ -102,7 +102,13 @@ function StepIndicator({ status }: { status: StatusStepperRowStatus }) {
     return (
       <span
         aria-hidden="true"
-        className="flex h-9 w-9 items-center justify-center rounded-full border border-[var(--success)] bg-[var(--success)] text-[var(--text-inverse)]"
+        style={{
+          borderColor: "color-mix(in srgb, var(--success) 55%, transparent)",
+          backgroundColor:
+            "color-mix(in srgb, var(--success) 16%, transparent)",
+          color: "var(--success)",
+        }}
+        className="flex h-9 w-9 items-center justify-center rounded-full border"
       >
         <Check className="h-4 w-4" strokeWidth={3} />
       </span>
