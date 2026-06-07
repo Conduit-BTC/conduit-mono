@@ -6,7 +6,9 @@ import { formatNpub, pubkeyToNpub, useProfile } from "@conduit/core"
 import { Globe, Store, UserRound, Zap } from "lucide-react"
 import {
   MerchantAvatarFallback,
+  Nip05TrustIndicator,
   getMerchantDisplayName,
+  getProfileNip05,
 } from "../../components/MerchantIdentity"
 import { RichProfileText } from "../../components/RichProfileText"
 import { resolveProfileReference } from "../../lib/profileRefs"
@@ -46,6 +48,7 @@ function PublicProfilePage() {
   const profile = profileQuery.data
   const displayName = getMerchantDisplayName(profile, pubkey)
   const npub = pubkeyToNpub(pubkey)
+  const profileNip05 = getProfileNip05(profile)
   const hasStorefront = (productsQuery.data?.data.length ?? 0) > 0
 
   return (
@@ -79,12 +82,12 @@ function PublicProfilePage() {
                 {displayName}
               </h1>
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                {profile?.nip05?.trim() ? (
+                {profileNip05 ? (
                   <Badge
                     variant="outline"
                     className="border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]"
                   >
-                    {profile.nip05.trim()}
+                    <Nip05TrustIndicator pubkey={pubkey} nip05={profileNip05} />
                   </Badge>
                 ) : null}
                 <Badge

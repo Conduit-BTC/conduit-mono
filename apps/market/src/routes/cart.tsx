@@ -1,5 +1,7 @@
 import {
   ChevronDown,
+  Check,
+  Copy,
   ReceiptText,
   RefreshCw,
   ShoppingCart,
@@ -34,7 +36,9 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   MerchantAvatarFallback,
+  Nip05TrustIndicator,
   getMerchantDisplayName,
+  getProfileNip05,
 } from "../components/MerchantIdentity"
 import { SignerSwitch } from "../components/SignerSwitch"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
@@ -176,15 +180,34 @@ function MerchantIdentity({
 }) {
   const { data: profile } = useProfile(merchantPubkey)
   const merchantName = getMerchantDisplayName(profile, merchantPubkey)
+  const nip05 = getProfileNip05(profile)
+  const [copied, setCopied] = useState(false)
+
+  async function copyMerchantNpub(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(pubkeyToNpub(merchantPubkey))
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1400)
+    } catch {
+      setCopied(false)
+    }
+  }
 
   return (
     <div className={`flex min-w-0 items-center gap-3 ${className}`}>
-      <Avatar className="h-12 w-12 shrink-0 border border-[var(--border)]">
-        <AvatarImage src={profile?.picture} alt={merchantName} />
-        <AvatarFallback>
-          <MerchantAvatarFallback />
-        </AvatarFallback>
-      </Avatar>
+      <Link
+        to="/store/$pubkey"
+        params={{ pubkey: pubkeyToNpub(merchantPubkey) }}
+        className="block shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]"
+        aria-label={`Visit ${merchantName} store`}
+      >
+        <Avatar className="h-12 w-12 border border-[var(--border)]">
+          <AvatarImage src={profile?.picture} alt={merchantName} />
+          <AvatarFallback>
+            <MerchantAvatarFallback />
+          </AvatarFallback>
+        </Avatar>
+      </Link>
       <div className="min-w-0">
         <Link
           to="/store/$pubkey"
@@ -193,13 +216,33 @@ function MerchantIdentity({
         >
           {merchantName}
         </Link>
-        <Link
-          to="/store/$pubkey"
-          params={{ pubkey: pubkeyToNpub(merchantPubkey) }}
-          className="mt-1 block truncate font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
-        >
-          {formatNpub(merchantPubkey, 10)}
-        </Link>
+        {nip05 ? (
+          <div
+            className="mt-1 truncate text-xs font-medium text-[var(--text-muted)]"
+            title={nip05}
+          >
+            <Nip05TrustIndicator pubkey={merchantPubkey} nip05={nip05} />
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md text-left font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]"
+            aria-label={
+              copied
+                ? `Copied ${merchantName} npub`
+                : `Copy ${merchantName} npub`
+            }
+            title={copied ? "Copied" : "Copy npub"}
+            onClick={() => void copyMerchantNpub()}
+          >
+            <span className="truncate">{formatNpub(merchantPubkey, 10)}</span>
+            {copied ? (
+              <Check className="h-3.5 w-3.5 shrink-0 text-success" />
+            ) : (
+              <Copy className="h-3.5 w-3.5 shrink-0" />
+            )}
+          </button>
+        )}
       </div>
     </div>
   )

@@ -80,6 +80,7 @@ export {
   type CachedProduct,
   type CachedProfile,
   type CachedOrderMessage,
+  type CachedNip05Verification,
   type StoredPaymentAttempt,
 } from "./db"
 
@@ -113,6 +114,11 @@ export {
   type UseProfileOptions,
   type UseProfileResult,
 } from "./hooks/useProfile"
+export {
+  useNip05Verification,
+  type Nip05TrustStatus,
+  type UseNip05VerificationResult,
+} from "./hooks/useNip05Verification"
 export {
   useProfiles,
   type UseProfilesOptions,

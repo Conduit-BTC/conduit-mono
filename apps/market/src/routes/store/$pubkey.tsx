@@ -51,7 +51,11 @@ import {
   ProductGridCardSkeleton,
 } from "../../components/ProductGridCard"
 import { CopyButton } from "../../components/CopyButton"
-import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
+import {
+  MerchantAvatarFallback,
+  Nip05TrustIndicator,
+  getProfileNip05,
+} from "../../components/MerchantIdentity"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
 import {
@@ -226,6 +230,7 @@ function StorefrontPage() {
       chars: 8,
     })
   const merchantAbout = profile?.about?.trim()
+  const profileNip05 = getProfileNip05(profile)
   const categoryFacetOptions = useMemo(
     () =>
       getCategoryFacetOptions(storeProducts, {
@@ -501,7 +506,14 @@ function StorefrontPage() {
                   <div className="mt-2 flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-2 text-sm text-[var(--text-secondary)]">
                     <span className="inline-flex min-w-0 max-w-[18rem] items-center gap-1 font-medium text-[var(--text-primary)] sm:max-w-[22rem]">
                       <span className="block min-w-0 truncate">
-                        {profile?.nip05 || formatNpub(pubkey, 8)}
+                        {profileNip05 ? (
+                          <Nip05TrustIndicator
+                            pubkey={pubkey}
+                            nip05={profileNip05}
+                          />
+                        ) : (
+                          formatNpub(pubkey, 8)
+                        )}
                       </span>
                       <span className="shrink-0">
                         <CopyButton value={pubkey} label="Copy pubkey" />

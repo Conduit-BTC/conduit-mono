@@ -34,6 +34,7 @@ import {
   normalizeLightningInvoice,
   parseOrderMessageRumorEvent,
   publishWithPlanner,
+  pubkeyToNpub,
   validateLightningInvoiceForPayment,
   waitForZapReceipt,
   useAuth,
@@ -42,7 +43,20 @@ import {
   type ParsedShippingOption,
   type ShippingAddressSchema,
 } from "@conduit/core"
-import { Button, Combobox, Input, Label, Textarea } from "@conduit/ui"
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+  Button,
+  Combobox,
+  Input,
+  Label,
+  Textarea,
+} from "@conduit/ui"
+import {
+  MerchantAvatarFallback,
+  getMerchantDisplayName,
+} from "../components/MerchantIdentity"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
 import { useWallet } from "../hooks/useWallet"
@@ -324,19 +338,16 @@ function getCartShippingOptionSnapshots(
 function OrderSummary({
   items,
   merchantPubkey,
-  step,
   btcUsdRate,
 }: {
   items: CartItem[]
   merchantPubkey: string
-  step: Exclude<CheckoutStep, "signing" | "sending" | "sent">
   btcUsdRate: PricingRateInput
 }) {
   const { data: merchantProfile } = useProfile(merchantPubkey)
-  const merchantName =
-    merchantProfile?.displayName ||
-    merchantProfile?.name ||
-    formatNpub(merchantPubkey, 8)
+  const merchantName = getMerchantDisplayName(merchantProfile, merchantPubkey)
+  const merchantStoreRef = pubkeyToNpub(merchantPubkey)
+  const totalItems = items.reduce((sum, item) => sum + item.quantity, 0)
   const shippingCost = getCheckoutShippingCost(items, btcUsdRate)
   const itemSubtotalSats = items.reduce((sum, item) => {
     const sats = getPriceSats(item, btcUsdRate)
@@ -378,21 +389,36 @@ function OrderSummary({
 
   return (
     <aside className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--border)] pb-4">
-        <div>
+      <div className="border-b border-[var(--border)] pb-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
           <h2 className="text-2xl font-semibold text-[var(--text-primary)]">
             Order summary
           </h2>
-          <div className="mt-1 text-sm text-[var(--text-secondary)]">
-            {step === "shipping" ? "Shipping" : "Send Order"}
+          <div className="text-sm text-[var(--text-secondary)]">
+            {totalItems} item{totalItems === 1 ? "" : "s"}
           </div>
         </div>
-        <div className="text-right">
-          <div className="text-sm text-[var(--text-secondary)]">Merchant</div>
-          <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">
-            {merchantName}
+        <Link
+          to="/store/$pubkey"
+          params={{ pubkey: merchantStoreRef }}
+          className="mt-4 flex min-w-0 items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 transition-colors hover:border-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]"
+          aria-label={`Visit ${merchantName} store`}
+        >
+          <Avatar className="h-12 w-12 shrink-0 border border-[var(--border)]">
+            <AvatarImage src={merchantProfile?.picture} alt={merchantName} />
+            <AvatarFallback>
+              <MerchantAvatarFallback />
+            </AvatarFallback>
+          </Avatar>
+          <div className="min-w-0">
+            <div className="text-xs font-medium uppercase text-[var(--text-muted)]">
+              Merchant
+            </div>
+            <div className="mt-1 truncate text-base font-semibold text-[var(--text-primary)]">
+              {merchantName}
+            </div>
           </div>
-        </div>
+        </Link>
       </div>
 
       <div className="mt-4 space-y-4">
@@ -865,16 +891,6 @@ function CheckoutPage() {
 
   const visibleCheckoutStep: CheckoutStep =
     isAllDigital && step === "shipping" ? "payment" : step
-
-  const summaryStep: Exclude<
-    CheckoutStep,
-    "signing" | "sending" | "sent" | "paying" | "paid"
-  > =
-    visibleCheckoutStep === "payment" ||
-    visibleCheckoutStep === "paying" ||
-    visibleCheckoutStep === "paid"
-      ? "payment"
-      : "shipping"
 
   function updateShipping<K extends keyof ShippingFormState>(
     field: K,
@@ -2559,7 +2575,6 @@ function CheckoutPage() {
               ? completedSnapshot.merchantPubkey
               : selectedMerchant)!
           }
-          step={summaryStep}
           btcUsdRate={btcUsdRate}
         />
       </div>
