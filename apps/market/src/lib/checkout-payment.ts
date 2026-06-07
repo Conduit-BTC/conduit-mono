@@ -486,26 +486,23 @@ export function getPaymentTrackerOutcome(
 
 /**
  * One-line headline for the tracker. Intentionally never claims funds moved
- * before the payment-confirmation row is complete.
+ * before the payment-confirmation row is complete: the in-progress headline is
+ * the neutral "Order in progress" and the success headline only resolves to
+ * "Order complete" once the payment has settled.
  */
 export function getPaymentTrackerHeadline(input: PaymentTrackerInput): string {
   switch (getPaymentTrackerOutcome(input)) {
     case "in_progress":
-      if (input.stage === "sending_receipt") return "Sending payment receipt"
-      if (input.stage === "paying_invoice") return "Confirming payment"
-      if (input.stage === "requesting_invoice")
-        return "Connecting to your wallet"
-      if (input.stage === "checking_receipt") return "Finalizing payment"
-      return "Delivering order to merchant"
+      return "Order in progress"
     case "succeeded":
-      return "Payment sent"
+      return "Order complete"
     case "proof_retry_needed":
       return "Payment sent. Receipt delivery needs retry."
     case "failed_pre_payment":
       return "Order delivered, payment did not complete"
     case "failed_pre_delivery":
     default:
-      return "Payment failed"
+      return "Order could not be sent"
   }
 }
 
@@ -585,29 +582,104 @@ export function parseRelayFailureMessage(
   return { summary, failures }
 }
 
+export type PaymentTrackerRowCopyState = "complete" | "active" | "waiting"
+
+export interface PaymentTrackerRowCopy {
+  title: string
+  subtitle: string
+}
+
 /**
- * Per-row title + subtitle copy. Consumers can override per-row.
+ * Per-row, per-state title + subtitle copy.
+ *
+ * Each row carries three tense-consistent variants so the label never mixes
+ * past/present/future across the stepper:
+ *  - `complete` -- past tense ("Order sent to merchant")
+ *  - `active`   -- present continuous ("Sending order to merchant")
+ *  - `waiting`  -- imperative/future ("Send order to merchant")
+ *
+ * Source of truth: the CND-89 copy table.
  */
 export const PAYMENT_TRACKER_ROW_COPY: Record<
   PaymentTrackerRowKey,
-  { title: string; subtitle: string }
+  Record<PaymentTrackerRowCopyState, PaymentTrackerRowCopy>
 > = {
   order_delivered: {
-    title: "Order delivered to merchant",
-    subtitle: "Encrypted order sent through Nostr",
+    complete: {
+      title: "Order sent to merchant",
+      subtitle: "Encrypted order details were delivered over Nostr.",
+    },
+    active: {
+      title: "Sending order to merchant",
+      subtitle: "Delivering encrypted order details over Nostr.",
+    },
+    waiting: {
+      title: "Send order to merchant",
+      subtitle: "Encrypted order details will be delivered over Nostr.",
+    },
   },
   wallet_connecting: {
-    title: "Connecting to wallet",
-    subtitle: "Requesting Lightning invoice via NWC",
+    complete: {
+      title: "Invoice requested",
+      subtitle: "The merchant's wallet returned a Lightning invoice.",
+    },
+    active: {
+      title: "Requesting invoice",
+      subtitle:
+        "Requesting a Lightning invoice from the merchant's wallet via NWC.",
+    },
+    waiting: {
+      title: "Request invoice",
+      subtitle:
+        "A Lightning invoice will be requested from the merchant's wallet via NWC.",
+    },
   },
   payment_confirmation: {
-    title: "Payment confirmation",
-    subtitle: "Wallet pays the invoice over Lightning",
+    complete: {
+      title: "Payment sent",
+      subtitle: "The invoice was paid over Lightning.",
+    },
+    active: {
+      title: "Sending payment",
+      subtitle: "Paying the invoice over Lightning.",
+    },
+    waiting: {
+      title: "Send payment",
+      subtitle: "The invoice will be paid over Lightning.",
+    },
   },
   receipt_sent: {
-    title: "Receipt sent to merchant",
-    subtitle: "Payment proof delivered through Nostr",
+    complete: {
+      title: "Receipt sent to merchant",
+      subtitle: "Payment proof was delivered over Nostr.",
+    },
+    active: {
+      title: "Sending receipt to merchant",
+      subtitle: "Delivering payment proof to the merchant over Nostr.",
+    },
+    waiting: {
+      title: "Send receipt to merchant",
+      subtitle: "Payment proof will be delivered to the merchant over Nostr.",
+    },
   },
+}
+
+/**
+ * Resolve the tense-correct copy for a row given its current status. `failed`
+ * and `retry_needed` reuse the `active` copy (the step that was in flight),
+ * with the failure tone surfaced by the status label rather than the title.
+ */
+export function getPaymentTrackerRowCopy(
+  key: PaymentTrackerRowKey,
+  status: PaymentTrackerRowStatus
+): PaymentTrackerRowCopy {
+  const state: PaymentTrackerRowCopyState =
+    status === "complete"
+      ? "complete"
+      : status === "waiting"
+        ? "waiting"
+        : "active"
+  return PAYMENT_TRACKER_ROW_COPY[key][state]
 }
 
 export function buildDefaultZapContent(params: {

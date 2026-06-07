@@ -1,5 +1,5 @@
-import { AlertCircle, Check, CircleDot, Loader2 } from "lucide-react"
-import type { ReactNode } from "react"
+import { AlertCircle, Check } from "lucide-react"
+import type { CSSProperties, ReactNode } from "react"
 import { cn } from "../utils"
 
 export type StatusStepperRowStatus =
@@ -12,7 +12,7 @@ export type StatusStepperRowStatus =
 export interface StatusStepperRow {
   /** Stable key for React reconciliation. */
   key: string
-  /** Primary label (e.g. "Order delivered to merchant"). */
+  /** Primary label (e.g. "Order sent to merchant"). */
   title: ReactNode
   /** Optional one-line subtitle rendered under the title. */
   subtitle?: ReactNode
@@ -44,19 +44,13 @@ const DEFAULT_LABELS: Record<StatusStepperRowStatus, string> = {
 }
 
 function getStatusMeta(status: StatusStepperRowStatus): {
-  iconClassName: string
   rowToneClassName: string
   labelToneClassName: string
   connectorClassName: string
-  Icon: typeof Check
-  spin?: boolean
 } {
   switch (status) {
     case "complete":
       return {
-        Icon: Check,
-        iconClassName:
-          "border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_18%,transparent)] text-[var(--success)]",
         rowToneClassName: "text-[var(--text-primary)]",
         labelToneClassName: "text-[var(--success)]",
         connectorClassName:
@@ -64,10 +58,6 @@ function getStatusMeta(status: StatusStepperRowStatus): {
       }
     case "in_progress":
       return {
-        Icon: Loader2,
-        spin: true,
-        iconClassName:
-          "border-[color-mix(in_srgb,var(--secondary-500)_55%,transparent)] bg-[color-mix(in_srgb,var(--secondary-500)_18%,transparent)] text-[var(--secondary-400)]",
         rowToneClassName: "text-[var(--text-primary)]",
         labelToneClassName: "text-[var(--secondary-400)]",
         connectorClassName:
@@ -75,18 +65,12 @@ function getStatusMeta(status: StatusStepperRowStatus): {
       }
     case "failed":
       return {
-        Icon: AlertCircle,
-        iconClassName:
-          "border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_18%,transparent)] text-[var(--error)]",
         rowToneClassName: "text-[var(--text-primary)]",
         labelToneClassName: "text-[var(--error)]",
         connectorClassName: "bg-[var(--border)]",
       }
     case "retry_needed":
       return {
-        Icon: AlertCircle,
-        iconClassName:
-          "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_18%,transparent)] text-[var(--warning)]",
         rowToneClassName: "text-[var(--text-primary)]",
         labelToneClassName: "text-[var(--warning)]",
         connectorClassName: "bg-[var(--border)]",
@@ -94,14 +78,102 @@ function getStatusMeta(status: StatusStepperRowStatus): {
     case "waiting":
     default:
       return {
-        Icon: CircleDot,
-        iconClassName:
-          "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-muted)]",
         rowToneClassName: "text-[var(--text-secondary)]",
         labelToneClassName: "text-[var(--text-muted)]",
         connectorClassName: "bg-[var(--border)]",
       }
   }
+}
+
+/**
+ * StepIndicator -- the circular status node rendered in the left rail.
+ *
+ * Each status reads at a glance from the ring itself rather than only the icon:
+ *  - complete:     solid success-filled disc with a check
+ *  - in_progress:  an animated arc that sweeps *around* the circle (progress
+ *                  shown on the ring as the step runs); a static partial arc
+ *                  under `prefers-reduced-motion`
+ *  - waiting:      a muted ring with a small centered dot
+ *  - failed:       error-toned ring with an alert glyph
+ *  - retry_needed: warning-toned ring with an alert glyph
+ */
+function StepIndicator({ status }: { status: StatusStepperRowStatus }) {
+  if (status === "complete") {
+    return (
+      <span
+        aria-hidden="true"
+        className="flex h-9 w-9 items-center justify-center rounded-full border border-[var(--success)] bg-[var(--success)] text-[var(--text-inverse)]"
+      >
+        <Check className="h-4 w-4" strokeWidth={3} />
+      </span>
+    )
+  }
+
+  if (status === "failed" || status === "retry_needed") {
+    const tone = status === "failed" ? "var(--error)" : "var(--warning)"
+    const indicatorStyle: CSSProperties = {
+      borderColor: tone,
+      color: tone,
+      backgroundColor: `color-mix(in srgb, ${tone} 16%, transparent)`,
+    }
+    return (
+      <span
+        aria-hidden="true"
+        style={indicatorStyle}
+        className="flex h-9 w-9 items-center justify-center rounded-full border"
+      >
+        <AlertCircle className="h-4 w-4" />
+      </span>
+    )
+  }
+
+  if (status === "in_progress") {
+    // r=15 -> circumference ~94.25; a ~30% arc reads as "in progress" while
+    // the wrapper rotation sweeps it around the ring.
+    return (
+      <span
+        aria-hidden="true"
+        className="flex h-9 w-9 items-center justify-center"
+      >
+        <svg
+          viewBox="0 0 36 36"
+          className="h-9 w-9 animate-spin motion-reduce:animate-none"
+          fill="none"
+        >
+          <circle
+            cx="18"
+            cy="18"
+            r="15"
+            strokeWidth="2.5"
+            style={{
+              stroke:
+                "color-mix(in srgb, var(--secondary-500) 22%, transparent)",
+            }}
+          />
+          <circle
+            cx="18"
+            cy="18"
+            r="15"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeDasharray="94.25"
+            strokeDashoffset="66"
+            style={{ stroke: "var(--secondary-400)" }}
+          />
+        </svg>
+      </span>
+    )
+  }
+
+  // waiting
+  return (
+    <span
+      aria-hidden="true"
+      className="flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]"
+    >
+      <span className="h-2 w-2 rounded-full bg-[var(--text-muted)]" />
+    </span>
+  )
 }
 
 /**
@@ -111,15 +183,15 @@ function getStatusMeta(status: StatusStepperRowStatus): {
  * publish). Tokens drive all colors so the same component reads correctly
  * across light/dark themes.
  *
- * Reduced-motion: the in-progress spinner is disabled via `motion-reduce:`
- * so it appears as a static icon for users with `prefers-reduced-motion`.
+ * Reduced-motion: the in-progress arc stops sweeping via `motion-reduce:` so it
+ * appears as a static partial ring for users with `prefers-reduced-motion`.
  *
  * @example
  * <StatusStepper
  *   rows={[
- *     { key: "deliver", title: "Order delivered", status: "complete" },
- *     { key: "wallet",  title: "Connecting wallet", status: "in_progress" },
- *     { key: "pay",     title: "Payment confirmation", status: "waiting" },
+ *     { key: "deliver", title: "Order sent", status: "complete" },
+ *     { key: "wallet",  title: "Requesting invoice", status: "in_progress" },
+ *     { key: "pay",     title: "Send payment", status: "waiting" },
  *   ]}
  * />
  */
@@ -137,26 +209,12 @@ export function StatusStepper({
       {rows.map((row, index) => {
         const meta = getStatusMeta(row.status)
         const isLast = index === rows.length - 1
-        const Icon = meta.Icon
         const label = row.label ?? DEFAULT_LABELS[row.status]
         return (
           <li key={row.key} className="relative flex gap-4">
             {/* Icon + connector column */}
             <div className="flex shrink-0 flex-col items-center">
-              <span
-                className={cn(
-                  "flex h-9 w-9 items-center justify-center rounded-full border transition-colors",
-                  meta.iconClassName
-                )}
-                aria-hidden="true"
-              >
-                <Icon
-                  className={cn(
-                    "h-4 w-4",
-                    meta.spin ? "animate-spin motion-reduce:animate-none" : ""
-                  )}
-                />
-              </span>
+              <StepIndicator status={row.status} />
               {!isLast && (
                 <span
                   aria-hidden="true"

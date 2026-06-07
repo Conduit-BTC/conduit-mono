@@ -1640,7 +1640,7 @@ describe("payment tracker state mapping", () => {
       expect(headline).toMatch(/payment did not complete/i)
     })
 
-    it("claims payment sent only after paymentMoved", () => {
+    it("resolves to a completed headline only after paymentMoved", () => {
       const headline = getPaymentTrackerHeadline(
         baseInput({
           paymentMoved: true,
@@ -1648,7 +1648,7 @@ describe("payment tracker state mapping", () => {
           finished: true,
         })
       )
-      expect(headline).toMatch(/payment sent/i)
+      expect(headline).toMatch(/order complete/i)
     })
 
     it("flags proof retry needed while still acknowledging payment sent", () => {

@@ -1401,7 +1401,11 @@ function CheckoutPage() {
         }
       }
 
-      cart.clearMerchant(selectedMerchant)
+      // NOTE(CND-89): do NOT clear the merchant cart here. Clearing it empties
+      // `checkoutItems`, which would trip the "Nothing to check out" guard and
+      // yank the buyer off the completed tracker after a beat. We defer the
+      // clear to `commitCompletedCheckout`, fired when the buyer leaves the
+      // completed view via a completion action, so the tracker holds until then.
       setSentOrderId(orderId)
       setShowSentGlow(true)
       setPaidNotice(
@@ -1585,7 +1589,9 @@ function CheckoutPage() {
     )
   }
 
-  if (checkoutItems.length === 0) {
+  // While paying / completed we intentionally keep the order visible even if
+  // the cart is being cleared, so the tracker holds (CND-89).
+  if (checkoutItems.length === 0 && step !== "paying" && step !== "paid") {
     return (
       <div className="space-y-6">
         <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
@@ -2323,6 +2329,11 @@ function CheckoutPage() {
               amountLabel={
                 total > 0 ? `${total.toLocaleString()} sats` : undefined
               }
+              onLeaveCompleted={() => {
+                // Deferred cart clear (see CND-89 note in payNow): the buyer is
+                // leaving the completed tracker, so it's safe to empty the cart.
+                if (selectedMerchant) cart.clearMerchant(selectedMerchant)
+              }}
               busy={!trackerFinished}
               onTryAgain={
                 !trackerPaymentMoved && trackerFinished

@@ -1,18 +1,23 @@
-import {
-  Button,
-  StatusPill,
-  StatusStepper,
-  type StatusStepperRow,
-} from "@conduit/ui"
+import { Button, StatusStepper, type StatusStepperRow } from "@conduit/ui"
 import { Link } from "@tanstack/react-router"
-import { ArrowLeft, ExternalLink, RefreshCw, Send, Zap } from "lucide-react"
 import {
-  PAYMENT_TRACKER_ROW_COPY,
+  AlertCircle,
+  ArrowLeft,
+  Check,
+  RefreshCw,
+  Send,
+  ShoppingBag,
+  Zap,
+} from "lucide-react"
+import type { CSSProperties } from "react"
+import {
   getPaymentTrackerHeadline,
   getPaymentTrackerOutcome,
+  getPaymentTrackerRowCopy,
   getPaymentTrackerRows,
   parseRelayFailureMessage,
   type PaymentTrackerInput,
+  type PaymentTrackerOutcome,
   type PaymentTrackerRowKey,
 } from "../lib/checkout-payment"
 
@@ -35,6 +40,13 @@ export interface PaymentTrackerProps {
   onResendReceipt?: () => void
   /** Optional handler for the "Back to checkout" recovery action when in a failure state. */
   onBackToCheckout?: () => void
+  /**
+   * Called when the buyer leaves the completed tracker via one of the
+   * completion actions (View orders / Keep shopping / Back to carts). Lets the
+   * host commit any deferred side effects (e.g. clearing the merchant cart)
+   * right before navigation, so the completed view holds until the buyer acts.
+   */
+  onLeaveCompleted?: () => void
   /** Whether a recovery action is currently submitting. Disables buttons. */
   busy?: boolean
   /**
@@ -45,49 +57,41 @@ export interface PaymentTrackerProps {
   hideRecoveryActions?: boolean
 }
 
-function pillVariantForOutcome(
-  outcome: ReturnType<typeof getPaymentTrackerOutcome>
-): React.ComponentProps<typeof StatusPill>["variant"] {
+/** Token-based accent color for the header, keyed off the coarse outcome. */
+function toneForOutcome(outcome: PaymentTrackerOutcome): string {
   switch (outcome) {
     case "succeeded":
-      return "success"
+      return "var(--success)"
     case "in_progress":
-      return "info"
+      return "var(--secondary-500)"
     case "proof_retry_needed":
-      return "warning"
+      return "var(--warning)"
     case "failed_pre_delivery":
     case "failed_pre_payment":
     default:
-      return "error"
+      return "var(--error)"
   }
 }
 
-function pillCopyForOutcome(
-  outcome: ReturnType<typeof getPaymentTrackerOutcome>
-): string {
-  switch (outcome) {
-    case "succeeded":
-      return "Complete"
-    case "in_progress":
-      return "In progress"
-    case "proof_retry_needed":
-      return "Retry needed"
-    case "failed_pre_delivery":
-    case "failed_pre_payment":
-    default:
-      return "Failed"
-  }
+function HeaderIcon({ outcome }: { outcome: PaymentTrackerOutcome }) {
+  if (outcome === "succeeded")
+    return <Check className="h-5 w-5" strokeWidth={3} />
+  if (outcome === "in_progress")
+    return <Zap className="h-5 w-5 fill-current" strokeWidth={1.5} />
+  return <AlertCircle className="h-5 w-5" />
 }
 
 /**
  * PaymentTracker -- the in-page replacement for the old purple full-screen
  * "Lightning payment started" interrupt.
  *
- * Renders a header (lightning icon + headline + status pill), a 4-row
- * StatusStepper of the buyer-facing payment lifecycle, and a footer of
- * recovery actions whose visibility depends on the tracker outcome (per
- * CND-2A: "Try payment again" must not duplicate an already-paid attempt;
- * "Send order / pay later" only when funds have not moved).
+ * Renders a tonal header card (lightning/check/alert + headline + sats) that
+ * reads as a distinct element from the steps below, a 4-row StatusStepper of
+ * the buyer-facing payment lifecycle with tense-consistent copy, and a footer
+ * of actions: completion navigation when the order is complete, or recovery
+ * actions whose visibility depends on the outcome (per CND-89: "Try payment
+ * again" must not duplicate an already-paid attempt; "Send order / pay later"
+ * only when funds have not moved).
  */
 export function PaymentTracker({
   input,
@@ -96,20 +100,23 @@ export function PaymentTracker({
   onPayLater,
   onResendReceipt,
   onBackToCheckout,
+  onLeaveCompleted,
   busy = false,
   hideRecoveryActions = false,
 }: PaymentTrackerProps) {
   const rows = getPaymentTrackerRows(input)
   const outcome = getPaymentTrackerOutcome(input)
   const headline = getPaymentTrackerHeadline(input)
+  const tone = toneForOutcome(outcome)
 
   const stepperRows: StatusStepperRow[] = ROW_ORDER.map((key) => {
-    const copy = PAYMENT_TRACKER_ROW_COPY[key]
+    const status = rows[key]
+    const copy = getPaymentTrackerRowCopy(key, status)
     return {
       key,
       title: copy.title,
       subtitle: copy.subtitle,
-      status: rows[key],
+      status,
     }
   })
 
@@ -123,38 +130,51 @@ export function PaymentTracker({
     (outcome === "failed_pre_delivery" || outcome === "failed_pre_payment") &&
     Boolean(onBackToCheckout)
 
+  const headerStyle: CSSProperties = {
+    borderColor: `color-mix(in srgb, ${tone} 55%, transparent)`,
+    backgroundColor: `color-mix(in srgb, ${tone} 8%, var(--surface))`,
+    boxShadow: `0 0 24px color-mix(in srgb, ${tone} 22%, transparent)`,
+  }
+  const headerIconStyle: CSSProperties = {
+    borderColor: `color-mix(in srgb, ${tone} 55%, transparent)`,
+    backgroundColor: `color-mix(in srgb, ${tone} 16%, transparent)`,
+    color: tone,
+  }
+
   return (
     <section
       aria-label="Lightning payment status"
       className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-6 shadow-[var(--shadow-md)]"
     >
-      {/* Header */}
-      <header className="flex items-start justify-between gap-4">
-        <div className="flex items-start gap-3 min-w-0">
-          <span
-            aria-hidden="true"
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-[color-mix(in_srgb,var(--secondary-400)_45%,transparent)] bg-[color-mix(in_srgb,var(--secondary-500)_14%,transparent)] text-[var(--secondary-400)]"
-          >
-            <Zap className="h-5 w-5 fill-current" strokeWidth={1.5} />
-          </span>
-          <div className="min-w-0">
-            <h2 className="text-base font-semibold leading-6 text-[var(--text-primary)]">
-              {headline}
-            </h2>
-            {amountLabel && (
-              <p className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
-                {amountLabel}
-              </p>
-            )}
-          </div>
+      {/* Header -- a distinct tonal card so it doesn't read like a step. */}
+      <header
+        style={headerStyle}
+        className="flex items-center gap-4 rounded-xl border p-4"
+      >
+        <span
+          aria-hidden="true"
+          style={headerIconStyle}
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border"
+        >
+          <HeaderIcon outcome={outcome} />
+        </span>
+        <div className="min-w-0">
+          <h2 className="text-lg font-semibold leading-6 text-[var(--text-primary)]">
+            {headline}
+          </h2>
+          {amountLabel && (
+            <p className="mt-0.5 text-sm font-semibold text-[var(--text-secondary)]">
+              {amountLabel}
+            </p>
+          )}
         </div>
-        <StatusPill variant={pillVariantForOutcome(outcome)}>
-          {pillCopyForOutcome(outcome)}
-        </StatusPill>
       </header>
 
       {/* Stepper */}
       <div className="mt-6">
+        <p className="mb-4 text-xs font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">
+          Transaction steps
+        </p>
         <StatusStepper
           rows={stepperRows}
           ariaLabel="Lightning payment progress"
@@ -203,13 +223,35 @@ export function PaymentTracker({
           )
         })()}
 
-      {/* Recovery actions */}
+      {/* Completion actions -- held here until the buyer chooses where to go. */}
+      {!hideRecoveryActions && outcome === "succeeded" && (
+        <footer className="mt-6 grid grid-cols-1 gap-2 border-t border-[var(--border)] pt-4 sm:grid-cols-3">
+          <Button asChild variant="outline">
+            <Link to="/orders" onClick={onLeaveCompleted}>
+              View orders
+            </Link>
+          </Button>
+          <Button asChild variant="primary">
+            <Link to="/products" onClick={onLeaveCompleted}>
+              <ShoppingBag className="mr-2 h-4 w-4" />
+              Keep shopping
+            </Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link to="/cart" onClick={onLeaveCompleted}>
+              Back to carts
+            </Link>
+          </Button>
+        </footer>
+      )}
+
+      {/* Recovery actions -- failure / retry states only. */}
       {!hideRecoveryActions &&
+        outcome !== "succeeded" &&
         (showTryAgain ||
           showPayLater ||
           showResendReceipt ||
           showBackToCheckout ||
-          outcome === "succeeded" ||
           outcome === "proof_retry_needed") && (
           <footer className="mt-6 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-4">
             {showTryAgain && onTryAgain && (
@@ -245,13 +287,10 @@ export function PaymentTracker({
                 Send order, pay later
               </Button>
             )}
-            {(outcome === "succeeded" || outcome === "proof_retry_needed") && (
-              // NOTE(CND-2A follow-up): no /orders/$orderId route yet, so we
-              // route to the flat order list. Replace once order detail lands.
+            {outcome === "proof_retry_needed" && (
               <Button asChild variant="outline">
-                <Link to="/orders">
-                  <ExternalLink className="mr-2 h-4 w-4" />
-                  View order
+                <Link to="/orders" onClick={onLeaveCompleted}>
+                  View orders
                 </Link>
               </Button>
             )}
