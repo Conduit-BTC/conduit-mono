@@ -1,43 +1,15 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react"
+import {
+  addCartItem,
+  clearMerchantCart,
+  getCartTotals,
+  removeCartItem,
+  setCartItemQuantity,
+  type CartItem,
+  type CartState,
+} from "../lib/cart-model"
 
-export type CartItem = {
-  productId: string
-  merchantPubkey: string
-  title: string
-  price: number
-  currency: string
-  priceSats?: number
-  sourcePrice?: {
-    amount: number
-    currency: string
-    normalizedCurrency: string
-  }
-  image?: string
-  tags?: string[]
-  /** Whether the product requires physical shipping. Defaults to "physical". */
-  format?: "physical" | "digital"
-  /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
-  shippingCostSats?: number
-  sourceShippingCost?: {
-    amount: number
-    currency: string
-    normalizedCurrency: string
-  }
-  shippingOptionId?: string
-  shippingOptionDTag?: string
-  shippingCountries?: string[]
-  shippingCountryRules?: Array<{
-    code: string
-    name: string
-    restrictTo: string[]
-    exclude: string[]
-  }>
-  quantity: number
-}
-
-type CartState = {
-  items: CartItem[]
-}
+export type { CartItem }
 
 const CART_STORAGE_KEY = "conduit:cart"
 
@@ -76,13 +48,14 @@ function readSnapshot(): CartState {
 
 function writeState(next: CartState): void {
   state = next
-  if (typeof window === "undefined") return
-  try {
-    localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(next))
-    notify()
-  } catch {
-    // localStorage can fail (quota, privacy mode). Keep behavior non-blocking for MVP.
+  if (typeof window !== "undefined") {
+    try {
+      localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(next))
+    } catch {
+      // localStorage can fail (quota, privacy mode). Keep behavior non-blocking for MVP.
+    }
   }
+  notify()
 }
 
 function subscribe(listener: Listener): () => void {
@@ -122,32 +95,19 @@ export function useCart() {
   const addItem = useCallback(
     (item: Omit<CartItem, "quantity">, quantity = 1) => {
       const curr = readSnapshot()
-      const existing = curr.items.find((i) => i.productId === item.productId)
-      const nextItems = existing
-        ? curr.items.map((i) =>
-            i.productId === item.productId
-              ? { ...i, quantity: i.quantity + quantity }
-              : i
-          )
-        : [...curr.items, { ...item, quantity }]
-      writeState({ items: nextItems })
+      writeState({ items: addCartItem(curr.items, item, quantity) })
     },
     []
   )
 
   const setQuantity = useCallback((productId: string, quantity: number) => {
-    const q = Math.max(1, Math.floor(quantity))
     const curr = readSnapshot()
-    writeState({
-      items: curr.items.map((i) =>
-        i.productId === productId ? { ...i, quantity: q } : i
-      ),
-    })
+    writeState({ items: setCartItemQuantity(curr.items, productId, quantity) })
   }, [])
 
   const removeItem = useCallback((productId: string) => {
     const curr = readSnapshot()
-    writeState({ items: curr.items.filter((i) => i.productId !== productId) })
+    writeState({ items: removeCartItem(curr.items, productId) })
   }, [])
 
   const clear = useCallback(() => {
@@ -156,21 +116,10 @@ export function useCart() {
 
   const clearMerchant = useCallback((merchantPubkey: string) => {
     const curr = readSnapshot()
-    writeState({
-      items: curr.items.filter((i) => i.merchantPubkey !== merchantPubkey),
-    })
+    writeState({ items: clearMerchantCart(curr.items, merchantPubkey) })
   }, [])
 
-  const totals = useMemo(() => {
-    return snap.items.reduce(
-      (acc, i) => {
-        acc.count += i.quantity
-        acc.subtotal += (i.priceSats ?? i.price) * i.quantity
-        return acc
-      },
-      { count: 0, subtotal: 0 }
-    )
-  }, [snap.items])
+  const totals = useMemo(() => getCartTotals(snap.items), [snap.items])
 
   return {
     items: snap.items,

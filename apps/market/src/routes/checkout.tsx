@@ -5,6 +5,7 @@ import {
   ExternalLink,
   KeyRound,
   LoaderCircle,
+  ReceiptText,
   ShoppingCart,
   Store,
   Zap,
@@ -51,6 +52,8 @@ import { PaymentTracker } from "../components/PaymentTracker"
 import {
   isFastCheckoutEligible,
   getFastCheckoutUnavailableReasons,
+  getShippingCheckoutState,
+  getShippingStepBlockingMessage,
   getValidationErrorFields,
   shippingFieldLabel,
   validateShippingFields,
@@ -209,6 +212,10 @@ function LightningIcon({ className = "h-4 w-4" }: { className?: string }) {
   return <Zap className={className} />
 }
 
+function OrderIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return <ReceiptText className={className} />
+}
+
 function CheckIcon({ className = "h-4 w-4" }: { className?: string }) {
   return <Check className={className} />
 }
@@ -217,46 +224,64 @@ function SpinnerIcon({ className = "h-5 w-5" }: { className?: string }) {
   return <LoaderCircle className={className} />
 }
 
-function PaymentMethodButton({
-  label,
-  icon,
-  active = false,
-  disabled = false,
-  subtitle,
-  onClick,
+function CheckoutBreadcrumb({
+  current,
+  includesShippingStep = true,
+  onShippingClick,
 }: {
-  label: string
-  icon: React.ReactNode
-  active?: boolean
-  disabled?: boolean
-  subtitle?: string
-  onClick?: () => void
+  current: "order" | "shipping" | "send-order"
+  includesShippingStep?: boolean
+  onShippingClick?: () => void
 }) {
+  const linkClassName =
+    "transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+  const currentClassName = "text-[var(--text-primary)]"
+
   return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className={[
-        "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition-colors",
-        active
-          ? "border-secondary-400 bg-secondary-500/12 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]"
-          : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] hover:border-[var(--text-secondary)]",
-        disabled ? "cursor-not-allowed opacity-70" : "",
-      ].join(" ")}
+    <nav
+      aria-label="Breadcrumb"
+      className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]"
     >
-      {icon}
-      {label}
-      {subtitle && (
-        <span
-          className={
-            active ? "text-[var(--text-secondary)]" : "text-[var(--text-muted)]"
-          }
-        >
-          {subtitle}
-        </span>
+      <Link to="/products" className={linkClassName}>
+        Shop
+      </Link>
+      <span>/</span>
+      <Link to="/cart" className={linkClassName}>
+        Cart
+      </Link>
+      {current === "order" && (
+        <>
+          <span>/</span>
+          <span className={currentClassName}>Order</span>
+        </>
       )}
-    </button>
+      {current !== "order" && includesShippingStep && (
+        <>
+          <span>/</span>
+          {current === "send-order" && onShippingClick ? (
+            <button
+              type="button"
+              onClick={onShippingClick}
+              className={linkClassName}
+            >
+              Shipping
+            </button>
+          ) : (
+            <span
+              className={current === "shipping" ? currentClassName : undefined}
+            >
+              Shipping
+            </span>
+          )}
+        </>
+      )}
+      {current === "send-order" && (
+        <>
+          <span>/</span>
+          <span className={currentClassName}>Send Order</span>
+        </>
+      )}
+    </nav>
   )
 }
 
@@ -337,7 +362,7 @@ function OrderSummary({
   )
   const shippingLabel =
     shippingCost.status === "not_required"
-      ? "Not required"
+      ? "Not required (digital)"
       : shippingCost.status === "included"
         ? "Included"
         : shippingCost.status === "manual"
@@ -359,7 +384,7 @@ function OrderSummary({
             Order summary
           </h2>
           <div className="mt-1 text-sm text-[var(--text-secondary)]">
-            {step === "shipping" ? "Shipping" : "Payment method"}
+            {step === "shipping" ? "Shipping" : "Send Order"}
           </div>
         </div>
         <div className="text-right">
@@ -577,11 +602,35 @@ function CheckoutPage() {
     [checkoutItems]
   )
 
+  const productShippingOptions = useMemo(
+    () => getCartShippingOptionSnapshots(checkoutItems),
+    [checkoutItems]
+  )
+  const physicalItemsMissingShippingZone = checkoutItems.some(
+    (item) => item.format !== "digital" && !item.shippingOptionId
+  )
+  const physicalItemsMissingShippingSnapshot = checkoutItems.some(
+    (item) =>
+      item.format !== "digital" &&
+      (!item.shippingOptionId ||
+        !item.shippingOptionDTag ||
+        !item.shippingCountryRules ||
+        item.shippingCountryRules.length === 0)
+  )
+  const hasCompleteCartShippingSnapshot =
+    !isAllDigital &&
+    checkoutItems.length > 0 &&
+    !physicalItemsMissingShippingSnapshot
+
   // Fetch merchant's published shipping zones (kind-30406)
   const shippingOptionsQuery = useQuery({
     queryKey: ["shippingOptions", selectedMerchant],
     queryFn: () => getShippingOptions(selectedMerchant!),
-    enabled: !!selectedMerchant && !isAllDigital,
+    enabled:
+      !!selectedMerchant &&
+      !isAllDigital &&
+      !physicalItemsMissingShippingZone &&
+      !hasCompleteCartShippingSnapshot,
     staleTime: 5 * 60 * 1000,
   })
   const merchantShippingOptions = shippingOptionsQuery.data ?? []
@@ -735,17 +784,10 @@ function CheckoutPage() {
     void refreshCheckoutPricing(false)
   }, [pricingPreviewIsStale, pricingRefreshFailedAt, refreshCheckoutPricing])
 
-  const productShippingOptions = useMemo(
-    () => getCartShippingOptionSnapshots(checkoutItems),
-    [checkoutItems]
-  )
   const shippingOptionsForEligibility =
     merchantShippingOptions.length > 0
       ? merchantShippingOptions
       : productShippingOptions
-  const physicalItemsMissingShippingZone = checkoutItems.some(
-    (item) => item.format !== "digital" && !item.shippingOptionId
-  )
   const destinationEligibility = isAllDigital
     ? ({ eligible: true } as const)
     : getShippingDestinationEligibility(
@@ -756,19 +798,15 @@ function CheckoutPage() {
         shippingOptionsForEligibility
       )
 
-  const shippingCheckoutState: ShippingCheckoutState = isAllDigital
-    ? "not_required"
-    : shippingOptionsQuery.isLoading
-      ? "loading"
-      : physicalItemsMissingShippingZone
-        ? "missing_product_zone"
-        : shippingOptionsForEligibility.length === 0
-          ? "no_published_rule"
-          : destinationEligibility.eligible === true
-            ? "allowed"
-            : destinationEligibility.reason === "country_unsupported"
-              ? "country_unsupported"
-              : "postal_restricted"
+  const shippingCheckoutState: ShippingCheckoutState = getShippingCheckoutState(
+    {
+      isAllDigital,
+      shippingLookupPending: shippingOptionsQuery.isLoading,
+      physicalItemsMissingShippingZone,
+      shippingOptionsAvailable: shippingOptionsForEligibility.length > 0,
+      destinationEligibility,
+    }
+  )
 
   const shippingEligibleForFastCheckout =
     shippingCheckoutState === "not_required" ||
@@ -819,17 +857,22 @@ function CheckoutPage() {
       case "allowed":
         return "This destination is covered by the merchant shipping zone."
       case "country_unsupported":
-        return "This merchant does not ship to the selected country."
+        return "Zap out is unavailable for this destination. You can still send the order first."
       case "postal_restricted":
-        return "This merchant shipping zone excludes or does not include this postal code."
+        return "Zap out is unavailable for this postal code. You can still send the order first."
     }
   })()
+
+  const visibleCheckoutStep: CheckoutStep =
+    isAllDigital && step === "shipping" ? "payment" : step
 
   const summaryStep: Exclude<
     CheckoutStep,
     "signing" | "sending" | "sent" | "paying" | "paid"
   > =
-    step === "payment" || step === "paying" || step === "paid"
+    visibleCheckoutStep === "payment" ||
+    visibleCheckoutStep === "paying" ||
+    visibleCheckoutStep === "paid"
       ? "payment"
       : "shipping"
 
@@ -850,24 +893,15 @@ function CheckoutPage() {
 
   function continueToPayment(): void {
     setShippingAttempted(true)
-    if (hasUnpricedCheckoutItems) {
-      setError(
-        "One or more items cannot be converted to sats right now. Refresh prices before checkout."
-      )
-      return
-    }
     const errors = validateShippingFields(shipping)
     setShippingErrors(errors)
-    if (errors.length > 0) {
-      setError("Fix the highlighted fields to continue.")
-      return
-    }
-    if (destinationEligibility.eligible === false) {
-      const message =
-        destinationEligibility.reason === "country_unsupported"
-          ? `This merchant doesn't ship to ${shipping.country}. Please check the country code or contact the merchant.`
-          : `This merchant's shipping rules do not include postal code ${shipping.postalCode}.`
-      setError(message)
+    const blockingMessage = getShippingStepBlockingMessage({
+      hasUnpricedCheckoutItems,
+      shippingErrors: errors,
+      shippingState: shippingCheckoutState,
+    })
+    if (blockingMessage) {
+      setError(blockingMessage)
       return
     }
     setError(null)
@@ -1063,7 +1097,7 @@ function CheckoutPage() {
     try {
       if (hasUnpricedCheckoutItems) {
         throw new Error(
-          "One or more items cannot be converted to sats right now. Refresh prices before checkout."
+          "One or more items cannot be converted to sats right now. Refresh prices before ordering."
         )
       }
 
@@ -1508,7 +1542,7 @@ function CheckoutPage() {
     try {
       if (hasUnpricedCheckoutItems) {
         throw new Error(
-          "One or more items cannot be converted to sats right now. Refresh prices before checkout."
+          "One or more items cannot be converted to sats right now. Refresh prices before ordering."
         )
       }
 
@@ -1524,7 +1558,7 @@ function CheckoutPage() {
             ...fastEligibilityInput,
             shippingEligible: false,
           }).find((reason) => reason.includes("shipping")) ??
-            "Checkout needs current shipping rules before direct payment."
+            "Order flow needs current shipping rules before direct payment."
         )
       }
 
@@ -1715,23 +1749,14 @@ function CheckoutPage() {
   if (!selectedMerchant && cart.items.length > 0) {
     return (
       <div className="space-y-6">
-        <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
-          <Link
-            to="/cart"
-            className="transition-colors hover:text-[var(--text-primary)]"
-          >
-            Cart
-          </Link>
-          <span>/</span>
-          <span className="text-[var(--text-primary)]">Checkout</span>
-        </div>
+        <CheckoutBreadcrumb current="order" />
         <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
           <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Choose a cart before checkout
+            Choose a store cart before ordering
           </h1>
           <p className="mt-3 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
-            Checkout continues one store at a time. Head back to your cart and
-            pick the store you want to review first.
+            Orders are sent one store at a time. Head back to your cart and pick
+            the store you want to review first.
           </p>
           <div className="mt-6">
             <Button asChild className="h-11 px-4 text-sm">
@@ -1751,23 +1776,14 @@ function CheckoutPage() {
   if (checkoutItems.length === 0 && step !== "paying" && step !== "paid") {
     return (
       <div className="space-y-6">
-        <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
-          <Link
-            to="/cart"
-            className="transition-colors hover:text-[var(--text-primary)]"
-          >
-            Cart
-          </Link>
-          <span>/</span>
-          <span className="text-[var(--text-primary)]">Checkout</span>
-        </div>
+        <CheckoutBreadcrumb current="order" />
         <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-8 sm:p-10">
           <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Nothing to check out
+            Cart is empty
           </h1>
           <p className="mt-3 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
             This cart is empty now. Head back to the marketplace and add
-            products before starting checkout again.
+            products before starting an order again.
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
             <Button asChild className="h-11 px-4 text-sm">
@@ -1804,35 +1820,22 @@ function CheckoutPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
-        <Link
-          to="/cart"
-          className="transition-colors hover:text-[var(--text-primary)]"
-        >
-          Cart
-        </Link>
-        <span>/</span>
-        <span
-          className={step === "shipping" ? "text-[var(--text-primary)]" : ""}
-        >
-          Shipping
-        </span>
-        <span>/</span>
-        <span
-          className={
-            step === "payment" || step === "paying" || step === "paid"
-              ? "text-[var(--text-primary)]"
-              : "text-[var(--text-muted)]"
-          }
-        >
-          Payment method
-        </span>
-      </div>
+      <CheckoutBreadcrumb
+        current={visibleCheckoutStep === "payment" ? "send-order" : "shipping"}
+        includesShippingStep={!isAllDigital}
+        onShippingClick={
+          visibleCheckoutStep === "payment" &&
+          !isAllDigital &&
+          !pendingManualInvoice
+            ? () => setStep("shipping")
+            : undefined
+        }
+      />
 
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,520px)]">
         <section className="space-y-5">
           {/* ── Shipping step ─────────────────────────────────────────────── */}
-          {step === "shipping" && (
+          {visibleCheckoutStep === "shipping" && (
             <>
               <div>
                 <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
@@ -1840,8 +1843,8 @@ function CheckoutPage() {
                 </h1>
                 <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
                   Add delivery details for this order. Merchant follow-up and
-                  payment requests are sent through your Nostr account after
-                  checkout.
+                  payment requests are sent through your Nostr account after the
+                  order is sent.
                 </p>
               </div>
 
@@ -2097,7 +2100,7 @@ function CheckoutPage() {
                     className="mt-2 h-11 w-full text-sm"
                     onClick={continueToPayment}
                   >
-                    Continue to payment method
+                    Continue to Send Order
                   </Button>
 
                   <p className="text-xs leading-6 text-[var(--text-muted)]">
@@ -2111,48 +2114,48 @@ function CheckoutPage() {
           )}
 
           {/* ── Payment step ──────────────────────────────────────────────── */}
-          {step === "payment" && (
+          {visibleCheckoutStep === "payment" && (
             <>
               <div>
                 <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-                  Payment method
+                  Send Order
                 </h1>
                 <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
                   {fastEligible
                     ? wallet.status === "pay-capable"
-                      ? "Your wallet is connected and ready. Pay now or send the order first and pay later."
-                      : "Conduit can request a zap invoice now and fall back to your browser or wallet if the saved wallet is unreachable."
+                      ? "Your wallet is connected and ready. Zap out now, or send the order first and pay later."
+                      : "Zap out is available for this merchant, or you can send the order first and pay later."
                     : pricingOnlyFastCheckoutBlocker
-                      ? "Conduit is refreshing the price conversion before offering instant Lightning payment."
-                      : "Orders are sent to the merchant first. The merchant will reply with payment details after reviewing your order."}
+                      ? "Conduit is refreshing the price conversion before offering zap out. You can still send the order first."
+                      : "Send the order to the merchant first. They can confirm shipping and reply with payment details."}
                 </p>
               </div>
 
-              <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
-                {/* Payment method picker */}
-                <div className="flex flex-wrap gap-3">
-                  <PaymentMethodButton
-                    label="Lightning"
-                    icon={<LightningIcon className="h-4 w-4" />}
-                    active
-                  />
-                  <PaymentMethodButton
-                    label="USDT"
-                    icon={<span className="text-base">₮</span>}
-                    disabled
-                    subtitle="Coming soon"
-                  />
-                  <PaymentMethodButton
-                    label="Card"
-                    icon={<CreditCard className="h-4 w-4" />}
-                    disabled
-                    subtitle="Coming soon"
-                  />
+              {isAllDigital && (
+                <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-secondary-500/30 bg-secondary-500/10 text-secondary-400">
+                      <CheckIcon className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium text-[var(--text-primary)]">
+                        Digital delivery
+                      </div>
+                      <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
+                        This merchant cart contains only digital products, so no
+                        shipping address is needed. Merchant follow-up still
+                        happens through your Nostr account after the order is
+                        sent.
+                      </p>
+                    </div>
+                  </div>
                 </div>
+              )}
 
-                {/* Fast checkout banner */}
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
+                {/* Zap out banner */}
                 {lnurlProbing && (
-                  <div className="mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
+                  <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
                     <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
                       <SpinnerIcon className="h-4 w-4 animate-spin" />
                       Checking merchant payment capabilities...
@@ -2161,7 +2164,7 @@ function CheckoutPage() {
                 )}
 
                 {!lnurlProbing && showFastCheckoutSurface && (
-                  <div className="mt-5 rounded-2xl border border-secondary-500/30 bg-secondary-500/8 p-5">
+                  <div className="rounded-2xl border border-secondary-500/30 bg-secondary-500/8 p-5">
                     <div className="flex items-center gap-2">
                       {pricingOnlyFastCheckoutBlocker ? (
                         <SpinnerIcon className="h-4 w-4 animate-spin text-secondary-400" />
@@ -2171,7 +2174,7 @@ function CheckoutPage() {
                       <div className="text-sm font-medium text-[var(--text-primary)]">
                         {pricingOnlyFastCheckoutBlocker
                           ? "Refreshing Lightning total"
-                          : "Pay now with Lightning"}
+                          : "Zap out with Lightning"}
                       </div>
                     </div>
                     <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
@@ -2223,7 +2226,7 @@ function CheckoutPage() {
                         ].join(" ")}
                       >
                         <span className="block font-medium">
-                          Private checkout
+                          Private invoice
                         </span>
                         <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
                           Request a normal LNURL invoice without a public zap
@@ -2241,9 +2244,9 @@ function CheckoutPage() {
                             setZapContent(e.target.value)
                             setZapContentEdited(true)
                           }}
-                          rows={3}
+                          rows={1}
                           maxLength={280}
-                          className="min-h-0 rounded-xl bg-[var(--surface)] py-2.5 focus-visible:border-primary-500 focus-visible:ring-primary-500/30"
+                          className="min-h-[2.75rem] rounded-xl bg-[var(--surface)] py-2.5 focus-visible:border-primary-500 focus-visible:ring-primary-500/30"
                         />
                         <p className="text-xs leading-6 text-[var(--text-muted)]">
                           Public zap receipts can expose this comment. Shipping
@@ -2257,7 +2260,7 @@ function CheckoutPage() {
 
                 {/* What happens next (order-first) */}
                 {!showFastCheckoutSurface && !lnurlProbing && (
-                  <div className="mt-6 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
+                  <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
                     <div className="text-sm font-medium text-[var(--text-primary)]">
                       What happens next
                     </div>
@@ -2277,7 +2280,7 @@ function CheckoutPage() {
                     {fastUnavailableReasons.length > 0 && (
                       <div className="mt-4 border-t border-[var(--border)] pt-4">
                         <div className="text-xs font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">
-                          Pay now unavailable
+                          Zap out unavailable
                         </div>
                         <ul className="mt-3 space-y-2 text-xs leading-5 text-[var(--text-secondary)]">
                           {fastUnavailableReasons.map((reason) => (
@@ -2294,7 +2297,7 @@ function CheckoutPage() {
                         >
                           Connect a Lightning wallet
                         </Link>{" "}
-                        to unlock instant checkout on future orders.
+                        to unlock zap out on future orders.
                       </div>
                     )}
                   </div>
@@ -2308,8 +2311,8 @@ function CheckoutPage() {
                     value={note}
                     onChange={(e) => setNote(e.target.value)}
                     placeholder="Anything the merchant should know before they confirm the order?"
-                    rows={4}
-                    className="min-h-0 rounded-xl bg-[var(--surface-elevated)] py-2.5 focus-visible:border-primary-500 focus-visible:ring-primary-500/30"
+                    rows={2}
+                    className="min-h-[4.5rem] rounded-xl bg-[var(--surface-elevated)] py-2.5 focus-visible:border-primary-500 focus-visible:ring-primary-500/30"
                   />
                 </div>
 
@@ -2413,13 +2416,6 @@ function CheckoutPage() {
                     </>
                   ) : (
                     <>
-                      <Button
-                        variant="outline"
-                        className="h-11 px-4 text-sm"
-                        onClick={() => setStep("shipping")}
-                      >
-                        Back to shipping
-                      </Button>
                       {fastEligible && (
                         <Button
                           className="h-11 px-5 text-sm"
@@ -2432,7 +2428,7 @@ function CheckoutPage() {
                           }}
                         >
                           <LightningIcon className="h-4 w-4" />
-                          Pay now
+                          Zap out
                         </Button>
                       )}
                       {pricingOnlyFastCheckoutBlocker && !fastEligible && (
@@ -2464,14 +2460,8 @@ function CheckoutPage() {
                         className="h-11 px-5 text-sm"
                         onClick={placeOrder}
                       >
-                        {fastEligible ? (
-                          "Send order (pay later)"
-                        ) : (
-                          <>
-                            <LightningIcon className="h-4 w-4" />
-                            Send order
-                          </>
-                        )}
+                        <OrderIcon className="h-4 w-4" />
+                        Send order
                       </Button>
                     </>
                   )}

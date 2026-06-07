@@ -37,7 +37,7 @@ export const Route = createFileRoute("/products/$productId")({
 })
 
 const PRODUCT_SUMMARY_FALLBACK =
-  "This listing does not include a merchant-written summary yet. Product pricing, identity, and order flow are still available for checkout."
+  "This listing does not include a merchant-written summary yet. Product pricing, identity, and the order flow are still available."
 const PRODUCT_DESCRIPTION_COLLAPSED_ROWS = 5
 
 type DescriptionMetrics = {
@@ -431,7 +431,8 @@ function ProductPage() {
                     </div>
                   )}
                   <div className="mt-3 text-xs text-[var(--text-secondary)]">
-                    Payment and shipping are finalized during checkout.
+                    Payment and shipping are finalized with the merchant during
+                    the order flow.
                   </div>
                 </div>
 
@@ -499,7 +500,10 @@ function ProductPage() {
                 </div>
 
                 <Button asChild variant="outline" className="w-full">
-                  <Link to="/cart">
+                  <Link
+                    to="/cart"
+                    search={{ merchant: pubkeyToNpub(product.pubkey) }}
+                  >
                     <ShoppingCart className="h-4 w-4" />
                     View cart
                   </Link>

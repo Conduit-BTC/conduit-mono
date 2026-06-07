@@ -320,7 +320,7 @@ function ProductsPage() {
                 Connect a signer to continue.
               </h2>
               <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
-                Checkout, orders, and merchant follow-up require a connected
+                Orders, zap out, and merchant follow-up require a connected
                 Nostr signer.
               </p>
             </div>

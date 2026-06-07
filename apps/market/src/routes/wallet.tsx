@@ -159,8 +159,8 @@ function WalletPage() {
               </h1>
               <p className="mt-4 max-w-xl text-base leading-7 text-[var(--text-secondary)]">
                 Connect a Lightning wallet using Nostr Wallet Connect (NWC) to
-                enable fast checkout. Your wallet connection is private and
-                stored only on this device.
+                zap out when a merchant supports direct Lightning payment. Your
+                wallet connection is private and stored only on this device.
               </p>
             </div>
 
@@ -180,7 +180,7 @@ function WalletPage() {
               </h2>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
                 Conduit uses this connection to authorize Lightning payments
-                directly from your wallet at checkout.
+                directly from your wallet when you zap out.
               </p>
 
               <div className="mt-3 rounded-[1.75rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)] px-5 py-4 shadow-[var(--shadow-glass-inset)]">
@@ -291,9 +291,9 @@ function WalletPage() {
                 {wallet.status === "unsupported" && (
                   <div className="mt-4 rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] p-3 text-sm text-[var(--warning)]">
                     Your connected wallet does not advertise support for{" "}
-                    <code className="font-mono">pay_invoice</code>. Fast
-                    checkout will remain unavailable until you connect a
-                    payment-capable wallet.
+                    <code className="font-mono">pay_invoice</code>. Zap out
+                    remains unavailable until you connect a payment-capable
+                    wallet.
                   </div>
                 )}
 
@@ -302,8 +302,8 @@ function WalletPage() {
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <span>
                         Wallet saved, but Conduit cannot reach its NWC relay
-                        right now. We will keep checking; checkout can still
-                        offer a Lightning invoice fallback.
+                        right now. We will keep checking; the order flow can
+                        still offer a Lightning invoice fallback.
                       </span>
                       <Button
                         variant="outline"
@@ -412,11 +412,11 @@ function WalletPage() {
             {/* How it works */}
             <div>
               <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--primary-500)]">
-                How fast checkout works
+                How zap out works
               </h2>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
-                Fast checkout lets you pay merchants directly at checkout
-                without waiting for a manual invoice.
+                Zap out lets you pay merchants directly when payment details are
+                available without waiting for a manual invoice.
               </p>
 
               <div className="mt-3 rounded-[1.75rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)] px-5 py-4 shadow-[var(--shadow-glass-inset)]">
@@ -426,9 +426,9 @@ function WalletPage() {
                     connection string.
                   </li>
                   <li>
-                    2. At checkout, Conduit checks if the merchant has a
-                    Lightning address and whether your saved wallet is currently
-                    reachable.
+                    2. During the order flow, Conduit checks if the merchant has
+                    a Lightning address and whether your saved wallet is
+                    currently reachable.
                   </li>
                   <li>
                     3. Conduit requests a zap invoice, tries your connected
@@ -436,8 +436,8 @@ function WalletPage() {
                     when the wallet returns it.
                   </li>
                   <li>
-                    4. If the NWC path is unreachable before funds move,
-                    checkout can fall back to a Lightning invoice you can open
+                    4. If the NWC path is unreachable before funds move, the
+                    order flow can fall back to a Lightning invoice you can open
                     in another wallet.
                   </li>
                 </ol>

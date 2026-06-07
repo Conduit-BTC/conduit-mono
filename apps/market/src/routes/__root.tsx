@@ -61,7 +61,7 @@ function getPageTitle(pathname: string): string {
     return "Cart"
   }
   if (pathname === "/checkout") {
-    return "Checkout"
+    return "Order"
   }
   if (pathname === "/orders") {
     return "Orders"

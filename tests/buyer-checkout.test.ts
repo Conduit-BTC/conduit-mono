@@ -7,7 +7,10 @@ import {
   validateShippingFields,
   isFastCheckoutEligible,
   getFastCheckoutUnavailableReasons,
+  getShippingCheckoutState,
+  getShippingStepBlockingMessage,
   type ShippingFormState,
+  type ShippingCheckoutState,
 } from "../apps/market/src/lib/checkout-validation"
 import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
 import {
@@ -163,6 +166,93 @@ describe("validateShippingFields", () => {
   })
 })
 
+// ─── getShippingStepBlockingMessage ───────────────────────────────────────────
+
+describe("getShippingStepBlockingMessage", () => {
+  it("blocks unpriced items before moving to Send Order", () => {
+    expect(
+      getShippingStepBlockingMessage({
+        hasUnpricedCheckoutItems: true,
+        shippingErrors: [],
+        shippingState: "allowed",
+      })
+    ).toContain("cannot be converted to sats")
+  })
+
+  it("blocks invalid shipping fields before moving to Send Order", () => {
+    const shippingErrors = validateShippingFields(
+      validShipping({ firstName: "" })
+    )
+    expect(
+      getShippingStepBlockingMessage({
+        hasUnpricedCheckoutItems: false,
+        shippingErrors,
+        shippingState: "allowed",
+      })
+    ).toBe("Fix the highlighted fields to continue.")
+  })
+
+  it("does not let shipping-zone readiness block order-first Send Order", () => {
+    const nonBlockingShippingStates: ShippingCheckoutState[] = [
+      "loading",
+      "missing_product_zone",
+      "no_published_rule",
+      "country_unsupported",
+      "postal_restricted",
+    ]
+
+    for (const shippingState of nonBlockingShippingStates) {
+      expect(
+        getShippingStepBlockingMessage({
+          hasUnpricedCheckoutItems: false,
+          shippingErrors: [],
+          shippingState,
+        })
+      ).toBeNull()
+    }
+  })
+})
+
+// ─── getShippingCheckoutState ────────────────────────────────────────────────
+
+describe("getShippingCheckoutState", () => {
+  it("uses cached cart shipping snapshots before showing a lookup loading state", () => {
+    expect(
+      getShippingCheckoutState({
+        isAllDigital: false,
+        shippingLookupPending: true,
+        physicalItemsMissingShippingZone: false,
+        shippingOptionsAvailable: true,
+        destinationEligibility: { eligible: true },
+      })
+    ).toBe("allowed")
+  })
+
+  it("shows loading only when no cached shipping snapshot is available", () => {
+    expect(
+      getShippingCheckoutState({
+        isAllDigital: false,
+        shippingLookupPending: true,
+        physicalItemsMissingShippingZone: false,
+        shippingOptionsAvailable: false,
+        destinationEligibility: { eligible: null, reason: "unknown" },
+      })
+    ).toBe("loading")
+  })
+
+  it("does not wait for lookup when the product lacks a shipping zone", () => {
+    expect(
+      getShippingCheckoutState({
+        isAllDigital: false,
+        shippingLookupPending: true,
+        physicalItemsMissingShippingZone: true,
+        shippingOptionsAvailable: false,
+        destinationEligibility: { eligible: null, reason: "unknown" },
+      })
+    ).toBe("missing_product_zone")
+  })
+})
+
 // ─── isFastCheckoutEligible ───────────────────────────────────────────────────
 
 describe("isFastCheckoutEligible", () => {
@@ -254,7 +344,7 @@ describe("isFastCheckoutEligible", () => {
         lnurlAllowsNostr: false,
       })
     ).toEqual([
-      "Connect a Lightning wallet or browser payment method.",
+      "Connect a Lightning wallet or enable browser Lightning payments.",
       "Merchant has not added a Lightning Address.",
     ])
   })
