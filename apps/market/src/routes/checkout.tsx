@@ -521,6 +521,9 @@ function CheckoutPage() {
   // order rumor has been published; lets a post-delivery payment failure retry
   // invoice + payment against the SAME order instead of republishing it (which
   // would create a duplicate merchant order). Cleared at the start of payNow.
+  const deliveredOrderContextRef = useRef<FastCheckoutPaymentContext | null>(
+    null
+  )
   const [deliveredOrderContext, setDeliveredOrderContext] =
     useState<FastCheckoutPaymentContext | null>(null)
   // Frozen snapshot of the just-completed order. We clear the live cart the
@@ -929,12 +932,24 @@ function CheckoutPage() {
     }
   }
 
-  function startOverPendingManualInvoice(): void {
-    setPendingManualInvoice(null)
-    setError(null)
-    setPaidNotice(null)
-    setSentOrderId(null)
-    setStep("payment")
+  function setDeliveredOrderContextValue(
+    ctx: FastCheckoutPaymentContext | null
+  ): void {
+    deliveredOrderContextRef.current = ctx
+    setDeliveredOrderContext(ctx)
+  }
+
+  function retryPendingManualInvoicePayment(): void {
+    const ctx = deliveredOrderContextRef.current ?? deliveredOrderContext
+    if (!ctx) {
+      setError(
+        "This order was already sent. Use the invoice shown here, or view the order from Orders."
+      )
+      return
+    }
+
+    setOverlayPlaying(true)
+    void payDeliveredOrder(ctx)
   }
 
   function getErrorMessage(error: unknown, fallback: string): string {
@@ -1033,6 +1048,13 @@ function CheckoutPage() {
   async function placeOrder(): Promise<void> {
     if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
     if (pendingManualInvoice) return
+    if (deliveredOrderContextRef.current) {
+      setError(
+        "This order has already been sent to the merchant. Continue payment or view it from Orders instead."
+      )
+      setStep("payment")
+      return
+    }
 
     setError(null)
     setPaidNotice(null)
@@ -1444,6 +1466,12 @@ function CheckoutPage() {
   }
 
   async function payNow(): Promise<void> {
+    const deliveredCtx = deliveredOrderContextRef.current
+    if (deliveredCtx) {
+      await payDeliveredOrder(deliveredCtx)
+      return
+    }
+
     if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
     if (pendingManualInvoice) return
     const webLnAvailableNow = hasWebLN()
@@ -1473,7 +1501,7 @@ function CheckoutPage() {
     setTrackerProofStatus(undefined)
     setTrackerFinished(false)
     setTrackerError(null)
-    setDeliveredOrderContext(null)
+    setDeliveredOrderContextValue(null)
     setCompletedSnapshot(null)
     setStep("paying")
 
@@ -1558,7 +1586,7 @@ function CheckoutPage() {
         pricingIntent,
         orderDeliveryNotice,
       }
-      setDeliveredOrderContext(ctx)
+      setDeliveredOrderContextValue(ctx)
       // Hand off to the payment half. Release the guard first so payDeliveredOrder
       // can re-acquire it; there is no await between here and its synchronous
       // guard check, so no second click can interleave.
@@ -2366,13 +2394,23 @@ function CheckoutPage() {
                 {/* Action buttons */}
                 <div className="mt-6 flex flex-wrap gap-3">
                   {pendingManualInvoice ? (
-                    <Button
-                      variant="outline"
-                      className="h-11 px-4 text-sm"
-                      onClick={startOverPendingManualInvoice}
-                    >
-                      Start over
-                    </Button>
+                    <>
+                      <Button
+                        variant="outline"
+                        className="h-11 px-4 text-sm"
+                        onClick={retryPendingManualInvoicePayment}
+                      >
+                        <CreditCard className="h-4 w-4" />
+                        Try automatic payment again
+                      </Button>
+                      <Button
+                        asChild
+                        variant="ghost"
+                        className="h-11 px-4 text-sm"
+                      >
+                        <Link to="/orders">View orders</Link>
+                      </Button>
+                    </>
                   ) : (
                     <>
                       <Button
@@ -2475,12 +2513,22 @@ function CheckoutPage() {
                   onTryAgain={
                     canRetry
                       ? () => {
-                          setOverlayPlaying(true)
                           // Order already delivered -> retry payment only.
                           // Otherwise re-run the full flow (nothing published).
-                          if (plan.canRetryPayment && deliveredOrderContext) {
-                            void payDeliveredOrder(deliveredOrderContext)
+                          if (plan.canRetryPayment) {
+                            const ctx =
+                              deliveredOrderContextRef.current ??
+                              deliveredOrderContext
+                            if (ctx) {
+                              setOverlayPlaying(true)
+                              void payDeliveredOrder(ctx)
+                            } else {
+                              setTrackerError(
+                                "This order was already sent. Return to Orders to continue."
+                              )
+                            }
                           } else {
+                            setOverlayPlaying(true)
                             void payNow()
                           }
                         }
@@ -2496,7 +2544,7 @@ function CheckoutPage() {
                       : undefined
                   }
                   onBackToCheckout={
-                    canRetry
+                    plan.canReturnToCheckout
                       ? () => {
                           setError(trackerError)
                           setTrackerError(null)

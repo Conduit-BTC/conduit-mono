@@ -128,8 +128,7 @@ export function PaymentTracker({
     Boolean(onTryAgain)
   const showPayLater = recovery.canSendOrderPayLater && Boolean(onPayLater)
   const showBackToCheckout =
-    (recovery.canRetryPayment || recovery.canRepublishOrder) &&
-    Boolean(onBackToCheckout)
+    recovery.canReturnToCheckout && Boolean(onBackToCheckout)
 
   const headerStyle: CSSProperties = {
     borderColor: `color-mix(in srgb, ${tone} 55%, transparent)`,

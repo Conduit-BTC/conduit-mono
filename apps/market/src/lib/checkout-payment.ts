@@ -505,6 +505,12 @@ export interface CheckoutRecoveryPlan {
   canRepublishOrder: boolean
   /** Fall back to the order-first flow, which publishes a NEW order. */
   canSendOrderPayLater: boolean
+  /**
+   * Let the buyer return to the editable checkout form. Only safe before an
+   * order has reached the merchant; after delivery, that form contains actions
+   * that would publish a second order.
+   */
+  canReturnToCheckout: boolean
 }
 
 export function getCheckoutRecoveryPlan(
@@ -514,6 +520,7 @@ export function getCheckoutRecoveryPlan(
     canRetryPayment: false,
     canRepublishOrder: false,
     canSendOrderPayLater: false,
+    canReturnToCheckout: false,
   }
   // No terminal failure to recover from, or funds already moved (a paid order
   // must never be re-sent or re-paid from these actions).
@@ -525,6 +532,7 @@ export function getCheckoutRecoveryPlan(
       canRetryPayment: true,
       canRepublishOrder: false,
       canSendOrderPayLater: false,
+      canReturnToCheckout: false,
     }
   }
 
@@ -533,6 +541,7 @@ export function getCheckoutRecoveryPlan(
     canRetryPayment: false,
     canRepublishOrder: true,
     canSendOrderPayLater: true,
+    canReturnToCheckout: true,
   }
 }
 

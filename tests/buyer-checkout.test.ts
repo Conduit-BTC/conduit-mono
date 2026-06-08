@@ -1687,9 +1687,10 @@ describe("payment tracker state mapping", () => {
       expect(plan.canRepublishOrder).toBe(true)
       expect(plan.canSendOrderPayLater).toBe(true)
       expect(plan.canRetryPayment).toBe(false)
+      expect(plan.canReturnToCheckout).toBe(true)
     })
 
-    it("post-delivery / pre-payment failure: retry payment only, never republish", () => {
+    it("post-delivery / pre-payment failure: retry payment only, never republish or return to checkout", () => {
       const plan = getCheckoutRecoveryPlan(
         input({ finished: true, orderDelivered: true, paymentMoved: false })
       )
@@ -1697,6 +1698,7 @@ describe("payment tracker state mapping", () => {
       // The order is already with the merchant -- these would duplicate it.
       expect(plan.canRepublishOrder).toBe(false)
       expect(plan.canSendOrderPayLater).toBe(false)
+      expect(plan.canReturnToCheckout).toBe(false)
     })
 
     it("while in flight: offers no order/payment recovery actions", () => {
@@ -1706,6 +1708,7 @@ describe("payment tracker state mapping", () => {
       expect(plan.canRetryPayment).toBe(false)
       expect(plan.canRepublishOrder).toBe(false)
       expect(plan.canSendOrderPayLater).toBe(false)
+      expect(plan.canReturnToCheckout).toBe(false)
     })
 
     it("after funds moved: never re-sends or re-pays a paid order", () => {
@@ -1729,6 +1732,7 @@ describe("payment tracker state mapping", () => {
         expect(plan.canRetryPayment).toBe(false)
         expect(plan.canRepublishOrder).toBe(false)
         expect(plan.canSendOrderPayLater).toBe(false)
+        expect(plan.canReturnToCheckout).toBe(false)
       }
     })
   })
