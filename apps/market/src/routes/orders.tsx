@@ -427,8 +427,13 @@ function OrdersPage() {
       return attempt ?? null
     },
     // Re-poll while the user is on the page so a "pending" proof can refresh
-    // to "sent" without a manual reload.
-    refetchInterval: 15_000,
+    // to "sent" without a manual reload. Stop once proof delivery is confirmed
+    // (or there is no attempt) — that state is terminal, so further polling
+    // would just re-read IndexedDB forever.
+    refetchInterval: (query) =>
+      query.state.data && query.state.data.proofDeliveryStatus !== "sent"
+        ? 15_000
+        : false,
     refetchIntervalInBackground: false,
   })
   const incompletePaymentAttempt = useMemo(() => {

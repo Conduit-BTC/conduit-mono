@@ -10,7 +10,7 @@ import {
   Zap,
 } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { NDKEvent, NDKUser, giftWrap } from "@nostr-dev-kit/ndk"
 import {
@@ -528,6 +528,12 @@ function CheckoutPage() {
   // then render the held completed tracker + summary from this snapshot.
   const [completedSnapshot, setCompletedSnapshot] =
     useState<CheckoutCompletionSnapshot | null>(null)
+  // Synchronous re-entrancy guard for the payment flow. A `step`/`disabled`
+  // check can't prevent a double-click because the state change doesn't commit
+  // until React re-renders; this ref flips synchronously inside the click's
+  // first tick so a second click is rejected before it can publish a duplicate
+  // order or re-pay an invoice (CND-89).
+  const paymentInFlightRef = useRef(false)
   const [zapVisibility, setZapVisibility] =
     useState<CheckoutZapVisibility>("public_zap")
   const [zapContent, setZapContent] = useState("")
@@ -1156,6 +1162,9 @@ function CheckoutPage() {
       setTrackerFinished(true)
       return
     }
+    // Reject a concurrent attempt (e.g. double-clicked "Try payment again").
+    if (paymentInFlightRef.current) return
+    paymentInFlightRef.current = true
 
     // Fresh payment attempt: reset the payment-portion tracker state but leave
     // `orderDelivered` true (the order is already with the merchant).
@@ -1425,7 +1434,12 @@ function CheckoutPage() {
         setTrackerFinished(true)
       }
     } finally {
-      setPaymentStage(null)
+      // NB: do not reset `paymentStage` here. On a terminal failure the tracker
+      // derives which row to mark "failed" from the stage that was active when
+      // the flow stopped (getPaymentTrackerRows); nulling it would always blame
+      // the invoice row even when the failure was during payment. The stage is
+      // re-initialised at the start of the next attempt.
+      paymentInFlightRef.current = false
     }
   }
 
@@ -1444,6 +1458,11 @@ function CheckoutPage() {
       setError("Merchant does not have a Lightning address.")
       return
     }
+    // Reject a concurrent attempt: a double-clicked "Pay now" must not publish
+    // the order twice (CND-89). The ref flips synchronously, before the first
+    // `setStep("paying")` re-render commits.
+    if (paymentInFlightRef.current) return
+    paymentInFlightRef.current = true
 
     setError(null)
     setPaidNotice(null)
@@ -1540,14 +1559,20 @@ function CheckoutPage() {
         orderDeliveryNotice,
       }
       setDeliveredOrderContext(ctx)
+      // Hand off to the payment half. Release the guard first so payDeliveredOrder
+      // can re-acquire it; there is no await between here and its synchronous
+      // guard check, so no second click can interleave.
+      paymentInFlightRef.current = false
       await payDeliveredOrder(ctx)
     } catch (e) {
       // Failure before the order reached the merchant. No order was published,
       // so a full retry (or order-first fallback) can't create a duplicate.
+      // Keep `paymentStage` ("checking_order_delivery") so the tracker marks the
+      // order-delivery row as failed rather than a later row.
       const message = e instanceof Error ? e.message : "Payment failed"
       setTrackerError(message)
       setTrackerFinished(true)
-      setPaymentStage(null)
+      paymentInFlightRef.current = false
     }
   }
 
