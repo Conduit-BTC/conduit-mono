@@ -18,7 +18,9 @@ import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
 import {
   MerchantAvatarFallback,
-  getPendingMerchantDisplayName,
+  Nip05TrustIndicator,
+  getMerchantDisplayName,
+  getProfileNip05,
 } from "../../components/MerchantIdentity"
 import {
   ProductGridCard,
@@ -108,9 +110,11 @@ function ProductPage() {
   const merchantProfileName = getProfileName(merchantProfile.data)
   const merchantIdentityPending = !!product && !merchantProfileName
   const merchantName = product
-    ? merchantProfileName ||
-      getPendingMerchantDisplayName(product.pubkey, { chars: 8 })
+    ? getMerchantDisplayName(merchantProfile.data, product.pubkey, {
+        chars: 8,
+      })
     : ""
+  const merchantNip05 = getProfileNip05(merchantProfile.data)
   const cartItem = product
     ? cart.items.find((item) => item.productId === product.id)
     : null
@@ -375,15 +379,22 @@ function ProductPage() {
                   Shop at
                 </div>
                 <div className="mt-3 flex items-start gap-3">
-                  <Avatar className="h-11 w-11 shrink-0 border border-[var(--border)]">
-                    <AvatarImage
-                      src={merchantProfile.data?.picture}
-                      alt={merchantName}
-                    />
-                    <AvatarFallback>
-                      <MerchantAvatarFallback />
-                    </AvatarFallback>
-                  </Avatar>
+                  <Link
+                    to="/store/$pubkey"
+                    params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                    className="block shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface-elevated)]"
+                    aria-label={`Visit ${merchantName} store`}
+                  >
+                    <Avatar className="h-11 w-11 border border-[var(--border)]">
+                      <AvatarImage
+                        src={merchantProfile.data?.picture}
+                        alt={merchantName}
+                      />
+                      <AvatarFallback>
+                        <MerchantAvatarFallback />
+                      </AvatarFallback>
+                    </Avatar>
+                  </Link>
                   <div className="min-w-0 flex-1">
                     <Link
                       to="/store/$pubkey"
@@ -402,16 +413,31 @@ function ProductPage() {
                         </div>
                       )}
                     </Link>
-                    <div className="mt-1 flex min-w-0 items-center gap-2">
-                      <Link
-                        to="/store/$pubkey"
-                        params={{ pubkey: pubkeyToNpub(product.pubkey) }}
-                        className="truncate font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+                    {merchantNip05 ? (
+                      <div
+                        className="mt-1 truncate text-xs font-medium text-[var(--text-muted)]"
+                        title={merchantNip05}
                       >
-                        {formatNpub(product.pubkey, 10)}
-                      </Link>
-                      <CopyButton value={product.pubkey} label="Copy pubkey" />
-                    </div>
+                        <Nip05TrustIndicator
+                          pubkey={product.pubkey}
+                          nip05={merchantNip05}
+                        />
+                      </div>
+                    ) : (
+                      <div className="mt-1 flex min-w-0 items-center gap-2">
+                        <Link
+                          to="/store/$pubkey"
+                          params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                          className="truncate font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+                        >
+                          {formatNpub(product.pubkey, 10)}
+                        </Link>
+                        <CopyButton
+                          value={pubkeyToNpub(product.pubkey)}
+                          label="Copy npub"
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

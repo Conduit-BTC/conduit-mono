@@ -34,7 +34,9 @@ export const NIP05_VERIFICATION_VALID_TTL_MS = 6 * 60 * 60_000
 export const NIP05_VERIFICATION_INVALID_TTL_MS = 30 * 60_000
 export const NIP05_VERIFICATION_UNKNOWN_TTL_MS = 5 * 60_000
 
+const NIP05_VERIFICATION_CACHE_VERSION = "v4"
 const HEX_PUBKEY_PATTERN = /^[0-9a-f]{64}$/i
+const NIP05_LOCAL_PART_PATTERN = /^[a-z0-9_.-]+$/i
 
 function defaultCache(): Nip05VerificationCache | null {
   if (typeof window === "undefined") return null
@@ -67,7 +69,7 @@ export function parseNip05Identifier(
   const trimmed = nip05?.trim()
   if (!trimmed || trimmed.length > 100 || /\s/.test(trimmed)) return null
 
-  const parts = trimmed.split("@")
+  const parts = trimmed.includes("@") ? trimmed.split("@") : ["_", trimmed]
   if (parts.length !== 2) return null
 
   const [rawName, rawDomain] = parts
@@ -79,6 +81,7 @@ export function parseNip05Identifier(
   }
 
   if (!domain.includes(".") || /[/:]/.test(domain)) return null
+  if (!NIP05_LOCAL_PART_PATTERN.test(name)) return null
 
   return {
     name,
@@ -91,7 +94,7 @@ export function getNip05VerificationCacheId(
   pubkey: string,
   normalizedIdentifier: string
 ): string {
-  return `${pubkey.toLowerCase()}:${normalizedIdentifier.toLowerCase()}`
+  return `${NIP05_VERIFICATION_CACHE_VERSION}:${pubkey.toLowerCase()}:${normalizedIdentifier.toLowerCase()}`
 }
 
 function rowToResult(
@@ -126,6 +129,25 @@ function makeResult(
     checkedAt: now,
     expiresAt: now + verificationTtl(input.status),
   }
+}
+
+function makeNetworkUnknownResult(
+  input: {
+    pubkey: string
+    nip05: string
+    normalizedIdentifier: string
+  },
+  now: number
+): Nip05VerificationResult {
+  return makeResult(
+    {
+      ...input,
+      status: "unknown",
+      reason: "network_error",
+      source: "network",
+    },
+    now
+  )
 }
 
 function resultToRow(result: Nip05VerificationResult): CachedNip05Verification {
@@ -163,6 +185,94 @@ function getClaimedPubkey(
 
   const normalized = claimed.trim().toLowerCase()
   return HEX_PUBKEY_PATTERN.test(normalized) ? normalized : null
+}
+
+function makeNip05Url(domain: string, name: string): string {
+  return `https://${domain}/.well-known/nostr.json?name=${encodeURIComponent(name)}`
+}
+
+function isRedirectResponse(response: Response): boolean {
+  return (
+    response.type === "opaqueredirect" ||
+    (response.status >= 300 && response.status < 400)
+  )
+}
+
+function getWwwRedirectFallbackDomain(domain: string): string | null {
+  if (domain.startsWith("www.")) return null
+  return `www.${domain}`
+}
+
+async function hasRedirectSignal(
+  fetcher: typeof fetch,
+  url: string
+): Promise<boolean> {
+  try {
+    const response = await fetcher(url, {
+      headers: { accept: "application/json" },
+      redirect: "manual",
+    })
+    return isRedirectResponse(response)
+  } catch {
+    // Browser CORS can hide redirect responses before JavaScript can inspect
+    // them. A no-cors manual request still exposes the opaque response type,
+    // which lets us distinguish redirects without reading private headers.
+  }
+
+  try {
+    const response = await fetcher(url, {
+      redirect: "manual",
+      mode: "no-cors",
+    })
+    return isRedirectResponse(response)
+  } catch {
+    return false
+  }
+}
+
+async function verifyNip05Url(
+  input: {
+    url: string
+    pubkey: string
+    nip05: string
+    normalizedIdentifier: string
+    name: string
+  },
+  fetcher: typeof fetch,
+  checkedAt: number
+): Promise<Nip05VerificationResult> {
+  const response = await fetcher(input.url, {
+    headers: { accept: "application/json" },
+  })
+
+  if (!response.ok) {
+    return makeResult(
+      {
+        pubkey: input.pubkey,
+        nip05: input.nip05,
+        normalizedIdentifier: input.normalizedIdentifier,
+        status: "invalid",
+        reason: `http_${response.status}`,
+        source: "network",
+      },
+      checkedAt
+    )
+  }
+
+  const names = readNamesMap(await response.json())
+  const claimedPubkey = names ? getClaimedPubkey(names, input.name) : null
+
+  return makeResult(
+    {
+      pubkey: input.pubkey,
+      nip05: input.nip05,
+      normalizedIdentifier: input.normalizedIdentifier,
+      status: claimedPubkey === input.pubkey ? "valid" : "invalid",
+      reason: claimedPubkey === input.pubkey ? undefined : "pubkey_mismatch",
+      source: "network",
+    },
+    checkedAt
+  )
 }
 
 export async function getNip05Verification(
@@ -235,54 +345,68 @@ export async function getNip05Verification(
     )
   }
 
-  const url = `https://${parsed.domain}/.well-known/nostr.json?name=${encodeURIComponent(parsed.name)}`
+  const url = makeNip05Url(parsed.domain, parsed.name)
   let result: Nip05VerificationResult
 
   try {
-    const response = await fetcher(url, {
-      headers: { accept: "application/json" },
-    })
-
-    if (!response.ok) {
-      result = makeResult(
-        {
-          pubkey,
-          nip05: input.nip05.trim(),
-          normalizedIdentifier: parsed.normalizedIdentifier,
-          status: "invalid",
-          reason: `http_${response.status}`,
-          source: "network",
-        },
-        checkedAt
-      )
+    result = await verifyNip05Url(
+      {
+        url,
+        pubkey,
+        nip05: input.nip05.trim(),
+        normalizedIdentifier: parsed.normalizedIdentifier,
+        name: parsed.name,
+      },
+      fetcher,
+      checkedAt
+    )
+  } catch {
+    const fallbackDomain = getWwwRedirectFallbackDomain(parsed.domain)
+    if (fallbackDomain) {
+      const redirectConfirmed = await hasRedirectSignal(fetcher, url)
+      try {
+        const fallbackResult = await verifyNip05Url(
+          {
+            url: makeNip05Url(fallbackDomain, parsed.name),
+            pubkey,
+            nip05: input.nip05.trim(),
+            normalizedIdentifier: parsed.normalizedIdentifier,
+            name: parsed.name,
+          },
+          fetcher,
+          checkedAt
+        )
+        result =
+          redirectConfirmed || fallbackResult.status === "valid"
+            ? fallbackResult
+            : makeNetworkUnknownResult(
+                {
+                  pubkey,
+                  nip05: input.nip05.trim(),
+                  normalizedIdentifier: parsed.normalizedIdentifier,
+                },
+                checkedAt
+              )
+      } catch {
+        result = makeNetworkUnknownResult(
+          {
+            pubkey,
+            nip05: input.nip05.trim(),
+            normalizedIdentifier: parsed.normalizedIdentifier,
+          },
+          checkedAt
+        )
+      }
     } else {
-      const names = readNamesMap(await response.json())
-      const claimedPubkey = names ? getClaimedPubkey(names, parsed.name) : null
-
-      result = makeResult(
+      result = makeNetworkUnknownResult(
         {
           pubkey,
           nip05: input.nip05.trim(),
           normalizedIdentifier: parsed.normalizedIdentifier,
-          status: claimedPubkey === pubkey ? "valid" : "invalid",
-          reason: claimedPubkey === pubkey ? undefined : "pubkey_mismatch",
-          source: "network",
         },
         checkedAt
       )
     }
-  } catch {
-    result = makeResult(
-      {
-        pubkey,
-        nip05: input.nip05.trim(),
-        normalizedIdentifier: parsed.normalizedIdentifier,
-        status: "unknown",
-        reason: "network_error",
-        source: "network",
-      },
-      checkedAt
-    )
   }
 
   try {

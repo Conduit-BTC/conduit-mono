@@ -21,7 +21,7 @@ describe("identity surface contracts", () => {
       ],
       "apps/market/src/routes/products/$productId.tsx": [
         "merchantIdentityPending",
-        "getPendingMerchantDisplayName",
+        "getMerchantDisplayName",
         "relayHints:",
       ],
       "apps/market/src/routes/products/index.tsx": [

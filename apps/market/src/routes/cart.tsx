@@ -17,6 +17,7 @@ import {
   getCachedMerchantStorefront,
   getMarketplaceProducts,
   getMerchantStorefront,
+  getProfileName,
   normalizePubkey,
   pubkeyToNpub,
   useAuth,
@@ -263,7 +264,8 @@ function RelatedProductRow({
   const imageUrl = product.images[0]?.url
   const price = getProductPriceDisplay(product, btcUsdRate)
   const { data: profile } = useProfile(product.pubkey)
-  const merchantLabel = getMerchantDisplayName(profile, product.pubkey)
+  const merchantName = getProfileName(profile)
+  const merchantLabel = merchantName ?? formatNpub(product.pubkey, 6)
 
   if (!imageUrl || imageFailed) return null
 
@@ -293,9 +295,15 @@ function RelatedProductRow({
         >
           {product.title}
         </Link>
-        <div className="mt-1 truncate text-xs text-[var(--text-muted)]">
-          {merchantLabel} / {formatNpub(product.pubkey, 6)}
-        </div>
+        <Link
+          to="/store/$pubkey"
+          params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+          className={`mt-1 block truncate text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] ${
+            merchantName ? "" : "font-mono"
+          }`}
+        >
+          {merchantLabel}
+        </Link>
         <div className="mt-2 text-sm font-semibold text-secondary-400">
           {price.primary}
         </div>
