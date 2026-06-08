@@ -63,10 +63,12 @@ import {
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
   buildPendingCheckoutManualInvoice,
+  getCheckoutRecoveryPlan,
   getLnurlReadyForCheckoutPayment,
   getCheckoutShippingCost,
   requestCheckoutLnurlInvoice,
   type CheckoutPaymentStage,
+  type CheckoutPricingIntent,
   type PendingCheckoutManualInvoice,
   type CheckoutZapVisibility,
 } from "../lib/checkout-payment"
@@ -88,6 +90,34 @@ type CheckoutStep =
 
 type CheckoutSearch = {
   merchant?: string
+}
+
+/** Priced "ok" intent — the only shape we proceed to payment with. */
+type OkPricingIntent = Extract<CheckoutPricingIntent, { status: "ok" }>
+
+/**
+ * Everything needed to (re)attempt payment for an order that has ALREADY been
+ * delivered to the merchant. Captured right after the order rumor publishes so
+ * a post-delivery failure can retry invoice + payment against the same
+ * `orderId` without republishing the order.
+ */
+type FastCheckoutPaymentContext = {
+  orderId: string
+  pricingIntent: OkPricingIntent
+  /** Delivery notice from the order publish, reused in success copy. */
+  orderDeliveryNotice: string | null
+}
+
+/**
+ * Frozen view of a completed order, used to hold the completed tracker + order
+ * summary after the live cart has been cleared (so the paid cart can't be
+ * re-paid on refresh/navigation).
+ */
+type CheckoutCompletionSnapshot = {
+  orderId: string
+  merchantPubkey: string
+  items: CartItem[]
+  totalSats: number
 }
 
 // Shipping is session-scoped: pre-fills within a browser session, never
@@ -487,6 +517,17 @@ function CheckoutPage() {
   >(undefined)
   const [trackerFinished, setTrackerFinished] = useState(false)
   const [trackerError, setTrackerError] = useState<string | null>(null)
+  // Context for the already-delivered fast-checkout order. Present once the
+  // order rumor has been published; lets a post-delivery payment failure retry
+  // invoice + payment against the SAME order instead of republishing it (which
+  // would create a duplicate merchant order). Cleared at the start of payNow.
+  const [deliveredOrderContext, setDeliveredOrderContext] =
+    useState<FastCheckoutPaymentContext | null>(null)
+  // Frozen snapshot of the just-completed order. We clear the live cart the
+  // moment payment settles (so a paid cart can never be re-paid on refresh),
+  // then render the held completed tracker + summary from this snapshot.
+  const [completedSnapshot, setCompletedSnapshot] =
+    useState<CheckoutCompletionSnapshot | null>(null)
   const [zapVisibility, setZapVisibility] =
     useState<CheckoutZapVisibility>("public_zap")
   const [zapContent, setZapContent] = useState("")
@@ -1094,116 +1135,47 @@ function CheckoutPage() {
     return buildCheckoutPricingIntent(checkoutItems, refetched)
   }
 
-  async function payNow(): Promise<void> {
-    if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
-    if (pendingManualInvoice) return
-    const webLnAvailableNow = hasWebLN()
-    if (webLnAvailableNow !== weblnAvailable)
-      setWeblnAvailable(webLnAvailableNow)
-    const canAttemptPaymentNow = canTrySavedNwcWallet || webLnAvailableNow
-    if (!canAttemptPaymentNow) {
-      setError("Connect a Lightning wallet or browser payment method.")
-      return
-    }
+  /**
+   * Pay (or re-pay) an order that has ALREADY been delivered to the merchant.
+   *
+   * This is the payment half of fast checkout: LNURL -> invoice -> NWC pay ->
+   * proof. It never publishes an order, so calling it again after a
+   * post-delivery / pre-payment failure retries payment against the same
+   * `orderId` instead of creating a duplicate merchant order (CND-89).
+   *
+   * On terminal success (or funds-moved-but-proof-failed) it clears the live
+   * cart immediately and freezes a snapshot so the completed tracker holds
+   * without leaving a paid cart re-payable.
+   */
+  async function payDeliveredOrder(
+    ctx: FastCheckoutPaymentContext
+  ): Promise<void> {
+    if (!pubkey || !selectedMerchant) return
     if (!merchantLud16) {
-      setError("Merchant does not have a Lightning address.")
+      setTrackerError("Merchant does not have a Lightning address.")
+      setTrackerFinished(true)
       return
     }
 
+    // Fresh payment attempt: reset the payment-portion tracker state but leave
+    // `orderDelivered` true (the order is already with the merchant).
     setError(null)
     setPaidNotice(null)
     setPendingManualInvoice(null)
-    setPaymentStage("checking_order_delivery")
-    setTrackerOrderDelivered(false)
+    setTrackerError(null)
+    setTrackerFinished(false)
     setTrackerPaymentMoved(false)
     setTrackerProofStatus(undefined)
-    setTrackerFinished(false)
-    setTrackerError(null)
+    setPaymentStage("requesting_invoice")
     setStep("paying")
 
-    let orderDelivered = false
+    const { orderId, pricingIntent } = ctx
+    const currency = "SATS"
     let paymentMoved = false
-    let paidOrderId: string | null = null
-    let recoveryNotice: string | null = null
+    let recoveryNotice = ctx.orderDeliveryNotice
 
     try {
-      if (hasUnpricedCheckoutItems) {
-        throw new Error(
-          "One or more items cannot be converted to sats right now. Refresh prices before checkout."
-        )
-      }
-
-      if (checkoutShippingCost.status === "manual") {
-        throw new Error(
-          "Shipping cost is coordinated with the merchant for one or more items. Send the order first."
-        )
-      }
-
-      if (!shippingEligibleForFastCheckout) {
-        throw new Error(
-          getFastCheckoutUnavailableReasons({
-            ...fastEligibilityInput,
-            shippingEligible: false,
-          }).find((reason) => reason.includes("shipping")) ??
-            "Checkout needs current shipping rules before direct payment."
-        )
-      }
-
-      const pricingIntent = await getFreshPricingIntent()
-      if (pricingIntent.status !== "ok") {
-        throw new Error(pricingIntent.reason)
-      }
-
-      const orderId = crypto.randomUUID()
-      paidOrderId = orderId
-      const currency = "SATS"
       const ndk = getNdk()
-      const orderPayload = {
-        id: orderId,
-        merchantPubkey: selectedMerchant,
-        buyerPubkey: pubkey,
-        items: pricingIntent.items,
-        subtotal: pricingIntent.totalSats,
-        currency,
-        shippingCostSats: pricingIntent.shippingCost.totalSats,
-        shippingCostStatus: pricingIntent.shippingCost.status,
-        shippingAddress: buildShippingAddress(),
-        note: buildContactNote(),
-        createdAt: Date.now(),
-        pricingQuote: pricingIntent.quote,
-      }
-
-      const orderRumor = new NDKEvent(ndk)
-      orderRumor.kind = EVENT_KINDS.ORDER
-      orderRumor.created_at = Math.floor(Date.now() / 1000)
-      orderRumor.tags = [
-        ["p", selectedMerchant],
-        ["type", "order"],
-        ["order", orderId],
-        ["amount", String(pricingIntent.totalSats)],
-        ["currency", currency],
-      ]
-      for (const item of checkoutItems) {
-        orderRumor.tags.push(["item", item.productId, String(item.quantity)])
-        if (item.shippingOptionId) {
-          orderRumor.tags.push(["shipping", item.shippingOptionId])
-        }
-      }
-      orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
-      orderRumor.content = JSON.stringify(orderPayload)
-
-      const orderDelivery = await publishWrappedToMerchantAndSelf(
-        orderRumor,
-        ndk,
-        selectedMerchant,
-        pubkey
-      )
-      recoveryNotice = getDeliveryNotice(orderDelivery, "Order")
-      orderDelivered = true
-      setTrackerOrderDelivered(true)
-
-      setPaymentStage("requesting_invoice")
-
       const lnurlMeta = await fetchLnurlPayMetadata(merchantLud16)
       const isPublicZapPayment = zapVisibility === "public_zap"
       if (isPublicZapPayment && !lnurlMeta.allowsNostr) {
@@ -1401,11 +1373,16 @@ function CheckoutPage() {
         }
       }
 
-      // NOTE(CND-89): do NOT clear the merchant cart here. Clearing it empties
-      // `checkoutItems`, which would trip the "Nothing to check out" guard and
-      // yank the buyer off the completed tracker after a beat. We defer the
-      // clear to `commitCompletedCheckout`, fired when the buyer leaves the
-      // completed view via a completion action, so the tracker holds until then.
+      // Terminal success. Clear the live cart immediately (a paid cart must
+      // never be re-payable on refresh) and freeze a snapshot so the completed
+      // tracker + order summary hold until the buyer chooses where to go.
+      setCompletedSnapshot({
+        orderId,
+        merchantPubkey: selectedMerchant,
+        items: checkoutItems,
+        totalSats: pricingIntent.totalSats,
+      })
+      cart.clearMerchant(selectedMerchant)
       setSentOrderId(orderId)
       setShowSentGlow(true)
       setPaidNotice(
@@ -1423,26 +1400,153 @@ function CheckoutPage() {
     } catch (e) {
       const message = e instanceof Error ? e.message : "Payment failed"
       if (paymentMoved) {
-        // Funds moved but proof publish (or another tail step) threw. Treat
-        // as proof retry needed so the tracker reflects reality.
-        if (paidOrderId) setSentOrderId(paidOrderId)
+        // Funds moved but a tail step (proof publish / receipt) threw. Still
+        // terminal success for the cart: clear it and hold the completed view.
+        setCompletedSnapshot({
+          orderId,
+          merchantPubkey: selectedMerchant,
+          items: checkoutItems,
+          totalSats: pricingIntent.totalSats,
+        })
+        cart.clearMerchant(selectedMerchant)
+        setSentOrderId(orderId)
         setPaidNotice("Payment sent. Proof delivery needs retry.")
         setShowSentGlow(true)
         setTrackerProofStatus("retry_needed")
         setTrackerFinished(true)
         setStep("paid")
       } else {
-        // No funds moved -- keep the tracker visible (step stays "paying")
-        // so the buyer can read the failed step + retry. Recovery actions on
-        // the tracker can either retry payment or fall back to order-first.
+        // Post-delivery, pre-payment failure. The order is already with the
+        // merchant, so recovery retries payment against THIS order; it must
+        // not publish another. The cart stays live so a retry can re-price.
         setTrackerError(
-          orderDelivered
-            ? `Order accepted by Nostr delivery relays for merchant pickup, but payment did not complete. ${message}`
-            : message
+          `Order accepted by Nostr delivery relays for merchant pickup, but payment did not complete. ${message}`
         )
         setTrackerFinished(true)
       }
     } finally {
+      setPaymentStage(null)
+    }
+  }
+
+  async function payNow(): Promise<void> {
+    if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
+    if (pendingManualInvoice) return
+    const webLnAvailableNow = hasWebLN()
+    if (webLnAvailableNow !== weblnAvailable)
+      setWeblnAvailable(webLnAvailableNow)
+    const canAttemptPaymentNow = canTrySavedNwcWallet || webLnAvailableNow
+    if (!canAttemptPaymentNow) {
+      setError("Connect a Lightning wallet or browser payment method.")
+      return
+    }
+    if (!merchantLud16) {
+      setError("Merchant does not have a Lightning address.")
+      return
+    }
+
+    setError(null)
+    setPaidNotice(null)
+    setPendingManualInvoice(null)
+    setPaymentStage("checking_order_delivery")
+    setTrackerOrderDelivered(false)
+    setTrackerPaymentMoved(false)
+    setTrackerProofStatus(undefined)
+    setTrackerFinished(false)
+    setTrackerError(null)
+    setDeliveredOrderContext(null)
+    setCompletedSnapshot(null)
+    setStep("paying")
+
+    try {
+      if (hasUnpricedCheckoutItems) {
+        throw new Error(
+          "One or more items cannot be converted to sats right now. Refresh prices before checkout."
+        )
+      }
+
+      if (checkoutShippingCost.status === "manual") {
+        throw new Error(
+          "Shipping cost is coordinated with the merchant for one or more items. Send the order first."
+        )
+      }
+
+      if (!shippingEligibleForFastCheckout) {
+        throw new Error(
+          getFastCheckoutUnavailableReasons({
+            ...fastEligibilityInput,
+            shippingEligible: false,
+          }).find((reason) => reason.includes("shipping")) ??
+            "Checkout needs current shipping rules before direct payment."
+        )
+      }
+
+      const pricingIntent = await getFreshPricingIntent()
+      if (pricingIntent.status !== "ok") {
+        throw new Error(pricingIntent.reason)
+      }
+
+      const orderId = crypto.randomUUID()
+      const currency = "SATS"
+      const ndk = getNdk()
+      const orderPayload = {
+        id: orderId,
+        merchantPubkey: selectedMerchant,
+        buyerPubkey: pubkey,
+        items: pricingIntent.items,
+        subtotal: pricingIntent.totalSats,
+        currency,
+        shippingCostSats: pricingIntent.shippingCost.totalSats,
+        shippingCostStatus: pricingIntent.shippingCost.status,
+        shippingAddress: buildShippingAddress(),
+        note: buildContactNote(),
+        createdAt: Date.now(),
+        pricingQuote: pricingIntent.quote,
+      }
+
+      const orderRumor = new NDKEvent(ndk)
+      orderRumor.kind = EVENT_KINDS.ORDER
+      orderRumor.created_at = Math.floor(Date.now() / 1000)
+      orderRumor.tags = [
+        ["p", selectedMerchant],
+        ["type", "order"],
+        ["order", orderId],
+        ["amount", String(pricingIntent.totalSats)],
+        ["currency", currency],
+      ]
+      for (const item of checkoutItems) {
+        orderRumor.tags.push(["item", item.productId, String(item.quantity)])
+        if (item.shippingOptionId) {
+          orderRumor.tags.push(["shipping", item.shippingOptionId])
+        }
+      }
+      orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
+      orderRumor.content = JSON.stringify(orderPayload)
+
+      const orderDelivery = await publishWrappedToMerchantAndSelf(
+        orderRumor,
+        ndk,
+        selectedMerchant,
+        pubkey
+      )
+      const orderDeliveryNotice = getDeliveryNotice(orderDelivery, "Order")
+      setTrackerOrderDelivered(true)
+
+      // The order is now with the merchant. Capture its context so a payment
+      // failure retries against THIS order rather than publishing a duplicate.
+      const ctx: FastCheckoutPaymentContext = {
+        orderId,
+        pricingIntent,
+        orderDeliveryNotice,
+      }
+      setDeliveredOrderContext(ctx)
+      await payDeliveredOrder(ctx)
+    } catch (e) {
+      // Failure before the order reached the merchant. No order was published,
+      // so a full retry (or order-first fallback) can't create a duplicate.
+      const message = e instanceof Error ? e.message : "Payment failed"
+      setTrackerError(message)
+      setTrackerFinished(true)
       setPaymentStage(null)
     }
   }
@@ -2316,59 +2420,82 @@ function CheckoutPage() {
           {/* Inline payment tracker -- replaces the old purple full-page
               interrupt. Renders in the left column so the OrderSummary on
               the right stays visible during payment. (CND-2A) */}
-          {(step === "paying" || step === "paid") && (
-            <PaymentTracker
-              input={{
+          {(step === "paying" || step === "paid") &&
+            (() => {
+              const trackerInput = {
                 stage: paymentStage,
                 orderDelivered: trackerOrderDelivered,
                 paymentMoved: trackerPaymentMoved,
                 proofStatus: trackerProofStatus,
                 finished: trackerFinished,
                 errorMessage: trackerError,
-              }}
-              amountLabel={
-                total > 0 ? `${total.toLocaleString()} sats` : undefined
               }
-              onLeaveCompleted={() => {
-                // Deferred cart clear (see CND-89 note in payNow): the buyer is
-                // leaving the completed tracker, so it's safe to empty the cart.
-                if (selectedMerchant) cart.clearMerchant(selectedMerchant)
-              }}
-              busy={!trackerFinished}
-              onTryAgain={
-                !trackerPaymentMoved && trackerFinished
-                  ? () => {
-                      setOverlayPlaying(true)
-                      void payNow()
-                    }
-                  : undefined
-              }
-              onPayLater={
-                !trackerPaymentMoved && trackerFinished
-                  ? () => {
-                      setTrackerError(null)
-                      setTrackerFinished(false)
-                      void placeOrder()
-                    }
-                  : undefined
-              }
-              onBackToCheckout={
-                !trackerPaymentMoved && trackerFinished
-                  ? () => {
-                      setError(trackerError)
-                      setTrackerError(null)
-                      setTrackerFinished(false)
-                      setStep("payment")
-                    }
-                  : undefined
-              }
-            />
-          )}
+              const plan = getCheckoutRecoveryPlan(trackerInput)
+              const canRetry = plan.canRetryPayment || plan.canRepublishOrder
+              // After payment settles the cart is cleared, so read the held
+              // total from the snapshot rather than the (now empty) cart.
+              const amountSats =
+                step === "paid" && completedSnapshot
+                  ? completedSnapshot.totalSats
+                  : total
+              return (
+                <PaymentTracker
+                  input={trackerInput}
+                  amountLabel={
+                    amountSats > 0
+                      ? `${amountSats.toLocaleString()} sats`
+                      : undefined
+                  }
+                  busy={!trackerFinished}
+                  onTryAgain={
+                    canRetry
+                      ? () => {
+                          setOverlayPlaying(true)
+                          // Order already delivered -> retry payment only.
+                          // Otherwise re-run the full flow (nothing published).
+                          if (plan.canRetryPayment && deliveredOrderContext) {
+                            void payDeliveredOrder(deliveredOrderContext)
+                          } else {
+                            void payNow()
+                          }
+                        }
+                      : undefined
+                  }
+                  onPayLater={
+                    plan.canSendOrderPayLater
+                      ? () => {
+                          setTrackerError(null)
+                          setTrackerFinished(false)
+                          void placeOrder()
+                        }
+                      : undefined
+                  }
+                  onBackToCheckout={
+                    canRetry
+                      ? () => {
+                          setError(trackerError)
+                          setTrackerError(null)
+                          setTrackerFinished(false)
+                          setStep("payment")
+                        }
+                      : undefined
+                  }
+                />
+              )
+            })()}
         </section>
 
         <OrderSummary
-          items={checkoutItems}
-          merchantPubkey={selectedMerchant!}
+          items={
+            step === "paid" && completedSnapshot
+              ? completedSnapshot.items
+              : checkoutItems
+          }
+          merchantPubkey={
+            (step === "paid" && completedSnapshot
+              ? completedSnapshot.merchantPubkey
+              : selectedMerchant)!
+          }
           step={summaryStep}
           btcUsdRate={btcUsdRate}
         />

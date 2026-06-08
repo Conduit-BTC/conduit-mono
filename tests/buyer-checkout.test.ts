@@ -19,6 +19,7 @@ import {
   getLnurlReadyForCheckoutPayment,
   getCheckoutShippingCost,
   requestCheckoutLnurlInvoice,
+  getCheckoutRecoveryPlan,
   getPaymentTrackerHeadline,
   getPaymentTrackerOutcome,
   getPaymentTrackerRows,
@@ -1661,6 +1662,74 @@ describe("payment tracker state mapping", () => {
       )
       expect(headline).toMatch(/payment sent/i)
       expect(headline).toMatch(/receipt|retry/i)
+    })
+  })
+
+  // CND-89 review blocker #1: once an order has been delivered to the merchant,
+  // recovery must NOT publish a second order. This guards the route's decision
+  // of which recovery path to offer (republish via payNow / order-first vs.
+  // retry payment against the same delivered order).
+  describe("getCheckoutRecoveryPlan - no duplicate orders after delivery", () => {
+    const input = (
+      overrides: Partial<PaymentTrackerInput> = {}
+    ): PaymentTrackerInput => ({
+      stage: null,
+      orderDelivered: false,
+      paymentMoved: false,
+      finished: false,
+      ...overrides,
+    })
+
+    it("pre-delivery failure: may republish the full order / pay later", () => {
+      const plan = getCheckoutRecoveryPlan(
+        input({ finished: true, orderDelivered: false })
+      )
+      expect(plan.canRepublishOrder).toBe(true)
+      expect(plan.canSendOrderPayLater).toBe(true)
+      expect(plan.canRetryPayment).toBe(false)
+    })
+
+    it("post-delivery / pre-payment failure: retry payment only, never republish", () => {
+      const plan = getCheckoutRecoveryPlan(
+        input({ finished: true, orderDelivered: true, paymentMoved: false })
+      )
+      expect(plan.canRetryPayment).toBe(true)
+      // The order is already with the merchant -- these would duplicate it.
+      expect(plan.canRepublishOrder).toBe(false)
+      expect(plan.canSendOrderPayLater).toBe(false)
+    })
+
+    it("while in flight: offers no order/payment recovery actions", () => {
+      const plan = getCheckoutRecoveryPlan(
+        input({ finished: false, orderDelivered: true })
+      )
+      expect(plan.canRetryPayment).toBe(false)
+      expect(plan.canRepublishOrder).toBe(false)
+      expect(plan.canSendOrderPayLater).toBe(false)
+    })
+
+    it("after funds moved: never re-sends or re-pays a paid order", () => {
+      const sent = getCheckoutRecoveryPlan(
+        input({
+          finished: true,
+          orderDelivered: true,
+          paymentMoved: true,
+          proofStatus: "sent",
+        })
+      )
+      const proofRetry = getCheckoutRecoveryPlan(
+        input({
+          finished: true,
+          orderDelivered: true,
+          paymentMoved: true,
+          proofStatus: "retry_needed",
+        })
+      )
+      for (const plan of [sent, proofRetry]) {
+        expect(plan.canRetryPayment).toBe(false)
+        expect(plan.canRepublishOrder).toBe(false)
+        expect(plan.canSendOrderPayLater).toBe(false)
+      }
     })
   })
 })

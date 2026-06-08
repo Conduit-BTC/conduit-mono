@@ -11,6 +11,7 @@ import {
 } from "lucide-react"
 import type { CSSProperties } from "react"
 import {
+  getCheckoutRecoveryPlan,
   getPaymentTrackerHeadline,
   getPaymentTrackerOutcome,
   getPaymentTrackerRowCopy,
@@ -32,21 +33,20 @@ export interface PaymentTrackerProps {
   input: PaymentTrackerInput
   /** Optional sat amount to surface in the header subline. */
   amountLabel?: string
-  /** Try the payment again. Hidden when funds have moved. */
+  /**
+   * Retry the payment. For a pre-delivery failure this re-runs the full
+   * checkout; for a post-delivery failure the host must retry payment against
+   * the already-delivered order (it must not publish a second order). Hidden
+   * once funds have moved.
+   */
   onTryAgain?: () => void
-  /** Switch to the order-first / pay-later fallback. Hidden when funds have moved. */
+  /**
+   * Switch to the order-first / pay-later fallback. Only offered before the
+   * order has been delivered (otherwise it would publish a duplicate order).
+   */
   onPayLater?: () => void
-  /** Resend payment proof / receipt. Shown only when proof delivery needs retry. */
-  onResendReceipt?: () => void
   /** Optional handler for the "Back to checkout" recovery action when in a failure state. */
   onBackToCheckout?: () => void
-  /**
-   * Called when the buyer leaves the completed tracker via one of the
-   * completion actions (View orders / Keep shopping / Back to carts). Lets the
-   * host commit any deferred side effects (e.g. clearing the merchant cart)
-   * right before navigation, so the completed view holds until the buyer acts.
-   */
-  onLeaveCompleted?: () => void
   /** Whether a recovery action is currently submitting. Disables buttons. */
   busy?: boolean
   /**
@@ -98,9 +98,7 @@ export function PaymentTracker({
   amountLabel,
   onTryAgain,
   onPayLater,
-  onResendReceipt,
   onBackToCheckout,
-  onLeaveCompleted,
   busy = false,
   hideRecoveryActions = false,
 }: PaymentTrackerProps) {
@@ -108,6 +106,7 @@ export function PaymentTracker({
   const outcome = getPaymentTrackerOutcome(input)
   const headline = getPaymentTrackerHeadline(input)
   const tone = toneForOutcome(outcome)
+  const recovery = getCheckoutRecoveryPlan(input)
 
   const stepperRows: StatusStepperRow[] = ROW_ORDER.map((key) => {
     const status = rows[key]
@@ -120,14 +119,16 @@ export function PaymentTracker({
     }
   })
 
-  const showTryAgain = !input.paymentMoved && outcome !== "in_progress"
-  const showPayLater =
-    !input.paymentMoved && outcome !== "in_progress" && Boolean(onPayLater)
-  const showResendReceipt =
-    outcome === "proof_retry_needed" && Boolean(onResendReceipt)
+  // Funds moved (paid or proof-incomplete) -> the journey is done; the footer
+  // is forward navigation, not recovery.
+  const showCompletionActions =
+    outcome === "succeeded" || outcome === "proof_retry_needed"
+  const showTryAgain =
+    (recovery.canRetryPayment || recovery.canRepublishOrder) &&
+    Boolean(onTryAgain)
+  const showPayLater = recovery.canSendOrderPayLater && Boolean(onPayLater)
   const showBackToCheckout =
-    !input.paymentMoved &&
-    (outcome === "failed_pre_delivery" || outcome === "failed_pre_payment") &&
+    (recovery.canRetryPayment || recovery.canRepublishOrder) &&
     Boolean(onBackToCheckout)
 
   const headerStyle: CSSProperties = {
@@ -223,36 +224,43 @@ export function PaymentTracker({
           )
         })()}
 
-      {/* Completion actions -- held here until the buyer chooses where to go. */}
-      {!hideRecoveryActions && outcome === "succeeded" && (
+      {/* Proof-incomplete note -- payment succeeded; the proof DM did not land.
+          Informational only (no buyer to-do): the merchant reconciles via the
+          zap receipt, so we do not promise a manual resend we don't provide. */}
+      {outcome === "proof_retry_needed" && (
+        <div
+          role="status"
+          className="mt-4 rounded-lg border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-3 py-2 text-sm text-[var(--text-primary)]"
+        >
+          Your payment went through. The receipt proof didn't reach the merchant
+          over Nostr — they can still confirm the payment from the Lightning
+          receipt, and you can follow up from your orders if needed.
+        </div>
+      )}
+
+      {/* Completion actions -- shown once funds have moved. Held here until the
+          buyer chooses where to go next. */}
+      {!hideRecoveryActions && showCompletionActions && (
         <footer className="mt-6 grid grid-cols-1 gap-2 border-t border-[var(--border)] pt-4 sm:grid-cols-3">
           <Button asChild variant="outline">
-            <Link to="/orders" onClick={onLeaveCompleted}>
-              View orders
-            </Link>
+            <Link to="/orders">View orders</Link>
           </Button>
           <Button asChild variant="primary">
-            <Link to="/products" onClick={onLeaveCompleted}>
+            <Link to="/products">
               <ShoppingBag className="mr-2 h-4 w-4" />
               Keep shopping
             </Link>
           </Button>
           <Button asChild variant="outline">
-            <Link to="/cart" onClick={onLeaveCompleted}>
-              Back to carts
-            </Link>
+            <Link to="/cart">Back to cart</Link>
           </Button>
         </footer>
       )}
 
-      {/* Recovery actions -- failure / retry states only. */}
+      {/* Recovery actions -- failure states only (no funds moved). */}
       {!hideRecoveryActions &&
-        outcome !== "succeeded" &&
-        (showTryAgain ||
-          showPayLater ||
-          showResendReceipt ||
-          showBackToCheckout ||
-          outcome === "proof_retry_needed") && (
+        !showCompletionActions &&
+        (showTryAgain || showPayLater || showBackToCheckout) && (
           <footer className="mt-6 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-4">
             {showTryAgain && onTryAgain && (
               <Button
@@ -265,17 +273,6 @@ export function PaymentTracker({
                 Try payment again
               </Button>
             )}
-            {showResendReceipt && onResendReceipt && (
-              <Button
-                type="button"
-                variant="primary"
-                onClick={onResendReceipt}
-                disabled={busy}
-              >
-                <Send className="mr-2 h-4 w-4" />
-                Resend receipt
-              </Button>
-            )}
             {showPayLater && onPayLater && (
               <Button
                 type="button"
@@ -285,13 +282,6 @@ export function PaymentTracker({
               >
                 <Send className="mr-2 h-4 w-4" />
                 Send order, pay later
-              </Button>
-            )}
-            {outcome === "proof_retry_needed" && (
-              <Button asChild variant="outline">
-                <Link to="/orders" onClick={onLeaveCompleted}>
-                  View orders
-                </Link>
               </Button>
             )}
             {showBackToCheckout && onBackToCheckout && (

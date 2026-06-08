@@ -485,6 +485,58 @@ export function getPaymentTrackerOutcome(
 }
 
 /**
+ * Which recovery moves are safe given the current tracker state.
+ *
+ * The critical invariant (CND-89 review): once the order has been delivered to
+ * the merchant, recovery must NOT publish a second order. Retrying after a
+ * post-delivery / pre-payment failure continues the *existing* order context
+ * (retry invoice + payment against the same `orderId`); republishing the full
+ * order or falling back to "send order, pay later" is only allowed before the
+ * order has been delivered.
+ *
+ *  - not finished, or funds already moved -> no order/payment recovery
+ *  - finished, no funds, order delivered    -> retry payment only
+ *  - finished, no funds, nothing delivered  -> republish / pay-later allowed
+ */
+export interface CheckoutRecoveryPlan {
+  /** Retry invoice + payment against the already-delivered order. */
+  canRetryPayment: boolean
+  /** Re-run the full fast-checkout flow, which publishes a NEW order. */
+  canRepublishOrder: boolean
+  /** Fall back to the order-first flow, which publishes a NEW order. */
+  canSendOrderPayLater: boolean
+}
+
+export function getCheckoutRecoveryPlan(
+  input: PaymentTrackerInput
+): CheckoutRecoveryPlan {
+  const none: CheckoutRecoveryPlan = {
+    canRetryPayment: false,
+    canRepublishOrder: false,
+    canSendOrderPayLater: false,
+  }
+  // No terminal failure to recover from, or funds already moved (a paid order
+  // must never be re-sent or re-paid from these actions).
+  if (!input.finished || input.paymentMoved) return none
+
+  if (input.orderDelivered) {
+    // Order is already in the merchant's hands -> only retry the payment.
+    return {
+      canRetryPayment: true,
+      canRepublishOrder: false,
+      canSendOrderPayLater: false,
+    }
+  }
+
+  // Nothing was delivered -> safe to publish a fresh order.
+  return {
+    canRetryPayment: false,
+    canRepublishOrder: true,
+    canSendOrderPayLater: true,
+  }
+}
+
+/**
  * One-line headline for the tracker. Intentionally never claims funds moved
  * before the payment-confirmation row is complete: the in-progress headline is
  * the neutral "Order in progress" and the success headline only resolves to
@@ -497,7 +549,10 @@ export function getPaymentTrackerHeadline(input: PaymentTrackerInput): string {
     case "succeeded":
       return "Order complete"
     case "proof_retry_needed":
-      return "Payment sent. Receipt delivery needs retry."
+      // Funds moved; only the best-effort proof DM did not reach the merchant.
+      // Phrased as informational (not a buyer to-do) since we don't expose a
+      // manual resend and the merchant reconciles via the zap receipt.
+      return "Payment sent. Receipt delivery incomplete."
     case "failed_pre_payment":
       return "Order delivered, payment did not complete"
     case "failed_pre_delivery":
