@@ -130,7 +130,6 @@ export function shippingFieldLabel(field: ShippingFieldKey): string {
 export function getShippingStepBlockingMessage(params: {
   hasUnpricedCheckoutItems: boolean
   shippingErrors: ShippingValidationError[]
-  shippingState: ShippingCheckoutState
 }): string | null {
   if (params.hasUnpricedCheckoutItems) {
     return "One or more items cannot be converted to sats right now. Refresh prices before ordering."
@@ -139,16 +138,8 @@ export function getShippingStepBlockingMessage(params: {
     return "Fix the highlighted fields to continue."
   }
 
-  switch (params.shippingState) {
-    case "not_required":
-    case "loading":
-    case "missing_product_zone":
-    case "no_published_rule":
-    case "allowed":
-    case "country_unsupported":
-    case "postal_restricted":
-      return null
-  }
+  // Shipping-zone readiness gates zap-out, not order-first Send Order.
+  return null
 }
 
 // ─── Fast checkout eligibility ────────────────────────────────────────────────

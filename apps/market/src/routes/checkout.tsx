@@ -1,11 +1,11 @@
 import {
   Check,
   Copy,
-  CreditCard,
   ExternalLink,
   KeyRound,
   LoaderCircle,
   ReceiptText,
+  RefreshCw,
   ShoppingCart,
   Store,
   Zap,
@@ -914,7 +914,6 @@ function CheckoutPage() {
     const blockingMessage = getShippingStepBlockingMessage({
       hasUnpricedCheckoutItems,
       shippingErrors: errors,
-      shippingState: shippingCheckoutState,
     })
     if (blockingMessage) {
       setError(blockingMessage)
@@ -2419,7 +2418,7 @@ function CheckoutPage() {
                         className="h-11 px-4 text-sm"
                         onClick={retryPendingManualInvoicePayment}
                       >
-                        <CreditCard className="h-4 w-4" />
+                        <RefreshCw className="h-4 w-4" />
                         Try automatic payment again
                       </Button>
                       <Button

@@ -10,7 +10,6 @@ import {
   getShippingCheckoutState,
   getShippingStepBlockingMessage,
   type ShippingFormState,
-  type ShippingCheckoutState,
 } from "../apps/market/src/lib/checkout-validation"
 import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
 import {
@@ -174,7 +173,6 @@ describe("getShippingStepBlockingMessage", () => {
       getShippingStepBlockingMessage({
         hasUnpricedCheckoutItems: true,
         shippingErrors: [],
-        shippingState: "allowed",
       })
     ).toContain("cannot be converted to sats")
   })
@@ -187,29 +185,17 @@ describe("getShippingStepBlockingMessage", () => {
       getShippingStepBlockingMessage({
         hasUnpricedCheckoutItems: false,
         shippingErrors,
-        shippingState: "allowed",
       })
     ).toBe("Fix the highlighted fields to continue.")
   })
 
   it("does not let shipping-zone readiness block order-first Send Order", () => {
-    const nonBlockingShippingStates: ShippingCheckoutState[] = [
-      "loading",
-      "missing_product_zone",
-      "no_published_rule",
-      "country_unsupported",
-      "postal_restricted",
-    ]
-
-    for (const shippingState of nonBlockingShippingStates) {
-      expect(
-        getShippingStepBlockingMessage({
-          hasUnpricedCheckoutItems: false,
-          shippingErrors: [],
-          shippingState,
-        })
-      ).toBeNull()
-    }
+    expect(
+      getShippingStepBlockingMessage({
+        hasUnpricedCheckoutItems: false,
+        shippingErrors: [],
+      })
+    ).toBeNull()
   })
 })
 
