@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  db,
   extractOrderSummary,
   formatNpub,
   formatPubkey,
@@ -37,6 +38,8 @@ import {
 } from "../lib/orderConversations"
 import { fetchStoreProducts } from "../lib/storeProducts"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
+import { PaymentTracker } from "../components/PaymentTracker"
+import { getPaymentTrackerInputForStoredAttempt } from "../lib/checkout-payment"
 
 export const Route = createFileRoute("/orders")({
   beforeLoad: () => {
@@ -416,6 +419,29 @@ function OrdersPage() {
     () => (selected ? extractOrderSummary(selected.messages ?? []) : null),
     [selected]
   )
+  const paymentAttemptQuery = useQuery({
+    queryKey: ["buyer-payment-attempt", selected?.orderId ?? "none"],
+    enabled: !!selected?.orderId,
+    queryFn: async () => {
+      const attempt = await db.paymentAttempts.get(selected!.orderId)
+      return attempt ?? null
+    },
+    // Re-poll while the user is on the page so a "pending" proof can refresh
+    // to "sent" without a manual reload. Stop once proof delivery is confirmed
+    // (or there is no attempt) — that state is terminal, so further polling
+    // would just re-read IndexedDB forever.
+    refetchInterval: (query) =>
+      query.state.data && query.state.data.proofDeliveryStatus !== "sent"
+        ? 15_000
+        : false,
+    refetchIntervalInBackground: false,
+  })
+  const incompletePaymentAttempt = useMemo(() => {
+    const attempt = paymentAttemptQuery.data
+    if (!attempt) return null
+    if (attempt.proofDeliveryStatus === "sent") return null
+    return attempt
+  }, [paymentAttemptQuery.data])
   const selectedProductsQuery = useQuery({
     queryKey: ["selected-order-products", selected?.merchantPubkey ?? "none"],
     enabled: !!selected?.merchantPubkey,
@@ -559,6 +585,21 @@ function OrdersPage() {
               {selected && orderSummary ? (
                 <>
                   <OrderHero conversation={selected} />
+
+                  {incompletePaymentAttempt && (
+                    <PaymentTracker
+                      input={getPaymentTrackerInputForStoredAttempt(
+                        incompletePaymentAttempt
+                      )}
+                      amountLabel={`${Math.round(
+                        incompletePaymentAttempt.amountMsats / 1000
+                      ).toLocaleString()} sats . order ${formatPubkey(
+                        incompletePaymentAttempt.orderId,
+                        6
+                      )}`}
+                      hideRecoveryActions
+                    />
+                  )}
 
                   <section className="space-y-3 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
                     <CollapsibleInfo
