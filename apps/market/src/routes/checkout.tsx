@@ -10,7 +10,7 @@ import {
   Store,
   Zap,
 } from "lucide-react"
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { NDKEvent, NDKUser, giftWrap } from "@nostr-dev-kit/ndk"
@@ -531,6 +531,7 @@ function CheckoutPage() {
   const { pubkey } = useAuth()
   const cart = useCart()
   const search = Route.useSearch()
+  const navigate = useNavigate()
   const btcUsdRateQuery = useBtcUsdRate()
   const wallet = useWallet()
 
@@ -1182,6 +1183,7 @@ function CheckoutPage() {
       setSentOrderId(orderId)
       setShowSentGlow(true)
       setStep("sent")
+      void navigate({ to: "/orders", replace: true })
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to send order")
       setStep("payment")
@@ -1477,6 +1479,7 @@ function CheckoutPage() {
       )
       setTrackerFinished(true)
       setStep("paid")
+      void navigate({ to: "/orders", replace: true })
     } catch (e) {
       const message = e instanceof Error ? e.message : "Payment failed"
       if (paymentMoved) {
@@ -1495,6 +1498,7 @@ function CheckoutPage() {
         setTrackerProofStatus("retry_needed")
         setTrackerFinished(true)
         setStep("paid")
+        void navigate({ to: "/orders", replace: true })
       } else {
         // Post-delivery, pre-payment failure. The order is already with the
         // merchant, so recovery retries payment against THIS order; it must
@@ -1732,8 +1736,8 @@ function CheckoutPage() {
               "Your order request has been sent to the merchant. They will review it and follow up with confirmation and payment details."}
           </p>
           <p className="relative mx-auto mt-4 max-w-lg text-sm leading-7 text-[var(--text-secondary)]">
-            You can return to your cart, keep browsing products, or check back
-            later for the merchant response.
+            You can review this order from Orders, keep browsing products, or
+            check back later for the merchant response.
           </p>
           {sentOrderId && (
             <div className="relative mt-6 text-xs font-mono text-[var(--text-muted)]">
@@ -1742,9 +1746,9 @@ function CheckoutPage() {
           )}
           <div className="relative mt-8 flex flex-wrap justify-center gap-3">
             <Button asChild variant="outline" className="h-11 px-5 text-sm">
-              <Link to="/cart">
-                <CartIcon className="h-4 w-4" />
-                Back to cart
+              <Link to="/orders">
+                <OrderIcon className="h-4 w-4" />
+                View orders
               </Link>
             </Button>
             <Button asChild className="h-11 px-5 text-sm">
