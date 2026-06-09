@@ -39,6 +39,15 @@ const VALID_NWC_URI =
   "?relay=wss%3A%2F%2Fwallet.example&secret=" +
   "b".repeat(64)
 const connection = parseNwcUri(VALID_NWC_URI)
+const NEXT_NWC_URI =
+  "nostr+walletconnect://" +
+  "c".repeat(64) +
+  "?relay=wss%3A%2F%2Fnext-wallet.example&secret=" +
+  "d".repeat(64)
+const nextConnection = parseNwcUri(NEXT_NWC_URI)
+
+class Nip47PublishError extends Error {}
+class Nip47ReplyTimeoutError extends Error {}
 
 afterEach(() => {
   __buyerNwcSessionTestInternals.__setClientFactory(null)
@@ -121,6 +130,102 @@ describe("BuyerNwcSession", () => {
     session.setConnection(connection)
 
     expect(statuses).toEqual(["disconnected"])
+  })
+
+  it("ignores a stale warm result after the wallet is disconnected", async () => {
+    let resolveInfo:
+      | ((value: { methods: string[]; alias?: string }) => void)
+      | null = null
+
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        pool: undefined,
+        getInfo: () =>
+          new Promise((resolve) => {
+            resolveInfo = resolve
+          }),
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    const statuses: string[] = []
+    session.subscribe((snapshot) => {
+      statuses.push(snapshot.status)
+    })
+
+    session.setConnection(connection)
+    const warmPromise = session.warm()
+    await Promise.resolve()
+
+    expect(resolveInfo).toBeFunction()
+    session.setConnection(null)
+    resolveInfo?.({ methods: ["pay_invoice"], alias: "Recovered too late" })
+    await warmPromise
+
+    expect(session.getSnapshot()).toMatchObject({
+      status: "disconnected",
+      connection: null,
+      info: null,
+      error: null,
+    })
+    expect(statuses).toEqual([
+      "disconnected",
+      "unreachable",
+      "warming",
+      "disconnected",
+    ])
+  })
+
+  it("ignores a stale warm result after the wallet is replaced", async () => {
+    const resolvers = new Map<
+      string,
+      (value: { methods: string[]; alias?: string }) => void
+    >()
+
+    __buyerNwcSessionTestInternals.__setClientFactory((clientConnection) =>
+      fakeClient({
+        pool: undefined,
+        getInfo: () =>
+          new Promise((resolve) => {
+            resolvers.set(clientConnection.walletPubkey, resolve)
+          }),
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    const snapshots: string[] = []
+    session.subscribe((snapshot) => {
+      snapshots.push(
+        `${snapshot.status}:${snapshot.connection?.walletPubkey.slice(0, 1) ?? "-"}:${snapshot.info?.alias ?? "-"}`
+      )
+    })
+
+    session.setConnection(connection)
+    const staleWarm = session.warm()
+    await Promise.resolve()
+
+    session.setConnection(nextConnection)
+    const currentWarm = session.warm()
+    await Promise.resolve()
+
+    resolvers.get(nextConnection.walletPubkey)?.({
+      methods: ["pay_invoice"],
+      alias: "Current wallet",
+    })
+    await currentWarm
+
+    resolvers.get(connection.walletPubkey)?.({
+      methods: ["pay_invoice"],
+      alias: "Stale wallet",
+    })
+    await staleWarm
+
+    expect(session.getSnapshot()).toMatchObject({
+      status: "reachable",
+      connection: nextConnection,
+      info: { alias: "Current wallet" },
+    })
+    expect(snapshots).not.toContain("reachable:a:Stale wallet")
   })
 
   it("still attempts payment when warm probing failed", async () => {
@@ -222,7 +327,7 @@ describe("BuyerNwcSession", () => {
     expect(payCalls).toBe(0)
   })
 
-  it("returns pre_publish_failed when no relay can connect before payment publish", async () => {
+  it("does not let failed relay preconnect skip payment publish", async () => {
     let payCalls = 0
     const relayTimeouts: number[] = []
 
@@ -251,14 +356,65 @@ describe("BuyerNwcSession", () => {
         timeoutMs: 100,
         appId: "market",
       })
+    ).resolves.toMatchObject({
+      status: "paid",
+      preimage: "should-not-pay",
+    })
+
+    expect(relayTimeouts).toEqual([10_000, 15_000, 20_000])
+    expect(payCalls).toBe(1)
+  })
+
+  it("returns pre_publish_failed when the SDK cannot publish payment", async () => {
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        payInvoice: async () => {
+          throw new Nip47PublishError("failed to publish")
+        },
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await expect(
+      session.payInvoice({
+        invoice: "lnbc1test",
+        amountMsats: 1_000,
+        timeoutMs: 100,
+        appId: "market",
+      })
     ).resolves.toEqual({
       status: "pre_publish_failed",
       phase: "before_publish",
       reason: "Failed to connect to NWC relay(s).",
     })
+  })
 
-    expect(relayTimeouts).toEqual([10_000, 15_000, 20_000])
-    expect(payCalls).toBe(0)
+  it("treats SDK reply timeout as ambiguous after-publish failure", async () => {
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        payInvoice: async () => {
+          throw new Nip47ReplyTimeoutError("reply timed out")
+        },
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await expect(
+      session.payInvoice({
+        invoice: "lnbc1test",
+        amountMsats: 1_000,
+        timeoutMs: 100,
+        appId: "market",
+      })
+    ).resolves.toEqual({
+      status: "published_timeout",
+      phase: "after_publish",
+      reason: "NWC request timed out.",
+    })
   })
 
   it("treats timeout after pay_invoice starts as ambiguous after-publish failure", async () => {

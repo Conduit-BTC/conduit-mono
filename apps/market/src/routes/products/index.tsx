@@ -15,11 +15,6 @@ import {
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuTrigger,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
 } from "@conduit/ui"
 import { SignerSwitch } from "../../components/SignerSwitch"
 import {
@@ -48,6 +43,14 @@ const CATALOG_SOURCE_LABELS: Record<ProductCatalogSourceMode, string> = {
   following: "Following",
   conduit: "Conduit",
 }
+const SORT_OPTIONS: Array<{
+  value: MarketBrowseSortOption
+  label: string
+}> = [
+  { value: "newest", label: "Newest" },
+  { value: "price_asc", label: "Price: Low to High" },
+  { value: "price_desc", label: "Price: High to Low" },
+]
 
 export type ProductSearch = MarketBrowseSearch
 
@@ -536,28 +539,40 @@ function ProductsPage() {
           )}
         </div>
 
-        <div className="flex w-full items-center gap-2 sm:ml-auto sm:w-auto">
+        <div className="flex w-full flex-col gap-2 sm:ml-auto sm:w-auto sm:flex-row sm:items-center">
           <span className="min-w-12 text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] sm:min-w-0">
             Sort
           </span>
-          <Select
-            value={search.sort ?? "newest"}
-            onValueChange={(v) =>
-              updateSearch({
-                sort:
-                  v === "newest" ? undefined : (v as MarketBrowseSortOption),
-              })
-            }
+          <div
+            className="inline-flex max-w-full overflow-x-auto rounded-full border border-[var(--border)] bg-[var(--surface)] p-1"
+            role="group"
+            aria-label="Sort products"
           >
-            <SelectTrigger className="h-8 min-w-0 flex-1 text-xs sm:w-auto sm:min-w-[160px] sm:flex-none">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="newest">Newest</SelectItem>
-              <SelectItem value="price_asc">Price: Low to High</SelectItem>
-              <SelectItem value="price_desc">Price: High to Low</SelectItem>
-            </SelectContent>
-          </Select>
+            {SORT_OPTIONS.map((option) => {
+              const selected = (search.sort ?? "newest") === option.value
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() =>
+                    updateSearch({
+                      sort:
+                        option.value === "newest" ? undefined : option.value,
+                    })
+                  }
+                  className={[
+                    "h-7 shrink-0 rounded-full px-3 text-xs font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+                    selected
+                      ? "bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-sm)]"
+                      : "text-[var(--text-muted)] hover:text-[var(--text-primary)]",
+                  ].join(" ")}
+                >
+                  {option.label}
+                </button>
+              )
+            })}
+          </div>
         </div>
       </div>
 

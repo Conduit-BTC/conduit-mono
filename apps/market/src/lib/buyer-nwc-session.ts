@@ -99,6 +99,7 @@ export class BuyerNwcSession {
   private warmPromise: Promise<NwcSessionSnapshot> | null = null
   private listeners = new Set<NwcSessionListener>()
   private snapshot: NwcSessionSnapshot = disconnectedSnapshot()
+  private version = 0
 
   setConnection(connection: NwcConnection | null): NwcSessionSnapshot {
     const nextKey = connection ? getConnectionKey(connection) : null
@@ -111,6 +112,7 @@ export class BuyerNwcSession {
     this.warmPromise = null
     this.connection = connection
     this.connectionKey = nextKey
+    this.version += 1
     this.snapshot = connection
       ? {
           status: "unreachable",
@@ -146,6 +148,7 @@ export class BuyerNwcSession {
     if (this.warmPromise) return this.warmPromise
 
     const connection = this.connection
+    const version = this.version
     this.snapshot = {
       ...this.snapshot,
       status: "warming",
@@ -154,8 +157,8 @@ export class BuyerNwcSession {
     }
     this.notify()
 
-    this.warmPromise = this.warmConnection(connection).finally(() => {
-      this.warmPromise = null
+    this.warmPromise = this.warmConnection(connection, version).finally(() => {
+      if (this.version === version) this.warmPromise = null
     })
 
     return this.warmPromise
@@ -236,10 +239,29 @@ export class BuyerNwcSession {
         }
       }
 
+      if (isNwcPrePublishError(error)) {
+        this.snapshot = {
+          ...this.snapshot,
+          status: "unreachable",
+          connection: this.connection,
+          lastWarmAt: Date.now(),
+          error: reason,
+        }
+        this.notify()
+
+        return {
+          status: "pre_publish_failed",
+          phase: "before_publish",
+          reason: "Failed to connect to NWC relay(s).",
+        }
+      }
+
       return {
         status: "published_timeout",
         phase: "after_publish",
-        reason: isNwcTransportError(error) ? "NWC request timed out." : reason,
+        reason: isNwcAmbiguousPaymentError(error)
+          ? "NWC request timed out."
+          : reason,
       }
     }
   }
@@ -250,12 +272,14 @@ export class BuyerNwcSession {
     this.connection = null
     this.connectionKey = null
     this.warmPromise = null
+    this.version += 1
     this.snapshot = disconnectedSnapshot()
     this.notify()
   }
 
   private async warmConnection(
-    connection: NwcConnection
+    connection: NwcConnection,
+    version: number
   ): Promise<NwcSessionSnapshot> {
     try {
       const client = this.getOrCreateClient(connection)
@@ -265,6 +289,8 @@ export class BuyerNwcSession {
       const status = info.methods.includes("pay_invoice")
         ? "reachable"
         : "unsupported"
+
+      if (!this.isCurrentConnection(connection, version)) return this.snapshot
 
       this.snapshot = {
         status,
@@ -278,6 +304,8 @@ export class BuyerNwcSession {
       }
       this.notify()
     } catch (error) {
+      if (!this.isCurrentConnection(connection, version)) return this.snapshot
+
       this.resetClient()
       this.snapshot = {
         status: "unreachable",
@@ -293,6 +321,16 @@ export class BuyerNwcSession {
     }
 
     return this.snapshot
+  }
+
+  private isCurrentConnection(
+    connection: NwcConnection,
+    version: number
+  ): boolean {
+    return (
+      this.version === version &&
+      this.connectionKey === getConnectionKey(connection)
+    )
   }
 
   private async prepareClientForPayment(): Promise<
@@ -314,36 +352,19 @@ export class BuyerNwcSession {
       }
     }
 
-    let lastError: unknown
-
     for (const timeoutMs of NWC_PAYMENT_RELAY_CONNECT_TIMEOUTS_MS) {
       const client = this.getOrCreateClient(connection)
       try {
         await connectNwcRelays(client, connection, timeoutMs)
         return { ok: true, client }
-      } catch (error) {
-        lastError = error
+      } catch {
         this.resetClient()
       }
     }
 
-    this.snapshot = {
-      ...this.snapshot,
-      status: "unreachable",
-      connection,
-      lastWarmAt: Date.now(),
-      error: getErrorMessage(lastError, "Failed to connect to NWC relay(s)."),
-    }
-    this.notify()
-
-    return {
-      ok: false,
-      result: {
-        status: "pre_publish_failed",
-        phase: "before_publish",
-        reason: "Failed to connect to NWC relay(s).",
-      },
-    }
+    // The SDK publish path is the source of truth. A browser-side preconnect
+    // false negative must not skip a valid NWC payment request.
+    return { ok: true, client: this.getOrCreateClient(connection) }
   }
 
   private getOrCreateClient(connection: NwcConnection): NwcSessionClientLike {
@@ -491,13 +512,32 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
 
-function isNwcTransportError(error: unknown): boolean {
+function getErrorConstructorName(error: unknown): string | null {
+  if (typeof error !== "object" || error === null) return null
+  const constructor = (error as { constructor?: { name?: unknown } })
+    .constructor
+  return typeof constructor?.name === "string" ? constructor.name : null
+}
+
+function isNwcPrePublishError(error: unknown): boolean {
+  const name = getErrorConstructorName(error)
   return (
     error instanceof Nip47NetworkError ||
     error instanceof Nip47PublishError ||
     error instanceof Nip47PublishTimeoutError ||
+    name === "Nip47NetworkError" ||
+    name === "Nip47PublishError" ||
+    name === "Nip47PublishTimeoutError"
+  )
+}
+
+function isNwcAmbiguousPaymentError(error: unknown): boolean {
+  const name = getErrorConstructorName(error)
+  return (
     error instanceof Nip47TimeoutError ||
-    error instanceof Nip47ReplyTimeoutError
+    error instanceof Nip47ReplyTimeoutError ||
+    name === "Nip47TimeoutError" ||
+    name === "Nip47ReplyTimeoutError"
   )
 }
 

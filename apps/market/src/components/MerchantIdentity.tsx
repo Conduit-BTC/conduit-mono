@@ -52,7 +52,7 @@ export function Nip05TrustIndicator({
   const icon =
     verification.status === "valid" ? (
       <ShieldCheck
-        className="h-3.5 w-3.5 shrink-0 text-secondary-400"
+        className="h-3.5 w-3.5 shrink-0 text-primary-500"
         aria-hidden="true"
       />
     ) : verification.status === "invalid" ? (

@@ -87,6 +87,21 @@ export interface ProgressiveProductsResult {
   error: unknown
 }
 
+type ProductAccumulatorState = {
+  key: string
+  catalogSource: ProductCatalogSourceMode
+  products: Product[]
+}
+
+type ProgressiveReadState = {
+  key: string
+  isFetching: boolean
+  count: number
+  meta: CommerceQueryMeta | null
+  error: unknown
+  latestResult?: CommerceResult<CommerceProductRecord[]>
+}
+
 function toProducts(
   result: CommerceResult<CommerceProductRecord[]> | undefined
 ): Product[] {
@@ -124,14 +139,38 @@ function dedupeProducts(products: Product[]): Product[] {
   return Array.from(byId.values()).sort((a, b) => b.createdAt - a.createdAt)
 }
 
+function hasSameProductsByReference(a: Product[], b: Product[]): boolean {
+  return (
+    a.length === b.length && a.every((product, index) => product === b[index])
+  )
+}
+
 function mergeProducts(existing: Product[], incoming: Product[]): Product[] {
-  return dedupeProducts([...existing, ...incoming])
+  if (incoming.length === 0) return existing
+
+  const merged = dedupeProducts([...existing, ...incoming])
+  return hasSameProductsByReference(existing, merged) ? existing : merged
 }
 
 function uniquePubkeys(pubkeys: readonly string[]): string[] {
   return Array.from(
     new Set(pubkeys.map(normalizePubkey).filter(Boolean) as string[])
   )
+}
+
+function hasSameStrings(a: readonly string[] = [], b: readonly string[] = []) {
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
+function nextProductAccumulatorState(
+  current: ProductAccumulatorState,
+  next: ProductAccumulatorState
+): ProductAccumulatorState {
+  return current.key === next.key &&
+    current.catalogSource === next.catalogSource &&
+    current.products === next.products
+    ? current
+    : next
 }
 
 function readCachedPerspectiveFollows(
@@ -355,19 +394,13 @@ export function useProgressiveProducts(
     input.scope === "marketplace"
       ? (marketplaceTags ?? []).join(",")
       : (input.tag ?? "")
-  const [productAccumulator, setProductAccumulator] = useState<{
-    key: string
-    catalogSource: ProductCatalogSourceMode
-    products: Product[]
-  }>({ key: discoveryKey, catalogSource, products: [] })
-  const [progressiveRead, setProgressiveRead] = useState<{
-    key: string
-    isFetching: boolean
-    count: number
-    meta: CommerceQueryMeta | null
-    error: unknown
-    latestResult?: CommerceResult<CommerceProductRecord[]>
-  }>({
+  const [productAccumulator, setProductAccumulator] =
+    useState<ProductAccumulatorState>({
+      key: discoveryKey,
+      catalogSource,
+      products: [],
+    })
+  const [progressiveRead, setProgressiveRead] = useState<ProgressiveReadState>({
     key: discoveryKey,
     isFetching: false,
     count: 0,
@@ -383,8 +416,9 @@ export function useProgressiveProducts(
     ) {
       return
     }
+    if (hasSameStrings(cachedPerspectiveAuthors, firstDegreeAuthors)) return
     writeCachedPerspectiveFollows(perspectivePubkey, firstDegreeAuthors)
-  }, [firstDegreeAuthors, perspectivePubkey])
+  }, [cachedPerspectiveAuthors, firstDegreeAuthors, perspectivePubkey])
 
   const canReadCache = queryEnabled && catalogReady
 
@@ -434,48 +468,66 @@ export function useProgressiveProducts(
       : []
 
   useEffect(() => {
-    setProductAccumulator((current) => ({
-      key: discoveryKey,
-      catalogSource,
-      products:
+    setProductAccumulator((current) => {
+      const products =
         catalogSource === "combined" &&
         current.catalogSource === "combined" &&
         current.products.length > 0
           ? current.products
-          : [],
-    }))
-    setProgressiveRead({
-      key: discoveryKey,
-      isFetching: false,
-      count: 0,
-      meta: null,
-      error: null,
-      latestResult: undefined,
+          : []
+      return nextProductAccumulatorState(current, {
+        key: discoveryKey,
+        catalogSource,
+        products,
+      })
     })
+    setProgressiveRead((current) =>
+      current.key === discoveryKey &&
+      !current.isFetching &&
+      current.count === 0 &&
+      current.meta === null &&
+      current.error === null &&
+      current.latestResult === undefined
+        ? current
+        : {
+            key: discoveryKey,
+            isFetching: false,
+            count: 0,
+            meta: null,
+            error: null,
+            latestResult: undefined,
+          }
+    )
   }, [catalogSource, discoveryKey])
 
   useEffect(() => {
     if (cachedProducts.length === 0) return
-    setProductAccumulator((current) => ({
-      key: discoveryKey,
-      catalogSource,
-      products: mergeProducts(
+    setProductAccumulator((current) => {
+      const products = mergeProducts(
         current.key === discoveryKey ? current.products : [],
         cachedProducts
-      ),
-    }))
+      )
+      return nextProductAccumulatorState(current, {
+        key: discoveryKey,
+        catalogSource,
+        products,
+      })
+    })
   }, [cachedProducts, catalogSource, discoveryKey])
 
   useEffect(() => {
     if (mergedNetworkProducts.length === 0) return
-    setProductAccumulator((current) => ({
-      key: discoveryKey,
-      catalogSource,
-      products: mergeProducts(
+    setProductAccumulator((current) => {
+      const products = mergeProducts(
         current.key === discoveryKey ? current.products : [],
         mergedNetworkProducts
-      ),
-    }))
+      )
+      return nextProductAccumulatorState(current, {
+        key: discoveryKey,
+        catalogSource,
+        products,
+      })
+    })
   }, [mergedNetworkProducts, catalogSource, discoveryKey])
 
   useEffect(() => {
@@ -491,6 +543,8 @@ export function useProgressiveProducts(
       count: current.key === discoveryKey ? current.count : 0,
       meta: current.key === discoveryKey ? current.meta : null,
       error: null,
+      latestResult:
+        current.key === discoveryKey ? current.latestResult : undefined,
     }))
 
     const readCatalog = async (
@@ -510,14 +564,17 @@ export function useProgressiveProducts(
           if (cancelled) return
           const incoming = toProducts(result)
           if (incoming.length > 0) {
-            setProductAccumulator((current) => ({
-              key: discoveryKey,
-              catalogSource,
-              products: mergeProducts(
+            setProductAccumulator((current) => {
+              const products = mergeProducts(
                 current.key === discoveryKey ? current.products : [],
                 incoming
-              ),
-            }))
+              )
+              return nextProductAccumulatorState(current, {
+                key: discoveryKey,
+                catalogSource,
+                products,
+              })
+            })
           }
           setProgressiveRead((current) => ({
             key: discoveryKey,
@@ -537,16 +594,20 @@ export function useProgressiveProducts(
       const fastResult = await readCatalog(PERSPECTIVE_STREAM_READ_POLICY)
       if (cancelled) return
 
-      setProgressiveRead({
-        key: discoveryKey,
-        isFetching: completionRead,
-        count: fastResult.data.length,
-        meta: fastResult.meta,
-        error: null,
-        latestResult: fastResult,
-      })
-
-      if (!completionRead) return
+      if (!completionRead) {
+        setProgressiveRead((current) => ({
+          key: discoveryKey,
+          isFetching: false,
+          count: Math.max(
+            current.key === discoveryKey ? current.count : 0,
+            fastResult.data.length
+          ),
+          meta: fastResult.meta,
+          error: null,
+          latestResult: fastResult,
+        }))
+        return
+      }
 
       const completionResult = await readCatalog(CATALOG_COMPLETION_READ_POLICY)
       if (cancelled) return

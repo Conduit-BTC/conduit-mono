@@ -5,6 +5,7 @@ import {
   DEFAULT_MARKET_PERSPECTIVE_NPUB,
   DEFAULT_MARKET_PERSPECTIVE_PUBKEY,
   getDefaultMarketPerspectiveFollowPubkeys,
+  resolveSafeDefaultMarketPerspectiveFollowRefresh,
   storeDefaultMarketPerspectiveFollowPubkeys,
 } from "../lib/defaultMarketPerspective"
 
@@ -12,6 +13,12 @@ export interface GuestMarketDiscovery {
   usesGuestMarket: boolean
   perspectivePubkey: string | null
   seedAuthorPubkeys?: string[]
+}
+
+function hasSamePubkeys(a: readonly string[], b: readonly string[]): boolean {
+  return (
+    a.length === b.length && a.every((pubkey, index) => pubkey === b[index])
+  )
 }
 
 export function useGuestMarketDiscovery(input: {
@@ -33,12 +40,15 @@ export function useGuestMarketDiscovery(input: {
   useEffect(() => {
     const pubkeys = followRefreshQuery.data?.data
     if (!pubkeys || pubkeys.length === 0) return
-    const acceptedPubkeys = storeDefaultMarketPerspectiveFollowPubkeys(
+    const acceptedPubkeys = resolveSafeDefaultMarketPerspectiveFollowRefresh(
       pubkeys,
-      undefined,
-      { previousPubkeys: guestFollowPubkeys }
+      guestFollowPubkeys
     )
-    if (!acceptedPubkeys) return
+    if (!acceptedPubkeys || hasSamePubkeys(guestFollowPubkeys, acceptedPubkeys))
+      return
+    storeDefaultMarketPerspectiveFollowPubkeys(acceptedPubkeys, undefined, {
+      previousPubkeys: guestFollowPubkeys,
+    })
     setGuestFollowPubkeys(acceptedPubkeys)
   }, [followRefreshQuery.data?.data, guestFollowPubkeys])
 

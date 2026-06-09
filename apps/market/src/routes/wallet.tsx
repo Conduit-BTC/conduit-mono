@@ -8,9 +8,8 @@ import {
   Zap,
 } from "lucide-react"
 import { useState } from "react"
-import { pubkeyToNpub } from "@conduit/core"
+import { parseNwcUri, pubkeyToNpub, type NwcDiagnostic } from "@conduit/core"
 import { Button, Input, Label, StatusPill } from "@conduit/ui"
-import type { NwcDiagnostic } from "@conduit/core"
 import { requireAuth } from "../lib/auth"
 import { useWallet, type WalletConnectionStatus } from "../hooks/useWallet"
 
@@ -119,10 +118,10 @@ function WalletPage() {
       setInputError("Paste a nostr+walletconnect:// connection string.")
       return
     }
-    if (!trimmed.startsWith("nostr+walletconnect://")) {
-      setInputError(
-        "The connection string must start with nostr+walletconnect://"
-      )
+    try {
+      parseNwcUri(trimmed)
+    } catch {
+      setInputError("Paste a valid Nostr Wallet Connect connection string.")
       return
     }
     setInputError(null)

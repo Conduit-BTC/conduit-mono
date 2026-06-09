@@ -143,6 +143,25 @@ function writeStoredCapability(
   return next
 }
 
+function isSameConnection(a: NwcConnection | null, b: NwcConnection): boolean {
+  return (
+    !!a &&
+    a.walletPubkey === b.walletPubkey &&
+    a.secret === b.secret &&
+    a.relays.length === b.relays.length &&
+    a.relays.every((relay, index) => relay === b.relays[index])
+  )
+}
+
+function writeSnapshotCapabilityIfCurrent(
+  connection: NwcConnection,
+  snapshot: NwcSessionSnapshot
+): void {
+  if (snapshot.info && isSameConnection(snapshot.connection, connection)) {
+    writeStoredCapability(connection, snapshot.info)
+  }
+}
+
 function deriveStatus(
   info: NwcGetInfoResult | null,
   error: string | null,
@@ -278,7 +297,7 @@ export function useWallet(): UseWalletReturn {
     }))
 
     const snapshot = await session.warm()
-    if (snapshot.info) writeStoredCapability(connection, snapshot.info)
+    writeSnapshotCapabilityIfCurrent(connection, snapshot)
     setState(getStateFromSessionSnapshot(snapshot, cached?.info ?? null))
   }, [state.connection])
 
@@ -325,7 +344,7 @@ export function useWallet(): UseWalletReturn {
     session
       .warm()
       .then((snapshot) => {
-        if (snapshot.info) writeStoredCapability(stored, snapshot.info)
+        writeSnapshotCapabilityIfCurrent(stored, snapshot)
         setState(getStateFromSessionSnapshot(snapshot, cached?.info ?? null))
       })
       .catch((error: unknown) => {
@@ -388,7 +407,7 @@ export function useWallet(): UseWalletReturn {
 
     try {
       const snapshot = await session.warm()
-      if (snapshot.info) writeStoredCapability(conn, snapshot.info)
+      writeSnapshotCapabilityIfCurrent(conn, snapshot)
       writeStoredConnection(conn)
       setState(getStateFromSessionSnapshot(snapshot))
     } catch {
