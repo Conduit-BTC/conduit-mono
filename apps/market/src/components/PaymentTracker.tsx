@@ -240,7 +240,7 @@ export function PaymentTracker({
       {/* Completion actions -- shown once funds have moved. Held here until the
           buyer chooses where to go next. */}
       {!hideRecoveryActions && showCompletionActions && (
-        <footer className="mt-6 grid grid-cols-1 gap-2 border-t border-[var(--border)] pt-4 sm:grid-cols-3">
+        <footer className="mt-6 grid grid-cols-1 gap-2 border-t border-[var(--border)] pt-4 sm:grid-cols-2">
           <Button asChild variant="outline">
             <Link to="/orders">View orders</Link>
           </Button>
@@ -249,9 +249,6 @@ export function PaymentTracker({
               <ShoppingBag className="mr-2 h-4 w-4" />
               Keep shopping
             </Link>
-          </Button>
-          <Button asChild variant="outline">
-            <Link to="/cart">Back to cart</Link>
           </Button>
         </footer>
       )}

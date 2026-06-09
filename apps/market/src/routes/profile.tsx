@@ -23,6 +23,10 @@ import {
 import { Check, Copy, Globe, PencilLine, UserRound, Zap } from "lucide-react"
 import { requireAuth } from "../lib/auth"
 import { RichProfileText } from "../components/RichProfileText"
+import {
+  Nip05TrustIndicator,
+  getProfileNip05,
+} from "../components/MerchantIdentity"
 
 export const Route = createFileRoute("/profile")({
   beforeLoad: () => {
@@ -98,6 +102,7 @@ function ProfilePage() {
     "Your profile"
   const shortPubkey = useMemo(() => formatNpub(pubkey ?? "", 8), [pubkey])
   const npub = useMemo(() => (pubkey ? pubkeyToNpub(pubkey) : ""), [pubkey])
+  const profileNip05 = getProfileNip05(profileQuery.data)
   const fallbackLetter = (displayName?.[0] ?? pubkey?.[0] ?? "?").toUpperCase()
   const savedProfileForm = useMemo(
     () => profileToForm(profileQuery.data),
@@ -216,12 +221,15 @@ function ProfilePage() {
                     {displayName}
                   </h2>
                   <div className="mt-3 flex flex-wrap items-center gap-2">
-                    {profileQuery.data?.nip05 ? (
+                    {pubkey && profileNip05 ? (
                       <Badge
                         variant="outline"
                         className="border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]"
                       >
-                        {profileQuery.data.nip05}
+                        <Nip05TrustIndicator
+                          pubkey={pubkey}
+                          nip05={profileNip05}
+                        />
                       </Badge>
                     ) : null}
                     <button

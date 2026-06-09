@@ -1,5 +1,5 @@
 /**
- * useWallet - buyer NWC wallet state for Market fast checkout.
+ * useWallet - buyer NWC wallet state for Market zap out payments.
  *
  * Stores the NWC connection locally (localStorage) only.
  * The NWC URI is a private secret and must never be published,
@@ -44,7 +44,7 @@ export interface WalletState {
   info: NwcGetInfoResult | null
   reachability: NwcReachability
   lastProbeAt: number | null
-  /** Plain-language reason the wallet cannot be used for fast checkout, if any. */
+  /** Plain-language reason the wallet cannot be used to zap out, if any. */
   unavailableReason: string | null
   /** Sanitized diagnostics. Never includes the full NWC URI or secret. */
   diagnostics: NwcDiagnostic[]
@@ -143,6 +143,25 @@ function writeStoredCapability(
   return next
 }
 
+function isSameConnection(a: NwcConnection | null, b: NwcConnection): boolean {
+  return (
+    !!a &&
+    a.walletPubkey === b.walletPubkey &&
+    a.secret === b.secret &&
+    a.relays.length === b.relays.length &&
+    a.relays.every((relay, index) => relay === b.relays[index])
+  )
+}
+
+function writeSnapshotCapabilityIfCurrent(
+  connection: NwcConnection,
+  snapshot: NwcSessionSnapshot
+): void {
+  if (snapshot.info && isSameConnection(snapshot.connection, connection)) {
+    writeStoredCapability(connection, snapshot.info)
+  }
+}
+
 function deriveStatus(
   info: NwcGetInfoResult | null,
   error: string | null,
@@ -160,7 +179,7 @@ function deriveUnavailableReason(
 ): string | null {
   switch (status) {
     case "disconnected":
-      return "Connect a wallet to use fast checkout."
+      return "Connect a wallet to zap out."
     case "connecting":
       return "Checking wallet capabilities..."
     case "error":
@@ -278,7 +297,7 @@ export function useWallet(): UseWalletReturn {
     }))
 
     const snapshot = await session.warm()
-    if (snapshot.info) writeStoredCapability(connection, snapshot.info)
+    writeSnapshotCapabilityIfCurrent(connection, snapshot)
     setState(getStateFromSessionSnapshot(snapshot, cached?.info ?? null))
   }, [state.connection])
 
@@ -325,7 +344,7 @@ export function useWallet(): UseWalletReturn {
     session
       .warm()
       .then((snapshot) => {
-        if (snapshot.info) writeStoredCapability(stored, snapshot.info)
+        writeSnapshotCapabilityIfCurrent(stored, snapshot)
         setState(getStateFromSessionSnapshot(snapshot, cached?.info ?? null))
       })
       .catch((error: unknown) => {
@@ -388,12 +407,12 @@ export function useWallet(): UseWalletReturn {
 
     try {
       const snapshot = await session.warm()
-      if (snapshot.info) writeStoredCapability(conn, snapshot.info)
+      writeSnapshotCapabilityIfCurrent(conn, snapshot)
       writeStoredConnection(conn)
       setState(getStateFromSessionSnapshot(snapshot))
     } catch {
       // Capability probe failed but URI parsed - store without advertising it
-      // as ready. Checkout can still fall back to WebLN or the invoice.
+      // as ready. The order flow can still fall back to WebLN or the invoice.
       writeStoredConnection(conn)
       const snapshot = session.getSnapshot()
       setState({

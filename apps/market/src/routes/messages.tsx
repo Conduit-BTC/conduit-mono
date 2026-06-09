@@ -443,7 +443,7 @@ function MessagesPage() {
                 Connect to view merchant threads
               </h2>
               <p className="mx-auto mt-3 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
-                Checkout replies and payment updates are tied to your signer
+                Order replies and payment updates are tied to your signer
                 identity.
               </p>
             </section>

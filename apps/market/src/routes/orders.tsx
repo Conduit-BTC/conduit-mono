@@ -467,7 +467,7 @@ function OrdersPage() {
           </h1>
           <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
             Track merchant updates, invoices, and shipping progress across your
-            recent checkouts.
+            recent orders.
           </p>
         </div>
         <Button

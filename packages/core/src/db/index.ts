@@ -173,6 +173,19 @@ export interface CachedProductSocialSummary {
   verifiedAt?: number
 }
 
+export interface CachedNip05Verification {
+  /** Stable cache key for this pubkey + normalized NIP-05 identifier. */
+  id: string
+  pubkey: string
+  nip05: string
+  normalizedIdentifier: string
+  status: "valid" | "invalid" | "unknown"
+  reason?: string
+  checkedAt: number
+  expiresAt: number
+  cachedAt: number
+}
+
 export interface StoredPaymentAttempt {
   id: string
   orderId: string
@@ -199,6 +212,7 @@ class ConduitDB extends Dexie {
   orderMessages!: EntityTable<CachedOrderMessage, "id">
   relayLists!: EntityTable<CachedRelayList, "pubkey">
   productSocialSummaries!: EntityTable<CachedProductSocialSummary, "key">
+  nip05Verifications!: EntityTable<CachedNip05Verification, "id">
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
 
   constructor() {
@@ -253,6 +267,21 @@ class ConduitDB extends Dexie {
       paymentAttempts:
         "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
     })
+
+    this.version(6).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
+      productSocialSummaries: "key, cachedAt",
+      nip05Verifications:
+        "id, pubkey, normalizedIdentifier, status, expiresAt, cachedAt",
+      paymentAttempts:
+        "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
+    })
   }
 }
 
@@ -288,6 +317,7 @@ export async function ensureCommerceCacheScope(): Promise<void> {
     db.orderMessages.clear(),
     db.relayLists.clear(),
     db.productSocialSummaries.clear(),
+    db.nip05Verifications.clear(),
   ])
 
   window.localStorage.setItem(CACHE_SCOPE_KEY, nextScope)
@@ -362,6 +392,12 @@ export async function pruneCommerceCaches(): Promise<void> {
     }),
     pruneTableByCachedAt(db.productSocialSummaries, {
       estimatedRowBytes: 500,
+      highWaterBytes: FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES,
+      targetBytes: FALLBACK_CACHE_PRUNE_TARGET_BYTES,
+      freshMs: CACHE_PRUNE_FRESH_MS,
+    }),
+    pruneTableByCachedAt(db.nip05Verifications, {
+      estimatedRowBytes: 300,
       highWaterBytes: FALLBACK_CACHE_PRUNE_HIGH_WATER_BYTES,
       targetBytes: FALLBACK_CACHE_PRUNE_TARGET_BYTES,
       freshMs: CACHE_PRUNE_FRESH_MS,

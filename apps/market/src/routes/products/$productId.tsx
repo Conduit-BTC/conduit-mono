@@ -18,7 +18,9 @@ import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
 import { CopyButton } from "../../components/CopyButton"
 import {
   MerchantAvatarFallback,
-  getPendingMerchantDisplayName,
+  Nip05TrustIndicator,
+  getMerchantDisplayName,
+  getProfileNip05,
 } from "../../components/MerchantIdentity"
 import {
   ProductGridCard,
@@ -37,7 +39,7 @@ export const Route = createFileRoute("/products/$productId")({
 })
 
 const PRODUCT_SUMMARY_FALLBACK =
-  "This listing does not include a merchant-written summary yet. Product pricing, identity, and order flow are still available for checkout."
+  "This listing does not include a merchant-written summary yet. Product pricing, identity, and the order flow are still available."
 const PRODUCT_DESCRIPTION_COLLAPSED_ROWS = 5
 
 type DescriptionMetrics = {
@@ -108,9 +110,11 @@ function ProductPage() {
   const merchantProfileName = getProfileName(merchantProfile.data)
   const merchantIdentityPending = !!product && !merchantProfileName
   const merchantName = product
-    ? merchantProfileName ||
-      getPendingMerchantDisplayName(product.pubkey, { chars: 8 })
+    ? getMerchantDisplayName(merchantProfile.data, product.pubkey, {
+        chars: 8,
+      })
     : ""
+  const merchantNip05 = getProfileNip05(merchantProfile.data)
   const cartItem = product
     ? cart.items.find((item) => item.productId === product.id)
     : null
@@ -375,15 +379,22 @@ function ProductPage() {
                   Shop at
                 </div>
                 <div className="mt-3 flex items-start gap-3">
-                  <Avatar className="h-11 w-11 shrink-0 border border-[var(--border)]">
-                    <AvatarImage
-                      src={merchantProfile.data?.picture}
-                      alt={merchantName}
-                    />
-                    <AvatarFallback>
-                      <MerchantAvatarFallback />
-                    </AvatarFallback>
-                  </Avatar>
+                  <Link
+                    to="/store/$pubkey"
+                    params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                    className="block shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface-elevated)]"
+                    aria-label={`Visit ${merchantName} store`}
+                  >
+                    <Avatar className="h-11 w-11 border border-[var(--border)]">
+                      <AvatarImage
+                        src={merchantProfile.data?.picture}
+                        alt={merchantName}
+                      />
+                      <AvatarFallback>
+                        <MerchantAvatarFallback />
+                      </AvatarFallback>
+                    </Avatar>
+                  </Link>
                   <div className="min-w-0 flex-1">
                     <Link
                       to="/store/$pubkey"
@@ -402,16 +413,31 @@ function ProductPage() {
                         </div>
                       )}
                     </Link>
-                    <div className="mt-1 flex min-w-0 items-center gap-2">
-                      <Link
-                        to="/store/$pubkey"
-                        params={{ pubkey: pubkeyToNpub(product.pubkey) }}
-                        className="truncate font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+                    {merchantNip05 ? (
+                      <div
+                        className="mt-1 truncate text-xs font-medium text-[var(--text-muted)]"
+                        title={merchantNip05}
                       >
-                        {formatNpub(product.pubkey, 10)}
-                      </Link>
-                      <CopyButton value={product.pubkey} label="Copy pubkey" />
-                    </div>
+                        <Nip05TrustIndicator
+                          pubkey={product.pubkey}
+                          nip05={merchantNip05}
+                        />
+                      </div>
+                    ) : (
+                      <div className="mt-1 flex min-w-0 items-center gap-2">
+                        <Link
+                          to="/store/$pubkey"
+                          params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+                          className="truncate font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+                        >
+                          {formatNpub(product.pubkey, 10)}
+                        </Link>
+                        <CopyButton
+                          value={pubkeyToNpub(product.pubkey)}
+                          label="Copy npub"
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -431,7 +457,8 @@ function ProductPage() {
                     </div>
                   )}
                   <div className="mt-3 text-xs text-[var(--text-secondary)]">
-                    Payment and shipping are finalized during checkout.
+                    Payment and shipping are finalized with the merchant during
+                    the order flow.
                   </div>
                 </div>
 
@@ -499,7 +526,10 @@ function ProductPage() {
                 </div>
 
                 <Button asChild variant="outline" className="w-full">
-                  <Link to="/cart">
+                  <Link
+                    to="/cart"
+                    search={{ merchant: pubkeyToNpub(product.pubkey) }}
+                  >
                     <ShoppingCart className="h-4 w-4" />
                     View cart
                   </Link>

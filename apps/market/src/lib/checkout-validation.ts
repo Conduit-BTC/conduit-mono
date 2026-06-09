@@ -127,6 +127,21 @@ export function shippingFieldLabel(field: ShippingFieldKey): string {
   }
 }
 
+export function getShippingStepBlockingMessage(params: {
+  hasUnpricedCheckoutItems: boolean
+  shippingErrors: ShippingValidationError[]
+}): string | null {
+  if (params.hasUnpricedCheckoutItems) {
+    return "One or more items cannot be converted to sats right now. Refresh prices before ordering."
+  }
+  if (params.shippingErrors.length > 0) {
+    return "Fix the highlighted fields to continue."
+  }
+
+  // Shipping-zone readiness gates zap-out, not order-first Send Order.
+  return null
+}
+
 // ─── Fast checkout eligibility ────────────────────────────────────────────────
 
 export function isFastCheckoutEligible(params: {
@@ -152,6 +167,33 @@ export type ShippingCheckoutState =
   | "country_unsupported"
   | "postal_restricted"
 
+export function getShippingCheckoutState(params: {
+  isAllDigital: boolean
+  shippingLookupPending: boolean
+  physicalItemsMissingShippingZone: boolean
+  shippingOptionsAvailable: boolean
+  destinationEligibility:
+    | { eligible: true }
+    | { eligible: false; reason: "country_unsupported" | "postal_restricted" }
+    | { eligible: null; reason: "unknown" }
+}): ShippingCheckoutState {
+  if (params.isAllDigital) return "not_required"
+  if (params.physicalItemsMissingShippingZone) return "missing_product_zone"
+
+  if (params.shippingOptionsAvailable) {
+    if (params.destinationEligibility.eligible === true) return "allowed"
+    if (params.destinationEligibility.reason === "country_unsupported") {
+      return "country_unsupported"
+    }
+    if (params.destinationEligibility.reason === "postal_restricted") {
+      return "postal_restricted"
+    }
+  }
+
+  if (params.shippingLookupPending) return "loading"
+  return "no_published_rule"
+}
+
 export function getFastCheckoutUnavailableReasons(params: {
   walletPayCapable: boolean
   merchantLud16: string | undefined | null
@@ -165,7 +207,9 @@ export function getFastCheckoutUnavailableReasons(params: {
 }): string[] {
   const reasons: string[] = []
   if (!params.walletPayCapable) {
-    reasons.push("Connect a Lightning wallet or browser payment method.")
+    reasons.push(
+      "Connect a Lightning wallet or enable browser Lightning payments."
+    )
   }
   if (!params.merchantLud16) {
     reasons.push("Merchant has not added a Lightning Address.")
@@ -216,7 +260,7 @@ export function getFastCheckoutUnavailableReasons(params: {
   }
   if (params.relayReady === false) {
     reasons.push(
-      "Checkout needs reliable order delivery before direct payment."
+      "Order flow needs reliable order delivery before direct payment."
     )
   }
   return reasons

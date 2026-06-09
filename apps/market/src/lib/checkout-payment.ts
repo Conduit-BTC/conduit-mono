@@ -169,7 +169,7 @@ export function buildCheckoutPricingIntent(
         status: "error",
         code: "unpriced_items",
         reason:
-          "One or more items cannot be converted to sats right now. Refresh prices before checkout.",
+          "One or more items cannot be converted to sats right now. Refresh prices before ordering.",
       }
     }
 
@@ -207,7 +207,7 @@ export function buildCheckoutPricingIntent(
           status: "error",
           code: "unpriced_items",
           reason:
-            "One or more items cannot be converted to sats right now. Refresh prices before checkout.",
+            "One or more items cannot be converted to sats right now. Refresh prices before ordering.",
         }
       }
       itemSats = normalized.sats
@@ -219,7 +219,7 @@ export function buildCheckoutPricingIntent(
         status: "error",
         code: "unpriced_items",
         reason:
-          "One or more items cannot be converted to sats right now. Refresh prices before checkout.",
+          "One or more items cannot be converted to sats right now. Refresh prices before ordering.",
       }
     }
     if (
@@ -305,7 +305,7 @@ export function getCheckoutPaymentStageLabel(
     case "checking_receipt":
       return "Checking receipt"
     case null:
-      return "Pay now"
+      return "Zap out"
   }
 }
 

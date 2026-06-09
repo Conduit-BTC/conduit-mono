@@ -88,7 +88,7 @@ function InvoiceCard({
           <span className="text-xs text-error">{invoiceMismatch}</span>
         ) : (
           <span className="text-xs text-[var(--text-secondary)]">
-            Matches current checkout environment.
+            Matches current order environment.
           </span>
         )}
       </div>

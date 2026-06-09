@@ -21,7 +21,7 @@ describe("identity surface contracts", () => {
       ],
       "apps/market/src/routes/products/$productId.tsx": [
         "merchantIdentityPending",
-        "getPendingMerchantDisplayName",
+        "getMerchantDisplayName",
         "relayHints:",
       ],
       "apps/market/src/routes/products/index.tsx": [
@@ -67,5 +67,18 @@ describe("identity surface contracts", () => {
     expect(content).toContain("useRelaySettings(session.relayScope")
     expect(content).toContain("pubkey,")
     expect(content).toContain("bootstrapRelayList: false")
+  })
+
+  it("keeps verified NIP-05 shields on the Conduit primary color", async () => {
+    const content = await readFile(
+      "apps/market/src/components/MerchantIdentity.tsx",
+      "utf8"
+    )
+
+    expect(content).toContain("ShieldCheck")
+    expect(content).toContain("text-primary-500")
+    expect(content).toContain("CircleAlert")
+    expect(content).toContain("text-[var(--warning)]")
+    expect(content).not.toContain("text-secondary-400")
   })
 })
