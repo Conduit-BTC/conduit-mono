@@ -9,12 +9,7 @@ import { KeyRound } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
 import { buildBugReportUrl, useAuth, useNip07Availability } from "@conduit/core"
-import {
-  ErrorPage,
-  LegalFooter,
-  NotFoundPage,
-  SignerConnectPanel,
-} from "@conduit/ui"
+import { ErrorPage, NotFoundPage, SignerConnectPanel } from "@conduit/ui"
 import {
   MerchantMobileNav,
   MerchantSidebar,
@@ -244,7 +239,6 @@ function ConnectGate() {
           onConnect={handleConnect}
         />
       </main>
-      <LegalFooter />
       {import.meta.env.DEV && <TanStackRouterDevtools />}
     </div>
   )
