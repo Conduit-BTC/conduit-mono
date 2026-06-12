@@ -1,3 +1,4 @@
+import type { ReactNode } from "react"
 import { CircleHelp, Github, type LucideIcon } from "lucide-react"
 import { cn } from "../utils"
 
@@ -24,6 +25,7 @@ export interface LegalFooterProps {
   className?: string
   logoHref?: string
   logoSrc?: string
+  aboutLink?: ReactNode
   aboutHref?: string
   privacyHref?: string
   termsHref?: string
@@ -52,6 +54,7 @@ export function LegalFooter({
   className,
   logoHref = "https://conduit.market/",
   logoSrc = "/images/logo/logo-full.svg",
+  aboutLink,
   aboutHref = "/about",
   privacyHref = "https://conduit.market/privacy-policy",
   termsHref = "https://conduit.market/terms-of-service",
@@ -88,12 +91,14 @@ export function LegalFooter({
           className="flex items-center gap-3 text-[11px] font-medium sm:text-xs"
           aria-label="Legal links"
         >
-          <a
-            href={aboutHref}
-            className="transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-          >
-            About
-          </a>
+          {aboutLink ?? (
+            <a
+              href={aboutHref}
+              className="transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            >
+              About
+            </a>
+          )}
           <a
             href={termsHref}
             className="transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"

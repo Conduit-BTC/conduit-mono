@@ -12,6 +12,12 @@ export const Route = createFileRoute("/about")({
   component: AboutPage,
 })
 
+function getSafeNpub(pubkey: string | null): string | null {
+  if (!pubkey) return null
+  const npub = pubkeyToNpub(pubkey)
+  return npub.startsWith("npub1") ? npub : null
+}
+
 function AboutPage() {
   const app = getConduitNip89AppDefinition("market")
 
@@ -25,11 +31,10 @@ function AboutPage() {
         sourceName: app.name,
         handlerAddress: getConduitNip89HandlerAddress("market"),
         handlerPubkey: app.pubkey,
-        handlerNpub: app.pubkey ? pubkeyToNpub(app.pubkey) : null,
+        handlerNpub: getSafeNpub(app.pubkey),
         dTag: app.dTag,
         relayHint: app.relayHint,
         supportedKinds: app.supportedKinds,
-        webHandlers: app.web,
       }}
     />
   )
