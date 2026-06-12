@@ -105,11 +105,11 @@ export {
   type LegalFooterProps,
 } from "./LegalFooter"
 export {
-  AppProvenancePanel,
-  type AppProvenanceBuildInfo,
-  type AppProvenanceIdentity,
-  type AppProvenancePanelProps,
-} from "./AppProvenancePanel"
+  AboutPagePanel,
+  type AboutPageBuildInfo,
+  type AboutPageIdentity,
+  type AboutPagePanelProps,
+} from "./AboutPagePanel"
 
 export { ProfileSelector, type ProfileSelectorProps } from "./ProfileSelector"
 export {

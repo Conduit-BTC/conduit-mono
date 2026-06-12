@@ -76,6 +76,7 @@ describe("relay settings protocol helpers", () => {
     expect(CANONICAL_APP_WRITE_RELAYS).toEqual(["wss://conduitl2.fly.dev"])
     expect(config.appWriteRelayUrls).toEqual(CANONICAL_APP_WRITE_RELAYS)
     expect(config.commerceRelayUrls).toContain("wss://conduitl2.fly.dev")
+    expect(config.nip89RelayHint).toBe("wss://conduitl2.fly.dev")
     expect(config.defaultRelays).not.toContain("wss://relay.conduit.market")
 
     const settings = createDefaultRelaySettings({
