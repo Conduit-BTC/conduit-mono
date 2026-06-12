@@ -1,5 +1,6 @@
 import {
   createRootRoute,
+  Link,
   Outlet,
   useRouterState,
   type ErrorComponentProps,
@@ -23,7 +24,16 @@ function RootShell({ children }: { children: React.ReactNode }) {
       <main className="mx-auto min-w-0 w-full max-w-7xl flex-1 px-4 pb-12 pt-6">
         {children}
       </main>
-      <LegalFooter />
+      <LegalFooter
+        aboutLink={
+          <Link
+            to="/about"
+            className="transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+          >
+            About
+          </Link>
+        }
+      />
       {import.meta.env.DEV && <TanStackRouterDevtools />}
     </div>
   )

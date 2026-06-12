@@ -233,7 +233,10 @@ const resolvedDefaultRelays = uniqueConfiguredRelayUrls([
   ...commerceRelayUrls,
   ...publicRelayUrls,
 ])
-const nip89RelayHint = getConfiguredRelayUrl(env.nip89RelayHint, relayUrl)
+const nip89RelayHint = getConfiguredRelayUrl(
+  env.nip89RelayHint,
+  CANONICAL_APP_WRITE_RELAYS[0] ?? relayUrl
+)
 
 export const config: ConduitConfig = {
   relayUrl,
