@@ -112,6 +112,20 @@ bun test            # Must pass
 - PRs require review before merging to `main`
 - PRs from forks may need a maintainer to approve GitHub Actions before CI runs
 
+### User-Reported Bugs
+
+GitHub bug reports use `.github/ISSUE_TEMPLATE/bug_report.yml`, which applies
+the `bug` and `user-reported` labels. Maintainers should triage these by:
+
+1. Checking that no Nostr secret keys (`nsec`), signer connection URLs/codes,
+   seed phrases, passwords, NWC connection strings, payment credentials, full
+   shipping addresses, phone numbers, or other sensitive personal information
+   were included.
+2. Confirming the affected app, route, build, and shortest reproduction path.
+3. Acknowledging valid reports so the community can see they entered the
+   maintainer triage path, then closing duplicates or out-of-scope reports with
+   a short note.
+
 ## CI and Preview Deploy Notes
 
 ### Cloudflare Pages projects

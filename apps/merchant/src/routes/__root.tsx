@@ -8,13 +8,8 @@ import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { KeyRound } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
-import { useAuth, useNip07Availability } from "@conduit/core"
-import {
-  ErrorPage,
-  LegalFooter,
-  NotFoundPage,
-  SignerConnectPanel,
-} from "@conduit/ui"
+import { buildBugReportUrl, useAuth, useNip07Availability } from "@conduit/core"
+import { ErrorPage, NotFoundPage, SignerConnectPanel } from "@conduit/ui"
 import {
   MerchantMobileNav,
   MerchantSidebar,
@@ -146,7 +141,9 @@ function RootErrorComponent({ error }: ErrorComponentProps) {
       title="Something went wrong"
       message={error.message || "An unexpected error occurred."}
       showReload
-    />
+    >
+      <ReportBugAction />
+    </ErrorPage>
   )
 
   if (!signerConnected) return errorPage
@@ -156,6 +153,35 @@ function RootErrorComponent({ error }: ErrorComponentProps) {
 
 function RootNotFound() {
   return <NotFoundPage backTo="/" backLabel="Go to dashboard" />
+}
+
+function ReportBugAction() {
+  const bugReportUrl = useMerchantBugReportUrl()
+
+  return (
+    <div className="space-y-2 text-sm">
+      <a
+        href={bugReportUrl}
+        target="_blank"
+        rel="noreferrer"
+        className="font-medium text-primary-500 underline underline-offset-4 hover:text-primary-600"
+      >
+        Report a Bug
+      </a>
+      <p className="text-xs leading-5 text-[var(--text-muted)]">
+        Do not include private keys, wallet secrets, payment credentials, or
+        sensitive personal information.
+      </p>
+    </div>
+  )
+}
+
+function useMerchantBugReportUrl(): string {
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
+
+  return buildBugReportUrl({ app: "merchant", route: pathname })
 }
 
 function ConnectGate() {
@@ -213,7 +239,6 @@ function ConnectGate() {
           onConnect={handleConnect}
         />
       </main>
-      <LegalFooter />
       {import.meta.env.DEV && <TanStackRouterDevtools />}
     </div>
   )
