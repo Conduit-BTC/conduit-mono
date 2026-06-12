@@ -43,7 +43,7 @@ jobs:
         if: env.SUDDEN_AGENT_API_KEY == ''
         run: echo "SUDDEN_AGENT_API_KEY is not configured; skipping agent hardening."
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         if: env.SUDDEN_AGENT_API_KEY != ''
         with:
           fetch-depth: 0
