@@ -31,9 +31,9 @@ describe("identity surface contracts", () => {
       ],
       "apps/market/src/routes/store/$pubkey.tsx": [
         "merchantIdentityPending",
-        "useProfile(pubkey",
-        "relayHints:",
-        "getProfileName(profile)",
+        "useMerchantTrustContext({",
+        "profileRelayHints,",
+        "merchantTrust.merchantName",
       ],
       "apps/merchant/src/routes/orders.tsx": [
         "useProfiles(buyerPubkeys",

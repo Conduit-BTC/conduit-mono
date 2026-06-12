@@ -16,7 +16,7 @@ import {
   type FormEvent,
 } from "react"
 import { createFileRoute, Link } from "@tanstack/react-router"
-import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { useQueryClient } from "@tanstack/react-query"
 import {
   Avatar,
   AvatarFallback,
@@ -32,14 +32,11 @@ import {
   appendConduitClientTag,
   formatNpub,
   getCommerceReadRelayUrls,
-  getProfileDisplayLabel,
-  getProfileName,
   normalizePubkey,
   publishWithPlanner,
   pubkeyToNpub,
   requireNdkConnected,
   useAuth,
-  useProfile,
   type PricingRateInput,
   type Product,
 } from "@conduit/core"
@@ -56,8 +53,10 @@ import {
   Nip05TrustIndicator,
   getProfileNip05,
 } from "../../components/MerchantIdentity"
+import { MerchantTrustSummary } from "../../components/MerchantTrustSummary"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
+import { useMerchantTrustContext } from "../../hooks/useMerchantTrustContext"
 import {
   compareCommercePrices,
   getComparablePriceValue,
@@ -187,48 +186,24 @@ function StorefrontPage() {
       ),
     [productsQuery.profileRelayHintsByPubkey, pubkey]
   )
-  const profileQuery = useProfile(pubkey, {
-    relayHints: profileRelayHints,
-    refetchUnresolvedMs: 2_000,
-  })
-  const profile = profileQuery.data
   const storeProducts = productsQuery.products
+  const productCount = storeProducts.length
+  const merchantTrust = useMerchantTrustContext({
+    merchantPubkey: pubkey,
+    viewerPubkey,
+    listingCount: productCount,
+    profileRelayHints,
+  })
+  const profile = merchantTrust.profile
   const selectedTags = useMemo(() => search.tag ?? [], [search.tag])
   const selectedTagSet = useMemo(() => new Set(selectedTags), [selectedTags])
-  const followQuery = useQuery({
-    queryKey: ["following-store", viewerPubkey ?? "none", pubkey],
-    enabled:
-      status === "connected" && !!viewerPubkey && viewerPubkey !== pubkey,
-    queryFn: async () => {
-      const ndk = await requireNdkConnected()
-      const events = await ndk.fetchEvents({
-        kinds: [3],
-        authors: [viewerPubkey!],
-        limit: 10,
-      })
-      const event = Array.from(events).sort(
-        (a, b) => (b.created_at ?? 0) - (a.created_at ?? 0)
-      )[0]
-
-      return Array.from(event?.tags ?? []).some(
-        (tag) => tag[0] === "p" && tag[1] === pubkey
-      )
-    },
-  })
   const [followState, setFollowState] = useState<
     "idle" | "saving_follow" | "saving_unfollow"
   >("idle")
   const [followOverride, setFollowOverride] = useState<boolean | null>(null)
 
-  const merchantProfileName = getProfileName(profile)
-  const merchantIdentityPending = !merchantProfileName
-  const merchantName =
-    merchantProfileName ||
-    getProfileDisplayLabel(profile, pubkey, {
-      lookupSettled: false,
-      pendingLabel: `Store ${formatNpub(pubkey, 8)}`,
-      chars: 8,
-    })
+  const merchantIdentityPending = merchantTrust.merchantNamePending
+  const merchantName = merchantTrust.merchantName
   const merchantAbout = profile?.about?.trim()
   const profileNip05 = getProfileNip05(profile)
   const categoryFacetOptions = useMemo(
@@ -263,7 +238,8 @@ function StorefrontPage() {
     [navigate]
   )
 
-  const isFollowing = followOverride ?? followQuery.data === true
+  const isFollowing =
+    followOverride ?? merchantTrust.viewerFollowsMerchant === true
   const isFollowBusy = followState !== "idle"
 
   const toggleTag = (tag: string) => {
@@ -391,7 +367,7 @@ function StorefrontPage() {
 
       setFollowOverride(nextShouldFollow)
       await queryClient.invalidateQueries({
-        queryKey: ["following-store", viewerPubkey, pubkey],
+        queryKey: ["merchant-trust-social", viewerPubkey, pubkey],
       })
       setFollowState("idle")
     } catch {
@@ -519,9 +495,6 @@ function StorefrontPage() {
                         <CopyButton value={pubkey} label="Copy pubkey" />
                       </span>
                     </span>
-                    <span className="text-[var(--text-muted)]">
-                      Created Apr 2024
-                    </span>
                   </div>
                 </div>
               </div>
@@ -577,6 +550,8 @@ function StorefrontPage() {
                 </Button>
               </div>
             </div>
+
+            <MerchantTrustSummary trust={merchantTrust} />
 
             <div className="border-t border-[var(--border)] pt-5">
               <RichProfileText

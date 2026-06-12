@@ -763,10 +763,28 @@ export function useProgressiveProductDetail(productId: string): {
     product,
     meta: active?.meta ?? null,
     profileRelayHintsByPubkey,
-    isInitialLoading:
-      !product && cachedQuery.isLoading && networkQuery.isLoading,
+    isInitialLoading: isProductDetailInitialLoading({
+      product,
+      cacheLoading: cachedQuery.isLoading,
+      networkLoading: networkQuery.isLoading,
+      networkFetching: networkQuery.isFetching,
+    }),
     isHydrating: networkQuery.isFetching,
     isShowingCache: active === cachedQuery.data && !!product,
     error: networkQuery.error ?? cachedQuery.error,
   }
+}
+
+export function isProductDetailInitialLoading({
+  product,
+  cacheLoading,
+  networkLoading,
+  networkFetching,
+}: {
+  product: Product | null
+  cacheLoading: boolean
+  networkLoading: boolean
+  networkFetching: boolean
+}): boolean {
+  return !product && (cacheLoading || networkLoading || networkFetching)
 }
