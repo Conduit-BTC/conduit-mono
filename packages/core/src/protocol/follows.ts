@@ -1,14 +1,25 @@
 /**
  * NIP-02 contact-list helpers.
  *
- * Contact lists are append-only events with `p` tags for followed pubkeys.
+ * Contact lists are replaceable events with `p` tags for followed pubkeys.
  * These helpers stay deliberately bounded: they interpret known contact-list
  * events, but do not attempt expensive reverse follower discovery.
  */
 
+import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { EVENT_KINDS } from "./kinds"
+import { appendConduitClientTag, type ConduitAppId } from "./nip89"
+import { requireNdkConnected } from "./ndk"
+import { publishWithPlanner } from "./relay-publish"
+import {
+  ReplaceablePublishSafetyError,
+  assertSafeReplaceablePublish,
+} from "./replaceable-safety"
+
 export type FollowListEventLike = {
   pubkey?: string
   created_at?: number
+  content?: string
   tags?: readonly (readonly string[])[]
 }
 
@@ -97,4 +108,112 @@ export function buildMerchantTrustSocialSummary({
         : null,
     mutualFollowCount,
   }
+}
+
+function copyMutableTags(
+  tags: readonly (readonly string[])[] | undefined
+): string[][] {
+  return (tags ?? []).map((tag) => [...tag])
+}
+
+export function buildContactListUpdateTags({
+  currentTags,
+  targetPubkey,
+  shouldFollow,
+}: {
+  currentTags: readonly (readonly string[])[] | undefined
+  targetPubkey: string
+  shouldFollow: boolean
+}): string[][] {
+  const normalizedTargetPubkey = normalizeHexPubkey(targetPubkey)
+  if (!normalizedTargetPubkey) {
+    throw new Error("Cannot update a follow list with an invalid target pubkey")
+  }
+
+  const nextTags = copyMutableTags(currentTags)
+  const currentFollowPubkeys = getFollowListPubkeySet({ tags: currentTags })
+  const alreadyFollowing = currentFollowPubkeys.has(normalizedTargetPubkey)
+
+  if (shouldFollow && !alreadyFollowing) {
+    nextTags.push(["p", normalizedTargetPubkey])
+  }
+  if (!shouldFollow && alreadyFollowing) {
+    for (let index = nextTags.length - 1; index >= 0; index -= 1) {
+      const tag = nextTags[index]
+      if (
+        tag[0] === "p" &&
+        normalizeHexPubkey(tag[1]) === normalizedTargetPubkey
+      ) {
+        nextTags.splice(index, 1)
+      }
+    }
+  }
+
+  return nextTags
+}
+
+export async function publishContactListUpdate({
+  ownerPubkey,
+  targetPubkey,
+  shouldFollow,
+  appId,
+}: {
+  ownerPubkey: string
+  targetPubkey: string
+  shouldFollow: boolean
+  appId: ConduitAppId
+}): Promise<void> {
+  const normalizedOwnerPubkey = normalizeHexPubkey(ownerPubkey)
+  const normalizedTargetPubkey = normalizeHexPubkey(targetPubkey)
+
+  if (!normalizedOwnerPubkey || !normalizedTargetPubkey) {
+    throw new Error("Cannot update a follow list with an invalid pubkey")
+  }
+
+  const ndk = await requireNdkConnected()
+  if (!ndk.signer) throw new Error("Signer not connected")
+
+  const signerPubkey = normalizeHexPubkey((await ndk.signer.user()).pubkey)
+  if (signerPubkey !== normalizedOwnerPubkey) {
+    throw new Error("Active signer does not match this follow list")
+  }
+
+  const existingEvents = await ndk.fetchEvents({
+    kinds: [EVENT_KINDS.CONTACT_LIST],
+    authors: [normalizedOwnerPubkey],
+    limit: 10,
+  })
+  const latest = selectLatestFollowListEvent(existingEvents)
+
+  if (!latest) {
+    throw new ReplaceablePublishSafetyError(
+      "Refusing to publish a new tiny follow list without loading an existing contact-list snapshot."
+    )
+  }
+
+  const nextTags = buildContactListUpdateTags({
+    currentTags: latest.tags,
+    targetPubkey: normalizedTargetPubkey,
+    shouldFollow,
+  })
+
+  const event = new NDKEvent(ndk)
+  event.kind = EVENT_KINDS.CONTACT_LIST
+  event.created_at = Math.floor(Date.now() / 1000)
+  event.content = latest.content ?? ""
+  event.tags = appendConduitClientTag(nextTags, appId)
+
+  const replaceableSafety = {
+    contactList: {
+      enforceMinimumPubkeys: false,
+    },
+  }
+
+  assertSafeReplaceablePublish(event, replaceableSafety)
+  await event.sign(ndk.signer)
+  await publishWithPlanner(event, {
+    intent: "author_event",
+    authorPubkey: normalizedOwnerPubkey,
+    replaceableSafety,
+  })
 }

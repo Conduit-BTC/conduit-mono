@@ -26,6 +26,10 @@ import {
   tryNormalizeRelayUrl,
 } from "./relay-settings"
 import { config } from "../config"
+import {
+  assertSafeReplaceablePublish,
+  type ReplaceablePublishSafetyOptions,
+} from "./replaceable-safety"
 
 const STANDARD_PUBLISH_TIMEOUT_MS = 5_000
 const CRITICAL_PUBLISH_TIMEOUT_MS = 10_000
@@ -45,6 +49,8 @@ export interface PublishWithPlannerInput {
   deliveryMode?: "standard" | "critical"
   /** Disable per-relay health filtering (last-resort retries). */
   skipHealthFilter?: boolean
+  /** Context for non-destructive replaceable-event publishes. */
+  replaceableSafety?: ReplaceablePublishSafetyOptions
 }
 
 export interface PublishWithPlannerResult {
@@ -450,6 +456,7 @@ export async function publishWithPlanner(
   if (event.kind === EVENT_KINDS.RELAY_LIST) {
     assertSafeNip65RelayTags(event.tags ?? [])
   }
+  assertSafeReplaceablePublish(event, input.replaceableSafety)
 
   const plan = testOverrides.planPublishRelays
     ? await testOverrides.planPublishRelays(input)
