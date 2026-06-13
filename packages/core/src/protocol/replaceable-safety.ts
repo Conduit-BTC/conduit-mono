@@ -21,9 +21,6 @@ export class ReplaceablePublishSafetyError extends Error {
 }
 
 export interface ReplaceablePublishSafetyOptions {
-  profile?: {
-    enforceMinimumFields?: boolean
-  }
   contactList?: {
     enforceMinimumPubkeys?: boolean
   }
@@ -128,8 +125,7 @@ export function assertSafeReplaceablePublish(
   switch (event.kind) {
     case EVENT_KINDS.PROFILE: {
       const fieldCount = countMeaningfulProfileFields(event.content)
-      const enforceMinimumFields = options.profile?.enforceMinimumFields ?? true
-      if (enforceMinimumFields && fieldCount <= 1) {
+      if (fieldCount <= 1) {
         throw new ReplaceablePublishSafetyError(
           "Refusing to publish a tiny Nostr profile. Wait for the existing profile to load or fill at least two profile fields before saving."
         )

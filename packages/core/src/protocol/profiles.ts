@@ -6,7 +6,10 @@ import { getProfiles } from "./commerce"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { requireNdkConnected } from "./ndk"
 import { publishWithPlanner } from "./relay-publish"
-import { assertSafeReplaceablePublish } from "./replaceable-safety"
+import {
+  assertSafeReplaceablePublish,
+  countMeaningfulProfileFields,
+} from "./replaceable-safety"
 
 interface RawProfileContent {
   name?: string
@@ -18,6 +21,37 @@ interface RawProfileContent {
   nip05?: string
   lud16?: string
   website?: string
+}
+
+const PROFILE_CONTENT_FIELDS = [
+  ["name", "name"],
+  ["displayName", "display_name"],
+  ["about", "about"],
+  ["picture", "picture"],
+  ["banner", "banner"],
+  ["nip05", "nip05"],
+  ["lud16", "lud16"],
+  ["website", "website"],
+] as const satisfies readonly [keyof Omit<Profile, "pubkey">, string][]
+
+function hasOwnProfileField(
+  profile: Omit<Profile, "pubkey">,
+  field: keyof Omit<Profile, "pubkey">
+): boolean {
+  return Object.prototype.hasOwnProperty.call(profile, field)
+}
+
+function setProfileContentField(
+  content: Record<string, string>,
+  key: string,
+  value: string | undefined
+): void {
+  if (value) {
+    content[key] = value
+    return
+  }
+
+  delete content[key]
 }
 
 export function parseProfileEvent(
@@ -59,27 +93,41 @@ export function buildNip01ProfileContent(
   profile: Omit<Profile, "pubkey">
 ): Record<string, string> {
   const content: Record<string, string> = {}
-  if (profile.name) content.name = profile.name
-  if (profile.displayName) content.display_name = profile.displayName
-  if (profile.about) content.about = profile.about
-  if (profile.picture) content.picture = profile.picture
-  if (profile.banner) content.banner = profile.banner
-  if (profile.nip05) content.nip05 = profile.nip05
-  if (profile.lud16) content.lud16 = profile.lud16
-  if (profile.website) content.website = profile.website
+  for (const [profileField, contentKey] of PROFILE_CONTENT_FIELDS) {
+    setProfileContentField(content, contentKey, profile[profileField])
+  }
+  return content
+}
+
+export function buildNip01ProfilePublishContent({
+  profile,
+  latestProfile,
+}: {
+  profile: Omit<Profile, "pubkey">
+  latestProfile: Profile
+}): Record<string, string> {
+  const hasProfileInput = PROFILE_CONTENT_FIELDS.some(([profileField]) =>
+    hasOwnProfileField(profile, profileField)
+  )
+
+  if (!hasProfileInput) return buildNip01ProfileContent(profile)
+
+  const content = buildNip01ProfileContent(latestProfile)
+  for (const [profileField, contentKey] of PROFILE_CONTENT_FIELDS) {
+    if (!hasOwnProfileField(profile, profileField)) continue
+    setProfileContentField(content, contentKey, profile[profileField])
+  }
+
   return content
 }
 
 export function shouldEnforceNip01ProfileMinimumFields({
   content,
-  latestContent,
 }: {
   content: Record<string, string>
-  latestContent: Record<string, string>
+  latestContent?: Record<string, string>
 }): boolean {
-  return (
-    Object.keys(content).length === 0 || Object.keys(latestContent).length <= 1
-  )
+  return countMeaningfulProfileFields(JSON.stringify(content)) <= 1
 }
 
 export async function publishProfile(
@@ -95,43 +143,22 @@ export async function publishProfile(
     priority: "visible",
   })
 
-  // Build NIP-01 snake_case content, omitting empty/undefined fields
-  const content = buildNip01ProfileContent(profile)
-  const latestContent = buildNip01ProfileContent(latestProfile)
-  const replaceableSafety = {
-    profile: {
-      enforceMinimumFields: shouldEnforceNip01ProfileMinimumFields({
-        content,
-        latestContent,
-      }),
-    },
-  }
-
+  // Build NIP-01 snake_case content, merging partial edits onto loaded context.
+  const content = buildNip01ProfilePublishContent({ profile, latestProfile })
   const event = new NDKEvent(ndk)
   event.kind = EVENT_KINDS.PROFILE
   event.created_at = Math.floor(Date.now() / 1000)
   event.content = JSON.stringify(content)
   event.tags = appendConduitClientTag([], appId)
 
-  assertSafeReplaceablePublish(event, replaceableSafety)
+  assertSafeReplaceablePublish(event)
   await event.sign(ndk.signer)
   await publishWithPlanner(event, {
     intent: "author_event",
     authorPubkey: pubkey,
-    replaceableSafety,
   })
 
-  const publishedProfile: Profile = {
-    pubkey,
-    name: profile.name,
-    displayName: profile.displayName,
-    about: profile.about,
-    picture: profile.picture,
-    banner: profile.banner,
-    nip05: profile.nip05,
-    lud16: profile.lud16,
-    website: profile.website,
-  }
+  const publishedProfile = parseProfileEvent({ pubkey, content: event.content })
 
   // Update local cache
   await db.profiles.put({

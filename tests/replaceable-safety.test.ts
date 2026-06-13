@@ -46,16 +46,20 @@ describe("replaceable publish safety", () => {
     ).not.toThrow()
   })
 
-  it("allows tiny profile replacements when the caller has loaded a prior profile", () => {
+  it("does not allow callers to relax tiny profile replacements", () => {
+    const legacyRelaxedOptions = {
+      profile: { enforceMinimumFields: false },
+    } as Parameters<typeof assertSafeReplaceablePublish>[1]
+
     expect(() =>
       assertSafeReplaceablePublish(
         {
           kind: EVENT_KINDS.PROFILE,
           content: JSON.stringify({ name: "Alice" }),
         },
-        { profile: { enforceMinimumFields: false } }
+        legacyRelaxedOptions
       )
-    ).not.toThrow()
+    ).toThrow(ReplaceablePublishSafetyError)
   })
 
   it("counts distinct contact-list pubkeys and ignores malformed tags", () => {
