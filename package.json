@@ -44,6 +44,7 @@
     "lint": "bun run --filter '*' lint",
     "telemetry:check": "bun scripts/ci/check_telemetry_policy.ts",
     "test": "bun test",
+    "test:e2e": "playwright test",
     "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules"
   },
   "dependencies": {
@@ -51,10 +52,11 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@getalby/sdk": "^8.0.3",
-    "@tanstack/router-generator": "^1.158.1",
-    "@nostr-dev-kit/ndk": "^2.14.0",
     "@eslint/js": "^9.19.0",
+    "@getalby/sdk": "^8.0.3",
+    "@nostr-dev-kit/ndk": "^2.14.0",
+    "@playwright/test": "^1.60.0",
+    "@tanstack/router-generator": "^1.158.1",
     "eslint": "^9.19.0",
     "eslint-plugin-react": "^7.37.4",
     "eslint-plugin-react-hooks": "^5.1.0",
