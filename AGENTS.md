@@ -260,7 +260,7 @@ The canonical relay reset list lives in `packages/core/src/config.ts` and curren
 
 ## GitHub CI/CD
 
-Pipeline stages include changed-file formatting, PR title, lint, typecheck, tests, color policy, signet/mainnet builds, and preview-link automation. See `CONTRIBUTING.md` and `.github/workflows/ci.yml` for the current gates.
+Pipeline stages include changed-file formatting, PR title, lint, typecheck, tests, color policy, telemetry policy, E2E smoke, the mainnet build, and preview-link automation. See `CONTRIBUTING.md` and `.github/workflows/ci.yml` for the current gates.
 
 Protected branches: `main`
 Pull request required for all changes.

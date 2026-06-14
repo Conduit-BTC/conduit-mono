@@ -178,7 +178,7 @@ Branch protection on `main` expects GitHub-owned CI gates to pass:
 - `color-policy`
 - `telemetry-policy`
 - `e2e-smoke`
-- `build-signet`
+- `build-mainnet`
 - `preview-links`
 
 Direct Cloudflare Pages checks are useful preview signals, but they are not

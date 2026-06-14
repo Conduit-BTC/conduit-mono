@@ -146,7 +146,7 @@ New `giftWrap`, publish, unwrap/decrypt, relay planning, event parsing, and sour
 
 ### GitHub CI / merge checks
 
-Use `CONTRIBUTING.md` and `.github/workflows/ci.yml` as the canonical merge-check sources. Current GitHub-owned gates include changed-file format, PR title, lint, typecheck, test, color policy, signet/mainnet builds, and preview-link automation. Direct Cloudflare Pages checks are useful signals, but they are not branch-protection gates because fork PRs cannot reliably produce them.
+Use `CONTRIBUTING.md` and `.github/workflows/ci.yml` as the canonical merge-check sources. Current GitHub-owned gates include changed-file format, PR title, lint, typecheck, test, color policy, telemetry policy, E2E smoke, the mainnet build, and preview-link automation. Direct Cloudflare Pages checks are useful signals, but they are not branch-protection gates because fork PRs cannot reliably produce them.
 
 ### Orders auth gate behavior
 
