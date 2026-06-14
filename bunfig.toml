@@ -1,0 +1,5 @@
+[install]
+# Hold newly-published npm versions for three days to reduce exposure to
+# fast-moving malicious package compromises. Existing bun.lock entries are
+# unchanged; this only affects new resolution.
+minimumReleaseAge = 259200
