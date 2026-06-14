@@ -1,141 +1,160 @@
-# Protocol Specification (MVP)
+# Protocol Specification
 
-This document consolidates the protocol surface used by Conduit Market and Merchant Portal for MVP ordering and messaging.
+This document defines the active protocol surface used by Conduit Market and Merchant Portal for products, ordering, payment requests/proofs, and buyer-merchant messaging.
 
 References:
+
 - NIP-17 message wrapping (gift wrap + seal): `docs/specs/market.md`, `docs/ARCHITECTURE.md`
 - One-way checkout architecture note: `docs/knowledge/one-way-checkout-multi-rail-payments.md`
 - External protocol references: `docs/knowledge/external-nostr-references.md`
 
-Non-goals (MVP):
-- NIP-46 remote signer auth (post-MVP, Phase 6)
-- Custom relay requirements (post-MVP, Phase 5)
-- Conduit services automation (post-MVP, Phase 6)
-- Refunds/disputes/escrow
+Non-goals for current Phase 2A:
 
-## Post-MVP: Client App Versioning + Open Source Note
+- key custody, key generation, escrow, refunds, or balance management
+- broad NIP-46 product UX beyond the external-signer policy already allowed by architecture
+- service-operated checkout automation
+- making NIP-44 v3 the default send path before public draft/client references, signer support, and recipient capability detection exist
+- replacing the current NDK-backed protocol helpers with a new relay substrate before the future architecture spec lands
 
-After MVP, prioritize client-facing versioning and compatibility tracking for:
-- Conduit Market
-- Merchant Portal
-- Store Builder
+Future direction:
 
-Planned approach:
-- Version each client app with SemVer and publish release notes for protocol-impacting changes.
-- Maintain a lightweight compatibility matrix (client app version -> supported protocol profile/version tags).
-- Emit optional provenance/version tags on outbound events where Conduit is the emitter (for example `["client","conduit-merchant/<version>"]` and `["v","<protocol_version>"]`).
-- Continue parsing legacy/no-version events as backward-compatible defaults during migration windows.
-
-Open-source direction:
-- We should keep client protocol integration layers and reference implementations public and inspectable in the spirit of Nostr ecosystem collaboration.
-- Public client releases should remain rebuildable from the public repository without private production font or asset dependencies.
-- Official deployments should map cleanly back to a public commit, app version, and source repository.
+- Phase 2B is expected to define a stronger local-first commerce/read architecture.
+- New source-aware relay work should avoid leaking NDK objects into durable records or product contracts, but current Phase 2A work may continue using the existing shared NDK-backed helpers where that is the least risky path.
+- Phase 2A secure messaging should introduce a shared Conduit-owned NIP-17/NIP-44 boundary before adding more route-local private-message send paths.
 
 ## Authentication
 
-MVP requires external signing via NIP-07 (`window.nostr`) only.
+Conduit apps use external signers only.
 
-## Messaging Transport: NIP-17 DMs
+| Signer path           | Status                  | Notes                                         |
+| --------------------- | ----------------------- | --------------------------------------------- |
+| NIP-07 browser signer | Current client support  | Required path for current interactive signing |
+| NIP-46 remote signer  | Architecture-compatible | Broad product UX is not a Phase 2A blocker    |
+| App-generated keys    | Prohibited              | No key custody or private-key storage         |
 
-All buyer-merchant order communication is sent as NIP-17 DMs:
-- Outer event: Kind `1059` (gift wrap)
-- Inner event: Kind `13` (seal)
-- Payload: JSON-serialized "order message" event (Kind `16`) encrypted with NIP-44
+## Event Kinds
 
-See also: `docs/specs/market.md` "NIP-17 Wrapping".
+| Kind    | Name                         | Direction    | Notes                                                    |
+| ------- | ---------------------------- | ------------ | -------------------------------------------------------- |
+| `0`     | Profile metadata             | both         | NIP-01                                                   |
+| `3`     | Contact list                 | both         | NIP-02 follow graph/trust context                        |
+| `5`     | Deletion                     | merchant     | NIP-09 deletion for products/shipping options            |
+| `13`    | Seal                         | both         | NIP-59 / NIP-17 inner encrypted envelope                 |
+| `14`    | Private direct message       | both         | NIP-17 direct message kind                               |
+| `16`    | Order message payload        | both         | Conduit payload, always wrapped/encrypted before publish |
+| `1059`  | Gift wrap                    | both         | NIP-17 outer envelope                                    |
+| `9734`  | Zap request                  | buyer        | NIP-57                                                   |
+| `9735`  | Zap receipt                  | relay/wallet | NIP-57                                                   |
+| `10002` | Relay list                   | both         | NIP-65 relay hints                                       |
+| `10050` | Private message relays       | both         | NIP-17 recipient relay and encryption hints              |
+| `30402` | Product listing              | merchant     | NIP-99 + GammaMarkets market-spec                        |
+| `30406` | Shipping option              | merchant     | Conduit commerce extension                               |
+| `31989` | Application recommendation   | both         | NIP-89                                                   |
+| `31990` | Application handler metadata | app/operator | NIP-89                                                   |
 
-## Event Kinds (MVP)
+## Product Identity
 
-| Kind | Name | Direction | Notes |
-|------|------|-----------|------|
-| `0` | Profile metadata | both | Merchant publishes store metadata; buyer may publish profile |
-| `5` | Deletion | merchant | Used for product deletion |
-| `10002` | Relay list | both | Optional; used to discover relays (NIP-65) |
-| `30402` | Product listing | merchant | Replaceable addressable product event |
-| `13` | Seal | both | NIP-17 inner encrypted envelope |
-| `1059` | Gift wrap | both | NIP-17 outer envelope |
-| `16` | Order message payload | both | JSON payload event, always sent via NIP-17 |
+Product listings are addressable events:
 
-## Order Message Payload (Kind 16)
+```text
+30402:<merchant_pubkey>:<d_tag>
+```
 
-### High-level
+Implementations must not dedupe only by `d` tag because different merchants can publish the same `d` value. Product identity, cart references, order item tags, cache records, and future source-aware graph records should preserve the full addressable coordinate.
 
-The payload is a Kind `16` event that is never published directly. It is encrypted and delivered via NIP-17.
+## Messaging Transport: NIP-17
 
-The `tags` determine the message type and its routing.
+Buyer-merchant communication is sent as NIP-17 encrypted messages:
 
-### Required tags (all types)
+- Inner payload: Conduit order message event, kind `16`
+- General direct message payload: kind `14`
+- Seal: kind `13`
+- Gift wrap: kind `1059`
+
+The kind `16` payload is never published directly. It is encrypted and delivered through NIP-17 wrapping. Kind `14` general DMs should remain separate from order-linked kind `16` conversations in product state.
+
+Current private-message code may continue to interoperate with NIP-44 v2, which is the current public NIP-44 encryption version. NIP-44 v3 readiness is intentional Phase 2A/Linear planning because the ecosystem is moving in that direction, but implementation must be source-gated until public draft/client references and capabilities are explicit.
+
+New Phase 2A secure messaging work should route sends and unwraps through a shared `@conduit/core` boundary that:
+
+- preserves NIP-44 v2 fallback for existing signers and peers
+- keeps NIP-44 v3 readiness visible without making it the default send path before source and capability gates are satisfied
+- parses kind `10050` private-message relay events enough to read recipient relay and encryption hints
+- rejects authenticated-context mismatches instead of returning plaintext when versioned encryption support adds that requirement
+- reports decrypt/unwrap diagnostics without plaintext, ciphertext, invoices, shipping/contact data, order contents, or message bodies
+
+NWC remains NIP-44 v2 by default unless wallet capability discovery and public draft/client references explicitly justify a safer NIP-44 v3 path.
+
+## Order Message Payload
+
+Required tags for all message types:
 
 - `["p", "<counterparty_pubkey_hex>"]`
 - `["order", "<order_id>"]`
 - `["type", "<type>"]`
 
-### Standard message types
+Standard message types:
 
-| `type` | Direction | Meaning |
-|--------|-----------|---------|
-| `order` | buyer -> merchant | Initial order intent and details |
-| `payment_request` | merchant -> buyer | Invoice request payload (baseline MVP) |
-| `payment_proof` | buyer -> merchant | Buyer-initiated proof for one-way checkout (milestone) |
-| `status_update` | merchant -> buyer | Order state transition |
-| `shipping_update` | merchant -> buyer | Tracking details |
-| `receipt` | merchant -> buyer | Final confirmation/receipt |
+| `type`            | Direction         | Meaning                            |
+| ----------------- | ----------------- | ---------------------------------- |
+| `order`           | buyer -> merchant | Initial order intent and details   |
+| `payment_request` | merchant -> buyer | Invoice or payment request payload |
+| `payment_proof`   | buyer -> merchant | Buyer payment evidence             |
+| `status_update`   | merchant -> buyer | Order state transition             |
+| `shipping_update` | merchant -> buyer | Tracking or shipping update        |
+| `receipt`         | merchant -> buyer | Final confirmation/receipt         |
 
-### `order` message schema (MVP)
+### `order`
 
 Tags:
+
 - `["p", merchant_pubkey]`
-- `["subject", "order-info"]` (legacy uses `order-info`; newer docs sometimes use "New Order")
+- `["subject", "order-info"]` or compatible subject text
 - `["type", "order"]`
 - `["order", order_id]`
 - `["amount", "<integer_sats>"]`
-- one per item:
-  - `["item", "30402:<merchant_pubkey>:<product_d_tag>", "<quantity>"]`
-- optional shipping selection:
-  - `["shipping", "30406:<shipping_event_id>:<method_id>"]` (legacy)
-- optional buyer info:
-  - `["address", "<string>"]`
-  - `["phone", "<string>"]`
-  - `["email", "<string>"]`
+- one per item: `["item", "30402:<merchant_pubkey>:<product_d_tag>", "<quantity>"]`
+- optional shipping selection: `["shipping", "30406:<merchant_pubkey>:<shipping_d_tag>"]`
+- optional buyer contact/shipping tags as supported by the current checkout schema
 
 Content:
-- human-readable message/note string
 
-Notes:
-- Legacy uses `["type","1"]` in one place; Conduit MVP should use the descriptive string `order` for clarity.
-- Validation should use Conduit's internal Zod schemas in `@conduit/core` (best-effort parsing for interop), but the on-wire format must remain compatible with existing tags.
+- human-readable buyer note or compact JSON payload when required by the implementation schema
 
-### `payment_request` message schema (baseline MVP)
+### `payment_request`
 
 Tags:
+
 - `["p", buyer_pubkey]`
 - `["type", "payment_request"]`
 - `["order", order_id]`
-- `["amount", "<integer_sats>"]` (recommended)
-- `["payment_method", "lightning"]` (recommended)
+- `["amount", "<integer_sats>"]`
+- `["payment_method", "lightning"]`
 
 Content:
-- `bolt11` invoice string (recommended)
-  - If content must be structured, JSON string is acceptable, but prefer plain bolt11 for interop.
 
-### `payment_proof` message schema (one-way checkout milestone)
+- BOLT11 invoice or structured JSON defined by the shared schema
+
+### `payment_proof`
 
 Tags:
+
 - `["p", merchant_pubkey]`
 - `["type", "payment_proof"]`
 - `["order", order_id]`
 - `["amount", "<integer_sats>"]`
-- `["currency", "SAT"]` (or ISO code)
-- `["rail", "lightning" | "stablecoin" | "card"]`
+- `["currency", "SAT"]`
+- `["rail", "lightning"]`
 
-Content (JSON string):
+Content:
+
 ```json
 {
   "rail": "lightning",
   "proof": {
     "payment_hash": "optional",
     "zap_receipt_event_id": "optional",
-    "tx_hash": "optional",
+    "preimage": "optional",
     "provider": "optional",
     "status": "optional"
   },
@@ -143,72 +162,73 @@ Content (JSON string):
 }
 ```
 
-Verification:
-- Merchant verifies proof independently (manual in MVP).
-- Automation is post-MVP (Conduit services).
+Payment proof is receipt-style evidence attached to the order conversation. It does not imply Conduit custody or automatic dispute resolution.
 
-### `status_update` message schema
+### `status_update`
 
 Tags:
+
 - `["p", buyer_pubkey]`
 - `["type", "status_update"]`
 - `["order", order_id]`
 - `["status", "pending" | "invoiced" | "paid" | "processing" | "shipped" | "complete" | "cancelled"]`
 
 Content:
+
 - optional human-readable message
 
-### `shipping_update` message schema
+### `shipping_update`
 
 Tags:
+
 - `["p", buyer_pubkey]`
 - `["type", "shipping_update"]`
 - `["order", order_id]`
-- `["carrier", "<carrier>"]` (optional)
-- `["tracking", "<tracking_number_or_url>"]` (optional)
+- `["carrier", "<carrier>"]` optional
+- `["tracking", "<tracking_number_or_url>"]` optional
 
 Content:
+
 - optional message
 
-### `receipt` message schema
+### `receipt`
 
 Tags:
+
 - `["p", buyer_pubkey]`
 - `["type", "receipt"]`
 - `["order", order_id]`
 
 Content:
-- optional JSON receipt details (keep minimal for privacy)
 
-## NIP-17 Wrapping (Implementation Notes)
+- optional minimal receipt details
 
-Order payload flow:
-1. Build a Kind `16` payload event
-2. Encrypt payload JSON to the recipient with NIP-44
-3. Put encrypted payload in a Kind `13` seal event, sign it
-4. Generate an ephemeral keypair for the wrapper
-5. Encrypt the seal event JSON to the recipient with NIP-44
-6. Put that ciphertext into a Kind `1059` gift wrap event tagged with `["p", recipient_pubkey]`
-7. Sign the gift wrap with the ephemeral key and publish
+## Payment Metadata
 
-The legacy implementation uses NDK signer encryption (`nip44`) and publishes only the gift wrap.
+Merchant payment readiness may come from:
 
-## Merchant-Published Payment Metadata (One-Way Milestone)
+- Lightning Address / LNURL-pay data on profile metadata such as `lud16`
+- NWC/WebLN setup in the merchant workspace
+- order-specific payment requests
+- future structured payment metadata after a separate spec is accepted
 
-For one-way checkout, merchants must publish payment handles that are publicly discoverable.
+Current Phase 2A should keep fast checkout gated by explicit merchant readiness and buyer payment capability. The manual invoice/payment-request path remains the fallback baseline.
 
-Minimum recommended fields:
-- Lightning Address / LNURL-pay handle
-- Accepted methods list (lightning, stablecoin, card)
-- Default currency
+## Versioning And Provenance
 
-Where to publish (MVP recommendation):
-- Merchant Kind `0` profile fields for lightning address (e.g. `lud16`)
-- Extend with a replaceable event later if/when we need structured multi-rail metadata across clients
+Conduit clients should expose version/source context and may emit optional provenance tags on outbound events where Conduit is the emitter, for example:
 
-## Interoperability Notes
+```text
+["client", "conduit-merchant/<version>"]
+["v", "<protocol_version>"]
+```
 
-De-commerce interoperability is a priority. Prefer backwards-compatible tag additions over breaking schema changes.
+Open-source client releases should remain rebuildable from the public repository without private production assets.
+
+## Interoperability
+
+Commerce interoperability is a priority. Prefer backwards-compatible tag additions over breaking schema changes.
 
 Primary external reference:
+
 - GammaMarkets market spec: https://github.com/GammaMarkets/market-spec

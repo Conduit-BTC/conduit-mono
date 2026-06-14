@@ -1,11 +1,14 @@
 # Hi-Fi Checklist
 
+> Archived historical MVP checklist. Do not use this document for current execution, route maps, env values, relay URLs, or design tokens.
+
 Feature-based hi-fi worklist for aligning Conduit's MVP and post-MVP UI with the Figma file `"Conduit High Fi - Website"` (`High Fi - WIP` page).
 
 This is intentionally scoped to look-and-feel work. It is not a full QA, routing, or product-scope checklist.
 Store Builder is out of scope for the March 12, 2026 MVP and is not tracked here.
 
 References:
+
 - `docs/specs/market.md`
 - `docs/specs/merchant.md`
 - `docs/plans/IMPLEMENTATION.md`
@@ -13,12 +16,14 @@ References:
 ## MVP Hi-Fi Worklist (Target: 3/12/2026)
 
 ### Shared Foundations
+
 - [x] Extract Figma design tokens into `packages/ui` (color, typography, spacing, radii, shadows)
 - [x] Align shared shell patterns across Market and Merchant (header, nav, page chrome, section spacing, mobile nav)
 - [x] Align core components used in MVP flows (buttons, inputs, selects, tabs, cards, badges, dialogs, sheets)
 - [x] Align visible feedback states used in MVP flows (loading, empty, error, success)
 
 ### Auth and Signer Flows
+
 - [x] Sign-in / signer-connect modal
 - [x] Connecting / loading state
 - [x] Failure / retry state
@@ -26,6 +31,7 @@ References:
 - [x] Signer-required gating UI in checkout, publishing, or settings
 
 ### Market Buyer Flow
+
 - [x] Product discovery surfaces: home, products listing, search, filters, sorting, category/tag treatment, product cards
 - [x] Product detail surfaces: gallery, price block, merchant summary, add-to-cart controls
 - [x] Cart surfaces: grouped-by-merchant cart layout, quantity controls, totals, removal / empty-cart state
@@ -36,6 +42,7 @@ References:
 - [x] Merchant storefront page (`/store/$pubkey`) and store identity surfaces
 
 ### Merchant Seller Flow
+
 - [x] Dashboard surfaces: overview layout, summary cards, recent orders/activity modules, quick actions
 - [x] Product list surfaces: list/table/cards, filters/search if present, empty state, action affordances
 - [x] Product create/edit surfaces: Basic, Details, Images, and Shipping tabs plus validation and save/publish feedback
@@ -45,17 +52,20 @@ References:
 - [x] Merchant profile/settings surfaces needed for MVP: profile, wallet/NWC, relays, and any settings entry points already in use
 
 ### Cross-Cutting MVP Polish
+
 - [x] Toasts, confirmations, tabs, dropdowns, sheets, and popovers used in MVP flows match Figma intent
 - [x] Spacing rhythm, typography hierarchy, and responsive behavior are consistent across Market and Merchant
 
 ## Post-MVP Hi-Fi Backlog
 
 ### Market Extensions
+
 - [ ] Standalone messages inbox/thread experience beyond MVP order tracking
 - [ ] Richer post-purchase status views and expanded order detail treatment
 - [ ] Additional discovery/trust/social surfaces not required for MVP
 
 ### Merchant Extensions
+
 - [ ] Dedicated messages inbox/thread UX if separated from orders
 - [ ] Expanded settings information architecture
 - [ ] Relay management page polish
@@ -63,6 +73,7 @@ References:
 - [ ] Advanced dashboard reporting surfaces
 
 ### Platform Extensions
+
 - [ ] Additional onboarding, motion, and non-blocking visual refinements
 
 ## Current Market Snapshot (March 16, 2026)

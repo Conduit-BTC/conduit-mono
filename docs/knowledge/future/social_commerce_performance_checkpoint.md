@@ -2,18 +2,18 @@
 
 ## Status
 
-Checkpoint / future-sprint planning spec.
+Checkpoint / future-sprint planning note. This is not an active relay spec and should not block current Phase 2 delivery.
 
 This document captures the relay-performance architecture discussion after reviewing a high-performance Nostr reference client and comparing it with Conduit's current Market and Merchant implementation.
 
-It is not a replacement for `docs/specs/relay/conduit_relay_architecture.md`. The existing relay architecture remains the source of truth for the user-facing relay model:
+It is not a replacement for `docs/specs/relay/conduit_relay_architecture.md`. The existing relay architecture remains the source of truth for the current user-facing relay model:
 
 - users configure `IN` and `OUT`
 - Conduit detects relay capabilities
 - Conduit uses commerce priority only as a local app planning signal
 - internal acceleration, cache, and routing behavior must not become user-managed relay roles
 
-This document focuses on the next performance layer: how Conduit should hydrate product, store, profile, order, and social-commerce surfaces quickly over ordinary Nostr relays while remaining compatible with future cache or acceleration paths.
+This document focuses on a future performance layer: how Conduit may hydrate product, store, profile, order, and social-commerce surfaces quickly over ordinary Nostr relays while remaining compatible with future cache or acceleration paths.
 
 ## Background
 

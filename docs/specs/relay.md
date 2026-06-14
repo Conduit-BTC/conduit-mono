@@ -48,7 +48,7 @@ NIP-11 alone is evidence, not proof. Relays with partial support should remain i
 
 ## Implementation Guidance
 
-Commerce-compatible relays may be implemented with existing relay software such as `strfry`, `nostr-rs-relay`, or `khatru`, with policy and indexing tuned for commerce event kinds.
+Commerce-compatible relays may be implemented with existing relay software such as Congee, `strfry`, `nostr-rs-relay`, or `khatru`, with policy and indexing tuned for commerce event kinds.
 
 Useful implementation areas:
 
@@ -92,12 +92,17 @@ Apps should not hard-code a single relay as the network authority. Relay plans s
 Environment configuration should use:
 
 ```bash
-VITE_DEFAULT_RELAYS=wss://relay.damus.io,wss://nos.lol
-VITE_PUBLIC_RELAY_URLS=wss://relay.damus.io,wss://nos.lol
-VITE_COMMERCE_RELAY_URLS=wss://relay.conduit.market,wss://relay.plebeian.market
+VITE_DEFAULT_RELAYS=
+VITE_PUBLIC_RELAY_URLS=
+VITE_COMMERCE_RELAY_URLS=
+VITE_APP_WRITE_RELAY_URLS=
 ```
 
 `VITE_RELAY_URL` remains a default relay hint for legacy and NIP-89-related flows, not a user-facing relay role.
+
+The canonical reset/fallback list is code-owned in `packages/core/src/config.ts` and currently starts with `wss://conduitl2.fly.dev`. Retired Conduit relay hosts must not be used in active examples.
+
+Future Phase 2B work is expected to add a more explicit source-aware relay outcome model and read frontier. That direction should be documented before replacing current NDK-backed helpers with a custom relay substrate.
 
 ## Success Metrics
 

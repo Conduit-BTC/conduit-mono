@@ -38,10 +38,14 @@ Examples: `feat/product-search`, `fix/invoice-qr-case`, `chore/upgrade-ndk`
 
 Conduit uses a combined Linear + docs workflow:
 
-- Linear tracks execution, ownership, and status
-- `docs/plans/*` tracks delivery scope and sequencing
+- Linear tracks live execution, ownership, priority, sequencing, status, and merge order
+- `docs/plans/*` tracks phase boundaries, exit criteria, and temporary delivery contracts
 - `docs/specs/*` tracks implementation requirements
 - `docs/knowledge/*` holds supporting notes and references, not the final source of truth
+
+If Linear conflicts with `docs/plans/*` on ticket status, owner, sequencing, or merge order, Linear wins. If Linear conflicts with `docs/specs/*` or `docs/ARCHITECTURE.md` on implementation behavior, update the repo contract before coding.
+
+When a temporary phase document's exit criteria appear complete, contributors and agents should prompt maintainers to archive or delete it and move the next phase fully to Linear-owned planning.
 
 If work changes product requirements, protocol behavior, shared UX rules, or cross-team implementation expectations:
 
@@ -50,6 +54,22 @@ If work changes product requirements, protocol behavior, shared UX rules, or cro
 3. Start the implementation `feat/*` branch only after the docs/spec change lands.
 
 For UI and theming work, also check [docs/DESIGN.md](docs/DESIGN.md) before introducing new shared styles or tokens.
+
+For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also check [external-nostr-references.md](docs/knowledge/external-nostr-references.md) and the relevant public NIP or GammaMarkets source before implementation. Product listings are NIP-99 + GammaMarkets `kind:30402`; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
+
+### Reviewer-Owned Context Follow-Up
+
+Reviewers decide whether implementation work requires repo context updates. This is not an autonomous agent responsibility.
+
+During review, mark one of:
+
+- `No docs follow-up needed`
+- `Docs-only PR after merge`
+- `Docs/spec PR required before merge`
+
+Use `Docs/spec PR required before merge` when the PR changes behavior that needs a stable contract before code lands. Use `Docs-only PR after merge` when the code fits existing contracts but reveals stale docs, missing agent routing, missing source references, or completed phase criteria.
+
+Docs follow-up PRs should be docs-only, reference the merged implementation PR and Linear issue, and be reviewed separately. Agents may draft them only when a reviewer or maintainer asks.
 
 ### Commits
 
@@ -99,6 +119,7 @@ bun run format:check # Must pass - no Prettier changes needed
 bun run typecheck   # Must pass — no TS errors
 bun run lint        # Must pass — no lint errors
 bun test            # Must pass
+bun run telemetry:check # Must pass when telemetry/analytics surfaces are affected
 ```
 
 ### Pull Requests
@@ -155,7 +176,9 @@ Branch protection on `main` expects GitHub-owned CI gates to pass:
 - `typecheck`
 - `test`
 - `color-policy`
-- `build-signet`
+- `telemetry-policy`
+- `e2e-smoke`
+- `build-mainnet`
 - `preview-links`
 
 Direct Cloudflare Pages checks are useful preview signals, but they are not
@@ -196,7 +219,7 @@ export function ProductCard({ product, className }: ProductCardProps) {
 
 ### Data Fetching
 
-All relay data goes through TanStack Query hooks in `@conduit/core`:
+Relay data should go through shared TanStack Query hooks or protocol helpers in `@conduit/core`. NDK is the current edge library, but routes should not invent new relay fanout or source-resolution behavior when shared helpers already exist:
 
 ```typescript
 import { useQuery } from "@tanstack/react-query"
@@ -230,6 +253,8 @@ export function useProducts(filters?: ProductFilters) {
 - App-specific components stay in the app's `components/` directory
 - Never create circular dependencies between packages
 
+For Nostr-sensitive changes, prefer deepening shared `@conduit/core` protocol modules over copying event construction, publish, unwrap/decrypt, relay planning, or parsing into routes.
+
 ## Protocol Constraints
 
 These are non-negotiable across all code:
@@ -249,8 +274,8 @@ These are non-negotiable across all code:
 
 ### Payments
 
-- NWC-based Lightning invoicing (NIP-47)
-- Invoice generation only — no balance management
+- Non-custodial Lightning payment requests, NWC/WebLN payment rails, and payment proofs
+- No balance management
 - No fund custody
 
 ## File Organization
@@ -264,7 +289,7 @@ app/src/
 
 packages/core/src/
 ├── types/          # TypeScript interfaces
-├── protocol/       # NDK singleton, event builders
+├── protocol/       # Nostr client helpers, event builders
 ├── schemas/        # Zod validators
 ├── hooks/          # Shared React Query hooks
 ├── context/        # Auth context
@@ -273,7 +298,6 @@ packages/core/src/
 
 packages/ui/src/
 ├── components/     # shadcn/ui + custom components
-├── hooks/          # UI hooks (useViewport, etc.)
 └── styles/         # CSS, theme tokens, typography
 ```
 

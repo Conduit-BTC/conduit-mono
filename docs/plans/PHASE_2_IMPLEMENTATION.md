@@ -1,8 +1,20 @@
 # Phase 2 Implementation
 
-Phase 2 is the execution plan for the next Conduit sprint after MVP.
+Phase 2 is the execution plan for the Conduit closeout sprint after MVP.
 
-This document preserves the finalized Phase 2 scope agreed between the parties, but translates that scope into a codebase-aware implementation map for `conduit-mono`.
+This document translates Phase 2 scope into a codebase-aware implementation map for `conduit-mono`.
+
+Execution state, ownership, priority, live status, and merge order live in Linear. This document should describe the repo-local delivery contract and should be kept in sync when Phase 2A closeout work lands.
+
+## Lifecycle And Archive Trigger
+
+This is a temporary Phase 2 closeout document, not the long-term execution source of truth.
+
+When the exit criteria below appear satisfied, or when the team starts the next phase as a Linear-owned plan, agents should prompt the user:
+
+> Phase 2 closeout criteria appear complete. Should `docs/plans/PHASE_2_IMPLEMENTATION.md` be archived or deleted so Linear becomes the only live planning source?
+
+Do not extend this file with rolling ticket status, owners, dates, or merge order. Put that in Linear.
 
 For each included area, this plan states:
 
@@ -14,6 +26,8 @@ The goal is to make this file usable as both:
 
 - a human-readable scope reference
 - an operational planning document that can be turned into issues and PRs without re-discovering the repo
+
+Phase 2A now includes secure marketplace messaging, the minimum essential-commerce outbox slice, and closeout hardening for checkout, payment proof, trust, support, provenance, and relay settings. Phase 2B is expected to introduce broader local-first app architecture and source-aware commerce reads. Current Phase 2A work should avoid blocking that direction, but it should not force a Commerce Graph or relay-substrate refactor into closeout milestones before the future architecture spec lands.
 
 ---
 
@@ -30,15 +44,16 @@ Top priority. This work enables the team to move faster and lets outside contrib
 - `.github/workflows/ci.yml` already runs `lint`, `typecheck`, `test`, and build jobs.
 - `.github/pull_request_template.md` already defines PR summary, scope, risk review, and test plan expectations.
 - `.github/copilot-instructions.md` and `.github/instructions/pr-review.instructions.md` already define AI review priorities and review format.
-- The repo is not yet open-source complete: `README.md` still says `License: TBD`.
-- Branch protection rules are described in `CONTRIBUTING.md`, but the Phase 2 doc should treat repo protection and review policy as required repo standards, not just contributor notes.
+- The repo has MIT licensing and explicit trademark/open-source posture in `README.md`, `OPEN_SOURCE.md`, and `TRADEMARKS.md`.
+- Branch protection rules are described in `CONTRIBUTING.md`, but this plan should treat repo protection and review policy as required repo standards, not just contributor notes.
+- Bug-report forms, provenance/About surfaces, compact legal footers, Playwright smoke coverage, and automation/telemetry guardrails have landed and should be treated as current repo baseline.
 
 #### Phase 2 implementation work
 
-- Finish the public repo baseline:
-  - add MIT licensing
-  - update `README.md` and related docs so the public repo boundary is explicit
-  - remove or relocate any tracked docs that are not safe for a public repo
+- Maintain the public repo baseline:
+  - keep MIT licensing and trademark posture explicit
+  - keep `README.md` and related docs public-safe
+  - remove or relocate tracked docs that are future-service, private-planning, or underspecified product scope rather than current `conduit-mono` contracts
 - Tighten contributor onboarding so a new engineer can understand:
   - the monorepo layout
   - app/package boundaries
@@ -62,11 +77,11 @@ Top priority. This work enables the team to move faster and lets outside contrib
 - Keep AI review tooling as a required quality surface:
   - preserve and refine Copilot review instructions
   - keep AI review aligned with protocol, privacy, and payment constraints
-- Add public repo linking from product and website surfaces once the repo is ready to expose.
+- Add and maintain public repo linking from product and website surfaces.
 
 #### Done when
 
-- The repo is publishable under MIT without `TBD` placeholders.
+- The repo remains publishable under MIT without stale placeholders or private planning references.
 - A new contributor can clone the repo, run the apps, and understand the monorepo boundary from `README.md` and `CONTRIBUTING.md`.
 - Required PR checks and review expectations are explicit and match actual CI.
 - AI review instructions are present, current, and aligned with Conduit’s protocol and privacy rules.
@@ -83,8 +98,9 @@ Second priority. This work aligns relay preferences, commerce compatibility, and
 - The current config already builds a merged relay list for client use.
 - `packages/core/src/protocol/commerce.ts` returns source metadata for commerce, public, and local-cache reads without exposing fixed relay roles as the product model.
 - Relay architecture is documented in `docs/specs/relay/conduit_relay_architecture.md`.
-- Merchant and Market already depend on relay reads, local cache, and fallback handling, but relay preferences and capability detection are not yet exposed as a clear user-facing product concept.
-- Merchant UI currently exposes relay health at a high level on the dashboard, but there is not yet a full relay settings product surface aligned to the Nostr-native relay architecture.
+- Merchant and Market already depend on relay reads, local cache, and fallback handling.
+- Shared relay preference/capability state exists in `@conduit/core`, and Market/Merchant expose Network settings surfaces built on the shared `@conduit/ui` relay settings panel.
+- Phase 2B is expected to deepen source-aware relay health and read-frontier behavior. Current Phase 2A work should keep route code source-aware where practical without introducing a premature custom relay substrate.
 
 #### Phase 2 implementation work
 
@@ -93,7 +109,7 @@ Second priority. This work aligns relay preferences, commerce compatibility, and
   - `OUT` for relays Conduit may publish to
   - commerce priority order as a Conduit-local app setting
   - capability indicators derived from NIP-11, active probes, and commerce compatibility checks
-- Build relay settings UX that maps to shared relay preference and capability state instead of user-managed relay roles.
+- Refine relay settings UX that maps to shared relay preference and capability state instead of user-managed relay roles.
 - Use two user-facing relay sections across Conduit clients:
   - Commerce Enabled Relays
   - Other Public Relays
@@ -114,7 +130,7 @@ Second priority. This work aligns relay preferences, commerce compatibility, and
   - commerce flows should prefer Commerce Enabled Relays in Conduit commerce priority order
   - general Nostr flows should follow user `IN` / `OUT` preferences
   - protected and mutation-adjacent flows may require stronger-source verification before acting
-- Support progressive verification in UI:
+- Preserve progressive verification in UI:
   - fast surfaces may render from cache first to avoid blank-page loading
   - cards and detail views may update source state as stronger relay-backed reads confirm the same data
   - source indicators should be subtle by default and more explicit only where degraded or stale state affects user decisions
@@ -159,20 +175,19 @@ Second priority. This work aligns relay preferences, commerce compatibility, and
   - product management in `apps/merchant/src/routes/products.tsx`
   - order handling and invoicing in `apps/merchant/src/routes/orders.tsx`
   - dashboard stats in `apps/merchant/src/routes/index.tsx`
-- Merchant dashboard already shows high-level counts such as listings, open orders, awaiting payment, and awaiting fulfillment.
-- There is no single merchant settings editor that combines profile, payment, shipping, and relay readiness into one operational setup flow.
-- There is no explicit “minimum viable merchant” checklist or readiness state model in the current product.
-- Merchant payment eligibility is currently implied by available invoice tooling, not expressed as a formal readiness state.
+- Merchant now has separate Profile, Payments, Shipping, Network, Products, Orders, and Dashboard surfaces.
+- Merchant readiness logic exists in app code and is surfaced on the dashboard.
+- There is not yet a single settings route, but the active design favors focused setup surfaces plus dashboard readiness instead of a monolithic settings editor.
+- Remaining work should tighten readiness copy, payment capability state, and shipping/payment/relay hydration rather than re-opening route structure.
 
 #### Phase 2 implementation work
 
-- Build a complete merchant settings surface that covers:
+- Keep a complete merchant setup/readiness model across the existing focused surfaces:
   - profile identity
   - payment setup
   - shipping readiness
   - relay configuration
-- Define a minimum viable merchant checklist using current product capabilities and required missing surfaces.
-- Add explicit readiness states to the Merchant dashboard instead of relying on raw order or listing counts.
+- Keep the minimum viable merchant checklist grounded in current product capabilities and explicit dashboard readiness states.
 - Split merchant payment capability into clear product states:
   - eligible for fast checkout
   - limited to invoice/manual flow
@@ -182,7 +197,7 @@ Second priority. This work aligns relay preferences, commerce compatibility, and
 #### Done when
 
 - Merchants can see what setup is complete, what is missing, and what payment path they currently support.
-- Merchant setup is understandable from one settings/readiness flow instead of scattered pages.
+- Merchant setup is understandable from focused setup pages and a dashboard readiness summary instead of raw counts alone.
 - Dashboard states reflect merchant readiness and payment eligibility directly.
 - The app can clearly distinguish between instant-payment-capable merchants and invoice-only merchants.
 
@@ -199,13 +214,12 @@ Second priority. This work aligns relay preferences, commerce compatibility, and
   - WebLN
   - NWC
   - manual invoice paste
-- This means the fallback invoice flow is already partially implemented.
-- Fast checkout from order total does not yet exist as a clearly gated buyer flow.
+- Fast checkout, NWC/WebLN payment attempts, payment tracking, and the v1 payment proof model exist in current code. Remaining closeout work should focus on gating, retry/recovery behavior, user-facing state clarity, and privacy-safe diagnostics.
 
 #### Phase 2 implementation work
 
 - Keep the existing order-first checkout path as the fallback baseline.
-- Add a fast checkout path for eligible merchants and NWC-ready buyers.
+- Finish and harden the fast checkout path for eligible merchants and NWC-ready buyers.
 - Let buyers initiate payment directly from the order total when eligibility rules are satisfied.
 - Gate fast checkout on explicit merchant readiness and trust conditions.
 - Keep checkout language and route behavior clear about which path the buyer is using:
@@ -231,7 +245,7 @@ Second priority. This work aligns relay preferences, commerce compatibility, and
 - Merchant orders already support invoice sending and status updates in `apps/merchant/src/routes/orders.tsx`.
 - Market already renders payment requests and payment proof messages in buyer order conversations.
 - Current order/payment state handling is useful but still partial:
-  - payment proof exists as a message type, but the Phase 2 proof model is not yet enforced as a full product rule
+  - payment proof exists as a first-class v1 schema/message concept and is rendered in buyer/merchant order surfaces
   - buyer success confirmation and merchant payment-state clarity need to be tightened
   - mismatch and unverified-payment handling are not yet defined as a complete state model
 
@@ -262,10 +276,9 @@ Second priority. This work aligns relay preferences, commerce compatibility, and
 
 #### Current codebase state
 
-- Storefront trust context is partially present in `apps/market/src/routes/store/$pubkey.tsx`.
+- Storefront and checkout trust context are present through shared Market trust-summary hooks/components.
 - Store pages already show merchant profile information and follow/unfollow behavior for connected buyers.
-- Trust context is not yet established as a checkout decision surface.
-- Checkout itself does not yet clearly warn buyers when they are sending funds without visible trust context.
+- Remaining trust work should tighten degraded/loading/absent state language and preserve trust as buyer information rather than a hidden allow/block system.
 
 #### Phase 2 implementation work
 
@@ -293,8 +306,8 @@ Second priority. This work aligns relay preferences, commerce compatibility, and
 
 - Privacy and observability constraints are already documented in `docs/specs/privacy-observability.md`.
 - That spec already prohibits behavioral tracking, message inspection, and sensitive telemetry fields.
-- The apps do not yet appear to expose a complete legal and support surface for beta users.
-- The core non-custodial risk posture exists in repo docs, but it is not yet consistently surfaced as user-facing product copy.
+- Compact app footers, bug-report forms, and provenance/about surfaces are present in current code.
+- The core non-custodial risk posture exists in repo docs and should remain consistent with user-facing product copy.
 
 #### Phase 2 implementation work
 
@@ -324,9 +337,9 @@ Second priority. This work aligns relay preferences, commerce compatibility, and
 
 #### Current codebase state
 
-- Product visibility concepts exist in product and spec history, but listing moderation states are not yet clearly implemented as runtime merchant-facing states.
-- Market already handles empty, loading, and missing-data states in several routes, but loading-state language is not yet standardized as a launch-readiness concern.
-- Package versions exist in `package.json` files, and protocol docs already call for post-MVP versioning and provenance, but version/build/source visibility is not yet exposed as a clear product surface.
+- Product visibility concepts exist in product and spec history, but listing moderation states still need clear runtime product semantics before they become launch gates.
+- Market already handles empty, loading, and missing-data states in several routes; launch work should keep loading/degraded/unavailable language consistent.
+- Version/build/source context is exposed through product surfaces and NIP-89 metadata; remaining work should keep it current as release and source-link behavior changes.
 
 #### Phase 2 implementation work
 
@@ -370,8 +383,8 @@ Buyer pays immediately based on order total -> proof of payment is created and s
 
 #### Current codebase state
 
-- The current codebase has checkout, invoice, and order-message primitives.
-- The current codebase does not yet expose this full fast path as a complete buyer and merchant experience.
+- The current codebase has checkout, invoice, payment-attempt, payment-rail, payment-proof, and order-message primitives.
+- Remaining closeout work should harden the fast-path buyer and merchant experience rather than treating it as only a protocol possibility.
 
 #### Phase 2 implementation work
 
@@ -381,7 +394,7 @@ Buyer pays immediately based on order total -> proof of payment is created and s
 
 #### Done when
 
-- Fast checkout exists as a real product path, not just a protocol possibility.
+- Fast checkout is hardened as a real product path, not just a protocol possibility.
 - Buyers and merchants can both see the fast-payment state clearly.
 
 ### Fallback Flow (Manual Invoice)
@@ -408,17 +421,98 @@ Buyer places order -> merchant sends invoice -> buyer pays and sends proof -> me
 
 ---
 
+## Phase 2A Messaging And Essential Commerce Writes
+
+Recent Linear planning split secure communication and minimum write durability out of broader Phase 2B architecture. These are Phase 2A closeout requirements because buyers and merchants need usable, retryable commerce communication before the full local-first frontier work lands.
+
+### Secure Marketplace Messaging
+
+#### Current codebase state
+
+- Market has a buyer-side `/messages` surface and order-linked conversation rendering.
+- Merchant currently handles buyer communication inside the orders workspace.
+- Order-linked kind `16` messages and general kind `14` DMs must remain distinct in product state.
+- Route code still has direct NDK `giftWrap` send paths in places, while inbound order unwrap is more centralized in `@conduit/core`.
+
+#### Phase 2A implementation work
+
+- Build a usable NIP-17 buyer/merchant general messaging experience across Market and Merchant.
+- Keep regular kind `14` conversations separate from order-linked kind `16` conversations, with compact order previews that link back to order context.
+- Surface decrypt/unwrap failures as degraded or retryable states instead of silently dropping messages.
+- Keep read-only legacy recovery narrow; do not add NIP-04 sending.
+- Keep message content out of telemetry, logs, analytics, and diagnostics.
+
+#### Done when
+
+- Market has a usable buyer-side general DM inbox for merchant conversations.
+- Merchant has a usable general messaging workspace for buyer conversations.
+- Order-linked messages remain distinct from general DMs and link back to order flows.
+- Failed unwrap/decrypt states are visible and safe to retry.
+
+### NIP-44 V3 Readiness
+
+#### Current codebase state
+
+- Current private-message sends depend on NDK/nostr-tools NIP-44 v2 behavior.
+- Current public NIP-44 specifies version 2 encryption, but NIP-44 v3 readiness is tracked in Linear as an emerging ecosystem direction.
+- NIP-07 typings expose `nip04` and `nip44`; they do not by themselves establish v3 support.
+- Relay list support is kind `10002` NIP-65 only; kind `10050` private-message relay hints are not yet a shared contract.
+- NWC uses NIP-44 v2 and should remain conservative unless wallet capability discovery and public draft/client references prove a safe v3 path.
+
+#### Phase 2A implementation work
+
+- Create a shared `@conduit/core` NIP-17/NIP-44 boundary for commerce messages instead of adding new route-local `giftWrap` calls.
+- Preserve NIP-44 v2 fallback for signers and recipients.
+- Keep NIP-44 v3 capability detection and compatibility evaluation as an explicit design path.
+- Gate any v3 send/decrypt behavior on linked public draft/client references and explicit signer/recipient capability detection.
+- Parse/cache kind `10050` private-message relay hints enough to read recipient relays and advertised encryption support.
+- Reject version/context mismatches where the supported encryption version defines them, and report only privacy-safe decrypt diagnostics.
+- Keep NWC v2 by default and explicitly test that wallet invoice flows are not broken by this boundary.
+
+#### Done when
+
+- Commerce message send/read code consumes the shared boundary.
+- NIP-44 v2 remains the fallback path.
+- NIP-44 v3 readiness is represented in the boundary without forcing v3 as the default path.
+- NIP-44 v3 is not used unless backed by linked public draft/client references and explicit capability discovery.
+- Tests cover v2 fallback, unknown/unsupported versions, version/context mismatch handling where applicable, and at least one order-message round trip.
+
+### Essential Commerce Outbox
+
+#### Current codebase state
+
+- Signed orders, messages, payment proofs, merchant replies, and product publish/delete actions may still depend too heavily on relay readback before becoming visible as local state.
+- Payment attempts and local caches exist, but they are not yet a complete signed-write ledger for essential commerce sends.
+
+#### Phase 2A implementation work
+
+- Add the minimum signed-write ledger needed for checkout orders, buyer/merchant messages, merchant replies, payment proofs, and product publish/delete actions.
+- Preserve signed events for retry without requiring users to re-enter content or re-sign unless content changes.
+- Project local outgoing order/message/proof state before relay convergence.
+- Surface ACK/reject/timeout state enough for useful retry or degraded UI.
+- Keep diagnostics content-free: no invoices, order contents, message bodies, addresses, or payment secrets.
+
+#### Done when
+
+- Checkout order delivery creates a local visible/retryable signed record after signing.
+- Buyer and merchant messages appear locally immediately after signing/sending.
+- Merchant replies and payment proofs are locally visible and retryable.
+- Refresh recovery works for locally signed in-flight essential commerce sends.
+- Tests cover failed publish after signing, refresh recovery, retry, and privacy-safe diagnostics.
+
+---
+
 ## Optional Scope (P1 Workstreams - Non-Blocking)
 
 These items are optional unless added later in writing.
 
 - More advanced trust or social features
-- NIP-46 support
+- Broad NIP-46 remote-signer UX beyond the external-signer policy already documented in the repo
 
 Current codebase note:
 
-- Basic trust context and follow behavior are partially present in Market store surfaces.
-- Repo workflow and AI review instructions already mention NIP-46 as an auth constraint, but broad NIP-46 product support is not yet a required Phase 2 deliverable.
+- Basic trust context and follow behavior are present or landing in Market store and checkout surfaces.
+- Repo workflow and AI review instructions mention NIP-46 because the architecture allows external signers beyond NIP-07, but broad NIP-46 product UX is not a required Phase 2A deliverable.
 
 ---
 
@@ -444,14 +538,15 @@ Implementation for Market and Merchant should remain in substantial conformance 
 - Signer-based authentication
 - Trust-visible payment flows
 - Clear separation of fast and fallback payment paths
-- Application architecture supporting future relay, caching and service extensibility
+- Application architecture supporting future relay, caching, and local-first app architecture work
 
 Codebase-aware interpretation:
 
 - Keep auth external-signer-only across Market and Merchant, consistent with current repo rules in `CONTRIBUTING.md` and `.github/copilot-instructions.md`.
 - Keep payments invoice/proof based and avoid any balance-holding or custody model.
 - Keep trust visible in product surfaces rather than hiding it in relay or moderation internals.
-- Keep route code and shared protocol code extensible enough to support relay, cache, and service evolution without rewriting app behavior around a single backend shape.
+- Keep route code and shared protocol code extensible enough to support relay, cache, and future local-first architecture without rewriting app behavior around a single backend shape.
+- Current work may continue using NDK where it is the practical repo pattern. When adding new relay-heavy or source-aware behavior, leave a small note in PRs if NDK appears to be constraining the design and a future Nostrify/custom adapter boundary should be considered.
 
 ---
 
@@ -473,7 +568,7 @@ Phase 2 is complete when:
 
 ## Verification Checklist For This Plan
 
-- The document preserves the finalized A-H scope exactly.
+- The document preserves the current A-H Phase 2 scope while reflecting shipped and in-flight implementation.
 - Each section distinguishes between current implementation, extension work, and net-new work.
 - The plan points to real monorepo surfaces where implementation is likely to live.
 - The plan does not invent backend architecture that conflicts with the current codebase.

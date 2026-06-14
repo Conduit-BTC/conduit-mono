@@ -87,10 +87,10 @@ Typography is defined in `packages/ui/src/styles/typography.css`.
 
 ### Font Roles
 
-- `--font-display`: `Whyte Inktrap Variable` for strong brand moments and large headlines
-- `--font-heading`: `Poppins` for section titles and structured headings
-- `--font-body`: `Poppins` for paragraphs, forms, tables, and general UI copy
-- `--font-mono`: `Whyte Mono Inktrap Variable` for ids, pubkeys, technical metadata, and dense utility labels
+- `--font-display`: `Bricolage Grotesque` for strong brand moments and large headlines
+- `--font-heading`: `Bricolage Grotesque` for section titles and structured headings
+- `--font-body`: `Bricolage Grotesque` for paragraphs, forms, tables, and general UI copy
+- `--font-mono`: system monospace stack for ids, pubkeys, technical metadata, and dense utility labels
 
 ### When To Use Each Font
 

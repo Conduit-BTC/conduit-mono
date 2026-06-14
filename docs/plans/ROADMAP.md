@@ -12,23 +12,25 @@ Build a decentralized commerce platform where merchants and buyers transact dire
 
 ## Development Epochs
 
-| Epoch | Focus | Target |
-|-------|-------|--------|
-| **Genesis** | Architecture, infrastructure, wireframes | 2/12/2026 |
-| **Core Function** | Market + Merchant Portal MVP | 3/12/2026 |
-| **Added Value** | Social features, enhanced UX | TBD |
-| **Monetization** | Premium tiers, ads | TBD |
-| **Scale** | Multi-language, enterprise | TBD |
+| Epoch             | Status   | Focus                                                                   |
+| ----------------- | -------- | ----------------------------------------------------------------------- |
+| **Genesis**       | Complete | Architecture, infrastructure, wireframes                                |
+| **Core Function** | Complete | Market + Merchant Portal MVP                                            |
+| **Phase 2A**      | Active   | Closeout, launch safety, merchant readiness, trust, provenance, support |
+| **Phase 2B**      | Planned  | Local-first performance and app architecture                            |
+| **Added Value**   | Future   | Social features and enhanced discovery                                  |
+| **Scale**         | Future   | Multi-language and enterprise readiness                                 |
 
 ---
 
 ## Epoch Details
 
-### Genesis (Current)
+### Genesis (Complete)
 
 **Objective**: Prepare a fully specified, architecturally sound foundation such that implementation can proceed without ambiguity.
 
 **Market**
+
 - Finalize marketplace scope, assumptions, and boundaries
 - Lock protocol primitives (event kinds, signer model, relay assumptions)
 - Complete PRDs, system diagrams, and AI-agent context documentation
@@ -37,6 +39,7 @@ Build a decentralized commerce platform where merchants and buyers transact dire
 - Build wireframes for product listing, product cards, cart, profile, messaging
 
 **Merchant Portal**
+
 - Define Portal as sole interface for merchant product management
 - Lock authentication to external signers (NIP-07, NIP-46)
 - Define merchant protocol surface (publishable/readable event kinds)
@@ -45,18 +48,20 @@ Build a decentralized commerce platform where merchants and buyers transact dire
 - Produce protocol boundary documentation
 
 **Store Builder**
+
 - Define Store Builder role relative to Market (discovery) and Portal (operations)
 - Finalize store identity, publishing model, and event linkage
-- Create first individual store template using Market components
-- Establish build/deploy workflows
+- Capture first storefront assumptions for future scoping
+- Keep generated-store deployment out of current client milestones until a future spec is accepted
 
 ---
 
-### Core Function
+### Core Function (Complete)
 
 **Objective**: Prove the core marketplace loop works end-to-end.
 
 **Market**
+
 - Buyers authenticate via external signers
 - Products discoverable, viewable, understandable
 - Buyer-merchant communication via NIP-17
@@ -65,6 +70,7 @@ Build a decentralized commerce platform where merchants and buyers transact dire
 - Full UX design implemented from Figma
 
 **Merchant Portal**
+
 - Product management surface (create, edit, publish, deprecate)
 - Order dashboard with filtering by state
 - Order state transitions (protocol-backed vs local annotations)
@@ -72,20 +78,58 @@ Build a decentralized commerce platform where merchants and buyers transact dire
 - Failure/recovery handling (partial orders, duplicates, delayed payments)
 
 **Store Builder**
-- AI-driven store generation from template
-- Store creation tied to merchant identity
-- Product publishing into store context
-- Basic layout, navigation, product listing
-- Order initiation and settlement
-- Minimal customization (distinguish stores from each other)
+
+- Placeholder app exists in the monorepo
+- Generated-store product scope deferred until a future spec is accepted
 
 ---
+
+### Phase 2A: Closeout, Architecture & Velocity
+
+**Objective**: Stabilize and finish the current Market and Merchant launch-readiness work without expanding scope into a broad architecture refactor.
+
+**Market**
+
+- Fast/fallback checkout clarity
+- Payment proof and buyer success states
+- Merchant trust context before payment-sensitive actions
+- Legal, support, provenance, and issue-reporting surfaces
+
+**Merchant Portal**
+
+- Readiness and setup state for profile, payments, shipping, relays, products, and orders
+- Shipping and payment readiness that reflect real user workflows
+- Product publish/delete safety and order-state clarity
+
+**Shared Packages**
+
+- Relay settings and capability surfaces that remain Nostr-native
+- Payment proof state model
+- Secure marketplace messaging and NIP-44 v3 readiness
+- Minimum essential-commerce outbox for signed orders, messages, payment proofs, and product publish/delete actions
+- Automation/telemetry guardrails that preserve privacy
+- Source/version/build transparency
+
+### Phase 2B: Performance and App Architecture
+
+**Objective**: Move toward local-first resilience and source-aware Nostr reads after Phase 2A closeout, without blocking current milestone delivery.
+
+The target direction is a shared local-first commerce substrate with Market and Merchant rendering prepared state from the same underlying evidence model. Current Phase 2A work should leave room for that direction, but should not replace working route/query behavior until the Phase 2B architecture has its own accepted spec.
+
+Expected themes:
+
+- full signed-write frontier beyond the Phase 2A essential-commerce outbox
+- source-aware relay read execution and relay health
+- local-first product/profile/order/message readiness
+- cache and media readiness as performance aids, not hidden sources of truth
+- Merchant workspace and Market browse views as lenses over shared commerce evidence
 
 ### Added Value
 
 **Objective**: Deliver user-facing value beyond raw protocol access.
 
 **Market**
+
 - Enhanced social context (richer profiles, social signals, web-of-trust)
 - Improved discovery (filtering, categorization, relevance)
 - Robust communication beyond baseline NIPs
@@ -93,77 +137,16 @@ Build a decentralized commerce platform where merchants and buyers transact dire
 - "Serious" marketplace experience comparable to modern web apps
 
 **Merchant Portal**
+
 - Enhanced fulfillment workflows (partial/split, backorder, internal notes)
 - Shipping integrations (ShipStation/EasyPost - USPS, UPS, FedEx)
 - Packing & dispatch tooling (slips, batch labels)
 - Payment operational controls (invoice expiry, re-issuance)
-- Cross-channel consistency (Market + Store Builder orders identical)
+- Cross-channel consistency between Market and any future storefront surfaces
 
 **Store Builder**
-- Feature parity with Market social/interaction capabilities
-- Richer customization (branding, layout, presentation controls)
-- Improved buyer trust signals and social context
-- Optional managed hosting by Conduit
-- Integration with Portal features (shipping, wallets, dashboards)
 
----
-
-### Monetization
-
-**Objective**: Establish revenue generation while preserving trust and baseline access.
-
-See [monetization.md](../specs/monetization.md) for full specification.
-
-**Principles**
-- Value-aligned: Pay for leverage, not access
-- Two-sided: Both shoppers and merchants can subscribe
-- Sats-denominated: All pricing in satoshis
-- No custody: Credits are prepaid tokens, not held funds
-- Graceful degradation: Free tier always works
-
-**Revenue Streams**
-
-| Stream | Target | Description |
-|--------|--------|-------------|
-| **Shopper Membership** | Buyers | Ad-free, personalized discovery, NIP-05, monthly credits |
-| **Merchant Membership** | Sellers | Automated orders, AI messaging, analytics |
-| **Sats Credits** | Both | Prepaid tokens for premium services |
-| **Sponsored Placements** | Merchants | Bid for visibility in search/browse |
-| **Store Hosting** | Merchants | Managed Blossom hosting ($12-21/mo) |
-| **Curator Revenue Share** | Curators | Percentage of ad spend on curated pages |
-
-**Membership Tiers**
-
-| Tier | Approx Price | Target |
-|------|--------------|--------|
-| **Free** | $0 | Casual users, new merchants |
-| **Side Hustle** | ~$7-10/mo | Regular shoppers, hobbyist sellers |
-| **Pro Hustle** | ~$15-30/mo | Power users, serious businesses |
-| **Enterprise** | Custom | High-volume merchants |
-
-**Credit System**
-- Sats-denominated prepaid tokens (never expire)
-- Consumed by: automated orders, AI messaging, analytics, AI store generation
-- Membership includes monthly credit allotment
-- Volume discounts for high usage
-
-**Advertising**
-- Sponsored Products in search results
-- Category Sponsorship at top of category pages
-- Homepage Featured rotation
-- Curated Page Sponsor (on curator collections)
-- All sponsored content clearly labeled
-- Fair auction mechanism
-- Self-serve campaign tools in Merchant Portal
-
-**Non-Goals (Preserve Trust)**
-- No percentage of sales (0% revenue share)
-- No charging buyers to browse/buy
-- No selling user data or behavior
-- No pay-to-win search ranking (organic stays organic)
-- No locking merchants into platform
-- No custody of user funds
-- No message content inspection
+- Future generated-store direction, not active Added Value scope until accepted separately
 
 ---
 
@@ -175,39 +158,42 @@ See [monetization.md](../specs/monetization.md) for full specification.
 - Advanced discovery and advertising formats
 - Ecosystem partnerships and revenue-sharing
 - Enterprise-grade infrastructure
-- "Shopify killer" moment for Store Builder
+- Future Store Builder and service-backed commerce capabilities once they have their own accepted specs
 
 ---
 
 ## Protocol Constraints (Non-Negotiable)
 
 ### Authentication
+
 - External signers ONLY (NIP-07, NIP-46)
 - NO key generation, custody, or storage in apps
 - Merchant/buyer identity = pubkey only
 
 ### Privacy
+
 - NO behavioral tracking or profiling
 - NO message content inspection
 - System metrics only (relay success, load times)
 - All user data stays on user's device or relays
 
 ### Payments
-- NWC-based Lightning (no custody)
-- Invoice generation, not balance management
+
+- Non-custodial Lightning payment requests and proofs
+- NWC/WebLN payment rails, not balance management
 - No refund processing in-app
 
 ---
 
 ## App Schedule
 
-| App | Genesis | Core Function | Added Value | Monetization | Scale |
-|-----|---------|---------------|-------------|--------------|-------|
-| **Market** | 2/12/2026 | 2/26/2026 | TBD | TBD | TBD |
-| **Merchant Portal** | 2/12/2026 | 3/12/2026 | TBD | TBD | TBD |
-| **Store Builder** | TBD | TBD | TBD | TBD | TBD |
-| **Relay** | TBD | TBD | TBD | TBD | TBD |
-| **Conduit Services** | TBD | TBD | TBD | TBD | TBD |
+| App/Area              | Genesis  | Core Function         | Phase 2A                          | Phase 2B                                | Future                   |
+| --------------------- | -------- | --------------------- | --------------------------------- | --------------------------------------- | ------------------------ |
+| **Market**            | Complete | Complete              | Active                            | Planned                                 | Added Value / Scale      |
+| **Merchant Portal**   | Complete | Complete              | Active                            | Planned                                 | Added Value / Scale      |
+| **Store Builder**     | Concept  | Placeholder app       | Out of active scope               | Out of active scope                     | Future spec required     |
+| **Relay**             | Concept  | Shared relay defaults | Congee/default relay and settings | Source-aware relay health/read frontier | Future service hardening |
+| **External Services** | Concept  | Out of scope          | Out of scope                      | Out of scope                            | Future service repo/spec |
 
 ---
 

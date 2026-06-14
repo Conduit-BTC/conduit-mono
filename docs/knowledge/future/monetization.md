@@ -1,14 +1,18 @@
 # Monetization Specification
 
+> Future note, not a current `conduit-mono` implementation contract.
+> This strategy material is kept for product context only. It should not introduce billing, analytics, advertising, or service-backend requirements into current Market or Merchant work.
+
 ## Overview
 
 Revenue generation while preserving Conduit's ethos: no surveillance, no lock-in, no rent-seeking on transactions. Users pay for enhanced capabilities and convenience, not for basic access.
 
-**Source**: `context/Conduit Monetization Plan LONG.pdf`
+**Planning status**: future product context only. Treat this as non-authoritative and do not use it as current implementation provenance.
 
 **Related specs:**
+
 - [billing.md](./billing.md) - Technical infrastructure (Supabase schema, APIs, entitlements)
-- [privacy-observability.md](./privacy-observability.md) - Privacy-safe metrics and telemetry constraints
+- [privacy-observability.md](../../specs/privacy-observability.md) - Privacy-safe metrics and telemetry constraints
 
 ---
 
@@ -24,24 +28,25 @@ Revenue generation while preserving Conduit's ethos: no surveillance, no lock-in
 ## Privacy-Safe Evidence of Traction
 
 Conduit reports traction using aggregate metrics only:
+
 - protocol-level activity counts (listings, order events, merchant activity)
 - aggregated reliability/operational metrics
 - centralized billing totals (MRR, top-ups, credits spent)
 
-No identity-level behavior tracking is required for investor reporting.
+No identity-level behavior tracking is required for aggregate business reporting.
 
 ---
 
 ## Revenue Streams Overview
 
-| Stream | Target | Phase |
-|--------|--------|-------|
-| Shopper Membership | Buyers | Added Value |
-| Merchant Membership | Sellers | Added Value |
-| Sats Credits | Both | Monetization |
-| Sponsored Placements | Merchants | Monetization |
-| Store Hosting | Merchants | Added Value |
-| Curator Revenue Share | Curators | Scale |
+| Stream                | Target    | Phase        |
+| --------------------- | --------- | ------------ |
+| Shopper Membership    | Buyers    | Added Value  |
+| Merchant Membership   | Sellers   | Added Value  |
+| Sats Credits          | Both      | Monetization |
+| Sponsored Placements  | Merchants | Monetization |
+| Store Hosting         | Merchants | Added Value  |
+| Curator Revenue Share | Curators  | Scale        |
 
 ---
 
@@ -53,13 +58,14 @@ Free users get full core functionality. Premium members get enhanced experience.
 
 **Tiers:**
 
-| Tier | Price (approx) | Target |
-|------|----------------|--------|
-| **Free** | $0 | Casual browsers |
+| Tier            | Price (approx)         | Target           |
+| --------------- | ---------------------- | ---------------- |
+| **Free**        | $0                     | Casual browsers  |
 | **Side Hustle** | ~$7/mo (half of Prime) | Regular shoppers |
-| **Pro Hustle** | ~$15/mo | Power users |
+| **Pro Hustle**  | ~$15/mo                | Power users      |
 
 **Member Benefits:**
+
 - **Ad-Free Browsing** - Hide all sponsored listings
 - **Personalized Discovery** - Pin categories, saved searches, default filters
 - **NIP-05 Identifier** - `alice@conduit.market` verification
@@ -67,6 +73,7 @@ Free users get full core functionality. Premium members get enhanced experience.
 - **Priority Relay Access** - Faster, more reliable connections
 
 **Implementation:**
+
 - Membership tied to Nostr pubkey (no separate account)
 - Payment via Lightning (one-time or recurring)
 - Preferences stored client-side or encrypted
@@ -74,11 +81,13 @@ Free users get full core functionality. Premium members get enhanced experience.
 ### Curated Markets (Affiliates)
 
 Curators create themed "micro-markets" using Store Builder:
+
 - Select products across merchants
 - AI generates polished storefront
 - Curator earns revenue share from ads on their pages
 
 **Revenue Share:**
+
 - Merchants pay for sponsored placements on curated pages
 - Curator receives percentage of ad spend
 - No need to track individual sales (simpler than traditional affiliate)
@@ -93,33 +102,34 @@ Core marketplace participation is **free**. Memberships unlock premium tools.
 
 **Tiers:**
 
-| Tier | Price (approx) | Target |
-|------|----------------|--------|
-| **Free** | $0 | New merchants |
-| **Side Hustle** | ~$10/mo | Hobbyist sellers |
-| **Pro Hustle** | ~$20-30/mo | Serious businesses |
-| **Enterprise** | Custom | High-volume |
+| Tier            | Price (approx) | Target             |
+| --------------- | -------------- | ------------------ |
+| **Free**        | $0             | New merchants      |
+| **Side Hustle** | ~$10/mo        | Hobbyist sellers   |
+| **Pro Hustle**  | ~$20-30/mo     | Serious businesses |
+| **Enterprise**  | Custom         | High-volume        |
 
-*All prices significantly below Shopify ($39/mo) and Etsy.*
+_All prices significantly below Shopify ($39/mo) and Etsy._
 
 **Member Benefits:**
 
-| Feature | Free | Side Hustle | Pro Hustle |
-|---------|------|-------------|------------|
-| List products | ✅ | ✅ | ✅ |
-| Receive orders | ✅ | ✅ | ✅ |
-| Monthly credits | - | Base amount | 3× credits |
-| Automated orders | - | ✅ | ✅ |
-| AI messaging | - | Limited | Full |
-| Analytics dashboard | Basic | Enhanced | Premium |
-| Priority support | - | - | ✅ |
-| Lower credit costs | - | - | ✅ |
+| Feature             | Free  | Side Hustle | Pro Hustle |
+| ------------------- | ----- | ----------- | ---------- |
+| List products       | ✅    | ✅          | ✅         |
+| Receive orders      | ✅    | ✅          | ✅         |
+| Monthly credits     | -     | Base amount | 3× credits |
+| Automated orders    | -     | ✅          | ✅         |
+| AI messaging        | -     | Limited     | Full       |
+| Analytics dashboard | Basic | Enhanced    | Premium    |
+| Priority support    | -     | -           | ✅         |
+| Lower credit costs  | -     | -           | ✅         |
 
 ### Sats Credit System
 
 Credits are prepaid tokens denominated in sats. Never expire, can be topped up anytime.
 
 **How Credits Work:**
+
 1. Membership includes monthly credit allotment
 2. Top up via Lightning or fiat conversion
 3. Spend on various services
@@ -127,14 +137,14 @@ Credits are prepaid tokens denominated in sats. Never expire, can be topped up a
 
 **Services That Consume Credits:**
 
-| Service | Description | Cost |
-|---------|-------------|------|
-| **Automated Order Handling** | Payment confirm, inventory update, shipping label, notify customer | X sats/order |
-| **AI Messaging Concierge** | Auto-respond to common inquiries | X sats/message |
-| **Advanced Analytics** | Custom reports, sales forecasts | X sats/query |
-| **AI Store Generation** | Generate layouts, descriptions, images | X sats/generation |
-| **Sponsored Placements** | Boost products in search/browse | Auction-based |
-| **Notifications** | SMS/email fallback | X sats/send |
+| Service                      | Description                                                        | Cost              |
+| ---------------------------- | ------------------------------------------------------------------ | ----------------- |
+| **Automated Order Handling** | Payment confirm, inventory update, shipping label, notify customer | X sats/order      |
+| **AI Messaging Concierge**   | Auto-respond to common inquiries                                   | X sats/message    |
+| **Advanced Analytics**       | Custom reports, sales forecasts                                    | X sats/query      |
+| **AI Store Generation**      | Generate layouts, descriptions, images                             | X sats/generation |
+| **Sponsored Placements**     | Boost products in search/browse                                    | Auction-based     |
+| **Notifications**            | SMS/email fallback                                                 | X sats/send       |
 
 **Confidential Compute:**
 All automation runs in secure enclaves - Conduit never sees plaintext message content or sensitive data.
@@ -143,10 +153,10 @@ All automation runs in secure enclaves - Conduit never sees plaintext message co
 
 **Managed Hosting (Blossom-Backed):**
 
-| Option | Price | Features |
-|--------|-------|----------|
-| **Subdomain** | $12/mo | `mystore.conduit.market`, SSL, CDN |
-| **Custom Domain** | $21/mo | Your domain, DNS management, SSL |
+| Option            | Price  | Features                           |
+| ----------------- | ------ | ---------------------------------- |
+| **Subdomain**     | $12/mo | `mystore.conduit.market`, SSL, CDN |
+| **Custom Domain** | $21/mo | Your domain, DNS management, SSL   |
 
 - Blossom media infrastructure for fast global delivery
 - Privacy-preserving (no tracking/ads injected)
@@ -156,14 +166,15 @@ All automation runs in secure enclaves - Conduit never sees plaintext message co
 
 Merchants bid sats for visibility:
 
-| Placement | Description |
-|-----------|-------------|
-| **Sponsored Products** | Top of search results |
-| **Category Sponsor** | Featured in category pages |
-| **Homepage Featured** | Rotating banner |
+| Placement                | Description                   |
+| ------------------------ | ----------------------------- |
+| **Sponsored Products**   | Top of search results         |
+| **Category Sponsor**     | Featured in category pages    |
+| **Homepage Featured**    | Rotating banner               |
 | **Curated Page Sponsor** | Appear on curator collections |
 
 **Rules:**
+
 - All sponsored content clearly labeled
 - Fair auction mechanism
 - Organic discovery not overshadowed
@@ -174,21 +185,25 @@ Merchants bid sats for visibility:
 ## Gamification & Incentives
 
 ### Volume Discounts
+
 - First 100 automated actions: X sats each
 - Next 100: 0.8× cost
 - Pro members get best rates automatically
 
 ### Loyalty Rewards
+
 - Bulk credit packages give bonus sats
 - High-activity users unlock discounted tiers
 - Referral bonuses for bringing new merchants
 
 ### Reputation & Identity
+
 - Membership badges on profiles
 - NIP-05 verification
 - Trust signals that carry across Nostr
 
 ### Trial Period
+
 - 1-month free Side Hustle for new merchants
 - Starter credit balance (~10 orders worth)
 - Credits never expire even after trial ends
@@ -198,24 +213,28 @@ Merchants bid sats for visibility:
 ## Implementation Phases
 
 ### MVP (Phases 1-4)
+
 - **No billing** - All features free
 - Track usage metrics for future billing
 - Build entitlement infrastructure (always returns true)
 - Credit balance UI (shows 0, non-functional)
 
 ### Added Value Phase
+
 - Introduce membership tiers
 - Implement credit system
 - Store hosting fees
 - Basic ad placements
 
 ### Monetization Phase
+
 - Full credit consumption services
 - Advanced analytics (paid)
 - AI features (paid)
 - Curator revenue sharing
 
 ### Scale Phase
+
 - Enterprise tier
 - Integration marketplace
 - Volume-based discounts at scale
@@ -231,7 +250,7 @@ Merchants bid sats for visibility:
 interface UserEntitlements {
   pubkey: string
   tier: "free" | "side_hustle" | "pro_hustle" | "enterprise"
-  creditBalance: number  // in sats
+  creditBalance: number // in sats
   features: {
     adFree: boolean
     automatedOrders: boolean
@@ -254,9 +273,9 @@ interface CreditTransaction {
   id: string
   pubkey: string
   type: "topup" | "spend" | "refund" | "bonus"
-  amount: number  // sats (positive for add, negative for spend)
-  service?: string  // e.g., "automated_order", "ai_message"
-  reference?: string  // order ID, etc.
+  amount: number // sats (positive for add, negative for spend)
+  service?: string // e.g., "automated_order", "ai_message"
+  reference?: string // order ID, etc.
   timestamp: number
 }
 ```
@@ -300,14 +319,14 @@ interface CreditTransaction {
 
 ## Key Differences from Original Spec
 
-| Original | New |
-|----------|-----|
-| Volume-based GMV fees | Membership + credit system |
-| 72-hour enforcement | Graceful feature degradation |
-| Merchants only | Both shoppers and merchants |
-| Simple tiers | Side Hustle / Pro Hustle naming |
-| No curator model | Curator revenue sharing |
-| No hosting fees | $12-21/mo hosting options |
+| Original              | New                             |
+| --------------------- | ------------------------------- |
+| Volume-based GMV fees | Membership + credit system      |
+| 72-hour enforcement   | Graceful feature degradation    |
+| Merchants only        | Both shoppers and merchants     |
+| Simple tiers          | Side Hustle / Pro Hustle naming |
+| No curator model      | Curator revenue sharing         |
+| No hosting fees       | $12-21/mo hosting options       |
 
 ---
 

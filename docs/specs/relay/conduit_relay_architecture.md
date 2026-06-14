@@ -25,7 +25,9 @@ The relay settings product surface should expose two groups:
 
 Users should not manually categorize relays. Conduit categorizes relays from NIP-11 relay information documents, active probes, cached scan results, and a versioned commerce compatibility profile. Commerce priority is a Conduit-local app preference. It is not a Nostr-level preference and must not be described as a universal relay ranking.
 
-This document defines the product and implementation contract for that model.
+This document defines the current product and implementation contract for that model.
+
+Future Phase 2B work is expected to add a deeper source-aware read frontier, relay health history, and local-first performance layer. That future work should extend this model rather than turning relays into user-managed app roles. It should also get its own accepted architecture/spec before replacing the current shared NDK-backed helpers with Nostrify or a custom relay substrate.
 
 ---
 

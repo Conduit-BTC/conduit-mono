@@ -11,7 +11,8 @@
 ## Tracking
 
 - Linear issue:
-- Phase 2 Track: `A` | `B` | `C` | `D` | `E` | `F` | `G` | `H` | `Support`
+- Workstream:
+- Phase: `Phase 2A` | `Phase 2B` | `Support` | `Future`
 - Source docs/specs:
 - Docs/spec PR:
 
@@ -23,8 +24,7 @@
 ## Scope
 
 - App/Package:
-- Layer: `UX` | `Protocol/App Logic` | `Infra/Relay` | `Business/Policy`
-- Phase: `P0 Launch Readiness` | `P1 Follow-through` | `Support`
+- Layer: `UX` | `Protocol/App Logic` | `Infra/Relay` | `Docs/Policy` | `Support`
 
 ## Risk Review
 
@@ -34,6 +34,34 @@
 - [ ] No behavioral tracking/profiling introduced
 - [ ] Payment flow remains non-custodial
 - [ ] Shared package dependency boundaries preserved
+
+## Nostr-Sensitive Preflight
+
+Complete this section when the PR touches protocol/app logic, infra/relay behavior, signer auth, messaging, payments, local cache/outbox, product event parsing/emission, or NDK/relay code.
+
+- [ ] `docs/knowledge/external-nostr-references.md` and the relevant public NIP/GammaMarkets source were checked before implementation
+- [ ] `Source docs/specs` lists the relevant repo spec and public protocol source
+- [ ] Product listings remain NIP-99 + GammaMarkets `kind:30402`; no alternate product-listing protocol terminology, schemas, or assumptions introduced
+- [ ] Relay/source assumptions are stated, including NIP-65 `kind:10002`, NIP-17 `kind:10050`, cache, fallback, stale, or degraded-state behavior when relevant
+- [ ] NIP-44 v3 work cites public draft/client references, keeps v2 fallback, and gates behavior on explicit signer/recipient capability detection
+- [ ] New protocol construction, `giftWrap`, publish, unwrap/decrypt, relay planning, or event parsing lives in `@conduit/core`, or the PR explains why route-local code is unavoidable
+- [ ] Diagnostics/logs/telemetry remain content-free: no plaintext, ciphertext, invoices, order contents, addresses, signer secrets, NWC URIs, or message bodies
+
+## Context Follow-Up
+
+Author notes:
+
+- Potential docs/context follow-up:
+
+Reviewer decision:
+
+- [ ] No docs follow-up needed
+- [ ] Docs-only PR after merge
+- [ ] Docs/spec PR required before merge
+
+Reviewer note:
+
+<!-- Reviewers own this decision. Agents may suggest possible drift, but docs-only follow-up PRs should be opened separately and reviewed separately. -->
 
 ## Changes
 
@@ -45,6 +73,9 @@
 - [ ] `bun run typecheck` passes
 - [ ] `bun run lint` passes
 - [ ] `bun test` passes
+- [ ] `bun run build` passes, or build is not required for this change
+- [ ] `bun run telemetry:check` passes, or telemetry is not affected
+- [ ] `bun run test:e2e` passes, or E2E smoke coverage is not affected
 - [ ] Tested locally with mock Lightning
 - [ ] Verified on preview deploy (if applicable)
 
