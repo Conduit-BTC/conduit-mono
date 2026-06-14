@@ -681,6 +681,51 @@ describe("commerce gateway", () => {
     expect(result.data[0]?.status).toBe("paid")
   })
 
+  it("does not mark malformed payment-proof-only conversations as paid", async () => {
+    const merchantPubkey = "merchant"
+    const buyerPubkey = "buyer"
+    const wrappedEvent = {
+      id: "wrap-proof-malformed",
+      kind: EVENT_KINDS.GIFT_WRAP,
+      pubkey: buyerPubkey,
+      created_at: 100,
+      content: "wrapped-proof",
+      tags: [["p", merchantPubkey]],
+    }
+    const proofRumor = {
+      id: "proof-rumor-malformed",
+      kind: EVENT_KINDS.ORDER,
+      pubkey: buyerPubkey,
+      created_at: 101,
+      content: JSON.stringify({}),
+      tags: [
+        ["p", merchantPubkey],
+        ["type", "payment_proof"],
+        ["order", "order-proof-malformed"],
+      ],
+    }
+
+    __setCommerceTestOverrides({
+      requireNdkConnected: async () => ({ signer: {} }) as never,
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
+          ? ([wrappedEvent] as never)
+          : [],
+      giftUnwrap: async () => proofRumor as never,
+    })
+
+    const result = await getMerchantConversationList({
+      principalPubkey: merchantPubkey,
+      limit: 50,
+    })
+
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.orderId).toBe("order-proof-malformed")
+    expect(result.data[0]?.buyerPubkey).toBe(buyerPubkey)
+    expect(result.data[0]?.latestType).toBe("payment_proof")
+    expect(result.data[0]?.status).toBeNull()
+  })
+
   it("queries expanded merchant inbox relays for gift-wrapped orders", async () => {
     const merchantPubkey = "merchant"
     const merchantReadRelays = Array.from(
