@@ -8,6 +8,7 @@ import {
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   appendConduitClientTag,
+  buildProductListingEventDraft,
   canonicalizeProductPrice,
   getCachedMerchantStorefront,
   getShippingOptionAddress,
@@ -316,37 +317,15 @@ async function publishProduct(
   })
 
   const event = new NDKEvent(ndk)
-  event.kind = EVENT_KINDS.PRODUCT
+  const draft = buildProductListingEventDraft({
+    product,
+    dTag,
+    clientAppId: "merchant",
+  })
+  event.kind = draft.kind
   event.created_at = Math.floor(now / 1000)
-  event.content = JSON.stringify(product)
-  event.tags = [
-    ["d", dTag],
-    ["title", product.title],
-    ["price", String(price), currency],
-    ["type", product.type, product.format],
-  ]
-
-  if (product.summary) event.tags.push(["summary", product.summary])
-  if (typeof product.shippingCostSats === "number") {
-    event.tags.push(["shipping_cost", String(product.shippingCostSats)])
-  }
-  if (product.shippingOptionId) {
-    event.tags.push(["shipping_option", product.shippingOptionId])
-  }
-  if (product.shippingCountries && product.shippingCountries.length > 0) {
-    event.tags.push(["shipping_country", ...product.shippingCountries])
-  }
-  for (const rule of product.shippingCountryRules ?? []) {
-    if (rule.restrictTo.length > 0) {
-      event.tags.push(["shipping_restrict", rule.code, ...rule.restrictTo])
-    }
-    if (rule.exclude.length > 0) {
-      event.tags.push(["shipping_exclude", rule.code, ...rule.exclude])
-    }
-  }
-  if (imageUrl) event.tags.push(["image", imageUrl])
-  for (const tag of tags) event.tags.push(["t", tag])
-  event.tags = appendConduitClientTag(event.tags, "merchant")
+  event.content = draft.content
+  event.tags = draft.tags
 
   await event.sign(ndk.signer)
   await publishWithPlanner(event, {

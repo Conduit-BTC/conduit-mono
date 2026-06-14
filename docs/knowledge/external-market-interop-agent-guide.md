@@ -17,6 +17,7 @@ Source policy: `docs/knowledge/external-market-interop-policy.md` (2026-02-10).
 - No silent coupling: never hard-code Plebeian-only conventions in shared logic.
 - Be liberal in what we accept (safe, best-effort parsing); be conservative in what we emit (strict, spec-aligned).
 - If we must support an external quirk, do it behind an explicit compat adapter and document it.
+- Public Nostr event `content` must follow the relevant NIP. Do not publish internal JSON in public content unless that NIP explicitly defines JSON content; put structured data in tags, encrypted/private payloads, or NIP-defined JSON content instead.
 
 ## Interop Levels (What "Done" Means)
 
