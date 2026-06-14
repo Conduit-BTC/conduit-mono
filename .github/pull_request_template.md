@@ -1,3 +1,9 @@
+## Preview Settings
+
+<!-- preview:show-commit-links-cloudflare -->
+
+- [ ] Show commit-level mainnet preview links (Cloudflare creates deployments automatically)
+
 ## Summary
 
 <!-- What changed and why? Include user/business impact. -->
