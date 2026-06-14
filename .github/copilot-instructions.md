@@ -36,6 +36,8 @@ When reviewing PRs:
 - Focus comments on behavior impact and reproducible scenarios.
 - Ask for tests where behavior changes are not covered.
 - Keep comments concise and actionable.
+- Include a reviewer-owned context decision when relevant: `No docs follow-up needed`, `Docs-only PR after merge`, or `Docs/spec PR required before merge`.
+- Treat broad docs/context updates as separate senior-reviewed docs PRs unless the current PR is explicitly a docs/spec PR.
 
 ## Reliability Checks (Orders/Messaging)
 
@@ -65,6 +67,14 @@ For changes touching agent automation, telemetry, or smoke-test artifacts:
 - Keep Linear, Slack, Cloudflare, telemetry backend, credential, and release-runbook details out of public tracked files.
 - Verify telemetry properties match `docs/analytics/events.md`.
 - Verify code-changing agent paths require maintainer intent and do not run for high-risk protocol/auth/payment/privacy work without human planning.
+
+## Context Follow-Up Checks
+
+For implementation PRs, reviewers decide whether the merged work changes durable repo context. Agents may suggest possible docs drift, but they should not present autonomous context upgrades as required workflow.
+
+- Use `Docs/spec PR required before merge` when product requirements, protocol behavior, shared UX rules, architecture, or cross-team implementation expectations changed before the repo contract was updated.
+- Use `Docs-only PR after merge` when the implementation fits current contracts but reveals stale docs, missing agent routing, missing source references, or completed phase criteria.
+- Use `No docs follow-up needed` when existing docs and Linear context remain sufficient.
 
 ## Suggested Validation Commands
 

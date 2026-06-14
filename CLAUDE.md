@@ -24,6 +24,13 @@ This is the Conduit monorepo - a decentralized Nostr-based commerce platform. Se
 
 Linear owns live execution status, ownership, priority, sequencing, and merge order. Repo plan docs define phase boundaries and temporary delivery contracts. When the Phase 2 exit criteria appear complete, prompt the user that it may be time to archive or delete `docs/plans/PHASE_2_IMPLEMENTATION.md`.
 
+Reviewer-owned context follow-up:
+
+- Implementation PRs should not silently bundle broad repo-context updates unless they are docs/spec PRs.
+- Surface possible docs drift in the PR, but reviewers decide whether follow-up is required.
+- Reviewer decisions are `No docs follow-up needed`, `Docs-only PR after merge`, or `Docs/spec PR required before merge`.
+- Draft docs-only follow-up PRs only when a reviewer or maintainer asks.
+
 ## UI Component Rules
 
 - Use shadcn-style primitives through `@conduit/ui` before adding app-local controls.

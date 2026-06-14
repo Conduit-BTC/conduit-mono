@@ -15,7 +15,11 @@ Apply these instructions when generating pull request reviews.
    - one-sentence impact statement
    - file path and line reference
    - concrete recommendation
-3. Short summary only after findings
+3. Reviewer context decision:
+   - `No docs follow-up needed`
+   - `Docs-only PR after merge`
+   - `Docs/spec PR required before merge`
+4. Short summary only after findings
 
 ## Mandatory Checks
 
@@ -30,6 +34,7 @@ Apply these instructions when generating pull request reviews.
 - NIP-17/private-message changes preserve NIP-59 seal/gift-wrap behavior, NIP-44 v2 compatibility, and source-gate NIP-44 v3 implementation behind public draft/client references and capability detection
 - Relay changes distinguish NIP-65 `kind:10002` general relay preferences from NIP-17 `kind:10050` private-message relay hints
 - New route-local NDK event construction, `giftWrap`, publish, unwrap/decrypt, relay planning, or event parsing is justified or moved behind `@conduit/core`
+- Reviewer owns docs/context follow-up decisions; agents may suggest docs drift but should not require autonomous context-upgrade PRs
 
 ## If No Findings
 

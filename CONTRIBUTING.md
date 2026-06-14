@@ -57,6 +57,20 @@ For UI and theming work, also check [docs/DESIGN.md](docs/DESIGN.md) before intr
 
 For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also check [external-nostr-references.md](docs/knowledge/external-nostr-references.md) and the relevant public NIP or GammaMarkets source before implementation. Product listings are NIP-99 + GammaMarkets `kind:30402`; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
 
+### Reviewer-Owned Context Follow-Up
+
+Reviewers decide whether implementation work requires repo context updates. This is not an autonomous agent responsibility.
+
+During review, mark one of:
+
+- `No docs follow-up needed`
+- `Docs-only PR after merge`
+- `Docs/spec PR required before merge`
+
+Use `Docs/spec PR required before merge` when the PR changes behavior that needs a stable contract before code lands. Use `Docs-only PR after merge` when the code fits existing contracts but reveals stale docs, missing agent routing, missing source references, or completed phase criteria.
+
+Docs follow-up PRs should be docs-only, reference the merged implementation PR and Linear issue, and be reviewed separately. Agents may draft them only when a reviewer or maintainer asks.
+
 ### Commits
 
 - Use Conventional Commits for commit messages: `type(scope): description`

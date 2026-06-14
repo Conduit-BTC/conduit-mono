@@ -17,8 +17,25 @@ This directory is organized by document intent so the team can keep live executi
 2. Use `docs/plans/*` only for phase boundaries, exit criteria, and temporary delivery contracts.
 3. Use `docs/specs/*` when product, protocol, or shared implementation behavior needs a stable contract.
 4. Merge the relevant docs/spec PR to `main` before starting the implementation `feat/*` branch when the work changes requirements or shared expectations.
-5. When a phase document's exit criteria appear complete, agents should prompt the user to archive or delete the temporary phase document and move the next phase fully to Linear-owned planning.
-6. If Linear conflicts with `docs/plans/*` on live execution, Linear wins. If Linear conflicts with `docs/specs/*` or `docs/ARCHITECTURE.md` on implementation behavior, stop and ask for a docs/spec update before coding.
+5. Use reviewer-owned context follow-up after implementation PRs reveal that repo guidance should change.
+6. When a phase document's exit criteria appear complete, agents should prompt the user to archive or delete the temporary phase document and move the next phase fully to Linear-owned planning.
+7. If Linear conflicts with `docs/plans/*` on live execution, Linear wins. If Linear conflicts with `docs/specs/*` or `docs/ARCHITECTURE.md` on implementation behavior, stop and ask for a docs/spec update before coding.
+
+## Reviewer-Owned Context Follow-Up
+
+Implementation PRs should stay focused on implementation unless they are explicitly docs/spec PRs or the docs edit is directly local and required for correctness.
+
+Reviewers own the judgment about whether a merged implementation changed durable repo context. During review, choose one of:
+
+- `No docs follow-up needed`
+- `Docs-only PR after merge`
+- `Docs/spec PR required before merge`
+
+Use `Docs/spec PR required before merge` when the implementation changes product requirements, protocol behavior, shared UX rules, architecture, or cross-team implementation expectations that are not already covered by repo contracts.
+
+Use `Docs-only PR after merge` when the implementation fits the current contract but reveals that docs, agent routing, source references, examples, or phase exit criteria should be clarified. That follow-up PR should reference the merged implementation PR and Linear issue, contain docs-only changes, and be reviewed separately by a senior reviewer.
+
+Agents may surface possible docs drift and draft the follow-up when asked, but they should not silently run autonomous context-upgrade checks or bundle broad repo-context updates into ordinary code PRs.
 
 ## Where To Put New Docs
 

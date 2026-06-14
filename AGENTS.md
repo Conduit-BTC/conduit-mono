@@ -83,7 +83,12 @@ Nostr-sensitive work must read `docs/knowledge/external-nostr-references.md` and
 4. **Spec-first rule**:
    - If work changes product requirements, protocol behavior, or shared implementation expectations, land the relevant docs/spec PR to `main` before starting the implementation `feat/*` branch
 
-5. **End**: Report validation and any doc/status follow-ups. Do not edit planning status checkboxes unless the user explicitly asks; live execution status belongs in Linear. When Phase 2 exit criteria appear complete, prompt the user that it may be time to archive or delete `docs/plans/PHASE_2_IMPLEMENTATION.md`.
+5. **Reviewer-owned context follow-up**:
+   - For implementation PRs, surface possible docs drift in the PR or final summary, but do not silently bundle broad repo-context changes into the code PR.
+   - The reviewer decides: `No docs follow-up needed`, `Docs-only PR after merge`, or `Docs/spec PR required before merge`.
+   - Draft docs-only follow-up PRs only when a reviewer or maintainer asks.
+
+6. **End**: Report validation and any doc/status follow-ups. Do not edit planning status checkboxes unless the user explicitly asks; live execution status belongs in Linear. When Phase 2 exit criteria appear complete, prompt the user that it may be time to archive or delete `docs/plans/PHASE_2_IMPLEMENTATION.md`.
 
 ## Nostr Task Routing
 

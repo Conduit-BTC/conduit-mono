@@ -47,6 +47,22 @@ Complete this section when the PR touches protocol/app logic, infra/relay behavi
 - [ ] New protocol construction, `giftWrap`, publish, unwrap/decrypt, relay planning, or event parsing lives in `@conduit/core`, or the PR explains why route-local code is unavoidable
 - [ ] Diagnostics/logs/telemetry remain content-free: no plaintext, ciphertext, invoices, order contents, addresses, signer secrets, NWC URIs, or message bodies
 
+## Context Follow-Up
+
+Author notes:
+
+- Potential docs/context follow-up:
+
+Reviewer decision:
+
+- [ ] No docs follow-up needed
+- [ ] Docs-only PR after merge
+- [ ] Docs/spec PR required before merge
+
+Reviewer note:
+
+<!-- Reviewers own this decision. Agents may suggest possible drift, but docs-only follow-up PRs should be opened separately and reviewed separately. -->
+
 ## Changes
 
 -

@@ -15,6 +15,10 @@ Output format:
   - Impact
   - Evidence (file + line)
   - Suggested fix
+- Then include a reviewer context decision:
+  - `No docs follow-up needed`
+  - `Docs-only PR after merge`
+  - `Docs/spec PR required before merge`
 - If no findings, state: "No blocking findings." and list residual risks.
 
 Conduit constraints to enforce:
@@ -30,6 +34,7 @@ Conduit constraints to enforce:
 - NIP-17/private-message work must preserve NIP-59 seal/gift-wrap behavior, NIP-44 v2 compatibility, and source-gate NIP-44 v3 implementation behind public draft/client references and capability detection
 - Relay work must distinguish NIP-65 `kind:10002` general relay preferences from NIP-17 `kind:10050` private-message relay hints
 - New route-local NDK event construction, `giftWrap`, publish, unwrap/decrypt, relay planning, or event parsing needs explicit justification; prefer `@conduit/core`
+- Reviewer owns docs/context follow-up decisions. Agents may suggest docs drift, but follow-up docs-only PRs are opened separately only when a reviewer or maintainer asks.
 
 Validation expectations:
 
