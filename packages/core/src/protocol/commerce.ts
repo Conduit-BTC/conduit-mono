@@ -22,7 +22,11 @@ import {
   requireNdkConnected,
 } from "./ndk"
 import { extractOrderSummary } from "./order-summary"
-import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
+import {
+  isPaymentProofEvidenceMessage,
+  parseOrderMessageRumorEvent,
+  type ParsedOrderMessage,
+} from "./orders"
 import { parseProductEvent } from "./products"
 import { parseProfileEvent } from "./profiles"
 import {
@@ -2071,7 +2075,7 @@ function buildBuyerConversationSummaries(
       .find((message) => message.type === "status_update")
     const latestPaymentProof = [...bucket]
       .reverse()
-      .find((message) => message.type === "payment_proof")
+      .find(isPaymentProofEvidenceMessage)
     const otherParticipants = Array.from(
       new Set(
         bucket
@@ -2095,7 +2099,7 @@ function buildBuyerConversationSummaries(
       status:
         latestStatus?.type === "status_update"
           ? latestStatus.payload.status
-          : latestPaymentProof?.type === "payment_proof"
+          : latestPaymentProof
             ? "paid"
             : null,
       totalSummary:
@@ -2135,7 +2139,7 @@ function buildMerchantConversationSummaries(
       .find((message) => message.type === "status_update")
     const latestPaymentProof = [...bucket]
       .reverse()
-      .find((message) => message.type === "payment_proof")
+      .find(isPaymentProofEvidenceMessage)
     const otherParticipants = Array.from(
       new Set(
         bucket
@@ -2159,7 +2163,7 @@ function buildMerchantConversationSummaries(
       status:
         latestStatus?.type === "status_update"
           ? latestStatus.payload.status
-          : latestPaymentProof?.type === "payment_proof"
+          : latestPaymentProof
             ? "paid"
             : null,
       totalSummary:

@@ -18,12 +18,12 @@ import {
   EVENT_KINDS,
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
+  buildLightningPaymentProofMessage,
   cacheParsedOrderMessage,
   config,
   fetchLnurlInvoice,
   fetchLnurlPayMetadata,
   fetchZapInvoice,
-  formatNpub,
   getPriceSats,
   getShippingCostSats,
   hasWebLN,
@@ -59,7 +59,9 @@ import {
 } from "../components/MerchantIdentity"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
+import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
 import { useWallet } from "../hooks/useWallet"
+import { MerchantTrustSummary } from "../components/MerchantTrustSummary"
 import { requireAuth } from "../lib/auth"
 import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
 import { PaymentTracker } from "../components/PaymentTracker"
@@ -678,12 +680,13 @@ function CheckoutPage() {
     [btcUsdRate, checkoutItems]
   )
 
-  const { data: merchantProfile } = useProfile(selectedMerchant ?? null)
+  const merchantTrust = useMerchantTrustContext({
+    merchantPubkey: selectedMerchant ?? null,
+    viewerPubkey: pubkey,
+  })
+  const merchantProfile = merchantTrust.profile
   const merchantLud16 = merchantProfile?.lud16
-  const merchantName =
-    merchantProfile?.displayName ||
-    merchantProfile?.name ||
-    (selectedMerchant ? formatNpub(selectedMerchant, 8) : "this merchant")
+  const merchantName = merchantTrust.merchantName
 
   useEffect(() => {
     if (zapContentEdited || checkoutItems.length === 0) return
@@ -1376,20 +1379,21 @@ function CheckoutPage() {
       }
 
       setPaymentStage("sending_receipt")
-      const proofPayload = {
+      const proofPayload = buildLightningPaymentProofMessage({
         orderId,
-        rail: "lightning",
         action: isPublicZapPayment ? "zap" : "private_checkout",
         amount: pricingIntent.totalSats,
+        amountMsats: pricingIntent.totalMsats,
         currency,
         invoice,
         preimage: payResult.preimage,
         paymentHash: payResult.paymentHash,
         feeMsats: payResult.feeMsats,
         ...(zapRequestId ? { zapRequestId } : {}),
+        source: payResult.rail,
         proofDeliveryStatus: "pending",
         note: `Payment for order ${orderId}`,
-      }
+      })
 
       const proofRumor = new NDKEvent(ndk)
       proofRumor.kind = EVENT_KINDS.ORDER
@@ -2170,6 +2174,8 @@ function CheckoutPage() {
                   </div>
                 </div>
               )}
+
+              <MerchantTrustSummary trust={merchantTrust} variant="checkout" />
 
               <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
                 {/* Zap out banner */}

@@ -16,7 +16,7 @@ import {
   type FormEvent,
 } from "react"
 import { createFileRoute, Link } from "@tanstack/react-router"
-import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { useQueryClient } from "@tanstack/react-query"
 import {
   Avatar,
   AvatarFallback,
@@ -29,21 +29,15 @@ import {
   SelectValue,
 } from "@conduit/ui"
 import {
-  appendConduitClientTag,
   formatNpub,
   getCommerceReadRelayUrls,
-  getProfileDisplayLabel,
-  getProfileName,
   normalizePubkey,
-  publishWithPlanner,
+  publishContactListUpdate,
   pubkeyToNpub,
-  requireNdkConnected,
   useAuth,
-  useProfile,
   type PricingRateInput,
   type Product,
 } from "@conduit/core"
-import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { SignerSwitch } from "../../components/SignerSwitch"
 import { RichProfileText } from "../../components/RichProfileText"
 import {
@@ -56,8 +50,10 @@ import {
   Nip05TrustIndicator,
   getProfileNip05,
 } from "../../components/MerchantIdentity"
+import { MerchantTrustSummary } from "../../components/MerchantTrustSummary"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
+import { useMerchantTrustContext } from "../../hooks/useMerchantTrustContext"
 import {
   compareCommercePrices,
   getComparablePriceValue,
@@ -187,48 +183,25 @@ function StorefrontPage() {
       ),
     [productsQuery.profileRelayHintsByPubkey, pubkey]
   )
-  const profileQuery = useProfile(pubkey, {
-    relayHints: profileRelayHints,
-    refetchUnresolvedMs: 2_000,
-  })
-  const profile = profileQuery.data
   const storeProducts = productsQuery.products
+  const productCount = storeProducts.length
+  const merchantTrust = useMerchantTrustContext({
+    merchantPubkey: pubkey,
+    viewerPubkey,
+    listingCount: productCount,
+    profileRelayHints,
+  })
+  const profile = merchantTrust.profile
   const selectedTags = useMemo(() => search.tag ?? [], [search.tag])
   const selectedTagSet = useMemo(() => new Set(selectedTags), [selectedTags])
-  const followQuery = useQuery({
-    queryKey: ["following-store", viewerPubkey ?? "none", pubkey],
-    enabled:
-      status === "connected" && !!viewerPubkey && viewerPubkey !== pubkey,
-    queryFn: async () => {
-      const ndk = await requireNdkConnected()
-      const events = await ndk.fetchEvents({
-        kinds: [3],
-        authors: [viewerPubkey!],
-        limit: 10,
-      })
-      const event = Array.from(events).sort(
-        (a, b) => (b.created_at ?? 0) - (a.created_at ?? 0)
-      )[0]
-
-      return Array.from(event?.tags ?? []).some(
-        (tag) => tag[0] === "p" && tag[1] === pubkey
-      )
-    },
-  })
   const [followState, setFollowState] = useState<
     "idle" | "saving_follow" | "saving_unfollow"
   >("idle")
   const [followOverride, setFollowOverride] = useState<boolean | null>(null)
+  const [followError, setFollowError] = useState<string | null>(null)
 
-  const merchantProfileName = getProfileName(profile)
-  const merchantIdentityPending = !merchantProfileName
-  const merchantName =
-    merchantProfileName ||
-    getProfileDisplayLabel(profile, pubkey, {
-      lookupSettled: false,
-      pendingLabel: `Store ${formatNpub(pubkey, 8)}`,
-      chars: 8,
-    })
+  const merchantIdentityPending = merchantTrust.merchantNamePending
+  const merchantName = merchantTrust.merchantName
   const merchantAbout = profile?.about?.trim()
   const profileNip05 = getProfileNip05(profile)
   const categoryFacetOptions = useMemo(
@@ -263,7 +236,8 @@ function StorefrontPage() {
     [navigate]
   )
 
-  const isFollowing = followOverride ?? followQuery.data === true
+  const isFollowing =
+    followOverride ?? merchantTrust.viewerFollowsMerchant === true
   const isFollowBusy = followState !== "idle"
 
   const toggleTag = (tag: string) => {
@@ -348,54 +322,27 @@ function StorefrontPage() {
 
     const nextShouldFollow = !isFollowing
     setFollowState(nextShouldFollow ? "saving_follow" : "saving_unfollow")
+    setFollowError(null)
     try {
-      const ndk = await requireNdkConnected()
-      if (!ndk.signer) throw new Error("Signer not connected")
-
-      const existingEvents = await ndk.fetchEvents({
-        kinds: [3],
-        authors: [viewerPubkey],
-        limit: 10,
-      })
-      const latest = Array.from(existingEvents).sort(
-        (a, b) => (b.created_at ?? 0) - (a.created_at ?? 0)
-      )[0]
-
-      const nextTags = Array.from(latest?.tags ?? [])
-      const alreadyFollowing = nextTags.some(
-        (tag) => tag[0] === "p" && tag[1] === pubkey
-      )
-      if (nextShouldFollow && !alreadyFollowing) {
-        nextTags.push(["p", pubkey])
-      }
-      if (!nextShouldFollow && alreadyFollowing) {
-        for (let index = nextTags.length - 1; index >= 0; index -= 1) {
-          const tag = nextTags[index]
-          if (tag[0] === "p" && tag[1] === pubkey) {
-            nextTags.splice(index, 1)
-          }
-        }
-      }
-
-      const event = new NDKEvent(ndk)
-      event.kind = 3
-      event.created_at = Math.floor(Date.now() / 1000)
-      event.content = latest?.content ?? ""
-      event.tags = appendConduitClientTag(nextTags, "market")
-
-      await event.sign(ndk.signer)
-      await publishWithPlanner(event, {
-        intent: "author_event",
-        authorPubkey: viewerPubkey,
+      await publishContactListUpdate({
+        ownerPubkey: viewerPubkey,
+        targetPubkey: pubkey,
+        shouldFollow: nextShouldFollow,
+        appId: "market",
       })
 
       setFollowOverride(nextShouldFollow)
       await queryClient.invalidateQueries({
-        queryKey: ["following-store", viewerPubkey, pubkey],
+        queryKey: ["merchant-trust-social", viewerPubkey, pubkey],
       })
       setFollowState("idle")
-    } catch {
+    } catch (error) {
       setFollowOverride(null)
+      setFollowError(
+        error instanceof Error
+          ? error.message
+          : "Could not update this follow list."
+      )
       setFollowState("idle")
     }
   }
@@ -519,9 +466,6 @@ function StorefrontPage() {
                         <CopyButton value={pubkey} label="Copy pubkey" />
                       </span>
                     </span>
-                    <span className="text-[var(--text-muted)]">
-                      Created Apr 2024
-                    </span>
                   </div>
                 </div>
               </div>
@@ -576,7 +520,14 @@ function StorefrontPage() {
                   )}
                 </Button>
               </div>
+              {followError && (
+                <p className="max-w-sm text-left text-xs leading-5 text-[var(--warning)] sm:ml-auto sm:text-right">
+                  {followError}
+                </p>
+              )}
             </div>
+
+            <MerchantTrustSummary trust={merchantTrust} />
 
             <div className="border-t border-[var(--border)] pt-5">
               <RichProfileText

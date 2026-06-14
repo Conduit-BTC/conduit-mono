@@ -196,6 +196,36 @@ describe("planPublishRelays", () => {
     expect(publishAttempts).toEqual([APP_WRITE_ATTEMPT_RELAYS])
   })
 
+  it("refuses tiny contact-list publishes before planning relays", async () => {
+    let planned = false
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => {
+        planned = true
+        return {
+          intent: "author_event",
+          primaryRelayUrls: ["wss://relay.example"],
+          broadcastRelayUrls: [],
+          parkedRelayUrls: [],
+        }
+      },
+    })
+
+    await expect(
+      publishWithPlanner(
+        {
+          kind: EVENT_KINDS.CONTACT_LIST,
+          content: "",
+          tags: [["p", "alice"]],
+        } as never,
+        {
+          intent: "author_event",
+          authorPubkey: "alice",
+        }
+      )
+    ).rejects.toThrow("Refusing to publish a tiny follow list")
+    expect(planned).toBe(false)
+  })
+
   it("does not let broadcast success mask recipient primary failure", async () => {
     const primaryRelay = "wss://recipient.example"
     const broadcastRelay = "wss://sender.example"

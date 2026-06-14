@@ -1,3 +1,4 @@
+import type { ReactNode } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "./Card"
 import { Button } from "./Button"
 
@@ -5,12 +6,14 @@ interface ErrorPageProps {
   title?: string
   message?: string
   showReload?: boolean
+  children?: ReactNode
 }
 
 export function ErrorPage({
   title = "Something went wrong",
   message = "An unexpected error occurred. Please try again.",
   showReload = true,
+  children,
 }: ErrorPageProps) {
   return (
     <div className="flex flex-1 items-center justify-center px-4 py-16">
@@ -21,13 +24,11 @@ export function ErrorPage({
         <CardContent className="space-y-4">
           <p className="text-sm text-[var(--text-secondary)]">{message}</p>
           {showReload && (
-            <Button
-              variant="outline"
-              onClick={() => window.location.reload()}
-            >
+            <Button variant="outline" onClick={() => window.location.reload()}>
               Reload page
             </Button>
           )}
+          {children}
         </CardContent>
       </Card>
     </div>

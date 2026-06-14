@@ -46,7 +46,7 @@ jobs:
         if: env.SUDDEN_AGENT_API_KEY == ''
         run: echo "SUDDEN_AGENT_API_KEY is not configured; skipping agent review."
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         if: env.SUDDEN_AGENT_API_KEY != ''
         with:
           fetch-depth: 0
@@ -54,7 +54,7 @@ jobs:
 
       - name: Run Sudden Agent review
         if: env.SUDDEN_AGENT_API_KEY != ''
-        uses: sudden-network/agent@326a428887a4ae4736a17ebf75a416944a04c0ab
+        uses: sudden-network/agent@b45254b54e09c4ba01662a93aa52ab2f27b26919
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
           github_token: ${{ github.token }}

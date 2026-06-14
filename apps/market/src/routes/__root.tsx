@@ -1,11 +1,13 @@
 import {
   createRootRoute,
+  Link,
   Outlet,
   useRouterState,
   type ErrorComponentProps,
 } from "@tanstack/react-router"
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { useEffect } from "react"
+import { buildBugReportUrl } from "@conduit/core"
 import { ErrorPage, LegalFooter, NotFoundPage } from "@conduit/ui"
 import { MarketHeader } from "../components/MarketHeader"
 
@@ -22,10 +24,45 @@ function RootShell({ children }: { children: React.ReactNode }) {
       <main className="mx-auto min-w-0 w-full max-w-7xl flex-1 px-4 pb-12 pt-6">
         {children}
       </main>
-      <LegalFooter />
+      <LegalFooter
+        aboutLink={
+          <Link
+            to="/about"
+            className="transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+          >
+            About
+          </Link>
+        }
+      />
       {import.meta.env.DEV && <TanStackRouterDevtools />}
     </div>
   )
+}
+
+function ReportBugLink({ className }: { className?: string }) {
+  const bugReportUrl = useMarketBugReportUrl()
+
+  return (
+    <a
+      href={bugReportUrl}
+      target="_blank"
+      rel="noreferrer"
+      className={
+        className ??
+        "font-medium text-[var(--text-primary)] underline decoration-[var(--border)] underline-offset-4 hover:decoration-[var(--text-primary)]"
+      }
+    >
+      Report a Bug
+    </a>
+  )
+}
+
+function useMarketBugReportUrl(): string {
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
+
+  return buildBugReportUrl({ app: "market", route: pathname })
 }
 
 function RootLayout() {
@@ -95,11 +132,21 @@ function getPageTitle(pathname: string): string {
 
 function RootErrorComponent({ error }: ErrorComponentProps) {
   return (
-    <ErrorPage
-      title="Something went wrong"
-      message={error.message || "An unexpected error occurred."}
-      showReload
-    />
+    <RootShell>
+      <ErrorPage
+        title="Something went wrong"
+        message={error.message || "An unexpected error occurred."}
+        showReload
+      >
+        <div className="space-y-2 text-sm">
+          <ReportBugLink className="font-medium text-primary-500 underline underline-offset-4 hover:text-primary-600" />
+          <p className="text-xs leading-5 text-[var(--text-muted)]">
+            Do not include private keys, wallet secrets, payment credentials, or
+            sensitive personal information.
+          </p>
+        </div>
+      </ErrorPage>
+    </RootShell>
   )
 }
 

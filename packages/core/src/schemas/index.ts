@@ -252,31 +252,90 @@ export type ConversationMessageSchema = z.infer<
   typeof conversationMessageSchema
 >
 
+export const paymentProofActionSchema = z.enum([
+  "zap",
+  "private_checkout",
+  "invoice",
+  "external_invoice",
+])
+
+export const paymentProofDeliveryStatusSchema = z.enum([
+  "pending",
+  "sent",
+  "retry_needed",
+])
+
+export const paymentProofSourceSchema = z.enum([
+  "nwc",
+  "webln",
+  "external",
+  "buyer",
+])
+
+export const paymentProofVerificationStateSchema = z.enum([
+  "buyer_evidence_received",
+  "verified",
+  "needs_merchant_verification",
+  "verification_failed",
+  "disputed",
+])
+
+export const paymentProofVerificationSchema = z
+  .object({
+    state: z
+      .union([paymentProofVerificationStateSchema, z.string().min(1)])
+      .default("buyer_evidence_received"),
+    checkedAt: z.number().optional(),
+    checks: z.array(z.string()).default([]),
+  })
+  .passthrough()
+
 /**
  * Payment proof message -- sent by the buyer after a successful Lightning payment.
- * Lets the merchant confirm payment without querying the Lightning node.
+ *
+ * This parser schema is deliberately tolerant so older or foreign proof
+ * messages can render as degraded evidence instead of crashing order views.
+ * Conduit-emitted v1 proofs should be created through the strict shared builder.
  */
-export const paymentProofMessageSchema = z.object({
-  orderId: z.string().optional(),
-  rail: z.literal("lightning").optional(),
-  action: z.enum(["zap", "invoice", "private_checkout"]).optional(),
-  amount: z.number().min(0).optional(),
-  currency: z.string().min(1).optional(),
-  /** BOLT11 invoice that was paid. */
-  invoice: z.string().min(1),
-  /** Payment preimage (hex) returned by the wallet. */
-  preimage: z.string().min(1),
-  /** Payment hash (hex), if returned by the wallet. */
-  paymentHash: z.string().optional(),
-  /** Fees paid in msats, if returned by the wallet. */
-  feeMsats: z.number().optional(),
-  zapRequestId: z.string().optional(),
-  zapReceiptId: z.string().optional(),
-  proofDeliveryStatus: z.enum(["pending", "sent", "retry_needed"]).optional(),
-  /** Human-readable note. */
-  note: z.string().max(2000).optional(),
-})
+export const paymentProofMessageSchema = z
+  .object({
+    version: z.number().int().min(1).optional(),
+    orderId: z.string().optional(),
+    rail: z.string().min(1).optional(),
+    action: z.string().min(1).optional(),
+    amount: z.number().min(0).optional(),
+    amountMsats: z.number().int().min(0).optional(),
+    currency: z.string().min(1).optional(),
+    /** BOLT11 invoice that was paid, when available. */
+    invoice: z.string().min(1).optional(),
+    /** Payment preimage returned by the wallet, when available. */
+    preimage: z.string().min(1).optional(),
+    /** Payment hash, if returned by the wallet. */
+    paymentHash: z.string().min(1).optional(),
+    /** Fees paid in msats, if returned by the wallet. */
+    feeMsats: z.number().optional(),
+    zapRequestId: z.string().min(1).optional(),
+    zapReceiptId: z.string().min(1).optional(),
+    source: z.string().min(1).optional(),
+    proofDeliveryStatus: z.string().min(1).optional(),
+    verification: paymentProofVerificationSchema.optional(),
+    /** Human-readable note. */
+    note: z.string().max(2000).optional(),
+  })
+  .passthrough()
 
 export type PaymentProofMessageSchema = z.infer<
   typeof paymentProofMessageSchema
+>
+
+export type PaymentProofActionSchema = z.infer<typeof paymentProofActionSchema>
+
+export type PaymentProofDeliveryStatusSchema = z.infer<
+  typeof paymentProofDeliveryStatusSchema
+>
+
+export type PaymentProofSourceSchema = z.infer<typeof paymentProofSourceSchema>
+
+export type PaymentProofVerificationStateSchema = z.infer<
+  typeof paymentProofVerificationStateSchema
 >

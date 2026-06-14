@@ -5,6 +5,7 @@ import {
   formatNpub,
   getCachedMerchantStorefront,
   getMerchantStorefront,
+  isPaymentProofEvidenceMessage,
   useAuth,
   useNdkState,
   type ParsedOrderMessage,
@@ -91,9 +92,7 @@ async function fetchDashboardStatsFromCacheOnly(
     const hasPaymentRequest = messages.some(
       (message) => message.type === "payment_request"
     )
-    const hasPaymentProof = messages.some(
-      (message) => message.type === "payment_proof"
-    )
+    const hasPaymentProof = messages.some(isPaymentProofEvidenceMessage)
     const latestStatus = [...messages]
       .reverse()
       .find((message) => message.type === "status_update")
