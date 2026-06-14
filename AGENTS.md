@@ -94,6 +94,7 @@ Treat these as Nostr-sensitive changes: `packages/core/src/protocol/*`, relay se
 - Do not add route-local `giftWrap`, publish, unwrap/decrypt, relay fanout, or event parsing when a shared helper exists or should be deepened.
 - Model relay partial failure, stale/degraded state, source disagreement, and publish ACK/reject/timeout where user decisions depend on freshness.
 - Keep diagnostics content-free: no plaintext, ciphertext, invoices, order contents, addresses, phone/email, signer secrets, NWC URIs, or message bodies.
+- Keep NIP-44 v3 readiness visible when messaging work touches that area. Be truthful that public NIP-44 is currently v2, but do not remove v3 planning; gate implementation on public draft/client references and explicit capability detection.
 
 ## Protected Files
 

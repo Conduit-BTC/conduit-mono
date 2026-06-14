@@ -27,7 +27,7 @@ Apply these instructions when generating pull request reviews.
 - Telemetry/analytics changes preserve the privacy allowlist and do not add behavioral tracking
 - Nostr-sensitive PRs cite `docs/knowledge/external-nostr-references.md` and the relevant public NIP or GammaMarkets `market-spec`
 - Product listings remain NIP-99 + GammaMarkets `kind:30402`; flag alternate product-listing protocol assumptions
-- NIP-17/private-message changes preserve NIP-59 seal/gift-wrap behavior, NIP-44 v2 compatibility, and source-gate any future encryption versions
+- NIP-17/private-message changes preserve NIP-59 seal/gift-wrap behavior, NIP-44 v2 compatibility, and source-gate NIP-44 v3 implementation behind public draft/client references and capability detection
 - Relay changes distinguish NIP-65 `kind:10002` general relay preferences from NIP-17 `kind:10050` private-message relay hints
 - New route-local NDK event construction, `giftWrap`, publish, unwrap/decrypt, relay planning, or event parsing is justified or moved behind `@conduit/core`
 

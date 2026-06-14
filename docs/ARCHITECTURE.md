@@ -135,7 +135,7 @@ Routes should prefer shared product parsing, dedupe, relay-planning, and cache h
 
 Buyer-merchant communication uses NIP-17 encrypted messages. A Conduit order message payload is kind `16`, encrypted/sealed/wrapped before publishing. General buyer/merchant DMs use kind `14` inside the same private-message transport and should stay distinct from order-linked kind `16` conversations in product state.
 
-Phase 2A secure messaging work should move route-level send/read behavior behind a Conduit-owned private-message boundary in `@conduit/core`. That boundary should preserve NIP-44 v2 compatibility, treat any future NIP-44 version as source-gated until a public accepted source and signer support exist, parse kind `10050` private-message relay hints, and keep decrypt/unwrap diagnostics content-free. NWC remains conservative and should not move to a future encryption version unless wallet capability discovery and an accepted public source explicitly support it.
+Phase 2A secure messaging work should move route-level send/read behavior behind a Conduit-owned private-message boundary in `@conduit/core`. That boundary should preserve NIP-44 v2 compatibility, keep NIP-44 v3 readiness visible as emerging Linear-tracked work, require public draft/client references and capability detection before v3 is used, parse kind `10050` private-message relay hints, and keep decrypt/unwrap diagnostics content-free. NWC remains conservative and should not move to NIP-44 v3 unless wallet capability discovery and public draft/client references explicitly support it.
 
 Standard order message types:
 

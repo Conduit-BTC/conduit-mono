@@ -64,7 +64,9 @@ Guidance:
 ### Private messages and commerce conversations
 
 - NIP-17 private direct messages use NIP-59 seals/gift wraps and NIP-44 encryption.
-- NIP-44 version 2 is the current public NIP-44 encryption version. Treat any future NIP-44 version as source-gated until a public accepted source is linked here and the repo specs are updated.
+- NIP-44 version 2 is the current public NIP-44 encryption version in the official NIP.
+- NIP-44 v3 readiness is an intentional Conduit planning track because the ecosystem is moving in that direction and clients are experimenting. Do not remove v3 planning just because the official NIP still defines v2.
+- Treat NIP-44 v3 implementation as source-gated: before code uses it, link the public draft/client references from this file or the relevant repo spec, keep v2 fallback, and require explicit capability detection.
 - NIP-17 uses kind `10050` private-message relay lists for recipient inbox relays. Do not substitute general NIP-65 relay lists as the only DM routing model once kind `10050` support is in scope.
 - A sender copy should be wrapped separately when local encrypted recovery is required.
 - Do not add NIP-04 sending. Legacy read-only recovery must stay narrow and explicitly documented.

@@ -13,7 +13,7 @@ Non-goals for current Phase 2A:
 - key custody, key generation, escrow, refunds, or balance management
 - broad NIP-46 product UX beyond the external-signer policy already allowed by architecture
 - service-operated checkout automation
-- requiring any non-standard or future NIP-44 version before a public accepted source and signer support exist
+- making NIP-44 v3 the default send path before public draft/client references, signer support, and recipient capability detection exist
 - replacing the current NDK-backed protocol helpers with a new relay substrate before the future architecture spec lands
 
 Future direction:
@@ -73,15 +73,17 @@ Buyer-merchant communication is sent as NIP-17 encrypted messages:
 
 The kind `16` payload is never published directly. It is encrypted and delivered through NIP-17 wrapping. Kind `14` general DMs should remain separate from order-linked kind `16` conversations in product state.
 
-Current private-message code may continue to interoperate with NIP-44 v2, which is the current public NIP-44 encryption version. New Phase 2A secure messaging work should route sends and unwraps through a shared `@conduit/core` boundary that:
+Current private-message code may continue to interoperate with NIP-44 v2, which is the current public NIP-44 encryption version. NIP-44 v3 readiness is intentional Phase 2A/Linear planning because the ecosystem is moving in that direction, but implementation must be source-gated until public draft/client references and capabilities are explicit.
+
+New Phase 2A secure messaging work should route sends and unwraps through a shared `@conduit/core` boundary that:
 
 - preserves NIP-44 v2 fallback for existing signers and peers
-- treats any future NIP-44 version as source-gated until a public accepted source is linked from `docs/knowledge/external-nostr-references.md`
+- keeps NIP-44 v3 readiness visible without making it the default send path before source and capability gates are satisfied
 - parses kind `10050` private-message relay events enough to read recipient relay and encryption hints
 - rejects authenticated-context mismatches instead of returning plaintext when versioned encryption support adds that requirement
 - reports decrypt/unwrap diagnostics without plaintext, ciphertext, invoices, shipping/contact data, order contents, or message bodies
 
-NWC remains NIP-44 v2 by default unless wallet capability discovery and an accepted public source explicitly justify a safer future-version path.
+NWC remains NIP-44 v2 by default unless wallet capability discovery and public draft/client references explicitly justify a safer NIP-44 v3 path.
 
 ## Order Message Payload
 

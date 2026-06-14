@@ -449,21 +449,22 @@ Recent Linear planning split secure communication and minimum write durability o
 - Order-linked messages remain distinct from general DMs and link back to order flows.
 - Failed unwrap/decrypt states are visible and safe to retry.
 
-### NIP-44 Versioned-Encryption Readiness
+### NIP-44 V3 Readiness
 
 #### Current codebase state
 
 - Current private-message sends depend on NDK/nostr-tools NIP-44 v2 behavior.
-- Current public NIP-44 specifies version 2 encryption. Any future version must be source-gated by a public accepted source before implementation.
-- NIP-07 typings expose `nip04` and `nip44`; they do not establish support for non-standard future NIP-44 versions.
+- Current public NIP-44 specifies version 2 encryption, but NIP-44 v3 readiness is tracked in Linear as an emerging ecosystem direction.
+- NIP-07 typings expose `nip04` and `nip44`; they do not by themselves establish v3 support.
 - Relay list support is kind `10002` NIP-65 only; kind `10050` private-message relay hints are not yet a shared contract.
-- NWC uses NIP-44 v2 and should remain conservative unless wallet capability discovery and an accepted public source prove future-version support.
+- NWC uses NIP-44 v2 and should remain conservative unless wallet capability discovery and public draft/client references prove a safe v3 path.
 
 #### Phase 2A implementation work
 
 - Create a shared `@conduit/core` NIP-17/NIP-44 boundary for commerce messages instead of adding new route-local `giftWrap` calls.
 - Preserve NIP-44 v2 fallback for signers and recipients.
-- Add source-gated capability detection only when a public accepted future-version source exists and is linked from `docs/knowledge/external-nostr-references.md`.
+- Keep NIP-44 v3 capability detection and compatibility evaluation as an explicit design path.
+- Gate any v3 send/decrypt behavior on linked public draft/client references and explicit signer/recipient capability detection.
 - Parse/cache kind `10050` private-message relay hints enough to read recipient relays and advertised encryption support.
 - Reject version/context mismatches where the supported encryption version defines them, and report only privacy-safe decrypt diagnostics.
 - Keep NWC v2 by default and explicitly test that wallet invoice flows are not broken by this boundary.
@@ -472,7 +473,8 @@ Recent Linear planning split secure communication and minimum write durability o
 
 - Commerce message send/read code consumes the shared boundary.
 - NIP-44 v2 remains the fallback path.
-- Future NIP-44 versions are not used unless backed by a linked public accepted source and explicit capability discovery.
+- NIP-44 v3 readiness is represented in the boundary without forcing v3 as the default path.
+- NIP-44 v3 is not used unless backed by linked public draft/client references and explicit capability discovery.
 - Tests cover v2 fallback, unknown/unsupported versions, version/context mismatch handling where applicable, and at least one order-message round trip.
 
 ### Essential Commerce Outbox

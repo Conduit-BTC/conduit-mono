@@ -81,7 +81,7 @@ import { getNdk, connectNdk } from "@conduit/core/protocol"
 
 Current Phase 2 work may continue using NDK where it is the established repo pattern. For new relay-heavy, source-aware, or performance-critical behavior, call out in the PR if NDK appears to constrain the design and a future Nostrify/custom adapter boundary should be considered. Do not introduce a broad custom relay substrate without an accepted architecture spec.
 
-Product listings are NIP-99 + GammaMarkets `kind:30402`. Do not introduce alternate product-listing protocol terminology, schemas, or assumptions. NIP-17 private-message work uses NIP-59 seals/gift wraps and NIP-44 v2 as the current public encryption version; future encryption versions must be source-gated by an accepted public source and explicit capability discovery.
+Product listings are NIP-99 + GammaMarkets `kind:30402`. Do not introduce alternate product-listing protocol terminology, schemas, or assumptions. NIP-17 private-message work uses NIP-59 seals/gift wraps and NIP-44 v2 as the current public encryption version. NIP-44 v3 readiness is intentional Linear-tracked work, but v3 implementation must be source-gated by public draft/client references and explicit capability discovery.
 
 New `giftWrap`, publish, unwrap/decrypt, relay planning, event parsing, and source-resolution behavior should live behind `@conduit/core` unless the PR documents why route-local code is unavoidable.
 
