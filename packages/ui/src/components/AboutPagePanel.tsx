@@ -5,7 +5,7 @@ import {
   ExternalLink,
   Fingerprint,
   GitCommitHorizontal,
-  Github,
+  GitFork,
   Info,
   Radio,
   ShieldCheck,
@@ -378,7 +378,7 @@ export function AboutPagePanel({
               label="Repository"
               value={repositoryDisplayLabel}
               href={repositoryUrl}
-              icon={<Github className="h-4 w-4" />}
+              icon={<GitFork className="h-4 w-4" />}
             />
             <FieldRow
               label="Source commit"
