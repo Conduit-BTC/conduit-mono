@@ -19,6 +19,7 @@ import bricolageMediumUrl from "../../../packages/ui/src/assets/fonts/BricolageG
 import bricolageRegularUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-Regular.ttf?url"
 import bricolageSemiBoldUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-SemiBold.ttf?url"
 import { routeTree } from "./routeTree.gen"
+import "@conduit/ui/styles/site.css"
 import "./styles/index.css"
 
 const queryClient = new QueryClient()
