@@ -2,7 +2,7 @@
  * Social commerce event-graph hydrator (scaffold).
  *
  * This module implements the API surface called for in
- * `docs/specs/relay/social_commerce_performance_checkpoint.md` Layers 5
+ * `docs/knowledge/future/social_commerce_performance_checkpoint.md` Layers 5
  * and "Engagement Summary APIs". It does not ship any UI — surfaces
  * (product cards, profile headers, etc.) will adopt it incrementally.
  *
