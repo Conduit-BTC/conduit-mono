@@ -63,6 +63,8 @@ Authentication: External signers only (NIP-07, NIP-46). No key custody.
 Messaging: NIP-17 encrypted DMs for buyer-merchant communication.
 Payments: NWC-based Lightning payments (NIP-47).
 
+Nostr-sensitive work must read `docs/knowledge/external-nostr-references.md` and the relevant public NIP/GammaMarkets source before coding. Product listings are NIP-99 + GammaMarkets `kind:30402`; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
+
 ## Session Workflow
 
 1. **Start**: Read `AGENTS.md`, then:
@@ -74,13 +76,24 @@ Payments: NWC-based Lightning payments (NIP-47).
 
 2. **Before building**: Read the relevant `docs/specs/*.md` for feature details
    - For UI/theming work, also read `docs/DESIGN.md`
+   - For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also read `docs/knowledge/external-nostr-references.md`
 
 3. **Plan before implementing**: For non-trivial implementation work, write a concise plan from the relevant spec/docs. If the user has already asked for implementation, proceed after the plan unless the work hits a stop condition.
 
 4. **Spec-first rule**:
    - If work changes product requirements, protocol behavior, or shared implementation expectations, land the relevant docs/spec PR to `main` before starting the implementation `feat/*` branch
 
-5. **End**: Report validation and any doc/status follow-ups. Do not edit planning status checkboxes unless the user explicitly asks; live execution status belongs in Linear.
+5. **End**: Report validation and any doc/status follow-ups. Do not edit planning status checkboxes unless the user explicitly asks; live execution status belongs in Linear. When Phase 2 exit criteria appear complete, prompt the user that it may be time to archive or delete `docs/plans/PHASE_2_IMPLEMENTATION.md`.
+
+## Nostr Task Routing
+
+Treat these as Nostr-sensitive changes: `packages/core/src/protocol/*`, relay settings/planning, NDK calls, event parsing/emission, signer auth, NIP-17/NIP-44/NIP-59 messaging, NWC/payment behavior, Dexie cache/outbox behavior for signed events, product identity, and route code that publishes, fetches, unwraps, or decrypts Nostr events.
+
+- Check public protocol sources before implementation, not after review.
+- Prefer shared protocol helpers and hooks in `@conduit/core`; route files should compose prepared state and workflows.
+- Do not add route-local `giftWrap`, publish, unwrap/decrypt, relay fanout, or event parsing when a shared helper exists or should be deepened.
+- Model relay partial failure, stale/degraded state, source disagreement, and publish ACK/reject/timeout where user decisions depend on freshness.
+- Keep diagnostics content-free: no plaintext, ciphertext, invoices, order contents, addresses, phone/email, signer secrets, NWC URIs, or message bodies.
 
 ## Protected Files
 

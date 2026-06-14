@@ -4,7 +4,17 @@ Phase 2 is the execution plan for the Conduit closeout sprint after MVP.
 
 This document translates Phase 2 scope into a codebase-aware implementation map for `conduit-mono`.
 
-Execution state, ownership, and merge order live in Linear. This document should describe the repo-local delivery contract and should be kept in sync when Phase 2A closeout work lands.
+Execution state, ownership, priority, live status, and merge order live in Linear. This document should describe the repo-local delivery contract and should be kept in sync when Phase 2A closeout work lands.
+
+## Lifecycle And Archive Trigger
+
+This is a temporary Phase 2 closeout document, not the long-term execution source of truth.
+
+When the exit criteria below appear satisfied, or when the team starts the next phase as a Linear-owned plan, agents should prompt the user:
+
+> Phase 2 closeout criteria appear complete. Should `docs/plans/PHASE_2_IMPLEMENTATION.md` be archived or deleted so Linear becomes the only live planning source?
+
+Do not extend this file with rolling ticket status, owners, dates, or merge order. Put that in Linear.
 
 For each included area, this plan states:
 
@@ -439,29 +449,31 @@ Recent Linear planning split secure communication and minimum write durability o
 - Order-linked messages remain distinct from general DMs and link back to order flows.
 - Failed unwrap/decrypt states are visible and safe to retry.
 
-### NIP-44 V3 Readiness
+### NIP-44 Versioned-Encryption Readiness
 
 #### Current codebase state
 
 - Current private-message sends depend on NDK/nostr-tools NIP-44 v2 behavior.
-- NIP-07 typings expose `nip04` and `nip44`, not optional NIP-44 v3 methods.
+- Current public NIP-44 specifies version 2 encryption. Any future version must be source-gated by a public accepted source before implementation.
+- NIP-07 typings expose `nip04` and `nip44`; they do not establish support for non-standard future NIP-44 versions.
 - Relay list support is kind `10002` NIP-65 only; kind `10050` private-message relay hints are not yet a shared contract.
-- NWC uses NIP-44 v2 and should remain conservative unless wallet capability discovery proves v3 support.
+- NWC uses NIP-44 v2 and should remain conservative unless wallet capability discovery and an accepted public source prove future-version support.
 
 #### Phase 2A implementation work
 
 - Create a shared `@conduit/core` NIP-17/NIP-44 boundary for commerce messages instead of adding new route-local `giftWrap` calls.
-- Add optional NIP-44 v3 capability detection for signers and recipients while preserving v2 fallback.
+- Preserve NIP-44 v2 fallback for signers and recipients.
+- Add source-gated capability detection only when a public accepted future-version source exists and is linked from `docs/knowledge/external-nostr-references.md`.
 - Parse/cache kind `10050` private-message relay hints enough to read recipient relays and advertised encryption support.
-- Reject v3 context mismatches and report only privacy-safe decrypt diagnostics.
+- Reject version/context mismatches where the supported encryption version defines them, and report only privacy-safe decrypt diagnostics.
 - Keep NWC v2 by default and explicitly test that wallet invoice flows are not broken by this boundary.
 
 #### Done when
 
 - Commerce message send/read code consumes the shared boundary.
-- NIP-44 v3 is used only when both sender capability and recipient advertisement allow it.
 - NIP-44 v2 remains the fallback path.
-- Tests cover v2 fallback, v3 context mismatch, unknown versions, and at least one order-message round trip.
+- Future NIP-44 versions are not used unless backed by a linked public accepted source and explicit capability discovery.
+- Tests cover v2 fallback, unknown/unsupported versions, version/context mismatch handling where applicable, and at least one order-message round trip.
 
 ### Essential Commerce Outbox
 

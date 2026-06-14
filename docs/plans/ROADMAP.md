@@ -105,7 +105,7 @@ Build a decentralized commerce platform where merchants and buyers transact dire
 
 - Relay settings and capability surfaces that remain Nostr-native
 - Payment proof state model
-- Secure marketplace messaging and NIP-44 v3 readiness
+- Secure marketplace messaging and NIP-44 versioned-encryption readiness
 - Minimum essential-commerce outbox for signed orders, messages, payment proofs, and product publish/delete actions
 - Automation/telemetry guardrails that preserve privacy
 - Source/version/build transparency

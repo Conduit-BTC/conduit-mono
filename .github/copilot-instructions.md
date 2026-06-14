@@ -45,6 +45,18 @@ For Market and Merchant changes touching orders/messages:
 - Verify relay lag/fallback does not produce ambiguous UI states.
 - Verify polling and manual refresh do not create UI jitter loops.
 
+## Nostr-Sensitive Checks
+
+For changes touching Nostr protocol, relay behavior, NDK usage, products/listings, private messages, signer auth, NWC/payments, local cache, or commerce outbox:
+
+- Verify the PR cites `docs/knowledge/external-nostr-references.md` plus the relevant NIP or GammaMarkets `market-spec`.
+- Verify product listings remain NIP-99 + GammaMarkets `kind:30402`; flag alternate product-listing protocol terminology or schema assumptions.
+- Verify relay behavior models partial reads, publish ACK/reject/timeout, stale/degraded state, and source disagreement where relevant.
+- Verify NIP-17 messaging uses NIP-59 seals/gift wraps and NIP-44 v2 as the current public encryption version; future encryption versions must be source-gated by an accepted public source and explicit capability discovery.
+- Verify kind `10050` private-message relay hints are not confused with general NIP-65 `kind:10002` relay preferences when DM routing is in scope.
+- Flag new route-local NDK event construction, `giftWrap`, publish, unwrap/decrypt, relay planning, or event parsing unless the PR explains why it cannot live behind `@conduit/core`.
+- Verify diagnostics/logs/telemetry do not include plaintext, ciphertext, invoices, order contents, addresses, signer secrets, NWC URIs, or message bodies.
+
 ## Agent Automation Checks
 
 For changes touching agent automation, telemetry, or smoke-test artifacts:

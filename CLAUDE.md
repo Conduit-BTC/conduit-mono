@@ -20,6 +20,9 @@ This is the Conduit monorepo - a decentralized Nostr-based commerce platform. Se
 3. For UI/theming work, read `docs/DESIGN.md` before introducing shared style values or tokens.
 4. If the work changes product requirements, protocol behavior, or shared implementation expectations, land the docs/spec PR to `main` before starting the implementation `feat/*` branch.
 5. Use `@conduit/core` Zod schemas for validation. Interop parsing stays best-effort, but shared contracts should be reflected in repo docs first.
+6. For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, read `docs/knowledge/external-nostr-references.md` and the relevant public NIP/GammaMarkets source before implementation.
+
+Linear owns live execution status, ownership, priority, sequencing, and merge order. Repo plan docs define phase boundaries and temporary delivery contracts. When the Phase 2 exit criteria appear complete, prompt the user that it may be time to archive or delete `docs/plans/PHASE_2_IMPLEMENTATION.md`.
 
 ## UI Component Rules
 
@@ -77,6 +80,10 @@ import { getNdk, connectNdk } from "@conduit/core/protocol"
 ```
 
 Current Phase 2 work may continue using NDK where it is the established repo pattern. For new relay-heavy, source-aware, or performance-critical behavior, call out in the PR if NDK appears to constrain the design and a future Nostrify/custom adapter boundary should be considered. Do not introduce a broad custom relay substrate without an accepted architecture spec.
+
+Product listings are NIP-99 + GammaMarkets `kind:30402`. Do not introduce alternate product-listing protocol terminology, schemas, or assumptions. NIP-17 private-message work uses NIP-59 seals/gift wraps and NIP-44 v2 as the current public encryption version; future encryption versions must be source-gated by an accepted public source and explicit capability discovery.
+
+New `giftWrap`, publish, unwrap/decrypt, relay planning, event parsing, and source-resolution behavior should live behind `@conduit/core` unless the PR documents why route-local code is unavoidable.
 
 ## Shared Packages
 

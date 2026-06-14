@@ -38,10 +38,14 @@ Examples: `feat/product-search`, `fix/invoice-qr-case`, `chore/upgrade-ndk`
 
 Conduit uses a combined Linear + docs workflow:
 
-- Linear tracks execution, ownership, and status
-- `docs/plans/*` tracks delivery scope and sequencing
+- Linear tracks live execution, ownership, priority, sequencing, status, and merge order
+- `docs/plans/*` tracks phase boundaries, exit criteria, and temporary delivery contracts
 - `docs/specs/*` tracks implementation requirements
 - `docs/knowledge/*` holds supporting notes and references, not the final source of truth
+
+If Linear conflicts with `docs/plans/*` on ticket status, owner, sequencing, or merge order, Linear wins. If Linear conflicts with `docs/specs/*` or `docs/ARCHITECTURE.md` on implementation behavior, update the repo contract before coding.
+
+When a temporary phase document's exit criteria appear complete, contributors and agents should prompt maintainers to archive or delete it and move the next phase fully to Linear-owned planning.
 
 If work changes product requirements, protocol behavior, shared UX rules, or cross-team implementation expectations:
 
@@ -50,6 +54,8 @@ If work changes product requirements, protocol behavior, shared UX rules, or cro
 3. Start the implementation `feat/*` branch only after the docs/spec change lands.
 
 For UI and theming work, also check [docs/DESIGN.md](docs/DESIGN.md) before introducing new shared styles or tokens.
+
+For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also check [external-nostr-references.md](docs/knowledge/external-nostr-references.md) and the relevant public NIP or GammaMarkets source before implementation. Product listings are NIP-99 + GammaMarkets `kind:30402`; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
 
 ### Commits
 
@@ -232,6 +238,8 @@ export function useProducts(filters?: ProductFilters) {
 - UI components go in `@conduit/ui`
 - App-specific components stay in the app's `components/` directory
 - Never create circular dependencies between packages
+
+For Nostr-sensitive changes, prefer deepening shared `@conduit/core` protocol modules over copying event construction, publish, unwrap/decrypt, relay planning, or parsing into routes.
 
 ## Protocol Constraints
 
