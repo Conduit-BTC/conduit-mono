@@ -11,7 +11,7 @@ async function main() {
       target: "react",
       routesDirectory: "src/routes",
       generatedRouteTree: "src/routeTree.gen.ts",
-      quoteStyle: "double",
+      quoteStyle: "single",
       semicolons: false,
       disableLogging: true,
     },
