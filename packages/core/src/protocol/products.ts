@@ -6,8 +6,93 @@ import {
   type SourcePriceQuote,
 } from "../pricing"
 import { productSchema, type ProductSchema } from "../schemas"
+import { EVENT_KINDS } from "./kinds"
+import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 
 const PRODUCT_IMAGE_URL_PATTERN = /^https?:\/\//i
+
+export interface ProductListingEventDraft {
+  kind: typeof EVENT_KINDS.PRODUCT
+  content: string
+  tags: string[][]
+}
+
+export interface BuildProductListingEventDraftInput {
+  product: ProductSchema
+  dTag: string
+  clientAppId?: ConduitAppId
+}
+
+/**
+ * Build a spec-aligned kind-30402 listing draft.
+ *
+ * NIP-99/Gamma expect `content` to be the human-readable listing
+ * description. Structured commerce data belongs in tags.
+ */
+export function buildProductListingEventDraft({
+  product,
+  dTag,
+  clientAppId,
+}: BuildProductListingEventDraftInput): ProductListingEventDraft {
+  const normalizedDTag = dTag.trim()
+  if (!normalizedDTag) throw new Error("Product d tag is required")
+
+  const content = product.summary?.trim() ?? ""
+  const sourcePrice = product.sourcePrice
+  const priceAmount = sourcePrice?.amount ?? product.price
+  const priceCurrency = sourcePrice?.currency ?? product.currency
+
+  let tags: string[][] = [
+    ["d", normalizedDTag],
+    ["title", product.title],
+    ["price", String(priceAmount), priceCurrency],
+    ["type", product.type, product.format],
+  ]
+
+  if (content) tags.push(["summary", content])
+
+  if (product.sourceShippingCost) {
+    tags.push([
+      "shipping_cost",
+      String(product.sourceShippingCost.amount),
+      product.sourceShippingCost.currency,
+    ])
+  } else if (typeof product.shippingCostSats === "number") {
+    tags.push(["shipping_cost", String(product.shippingCostSats)])
+  }
+
+  if (product.shippingOptionId) {
+    tags.push(["shipping_option", product.shippingOptionId])
+  }
+  if (product.shippingCountries && product.shippingCountries.length > 0) {
+    tags.push(["shipping_country", ...product.shippingCountries])
+  }
+  for (const rule of product.shippingCountryRules ?? []) {
+    if (rule.restrictTo.length > 0) {
+      tags.push(["shipping_restrict", rule.code, ...rule.restrictTo])
+    }
+    if (rule.exclude.length > 0) {
+      tags.push(["shipping_exclude", rule.code, ...rule.exclude])
+    }
+  }
+  for (const image of product.images) {
+    tags.push(["image", image.url])
+  }
+  for (const tag of product.tags) {
+    const normalizedTag = tag.trim()
+    if (normalizedTag) tags.push(["t", normalizedTag])
+  }
+
+  if (clientAppId) {
+    tags = appendConduitClientTag(tags, clientAppId)
+  }
+
+  return {
+    kind: EVENT_KINDS.PRODUCT,
+    content,
+    tags,
+  }
+}
 
 export function getProductImageCandidates(
   product: Pick<ProductSchema, "images">
@@ -146,8 +231,9 @@ function parseShippingCountryRules(tags: string[][] | undefined): {
  *
  * MVP note:
  * - Interop varies across de-commerce implementations.
- * - We first try JSON content matching our `productSchema`.
- * - If content isn't JSON, we fall back to minimal fields from tags/content.
+ * - We first try legacy JSON content matching our `productSchema`.
+ * - If content is not a legacy product object, we fall back to fields from
+ *   NIP-99/Gamma tags and Markdown content.
  */
 export function parseProductEvent(
   event: Pick<NDKEvent, "content" | "pubkey" | "created_at" | "tags" | "id">
@@ -155,7 +241,7 @@ export function parseProductEvent(
   const createdAtMs = (event.created_at ?? 0) * 1000
   const dTag = getTagValue(event.tags, "d")
 
-  // Try JSON content first (preferred for Conduit).
+  // Try legacy Conduit JSON content first for already-published listings.
   try {
     const parsed = JSON.parse(event.content || "{}") as Partial<ProductSchema>
     const candidate: Partial<ProductSchema> = {
