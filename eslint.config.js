@@ -38,8 +38,8 @@ export default [
     rules: {
       quotes: ["error", "double", { avoidEscape: true }],
       "react/react-in-jsx-scope": "off",
-      ...reactHooks.configs.recommended.rules,
+      "react-hooks/rules-of-hooks": "error",
+      "react-hooks/exhaustive-deps": "warn",
     },
   },
 ]
-
