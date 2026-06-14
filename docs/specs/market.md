@@ -46,21 +46,21 @@ Use Figma MCP tools to extract design context for screen work. Do not rely on ol
 
 ## Pages
 
-| Route                  | Description                                                        |
-| ---------------------- | ------------------------------------------------------------------ |
-| `/`                    | Home / browse entry                                                |
-| `/products`            | Product grid with filters                                          |
-| `/products/$productId` | Single product view                                                |
-| `/cart`                | Shopping cart                                                      |
-| `/checkout`            | Order and payment flow                                             |
-| `/orders`              | Buyer order history/details surface                                |
-| `/messages`            | DM inbox                                                           |
-| `/network`             | Relay/network settings                                             |
-| `/wallet`              | Buyer wallet / NWC setup                                           |
-| `/profile`             | Buyer profile                                                      |
-| `/store/$pubkey`       | Merchant storefront                                                |
-| `/u/$profileRef`       | Profile reference view                                             |
-| `/about`               | App/source/provenance surface, expected after provenance PRs merge |
+| Route                  | Description                         |
+| ---------------------- | ----------------------------------- |
+| `/`                    | Home / browse entry                 |
+| `/products`            | Product grid with filters           |
+| `/products/$productId` | Single product view                 |
+| `/cart`                | Shopping cart                       |
+| `/checkout`            | Order and payment flow              |
+| `/orders`              | Buyer order history/details surface |
+| `/messages`            | DM inbox                            |
+| `/network`             | Relay/network settings              |
+| `/wallet`              | Buyer wallet / NWC setup            |
+| `/profile`             | Buyer profile                       |
+| `/store/$pubkey`       | Merchant storefront                 |
+| `/u/$profileRef`       | Profile reference view              |
+| `/about`               | App/source/provenance surface       |
 
 Do not document `/orders/$orderId` unless that route exists again.
 

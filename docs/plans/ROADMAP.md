@@ -105,6 +105,8 @@ Build a decentralized commerce platform where merchants and buyers transact dire
 
 - Relay settings and capability surfaces that remain Nostr-native
 - Payment proof state model
+- Secure marketplace messaging and NIP-44 v3 readiness
+- Minimum essential-commerce outbox for signed orders, messages, payment proofs, and product publish/delete actions
 - Automation/telemetry guardrails that preserve privacy
 - Source/version/build transparency
 
@@ -116,7 +118,7 @@ The target direction is a shared local-first commerce substrate with Market and 
 
 Expected themes:
 
-- signed-write outbox and write frontier
+- full signed-write frontier beyond the Phase 2A essential-commerce outbox
 - source-aware relay read execution and relay health
 - local-first product/profile/order/message readiness
 - cache and media readiness as performance aids, not hidden sources of truth

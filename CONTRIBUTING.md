@@ -99,7 +99,7 @@ bun run format:check # Must pass - no Prettier changes needed
 bun run typecheck   # Must pass — no TS errors
 bun run lint        # Must pass — no lint errors
 bun test            # Must pass
-bun run telemetry:check # Must pass when telemetry/analytics surfaces are affected, after telemetry guardrails land
+bun run telemetry:check # Must pass when telemetry/analytics surfaces are affected
 ```
 
 ### Pull Requests
@@ -156,6 +156,8 @@ Branch protection on `main` expects GitHub-owned CI gates to pass:
 - `typecheck`
 - `test`
 - `color-policy`
+- `telemetry-policy`
+- `e2e-smoke`
 - `build-signet`
 - `preview-links`
 

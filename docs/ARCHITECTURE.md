@@ -63,6 +63,7 @@ apps/market/src/routes/
 ├── network.tsx
 ├── wallet.tsx
 ├── profile.tsx
+├── about.tsx
 ├── store/
 │   └── $pubkey.tsx
 └── u/
@@ -80,7 +81,8 @@ apps/merchant/src/routes/
 ├── profile.tsx
 ├── payments.tsx
 ├── shipping.tsx
-└── network.tsx
+├── network.tsx
+└── about.tsx
 ```
 
 ### Store Builder
@@ -111,6 +113,7 @@ Do not document Store Builder as a generated-store platform until that scope has
 | `9734`  | Zap request                  | NIP-57                            |
 | `9735`  | Zap receipt                  | NIP-57                            |
 | `10002` | Relay list                   | NIP-65                            |
+| `10050` | Private message relays       | NIP-17 recipient relay hints      |
 | `30402` | Product listing              | NIP-99 + GammaMarkets market-spec |
 | `30406` | Shipping option              | Conduit commerce extension        |
 | `31989` | Application recommendation   | NIP-89                            |
@@ -130,7 +133,9 @@ Routes should prefer shared product parsing, dedupe, relay-planning, and cache h
 
 ### Orders And Messages
 
-Order communication uses NIP-17 encrypted messages. A Conduit order message payload is kind `16`, encrypted/sealed/wrapped before publishing.
+Buyer-merchant communication uses NIP-17 encrypted messages. A Conduit order message payload is kind `16`, encrypted/sealed/wrapped before publishing. General buyer/merchant DMs use kind `14` inside the same private-message transport and should stay distinct from order-linked kind `16` conversations in product state.
+
+Phase 2A secure messaging work should move route-level send/read behavior behind a Conduit-owned private-message boundary in `@conduit/core`. That boundary should preserve NIP-44 v2 compatibility, add capability-gated NIP-44 v3 readiness, parse kind `10050` private-message relay hints, and keep decrypt/unwrap diagnostics content-free. NWC remains conservative and should not be moved to NIP-44 v3 unless wallet capability discovery explicitly supports it.
 
 Standard order message types:
 
@@ -212,6 +217,8 @@ wss://relay.minibits.cash
 Conduit-hosted deploys should leave relay env vars empty unless an operator intentionally needs an override. This keeps the public code defaults auditable.
 
 Future Phase 2B work is expected to add a more explicit source-aware read frontier, relay health model, and local-first performance layer. Current Phase 2A work should keep relay behavior typed and recoverable without making that future architecture a milestone blocker.
+
+Phase 2A also includes an essential commerce outbox slice for signed orders, messages, merchant replies, payment proofs, and product publish/delete actions. This is a minimum usability layer for locally visible, retryable signed commerce writes; the broader generic write frontier remains Phase 2B architecture work.
 
 ---
 

@@ -4,7 +4,7 @@
 
 Maintain deterministic automated coverage for the Market + Merchant + Relay core loop without blocking current Phase 2 delivery velocity.
 
-Open Phase 2 work is expected to add Playwright smoke coverage. This spec defines the desired coverage shape; package scripts and CI wiring should be read from `package.json` and `.github/workflows/*` after that PR lands.
+Playwright smoke coverage is part of the current repo baseline. This spec defines the desired coverage shape; package scripts and CI wiring should be read from `package.json` and `.github/workflows/*`.
 
 ## Scope
 
@@ -61,7 +61,9 @@ Open Phase 2 work is expected to add Playwright smoke coverage. This spec define
 
 ## Commands
 
-Use the scripts defined in `package.json` after the Playwright smoke PR lands. Do not document commands here that do not exist in the repo.
+- `bun run test:e2e` - run the Playwright smoke suite
+
+CI runs the same script through the `e2e-smoke` job.
 
 ## Exit Criteria (v0)
 

@@ -39,7 +39,7 @@ These are still valuable, but they are no longer blockers for MVP scope completi
 
 Phase 2 focuses on:
 
-- Phase 2A closeout: launch safety, merchant readiness, relay settings, checkout/payment proof clarity, trust context, legal/support, provenance, and automation guardrails
+- Phase 2A closeout: secure marketplace messaging, essential-commerce outbox, launch safety, merchant readiness, relay settings, checkout/payment proof clarity, trust context, legal/support, provenance, and automation guardrails
 - Phase 2B preparation: local-first performance and app architecture direction without making that future architecture a blocker for current milestones
 
 See [Phase 2 Implementation](./PHASE_2_IMPLEMENTATION.md) for the current deliverables.

@@ -47,6 +47,7 @@
 - [ ] `bun test` passes
 - [ ] `bun run build` passes, or build is not required for this change
 - [ ] `bun run telemetry:check` passes, or telemetry is not affected
+- [ ] `bun run test:e2e` passes, or E2E smoke coverage is not affected
 - [ ] Tested locally with mock Lightning
 - [ ] Verified on preview deploy (if applicable)
 

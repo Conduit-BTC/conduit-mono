@@ -280,7 +280,7 @@ See [PLAN.md](PLAN.md) for the current planning index, [ROADMAP.md](docs/plans/R
 | ------------- | -------- | -------------------------------------------- |
 | Genesis       | Complete | Architecture, infrastructure, wireframes     |
 | Core Function | Complete | Market + Merchant Portal MVP                 |
-| Phase 2A      | Active   | Closeout, launch safety, readiness, trust    |
+| Phase 2A      | Active   | Secure messaging, closeout, readiness, trust |
 | Phase 2B      | Planned  | Local-first performance and app architecture |
 | Added Value   | Future   | Social features and enhanced discovery       |
 | Scale         | Future   | Multi-language and enterprise readiness      |

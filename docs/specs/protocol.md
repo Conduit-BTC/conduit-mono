@@ -13,12 +13,14 @@ Non-goals for current Phase 2A:
 - key custody, key generation, escrow, refunds, or balance management
 - broad NIP-46 product UX beyond the external-signer policy already allowed by architecture
 - service-operated checkout automation
+- making NIP-44 v3 mandatory while signer and relay support are still capability-gated
 - replacing the current NDK-backed protocol helpers with a new relay substrate before the future architecture spec lands
 
 Future direction:
 
 - Phase 2B is expected to define a stronger local-first commerce/read architecture.
 - New source-aware relay work should avoid leaking NDK objects into durable records or product contracts, but current Phase 2A work may continue using the existing shared NDK-backed helpers where that is the least risky path.
+- Phase 2A secure messaging should introduce a shared Conduit-owned NIP-17/NIP-44 boundary before adding more route-local private-message send paths.
 
 ## Authentication
 
@@ -44,6 +46,7 @@ Conduit apps use external signers only.
 | `9734`  | Zap request                  | buyer        | NIP-57                                                   |
 | `9735`  | Zap receipt                  | relay/wallet | NIP-57                                                   |
 | `10002` | Relay list                   | both         | NIP-65 relay hints                                       |
+| `10050` | Private message relays       | both         | NIP-17 recipient relay and encryption hints              |
 | `30402` | Product listing              | merchant     | NIP-99 + GammaMarkets market-spec                        |
 | `30406` | Shipping option              | merchant     | Conduit commerce extension                               |
 | `31989` | Application recommendation   | both         | NIP-89                                                   |
@@ -61,13 +64,24 @@ Implementations must not dedupe only by `d` tag because different merchants can 
 
 ## Messaging Transport: NIP-17
 
-All buyer-merchant order communication is sent as NIP-17 encrypted messages:
+Buyer-merchant communication is sent as NIP-17 encrypted messages:
 
 - Inner payload: Conduit order message event, kind `16`
+- General direct message payload: kind `14`
 - Seal: kind `13`
 - Gift wrap: kind `1059`
 
-The kind `16` payload is never published directly. It is encrypted and delivered through NIP-17 wrapping.
+The kind `16` payload is never published directly. It is encrypted and delivered through NIP-17 wrapping. Kind `14` general DMs should remain separate from order-linked kind `16` conversations in product state.
+
+Current private-message code may continue to interoperate with NIP-44 v2. New Phase 2A secure messaging work should route sends and unwraps through a shared `@conduit/core` boundary that:
+
+- preserves NIP-44 v2 fallback for existing signers and peers
+- uses NIP-44 v3 only when the active signer and recipient advertisement support it
+- parses kind `10050` private-message relay events enough to read recipient relay and encryption hints
+- rejects authenticated-context mismatches instead of returning plaintext
+- reports decrypt/unwrap diagnostics without plaintext, ciphertext, invoices, shipping/contact data, order contents, or message bodies
+
+NWC remains NIP-44 v2 by default unless wallet capability discovery explicitly advertises a safer v3 path.
 
 ## Order Message Payload
 

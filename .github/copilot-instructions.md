@@ -62,5 +62,5 @@ bun run lint
 bun run telemetry:check
 bun test
 bun run build # when shared packages, env/config, routing, or build output are affected
-bun run telemetry:check # when telemetry/analytics surfaces are touched, after the telemetry PR lands
+bun run test:e2e # when end-to-end smoke behavior is affected
 ```

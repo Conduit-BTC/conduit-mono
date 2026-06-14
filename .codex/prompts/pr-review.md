@@ -32,4 +32,5 @@ Validation expectations:
 - `bun run lint`
 - `bun test`
 - `bun run build` when shared packages, routing, env/config, or build output are affected
-- `bun run telemetry:check` when telemetry/analytics surfaces are touched, after the telemetry PR lands
+- `bun run telemetry:check` when telemetry/analytics surfaces are touched
+- `bun run test:e2e` when end-to-end smoke behavior is affected

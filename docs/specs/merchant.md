@@ -58,16 +58,16 @@ The current product uses focused pages plus dashboard readiness. Do not re-open 
 
 ## Pages
 
-| Route       | Description                                                        |
-| ----------- | ------------------------------------------------------------------ |
-| `/`         | Readiness dashboard and overview                                   |
-| `/products` | Product list/create/edit workspace                                 |
-| `/orders`   | Order list and order detail workspace                              |
-| `/profile`  | Merchant/store profile setup                                       |
-| `/payments` | Payment and wallet readiness                                       |
-| `/shipping` | Shipping readiness/options                                         |
-| `/network`  | Relay/network settings                                             |
-| `/about`    | App/source/provenance surface, expected after provenance PRs merge |
+| Route       | Description                           |
+| ----------- | ------------------------------------- |
+| `/`         | Readiness dashboard and overview      |
+| `/products` | Product list/create/edit workspace    |
+| `/orders`   | Order list and order detail workspace |
+| `/profile`  | Merchant/store profile setup          |
+| `/payments` | Payment and wallet readiness          |
+| `/shipping` | Shipping readiness/options            |
+| `/network`  | Relay/network settings                |
+| `/about`    | App/source/provenance surface         |
 
 Do not document `/products/new`, `/products/$id/edit`, `/orders/$id`, `/messages`, or `/settings/*` unless those routes exist again.
 
