@@ -258,7 +258,7 @@ Extract from Figma:
 Conduit follows a privacy-first observability model:
 
 - telemetry is optional and default-off
-- investor reporting uses aggregate metrics, not user-level traces
+- business reporting uses aggregate metrics, not user-level traces
 - no persistent product-analytics identifiers
 - no message/order/payment content in telemetry
 

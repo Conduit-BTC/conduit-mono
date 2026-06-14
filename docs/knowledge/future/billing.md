@@ -77,7 +77,7 @@ Required constraints:
 
 - No storage of message content, order item details, or payment payloads in analytics tools.
 - No user-level behavior timelines for product analytics.
-- Billing data may be aggregated for investor reporting (MRR, churn, top-ups, credits spent).
+- Billing data may be aggregated for high-level business reporting (MRR, churn, top-ups, credits spent).
 - Any operational telemetry must follow `privacy-observability.md` allowlist rules.
 
 ---

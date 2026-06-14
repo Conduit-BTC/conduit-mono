@@ -7,7 +7,7 @@
 
 Revenue generation while preserving Conduit's ethos: no surveillance, no lock-in, no rent-seeking on transactions. Users pay for enhanced capabilities and convenience, not for basic access.
 
-**Planning input**: private business-planning material. Treat it as non-authoritative context, not as public implementation provenance.
+**Planning status**: future product context only. Treat this as non-authoritative and do not use it as current implementation provenance.
 
 **Related specs:**
 
