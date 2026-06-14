@@ -77,19 +77,6 @@ export type ParsedOrderMessage =
       payload: PaymentProofMessageSchema
     })
 
-export type OrderPaymentState =
-  | "awaiting_invoice"
-  | "invoice_available"
-  | "payment_in_progress"
-  | "payment_sent"
-  | "proof_sending"
-  | "proof_sent"
-  | "proof_delivery_failed"
-  | "awaiting_merchant_confirmation"
-  | "merchant_confirmed_paid"
-  | "payment_failed"
-  | "proof_disputed"
-
 const lightningPaymentProofInputSchema = z
   .object({
     orderId: z.string().min(1),
@@ -167,6 +154,10 @@ function getString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined
 }
 
+function hasText(value: string | undefined): value is string {
+  return typeof value === "string" && value.trim().length > 0
+}
+
 function getNumber(value: unknown): number | undefined {
   if (typeof value !== "number") return undefined
   return Number.isFinite(value) ? value : undefined
@@ -209,6 +200,30 @@ function normalizePaymentProofVerification(
   if (checks) normalized.checks = checks
 
   return Object.keys(normalized).length > 0 ? normalized : undefined
+}
+
+export function hasPaymentProofEvidence(
+  payload: PaymentProofMessageSchema
+): boolean {
+  const verificationState = payload.verification?.state
+  if (
+    verificationState === "verification_failed" ||
+    verificationState === "disputed"
+  ) {
+    return false
+  }
+
+  if (hasText(payload.invoice) && hasText(payload.preimage)) return true
+
+  return hasText(payload.zapRequestId) && hasText(payload.zapReceiptId)
+}
+
+export function isPaymentProofEvidenceMessage(
+  message: ParsedOrderMessage
+): message is Extract<ParsedOrderMessage, { type: "payment_proof" }> {
+  return (
+    message.type === "payment_proof" && hasPaymentProofEvidence(message.payload)
+  )
 }
 
 function messageBase<TType extends OrderMessageTypeSchema>(
@@ -372,51 +387,4 @@ export function buildLightningPaymentProofMessage(
     source: PaymentProofSourceSchema
     proofDeliveryStatus?: PaymentProofDeliveryStatusSchema
   }
-}
-
-function getLatestMessage<TType extends ParsedOrderMessage["type"]>(
-  messages: readonly ParsedOrderMessage[],
-  type: TType
-): Extract<ParsedOrderMessage, { type: TType }> | undefined {
-  return [...messages]
-    .filter(
-      (message): message is Extract<ParsedOrderMessage, { type: TType }> =>
-        message.type === type
-    )
-    .sort((a, b) => b.createdAt - a.createdAt)[0]
-}
-
-export function deriveOrderPaymentState(
-  messages: readonly ParsedOrderMessage[]
-): OrderPaymentState {
-  const latestStatus = getLatestMessage(messages, "status_update")
-  if (latestStatus?.payload.status === "paid") {
-    return "merchant_confirmed_paid"
-  }
-
-  const latestProof = getLatestMessage(messages, "payment_proof")
-  if (latestProof) {
-    const verificationState = latestProof.payload.verification?.state
-    if (verificationState === "disputed") return "proof_disputed"
-    if (verificationState === "verification_failed") return "payment_failed"
-    if (verificationState === "verified") return "merchant_confirmed_paid"
-
-    if (latestProof.payload.proofDeliveryStatus === "retry_needed") {
-      return "proof_delivery_failed"
-    }
-
-    if (latestProof.payload.proofDeliveryStatus === "pending") {
-      return "proof_sending"
-    }
-
-    return "proof_sent"
-  }
-
-  if (messages.some((message) => message.type === "payment_request")) {
-    return "invoice_available"
-  }
-
-  return messages.some((message) => message.type === "order")
-    ? "awaiting_invoice"
-    : "awaiting_invoice"
 }

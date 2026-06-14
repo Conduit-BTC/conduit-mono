@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test"
 import {
   buildLightningPaymentProofMessage,
-  deriveOrderPaymentState,
+  extractOrderSummary,
+  hasPaymentProofEvidence,
+  isPaymentProofEvidenceMessage,
   parseOrderMessageRumorEvent,
 } from "@conduit/core"
 
@@ -181,25 +183,98 @@ describe("payment proof model", () => {
     expect(message.payload.preimage).toBeUndefined()
   })
 
-  it("derives explicit states for proof delivery and verification outcomes", () => {
+  it("treats parsed malformed proofs as messages, not payment evidence", () => {
     const order = parsedOrder()
-    const proofRetry = parseOrderMessageRumorEvent(
+    const malformedProof = parseOrderMessageRumorEvent(
       rumor({
-        id: "proof-retry",
+        id: "proof-empty",
+        type: "payment_proof",
+        createdAt: 2,
+        content: JSON.stringify({}),
+      }) as never
+    )
+
+    expect(malformedProof.type).toBe("payment_proof")
+    if (malformedProof.type !== "payment_proof") return
+    expect(malformedProof.payload).toMatchObject({
+      orderId: "order-1",
+    })
+    expect(hasPaymentProofEvidence(malformedProof.payload)).toBe(false)
+    expect(isPaymentProofEvidenceMessage(malformedProof)).toBe(false)
+
+    const summary = extractOrderSummary([order, malformedProof])
+    expect(summary.paymentProofReceived).toBe(false)
+    expect(summary.paymentProofCount).toBe(0)
+    expect(summary.paymentProofAmount).toBeNull()
+    expect(summary.paymentProofCurrency).toBeNull()
+  })
+
+  it("requires concrete payment evidence before proof messages affect payment summaries", () => {
+    const order = parsedOrder()
+    const incompleteForeignProof = parseOrderMessageRumorEvent(
+      rumor({
+        id: "proof-incomplete-foreign",
         type: "payment_proof",
         createdAt: 2,
         content: JSON.stringify({
-          invoice: "lnbc1invoice",
-          preimage: "preimage",
-          proofDeliveryStatus: "retry_needed",
+          rail: "stablecoin",
+          invoice: "foreign-invoice",
+          verification: {
+            state: "wallet_seen",
+            checks: ["foreign_wallet_claim"],
+          },
         }),
       }) as never
     )
-    const proofDisputed = parseOrderMessageRumorEvent(
+    const proofWithEvidence = parseOrderMessageRumorEvent(
+      rumor({
+        id: "proof-evidence",
+        type: "payment_proof",
+        createdAt: 3,
+        content: JSON.stringify({
+          amount: 21,
+          currency: "SATS",
+          invoice: "lnbc1invoice",
+          preimage: "preimage",
+        }),
+      }) as never
+    )
+
+    expect(incompleteForeignProof.type).toBe("payment_proof")
+    expect(proofWithEvidence.type).toBe("payment_proof")
+    if (
+      incompleteForeignProof.type !== "payment_proof" ||
+      proofWithEvidence.type !== "payment_proof"
+    ) {
+      return
+    }
+
+    expect(hasPaymentProofEvidence(incompleteForeignProof.payload)).toBe(false)
+    expect(hasPaymentProofEvidence(proofWithEvidence.payload)).toBe(true)
+
+    const summaryBeforeEvidence = extractOrderSummary([
+      order,
+      incompleteForeignProof,
+    ])
+    expect(summaryBeforeEvidence.paymentProofReceived).toBe(false)
+    expect(summaryBeforeEvidence.paymentProofCount).toBe(0)
+
+    const summaryAfterEvidence = extractOrderSummary([
+      order,
+      incompleteForeignProof,
+      proofWithEvidence,
+    ])
+    expect(summaryAfterEvidence.paymentProofReceived).toBe(true)
+    expect(summaryAfterEvidence.paymentProofCount).toBe(1)
+    expect(summaryAfterEvidence.paymentProofAmount).toBe(21)
+    expect(summaryAfterEvidence.paymentProofCurrency).toBe("SATS")
+  })
+
+  it("does not count disputed or failed proof claims as payment evidence", () => {
+    const disputedProof = parseOrderMessageRumorEvent(
       rumor({
         id: "proof-disputed",
         type: "payment_proof",
-        createdAt: 3,
         content: JSON.stringify({
           invoice: "lnbc1invoice",
           preimage: "preimage",
@@ -210,11 +285,10 @@ describe("payment proof model", () => {
         }),
       }) as never
     )
-    const proofFailed = parseOrderMessageRumorEvent(
+    const failedProof = parseOrderMessageRumorEvent(
       rumor({
         id: "proof-failed",
         type: "payment_proof",
-        createdAt: 4,
         content: JSON.stringify({
           invoice: "lnbc1invoice",
           preimage: "preimage",
@@ -226,13 +300,12 @@ describe("payment proof model", () => {
       }) as never
     )
 
-    expect(deriveOrderPaymentState([order])).toBe("awaiting_invoice")
-    expect(deriveOrderPaymentState([order, proofRetry])).toBe(
-      "proof_delivery_failed"
-    )
-    expect(deriveOrderPaymentState([order, proofDisputed])).toBe(
-      "proof_disputed"
-    )
-    expect(deriveOrderPaymentState([order, proofFailed])).toBe("payment_failed")
+    expect(disputedProof.type).toBe("payment_proof")
+    expect(failedProof.type).toBe("payment_proof")
+    if (disputedProof.type !== "payment_proof") return
+    if (failedProof.type !== "payment_proof") return
+
+    expect(hasPaymentProofEvidence(disputedProof.payload)).toBe(false)
+    expect(hasPaymentProofEvidence(failedProof.payload)).toBe(false)
   })
 })
