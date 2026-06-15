@@ -403,7 +403,7 @@ export function SignerSwitch({
     : "Conduit currently supports external signers only."
   const extensionNotice =
     !extensionAvailable && !mobileSignerUnavailable
-      ? "No signer extension detected. Install a NIP-07 signer such as Alby or nos2x, then refresh and connect."
+      ? "No complete NIP-07 signer detected yet. Install or unlock a signer such as Alby or nos2x, then try Connect signer again."
       : null
 
   function setOpen(nextOpen: boolean): void {

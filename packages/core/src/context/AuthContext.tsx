@@ -21,11 +21,21 @@ export interface AuthContextValue {
   pubkey: string | null
   status: AuthStatus
   error: string | null
-  connect: () => Promise<void>
+  connect: (options?: AuthConnectOptions) => Promise<void>
   disconnect: () => void
 }
 
+export type AuthConnectMode = "interactive" | "restore"
+
+export interface AuthConnectOptions {
+  mode?: AuthConnectMode
+}
+
 const AUTH_STORAGE_KEY = "conduit:auth"
+const INTERACTIVE_INJECTION_WAIT_MS = 2_000
+const RESTORE_INJECTION_WAIT_MS = 1_000
+const INTERACTIVE_SIGNER_APPROVAL_TIMEOUT_MS = 30_000
+const RESTORE_SIGNER_APPROVAL_TIMEOUT_MS = 4_000
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
@@ -60,10 +70,66 @@ function forgetAuth(): void {
 }
 
 export function hasNip07(): boolean {
-  return typeof window !== "undefined" && !!window.nostr
+  return (
+    typeof window !== "undefined" &&
+    typeof window.nostr?.getPublicKey === "function" &&
+    typeof window.nostr?.signEvent === "function"
+  )
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForNip07(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (!hasNip07() && Date.now() < deadline) {
+    await sleep(200)
+  }
+
+  return hasNip07()
+}
+
+function getMissingSignerMessage(mode: AuthConnectMode): string {
+  if (mode === "restore") {
+    return "Reconnect your signer to continue. Conduit could not find a complete NIP-07 signer in this browser."
+  }
+
+  return "No complete NIP-07 signer found. Install or unlock a Nostr signer, then try again."
+}
+
+function getSignerTimeoutMessage(mode: AuthConnectMode): string {
+  if (mode === "restore") {
+    return "Reconnect your signer to continue. Your browser signer may require a fresh button click before it shows an approval prompt."
+  }
+
+  return "Signer approval timed out. Unlock your signer, check for an extension approval prompt, then try again."
+}
+
+function normalizeSignerConnectError(
+  error: unknown,
+  mode: AuthConnectMode
+): Error {
+  if (!(error instanceof Error)) {
+    return new Error("Failed to connect signer")
+  }
+
+  if (/timed out/i.test(error.message)) {
+    return new Error(getSignerTimeoutMessage(mode))
+  }
+
+  if (/not available|not found/i.test(error.message)) {
+    return new Error(getMissingSignerMessage(mode))
+  }
+
+  return error
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string
+): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs)
@@ -85,20 +151,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const connecting = useRef(false)
   const authEpoch = useRef(0)
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (options: AuthConnectOptions = {}) => {
+    const mode = options.mode ?? "interactive"
     if (connecting.current) return
     connecting.current = true
     const epoch = authEpoch.current
 
-    setStatus("connecting")
+    setStatus(mode === "restore" ? "restoring" : "connecting")
     setError(null)
 
-    // Extensions inject window.nostr asynchronously - wait briefly
-    for (let i = 0; i < 10 && !hasNip07(); i++) {
-      await new Promise((r) => setTimeout(r, 200))
-    }
-    if (!hasNip07()) {
-      const msg = "No NIP-07 extension found. Install a Nostr signer extension."
+    const hasSigner = await waitForNip07(
+      mode === "restore"
+        ? RESTORE_INJECTION_WAIT_MS
+        : INTERACTIVE_INJECTION_WAIT_MS
+    )
+    if (!hasSigner) {
+      const msg = getMissingSignerMessage(mode)
       setStatus("error")
       setError(msg)
       connecting.current = false
@@ -109,8 +177,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const signer = new NDKNip07Signer()
       const user = await withTimeout(
         signer.user(),
-        30_000,
-        "Signer connection timed out. Unlock/approve your NIP-07 extension (e.g., Alby) and retry."
+        mode === "restore"
+          ? RESTORE_SIGNER_APPROVAL_TIMEOUT_MS
+          : INTERACTIVE_SIGNER_APPROVAL_TIMEOUT_MS,
+        getSignerTimeoutMessage(mode)
       )
       const pk = user.pubkey
       if (epoch !== authEpoch.current) return
@@ -120,10 +190,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setStatus("connected")
       rememberAuth(pk)
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to connect signer"
+      const normalizedError = normalizeSignerConnectError(err, mode)
+      const msg = normalizedError.message
       setStatus("error")
       setError(msg)
-      throw err instanceof Error ? err : new Error(msg)
+      throw normalizedError
     } finally {
       connecting.current = false
     }
@@ -149,7 +220,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (cancelled) return
 
       // Don't crash the app on auto-reconnect failure; surface state via `error`.
-      void connect().catch(() => {
+      void connect({ mode: "restore" }).catch(() => {
         if (cancelled) return
         removeSigner()
       })

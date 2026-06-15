@@ -6,6 +6,7 @@ import {
   installLockedTestSigner,
   installRejectingTestSigner,
   installTestSigner,
+  seedStoredAuth,
   unlockTestSigner,
 } from "./helpers/auth"
 
@@ -93,4 +94,30 @@ test("merchant locked signer shows waiting state then connects after unlock", as
       timeout: 10_000,
     })
     .toBe(TEST_MERCHANT_PUBKEY)
+})
+
+test("merchant remembered auth falls back to explicit retry when signer needs activation", async ({
+  page,
+}) => {
+  await seedStoredAuth(page, TEST_MERCHANT_PUBKEY)
+  await installLockedTestSigner(page)
+  await page.goto(merchantUrl)
+
+  await expect(page.getByText("Restoring signer")).toBeVisible()
+  await expect(page.getByText(/fresh button click/i)).toBeVisible({
+    timeout: 8_000,
+  })
+
+  const connectButton = page.getByRole("button", { name: /Connect signer/i })
+  await expect(connectButton).toBeEnabled()
+  await connectButton.click()
+  await expect(page.getByRole("button", { name: /Connecting/i })).toBeDisabled({
+    timeout: 5_000,
+  })
+
+  await unlockTestSigner(page, TEST_MERCHANT_PUBKEY)
+
+  await expect(
+    page.getByRole("heading", { name: "Run your store" })
+  ).toBeVisible({ timeout: 10_000 })
 })
