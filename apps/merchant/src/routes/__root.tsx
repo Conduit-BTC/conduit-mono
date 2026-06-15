@@ -55,8 +55,7 @@ function RootLayout() {
     select: (state) => state.location.pathname,
   })
   const signerConnected = status === "connected" && !!pubkey
-  const signerRestoring =
-    !!pubkey && (status === "restoring" || status === "connecting")
+  const signerRestoring = !!pubkey && status === "restoring"
   const shouldDelayAuthFallback =
     !!pubkey && !signerConnected && !authFallbackReady
 
