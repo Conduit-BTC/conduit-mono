@@ -9,14 +9,20 @@ describe("identity surface contracts", () => {
         "getPendingMerchantDisplayName",
       ],
       "apps/market/src/hooks/useMerchantIdentities.ts": [
-        "useProfiles(visibleMerchantPubkeys",
-        "useProfiles(backgroundMerchantPubkeys",
+        "splitMerchantHydrationTargets",
+        "merchantHydrationTargets.visibleMerchantPubkeys",
+        "merchantHydrationTargets.backgroundMerchantPubkeys",
         "refetchUnresolvedMs: 5_000",
         "refetchUnresolvedMs: 12_000",
+        "maxUnresolvedRefetches: 2",
+        "maxUnresolvedRefetches: 1",
+        "lookupSettledByPubkey",
       ],
       "apps/market/src/lib/marketBrowseModel.ts": [
         "getProfileName(profile)",
-        'status: profileName ? "resolved" : "pending"',
+        '"resolved"',
+        '"fallback"',
+        '"pending"',
         "getPendingMerchantName(pubkey)",
       ],
       "apps/market/src/routes/products/$productId.tsx": [
@@ -38,6 +44,7 @@ describe("identity surface contracts", () => {
       "apps/merchant/src/routes/orders.tsx": [
         "useProfiles(buyerPubkeys",
         "refetchUnresolvedMs: 12_000",
+        "maxUnresolvedRefetches: 1",
       ],
     }
 

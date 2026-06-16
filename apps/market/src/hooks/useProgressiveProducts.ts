@@ -26,6 +26,7 @@ import {
   type ProductCatalogReadInput,
 } from "../lib/productCatalogRead"
 import { getDefaultMarketPerspectiveFollowPubkeys } from "../lib/defaultMarketPerspective"
+import { getProductSourceRelayHintsByPubkey } from "../lib/clientHydration"
 
 const PERSPECTIVE_STREAM_READ_POLICY: CommerceReadPolicy = {
   maxRelays: 32,
@@ -106,29 +107,6 @@ function toProducts(
   result: CommerceResult<CommerceProductRecord[]> | undefined
 ): Product[] {
   return result?.data.map((record) => record.product) ?? []
-}
-
-function mergeProfileRelayHints(
-  ...results: Array<CommerceResult<CommerceProductRecord[]> | undefined>
-): Record<string, string[]> {
-  const byPubkey = new Map<string, Set<string>>()
-  for (const result of results) {
-    for (const record of result?.data ?? []) {
-      if (!record.sourceRelayUrls?.length) continue
-      const current = byPubkey.get(record.product.pubkey) ?? new Set<string>()
-      for (const relayUrl of record.sourceRelayUrls) {
-        current.add(relayUrl)
-      }
-      byPubkey.set(record.product.pubkey, current)
-    }
-  }
-
-  return Object.fromEntries(
-    Array.from(byPubkey.entries()).map(([pubkey, relayUrls]) => [
-      pubkey,
-      Array.from(relayUrls),
-    ])
-  )
 }
 
 function dedupeProducts(products: Product[]): Product[] {
@@ -676,7 +654,7 @@ export function useProgressiveProducts(
       : undefined
   const profileRelayHintsByPubkey = useMemo(
     () =>
-      mergeProfileRelayHints(
+      getProductSourceRelayHintsByPubkey(
         cachedQuery.data,
         firstNetworkQuery.data,
         activeProgressiveResult

@@ -92,6 +92,19 @@ describe("market browse model helpers", () => {
     expect(pending.relayHints).toEqual(["wss://relay.example"])
   })
 
+  it("treats settled empty profile lookup as a fallback identity", () => {
+    const fallback = getMerchantIdentityView(
+      "merchant-a",
+      undefined,
+      ["wss://relay.example"],
+      { lookupSettled: true }
+    )
+
+    expect(fallback.displayName).toBe("Store merchant-a")
+    expect(fallback.status).toBe("fallback")
+    expect(fallback.relayHints).toEqual(["wss://relay.example"])
+  })
+
   it("treats profile names as resolved merchant identity", () => {
     const profile: Profile = {
       pubkey: "merchant-a",

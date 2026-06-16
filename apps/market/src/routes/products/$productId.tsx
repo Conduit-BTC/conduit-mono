@@ -86,6 +86,8 @@ function ProductPage() {
     relayHints: product
       ? productQuery.profileRelayHintsByPubkey[product.pubkey]
       : undefined,
+    refetchUnresolvedMs: 2_000,
+    maxUnresolvedRefetches: 2,
   })
 
   const relatedProductsQuery = useProgressiveProducts({
@@ -108,7 +110,8 @@ function ProductPage() {
   const hasMultipleImages = images.length > 1
   const selectedImage = images[selectedImageIndex] ?? images[0]
   const merchantProfileName = getProfileName(merchantProfile.data)
-  const merchantIdentityPending = !!product && !merchantProfileName
+  const merchantIdentityPending =
+    !!product && !merchantProfileName && !merchantProfile.lookupSettled
   const merchantName = product
     ? getMerchantDisplayName(merchantProfile.data, product.pubkey, {
         chars: 8,
