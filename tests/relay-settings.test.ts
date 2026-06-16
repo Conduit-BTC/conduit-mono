@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import {
   assertSafeNip65RelayList,
+  CANONICAL_APP_BACKPLANE_RELAYS,
   CANONICAL_APP_WRITE_RELAYS,
+  CANONICAL_COMMERCE_DM_FALLBACK_RELAYS,
+  CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS,
   CANONICAL_DEFAULT_RELAYS,
+  CANONICAL_DM_INBOX_DEFAULT_RELAYS,
+  CANONICAL_SEARCH_INDEX_RELAYS,
+  CANONICAL_ZAP_PUBLIC_RELAYS,
   config,
   createDefaultRelaySettings,
   createRelaySettingsEntryFromScan,
@@ -13,6 +19,7 @@ import {
   getCommerceWriteRelayUrls,
   getGeneralWriteRelayUrls,
   getPublishableRelaySettingsEntries,
+  getRelayBucketConfigs,
   loadRelaySettings,
   mergeRelayPreferencesIntoSettings,
   normalizeRelaySettingsState,
@@ -117,32 +124,77 @@ function entry(
 
 describe("relay settings protocol helpers", () => {
   it("keeps relay defaults canonical and excludes retired relay domains", () => {
+    expect(CANONICAL_APP_BACKPLANE_RELAYS).toEqual(["wss://conduitl2.fly.dev"])
+    expect(CANONICAL_APP_WRITE_RELAYS).toEqual(["wss://conduitl2.fly.dev"])
+    expect(CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS).toEqual([
+      "wss://nos.lol",
+      "wss://relay.damus.io",
+      "wss://relay.nostr.net",
+    ])
+    expect(CANONICAL_SEARCH_INDEX_RELAYS).toEqual(["wss://relay.nostr.band"])
+    expect(CANONICAL_COMMERCE_DM_FALLBACK_RELAYS).toEqual([
+      "wss://conduitl2.fly.dev",
+      "wss://inbox.azzamo.net",
+      "wss://nos.lol",
+      "wss://relay.damus.io",
+      "wss://relay.nostr.net",
+    ])
+    expect(CANONICAL_DM_INBOX_DEFAULT_RELAYS).toEqual([
+      "wss://nos.lol",
+      "wss://relay.damus.io",
+      "wss://relay.nostr.net",
+    ])
+    expect(CANONICAL_ZAP_PUBLIC_RELAYS).toEqual([
+      "wss://nos.lol",
+      "wss://relay.damus.io",
+      "wss://relay.nostr.net",
+      "wss://relay.nostr.band",
+    ])
     expect(CANONICAL_DEFAULT_RELAYS).toEqual([
       "wss://conduitl2.fly.dev",
-      "wss://relay.plebeian.market",
-      "wss://relay.primal.net",
-      "wss://relay.damus.io",
       "wss://nos.lol",
-      "wss://nostr.mom",
+      "wss://relay.damus.io",
       "wss://relay.nostr.net",
-      "wss://relay.minibits.cash",
     ])
     for (const relay of CANONICAL_DEFAULT_RELAYS) {
       expect(config.defaultRelays).toContain(relay)
     }
-    expect(CANONICAL_APP_WRITE_RELAYS).toEqual(["wss://conduitl2.fly.dev"])
+    expect(config.appBackplaneRelayUrls).toEqual(CANONICAL_APP_BACKPLANE_RELAYS)
     expect(config.appWriteRelayUrls).toEqual(CANONICAL_APP_WRITE_RELAYS)
+    expect(config.corePublicFallbackRelayUrls).toEqual(
+      CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS
+    )
+    expect(config.searchIndexRelayUrls).toEqual(CANONICAL_SEARCH_INDEX_RELAYS)
+    expect(config.commerceDmFallbackRelayUrls).toEqual(
+      CANONICAL_COMMERCE_DM_FALLBACK_RELAYS
+    )
+    expect(config.dmInboxDefaultRelayUrls).toEqual(
+      CANONICAL_DM_INBOX_DEFAULT_RELAYS
+    )
+    expect(config.zapRelayUrls).toEqual(CANONICAL_ZAP_PUBLIC_RELAYS)
+    expect(getRelayBucketConfigs().map((bucket) => bucket.id)).toEqual([
+      "app_backplane",
+      "core_public_fallback",
+      "search_index",
+      "commerce_dm_fallback",
+      "dm_inbox_default",
+      "zap_public",
+    ])
     expect(config.commerceRelayUrls).toContain("wss://conduitl2.fly.dev")
     expect(config.nip89RelayHint).toBe("wss://conduitl2.fly.dev")
     expect(config.defaultRelays).not.toContain("wss://relay.conduit.market")
+    expect(config.defaultRelays).not.toContain("wss://relay.plebeian.market")
+    expect(config.defaultRelays).not.toContain("wss://relay.primal.net")
+    expect(config.defaultRelays).not.toContain("wss://nostr.mom")
+    expect(config.defaultRelays).not.toContain("wss://relay.minibits.cash")
 
     const settings = createDefaultRelaySettings({
       ...config,
-      defaultRelays: ["wss://relay.conduit.market", "wss://relay.primal.net"],
+      defaultRelays: ["wss://relay.conduit.market", "wss://nos.lol"],
     })
 
     expect(settings.entries.map((relay) => relay.url)).toEqual([
-      "wss://relay.primal.net",
+      "wss://nos.lol",
     ])
     expect(settings.entries.every((relay) => relay.readEnabled)).toBe(true)
     expect(settings.entries.every((relay) => relay.writeEnabled)).toBe(true)

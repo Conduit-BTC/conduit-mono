@@ -148,17 +148,29 @@ function dedupeOrdered(urls: readonly (string | undefined | null)[]): string[] {
 
 function settingsPlanOptions(input: {
   settings?: RelaySettingsState
+  fallbackRelayUrls: readonly string[]
 }): RelayPlanOptions {
   return {
     settings: input.settings,
-    fallbackRelayUrls: config.defaultRelays,
+    fallbackRelayUrls: input.fallbackRelayUrls,
   }
 }
 
+function appAssistedReadFallbackRelayUrls(): string[] {
+  return dedupeOrdered([
+    ...config.appBackplaneRelayUrls,
+    ...config.corePublicFallbackRelayUrls,
+  ])
+}
+
+function corePublicReadFallbackRelayUrls(): string[] {
+  return dedupeOrdered(config.corePublicFallbackRelayUrls)
+}
+
 function defaultRecipientWriteFallbackRelayUrls(): string[] {
-  return config.publicRelayUrls.length > 0
-    ? config.publicRelayUrls
-    : config.defaultRelays
+  return config.commerceDmFallbackRelayUrls.length > 0
+    ? config.commerceDmFallbackRelayUrls
+    : appAssistedReadFallbackRelayUrls()
 }
 
 function hintReadRelaysForAuthors(
@@ -217,22 +229,36 @@ function clampFanout(urls: string[], limit: number | undefined): string[] {
  * The result is deduplicated and capped at `maxRelays`.
  */
 export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
-  const settingsOpts = settingsPlanOptions(input)
-
   const baseRelays = (() => {
     switch (input.intent) {
       case "commerce_products":
       case "author_products":
-        return getCommerceReadRelayUrls(settingsOpts)
+        return getCommerceReadRelayUrls(
+          settingsPlanOptions({
+            settings: input.settings,
+            fallbackRelayUrls: appAssistedReadFallbackRelayUrls(),
+          })
+        )
+      case "dm_inbox":
+        return getGeneralReadRelayUrls(
+          settingsPlanOptions({
+            settings: input.settings,
+            fallbackRelayUrls: config.commerceDmFallbackRelayUrls,
+          })
+        )
       case "product_card_social_summary":
       case "product_comments_preview":
       case "product_reviews":
       case "profile_social_feed":
       case "profiles":
       case "relay_lists":
-      case "dm_inbox":
       case "general":
-        return getGeneralReadRelayUrls(settingsOpts)
+        return getGeneralReadRelayUrls(
+          settingsPlanOptions({
+            settings: input.settings,
+            fallbackRelayUrls: corePublicReadFallbackRelayUrls(),
+          })
+        )
     }
   })()
 
@@ -278,11 +304,20 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
  * recipient delivery.
  */
 export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
-  const settingsOpts = settingsPlanOptions(input)
   const userWriteRelays =
     input.intent === "author_event"
-      ? getCommerceWriteRelayUrls(settingsOpts)
-      : getGeneralWriteRelayUrls(settingsOpts)
+      ? getCommerceWriteRelayUrls(
+          settingsPlanOptions({
+            settings: input.settings,
+            fallbackRelayUrls: [],
+          })
+        )
+      : getGeneralWriteRelayUrls(
+          settingsPlanOptions({
+            settings: input.settings,
+            fallbackRelayUrls: [],
+          })
+        )
 
   if (input.intent === "author_event") {
     const ordered = dedupeOrdered(userWriteRelays)

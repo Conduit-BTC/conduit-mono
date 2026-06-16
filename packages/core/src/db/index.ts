@@ -300,6 +300,10 @@ function getCommerceCacheScope(): string {
     defaultRelays: config.defaultRelays,
     commerceRelayUrls: config.commerceRelayUrls,
     publicRelayUrls: config.publicRelayUrls,
+    corePublicFallbackRelayUrls: config.corePublicFallbackRelayUrls,
+    searchIndexRelayUrls: config.searchIndexRelayUrls,
+    commerceDmFallbackRelayUrls: config.commerceDmFallbackRelayUrls,
+    zapRelayUrls: config.zapRelayUrls,
   })
 }
 

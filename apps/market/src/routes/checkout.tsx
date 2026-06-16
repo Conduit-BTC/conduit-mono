@@ -1288,7 +1288,7 @@ function CheckoutPage() {
           recipientPubkey: selectedMerchant,
           zapContent,
           explicitRelayUrls: ndk.explicitRelayUrls ?? [],
-          publicRelayUrls: config.publicRelayUrls,
+          zapRelayUrls: config.zapRelayUrls,
         },
         {
           fetchLnurlInvoice,

@@ -332,7 +332,9 @@ describe("planRelayWrites", () => {
       relayLists: new Map(),
       settings: state,
     })
-    expect(plan.primaryRelayUrls).toEqual(config.publicRelayUrls.slice(0, 4))
+    expect(plan.primaryRelayUrls).toEqual(
+      config.commerceDmFallbackRelayUrls.slice(0, 4)
+    )
     expect(plan.primaryRelayUrls).not.toContain("wss://outbox.example.com")
     expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.example.com"])
   })
@@ -345,7 +347,9 @@ describe("planRelayWrites", () => {
       settings: settings([]),
     })
 
-    expect(plan.primaryRelayUrls).toEqual(config.publicRelayUrls.slice(0, 4))
+    expect(plan.primaryRelayUrls).toEqual(
+      config.commerceDmFallbackRelayUrls.slice(0, 4)
+    )
     expect(plan.broadcastRelayUrls).toEqual([])
   })
 
