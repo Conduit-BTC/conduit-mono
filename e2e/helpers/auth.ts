@@ -127,6 +127,15 @@ export async function unlockTestSigner(
   }, pubkey)
 }
 
+export async function seedStoredAuth(
+  page: Page,
+  pubkey: string
+): Promise<void> {
+  await page.addInitScript((signerPubkey) => {
+    localStorage.setItem("conduit:auth", signerPubkey)
+  }, pubkey)
+}
+
 export async function installLateTestSigner(
   page: Page,
   pubkey: string,

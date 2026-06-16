@@ -55,8 +55,7 @@ function RootLayout() {
     select: (state) => state.location.pathname,
   })
   const signerConnected = status === "connected" && !!pubkey
-  const signerRestoring =
-    !!pubkey && (status === "restoring" || status === "connecting")
+  const signerRestoring = !!pubkey && status === "restoring"
   const shouldDelayAuthFallback =
     !!pubkey && !signerConnected && !authFallbackReady
 
@@ -195,6 +194,10 @@ function ConnectGate() {
   }, [])
   const mobileSignerUnavailable =
     isProbablyMobileBrowser && !extensionAvailable && status !== "connected"
+  const extensionNotice =
+    !extensionAvailable && !mobileSignerUnavailable
+      ? "No complete NIP-07 signer detected yet. Install or unlock a signer such as Alby or nos2x, then try Connect signer again."
+      : null
 
   async function handleConnect(): Promise<void> {
     if (authPending) return
@@ -232,6 +235,7 @@ function ConnectGate() {
             "Sell through Conduit, your own storefront, and the wider Nostr network.",
           ]}
           error={error}
+          extensionNotice={extensionNotice}
           mobileSignerUnavailable={mobileSignerUnavailable}
           connectPending={authPending || isWorking}
           connectDisabled={isWorking || authPending}
