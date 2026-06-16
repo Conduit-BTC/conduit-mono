@@ -15,7 +15,7 @@
     "@conduit/core": "workspace:*",
     "@conduit/ui": "workspace:*",
     "@nostr-dev-kit/ndk": "^3.0.3",
-    "@tanstack/react-query": "^5.62.8",
+    "@tanstack/react-query": "^5.101.0",
     "@tanstack/react-router": "^1.170.15",
     "country-list": "^2.4.1",
     "lucide-react": "^1.18.0",
