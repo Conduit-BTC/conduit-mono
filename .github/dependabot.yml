@@ -7,12 +7,69 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
 
-  - package-ecosystem: "npm"
+  - package-ecosystem: "bun"
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 8
+    cooldown:
+      semver-patch-days: 1
+      semver-minor-days: 3
+      semver-major-days: 14
     groups:
-      app-dependencies:
+      ui-leaf-dependencies:
+        applies-to: version-updates
         patterns:
-          - "*"
+          - "lucide-react"
+          - "tailwind-merge"
+
+      lint-tooling:
+        applies-to: version-updates
+        patterns:
+          - "@eslint/*"
+          - "@typescript-eslint/*"
+          - "eslint"
+          - "eslint-*"
+          - "husky"
+          - "lint-staged"
+          - "prettier"
+          - "typescript-eslint"
+
+      build-tooling:
+        applies-to: version-updates
+        patterns:
+          - "@tanstack/router-*"
+          - "@vitejs/*"
+          - "vite"
+
+      typescript-compiler:
+        applies-to: version-updates
+        patterns:
+          - "@types/*"
+          - "typescript"
+
+      css-tooling:
+        applies-to: version-updates
+        patterns:
+          - "autoprefixer"
+          - "class-variance-authority"
+          - "clsx"
+          - "postcss"
+          - "tailwindcss"
+
+      schema-validation:
+        applies-to: version-updates
+        patterns:
+          - "@hookform/resolvers"
+          - "react-hook-form"
+          - "zod"
+
+      protocol-runtime:
+        applies-to: version-updates
+        patterns:
+          - "@getalby/sdk"
+          - "@nostr-dev-kit/ndk"
+          - "nostr-tools"
