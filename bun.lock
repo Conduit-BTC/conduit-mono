@@ -6,7 +6,7 @@
       "name": "conduit-mono",
       "dependencies": {
         "react": "^19.2.7",
-        "react-dom": "^19.0.0",
+        "react-dom": "^19.2.7",
       },
       "devDependencies": {
         "@eslint/js": "^9.39.2",
@@ -37,7 +37,7 @@
         "lucide-react": "^1.18.0",
         "qrcode.react": "^4.2.0",
         "react": "^19.2.7",
-        "react-dom": "^19.0.0",
+        "react-dom": "^19.2.7",
         "react-hook-form": "^7.54.2",
         "zod": "^4.4.3",
       },
@@ -68,7 +68,7 @@
         "country-list": "^2.4.1",
         "lucide-react": "^1.18.0",
         "react": "^19.2.7",
-        "react-dom": "^19.0.0",
+        "react-dom": "^19.2.7",
         "react-hook-form": "^7.54.2",
         "zod": "^4.4.3",
       },
@@ -98,7 +98,7 @@
         "@tanstack/react-query": "^5.62.8",
         "@tanstack/react-router": "^1.170.15",
         "react": "^19.2.7",
-        "react-dom": "^19.0.0",
+        "react-dom": "^19.2.7",
         "react-hook-form": "^7.54.2",
         "zod": "^4.4.3",
       },
@@ -164,7 +164,7 @@
       },
       "peerDependencies": {
         "react": "^19.0.0",
-        "react-dom": "^19.0.0",
+        "react-dom": "^19.2.7",
       },
     },
   },
@@ -1093,7 +1093,7 @@
 
     "react": ["react@19.2.7", "", {}, "sha512-HNe9WslTbXmFK8o8cmwgAeJFSBvt1bPdHCVKtaaV+WlAN36mpT4hcRpwbf3fY56ar2oIXzsBpOAiIRHAdY0OlQ=="],
 
-    "react-dom": ["react-dom@19.2.4", "", { "dependencies": { "scheduler": "^0.27.0" }, "peerDependencies": { "react": "^19.2.4" } }, "sha512-AXJdLo8kgMbimY95O2aKQqsz2iWi9jMgKJhRBAxECE4IFxfcazB2LmzloIoibJI3C12IlY20+KFaLv+71bUJeQ=="],
+    "react-dom": ["react-dom@19.2.7", "", { "dependencies": { "scheduler": "^0.27.0" }, "peerDependencies": { "react": "^19.2.7" } }, "sha512-t0BRVXvbiE/o20Hfw669rLbMCDWtYZLvmJigy2f0MxsXF+71pxhR3xOkspmsO8h3ZlNzyibAmtCa3l4lYKk6gQ=="],
 
     "react-hook-form": ["react-hook-form@7.71.1", "", { "peerDependencies": { "react": "^16.8.0 || ^17 || ^18 || ^19" } }, "sha512-9SUJKCGKo8HUSsCO+y0CtqkqI5nNuaDqTxyqPsZPqIwudpj4rCrAz/jZV+jn57bx5gtZKOh3neQu94DXMc+w5w=="],
 
