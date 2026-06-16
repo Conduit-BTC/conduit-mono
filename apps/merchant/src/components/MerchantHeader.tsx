@@ -5,7 +5,7 @@ import {
   Copy,
   CreditCard,
   ExternalLink,
-  Github,
+  GitFork,
   Info,
   LogOut,
   Menu,
@@ -101,7 +101,7 @@ const merchantResourceLinks: readonly MerchantResourceLink[] = [
   {
     label: "GitHub",
     href: "https://github.com/Conduit-BTC/conduit-mono",
-    icon: Github,
+    icon: GitFork,
   },
   {
     label: "Support",

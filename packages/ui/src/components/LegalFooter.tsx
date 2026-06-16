@@ -1,5 +1,5 @@
 import type { ReactNode } from "react"
-import { CircleHelp, Github, type LucideIcon } from "lucide-react"
+import { CircleHelp, GitFork, type LucideIcon } from "lucide-react"
 import { cn } from "../utils"
 
 interface LegalFooterBaseIconLink {
@@ -36,7 +36,7 @@ const DEFAULT_ICON_LINKS: LegalFooterIconLink[] = [
   {
     href: "https://github.com/Conduit-BTC/conduit-mono",
     label: "GitHub",
-    icon: Github,
+    icon: GitFork,
   },
   {
     href: "https://njump.me/npub1nkfqwlz7xkhhdaa3ekz88qqqk7a0ks7jpv9zdsv0u206swxjw9rq0g2svu",
