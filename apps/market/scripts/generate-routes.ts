@@ -11,7 +11,7 @@ async function main() {
       target: "react",
       routesDirectory: "src/routes",
       generatedRouteTree: "src/routeTree.gen.ts",
-      quoteStyle: "double",
+      quoteStyle: "single",
       semicolons: false,
       disableLogging: true,
     },
@@ -26,4 +26,3 @@ main().catch((err) => {
   console.error(err instanceof Error ? err.message : String(err))
   process.exit(1)
 })
-
