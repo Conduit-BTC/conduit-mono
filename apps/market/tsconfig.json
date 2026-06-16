@@ -4,7 +4,6 @@
     "composite": false,
     "noEmit": true,
     "jsx": "react-jsx",
-    "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
       "@conduit/core": ["../../packages/core/src"],
