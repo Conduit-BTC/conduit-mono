@@ -84,7 +84,9 @@ export async function payCheckoutInvoice(
     } catch (error) {
       const diagnostic = classifyNwcPaymentError(error, input.walletConnection)
       if (!diagnostic.safeManualFallback) {
-        throw new Error(`${diagnostic.detail} ${diagnostic.action}`)
+        throw new Error(`${diagnostic.detail} ${diagnostic.action}`, {
+          cause: error,
+        })
       }
       diagnostics.push(diagnostic)
       failures.push(`${diagnostic.title}: ${diagnostic.action}`)
@@ -132,7 +134,8 @@ export async function payCheckoutInvoice(
       const message = getErrorMessage(error, "Browser wallet payment failed")
       if (isWeblnAmbiguousProofFailure(error)) {
         throw new Error(
-          `${message} Check your wallet before trying another payment path.`
+          `${message} Check your wallet before trying another payment path.`,
+          { cause: error }
         )
       }
       failures.push(message)
