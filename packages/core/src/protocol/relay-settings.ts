@@ -789,7 +789,9 @@ export function createUnreachableRelaySettingsEntry(
         ? (existing?.writeEnabled ?? false)
         : false,
     section: "public",
-    commercePriority: undefined,
+    commercePriority: preservePreference
+      ? existing?.commercePriority
+      : undefined,
     capabilities: {
       ...baseCapabilities,
       commerce: false,
@@ -981,7 +983,12 @@ export function normalizeRelaySettingsState(
     entries: entries.map((entry) =>
       entry.section === "commerce"
         ? { ...entry, commercePriority: priorityByUrl.get(entry.url) ?? 0 }
-        : { ...entry, commercePriority: undefined }
+        : {
+            ...entry,
+            commercePriority: entry.warnings.unreachable
+              ? entry.commercePriority
+              : undefined,
+          }
     ),
   }
 }

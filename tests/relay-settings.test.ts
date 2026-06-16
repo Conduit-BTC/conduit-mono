@@ -342,6 +342,42 @@ describe("relay settings protocol helpers", () => {
     expect(relay.warnings.unreachable).toBe(true)
   })
 
+  it("preserves commerce priority across transient scan failures", () => {
+    const unreachable = createUnreachableRelaySettingsEntry(
+      "commerce.example",
+      "manual",
+      10,
+      entry("wss://commerce.example", {
+        section: "commerce",
+        commercePriority: 2,
+        readEnabled: true,
+        writeEnabled: true,
+        source: "manual",
+      })
+    )
+    const normalized = state([unreachable])
+    const restoredScan = deriveRelayScanResult(
+      "wss://commerce.example",
+      {
+        supported_nips: [9, 42, 50, 59],
+      },
+      {
+        commerceRelayUrls: ["wss://commerce.example"],
+      }
+    )
+    const restored = createRelaySettingsEntryFromScan(
+      restoredScan,
+      normalized.entries[0]
+    )
+
+    expect(normalized.entries[0]?.section).toBe("public")
+    expect(normalized.entries[0]?.commercePriority).toBe(2)
+    expect(normalized.entries[0]?.capabilities.commerce).toBe(false)
+    expect(normalized.entries[0]?.warnings.unreachable).toBe(true)
+    expect(restored.section).toBe("commerce")
+    expect(restored.commercePriority).toBe(2)
+  })
+
   it("orders commerce reads before public fallback without manual priority", () => {
     const settings = state([
       entry("wss://public.example"),
