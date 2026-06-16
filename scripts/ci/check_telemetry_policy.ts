@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
+import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs"
 import { join, relative } from "node:path"
 
 export const allowedTelemetryProperties = new Set([
@@ -71,6 +71,8 @@ const telemetryApiPattern =
 const literalTelemetryCallPattern =
   /\b(?:posthog\.capture|plausible|trackTelemetry|recordTelemetryEvent)\s*\(\s*["'`]([a-z0-9_]+)["'`]/g
 
+const skippedWalkDirectoryNames = new Set([".git", "dist", "node_modules"])
+
 function walkFiles(
   root: string,
   predicate: (path: string) => boolean
@@ -79,8 +81,12 @@ function walkFiles(
 
   const files: string[] = []
   for (const entry of readdirSync(root)) {
+    if (skippedWalkDirectoryNames.has(entry)) continue
+
     const path = join(root, entry)
-    const stats = statSync(path)
+    const stats = lstatSync(path)
+    if (stats.isSymbolicLink()) continue
+
     if (stats.isDirectory()) {
       files.push(...walkFiles(path, predicate))
       continue

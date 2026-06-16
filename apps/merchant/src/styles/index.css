@@ -1,8 +1,15 @@
-@import "@conduit/ui/styles/site.css";
+@import "tailwindcss";
+@config "../../tailwind.config.js";
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--border);
+  }
+}
 
 body {
   font-family: var(--font-body);

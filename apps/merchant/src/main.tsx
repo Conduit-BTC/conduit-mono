@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools"
 import { AuthProvider, ConduitSessionProvider } from "@conduit/core"
 import { routeTree } from "./routeTree.gen"
+import "@conduit/ui/styles/site.css"
 import "./styles/index.css"
 
 const queryClient = new QueryClient()
