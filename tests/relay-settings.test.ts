@@ -36,25 +36,49 @@ function entry(
   url: string,
   overrides: Partial<RelaySettingsEntry> = {}
 ): RelaySettingsEntry {
+  const baseCapabilities: RelaySettingsEntry["capabilities"] = {
+    nip11: true,
+    search: false,
+    dm: false,
+    auth: false,
+    commerce: false,
+    protectedMessages: false,
+    listings: false,
+    cleanup: false,
+  }
+  const commerceCapabilities: RelaySettingsEntry["capabilities"] = {
+    ...baseCapabilities,
+    dm: true,
+    auth: true,
+    commerce: true,
+    protectedMessages: true,
+    listings: true,
+    cleanup: true,
+  }
+  const baseWarnings: RelaySettingsEntry["warnings"] = {
+    dmWithoutAuth: false,
+    staleRelayInfo: false,
+    unreachable: false,
+    commercePartialSupport: false,
+  }
+  const capabilities =
+    overrides.capabilities ??
+    (overrides.section === "commerce" ? commerceCapabilities : baseCapabilities)
+  const warnings = {
+    ...baseWarnings,
+    ...overrides.warnings,
+  }
+
   return {
     url,
     readEnabled: true,
     writeEnabled: false,
     section: "public",
-    capabilities: {
-      nip11: true,
-      search: false,
-      dm: false,
-      auth: false,
-      commerce: false,
-    },
-    warnings: {
-      dmWithoutAuth: false,
-      staleRelayInfo: false,
-      unreachable: false,
-      commercePartialSupport: false,
-    },
+    capabilities,
+    warnings,
     ...overrides,
+    capabilities,
+    warnings,
   }
 }
 
@@ -149,7 +173,7 @@ describe("relay settings protocol helpers", () => {
       "wss://relay.plebeian.market",
       {
         name: "Plebeian Market",
-        supported_nips: [17, 42, 50],
+        supported_nips: [9, 42, 50, 59],
       },
       { now: () => 10 }
     )
@@ -160,44 +184,134 @@ describe("relay settings protocol helpers", () => {
       dm: true,
       auth: true,
       commerce: false,
+      protectedMessages: true,
+      listings: false,
+      cleanup: true,
+    })
+    expect(verified.observations.protectedMessages).toMatchObject({
+      supported: true,
+      status: "advertised",
+      confidence: "advertised",
+      evidence: ["nip11"],
+    })
+    expect(verified.observations.cleanup).toMatchObject({
+      supported: true,
+      status: "advertised",
+      confidence: "advertised",
+      evidence: ["nip11"],
     })
     expect(verified.warnings.dmWithoutAuth).toBe(false)
     expect(verified.warnings.commercePartialSupport).toBe(true)
     expect(verified.scannedAt).toBe(10)
 
     const dmWithoutAuth = deriveRelayScanResult("wss://relay.example", {
-      supported_nips: [17],
+      supported_nips: [59],
     })
 
     expect(dmWithoutAuth.capabilities.dm).toBe(true)
+    expect(dmWithoutAuth.capabilities.protectedMessages).toBe(true)
     expect(dmWithoutAuth.capabilities.auth).toBe(false)
     expect(dmWithoutAuth.warnings.dmWithoutAuth).toBe(true)
     expect(dmWithoutAuth.warnings.commercePartialSupport).toBe(true)
   })
 
-  it("requires the full commerce NIP profile before marking a relay commerce", () => {
-    const scanned = deriveRelayScanResult("wss://relay.example", {
-      supported_nips: [17, 33, 42, 65, 99],
-    })
+  it("uses the Conduit commerce profile instead of client/event NIPs", () => {
+    const scanned = deriveRelayScanResult(
+      "wss://commerce.example",
+      {
+        supported_nips: [9, 42, 50, 59],
+      },
+      {
+        commerceRelayUrls: ["wss://commerce.example"],
+      }
+    )
 
     expect(scanned.capabilities.commerce).toBe(true)
+    expect(scanned.capabilities.listings).toBe(true)
+    expect(scanned.commerceProfileVersion).toBe(1)
+    expect(scanned.observations.listings).toMatchObject({
+      supported: true,
+      status: "known",
+      confidence: "known",
+      evidence: ["conduit-commerce-profile"],
+    })
     expect(scanned.warnings.commercePartialSupport).toBe(false)
+
+    const legacyClientEventNips = deriveRelayScanResult(
+      "wss://legacy.example",
+      {
+        supported_nips: [17, 33, 42, 65, 99],
+      }
+    )
+
+    expect(legacyClientEventNips.capabilities.commerce).toBe(false)
+    expect(legacyClientEventNips.capabilities.dm).toBe(false)
+    expect(legacyClientEventNips.warnings.commercePartialSupport).toBe(false)
+
+    const profiledWithoutAuth = deriveRelayScanResult(
+      "wss://commerce.example",
+      {
+        supported_nips: [9, 59],
+      },
+      {
+        commerceRelayUrls: ["wss://commerce.example"],
+      }
+    )
+
+    expect(profiledWithoutAuth.capabilities.commerce).toBe(false)
+    expect(profiledWithoutAuth.capabilities.listings).toBe(true)
+    expect(profiledWithoutAuth.warnings.dmWithoutAuth).toBe(true)
+    expect(profiledWithoutAuth.warnings.commercePartialSupport).toBe(true)
 
     const partial = deriveRelayScanResult("wss://partial.example", {
       supported_nips: [33, 65, 99],
     })
 
     expect(partial.capabilities.commerce).toBe(false)
-    expect(partial.warnings.commercePartialSupport).toBe(true)
+    expect(partial.warnings.commercePartialSupport).toBe(false)
   })
 
   it("does not mark configured relays as commerce without NIP-11 evidence", () => {
-    const scanned = deriveRelayScanResult("wss://relay.conduit.market", {
-      supported_nips: [17, 42, 50],
+    const scanned = deriveRelayScanResult("wss://conduitl2.fly.dev", null, {
+      commerceRelayUrls: ["wss://conduitl2.fly.dev"],
     })
 
+    expect(scanned.reachable).toBe(false)
     expect(scanned.capabilities.commerce).toBe(false)
-    expect(scanned.warnings.commercePartialSupport).toBe(true)
+    expect(scanned.warnings.commercePartialSupport).toBe(false)
+  })
+
+  it("demotes stale persisted commerce placement without current details", () => {
+    const settings = normalizeRelaySettingsState({
+      version: 1,
+      updatedAt: 1,
+      entries: [
+        {
+          url: "wss://old-commerce.example",
+          readEnabled: true,
+          writeEnabled: true,
+          section: "commerce",
+          commercePriority: 0,
+          capabilities: {
+            nip11: true,
+            search: true,
+            dm: true,
+            auth: true,
+            commerce: true,
+          },
+          warnings: {
+            dmWithoutAuth: false,
+            staleRelayInfo: false,
+            unreachable: false,
+            commercePartialSupport: false,
+          },
+        },
+      ],
+    })
+
+    expect(settings.entries[0]?.section).toBe("public")
+    expect(settings.entries[0]?.commercePriority).toBeUndefined()
+    expect(settings.entries[0]?.capabilities.commerce).toBe(false)
   })
 
   it("keeps unreachable relays disabled instead of silently discarding them", () => {
@@ -223,6 +337,8 @@ describe("relay settings protocol helpers", () => {
 
     expect(relay.readEnabled).toBe(true)
     expect(relay.writeEnabled).toBe(true)
+    expect(relay.section).toBe("public")
+    expect(relay.capabilities.commerce).toBe(false)
     expect(relay.warnings.unreachable).toBe(true)
   })
 
@@ -239,6 +355,9 @@ describe("relay settings protocol helpers", () => {
           dm: true,
           auth: true,
           commerce: true,
+          protectedMessages: true,
+          listings: true,
+          cleanup: true,
         },
       }),
       entry("wss://commerce-a.example", {
@@ -251,6 +370,9 @@ describe("relay settings protocol helpers", () => {
           dm: true,
           auth: true,
           commerce: true,
+          protectedMessages: true,
+          listings: true,
+          cleanup: true,
         },
       }),
     ])
@@ -536,9 +658,15 @@ describe("relay settings protocol helpers", () => {
     expect(publicEntry.readEnabled).toBe(true)
     expect(publicEntry.writeEnabled).toBe(false)
 
-    const commerceScan = deriveRelayScanResult("wss://commerce.example", {
-      supported_nips: [17, 33, 42, 65, 99],
-    })
+    const commerceScan = deriveRelayScanResult(
+      "wss://commerce.example",
+      {
+        supported_nips: [9, 42, 50, 59],
+      },
+      {
+        commerceRelayUrls: ["wss://commerce.example"],
+      }
+    )
     const commerceEntry = createRelaySettingsEntryFromScan(commerceScan)
 
     expect(commerceEntry.section).toBe("commerce")

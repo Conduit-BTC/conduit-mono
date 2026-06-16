@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  Eraser,
   GripVertical,
   LockKeyhole,
   Plus,
@@ -32,6 +33,9 @@ interface RelayCapabilities {
   dm: boolean
   auth: boolean
   commerce: boolean
+  protectedMessages?: boolean
+  listings?: boolean
+  cleanup?: boolean
 }
 
 interface RelayWarnings {
@@ -143,10 +147,10 @@ function getRelayWarningText(entry: RelaySettingsPanelEntry): string | null {
     return "Relay is unreachable. It is kept disabled until verification succeeds."
   }
   if (entry.warnings.dmWithoutAuth) {
-    return "DM relay without auth. Conduit may limit DM use here because access controls may be weaker."
+    return "Protected-message relay without auth. Conduit may limit private commerce messaging here because relay access controls may be weaker."
   }
   if (entry.warnings.commercePartialSupport) {
-    return "Some commerce signals were detected, but this relay does not meet the full profile: NIP-33, NIP-65, NIP-99, NIP-17, and NIP-42."
+    return "Commerce checks are incomplete. This relay has commerce-relevant signals, but has not passed Conduit's listing, protected-message, cleanup, and auth requirements."
   }
   if (entry.warnings.staleRelayInfo) {
     return "Relay information is cached or seeded. Refresh to verify current capabilities."
@@ -162,7 +166,7 @@ function getRelayCompatibilityText(entry: RelaySettingsPanelEntry): string {
     return "Commerce compatible. Conduit can prioritize this relay for products, stock, orders, and merchant messages."
   }
   if (entry.warnings.commercePartialSupport) {
-    return "Partial commerce signals detected. Conduit keeps this relay public until NIP-33, NIP-65, NIP-99, NIP-17, and NIP-42 are advertised."
+    return "Commerce signals detected, but Conduit keeps this relay public until listing, protected-message, cleanup, and auth checks are complete."
   }
   if (entry.capabilities.nip11) {
     return "Public relay verified. Conduit can use it for general Nostr reads or writes when enabled."
@@ -171,6 +175,16 @@ function getRelayCompatibilityText(entry: RelaySettingsPanelEntry): string {
     return "Compatibility has not been freshly verified. Refresh this relay to update detected capabilities."
   }
   return "Compatibility has not been scanned yet."
+}
+
+function hasProtectedMessageCapability(
+  entry: RelaySettingsPanelEntry
+): boolean {
+  return entry.capabilities.protectedMessages ?? entry.capabilities.dm
+}
+
+function hasCleanupCapability(entry: RelaySettingsPanelEntry): boolean {
+  return entry.capabilities.cleanup === true
 }
 
 function getRelaySourceMeta(entry: RelaySettingsPanelEntry): {
@@ -311,6 +325,8 @@ function RelayRow({
   const draggable = section === "commerce" && !!onDropRelay
   const statusLabel = scanning ? "Checking" : getRelayStatusLabel(entry)
   const sourceMeta = getRelaySourceMeta(entry)
+  const supportsProtectedMessages = hasProtectedMessageCapability(entry)
+  const supportsCleanup = hasCleanupCapability(entry)
 
   function handleDragStart(event: DragEvent<HTMLDivElement>): void {
     if (!draggable) return
@@ -376,28 +392,18 @@ function RelayRow({
                 label={
                   entry.capabilities.commerce
                     ? "Commerce compatible"
-                    : entry.warnings.commercePartialSupport
-                      ? "Partial commerce"
-                      : "Public relay"
+                    : "Public relay"
                 }
                 description={compatibilityText}
               >
                 <StatusPill
-                  variant={
-                    entry.capabilities.commerce
-                      ? "success"
-                      : entry.warnings.commercePartialSupport
-                        ? "warning"
-                        : "neutral"
-                  }
+                  variant={entry.capabilities.commerce ? "success" : "neutral"}
                   noIcon
                   className="cursor-default py-0.5 text-[0.68rem]"
                 >
                   {entry.capabilities.commerce
                     ? "Commerce compatible"
-                    : entry.warnings.commercePartialSupport
-                      ? "Partial commerce"
-                      : "Public relay"}
+                    : "Public relay"}
                 </StatusPill>
               </CapabilityTooltip>
               {entry.relayName ? <span>{entry.relayName}</span> : null}
@@ -449,17 +455,17 @@ function RelayRow({
             }
           />
           <CapabilityIcon
-            active={entry.capabilities.dm}
+            active={supportsProtectedMessages}
             icon={Send}
             label={
-              entry.capabilities.dm
-                ? "DM support detected"
-                : "DM support not advertised"
+              supportsProtectedMessages
+                ? "Protected messages detected"
+                : "Protected messages not detected"
             }
             description={
-              entry.capabilities.dm
-                ? `This relay advertises NIP-17 support. Conduit can consider it for modern encrypted buyer and merchant message delivery. ${compatibilityText}`
-                : `This relay does not advertise NIP-17 support. Conduit should avoid depending on it for buyer and merchant message delivery. ${compatibilityText}`
+              supportsProtectedMessages
+                ? `This relay advertises or is profiled for NIP-59 gift-wrap transport using kind 1059. Conduit can consider it for encrypted buyer and merchant message delivery. ${compatibilityText}`
+                : `This relay has not shown NIP-59 gift-wrap transport support. Conduit should avoid depending on it for buyer and merchant message delivery. ${compatibilityText}`
             }
           />
           <CapabilityIcon
@@ -467,17 +473,31 @@ function RelayRow({
             icon={LockKeyhole}
             label={
               entry.warnings.dmWithoutAuth
-                ? "DM relay without auth"
-                : "Auth supported"
+                ? "Protected messages without auth"
+                : entry.capabilities.auth
+                  ? "Auth supported"
+                  : "Auth not advertised"
             }
             description={
               entry.warnings.dmWithoutAuth
-                ? `This relay advertises NIP-17 DMs but not NIP-42 auth. Message content remains encrypted, but relay access controls may be weaker, so Conduit may limit protected messaging use here. ${compatibilityText}`
+                ? `This relay has protected-message transport but does not advertise or require NIP-42 auth. Message content remains encrypted, but relay access controls may be weaker, so Conduit may limit protected messaging use here. ${compatibilityText}`
                 : entry.capabilities.auth
                   ? `This relay advertises or requires NIP-42 authentication. Conduit can authenticate when a relay requires signed access for protected reads or writes. ${compatibilityText}`
                   : `This relay does not advertise NIP-42 authentication. Conduit can still use it for public reads or writes, but should avoid it for protected messaging paths. ${compatibilityText}`
             }
             warning={entry.warnings.dmWithoutAuth}
+          />
+          <CapabilityIcon
+            active={supportsCleanup}
+            icon={Eraser}
+            label={
+              supportsCleanup ? "Cleanup supported" : "Cleanup not detected"
+            }
+            description={
+              supportsCleanup
+                ? `This relay advertises or is profiled for cleanup support. Conduit can request NIP-09 deletion for product replacement cleanup, and may use NIP-62 vanish behavior when protected/private traces are in scope. ${compatibilityText}`
+                : `This relay has not shown cleanup support. Conduit should not assume product deletion requests or private-trace cleanup behavior will be honored here. ${compatibilityText}`
+            }
           />
           {(entry.warnings.unreachable ||
             entry.warnings.commercePartialSupport ||

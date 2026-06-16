@@ -15,25 +15,49 @@ function entry(
   url: string,
   overrides: Partial<RelaySettingsEntry> = {}
 ): RelaySettingsEntry {
+  const baseCapabilities: RelaySettingsEntry["capabilities"] = {
+    nip11: true,
+    search: false,
+    dm: false,
+    auth: false,
+    commerce: false,
+    protectedMessages: false,
+    listings: false,
+    cleanup: false,
+  }
+  const commerceCapabilities: RelaySettingsEntry["capabilities"] = {
+    ...baseCapabilities,
+    dm: true,
+    auth: true,
+    commerce: true,
+    protectedMessages: true,
+    listings: true,
+    cleanup: true,
+  }
+  const baseWarnings: RelaySettingsEntry["warnings"] = {
+    dmWithoutAuth: false,
+    staleRelayInfo: false,
+    unreachable: false,
+    commercePartialSupport: false,
+  }
+  const capabilities =
+    overrides.capabilities ??
+    (overrides.section === "commerce" ? commerceCapabilities : baseCapabilities)
+  const warnings = {
+    ...baseWarnings,
+    ...overrides.warnings,
+  }
+
   return {
     url,
     readEnabled: true,
     writeEnabled: false,
     section: "public",
-    capabilities: {
-      nip11: true,
-      search: false,
-      dm: false,
-      auth: false,
-      commerce: false,
-    },
-    warnings: {
-      dmWithoutAuth: false,
-      staleRelayInfo: false,
-      unreachable: false,
-      commercePartialSupport: false,
-    },
+    capabilities,
+    warnings,
     ...overrides,
+    capabilities,
+    warnings,
   }
 }
 
@@ -76,9 +100,12 @@ describe("planRelayReads", () => {
         capabilities: {
           nip11: true,
           search: true,
-          dm: false,
-          auth: false,
+          dm: true,
+          auth: true,
           commerce: true,
+          protectedMessages: true,
+          listings: true,
+          cleanup: true,
         },
       }),
       entry("wss://public.example.com", {
@@ -215,9 +242,12 @@ describe("planRelayWrites", () => {
         capabilities: {
           nip11: true,
           search: false,
-          dm: false,
-          auth: false,
+          dm: true,
+          auth: true,
           commerce: true,
+          protectedMessages: true,
+          listings: true,
+          cleanup: true,
         },
       }),
       entry("wss://stale.example.com", {
@@ -250,9 +280,12 @@ describe("planRelayWrites", () => {
         capabilities: {
           nip11: true,
           search: false,
-          dm: false,
-          auth: false,
+          dm: true,
+          auth: true,
           commerce: true,
+          protectedMessages: true,
+          listings: true,
+          cleanup: true,
         },
       }),
     ])
@@ -284,9 +317,12 @@ describe("planRelayWrites", () => {
         capabilities: {
           nip11: true,
           search: false,
-          dm: false,
-          auth: false,
+          dm: true,
+          auth: true,
           commerce: true,
+          protectedMessages: true,
+          listings: true,
+          cleanup: true,
         },
       }),
     ])
