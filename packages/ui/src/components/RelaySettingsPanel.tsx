@@ -77,8 +77,6 @@ export interface RelaySettingsPanelProps {
   onToggleWrite: (url: string, enabled: boolean) => void
   onReorderCommerceRelay?: (sourceUrl: string, targetUrl: string) => void
   onReset?: () => void
-  onRestoreDefaults?: () => void
-  onIncludeDefaults?: () => void
   onPublishRelayList?: () => void | Promise<void>
   className?: string
 }
@@ -200,7 +198,7 @@ function getRelaySourceMeta(entry: RelaySettingsPanelEntry): {
       return { label: "Manual", variant: "info" }
     case "default":
     default:
-      return { label: "Conduit default", variant: "neutral" }
+      return { label: "Imported", variant: "neutral" }
   }
 }
 
@@ -652,8 +650,6 @@ export function RelaySettingsPanel({
   onToggleWrite,
   onReorderCommerceRelay,
   onReset,
-  onRestoreDefaults,
-  onIncludeDefaults,
   onPublishRelayList,
   className,
 }: RelaySettingsPanelProps) {
@@ -662,17 +658,17 @@ export function RelaySettingsPanel({
   const [isPublishing, setIsPublishing] = useState(false)
   const [relayPublishSucceeded, setRelayPublishSucceeded] = useState(false)
   const [draggedUrl, setDraggedUrl] = useState<string | null>(null)
-  const commerceEntries = sortSectionEntries(settings.entries, "commerce")
-  const publicEntries = sortSectionEntries(settings.entries, "public")
-  const publishableEntries = settings.entries.filter(
-    (entry) =>
-      entry.source !== "default" && (entry.readEnabled || entry.writeEnabled)
+  const personalEntries = useMemo(
+    () => settings.entries.filter((entry) => entry.source !== "default"),
+    [settings.entries]
   )
-  const defaultRelayCount = settings.entries.filter(
-    (entry) => entry.source === "default"
-  ).length
+  const commerceEntries = sortSectionEntries(personalEntries, "commerce")
+  const publicEntries = sortSectionEntries(personalEntries, "public")
+  const publishableEntries = personalEntries.filter(
+    (entry) => entry.readEnabled || entry.writeEnabled
+  )
   const activeRelayCount = publishableEntries.length
-  const localActiveRelayCount = settings.entries.filter(
+  const localActiveRelayCount = personalEntries.filter(
     (entry) => entry.readEnabled || entry.writeEnabled
   ).length
   const readRelayCount = publishableEntries.filter(
@@ -684,7 +680,7 @@ export function RelaySettingsPanel({
   const canPublishRelayList = activeRelayCount > 1 && writeRelayCount > 0
   const relaySettingsFingerprint = useMemo(
     () =>
-      settings.entries
+      personalEntries
         .map((entry) =>
           [
             entry.url,
@@ -694,7 +690,7 @@ export function RelaySettingsPanel({
         )
         .sort()
         .join("|"),
-    [settings.entries]
+    [personalEntries]
   )
 
   useEffect(() => {
@@ -777,25 +773,16 @@ export function RelaySettingsPanel({
           onToggleWrite={onToggleWrite}
         />
 
-        {settings.entries.length === 0 && onRestoreDefaults ? (
+        {personalEntries.length === 0 ? (
           <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
             <div className="text-sm font-medium text-[var(--text-primary)]">
               No relays saved for this signer
             </div>
             <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-              Market reads can still use Conduit defaults as a fallback. Add
-              relays manually or start from the default list.
+              Conduit can still use app infrastructure and bounded fallback
+              relays for reads. Those relays are separate from your personal
+              NIP-65 list.
             </p>
-            <div className="mt-4">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={onRestoreDefaults}
-              >
-                <RefreshCw className="h-4 w-4" />
-                Use default relays
-              </Button>
-            </div>
           </div>
         ) : null}
 
@@ -857,9 +844,6 @@ export function RelaySettingsPanel({
                 Publishing signs a NIP-65 event with {activeRelayCount} saved{" "}
                 relay {activeRelayCount === 1 ? "tag" : "tags"}:{" "}
                 {readRelayCount} IN, {writeRelayCount} OUT.
-                {defaultRelayCount > 0
-                  ? ` ${defaultRelayCount} Conduit default ${defaultRelayCount === 1 ? "relay is" : "relays are"} shown as local fallback and excluded until added to your list.`
-                  : ""}
                 {writeRelayCount === 0
                   ? " Enable OUT on at least one relay before publishing."
                   : " Signers may show empty content because relay URLs live in tags, and may auto-approve if this site already has signing permission."}
@@ -868,30 +852,7 @@ export function RelaySettingsPanel({
             <div className="flex flex-wrap justify-end gap-2">
               {onReset ? (
                 <Button type="button" variant="ghost" onClick={onReset}>
-                  {onPublishRelayList
-                    ? "Replace with default relays"
-                    : "Reset to defaults"}
-                </Button>
-              ) : null}
-              {onIncludeDefaults && defaultRelayCount > 0 ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={onIncludeDefaults}
-                >
-                  <Plus className="h-4 w-4" />
-                  Add defaults to my list
-                </Button>
-              ) : null}
-              {onRestoreDefaults &&
-              settings.entries.length > 0 &&
-              !onPublishRelayList ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={onRestoreDefaults}
-                >
-                  Replace with defaults
+                  Clear relay settings
                 </Button>
               ) : null}
               {onPublishRelayList ? (

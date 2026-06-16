@@ -2,12 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   assertSafeNip65RelayList,
-  createDefaultRelaySettings,
   createRelaySettingsFromPreferences,
   getPublishableRelaySettingsEntries,
   getRelaySettingsStorageKey,
   hasManualRelaySettings,
-  includeDefaultRelaySettingsEntries,
   loadRelaySettings,
   mergeRelayPreferencesIntoSettings,
   mergeNip65RelayUrls,
@@ -72,32 +70,8 @@ function createEmptyRelaySettings(): RelaySettingsState {
   }
 }
 
-function createManualDefaultRelaySettings(): RelaySettingsState {
-  const defaults = createDefaultRelaySettings()
-  return {
-    ...defaults,
-    entries: defaults.entries.map((entry) => ({
-      ...entry,
-      source: "manual" as const,
-    })),
-  }
-}
-
-function isDefaultOnlyRelaySettings(settings: RelaySettingsState): boolean {
-  return (
-    settings.entries.length > 0 &&
-    settings.entries.every((entry) => entry.source === "default")
-  )
-}
-
-function maskDefaultSettingsForIdentity(
-  settings: RelaySettingsState,
-  pubkey: string | null,
-  maskDefaults: boolean
-): RelaySettingsState {
-  return pubkey && maskDefaults && isDefaultOnlyRelaySettings(settings)
-    ? createEmptyRelaySettings()
-    : settings
+function hasNoRelaySettings(settings: RelaySettingsState): boolean {
+  return settings.entries.length === 0
 }
 
 export function useRelaySettings(
@@ -108,11 +82,7 @@ export function useRelaySettings(
   const enabled = options.enabled ?? true
   const bootstrapRelayList = options.bootstrapRelayList ?? true
   const [settings, setSettings] = useState<RelaySettingsState>(() =>
-    maskDefaultSettingsForIdentity(
-      loadRelaySettings(scope),
-      pubkey,
-      bootstrapRelayList
-    )
+    loadRelaySettings(scope)
   )
   const settingsRef = useRef(settings)
   const autoScannedStaleKeyRef = useRef("")
@@ -123,7 +93,7 @@ export function useRelaySettings(
       enabled &&
         bootstrapRelayList &&
         !!pubkey &&
-        isDefaultOnlyRelaySettings(loadRelaySettings(scope))
+        hasNoRelaySettings(loadRelaySettings(scope))
     )
   const [publishedRelayListUpdatedAt, setPublishedRelayListUpdatedAt] =
     useState<number | null>(null)
@@ -137,14 +107,10 @@ export function useRelaySettings(
     }
 
     const loaded = loadRelaySettings(scope)
-    const next = maskDefaultSettingsForIdentity(
-      loaded,
-      pubkey,
-      bootstrapRelayList
-    )
+    const next = loaded
     settingsRef.current = next
     setSettings(next)
-    if (bootstrapRelayList && pubkey && isDefaultOnlyRelaySettings(loaded)) {
+    if (bootstrapRelayList && pubkey && hasNoRelaySettings(loaded)) {
       setIsLoadingPublishedRelayList(true)
     } else {
       setIsLoadingPublishedRelayList(false)
@@ -158,11 +124,7 @@ export function useRelaySettings(
     const storageKey = getRelaySettingsStorageKey(scope)
     function handleStorage(event: StorageEvent): void {
       if (event.key !== storageKey) return
-      const next = maskDefaultSettingsForIdentity(
-        loadRelaySettings(scope),
-        pubkey,
-        bootstrapRelayList
-      )
+      const next = loadRelaySettings(scope)
       settingsRef.current = next
       setSettings(next)
     }
@@ -176,11 +138,7 @@ export function useRelaySettings(
     return subscribeRelaySettingsChanges((changedScope) => {
       const targetScope = scope?.trim() || null
       if (changedScope !== targetScope) return
-      const next = maskDefaultSettingsForIdentity(
-        loadRelaySettings(scope),
-        pubkey,
-        bootstrapRelayList
-      )
+      const next = loadRelaySettings(scope)
       settingsRef.current = next
       setSettings(next)
     })
@@ -434,29 +392,23 @@ export function useRelaySettings(
   function resetRelaySettings(): void {
     setError(null)
     setPublishError(null)
-    const defaults = saveRelaySettings(
-      createManualDefaultRelaySettings(),
-      scope
-    )
-    settingsRef.current = defaults
-    setSettings(defaults)
+    const next = saveRelaySettings(createEmptyRelaySettings(), scope)
+    settingsRef.current = next
+    setSettings(next)
   }
 
   function restoreDefaultRelaySettings(): void {
     setError(null)
     setPublishError(null)
-    const defaults = saveRelaySettings(
-      createManualDefaultRelaySettings(),
-      scope
-    )
-    settingsRef.current = defaults
-    setSettings(defaults)
+    const next = saveRelaySettings(createEmptyRelaySettings(), scope)
+    settingsRef.current = next
+    setSettings(next)
   }
 
   function includeDefaultRelays(): void {
     setError(null)
     setPublishError(null)
-    persist((current) => includeDefaultRelaySettingsEntries(current))
+    persist((current) => current)
   }
 
   async function publishRelayList(): Promise<void> {
@@ -472,7 +424,7 @@ export function useRelaySettings(
       )
       if (publishableEntries.length === 0) {
         throw new Error(
-          "Choose relays for your published NIP-65 list first. Conduit defaults stay local until you add them to your list."
+          "Choose relays for your published NIP-65 list first. Conduit app fallback relays are not part of your personal relay list."
         )
       }
 

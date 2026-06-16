@@ -395,22 +395,26 @@ function createDefaultRelaySettingsEntry(url: string): RelaySettingsEntry {
   }
 }
 
-function appendDefaultRelaySettingsEntries(
-  state: RelaySettingsState,
-  cfg: ConduitConfig = config
+function createEmptyRelaySettingsState(): RelaySettingsState {
+  return {
+    version: RELAY_SETTINGS_STORAGE_VERSION,
+    entries: [],
+    updatedAt: now(),
+  }
+}
+
+function filterUserManagedRelaySettingsEntries(
+  entries: readonly RelaySettingsEntry[]
+): RelaySettingsEntry[] {
+  return entries.filter((entry) => entry.source !== "default")
+}
+
+function normalizeUserManagedRelaySettingsState(
+  state: RelaySettingsState
 ): RelaySettingsState {
-  const existingUrls = new Set(state.entries.map((entry) => entry.url))
-  const missingDefaults = uniqueRelayUrls(
-    cfg.defaultRelays.filter((url) => !isRetiredDefaultRelayUrl(url))
-  )
-    .filter((url) => !existingUrls.has(url))
-    .map(createDefaultRelaySettingsEntry)
-
-  if (missingDefaults.length === 0) return state
-
   return normalizeRelaySettingsState({
     ...state,
-    entries: [...state.entries, ...missingDefaults],
+    entries: filterUserManagedRelaySettingsEntries(state.entries),
   })
 }
 
@@ -1003,29 +1007,27 @@ export function normalizeRelaySettingsState(
 }
 
 export function loadRelaySettings(scope?: string | null): RelaySettingsState {
-  if (typeof window === "undefined") return createDefaultRelaySettings()
+  if (typeof window === "undefined") return createEmptyRelaySettingsState()
 
   const key = getRelaySettingsStorageKey(scope)
   const raw = window.localStorage.getItem(key)
-  if (!raw) return createDefaultRelaySettings()
+  if (!raw) return createEmptyRelaySettingsState()
 
   try {
     const parsed = JSON.parse(raw)
     if (!isRecord(parsed) || !Array.isArray(parsed.entries)) {
-      return createDefaultRelaySettings()
+      return createEmptyRelaySettingsState()
     }
 
-    return appendDefaultRelaySettingsEntries(
-      normalizeRelaySettingsState({
-        version: Number(parsed.version) || RELAY_SETTINGS_STORAGE_VERSION,
-        updatedAt: Number(parsed.updatedAt) || now(),
-        entries: parsed.entries.filter(
-          isRecord
-        ) as unknown as RelaySettingsEntry[],
-      })
-    )
+    return normalizeUserManagedRelaySettingsState({
+      version: Number(parsed.version) || RELAY_SETTINGS_STORAGE_VERSION,
+      updatedAt: Number(parsed.updatedAt) || now(),
+      entries: parsed.entries.filter(
+        isRecord
+      ) as unknown as RelaySettingsEntry[],
+    })
   } catch {
-    return createDefaultRelaySettings()
+    return createEmptyRelaySettingsState()
   }
 }
 
@@ -1033,12 +1035,10 @@ export function saveRelaySettings(
   state: RelaySettingsState,
   scope?: string | null
 ): RelaySettingsState {
-  const normalized = appendDefaultRelaySettingsEntries(
-    normalizeRelaySettingsState({
-      ...state,
-      updatedAt: now(),
-    })
-  )
+  const normalized = normalizeUserManagedRelaySettingsState({
+    ...state,
+    updatedAt: now(),
+  })
 
   if (typeof window !== "undefined") {
     window.localStorage.setItem(
@@ -1152,12 +1152,7 @@ export function getPublishableRelaySettingsEntries(
 export function includeDefaultRelaySettingsEntries(
   state: RelaySettingsState
 ): RelaySettingsState {
-  return normalizeRelaySettingsState({
-    ...state,
-    entries: state.entries.map((entry) =>
-      entry.source === "default" ? { ...entry, source: "manual" } : entry
-    ),
-  })
+  return normalizeUserManagedRelaySettingsState(state)
 }
 
 export function mergeRelayPreferencesIntoSettings(

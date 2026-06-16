@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
 import {
   assertSafeNip65RelayList,
   CANONICAL_APP_WRITE_RELAYS,
@@ -13,7 +13,7 @@ import {
   getCommerceWriteRelayUrls,
   getGeneralWriteRelayUrls,
   getPublishableRelaySettingsEntries,
-  includeDefaultRelaySettingsEntries,
+  loadRelaySettings,
   mergeRelayPreferencesIntoSettings,
   normalizeRelaySettingsState,
   normalizeRelayUrl,
@@ -24,6 +24,38 @@ import {
   type RelaySettingsEntry,
   type RelaySettingsState,
 } from "@conduit/core"
+
+class MemoryStorage {
+  private values = new Map<string, string>()
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value)
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key)
+  }
+}
+
+const originalWindow = globalThis.window
+
+function installWindowStorage(storage: MemoryStorage): void {
+  Object.defineProperty(globalThis, "window", {
+    value: { localStorage: storage },
+    configurable: true,
+  })
+}
+
+afterEach(() => {
+  Object.defineProperty(globalThis, "window", {
+    value: originalWindow,
+    configurable: true,
+  })
+})
 
 function state(entries: RelaySettingsEntry[]): RelaySettingsState {
   return normalizeRelaySettingsState({
@@ -585,24 +617,7 @@ describe("relay settings protocol helpers", () => {
     expect(next.entries[0]?.source).toBe("published")
   })
 
-  it("upgrades persisted default relays to IN and OUT controls", () => {
-    const settings = normalizeRelaySettingsState({
-      version: 1,
-      updatedAt: 1,
-      entries: [
-        entry("wss://relay.example", {
-          readEnabled: true,
-          writeEnabled: false,
-          source: "default",
-        }),
-      ],
-    })
-
-    expect(settings.entries[0]?.readEnabled).toBe(true)
-    expect(settings.entries[0]?.writeEnabled).toBe(true)
-  })
-
-  it("keeps Conduit defaults visible but out of NIP-65 publishes until included", () => {
+  it("keeps Conduit defaults out of saved personal relay settings", () => {
     const settings = saveRelaySettings(
       createRelaySettingsFromPreferences(
         [
@@ -617,11 +632,11 @@ describe("relay settings protocol helpers", () => {
       "test:relays"
     )
 
-    expect(settings.entries.map((relay) => relay.url)).toContain(
-      "wss://published.example"
-    )
+    expect(settings.entries.map((relay) => relay.url)).toEqual([
+      "wss://published.example",
+    ])
     for (const relay of config.defaultRelays) {
-      expect(settings.entries.map((entry) => entry.url)).toContain(relay)
+      expect(settings.entries.map((entry) => entry.url)).not.toContain(relay)
     }
 
     expect(
@@ -629,13 +644,71 @@ describe("relay settings protocol helpers", () => {
         (relay) => relay.url
       )
     ).toEqual(["wss://published.example"])
+  })
 
-    const included = includeDefaultRelaySettingsEntries(settings)
+  it("filters legacy default relays when loading personal relay settings", () => {
+    const storage = new MemoryStorage()
+    installWindowStorage(storage)
+    storage.setItem(
+      "conduit:relay-settings:v1:test:legacy",
+      JSON.stringify({
+        version: 1,
+        updatedAt: 1,
+        entries: [
+          entry("wss://relay.damus.io", {
+            readEnabled: true,
+            writeEnabled: true,
+            source: "default",
+          }),
+          entry("wss://user.example", {
+            readEnabled: true,
+            writeEnabled: false,
+            source: "manual",
+          }),
+        ],
+      })
+    )
+
+    const loaded = loadRelaySettings("test:legacy")
+
+    expect(loaded.entries.map((relay) => relay.url)).toEqual([
+      "wss://user.example",
+    ])
+  })
+
+  it("preserves a user-managed relay even when it matches a default URL", () => {
+    const settings = saveRelaySettings(
+      state([
+        entry("wss://relay.damus.io", {
+          readEnabled: true,
+          writeEnabled: true,
+          source: "manual",
+        }),
+      ]),
+      "test:user-managed-default"
+    )
+
+    expect(settings.entries).toHaveLength(1)
+    expect(settings.entries[0]).toMatchObject({
+      url: "wss://relay.damus.io",
+      readEnabled: true,
+      writeEnabled: true,
+      source: "manual",
+    })
     expect(
-      getPublishableRelaySettingsEntries(included.entries).map(
+      getPublishableRelaySettingsEntries(settings.entries).map(
         (relay) => relay.url
       )
-    ).toEqual(["wss://published.example", ...config.defaultRelays])
+    ).toEqual(["wss://relay.damus.io"])
+  })
+
+  it("keeps planner fallback relays available when user settings are empty", () => {
+    expect(
+      getCommerceReadRelayUrls({
+        settings: state([]),
+        fallbackRelayUrls: ["wss://fallback.example"],
+      })
+    ).toEqual(["wss://fallback.example"])
   })
 
   it("blocks unsafe tiny NIP-65 publishes", () => {
