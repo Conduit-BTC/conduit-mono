@@ -1,10 +1,10 @@
 # Require maintainer review for repository automation, dependency, and deploy
 # surfaces that can affect CI execution, preview publishing, or shipped builds.
 
-.github/** @dylangolow
-package.json @dylangolow
-bun.lock @dylangolow
-apps/*/package.json @dylangolow
-packages/*/package.json @dylangolow
-.env.example @dylangolow
-apps/*/.env.production @dylangolow
+.github/** @dylangolow @ericfj2140
+package.json @dylangolow @ericfj2140
+bun.lock @dylangolow @ericfj2140
+apps/*/package.json @dylangolow @ericfj2140
+packages/*/package.json @dylangolow @ericfj2140
+.env.example @dylangolow @ericfj2140
+apps/*/.env.production @dylangolow @ericfj2140
