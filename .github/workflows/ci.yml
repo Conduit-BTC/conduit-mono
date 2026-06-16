@@ -141,6 +141,16 @@ jobs:
         run: bunx playwright install --with-deps chromium
       - name: Run Playwright smoke tests
         run: bun run test:e2e
+      - name: Upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-e2e-artifacts
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7
 
   build-mainnet:
     if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
