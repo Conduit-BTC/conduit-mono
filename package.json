@@ -48,7 +48,7 @@
     "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules"
   },
   "dependencies": {
-    "react": "^19.0.0",
+    "react": "^19.2.7",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
