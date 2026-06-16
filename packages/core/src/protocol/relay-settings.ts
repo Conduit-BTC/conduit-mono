@@ -442,6 +442,15 @@ function sortByCommercePriority(
   })
 }
 
+function sortCommerceRelayUrls(
+  entries: readonly RelaySettingsEntry[],
+  predicate: (entry: RelaySettingsEntry) => boolean
+): string[] {
+  return sortByCommercePriority(
+    entries.filter((entry) => entry.section === "commerce").filter(predicate)
+  ).map((entry) => entry.url)
+}
+
 export function normalizeRelayUrl(input: string): string {
   const trimmed = input.trim()
   if (!trimmed) {
@@ -1256,10 +1265,9 @@ export function getCommerceReadRelayUrls(
   options: RelayPlanOptions = {}
 ): string[] {
   const settings = getSettingsForPlan(options)
-  const commerceUrls = settings.entries
-    .filter((entry) => entry.section === "commerce")
-    .filter((entry) => hasFreshOrSeededRead(entry))
-    .map((entry) => entry.url)
+  const commerceUrls = sortCommerceRelayUrls(settings.entries, (entry) =>
+    hasFreshOrSeededRead(entry)
+  )
 
   const publicUrls =
     options.includePublicFallback === false
@@ -1280,10 +1288,9 @@ export function getCommerceWriteRelayUrls(
   options: RelayPlanOptions = {}
 ): string[] {
   const settings = getSettingsForPlan(options)
-  const commerceUrls = settings.entries
-    .filter((entry) => entry.section === "commerce")
-    .filter((entry) => hasUserEnabledWrite(entry))
-    .map((entry) => entry.url)
+  const commerceUrls = sortCommerceRelayUrls(settings.entries, (entry) =>
+    hasUserEnabledWrite(entry)
+  )
 
   const publicUrls =
     options.includePublicFallback === false

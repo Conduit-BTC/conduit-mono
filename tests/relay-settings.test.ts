@@ -10,6 +10,7 @@ import {
   createUnreachableRelaySettingsEntry,
   deriveRelayScanResult,
   getCommerceReadRelayUrls,
+  getCommerceWriteRelayUrls,
   getGeneralWriteRelayUrls,
   getPublishableRelaySettingsEntries,
   includeDefaultRelaySettingsEntries,
@@ -378,7 +379,7 @@ describe("relay settings protocol helpers", () => {
     expect(restored.commercePriority).toBe(2)
   })
 
-  it("orders commerce reads before public fallback without manual priority", () => {
+  it("orders commerce relays by saved commerce priority before public fallback", () => {
     const settings = state([
       entry("wss://public.example"),
       entry("wss://commerce-b.example", {
@@ -416,10 +417,13 @@ describe("relay settings protocol helpers", () => {
     expect(
       getCommerceReadRelayUrls({ settings, fallbackRelayUrls: [] })
     ).toEqual([
-      "wss://commerce-b.example",
       "wss://commerce-a.example",
+      "wss://commerce-b.example",
       "wss://public.example",
     ])
+    expect(
+      getCommerceWriteRelayUrls({ settings, fallbackRelayUrls: [] })
+    ).toEqual(["wss://commerce-a.example", "wss://commerce-b.example"])
   })
 
   it("keeps user-enabled write relays in the plan while carrying trust warnings", () => {
