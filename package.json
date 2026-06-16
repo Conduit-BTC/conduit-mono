@@ -54,7 +54,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.2",
     "@getalby/sdk": "^8.0.3",
-    "@nostr-dev-kit/ndk": "^2.14.0",
+    "@nostr-dev-kit/ndk": "^3.0.3",
     "@playwright/test": "^1.60.0",
     "@tanstack/router-generator": "^1.167.17",
     "eslint": "^9.39.2",
