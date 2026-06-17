@@ -186,6 +186,39 @@ export interface CachedNip05Verification {
   cachedAt: number
 }
 
+export interface CachedRelayCapability {
+  url: string
+  nip11Status: "unknown" | "ok" | "failed"
+  nip11FetchedAt?: number
+  supportedNips: number[]
+  paymentRequired: boolean
+  authRequired: boolean
+  name?: string
+  description?: string
+  software?: string
+  version?: string
+  readHealth: "unknown" | "ok" | "failed"
+  writeHealth: "unknown" | "ok" | "failed"
+  supportsNip50Search: boolean
+  supportsNip45Count: boolean
+  supportsNip42Auth: boolean
+  kind30402Read: "unknown" | "claimed" | "observed" | "failed"
+  kind30402Write: "unknown" | "claimed" | "observed" | "failed"
+  kind1059Read: "unknown" | "claimed" | "observed" | "failed"
+  kind1059Write: "unknown" | "claimed" | "observed" | "failed"
+  kind9735Read: "unknown" | "claimed" | "observed" | "failed"
+  kind9735Write: "unknown" | "claimed" | "observed" | "failed"
+  latencyMs?: number
+  timeoutCount: number
+  failureCount: number
+  lastSuccessfulReadAt?: number
+  lastSuccessfulWriteAt?: number
+  lastReadFailureAt?: number
+  lastWriteFailureAt?: number
+  lastWriteFailureMessage?: string
+  updatedAt: number
+}
+
 export interface StoredPaymentAttempt {
   id: string
   orderId: string
@@ -213,6 +246,7 @@ class ConduitDB extends Dexie {
   relayLists!: EntityTable<CachedRelayList, "pubkey">
   productSocialSummaries!: EntityTable<CachedProductSocialSummary, "key">
   nip05Verifications!: EntityTable<CachedNip05Verification, "id">
+  relayCapabilities!: EntityTable<CachedRelayCapability, "url">
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
 
   constructor() {
@@ -279,6 +313,22 @@ class ConduitDB extends Dexie {
       productSocialSummaries: "key, cachedAt",
       nip05Verifications:
         "id, pubkey, normalizedIdentifier, status, expiresAt, cachedAt",
+      paymentAttempts:
+        "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
+    })
+
+    this.version(7).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
+      productSocialSummaries: "key, cachedAt",
+      nip05Verifications:
+        "id, pubkey, normalizedIdentifier, status, expiresAt, cachedAt",
+      relayCapabilities: "url, nip11Status, updatedAt",
       paymentAttempts:
         "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
     })

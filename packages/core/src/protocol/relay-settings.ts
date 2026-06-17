@@ -1,4 +1,5 @@
 import { config, isRetiredDefaultRelayUrl, type ConduitConfig } from "../config"
+import { saveRelayCapabilityScan } from "./relay-capability-cache"
 
 export type RelaySettingsSection = "commerce" | "public"
 export type RelaySettingsSource = "default" | "manual" | "signer" | "published"
@@ -107,9 +108,13 @@ export interface Nip65RelayUrls {
 
 export interface RelayInfoDocument {
   name?: unknown
+  description?: unknown
+  software?: unknown
+  version?: unknown
   supported_nips?: unknown
   limitation?: {
     auth_required?: unknown
+    payment_required?: unknown
     [key: string]: unknown
   }
   [key: string]: unknown
@@ -123,6 +128,12 @@ export interface RelayScanResult {
   warnings: RelayWarnings
   observations: RelayCapabilityObservations
   commerceProfileVersion?: number
+  supportedNips: number[]
+  paymentRequired: boolean
+  authRequired: boolean
+  relayDescription?: string
+  relaySoftware?: string
+  relayVersion?: string
   scannedAt: number
 }
 
@@ -368,8 +379,20 @@ function getRelayName(info: RelayInfoDocument | null): string | undefined {
     : undefined
 }
 
+function getRelayStringField(
+  info: RelayInfoDocument | null,
+  field: "description" | "software" | "version"
+): string | undefined {
+  const value = info?.[field]
+  return typeof value === "string" && value.trim() ? value.trim() : undefined
+}
+
 function getAuthRequired(info: RelayInfoDocument | null): boolean {
   return info?.limitation?.auth_required === true
+}
+
+function getPaymentRequired(info: RelayInfoDocument | null): boolean {
+  return info?.limitation?.payment_required === true
 }
 
 function withRelayFallback(
@@ -651,7 +674,8 @@ export function deriveRelayScanResult(
   const advertisesCleanup =
     supportedNips.includes(9) || supportedNips.includes(62)
   const supportsCleanup = advertisesCleanup || hasKnownCommerceProfile
-  const supportsAuth = supportedNips.includes(42) || getAuthRequired(info)
+  const authRequired = getAuthRequired(info)
+  const supportsAuth = supportedNips.includes(42) || authRequired
   const supportsListings = hasKnownCommerceProfile
   const hasNip11 = !!info
   const commerce =
@@ -736,6 +760,12 @@ export function deriveRelayScanResult(
     commerceProfileVersion: hasKnownCommerceProfile
       ? RELAY_COMMERCE_PROFILE_VERSION
       : undefined,
+    supportedNips,
+    paymentRequired: getPaymentRequired(info),
+    authRequired,
+    relayDescription: getRelayStringField(info, "description"),
+    relaySoftware: getRelayStringField(info, "software"),
+    relayVersion: getRelayStringField(info, "version"),
     scannedAt,
   }
 }
@@ -835,13 +865,31 @@ export async function scanRelaySettingsEntry(
   const timeoutMs = options.timeoutMs ?? RELAY_SCAN_TIMEOUT_MS
   const scannedAt = options.now?.() ?? now()
 
-  if (!fetchImpl) {
+  async function cacheScan(scan: RelayScanResult): Promise<void> {
+    try {
+      await saveRelayCapabilityScan(scan)
+    } catch {
+      // Capability evidence is a local optimization. Relay settings must still
+      // update even when IndexedDB is unavailable or blocked.
+    }
+  }
+
+  async function createFailedEntry(): Promise<RelaySettingsEntry> {
+    const failedScan = deriveRelayScanResult(normalizedUrl, null, {
+      now: () => scannedAt,
+      commerceRelayUrls: options.commerceRelayUrls,
+    })
+    await cacheScan(failedScan)
     return createUnreachableRelaySettingsEntry(
       normalizedUrl,
       existing?.source ?? "manual",
       scannedAt,
       existing
     )
+  }
+
+  if (!fetchImpl) {
+    return await createFailedEntry()
   }
 
   const controller = new AbortController()
@@ -854,22 +902,12 @@ export async function scanRelaySettingsEntry(
     })
 
     if (!response.ok) {
-      return createUnreachableRelaySettingsEntry(
-        normalizedUrl,
-        existing?.source ?? "manual",
-        scannedAt,
-        existing
-      )
+      return await createFailedEntry()
     }
 
     const json = await response.json()
     if (!isRelayInfoDocument(json)) {
-      return createUnreachableRelaySettingsEntry(
-        normalizedUrl,
-        existing?.source ?? "manual",
-        scannedAt,
-        existing
-      )
+      return await createFailedEntry()
     }
 
     const info = json
@@ -877,14 +915,10 @@ export async function scanRelaySettingsEntry(
       now: () => scannedAt,
       commerceRelayUrls: options.commerceRelayUrls,
     })
+    await cacheScan(scan)
     return createRelaySettingsEntryFromScan(scan, existing)
   } catch {
-    return createUnreachableRelaySettingsEntry(
-      normalizedUrl,
-      existing?.source ?? "manual",
-      scannedAt,
-      existing
-    )
+    return await createFailedEntry()
   } finally {
     clearTimeout(timeoutId)
   }

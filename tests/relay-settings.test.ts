@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import {
   assertSafeNip65RelayList,
+  applyRelayCapabilityReadFailure,
+  applyRelayCapabilityReadSuccess,
+  applyRelayCapabilityWriteFailure,
+  applyRelayCapabilityWriteSuccess,
   CANONICAL_APP_BACKPLANE_RELAYS,
   CANONICAL_APP_WRITE_RELAYS,
   CANONICAL_COMMERCE_DM_FALLBACK_RELAYS,
@@ -10,11 +14,13 @@ import {
   CANONICAL_SEARCH_INDEX_RELAYS,
   CANONICAL_ZAP_PUBLIC_RELAYS,
   config,
+  createRelayCapabilityRecordFromScan,
   createDefaultRelaySettings,
   createRelaySettingsEntryFromScan,
   createRelaySettingsFromPreferences,
   createUnreachableRelaySettingsEntry,
   deriveRelayScanResult,
+  EVENT_KINDS,
   getCommerceReadRelayUrls,
   getCommerceWriteRelayUrls,
   getGeneralWriteRelayUrls,
@@ -258,7 +264,13 @@ describe("relay settings protocol helpers", () => {
       "wss://relay.plebeian.market",
       {
         name: "Plebeian Market",
+        description: "Marketplace relay",
+        software: "strfry",
+        version: "1.0.0",
         supported_nips: [9, 42, 50, 59],
+        limitation: {
+          payment_required: false,
+        },
       },
       { now: () => 10 }
     )
@@ -287,6 +299,12 @@ describe("relay settings protocol helpers", () => {
     })
     expect(verified.warnings.dmWithoutAuth).toBe(false)
     expect(verified.warnings.commercePartialSupport).toBe(true)
+    expect(verified.supportedNips).toEqual([9, 42, 50, 59])
+    expect(verified.paymentRequired).toBe(false)
+    expect(verified.authRequired).toBe(false)
+    expect(verified.relayDescription).toBe("Marketplace relay")
+    expect(verified.relaySoftware).toBe("strfry")
+    expect(verified.relayVersion).toBe("1.0.0")
     expect(verified.scannedAt).toBe(10)
 
     const dmWithoutAuth = deriveRelayScanResult("wss://relay.example", {
@@ -298,6 +316,116 @@ describe("relay settings protocol helpers", () => {
     expect(dmWithoutAuth.capabilities.auth).toBe(false)
     expect(dmWithoutAuth.warnings.dmWithoutAuth).toBe(true)
     expect(dmWithoutAuth.warnings.commercePartialSupport).toBe(true)
+  })
+
+  it("maps NIP-11 scan claims into a separate capability cache record", () => {
+    const scanned = deriveRelayScanResult(
+      "wss://relay.example",
+      {
+        name: "Relay",
+        supported_nips: [42, 45, 50, 57, 59],
+        limitation: {
+          auth_required: true,
+          payment_required: false,
+        },
+      },
+      { now: () => 25 }
+    )
+
+    const record = createRelayCapabilityRecordFromScan(scanned)
+
+    expect(record).toMatchObject({
+      url: "wss://relay.example",
+      nip11Status: "ok",
+      nip11FetchedAt: 25,
+      supportedNips: [42, 45, 50, 57, 59],
+      paymentRequired: false,
+      authRequired: true,
+      name: "Relay",
+      readHealth: "ok",
+      writeHealth: "unknown",
+      supportsNip50Search: true,
+      supportsNip45Count: true,
+      supportsNip42Auth: true,
+      kind30402Read: "unknown",
+      kind30402Write: "unknown",
+      kind1059Read: "claimed",
+      kind1059Write: "unknown",
+      kind9735Read: "claimed",
+      kind9735Write: "unknown",
+      timeoutCount: 0,
+      failureCount: 0,
+      updatedAt: 25,
+    })
+  })
+
+  it("updates relay capability records from observed read and write outcomes", () => {
+    const scanned = deriveRelayScanResult(
+      "wss://relay.example",
+      {
+        supported_nips: [59],
+      },
+      { now: () => 25 }
+    )
+    const record = createRelayCapabilityRecordFromScan(scanned)
+
+    const readObserved = applyRelayCapabilityReadSuccess(
+      record,
+      [EVENT_KINDS.PRODUCT, EVENT_KINDS.GIFT_WRAP],
+      50
+    )
+    expect(readObserved).toMatchObject({
+      readHealth: "ok",
+      kind30402Read: "observed",
+      kind1059Read: "observed",
+      kind30402Write: "unknown",
+      kind1059Write: "unknown",
+      lastSuccessfulReadAt: 50,
+      updatedAt: 50,
+    })
+
+    const writeObserved = applyRelayCapabilityWriteSuccess(
+      readObserved,
+      EVENT_KINDS.GIFT_WRAP,
+      75
+    )
+    expect(writeObserved).toMatchObject({
+      writeHealth: "ok",
+      kind1059Write: "observed",
+      lastSuccessfulWriteAt: 75,
+      updatedAt: 75,
+    })
+
+    const readFailed = applyRelayCapabilityReadFailure(
+      writeObserved,
+      { timedOut: true, eventKind: EVENT_KINDS.ZAP_RECEIPT },
+      100
+    )
+    expect(readFailed).toMatchObject({
+      readHealth: "failed",
+      kind9735Read: "failed",
+      timeoutCount: 1,
+      failureCount: 1,
+      lastReadFailureAt: 100,
+      updatedAt: 100,
+    })
+
+    const writeFailed = applyRelayCapabilityWriteFailure(
+      readFailed,
+      {
+        eventKind: EVENT_KINDS.PRODUCT,
+        message: "restricted: product writes are blocked",
+      },
+      125
+    )
+    expect(writeFailed).toMatchObject({
+      writeHealth: "failed",
+      kind30402Write: "failed",
+      failureCount: 2,
+      lastWriteFailureAt: 125,
+      lastWriteFailureMessage: "restricted: product writes are blocked",
+      updatedAt: 125,
+    })
   })
 
   it("uses the Conduit commerce profile instead of client/event NIPs", () => {

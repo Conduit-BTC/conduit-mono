@@ -20,6 +20,10 @@ import {
   type RelayWriteIntent,
   type RelayWritePlan,
 } from "./relay-planner"
+import {
+  recordRelayCapabilityWriteFailure,
+  recordRelayCapabilityWriteSuccess,
+} from "./relay-capability-cache"
 import { EVENT_KINDS } from "./kinds"
 import {
   assertSafeNip65RelayTags,
@@ -388,15 +392,26 @@ async function publishToRelayUrls(input: {
     failedUrls: explicitFailedUrls,
   })
 
-  for (const url of outcome.successfulRelayUrls) recordRelaySuccess(url)
-  for (const url of outcome.failedRelayUrls) recordRelayFailure(url)
-
   const relayFailureMessages = Object.fromEntries(
     outcome.failedRelayUrls.map((url) => [
       url,
       explicitFailureMessages.get(url) ?? "No acknowledgement before timeout",
     ])
   )
+
+  for (const url of outcome.successfulRelayUrls) {
+    recordRelaySuccess(url)
+    void recordRelayCapabilityWriteSuccess(url, input.event.kind).catch(
+      () => undefined
+    )
+  }
+  for (const url of outcome.failedRelayUrls) {
+    recordRelayFailure(url)
+    void recordRelayCapabilityWriteFailure(url, {
+      eventKind: input.event.kind,
+      message: relayFailureMessages[url],
+    }).catch(() => undefined)
+  }
 
   return { ...outcome, relayFailureMessages, thrown }
 }

@@ -18,6 +18,10 @@ import {
   runWithRelayNetworkBudget,
   type RelayNetworkBudgetClass,
 } from "./relay-network-budget"
+import {
+  recordRelayCapabilityReadFailure,
+  recordRelayCapabilityReadSuccess,
+} from "./relay-capability-cache"
 
 export type NdkConnectionState = "idle" | "connecting" | "connected" | "error"
 
@@ -143,6 +147,10 @@ async function fetchEventsFromRelay(
 
     if (!connected) {
       recordRelayFailure(relayUrl)
+      void recordRelayCapabilityReadFailure(relayUrl, {
+        timedOut: true,
+        eventKind: Array.isArray(filter.kinds) ? filter.kinds[0] : undefined,
+      }).catch(() => undefined)
       return []
     }
 
@@ -153,17 +161,30 @@ async function fetchEventsFromRelay(
 
     if (events === FETCH_TIMEOUT) {
       recordRelayFailure(relayUrl)
+      void recordRelayCapabilityReadFailure(relayUrl, {
+        timedOut: true,
+        eventKind: Array.isArray(filter.kinds) ? filter.kinds[0] : undefined,
+      }).catch(() => undefined)
       return []
     }
 
     recordRelaySuccess(relayUrl)
     const fetched = Array.from(events) as NDKEvent[]
+    void recordRelayCapabilityReadSuccess(
+      relayUrl,
+      fetched
+        .map((event) => event.kind)
+        .filter((kind): kind is number => typeof kind === "number")
+    ).catch(() => undefined)
     for (const event of fetched) {
       attachEventSourceRelayUrl(event, relayUrl)
     }
     return fetched
   } catch {
     recordRelayFailure(relayUrl)
+    void recordRelayCapabilityReadFailure(relayUrl, {
+      eventKind: Array.isArray(filter.kinds) ? filter.kinds[0] : undefined,
+    }).catch(() => undefined)
     return []
   } finally {
     for (const [, relay] of ndk.pool?.relays?.entries() ?? []) {
