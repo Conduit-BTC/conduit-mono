@@ -3,7 +3,10 @@ export type ConduitTelemetryApp = "market" | "merchant"
 export const browserTelemetryEventNames = [
   "app_load_result",
   "signer_connected",
+  "signer_disconnected",
   "cart_add",
+  "cart_remove",
+  "cart_clear",
   "checkout_initiated",
   "checkout_step_result",
   "checkout_success",
@@ -40,6 +43,8 @@ export const browserTelemetryPropertyNames = [
   "result_count_bucket",
   "amount_bucket",
   "product_type",
+  "page_url",
+  "page_path",
 ] as const
 
 export type BrowserTelemetryPropertyName =
@@ -313,6 +318,16 @@ export function sanitizeTelemetryEventProperties(
   return sanitized
 }
 
+export function buildTelemetryEventPageContext(input: {
+  origin: string
+  pathname: string
+}): Record<"page_url" | "page_path", string> {
+  return {
+    page_path: sanitizeTelemetryPath(input.pathname),
+    page_url: buildTelemetryPageUrl(input),
+  }
+}
+
 export function getConduitPostHogConfig(
   input: PostHogTelemetryConfig
 ): ConduitPostHogConfig {
@@ -344,7 +359,13 @@ export function recordBrowserTelemetryEvent(input: TelemetryEventInput): void {
   const config = resolveBrowserTelemetryConfig(input.app)
   if (!config.enabled) return
 
-  const properties = sanitizeTelemetryEventProperties(input)
+  const properties = {
+    ...sanitizeTelemetryEventProperties(input),
+    ...buildTelemetryEventPageContext({
+      origin: window.location.origin,
+      pathname: window.location.pathname,
+    }),
+  }
 
   if (config.plausible) {
     ensurePlausible(config.plausible)

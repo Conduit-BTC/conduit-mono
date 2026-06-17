@@ -1319,7 +1319,7 @@ function CheckoutPage() {
       const deliveryNotice = getDeliveryNotice(delivery, "Order")
       if (deliveryNotice) setPaidNotice(deliveryNotice)
 
-      cart.clearMerchant(selectedMerchant)
+      cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
       setSentOrderId(orderId)
       setShowSentGlow(true)
       setStep("sent")
@@ -1642,7 +1642,7 @@ function CheckoutPage() {
         items: checkoutItems,
         totalSats: pricingIntent.totalSats,
       })
-      cart.clearMerchant(selectedMerchant)
+      cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
       setSentOrderId(orderId)
       setShowSentGlow(true)
       setPaidNotice(
@@ -1675,7 +1675,7 @@ function CheckoutPage() {
           items: checkoutItems,
           totalSats: pricingIntent.totalSats,
         })
-        cart.clearMerchant(selectedMerchant)
+        cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
         setSentOrderId(orderId)
         setPaidNotice("Payment sent. Proof delivery needs retry.")
         setShowSentGlow(true)

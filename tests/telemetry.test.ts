@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import {
+  buildTelemetryEventPageContext,
   buildTelemetryPageUrl,
   getConduitPostHogConfig,
   getTelemetryAmountBucket,
@@ -68,6 +69,18 @@ describe("browser telemetry", () => {
         pathname: "/products/30402:merchant:item",
       })
     ).toBe("https://shop.conduit.market/products/:productId")
+  })
+
+  it("builds sanitized route context for custom events", () => {
+    expect(
+      buildTelemetryEventPageContext({
+        origin: "https://shop.conduit.market/",
+        pathname: "/store/abcdef123456?q=buyer-search",
+      })
+    ).toEqual({
+      page_path: "/store/:pubkey",
+      page_url: "https://shop.conduit.market/store/:pubkey",
+    })
   })
 
   it("uses privacy-restrictive PostHog configuration", () => {

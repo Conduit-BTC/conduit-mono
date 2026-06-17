@@ -94,6 +94,19 @@ function RootLayout() {
         },
       })
     }
+    if (
+      status === "disconnected" &&
+      previousAuthStatusRef.current === "connected"
+    ) {
+      recordBrowserTelemetryEvent({
+        app: "merchant",
+        eventName: "signer_disconnected",
+        properties: {
+          method: "nip07",
+          status: "success",
+        },
+      })
+    }
     previousAuthStatusRef.current = status
   }, [status])
 

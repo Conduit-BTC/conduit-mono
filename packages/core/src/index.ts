@@ -21,6 +21,7 @@ export {
 export {
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
+  buildTelemetryEventPageContext,
   buildTelemetryPageUrl,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,

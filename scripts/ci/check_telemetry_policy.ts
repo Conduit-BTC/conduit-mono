@@ -4,6 +4,8 @@ import { join, relative } from "node:path"
 export const allowedTelemetryProperties = new Set([
   "event_name",
   "app",
+  "page_url",
+  "page_path",
   "network",
   "status",
   "latency_bucket",

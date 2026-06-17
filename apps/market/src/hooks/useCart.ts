@@ -18,6 +18,9 @@ export type { CartItem }
 const CART_STORAGE_KEY = "conduit:cart"
 
 type Listener = () => void
+type CartClearOptions = {
+  emitTelemetry?: boolean
+}
 const listeners = new Set<Listener>()
 
 let state: CartState = { items: [] }
@@ -60,6 +63,18 @@ function writeState(next: CartState): void {
     }
   }
   notify()
+}
+
+function getCartTelemetryCount(items: CartItem[]): number {
+  return items.reduce((total, item) => total + item.quantity, 0)
+}
+
+function getCartTelemetryProductType(items: CartItem[]): string {
+  const formats = new Set(items.map((item) => item.format ?? "unknown"))
+
+  if (formats.size === 0) return "unknown"
+  if (formats.size > 1) return "mixed"
+  return formats.values().next().value ?? "unknown"
 }
 
 function subscribe(listener: Listener): () => void {
@@ -108,6 +123,7 @@ export function useCart() {
           count_bucket: getTelemetryCountBucket(quantity),
           product_type: item.format ?? "unknown",
           status: "success",
+          surface: "cart",
         },
       })
     },
@@ -121,17 +137,67 @@ export function useCart() {
 
   const removeItem = useCallback((productId: string) => {
     const curr = readSnapshot()
+    const removedItem = curr.items.find((item) => item.productId === productId)
     writeState({ items: removeCartItem(curr.items, productId) })
+    if (removedItem) {
+      recordBrowserTelemetryEvent({
+        app: "market",
+        eventName: "cart_remove",
+        properties: {
+          action: "remove",
+          count_bucket: getTelemetryCountBucket(removedItem.quantity),
+          product_type: getCartTelemetryProductType([removedItem]),
+          status: "success",
+          surface: "cart",
+        },
+      })
+    }
   }, [])
 
   const clear = useCallback(() => {
+    const curr = readSnapshot()
     writeState({ items: [] })
+    if (curr.items.length > 0) {
+      recordBrowserTelemetryEvent({
+        app: "market",
+        eventName: "cart_clear",
+        properties: {
+          action: "clear_all",
+          count_bucket: getTelemetryCountBucket(
+            getCartTelemetryCount(curr.items)
+          ),
+          product_type: getCartTelemetryProductType(curr.items),
+          status: "success",
+          surface: "cart",
+        },
+      })
+    }
   }, [])
 
-  const clearMerchant = useCallback((merchantPubkey: string) => {
-    const curr = readSnapshot()
-    writeState({ items: clearMerchantCart(curr.items, merchantPubkey) })
-  }, [])
+  const clearMerchant = useCallback(
+    (merchantPubkey: string, options: CartClearOptions = {}) => {
+      const curr = readSnapshot()
+      const merchantItems = curr.items.filter(
+        (item) => item.merchantPubkey === merchantPubkey
+      )
+      writeState({ items: clearMerchantCart(curr.items, merchantPubkey) })
+      if (options.emitTelemetry === false || merchantItems.length === 0) return
+      recordBrowserTelemetryEvent({
+        app: "market",
+        eventName: "cart_clear",
+        properties: {
+          action: "clear_merchant",
+          count_bucket: getTelemetryCountBucket(
+            getCartTelemetryCount(merchantItems)
+          ),
+          product_type: getCartTelemetryProductType(merchantItems),
+          status: "success",
+          surface: "cart",
+        },
+      })
+    },
+    []
+  )
 
   const totals = useMemo(() => getCartTotals(snap.items), [snap.items])
 
