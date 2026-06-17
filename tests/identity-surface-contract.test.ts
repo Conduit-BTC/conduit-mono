@@ -88,4 +88,36 @@ describe("identity surface contracts", () => {
     expect(content).toContain("text-[var(--warning)]")
     expect(content).not.toContain("text-secondary-400")
   })
+
+  it("keeps buyer trust surfaces from duplicating NIP-05 identity state", async () => {
+    const trustSummary = await readFile(
+      "apps/market/src/components/MerchantTrustSummary.tsx",
+      "utf8"
+    )
+    const checkout = await readFile(
+      "apps/market/src/routes/checkout.tsx",
+      "utf8"
+    )
+    const store = await readFile(
+      "apps/market/src/routes/store/$pubkey.tsx",
+      "utf8"
+    )
+
+    expect(trustSummary).not.toContain("NIP-05 claimed")
+    expect(trustSummary).not.toContain("No NIP-05")
+    expect(trustSummary).not.toContain("hasNip05")
+    expect(trustSummary).not.toContain("You follow")
+    expect(trustSummary).not.toContain("You don't follow")
+
+    expect(checkout).toContain("Nip05TrustIndicator")
+    expect(checkout).toContain("getProfileNip05")
+    expect(checkout).toContain("CheckoutMerchantIdentityLink")
+    expect(checkout).toContain('className="lg:hidden"')
+    expect(checkout).not.toContain("import { MerchantTrustSummary }")
+    expect(checkout).not.toContain("<MerchantTrustSummary")
+    expect(checkout).not.toContain("Merchant context")
+
+    expect(store).toContain("Nip05TrustIndicator")
+    expect(store).toContain("<MerchantTrustSummary trust={merchantTrust} />")
+  })
 })

@@ -29,8 +29,6 @@ export type MerchantTrustContext = MerchantTrustSocialSummary & {
   merchantName: string
   merchantNamePending: boolean
   listingCount?: number
-  hasNip05: boolean
-  hasLightningAddress: boolean
 }
 
 export function useMerchantTrustContext({
@@ -140,8 +138,6 @@ export function useMerchantTrustContext({
     merchantName,
     merchantNamePending,
     listingCount,
-    hasNip05: !!profile?.nip05?.trim(),
-    hasLightningAddress: !!profile?.lud16?.trim(),
     ...(socialQuery.data ?? fallbackSocial),
   }
 }

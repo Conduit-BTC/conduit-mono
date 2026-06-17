@@ -39,6 +39,7 @@ import {
   waitForZapReceipt,
   useAuth,
   useProfile,
+  type Profile,
   type PricingRateInput,
   type ParsedShippingOption,
   type ShippingAddressSchema,
@@ -55,13 +56,14 @@ import {
 } from "@conduit/ui"
 import {
   MerchantAvatarFallback,
+  Nip05TrustIndicator,
   getMerchantDisplayName,
+  getProfileNip05,
 } from "../components/MerchantIdentity"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
 import { useWallet } from "../hooks/useWallet"
-import { MerchantTrustSummary } from "../components/MerchantTrustSummary"
 import { requireAuth } from "../lib/auth"
 import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
 import { PaymentTracker } from "../components/PaymentTracker"
@@ -337,6 +339,59 @@ function getCartShippingOptionSnapshots(
 
 // ─── Order summary sidebar ────────────────────────────────────────────────────
 
+function CheckoutMerchantIdentityLink({
+  merchantPubkey,
+  merchantProfile,
+  merchantName,
+  className = "",
+}: {
+  merchantPubkey: string
+  merchantProfile: Profile | undefined
+  merchantName: string
+  className?: string
+}) {
+  const merchantNip05 = getProfileNip05(merchantProfile)
+  const merchantStoreRef = pubkeyToNpub(merchantPubkey)
+
+  return (
+    <Link
+      to="/store/$pubkey"
+      params={{ pubkey: merchantStoreRef }}
+      className={[
+        "flex min-w-0 items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 transition-colors hover:border-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]",
+        className,
+      ].join(" ")}
+      aria-label={`Visit ${merchantName} store`}
+    >
+      <Avatar className="h-12 w-12 shrink-0 border border-[var(--border)]">
+        <AvatarImage src={merchantProfile?.picture} alt={merchantName} />
+        <AvatarFallback>
+          <MerchantAvatarFallback />
+        </AvatarFallback>
+      </Avatar>
+      <div className="min-w-0">
+        <div className="text-xs font-medium uppercase text-[var(--text-muted)]">
+          Merchant
+        </div>
+        <div className="mt-1 truncate text-base font-semibold text-[var(--text-primary)]">
+          {merchantName}
+        </div>
+        {merchantNip05 && (
+          <div
+            className="mt-1 truncate text-xs font-medium text-[var(--text-muted)]"
+            title={merchantNip05}
+          >
+            <Nip05TrustIndicator
+              pubkey={merchantPubkey}
+              nip05={merchantNip05}
+            />
+          </div>
+        )}
+      </div>
+    </Link>
+  )
+}
+
 function OrderSummary({
   items,
   merchantPubkey,
@@ -348,7 +403,6 @@ function OrderSummary({
 }) {
   const { data: merchantProfile } = useProfile(merchantPubkey)
   const merchantName = getMerchantDisplayName(merchantProfile, merchantPubkey)
-  const merchantStoreRef = pubkeyToNpub(merchantPubkey)
   const totalItems = items.reduce((sum, item) => sum + item.quantity, 0)
   const shippingCost = getCheckoutShippingCost(items, btcUsdRate)
   const itemSubtotalSats = items.reduce((sum, item) => {
@@ -400,27 +454,12 @@ function OrderSummary({
             {totalItems} item{totalItems === 1 ? "" : "s"}
           </div>
         </div>
-        <Link
-          to="/store/$pubkey"
-          params={{ pubkey: merchantStoreRef }}
-          className="mt-4 flex min-w-0 items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 transition-colors hover:border-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]"
-          aria-label={`Visit ${merchantName} store`}
-        >
-          <Avatar className="h-12 w-12 shrink-0 border border-[var(--border)]">
-            <AvatarImage src={merchantProfile?.picture} alt={merchantName} />
-            <AvatarFallback>
-              <MerchantAvatarFallback />
-            </AvatarFallback>
-          </Avatar>
-          <div className="min-w-0">
-            <div className="text-xs font-medium uppercase text-[var(--text-muted)]">
-              Merchant
-            </div>
-            <div className="mt-1 truncate text-base font-semibold text-[var(--text-primary)]">
-              {merchantName}
-            </div>
-          </div>
-        </Link>
+        <CheckoutMerchantIdentityLink
+          merchantPubkey={merchantPubkey}
+          merchantProfile={merchantProfile}
+          merchantName={merchantName}
+          className="mt-4"
+        />
       </div>
 
       <div className="mt-4 space-y-4">
@@ -2175,7 +2214,12 @@ function CheckoutPage() {
                 </div>
               )}
 
-              <MerchantTrustSummary trust={merchantTrust} variant="checkout" />
+              <CheckoutMerchantIdentityLink
+                merchantPubkey={selectedMerchant!}
+                merchantProfile={merchantProfile}
+                merchantName={merchantName}
+                className="lg:hidden"
+              />
 
               <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
                 {/* Zap out banner */}
