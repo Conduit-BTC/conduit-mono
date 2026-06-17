@@ -143,4 +143,8 @@ export {
   useRelaySettings,
   type UseRelaySettingsResult,
 } from "./hooks/useRelaySettings"
+export {
+  useDmInboxSettings,
+  type UseDmInboxSettingsResult,
+} from "./hooks/useDmInboxSettings"
 export { useUpdateProfile } from "./hooks/useUpdateProfile"

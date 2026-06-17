@@ -32,6 +32,12 @@ export interface DmRelayListLookupOptions {
   now?: () => number
 }
 
+export function serializeDmRelayListTags(
+  relayUrls: readonly string[]
+): string[][] {
+  return dedupeUrls(relayUrls).map((url) => ["relay", url])
+}
+
 interface DmRelayListTestOverrides {
   fetchEventsFanout?: typeof fetchEventsFanout
   loadCached?: (pubkey: string) => Promise<CachedDmRelayList | undefined>

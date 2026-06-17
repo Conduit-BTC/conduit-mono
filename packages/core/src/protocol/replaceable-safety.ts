@@ -114,6 +114,20 @@ export function countActiveRelayListTags(
   return relayUrls.size
 }
 
+export function countDmRelayListTags(
+  tags: readonly string[][] | undefined
+): number {
+  const relayUrls = new Set<string>()
+
+  for (const tag of tags ?? []) {
+    if (tag[0] !== "relay" || !tag[1]) continue
+    const url = normalizeRelayTagUrl(tag[1])
+    if (url) relayUrls.add(url)
+  }
+
+  return relayUrls.size
+}
+
 export function assertSafeReplaceablePublish(
   event: {
     kind?: number | null
@@ -150,6 +164,16 @@ export function assertSafeReplaceablePublish(
       if (relayCount <= 1) {
         throw new ReplaceablePublishSafetyError(
           "Refusing to publish a tiny NIP-65 relay list. Load or add at least two active relays before publishing."
+        )
+      }
+      return
+    }
+
+    case EVENT_KINDS.DM_RELAY_LIST: {
+      const relayCount = countDmRelayListTags(event.tags)
+      if (relayCount < 1) {
+        throw new ReplaceablePublishSafetyError(
+          "Refusing to publish an empty NIP-17 inbox relay list."
         )
       }
       return

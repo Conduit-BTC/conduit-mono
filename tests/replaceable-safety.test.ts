@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import {
   assertSafeReplaceablePublish,
   countActiveRelayListTags,
+  countDmRelayListTags,
   countDistinctContactListPubkeys,
   countMeaningfulProfileFields,
   EVENT_KINDS,
@@ -184,6 +185,30 @@ describe("replaceable publish safety", () => {
           ["r", "wss://read.example", "read"],
           ["r", "wss://write.example", "write"],
         ],
+      })
+    ).not.toThrow()
+  })
+
+  it("guards kind:10050 inbox relay replacements using relay tags", () => {
+    expect(
+      countDmRelayListTags([
+        ["relay", "relay.example.com/"],
+        ["relay", "wss://relay.example.com"],
+        ["r", "wss://nip65.example", "read"],
+      ])
+    ).toBe(1)
+
+    expect(() =>
+      assertSafeReplaceablePublish({
+        kind: EVENT_KINDS.DM_RELAY_LIST,
+        tags: [["r", "wss://nip65.example", "read"]],
+      })
+    ).toThrow("empty NIP-17 inbox relay list")
+
+    expect(() =>
+      assertSafeReplaceablePublish({
+        kind: EVENT_KINDS.DM_RELAY_LIST,
+        tags: [["relay", "wss://inbox.example"]],
       })
     ).not.toThrow()
   })

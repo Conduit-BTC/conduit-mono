@@ -70,6 +70,12 @@ export interface RelaySettingsPanelProps {
   publishedRelayListUpdatedAt?: number | null
   publishingRelayList?: boolean
   publishError?: string | null
+  dmInboxRelayUrls?: readonly string[]
+  dmInboxDefaultRelayUrls?: readonly string[]
+  dmInboxPublishedAt?: number | null
+  dmInboxLoading?: boolean
+  publishingDmInbox?: boolean
+  dmInboxPublishError?: string | null
   onAddRelay: (url: string) => void | Promise<void>
   onRefreshRelay: (url: string) => void | Promise<void>
   onRemoveRelay: (url: string) => void
@@ -78,6 +84,7 @@ export interface RelaySettingsPanelProps {
   onReorderCommerceRelay?: (sourceUrl: string, targetUrl: string) => void
   onReset?: () => void
   onPublishRelayList?: () => void | Promise<void>
+  onPublishDefaultDmInbox?: () => void | Promise<void>
   className?: string
 }
 
@@ -635,6 +642,131 @@ function RelaySection({
   )
 }
 
+function DmInboxSection({
+  relayUrls,
+  defaultRelayUrls,
+  publishedAt,
+  loading,
+  publishing,
+  publishError,
+  onPublishDefaultDmInbox,
+}: {
+  relayUrls: readonly string[]
+  defaultRelayUrls: readonly string[]
+  publishedAt: number | null
+  loading: boolean
+  publishing: boolean
+  publishError: string | null
+  onPublishDefaultDmInbox?: () => void | Promise<void>
+}) {
+  const [localPublishing, setLocalPublishing] = useState(false)
+  const [publishSucceeded, setPublishSucceeded] = useState(false)
+  const effectiveRelayUrls = relayUrls.length > 0 ? relayUrls : defaultRelayUrls
+  const hasPublishedInbox = relayUrls.length > 0
+  const relayFingerprint = relayUrls.join("|")
+
+  useEffect(() => {
+    setPublishSucceeded(false)
+  }, [relayFingerprint])
+
+  async function handlePublish(): Promise<void> {
+    if (!onPublishDefaultDmInbox || publishing || localPublishing) return
+
+    setLocalPublishing(true)
+    setPublishSucceeded(false)
+    try {
+      await onPublishDefaultDmInbox()
+      setPublishSucceeded(true)
+    } catch {
+      setPublishSucceeded(false)
+    } finally {
+      setLocalPublishing(false)
+    }
+  }
+
+  return (
+    <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--text-primary)]">
+              Encrypted Order Inbox
+            </h2>
+            <StatusPill
+              variant={hasPublishedInbox ? "success" : "neutral"}
+              noIcon
+              className="cursor-default py-0.5 text-[0.68rem]"
+            >
+              {hasPublishedInbox ? "Published" : "Not published"}
+            </StatusPill>
+          </div>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
+            This NIP-17 inbox is separate from your NIP-65 relay list and is
+            used for encrypted buyer and merchant order messages.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {effectiveRelayUrls.map((url) => (
+              <span
+                key={url}
+                className="max-w-full truncate rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 font-mono text-xs text-[var(--text-secondary)]"
+                title={url}
+              >
+                {url}
+              </span>
+            ))}
+          </div>
+          {publishedAt ? (
+            <div className="mt-2 text-xs text-[var(--text-muted)]">
+              Published event timestamp {publishedAt}
+            </div>
+          ) : loading ? (
+            <div className="mt-2 text-xs text-[var(--text-muted)]">
+              Checking encrypted order inbox
+            </div>
+          ) : null}
+        </div>
+
+        {onPublishDefaultDmInbox ? (
+          <Button
+            type="button"
+            variant="outline"
+            disabled={
+              publishing || localPublishing || defaultRelayUrls.length === 0
+            }
+            onClick={() => void handlePublish()}
+            className="sm:mt-1"
+          >
+            <Upload className="h-4 w-4" />
+            {publishing || localPublishing
+              ? "Waiting for signer..."
+              : hasPublishedInbox
+                ? "Update inbox"
+                : "Publish inbox"}
+          </Button>
+        ) : null}
+      </div>
+
+      {onPublishDefaultDmInbox ? (
+        <SignedActionStatus
+          state={
+            publishing || localPublishing
+              ? "awaiting_signature"
+              : publishError
+                ? "error"
+                : publishSucceeded
+                  ? "success"
+                  : "idle"
+          }
+          awaitingSignatureMessage="Confirm the encrypted order inbox in your signer."
+          successMessage="Encrypted order inbox signed and published."
+          errorMessage={publishError ?? undefined}
+          className="mt-4"
+        />
+      ) : null}
+    </section>
+  )
+}
+
 export function RelaySettingsPanel({
   settings,
   scanningUrls = [],
@@ -643,6 +775,12 @@ export function RelaySettingsPanel({
   publishedRelayListUpdatedAt = null,
   publishingRelayList = false,
   publishError = null,
+  dmInboxRelayUrls = [],
+  dmInboxDefaultRelayUrls = [],
+  dmInboxPublishedAt = null,
+  dmInboxLoading = false,
+  publishingDmInbox = false,
+  dmInboxPublishError = null,
   onAddRelay,
   onRefreshRelay,
   onRemoveRelay,
@@ -651,6 +789,7 @@ export function RelaySettingsPanel({
   onReorderCommerceRelay,
   onReset,
   onPublishRelayList,
+  onPublishDefaultDmInbox,
   className,
 }: RelaySettingsPanelProps) {
   const [newRelayUrl, setNewRelayUrl] = useState("")
@@ -799,6 +938,18 @@ export function RelaySettingsPanel({
           onToggleRead={onToggleRead}
           onToggleWrite={onToggleWrite}
         />
+
+        {onPublishDefaultDmInbox || dmInboxRelayUrls.length > 0 ? (
+          <DmInboxSection
+            relayUrls={dmInboxRelayUrls}
+            defaultRelayUrls={dmInboxDefaultRelayUrls}
+            publishedAt={dmInboxPublishedAt}
+            loading={dmInboxLoading}
+            publishing={publishingDmInbox}
+            publishError={dmInboxPublishError}
+            onPublishDefaultDmInbox={onPublishDefaultDmInbox}
+          />
+        ) : null}
 
         <form
           onSubmit={(event) => void handleAddRelay(event)}

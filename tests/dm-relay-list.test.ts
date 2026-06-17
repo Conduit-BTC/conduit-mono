@@ -6,6 +6,7 @@ import {
   getDmRelayLists,
   parseDmRelayListEvent,
   pickLatestDmRelayListEvent,
+  serializeDmRelayListTags,
 } from "@conduit/core"
 
 afterEach(() => {
@@ -38,6 +39,19 @@ describe("NIP-17 DM relay lists", () => {
       sourceRelayUrls: ["wss://source.example"],
       cachedAt: 25,
     })
+  })
+
+  it("serializes kind:10050 relay tags separately from NIP-65 tags", () => {
+    expect(
+      serializeDmRelayListTags([
+        "relay.example.com/",
+        "wss://relay.example.com",
+        "wss://other.example",
+      ])
+    ).toEqual([
+      ["relay", "wss://relay.example.com"],
+      ["relay", "wss://other.example"],
+    ])
   })
 
   it("picks the newest kind:10050 event for a pubkey", () => {
