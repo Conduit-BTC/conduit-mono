@@ -9,6 +9,7 @@ This directory is organized by document intent so the team can keep live executi
 - `docs/plans/*`: phase boundaries, exit criteria, and temporary delivery contracts
 - `docs/specs/*`: active feature, protocol, and product requirements
   - `docs/specs/relay/source-aware-frontier.md`: source-aware Nostr relay frontier, surface priority, and mobile socket-budget contract
+  - `docs/specs/relay/protected-commerce-delivery-frontier.md`: protected checkout, order, and message delivery frontier requirements
 - `docs/knowledge/*`: supporting notes, research, references, future concepts, and working context that may inform implementation but do not replace the source-of-truth docs above
 - `docs/knowledge/future/*`: parked future product/service ideas that are intentionally not current `conduit-mono` implementation contracts
 

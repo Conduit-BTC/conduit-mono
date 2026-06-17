@@ -9,6 +9,8 @@ Conduit treats relays as Nostr infrastructure, not fixed app roles. Apps expose 
 
 The detailed product and client architecture lives in [Relay Architecture](./relay/conduit_relay_architecture.md).
 The source-aware read/write frontier contract lives in [Source-Aware Relay Frontier](./relay/source-aware-frontier.md).
+The protected checkout, order, and message delivery contract lives in
+[Protected Commerce Delivery Frontier](./relay/protected-commerce-delivery-frontier.md).
 
 This document defines the minimum behavior expected from a relay that wants to be considered commerce-compatible by Conduit.
 

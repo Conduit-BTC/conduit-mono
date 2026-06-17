@@ -256,6 +256,119 @@ export interface StoredPaymentAttempt {
   updatedAt: number
 }
 
+export type ProtectedDeliverySurface =
+  | "market_checkout"
+  | "market_orders"
+  | "market_messages"
+  | "merchant_orders"
+  | "merchant_messages"
+
+export type ProtectedDeliveryIntent =
+  | "checkout_order"
+  | "payment_proof"
+  | "buyer_message"
+  | "merchant_reply"
+  | "merchant_status_update"
+
+export type ProtectedDeliveryRecipientRole = "primary_recipient" | "self_copy"
+
+export type ProtectedDeliveryRelayPolicy = "nip17_order"
+
+export type ProtectedDeliveryPriorityClass =
+  | "critical_order_write"
+  | "critical_order_read"
+  | "user_publish"
+  | "interactive_detail"
+  | "interactive_search"
+  | "visible_marketplace_read"
+  | "zap_receipt_wait"
+  | "background_hydration"
+  | "capability_scan"
+  | "prefetch"
+
+export type ProtectedDeliveryState =
+  | "queued"
+  | "publishing"
+  | "partially_delivered"
+  | "delivered_required"
+  | "retry_needed"
+  | "failed"
+
+export type ProtectedDeliveryConfirmationState =
+  | "unconfirmed"
+  | "acked_by_relay"
+  | "observed_via_read_path"
+  | "confirmed"
+
+export type ProtectedDeliveryRelayOutcomeStatus =
+  | "acked"
+  | "rejected"
+  | "timeout"
+  | "error"
+
+export type ProtectedDeliveryFailureCategory =
+  | "relay_rejected"
+  | "relay_timeout"
+  | "relay_auth_required"
+  | "relay_rate_limited"
+  | "publish_error"
+  | "unknown"
+
+export type ProtectedDeliverySourceRationale =
+  | "recipient_nip17_10050"
+  | "recipient_nip65"
+  | "merchant_source_hint"
+  | "commerce_dm_fallback"
+  | "sender_write_relay"
+  | "app_write_relay"
+  | "core_public_fallback"
+  | "local_retry"
+  | "manual"
+
+export interface StoredProtectedDeliveryRelayOutcome {
+  relayUrl: string
+  status: ProtectedDeliveryRelayOutcomeStatus
+  failureCategory?: ProtectedDeliveryFailureCategory
+  attemptedAt: number
+  completedAt?: number
+}
+
+export interface StoredProtectedDeliveryRecord {
+  id: string
+  orderId?: string
+  conversationId?: string
+  senderPubkey: string
+  recipientPubkey: string
+  recipientRole: ProtectedDeliveryRecipientRole
+  surface: ProtectedDeliverySurface
+  intent: ProtectedDeliveryIntent
+  priorityClass: ProtectedDeliveryPriorityClass
+  productCoordinates: string[]
+  signedWrapEventId: string
+  signedWrapEventKind: number
+  signedWrapEventJson: string
+  localRumorId?: string
+  sourceRationale: ProtectedDeliverySourceRationale[]
+  plannedRelayUrls: string[]
+  requiredRelayUrls: string[]
+  recipientRelayPolicy: ProtectedDeliveryRelayPolicy
+  deliveryMode: "critical"
+  requiredAckCount: number
+  allowSelfCopyFailure: boolean
+  relayOutcomes: StoredProtectedDeliveryRelayOutcome[]
+  deliveryState: ProtectedDeliveryState
+  confirmationState: ProtectedDeliveryConfirmationState
+  retryCount: number
+  maxRetryCount: number
+  retryDelayMs: number
+  maxRetryDelayMs: number
+  lastFailureCategory?: ProtectedDeliveryFailureCategory
+  lastAttemptAt?: number
+  nextRetryAt?: number
+  createdAt: number
+  updatedAt: number
+}
+
 class ConduitDB extends Dexie {
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
@@ -268,6 +381,7 @@ class ConduitDB extends Dexie {
   nip05Verifications!: EntityTable<CachedNip05Verification, "id">
   relayCapabilities!: EntityTable<CachedRelayCapability, "url">
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
+  protectedDeliveryRecords!: EntityTable<StoredProtectedDeliveryRecord, "id">
 
   constructor() {
     super("conduit")
@@ -368,6 +482,25 @@ class ConduitDB extends Dexie {
       relayCapabilities: "url, nip11Status, updatedAt",
       paymentAttempts:
         "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
+    })
+
+    this.version(9).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
+      dmRelayLists: "pubkey, cachedAt",
+      productSocialSummaries: "key, cachedAt",
+      nip05Verifications:
+        "id, pubkey, normalizedIdentifier, status, expiresAt, cachedAt",
+      relayCapabilities: "url, nip11Status, updatedAt",
+      paymentAttempts:
+        "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
+      protectedDeliveryRecords:
+        "id, orderId, conversationId, senderPubkey, recipientPubkey, recipientRole, deliveryState, confirmationState, nextRetryAt, updatedAt, signedWrapEventId",
     })
   }
 }

@@ -96,6 +96,18 @@ export {
   type CachedProfile,
   type CachedOrderMessage,
   type CachedNip05Verification,
+  type ProtectedDeliveryConfirmationState,
+  type ProtectedDeliveryFailureCategory,
+  type ProtectedDeliveryIntent,
+  type ProtectedDeliveryPriorityClass,
+  type ProtectedDeliveryRecipientRole,
+  type ProtectedDeliveryRelayOutcomeStatus,
+  type ProtectedDeliveryRelayPolicy,
+  type ProtectedDeliverySourceRationale,
+  type ProtectedDeliveryState,
+  type ProtectedDeliverySurface,
+  type StoredProtectedDeliveryRecord,
+  type StoredProtectedDeliveryRelayOutcome,
   type StoredPaymentAttempt,
 } from "./db"
 
