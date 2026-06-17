@@ -62,8 +62,15 @@ export interface RelaySettingsPanelState {
   entries: RelaySettingsPanelEntry[]
 }
 
+export interface RelaySettingsPanelBucket {
+  id: string
+  label: string
+  relayUrls: readonly string[]
+}
+
 export interface RelaySettingsPanelProps {
   settings: RelaySettingsPanelState
+  relayBuckets?: readonly RelaySettingsPanelBucket[]
   scanningUrls?: readonly string[]
   error?: string | null
   isLoadingPublishedRelayList?: boolean
@@ -767,8 +774,51 @@ function DmInboxSection({
   )
 }
 
+function RelayDiagnosticsSection({
+  buckets,
+}: {
+  buckets: readonly RelaySettingsPanelBucket[]
+}) {
+  const visibleBuckets = buckets.filter((bucket) => bucket.relayUrls.length > 0)
+  if (visibleBuckets.length === 0) return null
+
+  return (
+    <details className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+      <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-[var(--text-primary)]">
+        Relay Diagnostics
+      </summary>
+      <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
+        App, fallback, search, DM, and zap relay buckets are planner
+        infrastructure. They are not part of your personal NIP-65 relay list
+        unless you add them above.
+      </p>
+      <div className="mt-4 space-y-4">
+        {visibleBuckets.map((bucket) => (
+          <div key={bucket.id}>
+            <div className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
+              {bucket.label}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {bucket.relayUrls.map((url) => (
+                <span
+                  key={`${bucket.id}:${url}`}
+                  className="max-w-full truncate rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-2.5 py-1 font-mono text-xs text-[var(--text-secondary)]"
+                  title={url}
+                >
+                  {url}
+                </span>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </details>
+  )
+}
+
 export function RelaySettingsPanel({
   settings,
+  relayBuckets = [],
   scanningUrls = [],
   error,
   isLoadingPublishedRelayList = false,
@@ -950,6 +1000,8 @@ export function RelaySettingsPanel({
             onPublishDefaultDmInbox={onPublishDefaultDmInbox}
           />
         ) : null}
+
+        <RelayDiagnosticsSection buckets={relayBuckets} />
 
         <form
           onSubmit={(event) => void handleAddRelay(event)}

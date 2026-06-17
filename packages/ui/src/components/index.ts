@@ -75,6 +75,7 @@ export { Skeleton } from "./Skeleton"
 export { Tabs, TabsList, TabsTrigger, TabsContent } from "./Tabs"
 export {
   RelaySettingsPanel,
+  type RelaySettingsPanelBucket,
   type RelaySettingsPanelEntry,
   type RelaySettingsPanelProps,
   type RelaySettingsPanelState,

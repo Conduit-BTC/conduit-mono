@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
 import {
+  getRelayBucketConfigs,
   useAuth,
   useConduitSession,
   useDmInboxSettings,
@@ -29,6 +30,7 @@ function NetworkPage() {
       <div className="mx-auto max-w-[50rem]">
         <RelaySettingsPanel
           settings={relaySettings.settings}
+          relayBuckets={getRelayBucketConfigs()}
           scanningUrls={relaySettings.scanningUrls}
           error={relaySettings.error}
           isLoadingPublishedRelayList={
