@@ -65,6 +65,12 @@ export interface PublishWithPlannerInput {
   skipHealthFilter?: boolean
   /** Context for non-destructive replaceable-event publishes. */
   replaceableSafety?: ReplaceablePublishSafetyOptions
+  /**
+   * Precomputed plan for callers that must persist the exact relay policy
+   * before publishing a signed event. When supplied, publish execution uses
+   * this plan instead of resolving relay hints again.
+   */
+  resolvedPlan?: RelayWritePlan
 }
 
 export interface PublishWithPlannerResult {
@@ -527,9 +533,11 @@ export async function publishWithPlanner(
   }
   assertSafeReplaceablePublish(event, input.replaceableSafety)
 
-  const plan = testOverrides.planPublishRelays
-    ? await testOverrides.planPublishRelays(input)
-    : await planPublishRelays(input)
+  const plan =
+    input.resolvedPlan ??
+    (testOverrides.planPublishRelays
+      ? await testOverrides.planPublishRelays(input)
+      : await planPublishRelays(input))
   const plannedRelayUrls = Array.from(
     new Set([...plan.primaryRelayUrls, ...plan.broadcastRelayUrls])
   )

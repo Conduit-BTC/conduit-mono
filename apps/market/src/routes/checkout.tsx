@@ -13,7 +13,7 @@ import {
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { NDKEvent, NDKUser, giftWrap } from "@nostr-dev-kit/ndk"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   EVENT_KINDS,
   SHIPPING_COUNTRIES,
@@ -26,6 +26,7 @@ import {
   fetchZapInvoice,
   getPriceSats,
   getShippingCostSats,
+  deliverProtectedOrderMessage,
   hasWebLN,
   getNdk,
   getShippingOptions,
@@ -33,7 +34,6 @@ import {
   normalizePubkey,
   normalizeLightningInvoice,
   parseOrderMessageRumorEvent,
-  publishWithPlanner,
   pubkeyToNpub,
   validateLightningInvoiceForPayment,
   waitForZapReceipt,
@@ -1009,17 +1009,6 @@ function CheckoutPage() {
     return error instanceof Error ? error.message : fallback
   }
 
-  function prepareBuyerRumor(rumor: NDKEvent, buyerPubkey: string): void {
-    rumor.pubkey = buyerPubkey
-    if (rumor.id) return
-
-    try {
-      rumor.id = rumor.getEventHash()
-    } catch (error) {
-      console.warn("Failed to derive buyer order rumor id", error)
-    }
-  }
-
   async function cacheBuyerOrderRumor(rumor: NDKEvent): Promise<string | null> {
     try {
       if (!rumor.id) throw new Error("Missing buyer order rumor id")
@@ -1051,51 +1040,29 @@ function CheckoutPage() {
   async function publishWrappedToMerchantAndSelf(
     rumor: NDKEvent,
     ndk: ReturnType<typeof getNdk>,
+    orderId: string,
     merchantPubkey: string,
-    buyerPubkey: string
+    buyerPubkey: string,
+    productCoordinates: readonly string[],
+    intent: "checkout_order" | "payment_proof" = "checkout_order"
   ): Promise<BuyerMessageDeliveryResult> {
-    prepareBuyerRumor(rumor, buyerPubkey)
-
-    const merchantUser = new NDKUser({ pubkey: merchantPubkey })
-    const buyerUser = new NDKUser({ pubkey: buyerPubkey })
-    const [wrappedToMerchant, wrappedToSelf] = await Promise.all([
-      giftWrap(rumor, merchantUser, ndk.signer, {
-        rumorKind: EVENT_KINDS.ORDER,
-      }),
-      giftWrap(rumor, buyerUser, ndk.signer, {
-        rumorKind: EVENT_KINDS.ORDER,
-      }),
-    ])
-
-    await publishWithPlanner(wrappedToMerchant, {
-      intent: "recipient_event",
-      authorPubkey: buyerPubkey,
-      recipientPubkeys: [merchantPubkey],
-      recipientRelayPolicy: "nip17_order",
-      refreshRelayLists: true,
-      deliveryMode: "critical",
+    const delivery = await deliverProtectedOrderMessage({
+      rumor,
+      signer: ndk.signer,
+      orderId,
+      senderPubkey: buyerPubkey,
+      recipientPubkey: merchantPubkey,
+      selfCopyPubkey: buyerPubkey,
+      productCoordinates,
+      intent,
+      surface: "market_checkout",
     })
 
-    let buyerSelfCopyError: string | null = null
-    try {
-      await publishWithPlanner(wrappedToSelf, {
-        intent: "recipient_event",
-        authorPubkey: buyerPubkey,
-        recipientPubkeys: [buyerPubkey],
-        recipientRelayPolicy: "nip17_order",
-        refreshRelayLists: true,
-        deliveryMode: "critical",
-      })
-    } catch (selfCopyError) {
-      console.warn("Buyer self-copy publish failed", selfCopyError)
-      buyerSelfCopyError = getErrorMessage(
-        selfCopyError,
-        "Buyer self-copy publish failed"
-      )
-    }
-
     const localCacheError = await cacheBuyerOrderRumor(rumor)
-    return { buyerSelfCopyError, localCacheError }
+    return {
+      buyerSelfCopyError: delivery.selfCopyError,
+      localCacheError,
+    }
   }
 
   // ─── Order-first path (existing flow) ───────────────────────────────────
@@ -1178,7 +1145,14 @@ function CheckoutPage() {
       setStep("sending")
 
       const [delivery] = await Promise.all([
-        publishWrappedToMerchantAndSelf(rumor, ndk, selectedMerchant, pubkey),
+        publishWrappedToMerchantAndSelf(
+          rumor,
+          ndk,
+          orderId,
+          selectedMerchant,
+          pubkey,
+          checkoutItems.map((item) => item.productId)
+        ),
         new Promise((resolve) => window.setTimeout(resolve, 900)),
       ])
       const deliveryNotice = getDeliveryNotice(delivery, "Order")
@@ -1416,8 +1390,11 @@ function CheckoutPage() {
         const proofDelivery = await publishWrappedToMerchantAndSelf(
           proofRumor,
           ndk,
+          orderId,
           selectedMerchant,
-          pubkey
+          pubkey,
+          pricingIntent.items.map((item) => item.productId),
+          "payment_proof"
         )
         recoveryNotice =
           getDeliveryNotice(proofDelivery, "Payment proof") ?? recoveryNotice
@@ -1632,8 +1609,10 @@ function CheckoutPage() {
       const orderDelivery = await publishWrappedToMerchantAndSelf(
         orderRumor,
         ndk,
+        orderId,
         selectedMerchant,
-        pubkey
+        pubkey,
+        checkoutItems.map((item) => item.productId)
       )
       const orderDeliveryNotice = getDeliveryNotice(orderDelivery, "Order")
       setTrackerOrderDelivered(true)

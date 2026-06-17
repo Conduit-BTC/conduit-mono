@@ -1,4 +1,10 @@
 import {
+  NDKUser,
+  giftWrap,
+  type NDKEvent,
+  type NDKSigner,
+} from "@nostr-dev-kit/ndk"
+import {
   db,
   type ProtectedDeliveryConfirmationState,
   type ProtectedDeliveryFailureCategory,
@@ -13,8 +19,16 @@ import {
   type StoredProtectedDeliveryRecord,
   type StoredProtectedDeliveryRelayOutcome,
 } from "../db"
+import { config } from "../config"
 import { EVENT_KINDS } from "./kinds"
-import type { PublishWithPlannerResult } from "./relay-publish"
+import {
+  RelayPublishDiagnosticsError,
+  planPublishRelays,
+  publishWithPlanner,
+  type PublishWithPlannerInput,
+  type PublishWithPlannerResult,
+} from "./relay-publish"
+import type { RelayWritePlan } from "./relay-planner"
 import { tryNormalizeRelayUrl } from "./relay-settings"
 
 export type {
@@ -107,9 +121,45 @@ export interface ProtectedDeliveryDiagnostics {
   sourceRationale: ProtectedDeliverySourceRationale[]
 }
 
+export interface ExecuteProtectedDeliveryRecordInput {
+  record: StoredProtectedDeliveryRecord
+  event: NDKEvent
+  publishInput: PublishWithPlannerInput
+  resolvedPlan?: RelayWritePlan
+  persistQueued?: boolean
+  throwOnPolicyFailure?: boolean
+  now?: number
+}
+
+export interface DeliverProtectedOrderMessageInput {
+  rumor: NDKEvent
+  signer: NDKSigner | undefined
+  orderId: string
+  intent?: ProtectedDeliveryIntent
+  senderPubkey: string
+  recipientPubkey: string
+  selfCopyPubkey?: string
+  productCoordinates: readonly string[]
+  surface?: ProtectedDeliverySurface
+  now?: number
+}
+
+export interface ProtectedOrderMessageDeliveryResult {
+  primaryRecord: StoredProtectedDeliveryRecord
+  selfCopyRecord: StoredProtectedDeliveryRecord
+  selfCopyError: string | null
+}
+
 interface ProtectedDeliveryTestOverrides {
   putRecord?: (record: StoredProtectedDeliveryRecord) => Promise<void>
   getRecords?: () => Promise<StoredProtectedDeliveryRecord[]>
+  planPublishRelays?: (
+    input: PublishWithPlannerInput
+  ) => Promise<RelayWritePlan>
+  publishWithPlanner?: (
+    event: NDKEvent,
+    input: PublishWithPlannerInput
+  ) => Promise<PublishWithPlannerResult>
   now?: () => number
 }
 
@@ -152,6 +202,14 @@ function normalizeRelayUrls(
   return normalizedUrls
 }
 
+function mergeRelayUrls(
+  ...groups: Array<readonly (string | null | undefined)[] | undefined>
+): string[] {
+  const merged: string[] = []
+  for (const group of groups) merged.push(...normalizeRelayUrls(group ?? []))
+  return normalizeRelayUrls(merged)
+}
+
 function dedupeSourceRationale(
   values: readonly ProtectedDeliverySourceRationale[]
 ): ProtectedDeliverySourceRationale[] {
@@ -191,6 +249,31 @@ function createRecordId(input: {
     input.recipientRole,
     input.signedWrapEventId,
   ].join(":")
+}
+
+function eventJson(input: NDKEvent): {
+  id: string
+  kind: number
+  json: string
+} {
+  const raw = input.rawEvent()
+  if (typeof raw.id !== "string" || raw.id.length === 0) {
+    throw new Error("Protected delivery signed wrap is missing an event id")
+  }
+  if (typeof raw.kind !== "number") {
+    throw new Error("Protected delivery signed wrap is missing an event kind")
+  }
+  return {
+    id: raw.id,
+    kind: raw.kind,
+    json: JSON.stringify(raw),
+  }
+}
+
+function prepareOrderRumor(rumor: NDKEvent, senderPubkey: string): void {
+  rumor.pubkey = senderPubkey
+  if (rumor.id) return
+  rumor.id = rumor.getEventHash()
 }
 
 function normalizeCount(value: number | undefined, fallback: number): number {
@@ -254,6 +337,19 @@ function classifyRelayFailure(
   return "relay_rejected"
 }
 
+function failureCategoryFromError(
+  error: unknown
+): ProtectedDeliveryFailureCategory {
+  if (error instanceof RelayPublishDiagnosticsError) {
+    const messages = Object.values(error.diagnostics.relayFailureMessages)
+    return messages.length > 0
+      ? classifyRelayFailure(messages.at(-1))
+      : "publish_error"
+  }
+  if (error instanceof Error) return classifyRelayFailure(error.message)
+  return "publish_error"
+}
+
 function outcomeStatusForFailure(
   failureCategory: ProtectedDeliveryFailureCategory
 ): ProtectedDeliveryRelayOutcomeStatus {
@@ -298,6 +394,29 @@ function scheduleNextRetry(input: {
     input.record.maxRetryDelayMs
   )
   return input.now + delay
+}
+
+function markProtectedDeliveryAttemptFailed(
+  record: StoredProtectedDeliveryRecord,
+  failureCategory: ProtectedDeliveryFailureCategory,
+  now: number = nowMs()
+): StoredProtectedDeliveryRecord {
+  const nextRetryCount = record.retryCount + 1
+  const retryExhausted = nextRetryCount >= record.maxRetryCount
+  return {
+    ...record,
+    deliveryState: retryExhausted ? "failed" : "retry_needed",
+    retryCount: nextRetryCount,
+    lastFailureCategory: failureCategory,
+    nextRetryAt: retryExhausted
+      ? undefined
+      : scheduleNextRetry({
+          record,
+          retryCount: nextRetryCount,
+          now,
+        }),
+    updatedAt: now,
+  }
 }
 
 function collapseStates(
@@ -354,6 +473,116 @@ function isRetryableRecord(
     )
   }
   return record.nextRetryAt === undefined || record.nextRetryAt <= now
+}
+
+function sourceRationaleForPlan(input: {
+  plan: RelayWritePlan
+  recipientRole: ProtectedDeliveryRecipientRole
+}): ProtectedDeliverySourceRationale[] {
+  const commerceFallbackRelays = new Set(
+    normalizeRelayUrls(config.commerceDmFallbackRelayUrls)
+  )
+  const appWriteRelays = new Set(normalizeRelayUrls(config.appWriteRelayUrls))
+  const primaryUsesFallback = input.plan.primaryRelayUrls.some((url) =>
+    commerceFallbackRelays.has(url)
+  )
+  const broadcastUsesAppWrite = input.plan.broadcastRelayUrls.some((url) =>
+    appWriteRelays.has(url)
+  )
+  const rationale: ProtectedDeliverySourceRationale[] = []
+
+  if (input.recipientRole === "primary_recipient") {
+    if (primaryUsesFallback) rationale.push("commerce_dm_fallback")
+    if (!primaryUsesFallback || input.plan.primaryRelayUrls.length > 0) {
+      rationale.push("recipient_nip17_10050")
+    }
+  } else {
+    rationale.push("recipient_nip17_10050", "sender_write_relay")
+  }
+  if (broadcastUsesAppWrite) rationale.push("app_write_relay")
+  if (input.plan.broadcastRelayUrls.length > 0)
+    rationale.push("sender_write_relay")
+  if (rationale.length === 0) rationale.push("local_retry")
+
+  return dedupeSourceRationale(rationale)
+}
+
+function requiredRelayUrlsForPlan(input: {
+  plan: RelayWritePlan
+  recipientRole: ProtectedDeliveryRecipientRole
+}): string[] {
+  if (input.recipientRole === "primary_recipient") {
+    return mergeRelayUrls(
+      input.plan.primaryRelayUrls,
+      config.commerceDmFallbackRelayUrls
+    )
+  }
+  return normalizeRelayUrls(input.plan.primaryRelayUrls)
+}
+
+async function resolvePublishPlan(
+  input: PublishWithPlannerInput
+): Promise<RelayWritePlan> {
+  return testOverrides.planPublishRelays
+    ? await testOverrides.planPublishRelays(input)
+    : await planPublishRelays(input)
+}
+
+async function publishPlannedEvent(
+  event: NDKEvent,
+  input: PublishWithPlannerInput
+): Promise<PublishWithPlannerResult> {
+  return testOverrides.publishWithPlanner
+    ? await testOverrides.publishWithPlanner(event, input)
+    : await publishWithPlanner(event, input)
+}
+
+function createProtectedDeliveryRecordFromWrap(input: {
+  wrappedEvent: NDKEvent
+  orderId: string
+  localRumorId?: string
+  senderPubkey: string
+  recipientPubkey: string
+  recipientRole: ProtectedDeliveryRecipientRole
+  surface: ProtectedDeliverySurface
+  intent: ProtectedDeliveryIntent
+  productCoordinates: readonly string[]
+  plan: RelayWritePlan
+  now?: number
+}): StoredProtectedDeliveryRecord {
+  const signedWrap = eventJson(input.wrappedEvent)
+  const plannedRelayUrls = mergeRelayUrls(
+    input.plan.primaryRelayUrls,
+    input.plan.broadcastRelayUrls,
+    config.commerceDmFallbackRelayUrls
+  )
+
+  return createProtectedDeliveryRecord({
+    orderId: input.orderId,
+    senderPubkey: input.senderPubkey,
+    recipientPubkey: input.recipientPubkey,
+    recipientRole: input.recipientRole,
+    surface: input.surface,
+    intent: input.intent,
+    productCoordinates: input.productCoordinates,
+    signedWrapEventId: signedWrap.id,
+    signedWrapEventKind: signedWrap.kind,
+    signedWrapEventJson: signedWrap.json,
+    localRumorId: input.localRumorId,
+    sourceRationale: sourceRationaleForPlan({
+      plan: input.plan,
+      recipientRole: input.recipientRole,
+    }),
+    plannedRelayUrls,
+    requiredRelayUrls: requiredRelayUrlsForPlan({
+      plan: input.plan,
+      recipientRole: input.recipientRole,
+    }),
+    recipientRelayPolicy: "nip17_order",
+    requiredAckCount: DEFAULT_REQUIRED_ACK_COUNT,
+    allowSelfCopyFailure: input.recipientRole === "self_copy",
+    now: input.now,
+  })
 }
 
 export function isFullProductCoordinate(value: string): boolean {
@@ -455,6 +684,218 @@ export async function persistProtectedDeliveryRecord(
   if (testOverrides.putRecord) await testOverrides.putRecord(record)
   else await db.protectedDeliveryRecords.put(record)
   return record
+}
+
+export class ProtectedDeliveryPolicyError extends Error {
+  readonly record: StoredProtectedDeliveryRecord
+  readonly cause: unknown
+
+  constructor(
+    message: string,
+    record: StoredProtectedDeliveryRecord,
+    cause: unknown = null
+  ) {
+    super(message)
+    this.name = "ProtectedDeliveryPolicyError"
+    this.record = record
+    this.cause = cause
+  }
+}
+
+export function getProtectedDeliveryErrorMessage(error: unknown): string {
+  if (error instanceof ProtectedDeliveryPolicyError) {
+    return "Protected delivery is saved locally and needs retry."
+  }
+  if (error instanceof RelayPublishDiagnosticsError) {
+    return "Protected delivery did not receive a required relay acknowledgement."
+  }
+  return error instanceof Error
+    ? error.message
+    : "Protected delivery did not complete."
+}
+
+export async function executeProtectedDeliveryRecord(
+  input: ExecuteProtectedDeliveryRecordInput
+): Promise<StoredProtectedDeliveryRecord> {
+  const publishInput = input.resolvedPlan
+    ? { ...input.publishInput, resolvedPlan: input.resolvedPlan }
+    : input.publishInput
+
+  if (input.persistQueued !== false) {
+    await persistProtectedDeliveryRecord(input.record)
+  }
+
+  const publishing = markProtectedDeliveryPublishing(
+    input.record,
+    nowMs(input.now)
+  )
+  await persistProtectedDeliveryRecord(publishing)
+
+  let finalRecord: StoredProtectedDeliveryRecord
+  try {
+    const result = await publishPlannedEvent(input.event, publishInput)
+    finalRecord = applyProtectedDeliveryPublishResult(
+      publishing,
+      result,
+      nowMs(input.now)
+    )
+  } catch (error) {
+    const diagnostics =
+      error instanceof RelayPublishDiagnosticsError
+        ? error.diagnostics
+        : undefined
+    finalRecord = diagnostics
+      ? applyProtectedDeliveryPublishResult(
+          publishing,
+          diagnostics,
+          nowMs(input.now)
+        )
+      : markProtectedDeliveryAttemptFailed(
+          publishing,
+          failureCategoryFromError(error),
+          nowMs(input.now)
+        )
+    await persistProtectedDeliveryRecord(finalRecord)
+    throw new ProtectedDeliveryPolicyError(
+      "Protected delivery did not receive a required relay acknowledgement.",
+      finalRecord,
+      error
+    )
+  }
+
+  await persistProtectedDeliveryRecord(finalRecord)
+  if (
+    input.throwOnPolicyFailure !== false &&
+    !hasRequiredDelivery(finalRecord)
+  ) {
+    throw new ProtectedDeliveryPolicyError(
+      "Protected delivery did not satisfy required recipient policy.",
+      finalRecord
+    )
+  }
+  return finalRecord
+}
+
+export async function deliverProtectedOrderMessage(
+  input: DeliverProtectedOrderMessageInput
+): Promise<ProtectedOrderMessageDeliveryResult> {
+  if (!input.signer) {
+    throw new Error("Protected order delivery requires an active signer")
+  }
+
+  const surface = input.surface ?? "market_checkout"
+  const intent = input.intent ?? "checkout_order"
+  prepareOrderRumor(input.rumor, input.senderPubkey)
+
+  const primaryPublishInput: PublishWithPlannerInput = {
+    intent: "recipient_event",
+    authorPubkey: input.senderPubkey,
+    recipientPubkeys: [input.recipientPubkey],
+    recipientRelayPolicy: "nip17_order",
+    refreshRelayLists: true,
+    deliveryMode: "critical",
+  }
+  const selfCopyPubkey = input.selfCopyPubkey ?? input.senderPubkey
+  const selfCopyPublishInput: PublishWithPlannerInput = {
+    intent: "recipient_event",
+    authorPubkey: input.senderPubkey,
+    recipientPubkeys: [selfCopyPubkey],
+    recipientRelayPolicy: "nip17_order",
+    refreshRelayLists: true,
+    deliveryMode: "critical",
+  }
+
+  const [primaryPlan, selfCopyPlan] = await Promise.all([
+    resolvePublishPlan(primaryPublishInput),
+    resolvePublishPlan(selfCopyPublishInput),
+  ])
+  const [wrappedToRecipient, wrappedToSelf] = await Promise.all([
+    giftWrap(
+      input.rumor,
+      new NDKUser({ pubkey: input.recipientPubkey }),
+      input.signer,
+      {
+        rumorKind: EVENT_KINDS.ORDER,
+      }
+    ),
+    giftWrap(
+      input.rumor,
+      new NDKUser({ pubkey: selfCopyPubkey }),
+      input.signer,
+      {
+        rumorKind: EVENT_KINDS.ORDER,
+      }
+    ),
+  ])
+
+  const primaryRecord = createProtectedDeliveryRecordFromWrap({
+    wrappedEvent: wrappedToRecipient,
+    orderId: input.orderId,
+    localRumorId: input.rumor.id,
+    senderPubkey: input.senderPubkey,
+    recipientPubkey: input.recipientPubkey,
+    recipientRole: "primary_recipient",
+    surface,
+    intent,
+    productCoordinates: input.productCoordinates,
+    plan: primaryPlan,
+    now: input.now,
+  })
+  const selfCopyRecord = createProtectedDeliveryRecordFromWrap({
+    wrappedEvent: wrappedToSelf,
+    orderId: input.orderId,
+    localRumorId: input.rumor.id,
+    senderPubkey: input.senderPubkey,
+    recipientPubkey: selfCopyPubkey,
+    recipientRole: "self_copy",
+    surface,
+    intent,
+    productCoordinates: input.productCoordinates,
+    plan: selfCopyPlan,
+    now: input.now,
+  })
+
+  await Promise.all([
+    persistProtectedDeliveryRecord(primaryRecord),
+    persistProtectedDeliveryRecord(selfCopyRecord),
+  ])
+
+  const deliveredPrimaryRecord = await executeProtectedDeliveryRecord({
+    record: primaryRecord,
+    event: wrappedToRecipient,
+    publishInput: primaryPublishInput,
+    resolvedPlan: primaryPlan,
+    persistQueued: false,
+  })
+
+  let deliveredSelfCopyRecord = selfCopyRecord
+  let selfCopyError: string | null = null
+  try {
+    deliveredSelfCopyRecord = await executeProtectedDeliveryRecord({
+      record: selfCopyRecord,
+      event: wrappedToSelf,
+      publishInput: selfCopyPublishInput,
+      resolvedPlan: selfCopyPlan,
+      persistQueued: false,
+      throwOnPolicyFailure: false,
+    })
+  } catch (error) {
+    selfCopyError = getProtectedDeliveryErrorMessage(error)
+    deliveredSelfCopyRecord =
+      error instanceof ProtectedDeliveryPolicyError
+        ? error.record
+        : markProtectedDeliveryAttemptFailed(
+            selfCopyRecord,
+            failureCategoryFromError(error)
+          )
+    await persistProtectedDeliveryRecord(deliveredSelfCopyRecord)
+  }
+
+  return {
+    primaryRecord: deliveredPrimaryRecord,
+    selfCopyRecord: deliveredSelfCopyRecord,
+    selfCopyError,
+  }
 }
 
 export function markProtectedDeliveryPublishing(
