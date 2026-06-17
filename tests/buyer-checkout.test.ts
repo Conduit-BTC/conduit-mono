@@ -747,7 +747,7 @@ describe("checkout payment helpers", () => {
         recipientPubkey: FAKE_PUBKEY,
         zapContent: "public note",
         explicitRelayUrls: ["wss://explicit.example"],
-        publicRelayUrls: ["wss://public.example"],
+        zapRelayUrls: ["wss://public.example"],
       },
       {
         fetchLnurlInvoice: fetchLnurl as never,
@@ -789,7 +789,7 @@ describe("checkout payment helpers", () => {
         recipientPubkey: FAKE_PUBKEY,
         zapContent: "hello\npublic",
         explicitRelayUrls: ["wss://relay.example", "wss://dup.example"],
-        publicRelayUrls: ["wss://dup.example", "wss://public.example"],
+        zapRelayUrls: ["wss://dup.example", "wss://public.example"],
         nowSeconds: 123,
       },
       {

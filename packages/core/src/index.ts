@@ -66,15 +66,24 @@ export type {
 
 // Config
 export {
+  CANONICAL_APP_BACKPLANE_RELAYS,
   CANONICAL_APP_WRITE_RELAYS,
+  CANONICAL_COMMERCE_DM_FALLBACK_RELAYS,
+  CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS,
   CANONICAL_DEFAULT_RELAYS,
+  CANONICAL_DM_INBOX_DEFAULT_RELAYS,
+  CANONICAL_SEARCH_INDEX_RELAYS,
+  CANONICAL_ZAP_PUBLIC_RELAYS,
   config,
+  getRelayBucketConfigs,
   isRetiredDefaultRelayUrl,
   isMockPayments,
   isSignet,
   isTestnet,
   isMainnet,
   type ConduitConfig,
+  type RelayBucketConfig,
+  type RelayBucketId,
 } from "./config"
 
 // Database

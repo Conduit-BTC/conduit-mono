@@ -36,6 +36,8 @@ const INTERACTIVE_INJECTION_WAIT_MS = 2_000
 const RESTORE_INJECTION_WAIT_MS = 1_000
 const INTERACTIVE_SIGNER_APPROVAL_TIMEOUT_MS = 30_000
 const RESTORE_SIGNER_APPROVAL_TIMEOUT_MS = 4_000
+const INTERACTIVE_TRANSIENT_CONNECT_RETRY_DELAYS_MS = [250, 750] as const
+const RESTORE_TRANSIENT_CONNECT_RETRY_DELAYS_MS = [250] as const
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
@@ -106,6 +108,27 @@ function getSignerTimeoutMessage(mode: AuthConnectMode): string {
   return "Signer approval timed out. Unlock your signer, check for an extension approval prompt, then try again."
 }
 
+function getSignerBridgeReadyMessage(mode: AuthConnectMode): string {
+  if (mode === "restore") {
+    return "Reconnect your signer to continue. Your browser signer extension was not ready yet."
+  }
+
+  return "Your signer extension was not ready yet. Unlock or reopen your signer, then try again."
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  return typeof error === "string" ? error : ""
+}
+
+export function isTransientNip07ConnectError(error: unknown): boolean {
+  const message = getErrorMessage(error)
+
+  return /could not establish connection|receiving end does not exist|message port closed|extension context invalidated|chrome\.runtime\.lastError/i.test(
+    message
+  )
+}
+
 function normalizeSignerConnectError(
   error: unknown,
   mode: AuthConnectMode
@@ -116,6 +139,10 @@ function normalizeSignerConnectError(
 
   if (/timed out/i.test(error.message)) {
     return new Error(getSignerTimeoutMessage(mode))
+  }
+
+  if (isTransientNip07ConnectError(error)) {
+    return new Error(getSignerBridgeReadyMessage(mode))
   }
 
   if (/not available|not found/i.test(error.message)) {
@@ -140,6 +167,53 @@ async function withTimeout<T>(
   } finally {
     if (timeoutId) clearTimeout(timeoutId)
   }
+}
+
+export async function connectNip07SignerForAuth(
+  mode: AuthConnectMode,
+  options: {
+    approvalTimeoutMs?: number
+    retryDelaysMs?: readonly number[]
+  } = {}
+): Promise<{
+  signer: NDKNip07Signer
+  user: Awaited<ReturnType<NDKNip07Signer["user"]>>
+}> {
+  const retryDelays =
+    options.retryDelaysMs ??
+    (mode === "restore"
+      ? RESTORE_TRANSIENT_CONNECT_RETRY_DELAYS_MS
+      : INTERACTIVE_TRANSIENT_CONNECT_RETRY_DELAYS_MS)
+  const approvalTimeoutMs =
+    options.approvalTimeoutMs ??
+    (mode === "restore"
+      ? RESTORE_SIGNER_APPROVAL_TIMEOUT_MS
+      : INTERACTIVE_SIGNER_APPROVAL_TIMEOUT_MS)
+  let lastError: unknown
+
+  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+    const signer = new NDKNip07Signer()
+
+    try {
+      const user = await withTimeout(
+        signer.user(),
+        approvalTimeoutMs,
+        getSignerTimeoutMessage(mode)
+      )
+      return { signer, user }
+    } catch (error) {
+      lastError = error
+
+      const retryDelay = retryDelays[attempt]
+      if (!isTransientNip07ConnectError(error) || retryDelay === undefined) {
+        break
+      }
+
+      await sleep(retryDelay)
+    }
+  }
+
+  throw normalizeSignerConnectError(lastError, mode)
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -174,14 +248,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     try {
-      const signer = new NDKNip07Signer()
-      const user = await withTimeout(
-        signer.user(),
-        mode === "restore"
-          ? RESTORE_SIGNER_APPROVAL_TIMEOUT_MS
-          : INTERACTIVE_SIGNER_APPROVAL_TIMEOUT_MS,
-        getSignerTimeoutMessage(mode)
-      )
+      const { signer, user } = await connectNip07SignerForAuth(mode)
       const pk = user.pubkey
       if (epoch !== authEpoch.current) return
 

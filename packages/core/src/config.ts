@@ -1,27 +1,64 @@
-export const CANONICAL_DEFAULT_RELAYS = [
-  // Canonical in-app relay reset list. Deploy env may add relays, but this
-  // source list stays visible in the browser console for public verification.
-  "wss://conduitl2.fly.dev",
-  "wss://relay.plebeian.market",
-  "wss://relay.primal.net",
-  "wss://relay.damus.io",
+export type RelayBucketId =
+  | "app_backplane"
+  | "core_public_fallback"
+  | "search_index"
+  | "commerce_dm_fallback"
+  | "dm_inbox_default"
+  | "zap_public"
+
+export interface RelayBucketConfig {
+  id: RelayBucketId
+  label: string
+  relayUrls: string[]
+}
+
+export const CANONICAL_APP_BACKPLANE_RELAYS = ["wss://conduitl2.fly.dev"]
+export const CANONICAL_APP_WRITE_RELAYS = CANONICAL_APP_BACKPLANE_RELAYS
+export const CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS = [
   "wss://nos.lol",
-  "wss://nostr.mom",
+  "wss://relay.damus.io",
   "wss://relay.nostr.net",
-  "wss://relay.minibits.cash",
 ]
-export const CANONICAL_APP_WRITE_RELAYS = ["wss://conduitl2.fly.dev"]
+export const CANONICAL_SEARCH_INDEX_RELAYS = ["wss://relay.nostr.band"]
+export const CANONICAL_COMMERCE_DM_FALLBACK_RELAYS = [
+  "wss://conduitl2.fly.dev",
+  "wss://inbox.azzamo.net",
+  "wss://nos.lol",
+  "wss://relay.damus.io",
+  "wss://relay.nostr.net",
+]
+export const CANONICAL_DM_INBOX_DEFAULT_RELAYS = [
+  "wss://nos.lol",
+  "wss://relay.damus.io",
+  "wss://relay.nostr.net",
+]
+export const CANONICAL_ZAP_PUBLIC_RELAYS = [
+  "wss://nos.lol",
+  "wss://relay.damus.io",
+  "wss://relay.nostr.net",
+  "wss://relay.nostr.band",
+]
+export const CANONICAL_DEFAULT_RELAYS = [
+  ...CANONICAL_APP_BACKPLANE_RELAYS,
+  ...CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS,
+]
 const RETIRED_DEFAULT_RELAYS = new Set(["wss://relay.conduit.market"])
-const FALLBACK_RELAY_URL = "wss://relay.primal.net"
+const FALLBACK_RELAY_URL = "wss://nos.lol"
 const PUBLIC_REPO_ISSUES_URL =
   "https://github.com/Conduit-BTC/conduit-mono/issues"
 
 export interface ConduitConfig {
   relayUrl: string
   defaultRelays: string[]
+  appBackplaneRelayUrls: string[]
   appWriteRelayUrls: string[]
   commerceRelayUrls: string[]
   publicRelayUrls: string[]
+  corePublicFallbackRelayUrls: string[]
+  searchIndexRelayUrls: string[]
+  commerceDmFallbackRelayUrls: string[]
+  dmInboxDefaultRelayUrls: string[]
+  zapRelayUrls: string[]
   cacheApiUrl: string | null
   lightningNetwork: "mainnet" | "signet" | "testnet" | "mock"
   nip89RelayHint: string
@@ -166,9 +203,15 @@ function logRelayDebugConfig(input: {
   resolved: {
     relayUrl: string
     defaultRelays: readonly string[]
+    appBackplaneRelayUrls: readonly string[]
     appWriteRelayUrls: readonly string[]
     publicRelayUrls: readonly string[]
     commerceRelayUrls: readonly string[]
+    corePublicFallbackRelayUrls: readonly string[]
+    searchIndexRelayUrls: readonly string[]
+    commerceDmFallbackRelayUrls: readonly string[]
+    dmInboxDefaultRelayUrls: readonly string[]
+    zapRelayUrls: readonly string[]
   }
 }): void {
   if (typeof window === "undefined") return
@@ -187,6 +230,8 @@ function logRelayDebugConfig(input: {
       "",
       "Resolved relay config:",
       `  relayUrl hint: ${input.resolved.relayUrl}`,
+      "  appBackplaneRelayUrls:",
+      formatRelayDebugList(input.resolved.appBackplaneRelayUrls),
       "  appWriteRelayUrls:",
       formatRelayDebugList(input.resolved.appWriteRelayUrls),
       "  defaultRelays:",
@@ -195,6 +240,16 @@ function logRelayDebugConfig(input: {
       formatRelayDebugList(input.resolved.publicRelayUrls),
       "  commerceRelayUrls:",
       formatRelayDebugList(input.resolved.commerceRelayUrls),
+      "  corePublicFallbackRelayUrls:",
+      formatRelayDebugList(input.resolved.corePublicFallbackRelayUrls),
+      "  searchIndexRelayUrls:",
+      formatRelayDebugList(input.resolved.searchIndexRelayUrls),
+      "  commerceDmFallbackRelayUrls:",
+      formatRelayDebugList(input.resolved.commerceDmFallbackRelayUrls),
+      "  dmInboxDefaultRelayUrls:",
+      formatRelayDebugList(input.resolved.dmInboxDefaultRelayUrls),
+      "  zapRelayUrls:",
+      formatRelayDebugList(input.resolved.zapRelayUrls),
       "",
       `Have feedback? Submit an issue: ${PUBLIC_REPO_ISSUES_URL}`,
     ].join("\n")
@@ -216,22 +271,39 @@ const envGeneralRelayUrls = uniqueConfiguredRelayUrls([
   ...envDefaultRelays,
 ])
 const defaultRelays = uniqueConfiguredRelayUrls(CANONICAL_DEFAULT_RELAYS)
+const appBackplaneRelayUrls = uniqueConfiguredRelayUrls([
+  ...CANONICAL_APP_BACKPLANE_RELAYS,
+])
 const appWriteRelayUrls = uniqueConfiguredRelayUrls([
-  ...CANONICAL_APP_WRITE_RELAYS,
+  ...appBackplaneRelayUrls,
   ...envAppWriteRelayUrls,
 ])
+const corePublicFallbackRelayUrls = uniqueConfiguredRelayUrls([
+  ...CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS,
+  ...envPublicRelayUrls,
+  ...envGeneralRelayUrls,
+])
+const searchIndexRelayUrls = uniqueConfiguredRelayUrls(
+  CANONICAL_SEARCH_INDEX_RELAYS
+)
+const commerceDmFallbackRelayUrls = uniqueConfiguredRelayUrls(
+  CANONICAL_COMMERCE_DM_FALLBACK_RELAYS
+)
+const dmInboxDefaultRelayUrls = uniqueConfiguredRelayUrls(
+  CANONICAL_DM_INBOX_DEFAULT_RELAYS
+)
+const zapRelayUrls = uniqueConfiguredRelayUrls(CANONICAL_ZAP_PUBLIC_RELAYS)
 const commerceRelayUrls = uniqueConfiguredRelayUrls([
   ...appWriteRelayUrls,
   ...envCommerceRelayUrls,
 ])
 const publicRelayUrls = uniqueConfiguredRelayUrls([
-  ...envPublicRelayUrls,
-  ...envGeneralRelayUrls,
-  ...defaultRelays,
+  ...corePublicFallbackRelayUrls,
 ])
 const resolvedDefaultRelays = uniqueConfiguredRelayUrls([
-  ...commerceRelayUrls,
-  ...publicRelayUrls,
+  ...appBackplaneRelayUrls,
+  ...corePublicFallbackRelayUrls,
+  ...envDefaultRelays,
 ])
 const nip89RelayHint = getConfiguredRelayUrl(
   env.nip89RelayHint,
@@ -241,9 +313,15 @@ const nip89RelayHint = getConfiguredRelayUrl(
 export const config: ConduitConfig = {
   relayUrl,
   defaultRelays: resolvedDefaultRelays,
+  appBackplaneRelayUrls,
   appWriteRelayUrls,
   commerceRelayUrls,
   publicRelayUrls,
+  corePublicFallbackRelayUrls,
+  searchIndexRelayUrls,
+  commerceDmFallbackRelayUrls,
+  dmInboxDefaultRelayUrls,
+  zapRelayUrls,
   cacheApiUrl: env.cacheApiUrl.trim() || null,
   lightningNetwork: (env.lightningNetwork ||
     "mainnet") as ConduitConfig["lightningNetwork"],
@@ -291,11 +369,54 @@ logRelayDebugConfig({
   resolved: {
     relayUrl: config.relayUrl,
     defaultRelays: config.defaultRelays,
+    appBackplaneRelayUrls: config.appBackplaneRelayUrls,
     appWriteRelayUrls: config.appWriteRelayUrls,
     publicRelayUrls: config.publicRelayUrls,
     commerceRelayUrls: config.commerceRelayUrls,
+    corePublicFallbackRelayUrls: config.corePublicFallbackRelayUrls,
+    searchIndexRelayUrls: config.searchIndexRelayUrls,
+    commerceDmFallbackRelayUrls: config.commerceDmFallbackRelayUrls,
+    dmInboxDefaultRelayUrls: config.dmInboxDefaultRelayUrls,
+    zapRelayUrls: config.zapRelayUrls,
   },
 })
+
+export function getRelayBucketConfigs(
+  cfg: ConduitConfig = config
+): RelayBucketConfig[] {
+  return [
+    {
+      id: "app_backplane",
+      label: "Conduit infrastructure",
+      relayUrls: cfg.appBackplaneRelayUrls,
+    },
+    {
+      id: "core_public_fallback",
+      label: "Core public fallback",
+      relayUrls: cfg.corePublicFallbackRelayUrls,
+    },
+    {
+      id: "search_index",
+      label: "Search/index",
+      relayUrls: cfg.searchIndexRelayUrls,
+    },
+    {
+      id: "commerce_dm_fallback",
+      label: "Commerce DM fallback",
+      relayUrls: cfg.commerceDmFallbackRelayUrls,
+    },
+    {
+      id: "dm_inbox_default",
+      label: "Default encrypted order inbox",
+      relayUrls: cfg.dmInboxDefaultRelayUrls,
+    },
+    {
+      id: "zap_public",
+      label: "Zap visibility",
+      relayUrls: cfg.zapRelayUrls,
+    },
+  ]
+}
 
 export function isMockPayments(): boolean {
   return config.lightningNetwork === "mock"

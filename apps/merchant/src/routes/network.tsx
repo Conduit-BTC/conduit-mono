@@ -40,12 +40,6 @@ function NetworkPage() {
           onToggleWrite={relaySettings.toggleRelayWrite}
           onReorderCommerceRelay={relaySettings.reorderRelay}
           onReset={relaySettings.resetRelaySettings}
-          onRestoreDefaults={
-            pubkey ? relaySettings.restoreDefaultRelaySettings : undefined
-          }
-          onIncludeDefaults={
-            pubkey ? relaySettings.includeDefaultRelays : undefined
-          }
           onPublishRelayList={
             pubkey ? relaySettings.publishRelayList : undefined
           }

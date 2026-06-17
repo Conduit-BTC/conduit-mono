@@ -2,19 +2,67 @@ import { config, isRetiredDefaultRelayUrl, type ConduitConfig } from "../config"
 
 export type RelaySettingsSection = "commerce" | "public"
 export type RelaySettingsSource = "default" | "manual" | "signer" | "published"
-export type RelayCapabilityKey = "nip11" | "search" | "dm" | "auth" | "commerce"
+export type RelayCapabilityKey =
+  | "nip11"
+  | "search"
+  | "dm"
+  | "auth"
+  | "commerce"
+  | "protectedMessages"
+  | "listings"
+  | "cleanup"
 export type RelayWarningKey =
   | "dmWithoutAuth"
   | "staleRelayInfo"
   | "unreachable"
   | "commercePartialSupport"
+export type RelayCapabilityObservationStatus =
+  | "unknown"
+  | "advertised"
+  | "known"
+  | "observed"
+  | "failed"
+export type RelayCapabilityConfidence =
+  | "none"
+  | "advertised"
+  | "known"
+  | "observed"
+export type RelayCapabilityEvidence =
+  | "nip11"
+  | "relay-limitation"
+  | "conduit-commerce-profile"
+  | "active-probe"
 
 export interface RelayCapabilities {
   nip11: boolean
   search: boolean
+  /**
+   * Legacy alias for protectedMessages. Keep populated while callers migrate.
+   */
   dm: boolean
   auth: boolean
   commerce: boolean
+  protectedMessages?: boolean
+  listings?: boolean
+  cleanup?: boolean
+}
+
+export interface RelayCapabilityObservation {
+  supported: boolean
+  status: RelayCapabilityObservationStatus
+  confidence: RelayCapabilityConfidence
+  evidence: RelayCapabilityEvidence[]
+  checkedAt?: number
+  latencyMs?: number
+  failureMode?: string
+}
+
+export interface RelayCapabilityObservations {
+  search: RelayCapabilityObservation
+  auth: RelayCapabilityObservation
+  protectedMessages: RelayCapabilityObservation
+  listings: RelayCapabilityObservation
+  cleanup: RelayCapabilityObservation
 }
 
 export interface RelayWarnings {
@@ -32,6 +80,8 @@ export interface RelaySettingsEntry {
   commercePriority?: number
   capabilities: RelayCapabilities
   warnings: RelayWarnings
+  observations?: RelayCapabilityObservations
+  commerceProfileVersion?: number
   source?: RelaySettingsSource
   scannedAt?: number
   relayName?: string
@@ -71,6 +121,8 @@ export interface RelayScanResult {
   relayName?: string
   capabilities: RelayCapabilities
   warnings: RelayWarnings
+  observations: RelayCapabilityObservations
+  commerceProfileVersion?: number
   scannedAt: number
 }
 
@@ -78,6 +130,7 @@ export interface RelayScanOptions {
   timeoutMs?: number
   now?: () => number
   fetchImpl?: typeof fetch
+  commerceRelayUrls?: readonly string[]
 }
 
 export interface RelayPlanOptions {
@@ -92,6 +145,7 @@ export const RELAY_SETTINGS_STORAGE_VERSION = 1
 export const RELAY_SETTINGS_STORAGE_KEY = "conduit:relay-settings:v1"
 export const RELAY_SCAN_STALE_MS = 7 * 24 * 60 * 60 * 1_000
 export const RELAY_SCAN_TIMEOUT_MS = 4_000
+export const RELAY_COMMERCE_PROFILE_VERSION = 1
 
 const EMPTY_CAPABILITIES: RelayCapabilities = {
   nip11: false,
@@ -99,6 +153,9 @@ const EMPTY_CAPABILITIES: RelayCapabilities = {
   dm: false,
   auth: false,
   commerce: false,
+  protectedMessages: false,
+  listings: false,
+  cleanup: false,
 }
 
 const EMPTY_WARNINGS: RelayWarnings = {
@@ -117,6 +174,146 @@ function now(): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function createUnknownObservation(): RelayCapabilityObservation {
+  return {
+    supported: false,
+    status: "unknown",
+    confidence: "none",
+    evidence: [],
+  }
+}
+
+function createCapabilityObservation(input: {
+  supported: boolean
+  status: RelayCapabilityObservationStatus
+  confidence: RelayCapabilityConfidence
+  evidence: RelayCapabilityEvidence[]
+  checkedAt: number
+}): RelayCapabilityObservation {
+  if (!input.supported) return createUnknownObservation()
+
+  return {
+    supported: true,
+    status: input.status,
+    confidence: input.confidence,
+    evidence: input.evidence,
+    checkedAt: input.checkedAt,
+  }
+}
+
+function normalizeRelayCapabilityObservation(
+  value: unknown
+): RelayCapabilityObservation {
+  if (!isRecord(value)) return createUnknownObservation()
+
+  const statuses: RelayCapabilityObservationStatus[] = [
+    "unknown",
+    "advertised",
+    "known",
+    "observed",
+    "failed",
+  ]
+  const confidences: RelayCapabilityConfidence[] = [
+    "none",
+    "advertised",
+    "known",
+    "observed",
+  ]
+  const evidenceKinds: RelayCapabilityEvidence[] = [
+    "nip11",
+    "relay-limitation",
+    "conduit-commerce-profile",
+    "active-probe",
+  ]
+  const status = statuses.includes(
+    value.status as RelayCapabilityObservationStatus
+  )
+    ? (value.status as RelayCapabilityObservationStatus)
+    : "unknown"
+  const confidence = confidences.includes(
+    value.confidence as RelayCapabilityConfidence
+  )
+    ? (value.confidence as RelayCapabilityConfidence)
+    : "none"
+  const evidence = Array.isArray(value.evidence)
+    ? value.evidence.filter((item): item is RelayCapabilityEvidence =>
+        evidenceKinds.includes(item as RelayCapabilityEvidence)
+      )
+    : []
+
+  return {
+    supported: value.supported === true,
+    status,
+    confidence,
+    evidence,
+    checkedAt:
+      typeof value.checkedAt === "number" && Number.isFinite(value.checkedAt)
+        ? value.checkedAt
+        : undefined,
+    latencyMs:
+      typeof value.latencyMs === "number" && Number.isFinite(value.latencyMs)
+        ? value.latencyMs
+        : undefined,
+    failureMode:
+      typeof value.failureMode === "string" && value.failureMode.trim()
+        ? value.failureMode.trim()
+        : undefined,
+  }
+}
+
+function normalizeRelayCapabilityObservations(
+  value: unknown
+): RelayCapabilityObservations {
+  const observations = isRecord(value) ? value : {}
+
+  return {
+    search: normalizeRelayCapabilityObservation(observations.search),
+    auth: normalizeRelayCapabilityObservation(observations.auth),
+    protectedMessages: normalizeRelayCapabilityObservation(
+      observations.protectedMessages
+    ),
+    listings: normalizeRelayCapabilityObservation(observations.listings),
+    cleanup: normalizeRelayCapabilityObservation(observations.cleanup),
+  }
+}
+
+function normalizeRelayCapabilities(value: unknown): RelayCapabilities {
+  const capabilities = isRecord(value) ? value : {}
+  const protectedMessages =
+    capabilities.protectedMessages === true || capabilities.dm === true
+  const listings = capabilities.listings === true
+  const cleanup = capabilities.cleanup === true
+  const auth = capabilities.auth === true
+  const commerce =
+    capabilities.commerce === true &&
+    listings &&
+    protectedMessages &&
+    cleanup &&
+    auth
+
+  return {
+    nip11: capabilities.nip11 === true,
+    search: capabilities.search === true,
+    dm: protectedMessages,
+    auth,
+    commerce,
+    protectedMessages,
+    listings,
+    cleanup,
+  }
+}
+
+function normalizeRelayWarnings(value: unknown): RelayWarnings {
+  const warnings = isRecord(value) ? value : {}
+
+  return {
+    dmWithoutAuth: warnings.dmWithoutAuth === true,
+    staleRelayInfo: warnings.staleRelayInfo === true,
+    unreachable: warnings.unreachable === true,
+    commercePartialSupport: warnings.commercePartialSupport === true,
+  }
 }
 
 function isRelayInfoDocument(value: unknown): value is RelayInfoDocument {
@@ -149,33 +346,20 @@ function getSupportedNips(info: RelayInfoDocument | null): number[] {
     .filter((value) => Number.isInteger(value) && value >= 0)
 }
 
-function hasCommerceCompatibilityEvidence(
-  supportedNips: readonly number[]
+function hasKnownCommerceProfileEvidence(
+  relayUrl: string,
+  commerceRelayUrls: readonly string[] = config.commerceRelayUrls
 ): boolean {
-  const supportsRelayLists = supportedNips.includes(65)
-  const supportsParameterizedReplaceable = supportedNips.includes(33)
-  const supportsMarketSpec = supportedNips.includes(99)
-  const supportsGiftWraps = supportedNips.includes(17)
-  const supportsAuth = supportedNips.includes(42)
-
-  return (
-    supportsRelayLists &&
-    supportsParameterizedReplaceable &&
-    supportsMarketSpec &&
-    supportsGiftWraps &&
-    supportsAuth
-  )
+  const normalizedUrl = normalizeRelayUrl(relayUrl)
+  return uniqueRelayUrls(commerceRelayUrls).includes(normalizedUrl)
 }
 
-function hasPartialCommerceEvidence(supportedNips: readonly number[]): boolean {
-  return (
-    supportedNips.includes(33) ||
-    supportedNips.includes(42) ||
-    supportedNips.includes(50) ||
-    supportedNips.includes(65) ||
-    supportedNips.includes(99) ||
-    supportedNips.includes(17)
-  )
+function hasPartialCommerceEvidence(input: {
+  listings: boolean
+  protectedMessages: boolean
+  cleanup: boolean
+}): boolean {
+  return input.listings || input.protectedMessages || input.cleanup
 }
 
 function getRelayName(info: RelayInfoDocument | null): string | undefined {
@@ -211,22 +395,26 @@ function createDefaultRelaySettingsEntry(url: string): RelaySettingsEntry {
   }
 }
 
-function appendDefaultRelaySettingsEntries(
-  state: RelaySettingsState,
-  cfg: ConduitConfig = config
+function createEmptyRelaySettingsState(): RelaySettingsState {
+  return {
+    version: RELAY_SETTINGS_STORAGE_VERSION,
+    entries: [],
+    updatedAt: now(),
+  }
+}
+
+function filterUserManagedRelaySettingsEntries(
+  entries: readonly RelaySettingsEntry[]
+): RelaySettingsEntry[] {
+  return entries.filter((entry) => entry.source !== "default")
+}
+
+function normalizeUserManagedRelaySettingsState(
+  state: RelaySettingsState
 ): RelaySettingsState {
-  const existingUrls = new Set(state.entries.map((entry) => entry.url))
-  const missingDefaults = uniqueRelayUrls(
-    cfg.defaultRelays.filter((url) => !isRetiredDefaultRelayUrl(url))
-  )
-    .filter((url) => !existingUrls.has(url))
-    .map(createDefaultRelaySettingsEntry)
-
-  if (missingDefaults.length === 0) return state
-
   return normalizeRelaySettingsState({
     ...state,
-    entries: [...state.entries, ...missingDefaults],
+    entries: filterUserManagedRelaySettingsEntries(state.entries),
   })
 }
 
@@ -256,6 +444,15 @@ function sortByCommercePriority(
     if (aPriority !== bPriority) return aPriority - bPriority
     return a.url.localeCompare(b.url)
   })
+}
+
+function sortCommerceRelayUrls(
+  entries: readonly RelaySettingsEntry[],
+  predicate: (entry: RelaySettingsEntry) => boolean
+): string[] {
+  return sortByCommercePriority(
+    entries.filter((entry) => entry.section === "commerce").filter(predicate)
+  ).map((entry) => entry.url)
 }
 
 export function normalizeRelayUrl(input: string): string {
@@ -437,31 +634,96 @@ export function mergeNip65RelayUrls(list: Nip65RelayUrls): RelayPreference[] {
 export function deriveRelayScanResult(
   relayUrl: string,
   info: RelayInfoDocument | null,
-  options: Pick<RelayScanOptions, "now"> = {}
+  options: Pick<RelayScanOptions, "now" | "commerceRelayUrls"> = {}
 ): RelayScanResult {
   const normalizedUrl = normalizeRelayUrl(relayUrl)
   const supportedNips = getSupportedNips(info)
   const hasSupportedNips = Array.isArray(info?.supported_nips)
+  const scannedAt = options.now?.() ?? now()
+  const hasKnownCommerceProfile = hasKnownCommerceProfileEvidence(
+    normalizedUrl,
+    options.commerceRelayUrls
+  )
   const supportsSearch = supportedNips.includes(50)
-  const supportsDm = supportedNips.includes(17)
+  const advertisesProtectedMessages = supportedNips.includes(59)
+  const supportsProtectedMessages =
+    advertisesProtectedMessages || hasKnownCommerceProfile
+  const advertisesCleanup =
+    supportedNips.includes(9) || supportedNips.includes(62)
+  const supportsCleanup = advertisesCleanup || hasKnownCommerceProfile
   const supportsAuth = supportedNips.includes(42) || getAuthRequired(info)
+  const supportsListings = hasKnownCommerceProfile
   const hasNip11 = !!info
-  const commerce = hasNip11 && hasCommerceCompatibilityEvidence(supportedNips)
+  const commerce =
+    hasNip11 &&
+    supportsListings &&
+    supportsProtectedMessages &&
+    supportsCleanup &&
+    supportsAuth
 
   const capabilities: RelayCapabilities = {
     nip11: hasNip11,
     search: supportsSearch,
-    dm: supportsDm,
+    dm: supportsProtectedMessages,
     auth: supportsAuth,
     commerce,
+    protectedMessages: supportsProtectedMessages,
+    listings: supportsListings,
+    cleanup: supportsCleanup,
+  }
+
+  const observations: RelayCapabilityObservations = {
+    search: createCapabilityObservation({
+      supported: supportsSearch,
+      status: "advertised",
+      confidence: "advertised",
+      evidence: ["nip11"],
+      checkedAt: scannedAt,
+    }),
+    auth: createCapabilityObservation({
+      supported: supportsAuth,
+      status: "advertised",
+      confidence: "advertised",
+      evidence: getAuthRequired(info) ? ["relay-limitation"] : ["nip11"],
+      checkedAt: scannedAt,
+    }),
+    protectedMessages: createCapabilityObservation({
+      supported: supportsProtectedMessages,
+      status: advertisesProtectedMessages ? "advertised" : "known",
+      confidence: advertisesProtectedMessages ? "advertised" : "known",
+      evidence: advertisesProtectedMessages
+        ? ["nip11"]
+        : ["conduit-commerce-profile"],
+      checkedAt: scannedAt,
+    }),
+    listings: createCapabilityObservation({
+      supported: supportsListings,
+      status: "known",
+      confidence: "known",
+      evidence: ["conduit-commerce-profile"],
+      checkedAt: scannedAt,
+    }),
+    cleanup: createCapabilityObservation({
+      supported: supportsCleanup,
+      status: advertisesCleanup ? "advertised" : "known",
+      confidence: advertisesCleanup ? "advertised" : "known",
+      evidence: advertisesCleanup ? ["nip11"] : ["conduit-commerce-profile"],
+      checkedAt: scannedAt,
+    }),
   }
 
   const warnings: RelayWarnings = {
     ...EMPTY_WARNINGS,
-    dmWithoutAuth: supportsDm && !supportsAuth,
+    dmWithoutAuth: supportsProtectedMessages && !supportsAuth,
     staleRelayInfo: hasNip11 && !hasSupportedNips,
     commercePartialSupport:
-      hasNip11 && !commerce && hasPartialCommerceEvidence(supportedNips),
+      hasNip11 &&
+      !commerce &&
+      hasPartialCommerceEvidence({
+        listings: supportsListings,
+        protectedMessages: supportsProtectedMessages,
+        cleanup: supportsCleanup,
+      }),
   }
 
   return {
@@ -470,7 +732,11 @@ export function deriveRelayScanResult(
     relayName: getRelayName(info),
     capabilities,
     warnings,
-    scannedAt: options.now?.() ?? now(),
+    observations,
+    commerceProfileVersion: hasKnownCommerceProfile
+      ? RELAY_COMMERCE_PROFILE_VERSION
+      : undefined,
+    scannedAt,
   }
 }
 
@@ -502,6 +768,8 @@ export function createRelaySettingsEntryFromScan(
       section === "commerce" ? existing?.commercePriority : undefined,
     capabilities: scan.capabilities,
     warnings: scan.warnings,
+    observations: scan.observations,
+    commerceProfileVersion: scan.commerceProfileVersion,
     source,
     scannedAt: scan.scannedAt,
     relayName: scan.relayName,
@@ -517,8 +785,10 @@ export function createUnreachableRelaySettingsEntry(
   const preservePreference = !!existing && existing.source !== "default"
   const usesCanonicalDefaults = source === "default"
   const baseCapabilities = preservePreference
-    ? (existing?.capabilities ?? EMPTY_CAPABILITIES)
-    : EMPTY_CAPABILITIES
+    ? normalizeRelayCapabilities(existing?.capabilities)
+    : {
+        ...EMPTY_CAPABILITIES,
+      }
   return {
     url: normalizeRelayUrl(relayUrl),
     readEnabled: usesCanonicalDefaults
@@ -531,17 +801,24 @@ export function createUnreachableRelaySettingsEntry(
       : preservePreference
         ? (existing?.writeEnabled ?? false)
         : false,
-    section: preservePreference ? (existing?.section ?? "public") : "public",
+    section: "public",
     commercePriority: preservePreference
       ? existing?.commercePriority
       : undefined,
-    capabilities: baseCapabilities,
+    capabilities: {
+      ...baseCapabilities,
+      commerce: false,
+      listings: false,
+    },
     warnings: {
       ...EMPTY_WARNINGS,
-      ...existing?.warnings,
       staleRelayInfo: true,
       unreachable: true,
     },
+    observations: preservePreference
+      ? normalizeRelayCapabilityObservations(existing?.observations)
+      : undefined,
+    commerceProfileVersion: undefined,
     source,
     scannedAt,
     relayName: existing?.relayName,
@@ -598,6 +875,7 @@ export async function scanRelaySettingsEntry(
     const info = json
     const scan = deriveRelayScanResult(normalizedUrl, info, {
       now: () => scannedAt,
+      commerceRelayUrls: options.commerceRelayUrls,
     })
     return createRelaySettingsEntryFromScan(scan, existing)
   } catch {
@@ -680,18 +958,13 @@ export function normalizeRelaySettingsState(
   for (const entry of state.entries) {
     const result = tryNormalizeRelayUrl(entry.url)
     if (!result.ok) continue
-    const capabilities = {
-      ...EMPTY_CAPABILITIES,
-      ...(isRecord(entry.capabilities) ? entry.capabilities : {}),
-    }
-    const warnings = {
-      ...EMPTY_WARNINGS,
-      ...(isRecord(entry.warnings) ? entry.warnings : {}),
-    }
+    const capabilities = normalizeRelayCapabilities(entry.capabilities)
+    const warnings = normalizeRelayWarnings(entry.warnings)
+    const observations = normalizeRelayCapabilityObservations(
+      entry.observations
+    )
     const section: RelaySettingsSection =
-      capabilities.commerce || entry.section === "commerce"
-        ? "commerce"
-        : "public"
+      capabilities.commerce && !warnings.unreachable ? "commerce" : "public"
 
     const normalizedEntry: RelaySettingsEntry = {
       ...entry,
@@ -700,6 +973,10 @@ export function normalizeRelaySettingsState(
       writeEnabled: entry.source === "default" ? true : entry.writeEnabled,
       capabilities,
       warnings,
+      observations,
+      commerceProfileVersion: capabilities.commerce
+        ? (entry.commerceProfileVersion ?? RELAY_COMMERCE_PROFILE_VERSION)
+        : undefined,
       section,
     }
     entriesByUrl.set(result.url, normalizedEntry)
@@ -719,35 +996,38 @@ export function normalizeRelaySettingsState(
     entries: entries.map((entry) =>
       entry.section === "commerce"
         ? { ...entry, commercePriority: priorityByUrl.get(entry.url) ?? 0 }
-        : { ...entry, commercePriority: undefined }
+        : {
+            ...entry,
+            commercePriority: entry.warnings.unreachable
+              ? entry.commercePriority
+              : undefined,
+          }
     ),
   }
 }
 
 export function loadRelaySettings(scope?: string | null): RelaySettingsState {
-  if (typeof window === "undefined") return createDefaultRelaySettings()
+  if (typeof window === "undefined") return createEmptyRelaySettingsState()
 
   const key = getRelaySettingsStorageKey(scope)
   const raw = window.localStorage.getItem(key)
-  if (!raw) return createDefaultRelaySettings()
+  if (!raw) return createEmptyRelaySettingsState()
 
   try {
     const parsed = JSON.parse(raw)
     if (!isRecord(parsed) || !Array.isArray(parsed.entries)) {
-      return createDefaultRelaySettings()
+      return createEmptyRelaySettingsState()
     }
 
-    return appendDefaultRelaySettingsEntries(
-      normalizeRelaySettingsState({
-        version: Number(parsed.version) || RELAY_SETTINGS_STORAGE_VERSION,
-        updatedAt: Number(parsed.updatedAt) || now(),
-        entries: parsed.entries.filter(
-          isRecord
-        ) as unknown as RelaySettingsEntry[],
-      })
-    )
+    return normalizeUserManagedRelaySettingsState({
+      version: Number(parsed.version) || RELAY_SETTINGS_STORAGE_VERSION,
+      updatedAt: Number(parsed.updatedAt) || now(),
+      entries: parsed.entries.filter(
+        isRecord
+      ) as unknown as RelaySettingsEntry[],
+    })
   } catch {
-    return createDefaultRelaySettings()
+    return createEmptyRelaySettingsState()
   }
 }
 
@@ -755,12 +1035,10 @@ export function saveRelaySettings(
   state: RelaySettingsState,
   scope?: string | null
 ): RelaySettingsState {
-  const normalized = appendDefaultRelaySettingsEntries(
-    normalizeRelaySettingsState({
-      ...state,
-      updatedAt: now(),
-    })
-  )
+  const normalized = normalizeUserManagedRelaySettingsState({
+    ...state,
+    updatedAt: now(),
+  })
 
   if (typeof window !== "undefined") {
     window.localStorage.setItem(
@@ -874,12 +1152,7 @@ export function getPublishableRelaySettingsEntries(
 export function includeDefaultRelaySettingsEntries(
   state: RelaySettingsState
 ): RelaySettingsState {
-  return normalizeRelaySettingsState({
-    ...state,
-    entries: state.entries.map((entry) =>
-      entry.source === "default" ? { ...entry, source: "manual" } : entry
-    ),
-  })
+  return normalizeUserManagedRelaySettingsState(state)
 }
 
 export function mergeRelayPreferencesIntoSettings(
@@ -892,17 +1165,17 @@ export function mergeRelayPreferencesIntoSettings(
   for (const preference of preferences) {
     const normalizedUrl = normalizeRelayUrl(preference.url)
     const existing = next.entries.find((entry) => entry.url === normalizedUrl)
-    const capabilities: RelayCapabilities = existing?.capabilities
-      ? {
-          ...existing.capabilities,
-        }
+    const capabilities = existing?.capabilities
+      ? normalizeRelayCapabilities(existing.capabilities)
       : {
           ...EMPTY_CAPABILITIES,
         }
-    const warnings: RelayWarnings = existing?.warnings ?? {
-      ...EMPTY_WARNINGS,
-      staleRelayInfo: true,
-    }
+    const warnings = existing?.warnings
+      ? normalizeRelayWarnings(existing.warnings)
+      : {
+          ...EMPTY_WARNINGS,
+          staleRelayInfo: true,
+        }
     const section: RelaySettingsSection = capabilities.commerce
       ? "commerce"
       : "public"
@@ -924,6 +1197,13 @@ export function mergeRelayPreferencesIntoSettings(
           : undefined,
       capabilities,
       warnings,
+      observations: existing?.observations
+        ? normalizeRelayCapabilityObservations(existing.observations)
+        : undefined,
+      commerceProfileVersion:
+        capabilities.commerce && existing?.commerceProfileVersion
+          ? existing.commerceProfileVersion
+          : undefined,
       source: preserveLocalControls ? existing.source : source,
       scannedAt: existing?.scannedAt,
       relayName: existing?.relayName,
@@ -980,10 +1260,9 @@ export function getCommerceReadRelayUrls(
   options: RelayPlanOptions = {}
 ): string[] {
   const settings = getSettingsForPlan(options)
-  const commerceUrls = settings.entries
-    .filter((entry) => entry.section === "commerce")
-    .filter((entry) => hasFreshOrSeededRead(entry))
-    .map((entry) => entry.url)
+  const commerceUrls = sortCommerceRelayUrls(settings.entries, (entry) =>
+    hasFreshOrSeededRead(entry)
+  )
 
   const publicUrls =
     options.includePublicFallback === false
@@ -1004,10 +1283,9 @@ export function getCommerceWriteRelayUrls(
   options: RelayPlanOptions = {}
 ): string[] {
   const settings = getSettingsForPlan(options)
-  const commerceUrls = settings.entries
-    .filter((entry) => entry.section === "commerce")
-    .filter((entry) => hasUserEnabledWrite(entry))
-    .map((entry) => entry.url)
+  const commerceUrls = sortCommerceRelayUrls(settings.entries, (entry) =>
+    hasUserEnabledWrite(entry)
+  )
 
   const publicUrls =
     options.includePublicFallback === false

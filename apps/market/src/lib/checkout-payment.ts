@@ -844,7 +844,7 @@ export async function requestCheckoutLnurlInvoice(
     recipientPubkey: string
     zapContent: string
     explicitRelayUrls: readonly string[]
-    publicRelayUrls: readonly string[]
+    zapRelayUrls: readonly string[]
     nowSeconds?: number
   },
   dependencies: CheckoutInvoiceRequestDependencies = defaultCheckoutInvoiceRequestDependencies
@@ -862,7 +862,7 @@ export async function requestCheckoutLnurlInvoice(
   }
 
   const zapRelayUrls = Array.from(
-    new Set([...params.explicitRelayUrls, ...params.publicRelayUrls])
+    new Set([...params.explicitRelayUrls, ...params.zapRelayUrls])
   )
   const draft: CheckoutZapRequestDraft = {
     kind: EVENT_KINDS.ZAP_REQUEST,

@@ -258,16 +258,15 @@ function now(): number {
 function publicReadRelayUrls(): string[] {
   return getGeneralReadRelayUrls({
     fallbackRelayUrls:
-      config.publicRelayUrls.length > 0 ? config.publicRelayUrls : undefined,
+      config.corePublicFallbackRelayUrls.length > 0
+        ? config.corePublicFallbackRelayUrls
+        : undefined,
   })
 }
 
 function commerceReadRelayUrls(): string[] {
   return getCommerceReadRelayUrls({
-    fallbackRelayUrls:
-      config.commerceRelayUrls.length > 0
-        ? config.commerceRelayUrls
-        : config.publicRelayUrls,
+    fallbackRelayUrls: config.defaultRelays,
   })
 }
 
@@ -319,8 +318,8 @@ async function planCommerceReadRelays(input: {
       case "author_products":
         return config.defaultRelays
       default:
-        return config.publicRelayUrls.length > 0
-          ? config.publicRelayUrls
+        return config.corePublicFallbackRelayUrls.length > 0
+          ? config.corePublicFallbackRelayUrls
           : config.defaultRelays
     }
   })()
