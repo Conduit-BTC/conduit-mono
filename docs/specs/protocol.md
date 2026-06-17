@@ -62,6 +62,35 @@ Product listings are addressable events:
 
 Implementations must not dedupe only by `d` tag because different merchants can publish the same `d` value. Product identity, cart references, order item tags, cache records, and future source-aware graph records should preserve the full addressable coordinate.
 
+## Client Hydration And Relay Hints
+
+Conduit clients should render commerce content from cache/progressive reads first, then hydrate surrounding identity and trust context without blocking the product surface.
+
+Source relay URLs and encoded reference relay hints are client-side fetch hints:
+
+- relays that delivered product/profile events
+- relay hints from `nprofile`, `nevent`, and `naddr` references
+- cached product/profile `sourceRelayUrls`
+- NIP-65 relay-list data already loaded by the shared planner
+
+These hints may bias fanout for related reads such as merchant profile hydration, product detail refreshes, and order/message trust context. They do not replace the relay planner, NIP-65 handling, default relay policy, or user relay settings.
+
+Page-level ownership:
+
+- Market browse owns visible/background merchant profile hydration for product cards and store facets.
+- Storefront and product detail routes can force a bounded profile retry because the user explicitly navigated to that merchant or listing.
+- Orders, messages, checkout, and merchant order surfaces should batch profile lookups and avoid per-row retry loops.
+- Deletion checks should not hide already available products while profile/social metadata is still hydrating.
+
+UX contract:
+
+- show cached or progressively fetched products as soon as they are usable
+- show stable skeleton/pending states for merchant names and avatars while lookup is active
+- after bounded lookup attempts settle empty, show a final fallback such as `Store npub...` without pending animation
+- do not shift product grid layout when profile names, avatars, tag counts, or trust metadata hydrate
+
+Implementation notes live in `docs/nips/` for compact agent preflight context. Canonical protocol behavior still comes from the public NIPs and GammaMarkets `market-spec`.
+
 ## Messaging Transport: NIP-17
 
 Buyer-merchant communication is sent as NIP-17 encrypted messages:

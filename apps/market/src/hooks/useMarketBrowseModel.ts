@@ -101,6 +101,7 @@ export function useMarketBrowseModel({
   )
   const merchantIdentities = useMerchantIdentities({
     allMerchantPubkeys,
+    deferBackgroundHydration: productsQuery.isHydrating,
     visibleMerchantPubkeys,
     relayHintsByPubkey: productsQuery.profileRelayHintsByPubkey,
   })

@@ -7,6 +7,7 @@ import {
   getBuyerConversationList,
   getConversationDetail,
   getMarketplaceProducts,
+  getMarketplaceProductsProgressive,
   getMerchantConversationList,
   getMerchantStorefront,
   getProductDetail,
@@ -1023,6 +1024,66 @@ describe("commerce gateway", () => {
 
     expect(seenRelayUrls?.[0]).toBe("wss://live-product-source.example")
     expect(result.data["live-merchant"]?.displayName).toBe("Live Merchant")
+  })
+
+  it("bounds broad progressive product author chunk fanout", async () => {
+    const authorPubkeys = Array.from(
+      { length: 129 },
+      (_, index) => `merchant-${index}`
+    )
+    let activeFetches = 0
+    let maxActiveFetches = 0
+    let fetchCalls = 0
+
+    __setRelayListTestOverrides({
+      loadCached: async (pubkey) => ({
+        pubkey,
+        readRelayUrls: [],
+        writeRelayUrls: [`wss://${pubkey}.relay.example`],
+        eventCreatedAt: 1,
+        cachedAt: FIXED_NOW,
+      }),
+    })
+    __setCommerceTestOverrides({
+      fetchEventsFanoutProgressive: async (filter, options, onProgress) => {
+        activeFetches += 1
+        maxActiveFetches = Math.max(maxActiveFetches, activeFetches)
+        fetchCalls += 1
+        const call = fetchCalls
+
+        await new Promise((resolve) => setTimeout(resolve, 1))
+
+        const pubkey = filter.authors?.[0] ?? "merchant"
+        const event = makeProductEvent({
+          pubkey,
+          dTag: `item-${call}`,
+          id: `event-${call}`,
+          createdAt: 100 + call,
+          title: `Item ${call}`,
+        }) as never
+        await onProgress({
+          relayUrl: options?.relayUrls?.[0] ?? "wss://relay.example",
+          events: [event],
+          mergedEvents: [event],
+        })
+
+        activeFetches -= 1
+        return [event]
+      },
+    })
+
+    const result = await getMarketplaceProductsProgressive(
+      {
+        authorPubkeys,
+        readPolicy: { maxRelays: 1 },
+        sort: "newest",
+      },
+      () => {}
+    )
+
+    expect(fetchCalls).toBeGreaterThan(1)
+    expect(maxActiveFetches).toBeLessThanOrEqual(2)
+    expect(result.data.length).toBeGreaterThan(0)
   })
 
   it("emits profile progress before the full profile result settles", async () => {

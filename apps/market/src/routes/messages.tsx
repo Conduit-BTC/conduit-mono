@@ -90,7 +90,9 @@ function MerchantThreadRow({
   active: boolean
   onClick: () => void
 }) {
-  const { data: profile } = useProfile(conversation.merchantPubkey)
+  const { data: profile } = useProfile(conversation.merchantPubkey, {
+    maxUnresolvedRefetches: 1,
+  })
   const merchantName = getMerchantDisplayName(
     profile,
     conversation.merchantPubkey
@@ -193,6 +195,7 @@ function MessagesPage() {
     enabled: signerConnected && merchantPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
+    maxUnresolvedRefetches: 1,
   })
 
   const filteredConversations = useMemo(() => {
@@ -270,7 +273,9 @@ function MessagesPage() {
     filteredConversations.find(
       (conversation) => conversation.id === search.thread
     ) ?? null
-  const selectedProfile = useProfile(selectedConversation?.merchantPubkey)
+  const selectedProfile = useProfile(selectedConversation?.merchantPubkey, {
+    maxUnresolvedRefetches: 1,
+  })
   const merchantName = selectedConversation
     ? getMerchantDisplayName(
         selectedProfile.data,

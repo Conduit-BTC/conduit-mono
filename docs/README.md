@@ -8,6 +8,7 @@ This directory is organized by document intent so the team can keep live executi
 - `docs/DESIGN.md`: shared design system and theming guidance
 - `docs/plans/*`: phase boundaries, exit criteria, and temporary delivery contracts
 - `docs/specs/*`: active feature, protocol, and product requirements
+- `docs/nips/*`: compact Nostr implementation notes that point back to active specs and canonical public NIPs
 - `docs/knowledge/*`: supporting notes, research, references, future concepts, and working context that may inform implementation but do not replace the source-of-truth docs above
 - `docs/knowledge/future/*`: parked future product/service ideas that are intentionally not current `conduit-mono` implementation contracts
 
@@ -42,6 +43,7 @@ Agents may surface possible docs drift and draft the follow-up when asked, but t
 - Add new architecture-level material to `docs/ARCHITECTURE.md` only with explicit approval.
 - Add new phase or delivery planning material under `docs/plans/` only when the repo needs a temporary public delivery contract. Keep ticket status and sequencing in Linear.
 - Add stable feature or protocol requirements under `docs/specs/`.
+- Add compact Nostr implementation notes under `docs/nips/`; keep them short and link back to `docs/specs/protocol.md` plus canonical public sources.
 - Add shared visual and theming guidance to `docs/DESIGN.md`.
 - Add research notes, interop references, future ideas, and non-authoritative supporting context under `docs/knowledge/`.
 

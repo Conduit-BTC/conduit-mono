@@ -47,6 +47,7 @@ export function useMerchantTrustContext({
   const profileQuery = useProfile(merchantPubkey ?? null, {
     relayHints: profileRelayHints,
     refetchUnresolvedMs: 2_000,
+    maxUnresolvedRefetches: 2,
   })
   const profile = profileQuery.data
 
@@ -95,7 +96,10 @@ export function useMerchantTrustContext({
         chars: 8,
       })
     : "this merchant"
-  const merchantNamePending = !!merchantPubkey && profileQuery.isPlaceholderData
+  const merchantNamePending =
+    !!merchantPubkey &&
+    profileQuery.isPlaceholderData &&
+    !profileQuery.lookupSettled
 
   const fallbackSocial = useMemo(
     () =>

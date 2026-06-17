@@ -597,6 +597,7 @@ function OrdersPage() {
     enabled: signerConnected && buyerPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
+    maxUnresolvedRefetches: 1,
   })
 
   useEffect(() => {
