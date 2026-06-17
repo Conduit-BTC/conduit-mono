@@ -699,7 +699,7 @@ function StorefrontPage() {
           </div>
 
           {productsQuery.isInitialLoading && (
-            <ul className="mt-4 grid min-w-0 max-w-full auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))]">
+            <ul className="mt-4 grid min-w-0 max-w-full auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
               {Array.from({ length: 6 }).map((_, index) => (
                 <li key={index} className="h-full">
                   <ProductGridCardSkeleton />
@@ -744,7 +744,7 @@ function StorefrontPage() {
             )}
 
           {filteredProducts.length > 0 && (
-            <ul className="mt-4 grid min-w-0 max-w-full auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))]">
+            <ul className="mt-4 grid min-w-0 max-w-full auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
               {filteredProducts.map((product, index) => (
                 <li key={product.id} className="h-full">
                   <ProductGridCard

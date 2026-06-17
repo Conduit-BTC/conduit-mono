@@ -10,13 +10,14 @@ describe("mobile product grid density", () => {
       ],
       [
         "apps/market/src/routes/store/$pubkey.tsx",
-        "grid min-w-0 max-w-full auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))]",
+        "grid min-w-0 max-w-full auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4",
       ],
     ])
 
     for (const [file, expectedGridClass] of expectedGridClasses) {
       const content = await readFile(file, "utf8")
       expect(content).toContain(expectedGridClass)
+      expect(content).not.toContain("auto-fit")
       expect(content).not.toContain(
         "grid auto-rows-fr list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2"
       )
