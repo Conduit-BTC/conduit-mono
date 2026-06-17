@@ -14,7 +14,7 @@ Conduit detects relay capabilities:
 
 - relay information availability
 - search/indexing support
-- private DM suitability
+- protected-message relay suitability
 - relay authentication support
 - commerce compatibility
 
@@ -58,7 +58,7 @@ The relay settings screen must not ask users to assign relays to custom Conduit 
 
 - NIP-11 availability
 - NIP-50 search support
-- NIP-17 DM support
+- protected-message relay suitability
 - NIP-42 auth support
 - Conduit commerce compatibility
 - warning states such as unreachable, stale relay information, or partial commerce support
@@ -188,21 +188,24 @@ Inactive tooltip:
 
 > Search not advertised
 
-#### DM
+#### Protected messages
 
-Meaning: the relay appears suitable for modern private direct messages.
+Meaning: the relay appears suitable for relay-visible protected-message traffic.
 
-Primary detection:
+Primary evidence:
 
-- NIP-11 `supported_nips` contains `17`
+- the relay can read and write relevant public wrapper traffic, especially kind `1059`
+- recipient inbox hints such as `kind:10050` point to the relay
+- active probes, compatibility registries, or recent local outcomes show useful delivery behavior
+- NIP-42 auth support is advertised or demonstrated when policy requires stronger access-control signals
 
 Active tooltip:
 
-> DM support detected
+> Protected-message relay
 
 Expanded tooltip:
 
-> This relay advertises support for modern encrypted direct messages.
+> This relay appears suitable for encrypted message delivery. Message content stays encrypted; Conduit only checks relay-visible delivery behavior.
 
 #### Auth / Security
 
@@ -222,19 +225,19 @@ Expanded tooltip:
 
 > This relay supports client authentication, which can help protect restricted or sensitive relay access.
 
-#### DM without auth warning
+#### Protected message without auth warning
 
-If a relay appears DM-capable but does not advertise or demonstrate NIP-42 auth support, show a warning state.
+If a relay appears suitable for protected-message traffic but does not advertise or demonstrate NIP-42 auth support, show a warning state.
 
 Tooltip:
 
-> DM relay without auth
+> Protected-message relay without auth
 
 Expanded tooltip:
 
-> This relay appears to support DMs but does not advertise relay authentication. Conduit may limit DM use here because access controls may be weaker.
+> This relay appears suitable for encrypted message delivery but does not advertise relay authentication. Conduit may limit DM use here because access controls may be weaker.
 
-This warning must not say the relay is categorically unsafe. It only explains that Conduit may limit DM usage because access control signals are weaker.
+This warning must not say the relay is categorically unsafe. It only explains that Conduit may limit DM usage because access-control signals are weaker.
 
 ---
 
@@ -253,7 +256,7 @@ Baseline requirements:
 - `kind:30402` product listings
 - `kind:30405` product collections where collections are used
 - merchant preferences, including relevant NIP-89 and kind `0` preference data
-- NIP-17 order communication and buyer/merchant messages
+- relay-visible delivery for NIP-17 order communication and buyer/merchant messages
 
 Optional or extended requirements:
 
@@ -273,7 +276,7 @@ Minimum checks:
 - The relay accepts writes for supported commerce event kinds when `OUT` is enabled and user policy allows publishing there.
 - The relay handles replaceable or parameterized replaceable commerce state needed for product and inventory updates.
 - The relay meets baseline reliability expectations for commerce flows.
-- If used for DMs, the relay is suitable for NIP-17 delivery and warning states are surfaced when auth support is absent.
+- If used for DMs, the relay is suitable for relay-visible protected-message delivery and warning states are surfaced when auth support is absent.
 
 Compatibility may be determined by:
 
@@ -477,9 +480,9 @@ For commerce writes, Conduit should:
 
 For NIP-17 buyer/merchant communication, Conduit should:
 
-- prefer relays that advertise or demonstrate DM suitability
+- prefer relays that demonstrate useful relay-visible protected-message delivery
 - prefer auth-capable relays for protected or restricted access patterns
-- warn when DM support exists without auth support
+- warn when protected-message suitability exists without auth support
 - limit DM usage on weaker relays when policy requires stronger access control
 
 ---

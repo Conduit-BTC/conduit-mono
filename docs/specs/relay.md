@@ -8,6 +8,7 @@ Conduit treats relays as Nostr infrastructure, not fixed app roles. Apps expose 
 - **Other Public Relays**
 
 The detailed product and client architecture lives in [Relay Architecture](./relay/conduit_relay_architecture.md).
+The source-aware read/write frontier contract lives in [Source-Aware Relay Frontier](./relay/source-aware-frontier.md).
 
 This document defines the minimum behavior expected from a relay that wants to be considered commerce-compatible by Conduit.
 
@@ -21,7 +22,7 @@ Minimum expectations:
 - NIP-11 relay information document
 - NIP-65 relay list compatibility via `kind:10002`
 - NIP-99 / GammaMarkets market-spec product events, especially `kind:30402`
-- NIP-17 suitability for buyer/merchant messages when the relay is used for DMs
+- suitability for relay-visible protected-message traffic when the relay is used for DMs
 - NIP-42 support or a clear warning path when auth is not advertised
 - reliable reads and writes for supported commerce event kinds
 - replaceable or parameterized replaceable event handling for product state
@@ -77,7 +78,7 @@ CREATE INDEX idx_products_created ON events (created_at DESC)
 
 Relays must not inspect encrypted message content. Operational metrics should remain aggregated and should avoid behavioral profiling.
 
-For private or restricted messaging behavior, Conduit should prefer relays that advertise or demonstrate NIP-42 authentication support. Relays that support DMs without auth can still exist in the settings UI, but Conduit should show a warning and may limit protected messaging use there.
+For private or restricted messaging behavior, Conduit should prefer relays that advertise or demonstrate NIP-42 authentication support. Relays that appear suitable for protected-message traffic without auth can still exist in the settings UI, but Conduit should show a warning and may limit protected messaging use there.
 
 ## Integration
 
@@ -102,7 +103,7 @@ VITE_APP_WRITE_RELAY_URLS=
 
 The canonical reset/fallback list is code-owned in `packages/core/src/config.ts` and currently starts with `wss://conduitl2.fly.dev`. Retired Conduit relay hosts must not be used in active examples.
 
-Future Phase 2B work is expected to add a more explicit source-aware relay outcome model and read frontier. That direction should be documented before replacing current NDK-backed helpers with a custom relay substrate.
+Future Phase 2B work is expected to follow the source-aware relay outcome model and read/write frontier in [Source-Aware Relay Frontier](./relay/source-aware-frontier.md) before replacing current NDK-backed helpers with a custom relay substrate.
 
 ## Success Metrics
 
