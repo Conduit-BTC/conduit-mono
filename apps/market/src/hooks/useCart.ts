@@ -70,7 +70,7 @@ function getCartTelemetryCount(items: CartItem[]): number {
 }
 
 function getCartTelemetryProductType(items: CartItem[]): string {
-  const formats = new Set(items.map((item) => item.format ?? "unknown"))
+  const formats = new Set(items.map((item) => item.format ?? "physical"))
 
   if (formats.size === 0) return "unknown"
   if (formats.size > 1) return "mixed"
@@ -121,7 +121,7 @@ export function useCart() {
         properties: {
           action: "add",
           count_bucket: getTelemetryCountBucket(quantity),
-          product_type: item.format ?? "unknown",
+          product_type: item.format ?? "physical",
           status: "success",
           surface: "cart",
         },

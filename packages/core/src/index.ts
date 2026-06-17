@@ -30,6 +30,7 @@ export {
   recordBrowserTelemetryEvent,
   recordBrowserTelemetryPageView,
   resolveBrowserTelemetryConfig,
+  sanitizePostHogCaptureEvent,
   sanitizeTelemetryEventProperties,
   sanitizeTelemetryPath,
   sensitiveTelemetryPropertyNames,

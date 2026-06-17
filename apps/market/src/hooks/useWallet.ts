@@ -175,6 +175,10 @@ function deriveStatus(
   return "unsupported"
 }
 
+function getWalletTelemetryStatus(status: string): string {
+  return status.replace(/-/g, "_")
+}
+
 function deriveUnavailableReason(
   status: WalletConnectionStatus
 ): string | null {
@@ -426,7 +430,7 @@ export function useWallet(): UseWalletReturn {
         properties: {
           method: "nwc",
           rail: "lightning",
-          status: nextState.status,
+          status: getWalletTelemetryStatus(nextState.status),
         },
       })
       setState(nextState)

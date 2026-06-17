@@ -8,6 +8,7 @@ import {
   getTelemetryCountBucket,
   resolveBrowserTelemetryConfig,
   sanitizeTelemetryEventProperties,
+  sanitizePostHogCaptureEvent,
   sanitizeTelemetryPath,
   sensitiveTelemetryPropertyNames,
 } from "@conduit/core"
@@ -60,6 +61,8 @@ describe("browser telemetry", () => {
     expect(sanitizeTelemetryPath("/store/abcdef123456")).toBe("/store/:pubkey")
     expect(sanitizeTelemetryPath("/u/npub1example")).toBe("/u/:profileRef")
     expect(sanitizeTelemetryPath("/orders?order=local-secret")).toBe("/orders")
+    expect(sanitizeTelemetryPath("/npub1example")).toBe("/:param")
+    expect(sanitizeTelemetryPath("/lnbc123")).toBe("/:param")
   })
 
   it("builds sanitized pageview urls for providers", () => {
@@ -110,6 +113,37 @@ describe("browser telemetry", () => {
     expect(config.property_denylist).toEqual([
       ...sensitiveTelemetryPropertyNames,
     ])
+    expect(typeof config.before_send).toBe("function")
+  })
+
+  it("strips PostHog SDK defaults from outgoing events", () => {
+    expect(
+      sanitizePostHogCaptureEvent({
+        event: "cart_add",
+        properties: {
+          $browser: "Chrome",
+          $current_url:
+            "https://shop.conduit.market/products/30402:merchant:item?q=raw",
+          $host: "shop.conduit.market",
+          $pathname: "/products/30402:merchant:item",
+          action: "add",
+          distinct_id: "sdk-generated-id",
+          page_path: "/products/:productId",
+          page_url: "https://shop.conduit.market/products/:productId",
+          status: "success",
+        },
+      })
+    ).toEqual({
+      event: "cart_add",
+      properties: {
+        $current_url: "https://shop.conduit.market/products/:productId",
+        $pathname: "/products/:productId",
+        action: "add",
+        page_path: "/products/:productId",
+        page_url: "https://shop.conduit.market/products/:productId",
+        status: "success",
+      },
+    })
   })
 
   it("buckets counts and amounts before telemetry emission", () => {

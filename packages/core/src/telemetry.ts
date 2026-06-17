@@ -133,6 +133,13 @@ export interface ConduitPostHogConfig {
   mask_all_text: true
   mask_all_element_attributes: true
   property_denylist: string[]
+  before_send: (event: PostHogCaptureEvent) => PostHogCaptureEvent | null
+}
+
+export interface PostHogCaptureEvent {
+  event?: string
+  properties?: Record<string, unknown>
+  [key: string]: unknown
 }
 
 declare global {
@@ -143,6 +150,19 @@ declare global {
 
 const DEFAULT_PLAUSIBLE_SCRIPT_SRC = "https://plausible.io/js/script.js"
 const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com"
+const staticTelemetryRouteSegments = new Set([
+  "about",
+  "cart",
+  "checkout",
+  "messages",
+  "network",
+  "orders",
+  "payments",
+  "products",
+  "profile",
+  "shipping",
+  "wallet",
+])
 
 export const sensitiveTelemetryPropertyNames = [
   "address",
@@ -253,6 +273,7 @@ export function sanitizeTelemetryPath(pathname: string): string {
   if (section === "u") return "/u/:profileRef"
   if (section === "orders") return "/orders"
 
+  if (!staticTelemetryRouteSegments.has(section)) return "/:param"
   if (segments.length === 1) return `/${section}`
   return `/${section}/:param`
 }
@@ -349,6 +370,66 @@ export function getConduitPostHogConfig(
     mask_all_text: true,
     mask_all_element_attributes: true,
     property_denylist: [...sensitiveTelemetryPropertyNames],
+    before_send: sanitizePostHogCaptureEvent,
+  }
+}
+
+export function sanitizePostHogCaptureEvent(
+  event: PostHogCaptureEvent
+): PostHogCaptureEvent | null {
+  const eventName = typeof event.event === "string" ? event.event : null
+  if (
+    eventName !== "$pageview" &&
+    (!eventName || !isBrowserTelemetryEventName(eventName))
+  ) {
+    return null
+  }
+
+  const sourceProperties = event.properties ?? {}
+  const sanitizedProperties: Record<string, string | boolean> = {}
+
+  for (const [key, value] of Object.entries(sourceProperties)) {
+    if (!browserTelemetryPropertyNameSet.has(key)) continue
+
+    if (typeof value === "boolean") {
+      sanitizedProperties[key] = value
+      continue
+    }
+    if (typeof value !== "string") continue
+
+    if (key === "page_url") {
+      const pageUrl = sanitizeTelemetryRouteUrl(value)
+      if (pageUrl) sanitizedProperties[key] = pageUrl
+      continue
+    }
+    if (key === "page_path") {
+      sanitizedProperties[key] = sanitizeTelemetryPath(value)
+      continue
+    }
+
+    const normalized = sanitizeTelemetryPropertyValue(value)
+    if (normalized) sanitizedProperties[key] = normalized
+  }
+
+  const pageUrl =
+    typeof sanitizedProperties.page_url === "string"
+      ? sanitizedProperties.page_url
+      : sanitizeTelemetryRouteUrl(
+          getStringProperty(sourceProperties, "$current_url")
+        )
+  const pagePath =
+    typeof sanitizedProperties.page_path === "string"
+      ? sanitizedProperties.page_path
+      : sanitizeTelemetryPath(
+          getStringProperty(sourceProperties, "$pathname") ?? "/"
+        )
+
+  if (pageUrl) sanitizedProperties.$current_url = pageUrl
+  sanitizedProperties.$pathname = pagePath
+
+  return {
+    ...event,
+    properties: sanitizedProperties,
   }
 }
 
@@ -369,12 +450,19 @@ export function recordBrowserTelemetryEvent(input: TelemetryEventInput): void {
 
   if (config.plausible) {
     ensurePlausible(config.plausible)
-    window.plausible?.(input.eventName, { props: properties })
+    window.plausible?.(input.eventName, {
+      url: properties.page_url as string,
+      props: properties,
+    })
   }
 
   if (config.posthog) {
     void ensurePostHog(config.posthog).then((client) => {
-      client?.capture(input.eventName, properties)
+      client?.capture(input.eventName, {
+        ...properties,
+        $current_url: properties.page_url,
+        $pathname: properties.page_path,
+      })
     })
   }
 }
@@ -404,8 +492,31 @@ export function recordBrowserTelemetryPageView(
         $current_url: pageUrl,
         $pathname: sanitizedPath,
         app: input.app,
+        page_path: sanitizedPath,
+        page_url: pageUrl,
       })
     })
+  }
+}
+
+function getStringProperty(
+  properties: Record<string, unknown>,
+  key: string
+): string | null {
+  const value = properties[key]
+  return typeof value === "string" && value.trim() ? value : null
+}
+
+function sanitizeTelemetryRouteUrl(value: string | null): string | null {
+  if (!value) return null
+  try {
+    const url = new URL(value)
+    return buildTelemetryPageUrl({
+      origin: url.origin,
+      pathname: url.pathname,
+    })
+  } catch {
+    return null
   }
 }
 
@@ -462,12 +573,17 @@ async function ensurePostHog(
   config: PostHogTelemetryConfig
 ): Promise<PostHogClient | null> {
   const key = `${config.host}:${config.key}`
-  if (posthogInitializedFor === key) return posthogClientPromise
+  if (posthogInitializedFor === key && posthogClientPromise) {
+    return posthogClientPromise
+  }
 
   posthogInitializedFor = key
   posthogClientPromise = import("posthog-js")
-    .then((mod: PostHogModule) => {
-      const client = (mod.default ?? mod) as PostHogClient | undefined
+    .then((mod) => {
+      const postHogModule = mod as unknown as PostHogModule
+      const client = (postHogModule.default ?? postHogModule) as
+        | PostHogClient
+        | undefined
       if (!client?.init || !client.capture) return null
       client.init(config.key, getConduitPostHogConfig(config))
       return client

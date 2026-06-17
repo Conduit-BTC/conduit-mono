@@ -88,16 +88,8 @@ const telemetryCallExpression =
 
 const telemetryApiPattern = new RegExp(`${telemetryCallExpression}\\s*\\(`, "g")
 
-const literalTelemetryCallPattern = new RegExp(
-  `${telemetryCallExpression}\\s*\\(\\s*["'\`]([a-z0-9_$]+)["'\`]`,
-  "g"
-)
-
-const recordBrowserTelemetryEventPattern =
-  /\brecordBrowserTelemetryEvent\s*\(\s*\{[\s\S]*?\beventName\s*:\s*["'`]([a-z0-9_]+)["'`]/g
-
 const forbiddenTelemetryApiPattern =
-  /\bposthog\.(?:alias|group|identify|register|setPersonProperties|setPersonPropertiesForFlags)\s*\(/g
+  /\b(?:posthog|client)(?:\.|\?\.)(?:alias|group|identify|register|setPersonProperties|setPersonPropertiesForFlags)\s*\(/g
 
 const unsafeTelemetryConfigPatterns: Array<[RegExp, string]> = [
   [/\bautocapture\s*:\s*true\b/, "autocapture must stay disabled"],
@@ -208,36 +200,25 @@ export function validateTelemetrySourceUsage(input: {
         index: match.index ?? 0,
       })
   )
-  const literalTelemetryCalls = [
-    ...input.source.matchAll(literalTelemetryCallPattern),
-    ...input.source.matchAll(recordBrowserTelemetryEventPattern),
-  ].filter(
-    (match) =>
-      !isAllowedTelemetryCoreProviderCall({
-        relativePath: input.relativePath,
-        source: input.source,
-        index: match.index ?? 0,
-      })
-  )
 
-  if (telemetryCalls.length !== literalTelemetryCalls.length) {
-    errors.push(
-      `${input.relativePath} includes a telemetry call without a literal allowlisted event name`
-    )
-  }
+  for (const match of telemetryCalls) {
+    const callWindow = getTelemetryCallWindow(input.source, match.index ?? 0)
+    const eventName = getLiteralTelemetryEventName(callWindow)
 
-  for (const match of literalTelemetryCalls) {
-    const eventName = match[1]
-    if (
-      !input.allowedEventNames.has(eventName) &&
-      !allowedProviderTelemetryEventNames.has(eventName)
-    ) {
+    if (!eventName) {
+      errors.push(
+        `${input.relativePath} includes a telemetry call without a literal allowlisted event name`
+      )
+    } else if (allowedProviderTelemetryEventNames.has(eventName)) {
+      errors.push(
+        `${input.relativePath} uses provider telemetry event ${eventName} outside the shared telemetry wrapper`
+      )
+    } else if (!input.allowedEventNames.has(eventName)) {
       errors.push(
         `${input.relativePath} uses telemetry event ${eventName} outside docs/analytics/events.md`
       )
     }
 
-    const callWindow = getTelemetryCallWindow(input.source, match.index ?? 0)
     for (const propertyName of sensitiveTelemetryPropertyNames) {
       const propertyPattern = new RegExp(`\\b${propertyName}\\b\\s*(?=[:,}])`)
       if (propertyPattern.test(callWindow)) {
@@ -263,6 +244,16 @@ export function validateTelemetrySourceUsage(input: {
   }
 
   return errors
+}
+
+function getLiteralTelemetryEventName(callWindow: string): string | null {
+  if (/\brecordBrowserTelemetryEvent\s*\(/.test(callWindow)) {
+    return (
+      /\beventName\s*:\s*["'`]([a-z0-9_]+)["'`]/.exec(callWindow)?.[1] ?? null
+    )
+  }
+
+  return /\(\s*["'`]([a-z0-9_$]+)["'`]/.exec(callWindow)?.[1] ?? null
 }
 
 function getTelemetryCallWindow(source: string, index: number): string {
