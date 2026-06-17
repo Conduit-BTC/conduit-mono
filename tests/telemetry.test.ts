@@ -3,7 +3,10 @@ import { describe, expect, it } from "bun:test"
 import {
   buildTelemetryPageUrl,
   getConduitPostHogConfig,
+  getTelemetryAmountBucket,
+  getTelemetryCountBucket,
   resolveBrowserTelemetryConfig,
+  sanitizeTelemetryEventProperties,
   sanitizeTelemetryPath,
   sensitiveTelemetryPropertyNames,
 } from "@conduit/core"
@@ -94,5 +97,59 @@ describe("browser telemetry", () => {
     expect(config.property_denylist).toEqual([
       ...sensitiveTelemetryPropertyNames,
     ])
+  })
+
+  it("buckets counts and amounts before telemetry emission", () => {
+    expect(getTelemetryCountBucket(0)).toBe("0")
+    expect(getTelemetryCountBucket(1)).toBe("1")
+    expect(getTelemetryCountBucket(3)).toBe("2_3")
+    expect(getTelemetryCountBucket(10)).toBe("4_10")
+    expect(getTelemetryCountBucket(11)).toBe("11_plus")
+
+    expect(getTelemetryAmountBucket(undefined)).toBe("unknown")
+    expect(getTelemetryAmountBucket(999)).toBe("lt_1k_sats")
+    expect(getTelemetryAmountBucket(10_000)).toBe("10k_100k_sats")
+    expect(getTelemetryAmountBucket(1_000_000)).toBe("1m_plus_sats")
+  })
+
+  it("drops telemetry properties that are sensitive, high-cardinality, or free text", () => {
+    expect(
+      sanitizeTelemetryEventProperties({
+        app: "market",
+        eventName: "cart_add",
+        properties: {
+          action: "ADD",
+          count_bucket: "2_3",
+          product_type: "digital",
+          pubkey:
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          status: "success",
+          surface: "cart",
+          title: "Handmade product title",
+        } as Record<string, string>,
+      })
+    ).toEqual({
+      action: "add",
+      app: "market",
+      count_bucket: "2_3",
+      event_name: "cart_add",
+      product_type: "digital",
+      status: "success",
+      surface: "cart",
+    })
+
+    expect(
+      sanitizeTelemetryEventProperties({
+        app: "market",
+        eventName: "checkout_initiated",
+        properties: {
+          surface: "https://example.com/cart",
+          status: "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+        },
+      })
+    ).toEqual({
+      app: "market",
+      event_name: "checkout_initiated",
+    })
   })
 })

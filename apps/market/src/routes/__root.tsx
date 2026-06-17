@@ -6,10 +6,12 @@ import {
   type ErrorComponentProps,
 } from "@tanstack/react-router"
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 import {
   buildBugReportUrl,
+  recordBrowserTelemetryEvent,
   recordBrowserTelemetryPageView,
+  useAuth,
 } from "@conduit/core"
 import { ErrorPage, LegalFooter, NotFoundPage } from "@conduit/ui"
 import { MarketHeader } from "../components/MarketHeader"
@@ -69,9 +71,42 @@ function useMarketBugReportUrl(): string {
 }
 
 function RootLayout() {
+  const { status } = useAuth()
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
+  const appLoadTelemetrySentRef = useRef(false)
+  const previousAuthStatusRef = useRef(status)
+
+  useEffect(() => {
+    if (appLoadTelemetrySentRef.current) return
+    appLoadTelemetrySentRef.current = true
+    recordBrowserTelemetryEvent({
+      app: "market",
+      eventName: "app_load_result",
+      properties: {
+        network: "browser",
+        status: "success",
+      },
+    })
+  }, [])
+
+  useEffect(() => {
+    if (
+      status === "connected" &&
+      previousAuthStatusRef.current !== "connected"
+    ) {
+      recordBrowserTelemetryEvent({
+        app: "market",
+        eventName: "signer_connected",
+        properties: {
+          method: "nip07",
+          status: "success",
+        },
+      })
+    }
+    previousAuthStatusRef.current = status
+  }, [status])
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" })

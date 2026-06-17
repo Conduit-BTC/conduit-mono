@@ -18,8 +18,10 @@ import {
   getMarketplaceProducts,
   getMerchantStorefront,
   getProfileName,
+  getTelemetryCountBucket,
   normalizePubkey,
   pubkeyToNpub,
+  recordBrowserTelemetryEvent,
   useAuth,
   useProfile,
   type PricingRateInput,
@@ -118,6 +120,22 @@ function getCartSummaryPrice(
     ...display,
     canZapOut: summary.canZapOut,
   }
+}
+
+function getCartTelemetryProductType(items: CartItem[]): string {
+  const hasDigital = items.some((item) => item.format === "digital")
+  const hasPhysical = items.some((item) => item.format !== "digital")
+
+  if (hasDigital && hasPhysical) return "mixed"
+  if (hasDigital) return "digital"
+  if (hasPhysical) return "physical"
+  return "unknown"
+}
+
+function getCartTelemetryItemCountBucket(items: CartItem[]): string {
+  return getTelemetryCountBucket(
+    items.reduce((sum, item) => sum + item.quantity, 0)
+  )
 }
 
 async function fetchSuggestedProducts(
@@ -598,6 +616,20 @@ function CartPage() {
   )
 
   function handleCheckout(merchant: string): void {
+    const group = merchantGroups.find(
+      (entry) => entry.merchantPubkey === merchant
+    )
+    recordBrowserTelemetryEvent({
+      app: "market",
+      eventName: "checkout_initiated",
+      properties: {
+        count_bucket: getCartTelemetryItemCountBucket(group?.items ?? []),
+        product_type: getCartTelemetryProductType(group?.items ?? []),
+        status: signerConnected ? "success" : "auth_required",
+        surface: "cart",
+      },
+    })
+
     if (signerConnected) {
       continueToCheckout(merchant)
       return

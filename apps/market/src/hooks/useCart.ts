@@ -1,5 +1,9 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react"
 import {
+  getTelemetryCountBucket,
+  recordBrowserTelemetryEvent,
+} from "@conduit/core"
+import {
   addCartItem,
   clearMerchantCart,
   getCartTotals,
@@ -96,6 +100,16 @@ export function useCart() {
     (item: Omit<CartItem, "quantity">, quantity = 1) => {
       const curr = readSnapshot()
       writeState({ items: addCartItem(curr.items, item, quantity) })
+      recordBrowserTelemetryEvent({
+        app: "market",
+        eventName: "cart_add",
+        properties: {
+          action: "add",
+          count_bucket: getTelemetryCountBucket(quantity),
+          product_type: item.format ?? "unknown",
+          status: "success",
+        },
+      })
     },
     []
   )

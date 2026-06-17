@@ -80,6 +80,30 @@ describe("telemetry policy", () => {
     expect(errors).toEqual([])
   })
 
+  it("allows literal browser telemetry events from the shared wrapper", () => {
+    const errors = validateTelemetrySourceUsage({
+      source:
+        'recordBrowserTelemetryEvent({ app: "market", eventName: "cart_add", properties: { app: "market", status: "success", count_bucket: "1" } })',
+      relativePath: "apps/market/src/hooks/useCart.ts",
+      allowedEventNames: new Set(["cart_add"]),
+    })
+
+    expect(errors).toEqual([])
+  })
+
+  it("rejects browser telemetry wrapper calls without a literal event", () => {
+    const errors = validateTelemetrySourceUsage({
+      source:
+        'recordBrowserTelemetryEvent({ app: "market", eventName, properties: { app: "market" } })',
+      relativePath: "apps/market/src/hooks/useCart.ts",
+      allowedEventNames: new Set(["cart_add"]),
+    })
+
+    expect(errors).toContain(
+      "apps/market/src/hooks/useCart.ts includes a telemetry call without a literal allowlisted event name"
+    )
+  })
+
   it("rejects PostHog identity APIs and unsafe capture config", () => {
     const errors = validateTelemetrySourceUsage({
       source:

@@ -1,5 +1,54 @@
 export type ConduitTelemetryApp = "market" | "merchant"
 
+export const browserTelemetryEventNames = [
+  "app_load_result",
+  "signer_connected",
+  "cart_add",
+  "checkout_initiated",
+  "checkout_step_result",
+  "checkout_success",
+  "relay_connect_result",
+  "relay_publish_result",
+  "wallet_connect_result",
+  "payment_attempt_result",
+  "merchant_setup_step_result",
+  "product_publish_result",
+  "shipping_publish_result",
+  "market_browse_action",
+  "product_detail_action",
+] as const
+
+export type BrowserTelemetryEventName =
+  (typeof browserTelemetryEventNames)[number]
+
+export const browserTelemetryPropertyNames = [
+  "event_name",
+  "app",
+  "network",
+  "status",
+  "latency_bucket",
+  "count",
+  "time_bucket",
+  "surface",
+  "action",
+  "step",
+  "mode",
+  "rail",
+  "method",
+  "event_family",
+  "count_bucket",
+  "result_count_bucket",
+  "amount_bucket",
+  "product_type",
+] as const
+
+export type BrowserTelemetryPropertyName =
+  (typeof browserTelemetryPropertyNames)[number]
+
+export type BrowserTelemetryEventProperties = Partial<
+  Record<BrowserTelemetryPropertyName, string | boolean>
+>
+
 export interface BrowserTelemetryEnv {
   VITE_ENABLE_TELEMETRY?: string
   VITE_PLAUSIBLE_DOMAIN?: string
@@ -31,8 +80,20 @@ export interface TelemetryPageViewInput {
   origin?: string
 }
 
+export interface TelemetryEventInput {
+  app: ConduitTelemetryApp
+  eventName: BrowserTelemetryEventName
+  properties?: BrowserTelemetryEventProperties
+}
+
 interface PlausibleFunction {
-  (eventName: "pageview", options?: { url?: string }): void
+  (
+    eventName: "pageview" | BrowserTelemetryEventName,
+    options?: {
+      url?: string
+      props?: Record<string, string | boolean>
+    }
+  ): void
   q?: unknown[]
   init?: (options: { autoCapturePageviews: boolean; logging: boolean }) => void
 }
@@ -40,7 +101,7 @@ interface PlausibleFunction {
 interface PostHogClient {
   init: (key: string, config: ConduitPostHogConfig) => void
   capture: (
-    eventName: "$pageview",
+    eventName: "$pageview" | BrowserTelemetryEventName,
     properties: Record<string, string | boolean>
   ) => void
 }
@@ -102,6 +163,11 @@ export const sensitiveTelemetryPropertyNames = [
   "wallet",
 ] as const
 
+const browserTelemetryEventNameSet = new Set<string>(browserTelemetryEventNames)
+const browserTelemetryPropertyNameSet = new Set<string>(
+  browserTelemetryPropertyNames
+)
+
 let plausibleInitializedFor: string | null = null
 let posthogInitializedFor: string | null = null
 let posthogClientPromise: Promise<PostHogClient | null> | null = null
@@ -160,6 +226,8 @@ export function resolveBrowserTelemetryConfig(
 export function sanitizeTelemetryPath(pathname: string): string {
   let parsedPathname: string
   try {
+    // Relative paths need an absolute base for URL parsing; `.invalid` is a
+    // reserved non-routable TLD and is never emitted to analytics providers.
     parsedPathname = new URL(pathname, "https://conduit.invalid").pathname
   } catch {
     parsedPathname = pathname.split("?")[0]?.split("#")[0] ?? "/"
@@ -193,6 +261,58 @@ export function buildTelemetryPageUrl(input: {
   return `${trimmedOrigin}${sanitizedPath}`
 }
 
+export function getTelemetryCountBucket(count: number): string {
+  if (!Number.isFinite(count) || count <= 0) return "0"
+  if (count === 1) return "1"
+  if (count <= 3) return "2_3"
+  if (count <= 10) return "4_10"
+  return "11_plus"
+}
+
+export function getTelemetryAmountBucket(
+  sats: number | null | undefined
+): string {
+  if (!Number.isFinite(sats ?? NaN) || !sats || sats <= 0) return "unknown"
+  if (sats < 1_000) return "lt_1k_sats"
+  if (sats < 10_000) return "1k_10k_sats"
+  if (sats < 100_000) return "10k_100k_sats"
+  if (sats < 1_000_000) return "100k_1m_sats"
+  return "1m_plus_sats"
+}
+
+export function isBrowserTelemetryEventName(
+  eventName: string
+): eventName is BrowserTelemetryEventName {
+  return browserTelemetryEventNameSet.has(eventName)
+}
+
+export function sanitizeTelemetryEventProperties(
+  input: TelemetryEventInput
+): Record<string, string | boolean> {
+  const sanitized: Record<string, string | boolean> = {
+    event_name: input.eventName,
+    app: input.app,
+  }
+
+  for (const [key, value] of Object.entries(input.properties ?? {})) {
+    if (
+      !browserTelemetryPropertyNameSet.has(key) ||
+      key === "event_name" ||
+      key === "app"
+    ) {
+      continue
+    }
+    if (typeof value === "boolean") {
+      sanitized[key] = value
+      continue
+    }
+    const normalized = sanitizeTelemetryPropertyValue(value)
+    if (normalized) sanitized[key] = normalized
+  }
+
+  return sanitized
+}
+
 export function getConduitPostHogConfig(
   input: PostHogTelemetryConfig
 ): ConduitPostHogConfig {
@@ -214,6 +334,27 @@ export function getConduitPostHogConfig(
     mask_all_text: true,
     mask_all_element_attributes: true,
     property_denylist: [...sensitiveTelemetryPropertyNames],
+  }
+}
+
+export function recordBrowserTelemetryEvent(input: TelemetryEventInput): void {
+  if (typeof window === "undefined" || typeof document === "undefined") return
+  if (!isBrowserTelemetryEventName(input.eventName)) return
+
+  const config = resolveBrowserTelemetryConfig(input.app)
+  if (!config.enabled) return
+
+  const properties = sanitizeTelemetryEventProperties(input)
+
+  if (config.plausible) {
+    ensurePlausible(config.plausible)
+    window.plausible?.(input.eventName, { props: properties })
+  }
+
+  if (config.posthog) {
+    void ensurePostHog(config.posthog).then((client) => {
+      client?.capture(input.eventName, properties)
+    })
   }
 }
 
@@ -245,6 +386,17 @@ export function recordBrowserTelemetryPageView(
       })
     })
   }
+}
+
+function sanitizeTelemetryPropertyValue(value: string): string | null {
+  const normalized = value.trim().toLowerCase()
+  if (!normalized) return null
+  if (normalized.length > 64) return null
+  if (/^https?:\/\//.test(normalized) || normalized.includes("://")) return null
+  if (/^[0-9a-f]{64}$/i.test(normalized)) return null
+  if (/^(naddr|nevent|note|nprofile|npub|nsec)1/i.test(normalized)) return null
+  if (!/^[a-z0-9_:-]+$/.test(normalized)) return null
+  return normalized
 }
 
 function ensurePlausible(config: PlausibleTelemetryConfig): void {

@@ -26,6 +26,8 @@ import {
   fetchZapInvoice,
   getPriceSats,
   getShippingCostSats,
+  getTelemetryAmountBucket,
+  getTelemetryCountBucket,
   hasWebLN,
   getNdk,
   getShippingOptions,
@@ -35,6 +37,7 @@ import {
   parseOrderMessageRumorEvent,
   publishWithPlanner,
   pubkeyToNpub,
+  recordBrowserTelemetryEvent,
   validateLightningInvoiceForPayment,
   waitForZapReceipt,
   useAuth,
@@ -112,6 +115,8 @@ type CheckoutStep =
 type CheckoutSearch = {
   merchant?: string
 }
+
+type CheckoutTelemetryMode = "checkout" | "order_first" | CheckoutZapVisibility
 
 /** Priced "ok" intent — the only shape we proceed to payment with. */
 type OkPricingIntent = Extract<CheckoutPricingIntent, { status: "ok" }>
@@ -335,6 +340,39 @@ function getCartShippingOptionSnapshots(
       service: "standard",
       createdAt: 0,
     }))
+}
+
+function getCheckoutTelemetryProductType(items: CartItem[]): string {
+  const hasDigital = items.some((item) => item.format === "digital")
+  const hasPhysical = items.some((item) => item.format !== "digital")
+
+  if (hasDigital && hasPhysical) return "mixed"
+  if (hasDigital) return "digital"
+  if (hasPhysical) return "physical"
+  return "unknown"
+}
+
+function getCheckoutTelemetryItemCountBucket(items: CartItem[]): string {
+  return getTelemetryCountBucket(
+    items.reduce((sum, item) => sum + item.quantity, 0)
+  )
+}
+
+function getCheckoutTelemetryBaseProperties(
+  items: CartItem[],
+  mode: CheckoutTelemetryMode,
+  amountSats?: number
+) {
+  return {
+    amount_bucket:
+      amountSats === undefined
+        ? "unknown"
+        : getTelemetryAmountBucket(amountSats),
+    count_bucket: getCheckoutTelemetryItemCountBucket(items),
+    mode,
+    product_type: getCheckoutTelemetryProductType(items),
+    surface: "checkout",
+  }
 }
 
 // ─── Order summary sidebar ────────────────────────────────────────────────────
@@ -935,6 +973,50 @@ function CheckoutPage() {
   const visibleCheckoutStep: CheckoutStep =
     isAllDigital && step === "shipping" ? "payment" : step
 
+  function recordCheckoutStepResult(input: {
+    checkoutMode: CheckoutTelemetryMode
+    rail?: string
+    status: string
+    stepName: string
+    amountSats?: number
+  }): void {
+    recordBrowserTelemetryEvent({
+      app: "market",
+      eventName: "checkout_step_result",
+      properties: {
+        ...getCheckoutTelemetryBaseProperties(
+          checkoutItems,
+          input.checkoutMode,
+          input.amountSats
+        ),
+        rail: input.rail ?? "none",
+        status: input.status,
+        step: input.stepName,
+      },
+    })
+  }
+
+  function recordCheckoutSuccess(input: {
+    checkoutMode: CheckoutTelemetryMode
+    rail?: string
+    status: string
+    amountSats: number
+  }): void {
+    recordBrowserTelemetryEvent({
+      app: "market",
+      eventName: "checkout_success",
+      properties: {
+        ...getCheckoutTelemetryBaseProperties(
+          checkoutItems,
+          input.checkoutMode,
+          input.amountSats
+        ),
+        rail: input.rail ?? "none",
+        status: input.status,
+      },
+    })
+  }
+
   function updateShipping<K extends keyof ShippingFormState>(
     field: K,
     value: ShippingFormState[K]
@@ -959,9 +1041,19 @@ function CheckoutPage() {
       shippingErrors: errors,
     })
     if (blockingMessage) {
+      recordCheckoutStepResult({
+        checkoutMode: "checkout",
+        status: "blocked",
+        stepName: "shipping",
+      })
       setError(blockingMessage)
       return
     }
+    recordCheckoutStepResult({
+      checkoutMode: "checkout",
+      status: "success",
+      stepName: "shipping",
+    })
     setError(null)
     setStep("payment")
   }
@@ -1151,6 +1243,12 @@ function CheckoutPage() {
     setError(null)
     setPaidNotice(null)
     setStep("signing")
+    recordCheckoutStepResult({
+      checkoutMode: "order_first",
+      status: "started",
+      stepName: "order_submit",
+      amountSats: total,
+    })
 
     try {
       if (hasUnpricedCheckoutItems) {
@@ -1225,8 +1323,19 @@ function CheckoutPage() {
       setSentOrderId(orderId)
       setShowSentGlow(true)
       setStep("sent")
+      recordCheckoutSuccess({
+        amountSats: total,
+        checkoutMode: "order_first",
+        status: "order_sent",
+      })
       void navigate({ to: "/orders", replace: true })
     } catch (e) {
+      recordCheckoutStepResult({
+        amountSats: total,
+        checkoutMode: "order_first",
+        status: "failed",
+        stepName: "order_submit",
+      })
       setError(e instanceof Error ? e.message : "Failed to send order")
       setStep("payment")
     }
@@ -1273,6 +1382,11 @@ function CheckoutPage() {
   ): Promise<void> {
     if (!pubkey || !selectedMerchant) return
     if (!merchantLud16) {
+      recordCheckoutStepResult({
+        checkoutMode: zapVisibility,
+        status: "failed",
+        stepName: "payment",
+      })
       setTrackerError("Merchant does not have a Lightning address.")
       setTrackerFinished(true)
       return
@@ -1296,7 +1410,14 @@ function CheckoutPage() {
     const { orderId, pricingIntent } = ctx
     const currency = "SATS"
     let paymentMoved = false
+    let paymentRail = "unknown"
     let recoveryNotice = ctx.orderDeliveryNotice
+    recordCheckoutStepResult({
+      amountSats: pricingIntent.totalSats,
+      checkoutMode: zapVisibility,
+      status: "started",
+      stepName: "payment",
+    })
 
     try {
       const ndk = getNdk()
@@ -1371,8 +1492,16 @@ function CheckoutPage() {
           amountMsats: pricingIntent.totalMsats,
         },
       })
+      paymentRail = payResult.status === "paid" ? payResult.rail : "manual"
 
       if (payResult.status === "manual_required") {
+        recordCheckoutStepResult({
+          amountSats: pricingIntent.totalSats,
+          checkoutMode: zapVisibility,
+          rail: "manual",
+          status: "manual_required",
+          stepName: "payment",
+        })
         setPendingManualInvoice(
           buildPendingCheckoutManualInvoice({
             orderId,
@@ -1501,6 +1630,12 @@ function CheckoutPage() {
       // Terminal success. Clear the live cart immediately (a paid cart must
       // never be re-payable on refresh) and freeze a snapshot so the completed
       // tracker + order summary hold until the buyer chooses where to go.
+      recordCheckoutSuccess({
+        amountSats: pricingIntent.totalSats,
+        checkoutMode: zapVisibility,
+        rail: paymentRail,
+        status: proofDelivered ? "paid" : "paid_proof_retry",
+      })
       setCompletedSnapshot({
         orderId,
         merchantPubkey: selectedMerchant,
@@ -1528,6 +1663,12 @@ function CheckoutPage() {
       if (paymentMoved) {
         // Funds moved but a tail step (proof publish / receipt) threw. Still
         // terminal success for the cart: clear it and hold the completed view.
+        recordCheckoutSuccess({
+          amountSats: pricingIntent.totalSats,
+          checkoutMode: zapVisibility,
+          rail: paymentRail,
+          status: "paid_proof_retry",
+        })
         setCompletedSnapshot({
           orderId,
           merchantPubkey: selectedMerchant,
@@ -1546,6 +1687,13 @@ function CheckoutPage() {
         // Post-delivery, pre-payment failure. The order is already with the
         // merchant, so recovery retries payment against THIS order; it must
         // not publish another. The cart stays live so a retry can re-price.
+        recordCheckoutStepResult({
+          amountSats: pricingIntent.totalSats,
+          checkoutMode: zapVisibility,
+          rail: paymentRail,
+          status: "failed",
+          stepName: "payment",
+        })
         setTrackerError(
           `Order accepted by Nostr delivery relays for merchant pickup, but payment did not complete. ${message}`
         )
@@ -1575,10 +1723,20 @@ function CheckoutPage() {
       setWeblnAvailable(webLnAvailableNow)
     const canAttemptPaymentNow = canTrySavedNwcWallet || webLnAvailableNow
     if (!canAttemptPaymentNow) {
+      recordCheckoutStepResult({
+        checkoutMode: zapVisibility,
+        status: "blocked",
+        stepName: "direct_payment",
+      })
       setError("Connect a Lightning wallet or browser payment method.")
       return
     }
     if (!merchantLud16) {
+      recordCheckoutStepResult({
+        checkoutMode: zapVisibility,
+        status: "blocked",
+        stepName: "direct_payment",
+      })
       setError("Merchant does not have a Lightning address.")
       return
     }
@@ -1600,6 +1758,12 @@ function CheckoutPage() {
     setDeliveredOrderContextValue(null)
     setCompletedSnapshot(null)
     setStep("paying")
+    recordCheckoutStepResult({
+      amountSats: total,
+      checkoutMode: zapVisibility,
+      status: "started",
+      stepName: "direct_payment",
+    })
 
     try {
       if (hasUnpricedCheckoutItems) {
@@ -1694,6 +1858,12 @@ function CheckoutPage() {
       // Keep `paymentStage` ("checking_order_delivery") so the tracker marks the
       // order-delivery row as failed rather than a later row.
       const message = e instanceof Error ? e.message : "Payment failed"
+      recordCheckoutStepResult({
+        amountSats: total,
+        checkoutMode: zapVisibility,
+        status: "failed",
+        stepName: "direct_payment",
+      })
       setTrackerError(message)
       setTrackerFinished(true)
       paymentInFlightRef.current = false

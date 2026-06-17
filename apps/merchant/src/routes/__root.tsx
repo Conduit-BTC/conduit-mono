@@ -6,10 +6,11 @@ import {
 } from "@tanstack/react-router"
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { KeyRound } from "lucide-react"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import {
   buildBugReportUrl,
+  recordBrowserTelemetryEvent,
   recordBrowserTelemetryPageView,
   useAuth,
   useNip07Availability,
@@ -59,10 +60,42 @@ function RootLayout() {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
+  const appLoadTelemetrySentRef = useRef(false)
+  const previousAuthStatusRef = useRef(status)
   const signerConnected = status === "connected" && !!pubkey
   const signerRestoring = !!pubkey && status === "restoring"
   const shouldDelayAuthFallback =
     !!pubkey && !signerConnected && !authFallbackReady
+
+  useEffect(() => {
+    if (appLoadTelemetrySentRef.current) return
+    appLoadTelemetrySentRef.current = true
+    recordBrowserTelemetryEvent({
+      app: "merchant",
+      eventName: "app_load_result",
+      properties: {
+        network: "browser",
+        status: "success",
+      },
+    })
+  }, [])
+
+  useEffect(() => {
+    if (
+      status === "connected" &&
+      previousAuthStatusRef.current !== "connected"
+    ) {
+      recordBrowserTelemetryEvent({
+        app: "merchant",
+        eventName: "signer_connected",
+        properties: {
+          method: "nip07",
+          status: "success",
+        },
+      })
+    }
+    previousAuthStatusRef.current = status
+  }, [status])
 
   useEffect(() => {
     if (!pubkey || signerConnected) {

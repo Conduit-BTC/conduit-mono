@@ -9,6 +9,17 @@ export const allowedTelemetryProperties = new Set([
   "latency_bucket",
   "count",
   "time_bucket",
+  "surface",
+  "action",
+  "step",
+  "mode",
+  "rail",
+  "method",
+  "event_family",
+  "count_bucket",
+  "result_count_bucket",
+  "amount_bucket",
+  "product_type",
 ])
 
 export const allowedProviderTelemetryEventNames = new Set([
@@ -71,7 +82,7 @@ const eventMarkerPattern =
   /<!--\s*telemetry-event:\s*([a-z0-9_]+)\s+properties=([a-z0-9_,]+)\s*-->/g
 
 const telemetryCallExpression =
-  "\\b(?:(?:posthog|client)(?:\\.|\\?\\.)capture|(?:window\\.)?plausible(?:\\?\\.)?|trackTelemetry|recordTelemetryEvent)"
+  "\\b(?:(?:posthog|client)(?:\\.|\\?\\.)capture|(?:window\\.)?plausible(?:\\?\\.)?|trackTelemetry|recordTelemetryEvent|recordBrowserTelemetryEvent)"
 
 const telemetryApiPattern = new RegExp(`${telemetryCallExpression}\\s*\\(`, "g")
 
@@ -79,6 +90,9 @@ const literalTelemetryCallPattern = new RegExp(
   `${telemetryCallExpression}\\s*\\(\\s*["'\`]([a-z0-9_$]+)["'\`]`,
   "g"
 )
+
+const recordBrowserTelemetryEventPattern =
+  /\brecordBrowserTelemetryEvent\s*\(\s*\{[\s\S]*?\beventName\s*:\s*["'`]([a-z0-9_]+)["'`]/g
 
 const forbiddenTelemetryApiPattern =
   /\bposthog\.(?:alias|group|identify|register|setPersonProperties|setPersonPropertiesForFlags)\s*\(/g
@@ -180,10 +194,29 @@ export function validateTelemetrySourceUsage(input: {
   allowedEventNames: Set<string>
 }): string[] {
   const errors: string[] = []
-  const telemetryCalls = [...input.source.matchAll(telemetryApiPattern)]
+  const telemetryCalls = [...input.source.matchAll(telemetryApiPattern)].filter(
+    (match) =>
+      !isTelemetryFunctionDeclaration({
+        source: input.source,
+        index: match.index ?? 0,
+      }) &&
+      !isAllowedTelemetryCoreProviderCall({
+        relativePath: input.relativePath,
+        source: input.source,
+        index: match.index ?? 0,
+      })
+  )
   const literalTelemetryCalls = [
     ...input.source.matchAll(literalTelemetryCallPattern),
-  ]
+    ...input.source.matchAll(recordBrowserTelemetryEventPattern),
+  ].filter(
+    (match) =>
+      !isAllowedTelemetryCoreProviderCall({
+        relativePath: input.relativePath,
+        source: input.source,
+        index: match.index ?? 0,
+      })
+  )
 
   if (telemetryCalls.length !== literalTelemetryCalls.length) {
     errors.push(
@@ -202,10 +235,7 @@ export function validateTelemetrySourceUsage(input: {
       )
     }
 
-    const callWindow = input.source.slice(
-      match.index ?? 0,
-      (match.index ?? 0) + 800
-    )
+    const callWindow = getTelemetryCallWindow(input.source, match.index ?? 0)
     for (const propertyName of sensitiveTelemetryPropertyNames) {
       const propertyPattern = new RegExp(`\\b${propertyName}\\b\\s*(?=[:,}])`)
       if (propertyPattern.test(callWindow)) {
@@ -231,6 +261,67 @@ export function validateTelemetrySourceUsage(input: {
   }
 
   return errors
+}
+
+function getTelemetryCallWindow(source: string, index: number): string {
+  const openParenIndex = source.indexOf("(", index)
+  if (openParenIndex === -1) return source.slice(index, index + 240)
+
+  let depth = 0
+  let quote: "'" | '"' | "`" | null = null
+  let escaped = false
+
+  for (let i = openParenIndex; i < source.length; i += 1) {
+    const char = source[i]
+
+    if (quote) {
+      if (escaped) {
+        escaped = false
+        continue
+      }
+      if (char === "\\") {
+        escaped = true
+        continue
+      }
+      if (char === quote) quote = null
+      continue
+    }
+
+    if (char === "'" || char === '"' || char === "`") {
+      quote = char
+      continue
+    }
+
+    if (char === "(") depth += 1
+    if (char === ")") {
+      depth -= 1
+      if (depth === 0) return source.slice(index, i + 1)
+    }
+  }
+
+  return source.slice(index, index + 240)
+}
+
+function isTelemetryFunctionDeclaration(input: {
+  source: string
+  index: number
+}): boolean {
+  const prefix = input.source.slice(Math.max(0, input.index - 32), input.index)
+  return /\bfunction\s*$/.test(prefix)
+}
+
+function isAllowedTelemetryCoreProviderCall(input: {
+  relativePath: string
+  source: string
+  index: number
+}): boolean {
+  if (input.relativePath !== "packages/core/src/telemetry.ts") return false
+
+  const snippet = input.source.slice(input.index, input.index + 80)
+  return (
+    snippet.startsWith("window.plausible?.(") ||
+    snippet.startsWith("client?.capture(")
+  )
 }
 
 export function checkTelemetrySourceUsage(
