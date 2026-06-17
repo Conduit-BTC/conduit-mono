@@ -331,7 +331,7 @@ async function publishProduct(
   await publishWithPlanner(event, {
     intent: "author_event",
     authorPubkey: signerPubkey,
-    deliveryMode: "critical",
+    deliveryMode: "user_publish",
   })
 }
 
@@ -365,7 +365,7 @@ async function deleteProduct(
   await publishWithPlanner(deletion, {
     intent: "author_event",
     authorPubkey: merchantPubkey,
-    deliveryMode: "critical",
+    deliveryMode: "user_publish",
   })
 }
 

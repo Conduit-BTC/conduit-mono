@@ -748,7 +748,6 @@ export function useProgressiveProductDetail(productId: string): {
   const networkQuery = useQuery({
     queryKey: ["progressive-product", "network", productId],
     queryFn: () => getProductDetail({ productId }),
-    placeholderData: (previousData) => previousData,
     staleTime: 20_000,
   })
 

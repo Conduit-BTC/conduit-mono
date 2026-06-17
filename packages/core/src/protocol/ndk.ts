@@ -22,6 +22,14 @@ import {
   recordRelayCapabilityReadFailure,
   recordRelayCapabilityReadSuccess,
 } from "./relay-capability-cache"
+import {
+  createRelayFrontierReadOutcome,
+  type NostrPlainEvent,
+  type RelayFrontierExecutor,
+  type RelayFrontierReadFilter,
+  type RelayFrontierReadOutcome,
+  type RelayFrontierSourceBucket,
+} from "./relay-frontier"
 
 export type NdkConnectionState = "idle" | "connecting" | "connected" | "error"
 
@@ -33,6 +41,8 @@ export interface NdkState {
 
 export interface FetchEventsFanoutOptions {
   relayUrls?: string[]
+  sourceBucket?: RelayFrontierSourceBucket
+  sourceBucketsByRelayUrl?: Record<string, RelayFrontierSourceBucket>
   connectTimeoutMs?: number
   fetchTimeoutMs?: number
   skipHealthFilter?: boolean
@@ -44,6 +54,12 @@ export interface FetchEventsFanoutProgress {
   relayUrl: string
   events: NDKEvent[]
   mergedEvents: NDKEvent[]
+  outcome: RelayFrontierReadOutcome
+}
+
+export interface FetchEventsFanoutResult {
+  events: NDKEvent[]
+  outcomes: RelayFrontierReadOutcome[]
 }
 
 const EVENT_SOURCE_RELAY_URLS = "__conduitSourceRelayUrls"
@@ -130,8 +146,11 @@ async function fetchEventsFromRelay(
   relayUrl: string,
   filter: NDKFilter,
   connectTimeoutMs: number,
-  fetchTimeoutMs: number
-): Promise<NDKEvent[]> {
+  fetchTimeoutMs: number,
+  budgetClass: RelayNetworkBudgetClass = "visible_marketplace_read",
+  sourceBucket: RelayFrontierSourceBucket = "unknown"
+): Promise<{ events: NDKEvent[]; outcome: RelayFrontierReadOutcome }> {
+  const startedAt = Date.now()
   const ndk = new NDK({
     explicitRelayUrls: [relayUrl],
   })
@@ -151,7 +170,18 @@ async function fetchEventsFromRelay(
         timedOut: true,
         eventKind: Array.isArray(filter.kinds) ? filter.kinds[0] : undefined,
       }).catch(() => undefined)
-      return []
+      return {
+        events: [],
+        outcome: createRelayFrontierReadOutcome({
+          adapter: "ndk",
+          relayUrl,
+          sourceBucket,
+          priorityClass: budgetClass,
+          startedAt,
+          eventsReceived: 0,
+          timedOut: true,
+        }),
+      }
     }
 
     const events = await Promise.race([
@@ -165,7 +195,18 @@ async function fetchEventsFromRelay(
         timedOut: true,
         eventKind: Array.isArray(filter.kinds) ? filter.kinds[0] : undefined,
       }).catch(() => undefined)
-      return []
+      return {
+        events: [],
+        outcome: createRelayFrontierReadOutcome({
+          adapter: "ndk",
+          relayUrl,
+          sourceBucket,
+          priorityClass: budgetClass,
+          startedAt,
+          eventsReceived: 0,
+          timedOut: true,
+        }),
+      }
     }
 
     recordRelaySuccess(relayUrl)
@@ -179,13 +220,35 @@ async function fetchEventsFromRelay(
     for (const event of fetched) {
       attachEventSourceRelayUrl(event, relayUrl)
     }
-    return fetched
-  } catch {
+    return {
+      events: fetched,
+      outcome: createRelayFrontierReadOutcome({
+        adapter: "ndk",
+        relayUrl,
+        sourceBucket,
+        priorityClass: budgetClass,
+        startedAt,
+        eventsReceived: fetched.length,
+        eventsReturned: fetched.length,
+      }),
+    }
+  } catch (error) {
     recordRelayFailure(relayUrl)
     void recordRelayCapabilityReadFailure(relayUrl, {
       eventKind: Array.isArray(filter.kinds) ? filter.kinds[0] : undefined,
     }).catch(() => undefined)
-    return []
+    return {
+      events: [],
+      outcome: createRelayFrontierReadOutcome({
+        adapter: "ndk",
+        relayUrl,
+        sourceBucket,
+        priorityClass: budgetClass,
+        startedAt,
+        eventsReceived: 0,
+        errorMessage: error instanceof Error ? error.message : "relay error",
+      }),
+    }
   } finally {
     for (const [, relay] of ndk.pool?.relays?.entries() ?? []) {
       relay.disconnect()
@@ -239,12 +302,23 @@ export async function fetchEventsFanout(
   filter: NDKFilter,
   options: FetchEventsFanoutOptions = {}
 ): Promise<NDKEvent[]> {
+  return (await fetchEventsFanoutWithOutcomes(filter, options)).events
+}
+
+export async function fetchEventsFanoutWithOutcomes(
+  filter: NDKFilter,
+  options: FetchEventsFanoutOptions = {}
+): Promise<FetchEventsFanoutResult> {
   const relayUrls = resolveFanoutRelayUrls(options)
 
-  if (relayUrls.length === 0) return []
+  if (relayUrls.length === 0) return { events: [], outcomes: [] }
 
   const connectTimeoutMs = options.connectTimeoutMs ?? 4_000
   const fetchTimeoutMs = options.fetchTimeoutMs ?? 8_000
+  const getSourceBucket = (relayUrl: string): RelayFrontierSourceBucket =>
+    options.sourceBucketsByRelayUrl?.[relayUrl] ??
+    options.sourceBucket ??
+    "unknown"
 
   const perRelayResults = await Promise.all(
     relayUrls.map((relayUrl) =>
@@ -254,7 +328,9 @@ export async function fetchEventsFanout(
             relayUrl,
             filter,
             connectTimeoutMs,
-            fetchTimeoutMs
+            fetchTimeoutMs,
+            options.budgetClass,
+            getSourceBucket(relayUrl)
           ),
         {
           budgetClass: options.budgetClass,
@@ -266,11 +342,14 @@ export async function fetchEventsFanout(
   )
 
   const merged = new Map<string, NDKEvent>()
-  for (const events of perRelayResults) {
+  for (const { events } of perRelayResults) {
     mergeEventsInto(merged, events)
   }
 
-  return Array.from(merged.values())
+  return {
+    events: Array.from(merged.values()),
+    outcomes: perRelayResults.map((result) => result.outcome),
+  }
 }
 
 export async function fetchEventsFanoutProgressive(
@@ -284,6 +363,10 @@ export async function fetchEventsFanoutProgressive(
   const connectTimeoutMs = options.connectTimeoutMs ?? 4_000
   const fetchTimeoutMs = options.fetchTimeoutMs ?? 8_000
   const merged = new Map<string, NDKEvent>()
+  const getSourceBucket = (relayUrl: string): RelayFrontierSourceBucket =>
+    options.sourceBucketsByRelayUrl?.[relayUrl] ??
+    options.sourceBucket ??
+    "unknown"
 
   await Promise.all(
     relayUrls.map(async (relayUrl) => {
@@ -293,7 +376,9 @@ export async function fetchEventsFanoutProgressive(
             relayUrl,
             filter,
             connectTimeoutMs,
-            fetchTimeoutMs
+            fetchTimeoutMs,
+            options.budgetClass,
+            getSourceBucket(relayUrl)
           ),
         {
           budgetClass: options.budgetClass,
@@ -301,16 +386,63 @@ export async function fetchEventsFanoutProgressive(
           signal: options.signal,
         }
       )
-      mergeEventsInto(merged, events)
+      mergeEventsInto(merged, events.events)
       await onProgress({
         relayUrl,
-        events,
+        events: events.events,
         mergedEvents: Array.from(merged.values()),
+        outcome: events.outcome,
       })
     })
   )
 
   return Array.from(merged.values())
+}
+
+export function toNostrPlainEvent(event: NDKEvent): NostrPlainEvent {
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    created_at: event.created_at ?? 0,
+    kind: event.kind ?? 0,
+    tags: event.tags ?? [],
+    content: event.content ?? "",
+    sig: event.sig,
+  }
+}
+
+function toNdkFilter(filter: RelayFrontierReadFilter): NDKFilter {
+  return filter as NDKFilter
+}
+
+export const ndkRelayFrontierExecutor: RelayFrontierExecutor = {
+  adapter: "ndk",
+  async read(input) {
+    const eventsById = new Map<string, NostrPlainEvent>()
+    const outcomes: RelayFrontierReadOutcome[] = []
+
+    for (const filter of input.filters) {
+      const result = await fetchEventsFanoutWithOutcomes(toNdkFilter(filter), {
+        relayUrls: input.relayUrls,
+        sourceBucket: input.sourceBucket,
+        sourceBucketsByRelayUrl: input.sourceBucketsByRelayUrl,
+        connectTimeoutMs: input.deadlineMs,
+        fetchTimeoutMs: input.deadlineMs,
+        budgetClass: input.priorityClass,
+        signal: input.signal,
+      })
+      for (const event of result.events) {
+        const plain = toNostrPlainEvent(event)
+        eventsById.set(plain.id, plain)
+      }
+      outcomes.push(...result.outcomes)
+    }
+
+    return {
+      events: Array.from(eventsById.values()),
+      outcomes,
+    }
+  },
 }
 
 export async function connectNdk(timeoutMs = 10_000): Promise<void> {

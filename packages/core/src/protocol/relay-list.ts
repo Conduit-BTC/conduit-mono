@@ -2,7 +2,7 @@ import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
 import { db, type CachedRelayList } from "../db"
 import { config } from "../config"
 import { EVENT_KINDS } from "./kinds"
-import { fetchEventsFanout } from "./ndk"
+import { fetchEventsFanout, getEventSourceRelayUrls } from "./ndk"
 import {
   getGeneralReadRelayUrls,
   parseNip65RelayTags,
@@ -236,7 +236,10 @@ export async function getRelayList(
     if (!latest) {
       return cached
     }
-    const list = parseRelayListEvent(latest, { cachedAt: now(opts) })
+    const list = parseRelayListEvent(latest, {
+      sourceRelayUrls: getEventSourceRelayUrls(latest),
+      cachedAt: now(opts),
+    })
     await putCached(list)
     return list
   } catch {
@@ -294,7 +297,10 @@ export async function getRelayLists(
     for (const pubkey of missing) {
       const latest = pickLatestRelayListEvent(events, pubkey)
       if (!latest) continue
-      const list = parseRelayListEvent(latest, { cachedAt: now(opts) })
+      const list = parseRelayListEvent(latest, {
+        sourceRelayUrls: getEventSourceRelayUrls(latest),
+        cachedAt: now(opts),
+      })
       await putCached(list)
       out.set(pubkey, list)
     }

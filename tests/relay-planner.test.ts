@@ -157,6 +157,31 @@ describe("planRelayReads", () => {
     expect(plan.hintRelayUrls).toEqual(["wss://alice-write.example.com"])
   })
 
+  it("keeps author write hints ahead of fallback relays under tight product fanout", () => {
+    const state = settings([
+      entry("wss://commerce-a.example.com", { section: "commerce" }),
+      entry("wss://commerce-b.example.com", { section: "commerce" }),
+      entry("wss://public.example.com", { section: "public" }),
+    ])
+    const lists = new Map<string, RelayList>([
+      ["alice", relayList("alice", [], ["wss://alice-write.example.com"])],
+      ["bob", relayList("bob", [], ["wss://bob-write.example.com"])],
+    ])
+
+    const plan = planRelayReads({
+      intent: "author_products",
+      authors: ["alice", "bob"],
+      relayLists: lists,
+      settings: state,
+      maxRelays: 2,
+    })
+
+    expect(plan.relayUrls).toEqual([
+      "wss://alice-write.example.com",
+      "wss://bob-write.example.com",
+    ])
+  })
+
   it("uses recipient read relays as hints for dm_inbox", () => {
     const state = settings([entry("wss://general.example.com")])
     const lists = new Map<string, RelayList>([

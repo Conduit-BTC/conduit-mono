@@ -165,7 +165,8 @@ function MessagesPage() {
     enabled: signerConnected,
     queryFn: () => fetchBuyerConversations(pubkey!),
     refetchInterval: 30_000,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: "always",
   })
   const cachedMessagesQuery = useQuery({
     queryKey: ["buyer-messages", pubkey ?? "none"],

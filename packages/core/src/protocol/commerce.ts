@@ -330,9 +330,7 @@ async function planCommerceReadRelays(input: {
           : config.defaultRelays
     }
   })()
-  const preferFallbackFirst =
-    input.intent === "commerce_products" ||
-    (input.intent === "author_products" && (input.authors?.length ?? 0) > 1)
+  const preferFallbackFirst = input.intent === "commerce_products"
   const plannedRelayUrls = preferFallbackFirst
     ? uniqueStrings([
         ...fallbackRelayUrls,
@@ -1059,7 +1057,7 @@ function dedupeProductEvents(
         sourceRelayUrls: getEventSourceRelayUrls(event),
       }
 
-      const dedupeKey = dTag ?? parsed.id
+      const dedupeKey = addressId
       const existing = byAddress.get(dedupeKey)
       if (!existing || candidate.eventCreatedAt >= existing.eventCreatedAt) {
         byAddress.set(dedupeKey, candidate)
@@ -1173,7 +1171,10 @@ async function fetchPublicProductRecordsProgressive(
         : "commerce_products",
     authors: query.authors,
     maxRelays: query.readPolicy?.maxRelays,
-    relayHintMode: "skip",
+    relayHintMode:
+      query.authors && query.authors.length > BROAD_AUTHOR_HINT_LIMIT
+        ? "skip"
+        : "auto",
   })
   const merged = new Map<string, NDKEvent>()
   const shouldExpandRelayHints =

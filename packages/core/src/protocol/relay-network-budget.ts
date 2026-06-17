@@ -1,6 +1,7 @@
 export type RelayNetworkBudgetClass =
   | "critical_order_write"
   | "critical_order_read"
+  | "user_publish"
   | "interactive_detail"
   | "interactive_search"
   | "visible_marketplace_read"
@@ -46,6 +47,7 @@ const BUDGET_CLASS_CONFIG: Record<RelayNetworkBudgetClass, BudgetClassConfig> =
   {
     critical_order_write: { priority: 900, maxActive: 4 },
     critical_order_read: { priority: 850, maxActive: 6 },
+    user_publish: { priority: 800, maxActive: 4 },
     interactive_detail: { priority: 700, maxActive: 6 },
     interactive_search: { priority: 650, maxActive: 2 },
     visible_marketplace_read: { priority: 600, maxActive: 5 },

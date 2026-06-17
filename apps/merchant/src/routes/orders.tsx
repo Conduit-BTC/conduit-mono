@@ -532,7 +532,8 @@ function OrdersPage() {
     queryFn: () => getMerchantConversationList({ principalPubkey: pubkey! }),
     staleTime: 30_000,
     refetchInterval: 30_000,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: "always",
   })
   const cachedOrdersQuery = useQuery({
     queryKey: ["merchant-order-messages", pubkey ?? "none"],

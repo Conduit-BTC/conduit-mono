@@ -19,6 +19,7 @@ export * from "./relay-list"
 export * from "./dm-relay-list"
 export * from "./relay-health"
 export * from "./relay-capability-cache"
+export * from "./relay-frontier"
 export * from "./relay-network-budget"
 export * from "./relay-planner"
 export * from "./nip17-order-planner"
@@ -32,7 +33,10 @@ export {
   connectNdk,
   requireNdkConnected,
   fetchEventsFanout,
+  fetchEventsFanoutWithOutcomes,
   fetchEventsFanoutProgressive,
+  ndkRelayFrontierExecutor,
+  toNostrPlainEvent,
   disconnectNdk,
   refreshNdkRelaySettings,
   setSigner,
@@ -41,4 +45,7 @@ export {
   getNdkState,
   type NdkConnectionState,
   type NdkState,
+  type FetchEventsFanoutOptions,
+  type FetchEventsFanoutProgress,
+  type FetchEventsFanoutResult,
 } from "./ndk"

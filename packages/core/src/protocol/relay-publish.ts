@@ -54,11 +54,13 @@ export interface PublishWithPlannerInput {
   /** Fetch missing NIP-65 hints before planning instead of cache-only lookup. */
   refreshRelayLists?: boolean
   /**
-   * Critical writes are user-visible delivery jobs. They fan out to every
+   * Critical writes are checkout/order delivery jobs. They fan out to every
    * intended relay and include parked relays instead of silently applying the
-   * normal small-batch health/cap policy.
+   * normal small-batch health/cap policy. User publishes are explicit signed
+   * actions such as product edits; they keep standard retry behavior but are
+   * distinct from ambient/background work.
    */
-  deliveryMode?: "standard" | "critical"
+  deliveryMode?: "standard" | "user_publish" | "critical"
   /** Disable per-relay health filtering (last-resort retries). */
   skipHealthFilter?: boolean
   /** Context for non-destructive replaceable-event publishes. */

@@ -177,6 +177,27 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     expect(list?.readRelayUrls).toEqual(["wss://relay-alice.example.com"])
   })
 
+  it("preserves source relay urls from fetched relay-list events", async () => {
+    __setRelayListTestOverrides({
+      fetchEventsFanout: async () => {
+        const event = makeRelayListEvent({
+          pubkey: "alice",
+          created_at: 120,
+          tags: [["r", "wss://alice-write.example.com", "write"]],
+        }) as unknown as NDKEvent & { __conduitSourceRelayUrls?: string[] }
+        event.__conduitSourceRelayUrls = ["wss://source.example"]
+        return [event]
+      },
+    })
+
+    const list = await getRelayList("alice")
+
+    expect(list?.sourceRelayUrls).toEqual(["wss://source.example"])
+    expect(cache.get("alice")?.sourceRelayUrls).toEqual([
+      "wss://source.example",
+    ])
+  })
+
   it("returns existing cached entry when network fetch fails", async () => {
     cache.set("alice", {
       pubkey: "alice",
