@@ -1,6 +1,7 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
 import {
   __aggregateSocialCounts,
+  __resetRelayNetworkBudget,
   __socialHydratorTestHooks,
   getProductSocialSummary,
 } from "@conduit/core"
@@ -24,6 +25,18 @@ function fakeEvent(
     created_at: 1,
     tags,
   }
+}
+
+afterEach(() => {
+  __socialHydratorTestHooks.reset()
+  __resetRelayNetworkBudget()
+})
+
+let coordinateCounter = 0
+
+function uniqueCoordinate(label: string): string {
+  coordinateCounter += 1
+  return `30402:abcd:${label}-${Date.now()}-${coordinateCounter}`
 }
 
 describe("aggregateSocialCounts", () => {
@@ -66,20 +79,24 @@ describe("aggregateSocialCounts", () => {
 
 describe("getProductSocialSummary", () => {
   it("returns an empty cache-miss summary synchronously", async () => {
-    const { summary } = await getProductSocialSummary({
-      coordinate: "30402:abcd:slug",
-      authorPubkey: "abcd",
+    __socialHydratorTestHooks.setFetchEventsFanout(async () => [])
+
+    const { summary, refreshPromise } = await getProductSocialSummary({
+      coordinate: uniqueCoordinate("slug"),
     })
+
     expect(summary.source === "empty" || summary.source === "stale").toBe(true)
     expect(summary.reactionCount).toBe(0)
+    await refreshPromise
   })
 
   it("schedules background refresh work via the queue", async () => {
+    __socialHydratorTestHooks.setFetchEventsFanout(async () => [])
+
     const beforePending = __socialHydratorTestHooks.pendingCount()
-    await getProductSocialSummary(
+    const { refreshPromise } = await getProductSocialSummary(
       {
-        coordinate: "30402:abcd:another-slug",
-        authorPubkey: "abcd",
+        coordinate: uniqueCoordinate("another-slug"),
       },
       { tier: "prefetch" }
     )
@@ -89,5 +106,8 @@ describe("getProductSocialSummary", () => {
     const afterPending = __socialHydratorTestHooks.pendingCount()
     expect(afterPending).toBeGreaterThanOrEqual(0)
     expect(afterPending).toBeGreaterThanOrEqual(beforePending - 1)
+    const refreshed = await refreshPromise
+    expect(refreshed.key).toContain("30402:abcd:another-slug")
+    expect(__socialHydratorTestHooks.pendingCount()).toBe(0)
   })
 })

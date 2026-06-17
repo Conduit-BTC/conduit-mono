@@ -251,10 +251,17 @@ class HydrationQueue {
 }
 
 const queue = new HydrationQueue()
+let fetchEventsFanoutImpl: typeof fetchEventsFanout = fetchEventsFanout
 
 /** Test-only access to the queue (used by unit tests). */
 export const __socialHydratorTestHooks = {
   pendingCount: () => queue.__pendingCount(),
+  setFetchEventsFanout: (impl: typeof fetchEventsFanout) => {
+    fetchEventsFanoutImpl = impl
+  },
+  reset: () => {
+    fetchEventsFanoutImpl = fetchEventsFanout
+  },
 }
 
 // -----------------------------------------------------------------------
@@ -325,7 +332,7 @@ export async function getProductSocialSummary(
             : undefined
         if (!filter) return summary
 
-        const events = await fetchEventsFanout(filter, {
+        const events = await fetchEventsFanoutImpl(filter, {
           relayUrls,
           fetchTimeoutMs: TIER_CONFIG[tier].fetchTimeoutMs,
           budgetClass: TIER_BUDGET_CLASS[tier],
@@ -367,7 +374,7 @@ export async function getProductCommentsPreview(
         ? { "#e": [input.eventId], kinds: [1111], limit }
         : undefined
     if (!filter) return []
-    const events = await fetchEventsFanout(filter, {
+    const events = await fetchEventsFanoutImpl(filter, {
       relayUrls,
       fetchTimeoutMs: TIER_CONFIG[tier].fetchTimeoutMs,
       budgetClass: TIER_BUDGET_CLASS[tier],
@@ -402,7 +409,7 @@ export async function getProfileSocialFeed(
       kinds: [1, 6, 30023],
       limit,
     }
-    return fetchEventsFanout(filter, {
+    return fetchEventsFanoutImpl(filter, {
       relayUrls,
       fetchTimeoutMs: TIER_CONFIG[tier].fetchTimeoutMs,
       budgetClass: TIER_BUDGET_CLASS[tier],
