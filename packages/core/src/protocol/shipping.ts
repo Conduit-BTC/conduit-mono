@@ -149,7 +149,7 @@ export async function getShippingOptions(
     intent: "author_products",
     authors: [merchantPubkey],
     relayLists,
-    maxRelays: 12,
+    maxRelays: 6,
   })
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
@@ -158,6 +158,7 @@ export async function getShippingOptions(
 
   const events = (await fetchEventsFanout(filter, {
     relayUrls: readPlan.relayUrls,
+    budgetClass: "interactive_detail",
   })) as NDKEvent[]
 
   const latestByDTag = new Map<string, ParsedShippingOption>()

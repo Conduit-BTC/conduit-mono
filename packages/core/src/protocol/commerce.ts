@@ -35,6 +35,7 @@ import {
 } from "./relay-settings"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
+import type { RelayNetworkBudgetClass } from "./relay-network-budget"
 
 const PRODUCT_CACHE_TTL_MS = 24 * 60 * 60_000
 const BROAD_AUTHOR_HINT_LIMIT = 16
@@ -165,6 +166,7 @@ export interface CommerceReadPolicy {
   maxRelays?: number
   connectTimeoutMs?: number
   fetchTimeoutMs?: number
+  budgetClass?: RelayNetworkBudgetClass
 }
 
 export interface BuyerConversationSummary extends ConversationSummaryBase {
@@ -467,6 +469,8 @@ async function streamProductRecordChunks(input: {
           relayUrls: input.relayUrls,
           connectTimeoutMs: input.readPolicy?.connectTimeoutMs ?? 4_000,
           fetchTimeoutMs: input.readPolicy?.fetchTimeoutMs ?? 8_000,
+          budgetClass:
+            input.readPolicy?.budgetClass ?? "visible_marketplace_read",
         },
         ({ mergedEvents, relayUrl }) => {
           for (const event of mergedEvents) {
@@ -970,6 +974,7 @@ async function fetchDeletionTimestamps(
     relayUrls: deletionRelayUrls,
     connectTimeoutMs: options.readPolicy?.connectTimeoutMs ?? 4_000,
     fetchTimeoutMs: options.readPolicy?.fetchTimeoutMs ?? 10_000,
+    budgetClass: options.readPolicy?.budgetClass ?? "background_hydration",
   }
   for (const filter of filters) {
     const fetched = await runFetchEventsFanout(filter, fanoutOptions)
@@ -1122,6 +1127,7 @@ async function fetchPublicProductRecords(query: {
     relayUrls,
     connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
     fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 8_000,
+    budgetClass: query.readPolicy?.budgetClass ?? "visible_marketplace_read",
   })
 
   return dedupeProductEvents(events)
@@ -1253,6 +1259,7 @@ export async function getFollowPubkeys(
       relayUrls,
       connectTimeoutMs: 2_500,
       fetchTimeoutMs: 4_000,
+      budgetClass: "background_hydration",
     }
   )
 
@@ -1452,6 +1459,7 @@ export async function getMerchantStorefront(
       relayUrls,
       connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
       fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 10_000,
+      budgetClass: query.readPolicy?.budgetClass ?? "interactive_detail",
     })
 
     const deletionTimestamps = await fetchDeletionTimestamps(
@@ -1810,6 +1818,9 @@ export async function getProfiles(
         query.readPolicy?.connectTimeoutMs ?? (visible ? 1_500 : 3_000),
       fetchTimeoutMs:
         query.readPolicy?.fetchTimeoutMs ?? (visible ? 3_000 : 6_000),
+      budgetClass:
+        query.readPolicy?.budgetClass ??
+        (visible ? "visible_marketplace_read" : "background_hydration"),
     }
     const emitProgress = (events: readonly NDKEvent[]) => {
       if (!query.onProgress) return
@@ -1996,6 +2007,7 @@ async function fetchParsedOrderMessages(
       relayUrls: dmRelayUrls,
       connectTimeoutMs: 4_000,
       fetchTimeoutMs: 12_000,
+      budgetClass: "critical_order_read",
     })
 
     const newWrapped = wrapped.filter((event) => !knownWrapIds.has(event.id))

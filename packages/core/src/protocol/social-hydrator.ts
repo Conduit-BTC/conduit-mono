@@ -21,6 +21,7 @@
 import type { NDKEvent, NDKFilter } from "@nostr-dev-kit/ndk"
 import { db, type CachedProductSocialSummary } from "../db"
 import { fetchEventsFanout } from "./ndk"
+import type { RelayNetworkBudgetClass } from "./relay-network-budget"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
 
@@ -83,6 +84,14 @@ const TIER_CONFIG: Record<HydrationTier, TierConfig> = {
     freshnessMs: 15_000,
     fetchTimeoutMs: 8_000,
   },
+}
+
+const TIER_BUDGET_CLASS: Record<HydrationTier, RelayNetworkBudgetClass> = {
+  immediate: "interactive_detail",
+  viewport: "visible_marketplace_read",
+  prefetch: "prefetch",
+  expanded: "interactive_detail",
+  detail: "interactive_detail",
 }
 
 /**
@@ -319,6 +328,7 @@ export async function getProductSocialSummary(
         const events = await fetchEventsFanout(filter, {
           relayUrls,
           fetchTimeoutMs: TIER_CONFIG[tier].fetchTimeoutMs,
+          budgetClass: TIER_BUDGET_CLASS[tier],
         })
 
         const counts = aggregateSocialCounts(events)
@@ -360,6 +370,7 @@ export async function getProductCommentsPreview(
     const events = await fetchEventsFanout(filter, {
       relayUrls,
       fetchTimeoutMs: TIER_CONFIG[tier].fetchTimeoutMs,
+      budgetClass: TIER_BUDGET_CLASS[tier],
     })
     return events
       .map((event) => ({
@@ -394,6 +405,7 @@ export async function getProfileSocialFeed(
     return fetchEventsFanout(filter, {
       relayUrls,
       fetchTimeoutMs: TIER_CONFIG[tier].fetchTimeoutMs,
+      budgetClass: TIER_BUDGET_CLASS[tier],
     })
   })
 }

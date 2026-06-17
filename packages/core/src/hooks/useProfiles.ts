@@ -64,12 +64,14 @@ function defaultReadPolicy(
   priority: ProfilePriority,
   readPolicy: CommerceReadPolicy | undefined
 ): CommerceReadPolicy {
+  const visible = priority === "visible"
   return {
-    maxRelays: readPolicy?.maxRelays ?? 32,
-    connectTimeoutMs:
-      readPolicy?.connectTimeoutMs ?? (priority === "visible" ? 1_500 : 2_000),
-    fetchTimeoutMs:
-      readPolicy?.fetchTimeoutMs ?? (priority === "visible" ? 6_000 : 8_000),
+    maxRelays: readPolicy?.maxRelays ?? (visible ? 8 : 4),
+    connectTimeoutMs: readPolicy?.connectTimeoutMs ?? (visible ? 1_500 : 2_000),
+    fetchTimeoutMs: readPolicy?.fetchTimeoutMs ?? (visible ? 6_000 : 8_000),
+    budgetClass:
+      readPolicy?.budgetClass ??
+      (visible ? "visible_marketplace_read" : "background_hydration"),
   }
 }
 

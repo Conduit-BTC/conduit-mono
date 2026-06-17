@@ -102,9 +102,10 @@ export function useMerchantReadiness() {
     staleTime: PROFILE_READINESS_POLL_MS,
     refetchUnresolvedMs: PROFILE_READINESS_POLL_MS,
     readPolicy: {
-      maxRelays: 16,
+      maxRelays: 4,
       connectTimeoutMs: 2_000,
       fetchTimeoutMs: 8_000,
+      budgetClass: "background_hydration",
     },
   })
   const profile = profileQuery.data

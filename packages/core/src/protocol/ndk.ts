@@ -14,6 +14,10 @@ import {
   recordRelayFailure,
   recordRelaySuccess,
 } from "./relay-health"
+import {
+  runWithRelayNetworkBudget,
+  type RelayNetworkBudgetClass,
+} from "./relay-network-budget"
 
 export type NdkConnectionState = "idle" | "connecting" | "connected" | "error"
 
@@ -28,6 +32,8 @@ export interface FetchEventsFanoutOptions {
   connectTimeoutMs?: number
   fetchTimeoutMs?: number
   skipHealthFilter?: boolean
+  budgetClass?: RelayNetworkBudgetClass
+  signal?: AbortSignal
 }
 
 export interface FetchEventsFanoutProgress {
@@ -221,7 +227,20 @@ export async function fetchEventsFanout(
 
   const perRelayResults = await Promise.all(
     relayUrls.map((relayUrl) =>
-      fetchEventsFromRelay(relayUrl, filter, connectTimeoutMs, fetchTimeoutMs)
+      runWithRelayNetworkBudget(
+        () =>
+          fetchEventsFromRelay(
+            relayUrl,
+            filter,
+            connectTimeoutMs,
+            fetchTimeoutMs
+          ),
+        {
+          budgetClass: options.budgetClass,
+          relayUrl,
+          signal: options.signal,
+        }
+      )
     )
   )
 
@@ -247,11 +266,19 @@ export async function fetchEventsFanoutProgressive(
 
   await Promise.all(
     relayUrls.map(async (relayUrl) => {
-      const events = await fetchEventsFromRelay(
-        relayUrl,
-        filter,
-        connectTimeoutMs,
-        fetchTimeoutMs
+      const events = await runWithRelayNetworkBudget(
+        () =>
+          fetchEventsFromRelay(
+            relayUrl,
+            filter,
+            connectTimeoutMs,
+            fetchTimeoutMs
+          ),
+        {
+          budgetClass: options.budgetClass,
+          relayUrl,
+          signal: options.signal,
+        }
       )
       mergeEventsInto(merged, events)
       await onProgress({

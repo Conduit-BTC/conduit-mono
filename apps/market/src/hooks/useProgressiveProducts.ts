@@ -28,19 +28,22 @@ import {
 import { getDefaultMarketPerspectiveFollowPubkeys } from "../lib/defaultMarketPerspective"
 
 const PERSPECTIVE_STREAM_READ_POLICY: CommerceReadPolicy = {
-  maxRelays: 32,
+  maxRelays: 8,
   connectTimeoutMs: 1_200,
   fetchTimeoutMs: 2_500,
+  budgetClass: "visible_marketplace_read",
 }
 const CATALOG_COMPLETION_READ_POLICY: CommerceReadPolicy = {
-  maxRelays: 32,
+  maxRelays: 12,
   connectTimeoutMs: 4_000,
   fetchTimeoutMs: 8_000,
+  budgetClass: "background_hydration",
 }
 const STOREFRONT_DELETION_READ_POLICY: CommerceReadPolicy = {
-  maxRelays: 8,
+  maxRelays: 4,
   connectTimeoutMs: 800,
   fetchTimeoutMs: 1_200,
+  budgetClass: "background_hydration",
 }
 const FOLLOW_CACHE_PREFIX = "conduit.market.perspectiveFollows.v1:"
 
