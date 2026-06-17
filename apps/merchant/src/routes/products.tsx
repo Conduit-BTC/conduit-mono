@@ -984,12 +984,20 @@ function ProductsPage() {
               <Label htmlFor="product-tags">Tags</Label>
               <Input
                 id="product-tags"
+                aria-describedby="product-tags-help"
                 value={form.tags}
                 onChange={(event) =>
                   setForm((prev) => ({ ...prev, tags: event.target.value }))
                 }
                 placeholder="gear, hardware, demo"
               />
+              <div
+                id="product-tags-help"
+                className="text-xs leading-5 text-[var(--text-muted)]"
+              >
+                Separate tags with commas. Tags are custom and help buyers
+                filter listings.
+              </div>
             </div>
 
             <SignedActionStatus
