@@ -13,6 +13,7 @@ import {
   getMarketplaceProductsProgressive,
   getMerchantStorefront,
   getProductDetail,
+  mergeRelayHintsByPubkey,
   normalizePubkey,
   type Product,
 } from "@conduit/core"
@@ -114,24 +115,19 @@ function toProducts(
 function mergeProfileRelayHints(
   ...results: Array<CommerceResult<CommerceProductRecord[]> | undefined>
 ): Record<string, string[]> {
-  const byPubkey = new Map<string, Set<string>>()
-  for (const result of results) {
+  const maps = results.map((result) => {
+    const byPubkey: Record<string, string[]> = {}
     for (const record of result?.data ?? []) {
       if (!record.sourceRelayUrls?.length) continue
-      const current = byPubkey.get(record.product.pubkey) ?? new Set<string>()
-      for (const relayUrl of record.sourceRelayUrls) {
-        current.add(relayUrl)
-      }
-      byPubkey.set(record.product.pubkey, current)
+      byPubkey[record.product.pubkey] = [
+        ...(byPubkey[record.product.pubkey] ?? []),
+        ...record.sourceRelayUrls,
+      ]
     }
-  }
+    return byPubkey
+  })
 
-  return Object.fromEntries(
-    Array.from(byPubkey.entries()).map(([pubkey, relayUrls]) => [
-      pubkey,
-      Array.from(relayUrls),
-    ])
-  )
+  return mergeRelayHintsByPubkey(...maps)
 }
 
 function dedupeProducts(products: Product[]): Product[] {

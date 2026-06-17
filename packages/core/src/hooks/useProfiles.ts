@@ -19,6 +19,7 @@ type ProfilePriority = "visible" | "background"
 
 export interface UseProfilesOptions {
   enabled?: boolean
+  maxUnresolvedRefetches?: number
   priority?: ProfilePriority
   readPolicy?: CommerceReadPolicy
   relayHintsByPubkey?: Record<string, string[] | undefined>
@@ -34,6 +35,8 @@ export interface UseProfilesResult {
   isLoading: boolean
   isFetching: boolean
   isHydrating: boolean
+  lookupSettled: boolean
+  unresolvedRefetchLimitReached: boolean
   error: unknown
   refetch: UseQueryResult<ProfileMap>["refetch"]
   getProfile: (pubkey: string) => Profile | undefined
@@ -102,6 +105,7 @@ export function useProfiles(
     [options.relayHintsByPubkey]
   )
   const [resolvedProfiles, setResolvedProfiles] = useState<ProfileMap>({})
+  const [unresolvedRefetchCount, setUnresolvedRefetchCount] = useState(0)
   const enabled = (options.enabled ?? true) && unique.length > 0
   const cacheResolvedProfiles = useCallback(
     (profiles: ProfileMap | undefined) => {
@@ -126,6 +130,10 @@ export function useProfiles(
     },
     [queryClient]
   )
+
+  useEffect(() => {
+    setUnresolvedRefetchCount(0)
+  }, [options.skipCache, priority, pubkeyKey, relayHintKey])
 
   useEffect(() => {
     const cached = Object.fromEntries(
@@ -158,7 +166,7 @@ export function useProfiles(
     staleTime: options.staleTime ?? PROFILE_STALE_TIME_MS,
     retry: 2,
     refetchOnWindowFocus: true,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
     refetchInterval: (state) => {
       const data = state.state.data
       if (!data) return false
@@ -166,6 +174,12 @@ export function useProfiles(
         (pubkey) => !hasProfileContent(data[pubkey])
       )
       if (!hasUnresolved) return false
+      if (
+        options.maxUnresolvedRefetches !== undefined &&
+        unresolvedRefetchCount >= options.maxUnresolvedRefetches
+      ) {
+        return false
+      }
       return (
         options.refetchUnresolvedMs ?? (priority === "visible" ? 5_000 : 12_000)
       )
@@ -188,6 +202,29 @@ export function useProfiles(
     () => unique.filter((pubkey) => !hasProfileContent(profiles[pubkey])),
     [profiles, unique]
   )
+  const unresolvedRefetchLimitReached =
+    options.maxUnresolvedRefetches !== undefined &&
+    unresolvedRefetchCount >= options.maxUnresolvedRefetches
+
+  useEffect(() => {
+    if (!query.data || query.isFetching) return
+    const hasUnresolved = unique.some(
+      (pubkey) => !hasProfileContent(query.data?.[pubkey])
+    )
+    if (!hasUnresolved) {
+      setUnresolvedRefetchCount(0)
+      return
+    }
+    setUnresolvedRefetchCount((current) => current + 1)
+  }, [query.data, query.dataUpdatedAt, query.isFetching, unique])
+
+  const lookupSettled =
+    !enabled ||
+    (!query.isLoading &&
+      !query.isFetching &&
+      (unresolvedPubkeys.length === 0 ||
+        unresolvedRefetchLimitReached ||
+        !!query.error))
 
   return {
     data: profiles,
@@ -195,7 +232,11 @@ export function useProfiles(
     unresolvedPubkeys,
     isLoading: query.isLoading,
     isFetching: query.isFetching,
-    isHydrating: query.isFetching || unresolvedPubkeys.length > 0,
+    isHydrating:
+      query.isFetching ||
+      (unresolvedPubkeys.length > 0 && !unresolvedRefetchLimitReached),
+    lookupSettled,
+    unresolvedRefetchLimitReached,
     error: query.error,
     refetch: query.refetch,
     getProfile: (pubkey) => profiles[pubkey],

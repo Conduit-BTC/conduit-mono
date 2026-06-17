@@ -2,6 +2,7 @@ import { useCallback, useMemo } from "react"
 import { mergeRicherProfiles, useProfiles } from "@conduit/core"
 import {
   getMerchantIdentityFromMap,
+  splitMerchantHydrationTargets,
   type MerchantIdentityView,
 } from "../lib/marketBrowseModel"
 
@@ -21,27 +22,64 @@ export function useMerchantIdentities({
   visibleMerchantPubkeys,
   relayHintsByPubkey,
 }: UseMerchantIdentitiesInput): UseMerchantIdentitiesResult {
-  const visibleMerchantProfiles = useProfiles(visibleMerchantPubkeys, {
-    priority: "visible",
-    relayHintsByPubkey,
-    refetchUnresolvedMs: 5_000,
-  })
-  const visibleMerchantPubkeySet = useMemo(
-    () => new Set(visibleMerchantPubkeys),
-    [visibleMerchantPubkeys]
-  )
-  const backgroundMerchantPubkeys = useMemo(
+  const merchantHydrationTargets = useMemo(
     () =>
-      allMerchantPubkeys.filter(
-        (pubkey) => !visibleMerchantPubkeySet.has(pubkey)
-      ),
-    [allMerchantPubkeys, visibleMerchantPubkeySet]
+      splitMerchantHydrationTargets({
+        allMerchantPubkeys,
+        visibleMerchantPubkeys,
+      }),
+    [allMerchantPubkeys, visibleMerchantPubkeys]
   )
-  const backgroundMerchantProfiles = useProfiles(backgroundMerchantPubkeys, {
-    priority: "background",
-    relayHintsByPubkey,
-    refetchUnresolvedMs: 12_000,
-  })
+  const visibleMerchantProfiles = useProfiles(
+    merchantHydrationTargets.visibleMerchantPubkeys,
+    {
+      priority: "visible",
+      relayHintsByPubkey,
+      refetchUnresolvedMs: 5_000,
+      maxUnresolvedRefetches: 2,
+    }
+  )
+  const backgroundMerchantProfiles = useProfiles(
+    merchantHydrationTargets.backgroundMerchantPubkeys,
+    {
+      priority: "background",
+      relayHintsByPubkey,
+      refetchUnresolvedMs: 12_000,
+      maxUnresolvedRefetches: 1,
+    }
+  )
+  const visibleLookupSettledByPubkey = useMemo(
+    () =>
+      Object.fromEntries(
+        merchantHydrationTargets.visibleMerchantPubkeys.map((pubkey) => [
+          pubkey,
+          visibleMerchantProfiles.hasProfile(pubkey) ||
+            visibleMerchantProfiles.lookupSettled,
+        ])
+      ),
+    [merchantHydrationTargets.visibleMerchantPubkeys, visibleMerchantProfiles]
+  )
+  const backgroundLookupSettledByPubkey = useMemo(
+    () =>
+      Object.fromEntries(
+        merchantHydrationTargets.backgroundMerchantPubkeys.map((pubkey) => [
+          pubkey,
+          backgroundMerchantProfiles.hasProfile(pubkey) ||
+            backgroundMerchantProfiles.lookupSettled,
+        ])
+      ),
+    [
+      backgroundMerchantProfiles,
+      merchantHydrationTargets.backgroundMerchantPubkeys,
+    ]
+  )
+  const lookupSettledByPubkey = useMemo(
+    () => ({
+      ...backgroundLookupSettledByPubkey,
+      ...visibleLookupSettledByPubkey,
+    }),
+    [backgroundLookupSettledByPubkey, visibleLookupSettledByPubkey]
+  )
   const merchantProfiles = useMemo(
     () =>
       mergeRicherProfiles(
@@ -58,17 +96,33 @@ export function useMerchantIdentities({
           getMerchantIdentityFromMap(
             pubkey,
             merchantProfiles,
-            relayHintsByPubkey
+            relayHintsByPubkey,
+            lookupSettledByPubkey
           ),
         ])
       ),
-    [allMerchantPubkeys, merchantProfiles, relayHintsByPubkey]
+    [
+      allMerchantPubkeys,
+      lookupSettledByPubkey,
+      merchantProfiles,
+      relayHintsByPubkey,
+    ]
   )
   const getIdentity = useCallback(
     (pubkey: string) =>
       identitiesByPubkey[pubkey] ??
-      getMerchantIdentityFromMap(pubkey, merchantProfiles, relayHintsByPubkey),
-    [identitiesByPubkey, merchantProfiles, relayHintsByPubkey]
+      getMerchantIdentityFromMap(
+        pubkey,
+        merchantProfiles,
+        relayHintsByPubkey,
+        lookupSettledByPubkey
+      ),
+    [
+      identitiesByPubkey,
+      lookupSettledByPubkey,
+      merchantProfiles,
+      relayHintsByPubkey,
+    ]
   )
 
   return {

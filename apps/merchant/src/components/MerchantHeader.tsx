@@ -278,7 +278,7 @@ function UserMenu({ className }: { className?: string } = {}) {
   if (!pubkey || status !== "connected") return null
 
   const displayName = getProfileDisplayLabel(profile, pubkey, {
-    lookupSettled: !profileQuery.isPlaceholderData,
+    lookupSettled: profileQuery.lookupSettled,
     pendingLabel: "Loading profile",
     chars: 6,
   })

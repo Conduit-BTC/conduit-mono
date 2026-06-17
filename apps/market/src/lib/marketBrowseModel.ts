@@ -24,7 +24,7 @@ export interface MarketBrowseSearch {
 export interface MerchantIdentityView {
   pubkey: string
   displayName: string
-  status: "resolved" | "pending"
+  status: "resolved" | "pending" | "fallback"
   relayHints: string[]
 }
 
@@ -44,14 +44,20 @@ export function getPendingMerchantName(pubkey: string): string {
 export function getMerchantIdentityView(
   pubkey: string,
   profile: Profile | undefined,
-  relayHints: readonly string[] | undefined
+  relayHints: readonly string[] | undefined,
+  options: { lookupSettled?: boolean } = {}
 ): MerchantIdentityView {
   const profileName = getProfileName(profile)
+  const fallbackName = getPendingMerchantName(pubkey)
 
   return {
     pubkey,
-    displayName: profileName ?? getPendingMerchantName(pubkey),
-    status: profileName ? "resolved" : "pending",
+    displayName: profileName ?? fallbackName,
+    status: profileName
+      ? "resolved"
+      : options.lookupSettled
+        ? "fallback"
+        : "pending",
     relayHints: [...(relayHints ?? [])],
   }
 }
@@ -59,13 +65,37 @@ export function getMerchantIdentityView(
 export function getMerchantIdentityFromMap(
   pubkey: string,
   profiles: Record<string, Profile | undefined>,
-  relayHintsByPubkey: Record<string, string[] | undefined>
+  relayHintsByPubkey: Record<string, string[] | undefined>,
+  lookupSettledByPubkey: Record<string, boolean | undefined> = {}
 ): MerchantIdentityView {
   return getMerchantIdentityView(
     pubkey,
     profiles[pubkey],
-    relayHintsByPubkey[pubkey]
+    relayHintsByPubkey[pubkey],
+    { lookupSettled: lookupSettledByPubkey[pubkey] }
   )
+}
+
+export function splitMerchantHydrationTargets({
+  allMerchantPubkeys,
+  visibleMerchantPubkeys,
+}: {
+  allMerchantPubkeys: readonly string[]
+  visibleMerchantPubkeys: readonly string[]
+}): {
+  visibleMerchantPubkeys: string[]
+  backgroundMerchantPubkeys: string[]
+} {
+  const visible = Array.from(new Set(visibleMerchantPubkeys))
+  const visibleSet = new Set(visible)
+  const background = Array.from(
+    new Set(allMerchantPubkeys.filter((pubkey) => !visibleSet.has(pubkey)))
+  )
+
+  return {
+    visibleMerchantPubkeys: visible,
+    backgroundMerchantPubkeys: background,
+  }
 }
 
 export function sortBrowseProducts(

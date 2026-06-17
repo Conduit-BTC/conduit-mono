@@ -1,14 +1,17 @@
+import { nip19 } from "@nostr-dev-kit/ndk"
 import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
   getCachedProductDetail,
   getMarketplaceProducts,
+  getProductDetail,
 } from "./commerce"
 import { toNostrPlainEvent } from "./ndk"
 import {
   createRelayFrontierReadOutcome,
   type NostrPlainEvent,
 } from "./relay-frontier"
+import { mergeRelayHintsByPubkey, normalizeRelayHints } from "./relay-hints"
 import {
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
@@ -95,6 +98,40 @@ function relayList(pubkey: string, writeRelayUrls: string[]): RelayList {
 }
 
 describe("commerce product hydration", () => {
+  test("normalizes, dedupes, and caps source relay hints", () => {
+    expect(
+      normalizeRelayHints([
+        "Relay.Example.com/",
+        "https://relay.example.com",
+        "not a relay",
+        "wss://second.example",
+        "wss://third.example",
+        "wss://fourth.example",
+        "wss://fifth.example",
+        "wss://sixth.example",
+      ])
+    ).toEqual([
+      "wss://relay.example.com",
+      "wss://second.example",
+      "wss://third.example",
+      "wss://fourth.example",
+      "wss://fifth.example",
+    ])
+
+    expect(
+      mergeRelayHintsByPubkey(
+        { merchant: ["wss://one.example", "wss://two.example"] },
+        { merchant: ["wss://two.example", "https://three.example"] }
+      )
+    ).toEqual({
+      merchant: [
+        "wss://one.example",
+        "wss://two.example",
+        "wss://three.example",
+      ],
+    })
+  })
+
   test("keeps products from different merchants when d tags collide", async () => {
     const events = [
       productEvent({
@@ -201,6 +238,98 @@ describe("commerce product hydration", () => {
       "wss://alice-write.example",
       "wss://bob-write.example",
     ])
+  })
+
+  test("uses naddr relay hints before default relays for exact product detail", async () => {
+    const merchantPubkey = "a".repeat(64)
+    const dTag = "source-hinted"
+    const event = productEvent({
+      id: "event-source-hinted",
+      pubkey: merchantPubkey,
+      dTag,
+      title: "Source Hinted Product",
+      createdAt: 100,
+    })
+    const naddr = nip19.naddrEncode({
+      kind: PRODUCT_KIND,
+      pubkey: merchantPubkey,
+      identifier: dTag,
+      relays: ["relay-hint.example"],
+    })
+    let seenRelayUrls: string[] | undefined
+    let seenSourceBuckets: Record<string, string> | undefined
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (_filter, options) => {
+        seenRelayUrls = options?.relayUrls
+        seenSourceBuckets = options?.sourceBucketsByRelayUrl
+        return [event] as never
+      },
+      getCachedProducts: async () => [],
+      putCachedProducts: async () => undefined,
+      now: () => 1_000_000,
+    })
+
+    const result = await getProductDetail({ productId: naddr })
+
+    expect(seenRelayUrls?.[0]).toBe("wss://relay-hint.example")
+    expect(seenSourceBuckets).toEqual({
+      "wss://relay-hint.example": "source_hint",
+    })
+    expect(result.data?.addressId).toBe(
+      `${PRODUCT_KIND}:${merchantPubkey}:${dTag}`
+    )
+  })
+
+  test("uses cached product source relays before default relays for exact product detail", async () => {
+    const merchantPubkey = "merchant-with-cache"
+    const dTag = "cached-source"
+    const addressId = `${PRODUCT_KIND}:${merchantPubkey}:${dTag}`
+    const event = productEvent({
+      id: "event-cached-source",
+      pubkey: merchantPubkey,
+      dTag,
+      title: "Cached Source Product",
+      createdAt: 100,
+    })
+    let seenRelayUrls: string[] | undefined
+    let seenSourceBuckets: Record<string, string> | undefined
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (_filter, options) => {
+        seenRelayUrls = options?.relayUrls
+        seenSourceBuckets = options?.sourceBucketsByRelayUrl
+        return [event] as never
+      },
+      getCachedProducts: async (pubkey) =>
+        pubkey === merchantPubkey
+          ? [
+              {
+                id: addressId,
+                pubkey: merchantPubkey,
+                title: "Cached Product",
+                price: 10,
+                currency: "USD",
+                images: [{ url: "https://cdn.example.com/cached.jpg" }],
+                tags: [],
+                cachedAt: 1_000_000,
+                createdAt: 1_000_000,
+                updatedAt: 1_000_000,
+                sourceRelayUrls: ["cached-source.example"],
+              },
+            ]
+          : [],
+      putCachedProducts: async () => undefined,
+      now: () => 1_000_000,
+    })
+
+    const result = await getProductDetail({ productId: addressId })
+
+    expect(seenRelayUrls?.[0]).toBe("wss://cached-source.example")
+    expect(seenSourceBuckets).toEqual({
+      "wss://cached-source.example": "source_hint",
+    })
+    expect(result.data?.addressId).toBe(addressId)
   })
 })
 

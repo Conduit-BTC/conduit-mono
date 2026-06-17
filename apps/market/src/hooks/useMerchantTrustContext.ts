@@ -47,6 +47,7 @@ export function useMerchantTrustContext({
   const profileQuery = useProfile(merchantPubkey ?? null, {
     relayHints: profileRelayHints,
     refetchUnresolvedMs: 2_000,
+    maxUnresolvedRefetches: 2,
   })
   const profile = profileQuery.data
 
@@ -89,13 +90,16 @@ export function useMerchantTrustContext({
 
   const merchantName = merchantPubkey
     ? getProfileDisplayLabel(profile, merchantPubkey, {
-        lookupSettled: !profileQuery.isPlaceholderData,
+        lookupSettled: profileQuery.lookupSettled,
         pendingLabel: `Store ${formatNpub(merchantPubkey, 8)}`,
         emptyPrefix: "Store",
         chars: 8,
       })
     : "this merchant"
-  const merchantNamePending = !!merchantPubkey && profileQuery.isPlaceholderData
+  const merchantNamePending =
+    !!merchantPubkey &&
+    profileQuery.isPlaceholderData &&
+    !profileQuery.lookupSettled
 
   const fallbackSocial = useMemo(
     () =>

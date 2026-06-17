@@ -39,6 +39,7 @@ import {
   ORDER_MESSAGE_READ_FANOUT,
   planNip17OrderMessageReads,
 } from "./nip17-order-planner"
+import { mergeRelayHints, normalizeRelayHints } from "./relay-hints"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
 import type { RelayNetworkBudgetClass } from "./relay-network-budget"
 
@@ -661,6 +662,21 @@ async function loadProductSourceRelayHints(
   return uniqueStrings(rows.flatMap((row) => row.sourceRelayUrls ?? []))
 }
 
+async function loadProductAddressSourceRelayHints({
+  addressId,
+  merchantPubkey,
+}: {
+  addressId: string
+  merchantPubkey: string
+}): Promise<string[]> {
+  const rows = await loadCachedProducts(merchantPubkey)
+  return normalizeRelayHints(
+    rows
+      .filter((row) => row.id === addressId)
+      .flatMap((row) => row.sourceRelayUrls ?? [])
+  )
+}
+
 function getProfileQueryRelayHints(query: ProfileBatchQuery): string[] {
   if (!query.relayHintsByPubkey) return []
   return uniqueStrings(
@@ -1105,6 +1121,7 @@ async function fetchPublicProductRecords(query: {
   authors?: string[]
   ids?: string[]
   dTags?: string[]
+  sourceRelayHints?: string[]
   limit?: number
   readPolicy?: CommerceReadPolicy
 }): Promise<CommerceProductRecord[]> {
@@ -1117,17 +1134,22 @@ async function fetchPublicProductRecords(query: {
   if (query.ids) filter.ids = query.ids
   if (query.dTags) filter["#d"] = query.dTags
 
+  const sourceRelayHints = normalizeRelayHints(query.sourceRelayHints ?? [])
   const relayUrls = await planCommerceReadRelays({
     intent:
       query.authors && query.authors.length > 0
         ? "author_products"
         : "commerce_products",
     authors: query.authors,
+    extraRelayUrls: sourceRelayHints,
     maxRelays: query.readPolicy?.maxRelays,
   })
 
   const events = await runFetchEventsFanout(filter, {
     relayUrls,
+    sourceBucketsByRelayUrl: Object.fromEntries(
+      sourceRelayHints.map((relayUrl) => [relayUrl, "source_hint"])
+    ),
     connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
     fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 8_000,
     budgetClass: query.readPolicy?.budgetClass ?? "visible_marketplace_read",
@@ -1586,28 +1608,41 @@ export async function getCachedMerchantStorefront(
   }
 }
 
-function parseAddress(
-  productId: string
-): { kind: number; pubkey: string; d: string } | null {
+function parseAddress(productId: string): {
+  kind: number
+  pubkey: string
+  d: string
+  relayHints: string[]
+} | null {
   const decoded = decodeURIComponent(productId)
   if (/^naddr1/i.test(decoded)) {
     try {
       const result = nip19.decode(decoded)
+      const naddrData = result.data as {
+        kind?: unknown
+        pubkey?: unknown
+        identifier?: unknown
+        relays?: unknown
+      }
       if (
         result.type === "naddr" &&
-        result.data &&
-        typeof result.data === "object" &&
-        "kind" in result.data &&
-        "pubkey" in result.data &&
-        "identifier" in result.data &&
-        typeof result.data.kind === "number" &&
-        typeof result.data.pubkey === "string" &&
-        typeof result.data.identifier === "string"
+        naddrData &&
+        typeof naddrData === "object" &&
+        typeof naddrData.kind === "number" &&
+        typeof naddrData.pubkey === "string" &&
+        typeof naddrData.identifier === "string"
       ) {
         return {
-          kind: result.data.kind,
-          pubkey: result.data.pubkey,
-          d: result.data.identifier,
+          kind: naddrData.kind,
+          pubkey: naddrData.pubkey,
+          d: naddrData.identifier,
+          relayHints: normalizeRelayHints(
+            Array.isArray(naddrData.relays)
+              ? naddrData.relays.filter(
+                  (relayUrl): relayUrl is string => typeof relayUrl === "string"
+                )
+              : []
+          ),
         }
       }
     } catch {
@@ -1618,13 +1653,18 @@ function parseAddress(
   const d = dParts.join(":")
   const kind = Number(kindStr)
   if (!Number.isFinite(kind) || !pubkey || !d) return null
-  return { kind, pubkey, d }
+  return { kind, pubkey, d, relayHints: [] }
 }
 
 function getProductLookupIds(productId: string): {
   decodedId: string
   addressId: string | null
-  address: { kind: number; pubkey: string; d: string } | null
+  address: {
+    kind: number
+    pubkey: string
+    d: string
+    relayHints: string[]
+  } | null
 } {
   const decodedId = decodeURIComponent(productId)
   const address = parseAddress(productId)
@@ -1641,9 +1681,17 @@ export async function getProductDetail(
 
   try {
     if (address && addressId && address.kind === EVENT_KINDS.PRODUCT) {
+      const sourceRelayHints = mergeRelayHints(
+        address.relayHints,
+        await loadProductAddressSourceRelayHints({
+          addressId,
+          merchantPubkey: address.pubkey,
+        })
+      )
       const direct = await fetchPublicProductRecords({
         authors: [address.pubkey],
         dTags: [address.d],
+        sourceRelayHints,
         limit: 10,
       })
       const record = direct.find((item) => item.addressId === addressId) ?? null

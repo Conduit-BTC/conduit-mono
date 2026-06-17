@@ -6,6 +6,7 @@ import {
 } from "../apps/market/src/lib/facets"
 import {
   getMerchantIdentityView,
+  splitMerchantHydrationTargets,
   sortStoreFacetOptionsByRecentPublisher,
 } from "../apps/market/src/lib/marketBrowseModel"
 
@@ -92,6 +93,19 @@ describe("market browse model helpers", () => {
     expect(pending.relayHints).toEqual(["wss://relay.example"])
   })
 
+  it("treats settled empty profile lookup as a fallback identity", () => {
+    const fallback = getMerchantIdentityView(
+      "merchant-a",
+      undefined,
+      ["wss://relay.example"],
+      { lookupSettled: true }
+    )
+
+    expect(fallback.displayName).toBe("Store merchant-a")
+    expect(fallback.status).toBe("fallback")
+    expect(fallback.relayHints).toEqual(["wss://relay.example"])
+  })
+
   it("treats profile names as resolved merchant identity", () => {
     const profile: Profile = {
       pubkey: "merchant-a",
@@ -102,5 +116,17 @@ describe("market browse model helpers", () => {
     expect(resolved.displayName).toBe("Alice Market")
     expect(resolved.status).toBe("resolved")
     expect(resolved.relayHints).toEqual([])
+  })
+
+  it("splits visible and background merchant hydration targets", () => {
+    expect(
+      splitMerchantHydrationTargets({
+        allMerchantPubkeys: ["merchant-a", "merchant-b", "merchant-a"],
+        visibleMerchantPubkeys: ["merchant-b", "merchant-b"],
+      })
+    ).toEqual({
+      visibleMerchantPubkeys: ["merchant-b"],
+      backgroundMerchantPubkeys: ["merchant-a"],
+    })
   })
 })

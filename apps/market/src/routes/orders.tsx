@@ -57,7 +57,9 @@ function OrderListItem({
   active: boolean
   onClick: () => void
 }) {
-  const { data: profile } = useProfile(conversation.merchantPubkey)
+  const { data: profile } = useProfile(conversation.merchantPubkey, {
+    maxUnresolvedRefetches: 1,
+  })
   const merchantName = getMerchantDisplayName(
     profile,
     conversation.merchantPubkey
@@ -126,7 +128,9 @@ function OrderListItem({
 }
 
 function OrderHero({ conversation }: { conversation: BuyerConversation }) {
-  const { data: profile } = useProfile(conversation.merchantPubkey)
+  const { data: profile } = useProfile(conversation.merchantPubkey, {
+    maxUnresolvedRefetches: 1,
+  })
   const btcUsdRateQuery = useBtcUsdRate()
   const merchantName = getMerchantDisplayName(
     profile,
@@ -354,6 +358,7 @@ function OrdersPage() {
     enabled: signerConnected && merchantPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
+    maxUnresolvedRefetches: 1,
   })
 
   const filteredConversations = useMemo(() => {
