@@ -1071,6 +1071,7 @@ function CheckoutPage() {
       intent: "recipient_event",
       authorPubkey: buyerPubkey,
       recipientPubkeys: [merchantPubkey],
+      recipientRelayPolicy: "nip17_order",
       refreshRelayLists: true,
       deliveryMode: "critical",
     })
@@ -1081,6 +1082,7 @@ function CheckoutPage() {
         intent: "recipient_event",
         authorPubkey: buyerPubkey,
         recipientPubkeys: [buyerPubkey],
+        recipientRelayPolicy: "nip17_order",
         refreshRelayLists: true,
         deliveryMode: "critical",
       })

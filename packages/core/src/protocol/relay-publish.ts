@@ -13,13 +13,15 @@ import {
   type NDKRelay,
 } from "@nostr-dev-kit/ndk"
 import { getNdk } from "./ndk"
-import { getRelayLists } from "./relay-list"
+import { getRelayLists, type RelayList } from "./relay-list"
+import { getDmRelayLists } from "./dm-relay-list"
 import { recordRelayFailure, recordRelaySuccess } from "./relay-health"
 import {
   planRelayWrites,
   type RelayWriteIntent,
   type RelayWritePlan,
 } from "./relay-planner"
+import { planNip17OrderMessageDelivery } from "./nip17-order-planner"
 import {
   recordRelayCapabilityWriteFailure,
   recordRelayCapabilityWriteSuccess,
@@ -43,6 +45,12 @@ export interface PublishWithPlannerInput {
   intent: RelayWriteIntent
   authorPubkey?: string
   recipientPubkeys?: readonly string[]
+  /**
+   * Recipient relay semantics. Generic recipient events keep the legacy NIP-65
+   * hint path; order messages use NIP-17 kind:10050 inboxes first and bounded
+   * commerce DM fallback relays second.
+   */
+  recipientRelayPolicy?: "nip65" | "nip17_order"
   /** Fetch missing NIP-65 hints before planning instead of cache-only lookup. */
   refreshRelayLists?: boolean
   /**
@@ -220,6 +228,23 @@ function mergePublishResults(
     failedRelayUrls: Array.from(failed),
     relayFailureMessages,
   }
+}
+
+function getDmRelayListDiscoveryRelayUrls(input: {
+  relayLists?: ReadonlyMap<string, RelayList>
+  recipientPubkeys?: readonly string[]
+}): string[] {
+  const urls: string[] = []
+  for (const pubkey of input.recipientPubkeys ?? []) {
+    const list = input.relayLists?.get(pubkey)
+    if (!list) continue
+    urls.push(...list.readRelayUrls, ...list.writeRelayUrls)
+  }
+  urls.push(
+    ...config.corePublicFallbackRelayUrls,
+    ...config.appBackplaneRelayUrls
+  )
+  return Array.from(new Set(urls))
 }
 
 function getAuthorEventFallbackRelayUrls(input: {
@@ -442,6 +467,32 @@ export async function planPublishRelays(
         })
       : undefined
 
+  if (
+    input.intent === "recipient_event" &&
+    input.recipientRelayPolicy === "nip17_order"
+  ) {
+    const recipientPubkeys = input.recipientPubkeys ?? []
+    const dmRelayLists =
+      recipientPubkeys.length > 0
+        ? await getDmRelayLists(recipientPubkeys, {
+            cacheOnly: input.refreshRelayLists !== true,
+            relayUrls: getDmRelayListDiscoveryRelayUrls({
+              relayLists,
+              recipientPubkeys,
+            }),
+          })
+        : undefined
+
+    return planNip17OrderMessageDelivery({
+      recipientPubkeys,
+      dmRelayLists,
+      maxPrimaryRelays: undefined,
+      maxBroadcastRelays: undefined,
+      skipHealthFilter:
+        input.skipHealthFilter ?? input.deliveryMode === "critical",
+    })
+  }
+
   return planRelayWrites({
     intent: input.intent,
     authorPubkey: input.authorPubkey,
@@ -483,6 +534,12 @@ export async function publishWithPlanner(
   let attemptedRelayUrls = [...plannedRelayUrls]
 
   if (plannedRelayUrls.length === 0) {
+    if (input.intent === "recipient_event") {
+      throw new Error(
+        "Refusing to publish a recipient event without explicit recipient relay targets."
+      )
+    }
+
     const fallbackRelayUrls = getAuthorEventFallbackRelayUrls({
       eventKind: event.kind,
       intent: input.intent,

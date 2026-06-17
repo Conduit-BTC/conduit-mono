@@ -326,6 +326,7 @@ function MessagesPage() {
         intent: "recipient_event",
         authorPubkey: pubkey,
         recipientPubkeys: [selectedConversation.merchantPubkey],
+        recipientRelayPolicy: "nip17_order",
         refreshRelayLists: true,
         deliveryMode: "critical",
       })
@@ -335,6 +336,7 @@ function MessagesPage() {
           intent: "recipient_event",
           authorPubkey: pubkey,
           recipientPubkeys: [pubkey],
+          recipientRelayPolicy: "nip17_order",
           refreshRelayLists: true,
           deliveryMode: "critical",
         })

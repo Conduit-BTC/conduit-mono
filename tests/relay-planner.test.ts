@@ -3,9 +3,12 @@ import {
   __resetRelayHealth,
   config,
   normalizeRelaySettingsState,
+  planNip17OrderMessageDelivery,
+  planNip17OrderMessageReads,
   planRelayReads,
   planRelayWrites,
   recordRelayFailure,
+  type DmRelayList,
   type RelayList,
   type RelaySettingsEntry,
   type RelaySettingsState,
@@ -78,6 +81,15 @@ function relayList(
     pubkey,
     readRelayUrls: reads,
     writeRelayUrls: writes,
+    eventCreatedAt: 1,
+    cachedAt: 1,
+  }
+}
+
+function dmRelayList(pubkey: string, relayUrls: string[]): DmRelayList {
+  return {
+    pubkey,
+    relayUrls,
     eventCreatedAt: 1,
     cachedAt: 1,
   }
@@ -376,6 +388,50 @@ describe("planRelayWrites", () => {
       "wss://shared.example.com",
       "wss://carol-only.example.com",
     ])
+  })
+
+  it("plans order message delivery to NIP-17 inbox relays before user outbox", () => {
+    const state = settings([
+      entry("wss://outbox.example.com", {
+        writeEnabled: true,
+      }),
+    ])
+    const dmLists = new Map<string, DmRelayList>([
+      ["bob", dmRelayList("bob", ["wss://bob-dm.example.com"])],
+    ])
+
+    const plan = planNip17OrderMessageDelivery({
+      recipientPubkeys: ["bob"],
+      dmRelayLists: dmLists,
+      settings: state,
+    })
+
+    expect(plan.primaryRelayUrls).toEqual(["wss://bob-dm.example.com"])
+    expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.example.com"])
+  })
+
+  it("uses bounded commerce DM fallback when order recipient has no kind:10050", () => {
+    const plan = planNip17OrderMessageDelivery({
+      recipientPubkeys: ["bob"],
+      dmRelayLists: new Map(),
+      settings: settings([]),
+    })
+
+    expect(plan.primaryRelayUrls).toEqual(
+      config.commerceDmFallbackRelayUrls.slice(0, 4)
+    )
+    expect(plan.broadcastRelayUrls).toEqual([])
+  })
+
+  it("plans order message reads from inbox plus bounded fallback relays", () => {
+    const plan = planNip17OrderMessageReads({
+      recipientPubkey: "merchant",
+      dmRelayList: dmRelayList("merchant", ["wss://merchant-dm.example.com"]),
+    })
+
+    expect(plan.relayUrls[0]).toBe("wss://merchant-dm.example.com")
+    expect(plan.relayUrls).toContain(config.commerceDmFallbackRelayUrls[0])
+    expect(plan.relayUrls.length).toBeLessThanOrEqual(8)
   })
 
   it("respects fanout caps", () => {

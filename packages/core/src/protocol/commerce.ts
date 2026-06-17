@@ -34,12 +34,17 @@ import {
   getGeneralReadRelayUrls,
 } from "./relay-settings"
 import { getRelayLists } from "./relay-list"
+import { getDmRelayList } from "./dm-relay-list"
+import {
+  ORDER_MESSAGE_READ_FANOUT,
+  planNip17OrderMessageReads,
+} from "./nip17-order-planner"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
 import type { RelayNetworkBudgetClass } from "./relay-network-budget"
 
 const PRODUCT_CACHE_TTL_MS = 24 * 60 * 60_000
 const BROAD_AUTHOR_HINT_LIMIT = 16
-const DM_INBOX_READ_FANOUT = 24
+const DM_INBOX_READ_FANOUT = ORDER_MESSAGE_READ_FANOUT
 // Keep author-scoped product filters small enough for public relays that
 // reject or truncate very large authors arrays. This is a transport batch
 // size, not a product truth cap.
@@ -1996,15 +2001,17 @@ async function fetchParsedOrderMessages(
       limit,
     }
 
-    const dmRelayUrls = await planCommerceReadRelays({
-      intent: "dm_inbox",
-      recipients: [principalPubkey],
+    const dmRelayList = await getDmRelayList(principalPubkey, {
+      cacheOnly: Boolean(testOverrides.fetchEventsFanout),
+    })
+    const dmReadPlan = planNip17OrderMessageReads({
+      recipientPubkey: principalPubkey,
+      dmRelayList,
       maxRelays: DM_INBOX_READ_FANOUT,
-      extraRelayUrls: config.appWriteRelayUrls,
     })
 
     const wrapped = await runFetchEventsFanout(filter, {
-      relayUrls: dmRelayUrls,
+      relayUrls: dmReadPlan.relayUrls,
       connectTimeoutMs: 4_000,
       fetchTimeoutMs: 12_000,
       budgetClass: "critical_order_read",

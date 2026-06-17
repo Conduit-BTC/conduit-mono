@@ -147,6 +147,25 @@ export interface CachedRelayList {
 }
 
 /**
+ * NIP-17 kind:10050 DM inbox relay list for an arbitrary pubkey.
+ *
+ * This is intentionally separate from NIP-65 relay list metadata: these
+ * relays are where encrypted gift wraps can reach a recipient, not the
+ * user's general read/write preferences.
+ */
+export interface CachedDmRelayList {
+  pubkey: string
+  /** Relays from kind:10050 `relay` tags. */
+  relayUrls: string[]
+  /** `created_at` of the kind-10050 event in seconds. */
+  eventCreatedAt: number
+  /** Relays the kind-10050 event was observed on, if known. */
+  sourceRelayUrls?: string[]
+  /** Local cache time in milliseconds. */
+  cachedAt: number
+}
+
+/**
  * Aggregate social signals for a product, keyed by the product's
  * coordinate (NIP-33 `kind:pubkey:d-tag`) or event id when available.
  *
@@ -244,6 +263,7 @@ class ConduitDB extends Dexie {
   profiles!: EntityTable<CachedProfile, "pubkey">
   orderMessages!: EntityTable<CachedOrderMessage, "id">
   relayLists!: EntityTable<CachedRelayList, "pubkey">
+  dmRelayLists!: EntityTable<CachedDmRelayList, "pubkey">
   productSocialSummaries!: EntityTable<CachedProductSocialSummary, "key">
   nip05Verifications!: EntityTable<CachedNip05Verification, "id">
   relayCapabilities!: EntityTable<CachedRelayCapability, "url">
@@ -332,6 +352,23 @@ class ConduitDB extends Dexie {
       paymentAttempts:
         "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
     })
+
+    this.version(8).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
+      dmRelayLists: "pubkey, cachedAt",
+      productSocialSummaries: "key, cachedAt",
+      nip05Verifications:
+        "id, pubkey, normalizedIdentifier, status, expiresAt, cachedAt",
+      relayCapabilities: "url, nip11Status, updatedAt",
+      paymentAttempts:
+        "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
+    })
   }
 }
 
@@ -370,6 +407,7 @@ export async function ensureCommerceCacheScope(): Promise<void> {
     db.profiles.clear(),
     db.orderMessages.clear(),
     db.relayLists.clear(),
+    db.dmRelayLists.clear(),
     db.productSocialSummaries.clear(),
     db.nip05Verifications.clear(),
   ])

@@ -2,8 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { nip19 } from "@nostr-dev-kit/ndk"
 import {
   __resetCommerceTestOverrides,
+  __resetDmRelayListTestOverrides,
   __setCommerceTestOverrides,
+  __setDmRelayListTestOverrides,
   cacheParsedOrderMessage,
+  CANONICAL_COMMERCE_DM_FALLBACK_RELAYS,
   getBuyerConversationList,
   getConversationDetail,
   getMarketplaceProducts,
@@ -12,8 +15,6 @@ import {
   getProductDetail,
   getProfiles,
   __resetRelayListTestOverrides,
-  __setRelayListTestOverrides,
-  CANONICAL_APP_WRITE_RELAYS,
 } from "@conduit/core"
 import { EVENT_KINDS } from "@conduit/core"
 import type {
@@ -68,6 +69,7 @@ function makeProductEvent(params: {
 
 beforeEach(async () => {
   __resetCommerceTestOverrides()
+  __resetDmRelayListTestOverrides()
   __resetRelayListTestOverrides()
   cachedProducts = []
   cachedProfiles = new Map()
@@ -112,6 +114,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   __resetCommerceTestOverrides()
+  __resetDmRelayListTestOverrides()
   __resetRelayListTestOverrides()
   cachedProducts = []
   cachedProfiles = new Map()
@@ -726,22 +729,18 @@ describe("commerce gateway", () => {
     expect(result.data[0]?.status).toBeNull()
   })
 
-  it("queries expanded merchant inbox relays for gift-wrapped orders", async () => {
+  it("queries NIP-17 inbox and bounded fallback relays for gift-wrapped orders", async () => {
     const merchantPubkey = "merchant"
-    const merchantReadRelays = Array.from(
-      { length: 8 },
-      (_, index) => `wss://merchant-read-${index}.example`
-    )
+    const merchantInboxRelays = ["wss://merchant-inbox.example"]
     let seenRelayUrls: string[] | undefined
 
-    __setRelayListTestOverrides({
+    __setDmRelayListTestOverrides({
       now: () => FIXED_NOW,
       loadCached: async (pubkey) =>
         pubkey === merchantPubkey
           ? {
               pubkey,
-              readRelayUrls: merchantReadRelays,
-              writeRelayUrls: [],
+              relayUrls: merchantInboxRelays,
               eventCreatedAt: 1,
               cachedAt: FIXED_NOW,
             }
@@ -762,8 +761,9 @@ describe("commerce gateway", () => {
       limit: 50,
     })
 
-    expect(seenRelayUrls).toContain(CANONICAL_APP_WRITE_RELAYS[0])
-    expect(seenRelayUrls).toContain("wss://merchant-read-7.example")
+    expect(seenRelayUrls).toContain("wss://merchant-inbox.example")
+    expect(seenRelayUrls).toContain(CANONICAL_COMMERCE_DM_FALLBACK_RELAYS[0])
+    expect(seenRelayUrls).not.toContain("wss://merchant-read-7.example")
   })
 
   it("retries parsed wrapped order messages when cache persistence fails", async () => {

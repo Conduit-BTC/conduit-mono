@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import {
+  __resetDmRelayListTestOverrides,
   __resetRelayListTestOverrides,
   __resetRelayPublishTestOverrides,
+  __setDmRelayListTestOverrides,
   __setRelayListTestOverrides,
   __setRelayPublishTestOverrides,
   CANONICAL_APP_WRITE_RELAYS,
@@ -39,6 +41,7 @@ describe("planPublishRelays", () => {
   })
 
   afterEach(() => {
+    __resetDmRelayListTestOverrides()
     __resetRelayListTestOverrides()
     __resetRelayPublishTestOverrides()
   })
@@ -133,6 +136,41 @@ describe("planPublishRelays", () => {
     // No recipient hint, so primary should still seed from user write relays.
     expect(plan.intent).toBe("recipient_event")
     expect(Array.isArray(plan.broadcastRelayUrls)).toBe(true)
+  })
+
+  it("uses NIP-17 kind:10050 relays for order-message recipient planning", async () => {
+    __setRelayListTestOverrides({
+      now: () => NOW,
+      loadCached: async (pubkey) =>
+        pubkey === "bob"
+          ? relayList("bob", {
+              readRelayUrls: ["wss://bob-read.example"],
+              writeRelayUrls: [],
+            })
+          : undefined,
+    })
+    __setDmRelayListTestOverrides({
+      now: () => NOW,
+      loadCached: async (pubkey) =>
+        pubkey === "bob"
+          ? {
+              pubkey: "bob",
+              relayUrls: ["wss://bob-dm.example"],
+              eventCreatedAt: 1,
+              cachedAt: NOW,
+            }
+          : undefined,
+    })
+
+    const plan = await planPublishRelays({
+      intent: "recipient_event",
+      authorPubkey: "alice",
+      recipientPubkeys: ["bob"],
+      recipientRelayPolicy: "nip17_order",
+    })
+
+    expect(plan.primaryRelayUrls).toEqual(["wss://bob-dm.example"])
+    expect(plan.primaryRelayUrls).not.toContain("wss://bob-read.example")
   })
 
   // Mark relay list usage helper as used to avoid lint flag.
@@ -263,6 +301,36 @@ describe("planPublishRelays", () => {
 
     expect(attempts).toHaveLength(1)
     expect(attempts[0]?.[0]).toStartWith(primaryRelay)
+  })
+
+  it("refuses recipient publishes when no explicit recipient relay targets exist", async () => {
+    let publishedImplicitly = false
+    const fakeEvent = {
+      publish: async () => {
+        publishedImplicitly = true
+        return new Set()
+      },
+    } as never
+
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "recipient_event",
+        primaryRelayUrls: [],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await expect(
+      publishWithPlanner(fakeEvent, {
+        intent: "recipient_event",
+        authorPubkey: "alice",
+        recipientPubkeys: ["bob"],
+      })
+    ).rejects.toThrow(
+      "Refusing to publish a recipient event without explicit recipient relay targets."
+    )
+    expect(publishedImplicitly).toBe(false)
   })
 
   it("returns broadcast failures as diagnostics after primary delivery succeeds", async () => {

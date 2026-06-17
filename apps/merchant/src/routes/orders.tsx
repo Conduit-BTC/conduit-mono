@@ -201,6 +201,7 @@ async function publishOrderConversationMessage(params: {
     intent: "recipient_event",
     authorPubkey: params.merchantPubkey,
     recipientPubkeys: [params.buyerPubkey],
+    recipientRelayPolicy: "nip17_order",
     refreshRelayLists: true,
     deliveryMode: "critical",
   })
@@ -210,6 +211,7 @@ async function publishOrderConversationMessage(params: {
       intent: "recipient_event",
       authorPubkey: params.merchantPubkey,
       recipientPubkeys: [params.merchantPubkey],
+      recipientRelayPolicy: "nip17_order",
       refreshRelayLists: true,
       deliveryMode: "critical",
     })
