@@ -43,6 +43,7 @@ const DM_INBOX_READ_FANOUT = 24
 // reject or truncate very large authors arrays. This is a transport batch
 // size, not a product truth cap.
 const PRODUCT_AUTHOR_CHUNK_SIZE = 64
+const PRODUCT_AUTHOR_CHUNK_CONCURRENCY = 2
 const PROFILE_CACHE_TTL_MS = 5 * 60_000
 
 export type CommerceReadSource = "commerce" | "public" | "local_cache"
@@ -197,6 +198,7 @@ type RawMessageFetchResult = {
 
 type CommerceTestOverrides = {
   fetchEventsFanout?: typeof fetchEventsFanout
+  fetchEventsFanoutProgressive?: typeof fetchEventsFanoutProgressive
   requireNdkConnected?: typeof requireNdkConnected
   giftUnwrap?: (
     event: NDKEvent,
@@ -324,8 +326,9 @@ async function planCommerceReadRelays(input: {
     }
   })()
   const preferFallbackFirst =
-    input.intent === "commerce_products" ||
-    (input.intent === "author_products" && (input.authors?.length ?? 0) > 1)
+    input.relayHintMode !== "force" &&
+    (input.intent === "commerce_products" ||
+      (input.intent === "author_products" && (input.authors?.length ?? 0) > 1))
   const plannedRelayUrls = preferFallbackFirst
     ? uniqueStrings([
         ...fallbackRelayUrls,
@@ -455,31 +458,44 @@ async function streamProductRecordChunks(input: {
 }): Promise<void> {
   if (input.relayUrls.length === 0) return
 
+  let nextChunkIndex = 0
+  const workerCount = Math.min(
+    PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
+    input.authorChunks.length
+  )
+  const fetchProgressive =
+    testOverrides.fetchEventsFanoutProgressive ?? fetchEventsFanoutProgressive
+
   await Promise.all(
-    input.authorChunks.map(async (authors) => {
-      const chunkFilter: NDKFilter = {
-        ...input.baseFilter,
-        ...(authors ? { authors } : {}),
-      }
-      const events = await fetchEventsFanoutProgressive(
-        chunkFilter,
-        {
-          relayUrls: input.relayUrls,
-          connectTimeoutMs: input.readPolicy?.connectTimeoutMs ?? 4_000,
-          fetchTimeoutMs: input.readPolicy?.fetchTimeoutMs ?? 8_000,
-        },
-        ({ mergedEvents, relayUrl }) => {
-          for (const event of mergedEvents) {
-            putMergedEvent(input.merged, event)
-          }
-          input.onRecords(
-            dedupeProductEvents(Array.from(input.merged.values())),
-            relayUrl
-          )
+    Array.from({ length: workerCount }, async () => {
+      while (nextChunkIndex < input.authorChunks.length) {
+        const authors = input.authorChunks[nextChunkIndex]
+        nextChunkIndex += 1
+
+        const chunkFilter: NDKFilter = {
+          ...input.baseFilter,
+          ...(authors ? { authors } : {}),
         }
-      )
-      for (const event of events) {
-        putMergedEvent(input.merged, event)
+        const events = await fetchProgressive(
+          chunkFilter,
+          {
+            relayUrls: input.relayUrls,
+            connectTimeoutMs: input.readPolicy?.connectTimeoutMs ?? 4_000,
+            fetchTimeoutMs: input.readPolicy?.fetchTimeoutMs ?? 8_000,
+          },
+          ({ mergedEvents, relayUrl }) => {
+            for (const event of mergedEvents) {
+              putMergedEvent(input.merged, event)
+            }
+            input.onRecords(
+              dedupeProductEvents(Array.from(input.merged.values())),
+              relayUrl
+            )
+          }
+        )
+        for (const event of events) {
+          putMergedEvent(input.merged, event)
+        }
       }
     })
   )
