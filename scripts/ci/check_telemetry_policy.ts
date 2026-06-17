@@ -11,6 +11,11 @@ export const allowedTelemetryProperties = new Set([
   "time_bucket",
 ])
 
+export const allowedProviderTelemetryEventNames = new Set([
+  "$pageview",
+  "pageview",
+])
+
 export const bannedTelemetryPackages = [
   "@amplitude/analytics-browser",
   "@amplitude/analytics-node",
@@ -65,11 +70,43 @@ export type TelemetryPolicyResult = {
 const eventMarkerPattern =
   /<!--\s*telemetry-event:\s*([a-z0-9_]+)\s+properties=([a-z0-9_,]+)\s*-->/g
 
-const telemetryApiPattern =
-  /\b(?:posthog\.capture|plausible|trackTelemetry|recordTelemetryEvent)\s*\(/g
+const telemetryCallExpression =
+  "\\b(?:(?:posthog|client)(?:\\.|\\?\\.)capture|(?:window\\.)?plausible(?:\\?\\.)?|trackTelemetry|recordTelemetryEvent)"
 
-const literalTelemetryCallPattern =
-  /\b(?:posthog\.capture|plausible|trackTelemetry|recordTelemetryEvent)\s*\(\s*["'`]([a-z0-9_]+)["'`]/g
+const telemetryApiPattern = new RegExp(`${telemetryCallExpression}\\s*\\(`, "g")
+
+const literalTelemetryCallPattern = new RegExp(
+  `${telemetryCallExpression}\\s*\\(\\s*["'\`]([a-z0-9_$]+)["'\`]`,
+  "g"
+)
+
+const forbiddenTelemetryApiPattern =
+  /\bposthog\.(?:alias|group|identify|register|setPersonProperties|setPersonPropertiesForFlags)\s*\(/g
+
+const unsafeTelemetryConfigPatterns: Array<[RegExp, string]> = [
+  [/\bautocapture\s*:\s*true\b/, "autocapture must stay disabled"],
+  [
+    /\bcapture_pageview\s*:\s*true\b/,
+    "PostHog automatic pageviews must stay disabled",
+  ],
+  [
+    /\bcapture_pageleave\s*:\s*true\b/,
+    "PostHog pageleave capture must stay disabled",
+  ],
+  [
+    /\bdisable_session_recording\s*:\s*false\b/,
+    "PostHog session recording must stay disabled",
+  ],
+  [/\benable_heatmaps\s*:\s*true\b/, "PostHog heatmaps must stay disabled"],
+  [
+    /\bdisable_persistence\s*:\s*false\b/,
+    "PostHog persistence must stay disabled",
+  ],
+  [
+    /\bperson_profiles\s*:\s*["'`](?!never["'`])/,
+    "PostHog person profiles must stay disabled",
+  ],
+]
 
 const skippedWalkDirectoryNames = new Set([".git", "dist", "node_modules"])
 
@@ -156,7 +193,10 @@ export function validateTelemetrySourceUsage(input: {
 
   for (const match of literalTelemetryCalls) {
     const eventName = match[1]
-    if (!input.allowedEventNames.has(eventName)) {
+    if (
+      !input.allowedEventNames.has(eventName) &&
+      !allowedProviderTelemetryEventNames.has(eventName)
+    ) {
       errors.push(
         `${input.relativePath} uses telemetry event ${eventName} outside docs/analytics/events.md`
       )
@@ -173,6 +213,20 @@ export function validateTelemetrySourceUsage(input: {
           `${input.relativePath} includes sensitive telemetry property ${propertyName}`
         )
       }
+    }
+  }
+
+  for (const match of input.source.matchAll(forbiddenTelemetryApiPattern)) {
+    errors.push(
+      `${input.relativePath} uses forbidden PostHog identity/profile API ${match[0]}`
+    )
+  }
+
+  for (const [pattern, message] of unsafeTelemetryConfigPatterns) {
+    if (pattern.test(input.source)) {
+      errors.push(
+        `${input.relativePath} has unsafe telemetry config: ${message}`
+      )
     }
   }
 

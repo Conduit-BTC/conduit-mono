@@ -7,7 +7,10 @@ import {
 } from "@tanstack/react-router"
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { useEffect } from "react"
-import { buildBugReportUrl } from "@conduit/core"
+import {
+  buildBugReportUrl,
+  recordBrowserTelemetryPageView,
+} from "@conduit/core"
 import { ErrorPage, LegalFooter, NotFoundPage } from "@conduit/ui"
 import { MarketHeader } from "../components/MarketHeader"
 
@@ -77,6 +80,10 @@ function RootLayout() {
   useEffect(() => {
     const title = getPageTitle(pathname)
     document.title = `${title} | Conduit Market`
+  }, [pathname])
+
+  useEffect(() => {
+    recordBrowserTelemetryPageView({ app: "market", pathname })
   }, [pathname])
 
   return (

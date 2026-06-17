@@ -19,6 +19,21 @@ export {
   type ConduitBuildInfo,
 } from "./build-info"
 export {
+  buildTelemetryPageUrl,
+  getConduitPostHogConfig,
+  recordBrowserTelemetryPageView,
+  resolveBrowserTelemetryConfig,
+  sanitizeTelemetryPath,
+  sensitiveTelemetryPropertyNames,
+  type BrowserTelemetryConfig,
+  type BrowserTelemetryEnv,
+  type ConduitPostHogConfig,
+  type ConduitTelemetryApp,
+  type PlausibleTelemetryConfig,
+  type PostHogTelemetryConfig,
+  type TelemetryPageViewInput,
+} from "./telemetry"
+export {
   buildBugReportUrl,
   getBugReportAppLabel,
   type BugReportAppId,

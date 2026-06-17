@@ -68,4 +68,34 @@ describe("telemetry policy", () => {
       "apps/market/src/analytics.ts includes sensitive telemetry property pubkey"
     )
   })
+
+  it("allows provider pageview events without adding product analytics events", () => {
+    const errors = validateTelemetrySourceUsage({
+      source:
+        'posthog.capture("$pageview", { app: "market", $pathname: "/products/:productId" }); window.plausible?.("pageview", { url: "/" }); client?.capture("$pageview", { app: "merchant" })',
+      relativePath: "packages/core/src/telemetry.ts",
+      allowedEventNames: new Set(["relay_publish_result"]),
+    })
+
+    expect(errors).toEqual([])
+  })
+
+  it("rejects PostHog identity APIs and unsafe capture config", () => {
+    const errors = validateTelemetrySourceUsage({
+      source:
+        'posthog.identify(pubkey); posthog.init("key", { autocapture: true, disable_session_recording: false })',
+      relativePath: "apps/market/src/analytics.ts",
+      allowedEventNames: new Set(["checkout_result"]),
+    })
+
+    expect(errors).toContain(
+      "apps/market/src/analytics.ts uses forbidden PostHog identity/profile API posthog.identify("
+    )
+    expect(errors).toContain(
+      "apps/market/src/analytics.ts has unsafe telemetry config: autocapture must stay disabled"
+    )
+    expect(errors).toContain(
+      "apps/market/src/analytics.ts has unsafe telemetry config: PostHog session recording must stay disabled"
+    )
+  })
 })

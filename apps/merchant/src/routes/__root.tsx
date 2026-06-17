@@ -8,7 +8,12 @@ import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { KeyRound } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
-import { buildBugReportUrl, useAuth, useNip07Availability } from "@conduit/core"
+import {
+  buildBugReportUrl,
+  recordBrowserTelemetryPageView,
+  useAuth,
+  useNip07Availability,
+} from "@conduit/core"
 import { ErrorPage, NotFoundPage, SignerConnectPanel } from "@conduit/ui"
 import {
   MerchantMobileNav,
@@ -84,6 +89,10 @@ function RootLayout() {
       signerConnected || signerRestoring ? getPageTitle(pathname) : "Connect"
     document.title = `${title} | Conduit Merchant`
   }, [pathname, signerConnected, signerRestoring])
+
+  useEffect(() => {
+    recordBrowserTelemetryPageView({ app: "merchant", pathname })
+  }, [pathname])
 
   if (shouldDelayAuthFallback) {
     return <AuthGateGrace />
