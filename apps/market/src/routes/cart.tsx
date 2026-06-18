@@ -13,12 +13,15 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
   formatNpub,
+  evaluateListingSafety,
   getCachedMarketplaceProducts,
   getCachedMerchantStorefront,
+  getListingSafetyDisplay,
   getMarketplaceProducts,
   getMerchantStorefront,
   getProfileName,
   getTelemetryCountBucket,
+  isListingPurchasable,
   normalizePubkey,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
@@ -27,7 +30,14 @@ import {
   type PricingRateInput,
   type Product,
 } from "@conduit/core"
-import { Avatar, AvatarFallback, AvatarImage, Button, cn } from "@conduit/ui"
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+  Button,
+  StatusPill,
+  cn,
+} from "@conduit/ui"
 import {
   Dialog,
   DialogContent,
@@ -136,6 +146,31 @@ function getCartTelemetryItemCountBucket(items: CartItem[]): string {
   return getTelemetryCountBucket(
     items.reduce((sum, item) => sum + item.quantity, 0)
   )
+}
+
+function getCartItemSafety(item: CartItem) {
+  return evaluateListingSafety({
+    id: item.productId,
+    pubkey: item.merchantPubkey,
+    title: item.title,
+    price: item.price,
+    currency: item.currency,
+    priceSats: item.priceSats,
+    sourcePrice: item.sourcePrice,
+    type: "simple",
+    format: item.format ?? "physical",
+    shippingCostSats: item.shippingCostSats,
+    sourceShippingCost: item.sourceShippingCost,
+    shippingOptionId: item.shippingOptionId,
+    shippingOptionDTag: item.shippingOptionDTag,
+    shippingCountries: item.shippingCountries,
+    shippingCountryRules: item.shippingCountryRules,
+    visibility: "public",
+    images: item.image ? [{ url: item.image }] : [],
+    tags: item.tags ?? [],
+    createdAt: 0,
+    updatedAt: 0,
+  })
 }
 
 async function fetchSuggestedProducts(
@@ -375,6 +410,9 @@ function CartLineItem({
     btcUsdRate
   )
   const unitPrice = getProductPriceDisplay(item, btcUsdRate)
+  const safety = getCartItemSafety(item)
+  const safetyDisplay = getListingSafetyDisplay(safety)
+  const purchasable = isListingPurchasable(safety)
 
   return (
     <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-4 py-5 sm:grid-cols-[112px_minmax(0,1fr)] lg:grid-cols-[112px_minmax(0,1fr)_minmax(8rem,auto)] lg:items-start">
@@ -403,6 +441,24 @@ function CartLineItem({
         <div className="mt-2 text-sm text-[var(--text-secondary)]">
           Qty {item.quantity}
         </div>
+
+        {!purchasable && (
+          <div className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-[var(--text-secondary)]">
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusPill variant={safetyDisplay.tone} className="text-[10px]">
+                {safetyDisplay.label}
+              </StatusPill>
+              <span className="font-medium text-[var(--text-primary)]">
+                Checkout blocked
+              </span>
+            </div>
+            <p className="mt-2">
+              This cart item is not available for checkout from the current
+              listing snapshot. Remove it or wait for the merchant to update the
+              listing.
+            </p>
+          </div>
+        )}
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <button
@@ -478,6 +534,10 @@ function MerchantCartCard({
   const { data: profile } = useProfile(group.merchantPubkey)
   const summary = getCartSummaryPrice(group.items, btcUsdRate)
   const canZapOut = Boolean(profile?.lud16) && summary.canZapOut
+  const blockedItems = group.items.filter(
+    (item) => !isListingPurchasable(getCartItemSafety(item))
+  )
+  const checkoutBlocked = blockedItems.length > 0
   const primaryActionLabel = canZapOut ? "Zap out" : "Order"
   const reviewItemsLabel = `${expanded ? "Hide" : "Review"} ${group.totalItems} item${group.totalItems === 1 ? "" : "s"}`
   const detailsId = `cart-group-${group.merchantPubkey}`
@@ -515,7 +575,11 @@ function MerchantCartCard({
           </div>
 
           <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap lg:w-auto lg:justify-end">
-            <Button className="h-11 px-5 text-sm" onClick={onCheckout}>
+            <Button
+              className="h-11 px-5 text-sm"
+              disabled={checkoutBlocked}
+              onClick={onCheckout}
+            >
               {canZapOut ? (
                 <LightningIcon className="h-4 w-4" />
               ) : (
@@ -544,6 +608,13 @@ function MerchantCartCard({
             )}
           </div>
         </div>
+
+        {checkoutBlocked && (
+          <div className="mt-4 rounded-xl border border-warning/30 bg-warning/10 px-4 py-3 text-xs leading-5 text-[var(--text-secondary)]">
+            Remove or review the unavailable item
+            {blockedItems.length === 1 ? "" : "s"} before starting checkout.
+          </div>
+        )}
 
         {expanded && (
           <div id={detailsId} className="mt-5 border-t border-[var(--border)]">

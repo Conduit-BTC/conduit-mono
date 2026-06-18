@@ -382,6 +382,46 @@ describe("commerce gateway", () => {
     expect(merchantResult.data[0]?.product.title).toBe("Needs Image")
   })
 
+  it("suppresses blocked launch-safety listings from Market while Merchant can inspect them", async () => {
+    const productEvent = makeProductEvent({
+      pubkey: "merchant",
+      dTag: "blocked-item",
+      id: "event-blocked",
+      createdAt: 100,
+      title: "Counterfeit display sample",
+    })
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([productEvent] as never)
+          : [],
+    })
+
+    const marketResult = await getMerchantStorefront({
+      merchantPubkey: "merchant",
+      limit: 10,
+    })
+    const merchantResult = await getMerchantStorefront({
+      merchantPubkey: "merchant",
+      includeMarketHidden: true,
+      limit: 10,
+    })
+    const publicDetail = await getProductDetail({
+      productId: "30402:merchant:blocked-item",
+    })
+    const merchantDetail = await getProductDetail({
+      productId: "30402:merchant:blocked-item",
+      includeMarketHidden: true,
+    })
+
+    expect(marketResult.data).toHaveLength(0)
+    expect(publicDetail.data).toBeNull()
+    expect(merchantResult.data).toHaveLength(1)
+    expect(merchantResult.data[0]?.safety?.state).toBe("blocked")
+    expect(merchantDetail.data?.safety?.state).toBe("blocked")
+  })
+
   it("resolves product detail from a NIP-89 naddr handler URL", async () => {
     const merchantPubkey = "a".repeat(64)
     const dTag = "naddr-item"

@@ -13,7 +13,9 @@ import {
   getMarketplaceProductsProgressive,
   getMerchantStorefront,
   getProductDetail,
+  isListingMarketVisible,
   normalizePubkey,
+  type ListingSafetyEvaluation,
   type Product,
 } from "@conduit/core"
 import {
@@ -722,6 +724,8 @@ export function useProgressiveProducts(
 
 export function useProgressiveProductDetail(productId: string): {
   product: Product | null
+  listingSafety: ListingSafetyEvaluation | null
+  isMarketVisible: boolean
   meta: CommerceQueryMeta | null
   profileRelayHintsByPubkey: Record<string, string[]>
   isInitialLoading: boolean
@@ -731,13 +735,17 @@ export function useProgressiveProductDetail(productId: string): {
 } {
   const cachedQuery = useQuery({
     queryKey: ["progressive-product", "cache", productId],
-    queryFn: () => getCachedProductDetail({ productId }),
+    queryFn: () =>
+      getCachedProductDetail(
+        { productId },
+        { includeStale: true, includeMarketHidden: true }
+      ),
     staleTime: 15_000,
   })
 
   const networkQuery = useQuery({
     queryKey: ["progressive-product", "network", productId],
-    queryFn: () => getProductDetail({ productId }),
+    queryFn: () => getProductDetail({ productId, includeMarketHidden: true }),
     placeholderData: (previousData) => previousData,
     staleTime: 20_000,
   })
@@ -747,6 +755,10 @@ export function useProgressiveProductDetail(productId: string): {
   const active =
     hasNetworkResult || !cachedQuery.data ? networkQuery.data : cachedQuery.data
   const product = active?.data?.product ?? null
+  const listingSafety = active?.data?.safety ?? null
+  const isMarketVisible = listingSafety
+    ? isListingMarketVisible(listingSafety)
+    : true
   const profileRelayHintsByPubkey =
     product && active?.data?.sourceRelayUrls?.length
       ? { [product.pubkey]: active.data.sourceRelayUrls }
@@ -754,6 +766,8 @@ export function useProgressiveProductDetail(productId: string): {
 
   return {
     product,
+    listingSafety,
+    isMarketVisible,
     meta: active?.meta ?? null,
     profileRelayHintsByPubkey,
     isInitialLoading: isProductDetailInitialLoading({

@@ -27,6 +27,11 @@ import {
   parseOrderMessageRumorEvent,
   type ParsedOrderMessage,
 } from "./orders"
+import {
+  evaluateListingSafety,
+  isListingMarketVisible,
+  type ListingSafetyEvaluation,
+} from "./listing-safety"
 import { parseProductEvent } from "./products"
 import { parseProfileEvent } from "./profiles"
 import {
@@ -84,6 +89,7 @@ export interface CommerceResult<T> {
 
 export interface CommerceProductRecord {
   product: Product
+  safety?: ListingSafetyEvaluation
   eventId: string
   addressId: string
   dTag: string | null
@@ -120,6 +126,7 @@ export interface MerchantStorefrontQuery {
 export interface ProductDetailQuery {
   productId: string
   revalidateCanonical?: boolean
+  includeMarketHidden?: boolean
 }
 
 export interface ProfileBatchQuery {
@@ -469,6 +476,7 @@ async function streamProductRecordChunks(input: {
   authorChunks: Array<string[] | undefined>
   relayUrls: string[]
   readPolicy?: CommerceReadPolicy
+  includeMarketHidden?: boolean
   merged: Map<string, NDKEvent>
   onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
 }): Promise<void> {
@@ -504,7 +512,13 @@ async function streamProductRecordChunks(input: {
               putMergedEvent(input.merged, event)
             }
             input.onRecords(
-              dedupeProductEvents(Array.from(input.merged.values())),
+              dedupeProductEvents(
+                Array.from(input.merged.values()),
+                undefined,
+                {
+                  includeMarketHidden: input.includeMarketHidden,
+                }
+              ),
               relayUrl
             )
           }
@@ -602,6 +616,23 @@ export function hasMarketProductImage(
   return product.images.some((image) => isValidProductImageUrl(image.url))
 }
 
+function withListingSafety(
+  record: Omit<CommerceProductRecord, "safety"> & {
+    safety?: ListingSafetyEvaluation
+  }
+): CommerceProductRecord {
+  return {
+    ...record,
+    safety: record.safety ?? evaluateListingSafety(record.product),
+  }
+}
+
+function isMarketRenderableRecord(record: CommerceProductRecord): boolean {
+  return isListingMarketVisible(
+    record.safety ?? evaluateListingSafety(record.product)
+  )
+}
+
 function toCachedProduct(record: CommerceProductRecord) {
   const { product } = record
   return {
@@ -663,14 +694,14 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
   const dTag = product.id.startsWith("30402:")
     ? product.id.split(":").slice(2).join(":")
     : null
-  return {
+  return withListingSafety({
     product,
     eventId: product.id,
     addressId: product.id,
     dTag,
     eventCreatedAt: Math.floor(product.createdAt / 1000),
     sourceRelayUrls: row.sourceRelayUrls,
-  }
+  })
 }
 
 async function loadProductSourceRelayHints(
@@ -729,7 +760,7 @@ async function getCachedProductRecords(
     .map(fromCachedProduct)
     .filter(
       (record) =>
-        options.includeMarketHidden || hasMarketProductImage(record.product)
+        options.includeMarketHidden || isMarketRenderableRecord(record)
     )
 }
 
@@ -739,7 +770,7 @@ async function cacheProductRecords(
 ): Promise<void> {
   const cacheable = options.includeMarketHidden
     ? records
-    : records.filter((record) => hasMarketProductImage(record.product))
+    : records.filter(isMarketRenderableRecord)
   if (cacheable.length === 0) return
   await storeCachedProducts(cacheable.map(toCachedProduct))
 }
@@ -1061,8 +1092,10 @@ function dedupeProductEvents(
   for (const event of events) {
     try {
       const parsed = parseProductEvent(event)
-      if (!options.includeMarketHidden && !hasMarketProductImage(parsed))
+      const safety = evaluateListingSafety(parsed)
+      if (!options.includeMarketHidden && !isListingMarketVisible(safety)) {
         continue
+      }
 
       const dTag = getTagValue(event.tags ?? [], "d")
       const addressId = dTag ? `30402:${event.pubkey}:${dTag}` : parsed.id
@@ -1076,6 +1109,7 @@ function dedupeProductEvents(
 
       const candidate: CommerceProductRecord = {
         product: parsed,
+        safety,
         eventId: event.id,
         addressId,
         dTag,
@@ -1134,6 +1168,7 @@ async function fetchPublicProductRecords(query: {
   authenticatedPubkey?: string | null
   limit?: number
   readPolicy?: CommerceReadPolicy
+  includeMarketHidden?: boolean
 }): Promise<CommerceProductRecord[]> {
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.PRODUCT],
@@ -1160,7 +1195,9 @@ async function fetchPublicProductRecords(query: {
     fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 8_000,
   })
 
-  return dedupeProductEvents(events)
+  return dedupeProductEvents(events, undefined, {
+    includeMarketHidden: query.includeMarketHidden,
+  })
 }
 
 async function fetchPublicProductRecordsProgressive(
@@ -1171,6 +1208,7 @@ async function fetchPublicProductRecordsProgressive(
     authenticatedPubkey?: string | null
     limit?: number
     readPolicy?: CommerceReadPolicy
+    includeMarketHidden?: boolean
   },
   onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
 ): Promise<CommerceProductRecord[]> {
@@ -1220,6 +1258,7 @@ async function fetchPublicProductRecordsProgressive(
     authorChunks,
     relayUrls,
     readPolicy: query.readPolicy,
+    includeMarketHidden: query.includeMarketHidden,
     merged,
     onRecords,
   })
@@ -1233,11 +1272,14 @@ async function fetchPublicProductRecordsProgressive(
     authorChunks,
     relayUrls: expansionRelayUrls,
     readPolicy: query.readPolicy,
+    includeMarketHidden: query.includeMarketHidden,
     merged,
     onRecords,
   })
 
-  return dedupeProductEvents(Array.from(merged.values()))
+  return dedupeProductEvents(Array.from(merged.values()), undefined, {
+    includeMarketHidden: query.includeMarketHidden,
+  })
 }
 
 function applyProductLimit(
@@ -1675,6 +1717,7 @@ export async function getProductDetail(
         authors: [address.pubkey],
         dTags: [address.d],
         limit: 10,
+        includeMarketHidden: query.includeMarketHidden,
       })
       const record = direct.find((item) => item.addressId === addressId) ?? null
       if (record) {
@@ -1687,6 +1730,7 @@ export async function getProductDetail(
 
       const storefront = await getMerchantStorefront({
         merchantPubkey: address.pubkey,
+        includeMarketHidden: query.includeMarketHidden,
       })
       const fallbackRecord =
         storefront.data.find((item) => item.addressId === addressId) ?? null
@@ -1700,6 +1744,7 @@ export async function getProductDetail(
       const records = await fetchPublicProductRecords({
         ids: [decodedId],
         limit: 1,
+        includeMarketHidden: query.includeMarketHidden,
       })
       const record = records[0] ?? null
       if (record) {
@@ -1711,7 +1756,10 @@ export async function getProductDetail(
       }
     }
   } catch (error) {
-    const cached = await getCachedProductRecords()
+    const cached = await getCachedProductRecords(undefined, {
+      includeStale: true,
+      includeMarketHidden: query.includeMarketHidden,
+    })
     const lookupIds = [decodedId, addressId].filter(Boolean)
     const record =
       cached.find(
@@ -1733,7 +1781,10 @@ export async function getProductDetail(
     throw error
   }
 
-  const cached = await getCachedProductRecords()
+  const cached = await getCachedProductRecords(undefined, {
+    includeStale: true,
+    includeMarketHidden: query.includeMarketHidden,
+  })
   const lookupIds = [decodedId, addressId].filter(Boolean)
   const record =
     cached.find(
