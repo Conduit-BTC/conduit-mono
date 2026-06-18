@@ -114,6 +114,10 @@ const unsafeTelemetryConfigPatterns: Array<[RegExp, string]> = [
     /\bperson_profiles\s*:\s*["'`](?!never["'`])/,
     "PostHog person profiles must stay disabled",
   ],
+  [
+    /\badvanced_disable_flags\s*:\s*false\b/,
+    "PostHog flags endpoint must stay disabled",
+  ],
 ]
 
 const skippedWalkDirectoryNames = new Set([".git", "dist", "node_modules"])

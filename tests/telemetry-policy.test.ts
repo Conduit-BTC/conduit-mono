@@ -133,7 +133,7 @@ describe("telemetry policy", () => {
   it("rejects PostHog identity APIs and unsafe capture config", () => {
     const errors = validateTelemetrySourceUsage({
       source:
-        'posthog.identify(pubkey); client?.identify(pubkey); client.register({ merchant: true }); posthog.init("key", { autocapture: true, disable_session_recording: false })',
+        'posthog.identify(pubkey); client?.identify(pubkey); client.register({ merchant: true }); posthog.init("key", { autocapture: true, disable_session_recording: false, advanced_disable_flags: false })',
       relativePath: "apps/market/src/analytics.ts",
       allowedEventNames: new Set(["checkout_result"]),
     })
@@ -152,6 +152,9 @@ describe("telemetry policy", () => {
     )
     expect(errors).toContain(
       "apps/market/src/analytics.ts has unsafe telemetry config: PostHog session recording must stay disabled"
+    )
+    expect(errors).toContain(
+      "apps/market/src/analytics.ts has unsafe telemetry config: PostHog flags endpoint must stay disabled"
     )
   })
 })

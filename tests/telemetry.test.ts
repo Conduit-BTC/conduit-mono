@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import {
+  applyPlausibleInitOptions,
   buildTelemetryEventPageContext,
   buildTelemetryPageUrl,
   getConduitPostHogConfig,
@@ -11,6 +12,7 @@ import {
   sanitizePostHogCaptureEvent,
   sanitizeTelemetryPath,
   sensitiveTelemetryPropertyNames,
+  type PlausibleFunction,
 } from "@conduit/core"
 
 describe("browser telemetry", () => {
@@ -104,6 +106,7 @@ describe("browser telemetry", () => {
       disable_persistence: true,
       persistence: "memory",
       person_profiles: "never",
+      advanced_disable_flags: true,
       advanced_disable_feature_flags: true,
       enable_recording_console_log: false,
       enable_heatmaps: false,
@@ -114,6 +117,21 @@ describe("browser telemetry", () => {
       ...sensitiveTelemetryPropertyNames,
     ])
     expect(typeof config.before_send).toBe("function")
+  })
+
+  it("stores Plausible init options on the official stub field", () => {
+    const plausible = (() => undefined) as PlausibleFunction
+
+    applyPlausibleInitOptions(plausible, {
+      autoCapturePageviews: false,
+      logging: false,
+    })
+
+    expect(plausible.o).toEqual({
+      autoCapturePageviews: false,
+      logging: false,
+    })
+    expect(plausible.q).toBeUndefined()
   })
 
   it("strips PostHog SDK defaults from outgoing events", () => {

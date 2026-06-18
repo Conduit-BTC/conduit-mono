@@ -91,7 +91,7 @@ export interface TelemetryEventInput {
   properties?: BrowserTelemetryEventProperties
 }
 
-interface PlausibleFunction {
+export interface PlausibleFunction {
   (
     eventName: "pageview" | BrowserTelemetryEventName,
     options?: {
@@ -100,7 +100,20 @@ interface PlausibleFunction {
     }
   ): void
   q?: unknown[]
-  init?: (options: { autoCapturePageviews: boolean; logging: boolean }) => void
+  o?: PlausibleInitOptions
+  init?: (options: PlausibleInitOptions) => void
+}
+
+export interface PlausibleInitOptions {
+  autoCapturePageviews: false
+  logging: false
+}
+
+export function applyPlausibleInitOptions(
+  plausible: PlausibleFunction,
+  options: PlausibleInitOptions
+): void {
+  plausible.o = options
 }
 
 interface PostHogClient {
@@ -127,6 +140,7 @@ export interface ConduitPostHogConfig {
   disable_persistence: true
   persistence: "memory"
   person_profiles: "never"
+  advanced_disable_flags: true
   advanced_disable_feature_flags: true
   enable_recording_console_log: false
   enable_heatmaps: false
@@ -364,6 +378,7 @@ export function getConduitPostHogConfig(
     disable_persistence: true,
     persistence: "memory",
     person_profiles: "never",
+    advanced_disable_flags: true,
     advanced_disable_feature_flags: true,
     enable_recording_console_log: false,
     enable_heatmaps: false,
@@ -545,8 +560,7 @@ function ensurePlausible(config: PlausibleTelemetryConfig): void {
   plausible.init =
     plausible.init ??
     ((options) => {
-      plausible.q = plausible.q ?? []
-      plausible.q.push(["init", options])
+      applyPlausibleInitOptions(plausible, options)
     })
   window.plausible = plausible
   window.plausible.init?.({ autoCapturePageviews: false, logging: false })

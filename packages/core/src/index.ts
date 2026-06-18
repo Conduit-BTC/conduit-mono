@@ -21,6 +21,7 @@ export {
 export {
   browserTelemetryEventNames,
   browserTelemetryPropertyNames,
+  applyPlausibleInitOptions,
   buildTelemetryEventPageContext,
   buildTelemetryPageUrl,
   getTelemetryAmountBucket,
@@ -42,6 +43,8 @@ export {
   type ConduitPostHogConfig,
   type ConduitTelemetryApp,
   type PlausibleTelemetryConfig,
+  type PlausibleFunction,
+  type PlausibleInitOptions,
   type PostHogTelemetryConfig,
   type TelemetryEventInput,
   type TelemetryPageViewInput,
