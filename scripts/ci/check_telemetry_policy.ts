@@ -4,11 +4,29 @@ import { join, relative } from "node:path"
 export const allowedTelemetryProperties = new Set([
   "event_name",
   "app",
+  "page_url",
+  "page_path",
   "network",
   "status",
   "latency_bucket",
   "count",
   "time_bucket",
+  "surface",
+  "action",
+  "step",
+  "mode",
+  "rail",
+  "method",
+  "event_family",
+  "count_bucket",
+  "result_count_bucket",
+  "amount_bucket",
+  "product_type",
+])
+
+export const allowedProviderTelemetryEventNames = new Set([
+  "$pageview",
+  "pageview",
 ])
 
 export const bannedTelemetryPackages = [
@@ -65,11 +83,42 @@ export type TelemetryPolicyResult = {
 const eventMarkerPattern =
   /<!--\s*telemetry-event:\s*([a-z0-9_]+)\s+properties=([a-z0-9_,]+)\s*-->/g
 
-const telemetryApiPattern =
-  /\b(?:posthog\.capture|plausible|trackTelemetry|recordTelemetryEvent)\s*\(/g
+const telemetryCallExpression =
+  "\\b(?:(?:posthog|client)(?:\\.|\\?\\.)capture|(?:window\\.)?plausible(?:\\?\\.)?|trackTelemetry|recordTelemetryEvent|recordBrowserTelemetryEvent)"
 
-const literalTelemetryCallPattern =
-  /\b(?:posthog\.capture|plausible|trackTelemetry|recordTelemetryEvent)\s*\(\s*["'`]([a-z0-9_]+)["'`]/g
+const telemetryApiPattern = new RegExp(`${telemetryCallExpression}\\s*\\(`, "g")
+
+const forbiddenTelemetryApiPattern =
+  /\b(?:posthog|client)(?:\.|\?\.)(?:alias|group|identify|register|setPersonProperties|setPersonPropertiesForFlags)\s*\(/g
+
+const unsafeTelemetryConfigPatterns: Array<[RegExp, string]> = [
+  [/\bautocapture\s*:\s*true\b/, "autocapture must stay disabled"],
+  [
+    /\bcapture_pageview\s*:\s*true\b/,
+    "PostHog automatic pageviews must stay disabled",
+  ],
+  [
+    /\bcapture_pageleave\s*:\s*true\b/,
+    "PostHog pageleave capture must stay disabled",
+  ],
+  [
+    /\bdisable_session_recording\s*:\s*false\b/,
+    "PostHog session recording must stay disabled",
+  ],
+  [/\benable_heatmaps\s*:\s*true\b/, "PostHog heatmaps must stay disabled"],
+  [
+    /\bdisable_persistence\s*:\s*false\b/,
+    "PostHog persistence must stay disabled",
+  ],
+  [
+    /\bperson_profiles\s*:\s*["'`](?!never["'`])/,
+    "PostHog person profiles must stay disabled",
+  ],
+  [
+    /\badvanced_disable_flags\s*:\s*false\b/,
+    "PostHog flags endpoint must stay disabled",
+  ],
+]
 
 const skippedWalkDirectoryNames = new Set([".git", "dist", "node_modules"])
 
@@ -143,29 +192,37 @@ export function validateTelemetrySourceUsage(input: {
   allowedEventNames: Set<string>
 }): string[] {
   const errors: string[] = []
-  const telemetryCalls = [...input.source.matchAll(telemetryApiPattern)]
-  const literalTelemetryCalls = [
-    ...input.source.matchAll(literalTelemetryCallPattern),
-  ]
+  const telemetryCalls = [...input.source.matchAll(telemetryApiPattern)].filter(
+    (match) =>
+      !isTelemetryFunctionDeclaration({
+        source: input.source,
+        index: match.index ?? 0,
+      }) &&
+      !isAllowedTelemetryCoreProviderCall({
+        relativePath: input.relativePath,
+        source: input.source,
+        index: match.index ?? 0,
+      })
+  )
 
-  if (telemetryCalls.length !== literalTelemetryCalls.length) {
-    errors.push(
-      `${input.relativePath} includes a telemetry call without a literal allowlisted event name`
-    )
-  }
+  for (const match of telemetryCalls) {
+    const callWindow = getTelemetryCallWindow(input.source, match.index ?? 0)
+    const eventName = getLiteralTelemetryEventName(callWindow)
 
-  for (const match of literalTelemetryCalls) {
-    const eventName = match[1]
-    if (!input.allowedEventNames.has(eventName)) {
+    if (!eventName) {
+      errors.push(
+        `${input.relativePath} includes a telemetry call without a literal allowlisted event name`
+      )
+    } else if (allowedProviderTelemetryEventNames.has(eventName)) {
+      errors.push(
+        `${input.relativePath} uses provider telemetry event ${eventName} outside the shared telemetry wrapper`
+      )
+    } else if (!input.allowedEventNames.has(eventName)) {
       errors.push(
         `${input.relativePath} uses telemetry event ${eventName} outside docs/analytics/events.md`
       )
     }
 
-    const callWindow = input.source.slice(
-      match.index ?? 0,
-      (match.index ?? 0) + 800
-    )
     for (const propertyName of sensitiveTelemetryPropertyNames) {
       const propertyPattern = new RegExp(`\\b${propertyName}\\b\\s*(?=[:,}])`)
       if (propertyPattern.test(callWindow)) {
@@ -176,7 +233,92 @@ export function validateTelemetrySourceUsage(input: {
     }
   }
 
+  for (const match of input.source.matchAll(forbiddenTelemetryApiPattern)) {
+    errors.push(
+      `${input.relativePath} uses forbidden PostHog identity/profile API ${match[0]}`
+    )
+  }
+
+  for (const [pattern, message] of unsafeTelemetryConfigPatterns) {
+    if (pattern.test(input.source)) {
+      errors.push(
+        `${input.relativePath} has unsafe telemetry config: ${message}`
+      )
+    }
+  }
+
   return errors
+}
+
+function getLiteralTelemetryEventName(callWindow: string): string | null {
+  if (/\brecordBrowserTelemetryEvent\s*\(/.test(callWindow)) {
+    return (
+      /\beventName\s*:\s*["'`]([a-z0-9_]+)["'`]/.exec(callWindow)?.[1] ?? null
+    )
+  }
+
+  return /\(\s*["'`]([a-z0-9_$]+)["'`]/.exec(callWindow)?.[1] ?? null
+}
+
+function getTelemetryCallWindow(source: string, index: number): string {
+  const openParenIndex = source.indexOf("(", index)
+  if (openParenIndex === -1) return source.slice(index, index + 240)
+
+  let depth = 0
+  let quote: "'" | '"' | "`" | null = null
+  let escaped = false
+
+  for (let i = openParenIndex; i < source.length; i += 1) {
+    const char = source[i]
+
+    if (quote) {
+      if (escaped) {
+        escaped = false
+        continue
+      }
+      if (char === "\\") {
+        escaped = true
+        continue
+      }
+      if (char === quote) quote = null
+      continue
+    }
+
+    if (char === "'" || char === '"' || char === "`") {
+      quote = char
+      continue
+    }
+
+    if (char === "(") depth += 1
+    if (char === ")") {
+      depth -= 1
+      if (depth === 0) return source.slice(index, i + 1)
+    }
+  }
+
+  return source.slice(index, index + 240)
+}
+
+function isTelemetryFunctionDeclaration(input: {
+  source: string
+  index: number
+}): boolean {
+  const prefix = input.source.slice(Math.max(0, input.index - 32), input.index)
+  return /\bfunction\s*$/.test(prefix)
+}
+
+function isAllowedTelemetryCoreProviderCall(input: {
+  relativePath: string
+  source: string
+  index: number
+}): boolean {
+  if (input.relativePath !== "packages/core/src/telemetry.ts") return false
+
+  const snippet = input.source.slice(input.index, input.index + 80)
+  return (
+    snippet.startsWith("window.plausible?.(") ||
+    snippet.startsWith("client?.capture(")
+  )
 }
 
 export function checkTelemetrySourceUsage(

@@ -10,6 +10,7 @@ import {
   getInvalidNwcUriDiagnostic,
   getNwcConnectionDiagnostics,
   parseNwcUri,
+  recordBrowserTelemetryEvent,
   type NwcDiagnostic,
   type NwcConnection,
   type NwcGetInfoResult,
@@ -172,6 +173,10 @@ function deriveStatus(
   if (!info) return "connected"
   if (info.methods.includes("pay_invoice")) return "pay-capable"
   return "unsupported"
+}
+
+function getWalletTelemetryStatus(status: string): string {
+  return status.replace(/-/g, "_")
 }
 
 function deriveUnavailableReason(
@@ -393,6 +398,15 @@ export function useWallet(): UseWalletReturn {
     try {
       conn = parseNwcUri(uri)
     } catch (e) {
+      recordBrowserTelemetryEvent({
+        app: "market",
+        eventName: "wallet_connect_result",
+        properties: {
+          method: "nwc",
+          rail: "lightning",
+          status: "invalid",
+        },
+      })
       setState((s) => ({
         ...s,
         status: "error",
@@ -409,12 +423,31 @@ export function useWallet(): UseWalletReturn {
       const snapshot = await session.warm()
       writeSnapshotCapabilityIfCurrent(conn, snapshot)
       writeStoredConnection(conn)
-      setState(getStateFromSessionSnapshot(snapshot))
+      const nextState = getStateFromSessionSnapshot(snapshot)
+      recordBrowserTelemetryEvent({
+        app: "market",
+        eventName: "wallet_connect_result",
+        properties: {
+          method: "nwc",
+          rail: "lightning",
+          status: getWalletTelemetryStatus(nextState.status),
+        },
+      })
+      setState(nextState)
     } catch {
       // Capability probe failed but URI parsed - store without advertising it
       // as ready. The order flow can still fall back to WebLN or the invoice.
       writeStoredConnection(conn)
       const snapshot = session.getSnapshot()
+      recordBrowserTelemetryEvent({
+        app: "market",
+        eventName: "wallet_connect_result",
+        properties: {
+          method: "nwc",
+          rail: "lightning",
+          status: "unreachable",
+        },
+      })
       setState({
         connection: conn,
         info: snapshot.info,
