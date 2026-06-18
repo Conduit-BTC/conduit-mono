@@ -31,9 +31,11 @@ import {
 import {
   formatNpub,
   getCommerceReadRelayUrls,
+  getTelemetryCountBucket,
   normalizePubkey,
   publishContactListUpdate,
   pubkeyToNpub,
+  recordBrowserTelemetryEvent,
   useAuth,
   type PricingRateInput,
   type Product,
@@ -237,6 +239,28 @@ function StorefrontPage() {
     [navigate]
   )
 
+  const recordStorefrontSearch = useCallback(
+    (query: string, tags: string[] = selectedTags) => {
+      const nextQuery = query || undefined
+      const resultCount = filterProductsByFacets(storeProducts, {
+        q: nextQuery,
+        tags,
+      }).length
+
+      recordBrowserTelemetryEvent({
+        app: "market",
+        eventName: "market_browse_action",
+        properties: {
+          action: nextQuery ? "storefront_search" : "storefront_search_clear",
+          result_count_bucket: getTelemetryCountBucket(resultCount),
+          status: "success",
+          surface: "storefront",
+        },
+      })
+    },
+    [selectedTags, storeProducts]
+  )
+
   const isFollowing =
     followOverride ?? merchantTrust.viewerFollowsMerchant === true
   const isFollowBusy = followState !== "idle"
@@ -287,14 +311,26 @@ function StorefrontPage() {
     if (normalizedSearch.length > 0 && normalizedSearch.length < 3) return
 
     const timeoutId = window.setTimeout(() => {
+      if ((normalizedSearch || undefined) !== search.q) {
+        recordStorefrontSearch(normalizedSearch)
+      }
       updateSearch({ q: normalizedSearch || undefined })
     }, 260)
 
     return () => window.clearTimeout(timeoutId)
-  }, [normalizedSearch, searchDirty, updateSearch])
+  }, [
+    normalizedSearch,
+    recordStorefrontSearch,
+    search.q,
+    searchDirty,
+    updateSearch,
+  ])
 
   function submitSearch(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault()
+    if ((normalizedSearch || undefined) !== search.q) {
+      recordStorefrontSearch(normalizedSearch)
+    }
     updateSearch({ q: normalizedSearch || undefined })
     setSearchDirty(false)
   }
@@ -730,7 +766,9 @@ function StorefrontPage() {
                   <Button
                     variant="outline"
                     onClick={() => {
+                      recordStorefrontSearch("", [])
                       setLocalSearch("")
+                      setSearchDirty(false)
                       updateSearch({
                         q: undefined,
                         tag: undefined,

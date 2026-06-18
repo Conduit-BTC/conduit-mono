@@ -6,9 +6,15 @@ import {
 } from "@tanstack/react-router"
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { KeyRound } from "lucide-react"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import type { ReactNode } from "react"
-import { buildBugReportUrl, useAuth, useNip07Availability } from "@conduit/core"
+import {
+  buildBugReportUrl,
+  recordBrowserTelemetryEvent,
+  recordBrowserTelemetryPageView,
+  useAuth,
+  useNip07Availability,
+} from "@conduit/core"
 import { ErrorPage, NotFoundPage, SignerConnectPanel } from "@conduit/ui"
 import {
   MerchantMobileNav,
@@ -54,10 +60,55 @@ function RootLayout() {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
+  const appLoadTelemetrySentRef = useRef(false)
+  const previousAuthStatusRef = useRef(status)
   const signerConnected = status === "connected" && !!pubkey
   const signerRestoring = !!pubkey && status === "restoring"
   const shouldDelayAuthFallback =
     !!pubkey && !signerConnected && !authFallbackReady
+
+  useEffect(() => {
+    if (appLoadTelemetrySentRef.current) return
+    appLoadTelemetrySentRef.current = true
+    recordBrowserTelemetryEvent({
+      app: "merchant",
+      eventName: "app_load_result",
+      properties: {
+        network: "browser",
+        status: "success",
+      },
+    })
+  }, [])
+
+  useEffect(() => {
+    if (
+      status === "connected" &&
+      previousAuthStatusRef.current !== "connected"
+    ) {
+      recordBrowserTelemetryEvent({
+        app: "merchant",
+        eventName: "signer_connected",
+        properties: {
+          method: "nip07",
+          status: "success",
+        },
+      })
+    }
+    if (
+      status === "disconnected" &&
+      previousAuthStatusRef.current === "connected"
+    ) {
+      recordBrowserTelemetryEvent({
+        app: "merchant",
+        eventName: "signer_disconnected",
+        properties: {
+          method: "nip07",
+          status: "success",
+        },
+      })
+    }
+    previousAuthStatusRef.current = status
+  }, [status])
 
   useEffect(() => {
     if (!pubkey || signerConnected) {
@@ -84,6 +135,10 @@ function RootLayout() {
       signerConnected || signerRestoring ? getPageTitle(pathname) : "Connect"
     document.title = `${title} | Conduit Merchant`
   }, [pathname, signerConnected, signerRestoring])
+
+  useEffect(() => {
+    recordBrowserTelemetryPageView({ app: "merchant", pathname })
+  }, [pathname])
 
   if (shouldDelayAuthFallback) {
     return <AuthGateGrace />

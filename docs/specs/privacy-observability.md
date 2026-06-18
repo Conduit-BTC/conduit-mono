@@ -8,9 +8,27 @@ Provide aggregate proof of product usage, reliability, and business health witho
 
 1. Default-off telemetry in product clients.
 2. Aggregate metrics over user-level tracking.
-3. No persistent identifiers for product analytics.
-4. No storage of message/order/payment content in telemetry systems.
-5. Future centralized billing, if accepted under a separate service boundary, is allowed for accounting and entitlements only.
+3. No persistent identifiers for active users in product analytics.
+4. Public commerce page identifiers may be used only as sanitized page context for aggregate storefront performance reporting.
+5. No storage of message/order/payment content in telemetry systems.
+6. Future centralized billing, if accepted under a separate service boundary, is allowed for accounting and entitlements only.
+
+## Identity Boundary
+
+Telemetry must distinguish active user identity from public page identity.
+
+Active user identity means signer, buyer, wallet, session, or connected account
+context. Product clients must not send active user pubkeys, npubs, nsecs,
+wallet pubkeys, signer connection strings, NWC URIs, or any stable identifier
+that can reconstruct a viewer journey.
+
+Public page identity means an address already used to render a public commerce
+surface, such as a storefront route identified by a store npub. A public store
+npub may appear only in sanitized route context such as `page_path` or
+`page_url`, and only for aggregate storefront/page reporting. It must not be
+copied into custom identity fields, joined to active user identity, used for
+per-viewer drilldowns, or used to infer what that store owner is doing in an
+authenticated session.
 
 ## Data Classes
 
@@ -27,25 +45,36 @@ These metrics are aggregate-only and require no private profile of users.
 
 ### Operational Metrics (optional, default-off)
 
-Anonymous reliability and performance counters:
+Anonymous reliability, performance, and public commerce page counters:
 
 - App load success/failure counts
 - Relay connect/publish success rates
 - Latency buckets (`<100ms`, `100-500ms`, `>500ms`)
 - Error counts by category
+- Storefront pageview and browse-action counts by sanitized public store route
 
 Allowed fields:
 
-- `event_name`, `app`, `network`, `status`, `latency_bucket`, `count`, `time_bucket`
+- `event_name`, `app`, `page_url`, `page_path`, `network`, `status`,
+  `latency_bucket`, `count`, `time_bucket`, `surface`, `action`, `step`,
+  `mode`, `rail`, `method`, `event_family`, `count_bucket`,
+  `result_count_bucket`, `amount_bucket`, `product_type`
 
 Disallowed fields:
 
-- pubkey/npub/nsec
+- active user, signer, buyer, wallet, or session pubkey/npub/nsec
 - message content
 - order items or titles
 - invoice strings/payment requests
 - contact/address data
 - IP address or fingerprint fields
+
+Permitted public page context:
+
+- sanitized storefront route context may include the public store npub in
+  `page_path` or `page_url`
+- product, profile, order, query string, unknown route, and active user
+  identifiers must remain redacted
 
 ### Future Billing & Revenue Metrics
 
@@ -71,12 +100,14 @@ Constraint:
 Expose only aggregate KPIs:
 
 - Weekly active merchants (aggregate)
+- Storefront page performance by public store route (aggregate)
 - Weekly order-event count
 - Product catalog growth
 - Checkout success rate (aggregate)
 - MRR and credit economy metrics
 
-No per-user journey replay, no identity-level drilldowns.
+No per-user journey replay, no active-user identity drilldowns, and no joining
+public page performance data to signer, buyer, wallet, or session identity.
 
 ## Enforcement
 
