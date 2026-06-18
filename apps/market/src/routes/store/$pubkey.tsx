@@ -239,11 +239,11 @@ function StorefrontPage() {
   )
 
   const recordStorefrontSearch = useCallback(
-    (query: string) => {
+    (query: string, tags: string[] = selectedTags) => {
       const nextQuery = query || undefined
       const resultCount = filterProductsByFacets(storeProducts, {
         q: nextQuery,
-        tags: selectedTags,
+        tags,
       }).length
 
       recordBrowserTelemetryEvent({
@@ -765,7 +765,9 @@ function StorefrontPage() {
                   <Button
                     variant="outline"
                     onClick={() => {
+                      recordStorefrontSearch("", [])
                       setLocalSearch("")
+                      setSearchDirty(false)
                       updateSearch({
                         q: undefined,
                         tag: undefined,
