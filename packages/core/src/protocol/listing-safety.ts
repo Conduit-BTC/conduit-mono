@@ -59,31 +59,100 @@ type ListingSafetyRule = {
   terms: string[]
 }
 
-const TAG_ONLY_RULES: ListingSafetyRule[] = [
+const WARNING_RULES: ListingSafetyRule[] = [
   {
-    id: "restricted-adult",
+    id: "warning-adult",
     state: "flagged",
     code: "restricted_tag",
-    label: "Restricted adult category",
+    label: "Adult content warning",
     detail:
-      "This listing uses an adult or explicit category tag that is suppressed during the beta launch.",
+      "This listing uses adult or explicit category language. It remains active in Conduit alpha, but may be limited by other marketplaces or future policy controls.",
     merchantAction:
-      "Remove the restricted category tag or edit the listing for a general audience.",
+      "Confirm the listing is legal and accurately categorized, or edit the tags and copy if this should be general-audience inventory.",
     tags: ["adult", "explicit", "nsfw", "pornography"],
-    terms: [],
+    terms: [
+      "adult content",
+      "adult material",
+      "explicit content",
+      "nsfw",
+      "pornographic",
+    ],
+  },
+  {
+    id: "warning-knives-tools",
+    state: "flagged",
+    code: "restricted_term",
+    label: "Tools or blades warning",
+    detail:
+      "This listing uses knife, blade, or tool-adjacent language. It remains active in Conduit alpha, but may be limited by other marketplaces or future policy controls.",
+    merchantAction:
+      "Confirm the listing is legal and ordinary commerce inventory, or clarify the listing copy and tags.",
+    tags: [
+      "knife",
+      "knives",
+      "blade",
+      "blades",
+      "utility-knife",
+      "pocket-knife",
+      "multi-tool",
+      "multitool",
+    ],
+    terms: [
+      "knife",
+      "knives",
+      "blade",
+      "blades",
+      "utility knife",
+      "pocket knife",
+      "multi tool",
+      "multitool",
+    ],
+  },
+  {
+    id: "warning-substance-adjacent",
+    state: "flagged",
+    code: "restricted_term",
+    label: "Substance-adjacent warning",
+    detail:
+      "This listing uses lower-confidence substance-adjacent language. It remains active in Conduit alpha, but may be limited by other marketplaces or future policy controls.",
+    merchantAction:
+      "Confirm the listing is legal where sold and shipped, or clarify the listing copy and tags.",
+    tags: ["cbd", "hemp", "supplement", "supplements", "kratom", "cannabis"],
+    terms: ["cbd", "hemp", "supplement", "supplements", "kratom", "cannabis"],
   },
 ]
 
-const LAUNCH_SAFETY_RULES: ListingSafetyRule[] = [
+const BLOCKING_RULES: ListingSafetyRule[] = [
   {
-    id: "restricted-weapons",
-    state: "flagged",
-    code: "restricted_term",
-    label: "Restricted goods term",
+    id: "blocked-csam",
+    state: "blocked",
+    code: "blocked_term",
+    label: "Blocked illegal sexual exploitation category",
     detail:
-      "This listing includes a restricted goods term that is suppressed during the beta launch.",
+      "This listing uses high-confidence child sexual abuse material category language that Conduit does not present as commerce inventory.",
     merchantAction:
-      "Edit the title, description, or tags so the listing clearly avoids restricted goods.",
+      "Remove this content from Conduit-facing listings. Conduit will not present it as Market inventory.",
+    tags: [
+      "csam",
+      "child-sexual-abuse-material",
+      "child-exploitation-material",
+    ],
+    terms: [
+      "csam",
+      "child sexual abuse material",
+      "child exploitation material",
+      "child pornography",
+    ],
+  },
+  {
+    id: "blocked-weapons",
+    state: "blocked",
+    code: "blocked_term",
+    label: "Blocked weapons category",
+    detail:
+      "This listing uses high-confidence firearms, ammunition, weapon, or explosive category language that Conduit does not present as commerce inventory in alpha.",
+    merchantAction:
+      "Remove weapons category language before publishing a Market-visible listing.",
     tags: [
       "weapon",
       "weapons",
@@ -98,20 +167,23 @@ const LAUNCH_SAFETY_RULES: ListingSafetyRule[] = [
       "firearm",
       "firearms",
       "ammunition",
+      "ammo",
       "explosive",
       "explosives",
       "controlled weapon",
+      "weapon sale",
+      "weapons sale",
     ],
   },
   {
-    id: "restricted-substances",
-    state: "flagged",
-    code: "restricted_term",
-    label: "Restricted substance term",
+    id: "blocked-controlled-substances",
+    state: "blocked",
+    code: "blocked_term",
+    label: "Blocked controlled-substance category",
     detail:
-      "This listing includes a controlled-substance term that is suppressed during the beta launch.",
+      "This listing uses high-confidence controlled-substance or illegal-drug category language that Conduit does not present as commerce inventory in alpha.",
     merchantAction:
-      "Edit the title, description, or tags so the listing clearly avoids controlled substances.",
+      "Remove controlled-substance or illegal-drug category language before publishing a Market-visible listing.",
     tags: [
       "controlled-substance",
       "controlled-substances",
@@ -137,16 +209,23 @@ const LAUNCH_SAFETY_RULES: ListingSafetyRule[] = [
       "This listing includes counterfeit or stolen-goods language that is blocked in Conduit surfaces.",
     merchantAction:
       "Remove counterfeit or stolen-goods language before publishing a Market-visible listing.",
-    tags: ["counterfeit", "stolen"],
-    terms: ["counterfeit", "stolen goods", "stolen item", "stolen items"],
+    tags: ["counterfeit", "counterfeit-goods", "stolen-goods"],
+    terms: [
+      "counterfeit goods",
+      "counterfeit item",
+      "counterfeit items",
+      "stolen goods",
+      "stolen item",
+      "stolen items",
+    ],
   },
 ]
 
 const STATE_RANK: Record<ListingSafetyState, number> = {
   active: 0,
-  hidden: 1,
-  pending_review: 2,
-  flagged: 3,
+  flagged: 1,
+  hidden: 2,
+  pending_review: 3,
   unsupported: 4,
   blocked: 5,
 }
@@ -212,6 +291,14 @@ function getMostSevereState(states: ListingSafetyState[]): ListingSafetyState {
   )
 }
 
+function isMarketVisibleState(state: ListingSafetyState): boolean {
+  return state === "active" || state === "flagged"
+}
+
+function isPurchasableState(state: ListingSafetyState): boolean {
+  return state === "active" || state === "flagged"
+}
+
 export function evaluateListingSafety(
   product: Product,
   decision?: ListingSafetyDecision | null
@@ -222,8 +309,8 @@ export function evaluateListingSafety(
     return {
       state: decision.state,
       reasons: decision.reasons,
-      marketVisible: false,
-      purchasable: false,
+      marketVisible: isMarketVisibleState(decision.state),
+      purchasable: isPurchasableState(decision.state),
       source: decision.source,
       evaluatedAt: decision.evaluatedAt ?? evaluatedAt,
     }
@@ -261,14 +348,15 @@ export function evaluateListingSafety(
     reasons.push({
       code: "unsupported_product_type",
       label: "Unsupported listing type",
-      detail: "This client currently supports simple product listings only.",
+      detail:
+        "Variant listings are not supported in Conduit alpha checkout yet.",
       merchantAction:
-        "Publish this as a simple listing or wait for variable listing support.",
+        "Publish this as a simple listing or wait for variant listing support.",
       source: "client_rules",
     })
   }
 
-  for (const rule of [...TAG_ONLY_RULES, ...LAUNCH_SAFETY_RULES]) {
+  for (const rule of [...WARNING_RULES, ...BLOCKING_RULES]) {
     if (getRuleMatches(product, rule).length === 0) continue
     states.push(rule.state)
     reasons.push(reasonFromRule(rule))
@@ -278,8 +366,8 @@ export function evaluateListingSafety(
   return {
     state,
     reasons,
-    marketVisible: state === "active",
-    purchasable: state === "active",
+    marketVisible: isMarketVisibleState(state),
+    purchasable: isPurchasableState(state),
     source: "client_rules",
     evaluatedAt,
   }
@@ -357,13 +445,13 @@ export function getListingSafetyDisplay(
       }
     case "flagged":
       return {
-        label: "Flagged",
+        label: "Policy warning",
         summary:
           primaryReason?.detail ??
-          "This listing is suppressed from Market during review.",
+          "This listing is active, but it matches an alpha policy warning.",
         merchantAction:
           primaryReason?.merchantAction ??
-          "Edit the listing to resolve the flagged content.",
+          "Review the listing policy fit and edit it if needed.",
         tone: "warning",
       }
     case "blocked":
@@ -393,10 +481,10 @@ export function getListingSafetyDisplay(
         label: "Pending review",
         summary:
           primaryReason?.detail ??
-          "This listing is waiting for review before it appears in Market.",
+          "A non-client review decision has marked this listing pending.",
         merchantAction:
           primaryReason?.merchantAction ??
-          "Wait for review or edit the listing.",
+          "Follow the external review process or edit the listing.",
         tone: "info",
       }
   }

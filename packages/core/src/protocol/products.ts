@@ -281,6 +281,10 @@ export function parseProductEvent(
 
   // market-spec: ["type", "simple|variable|variation", "digital|physical"]
   const typeTag = event.tags?.find((t) => t[0] === "type")
+  const type =
+    typeTag?.[1] === "variable" || typeTag?.[1] === "variation"
+      ? typeTag[1]
+      : "simple"
   const format: "physical" | "digital" =
     typeTag?.[2] === "digital" ? "digital" : "physical"
 
@@ -299,6 +303,7 @@ export function parseProductEvent(
         summaryTag ?? (fromContent ? fromContent.slice(0, 5000) : undefined),
       price: priceInfo?.price ?? 0,
       currency: priceInfo?.currency ?? "USD",
+      type,
       format,
       ...shippingCost,
       ...shippingOption,

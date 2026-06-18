@@ -140,7 +140,42 @@ describe("product listing event parsing", () => {
     expect(parsed.summary).toBe("A Markdown product description.")
     expect(parsed.price).toBe(25_000)
     expect(parsed.currency).toBe("SATS")
+    expect(parsed.type).toBe("simple")
     expect(parsed.format).toBe("digital")
+  })
+
+  it("parses variable and variation product types from spec type tags", () => {
+    const variable = parseProductEvent({
+      id: "variable-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Choose a size before purchase.",
+      tags: [
+        ["d", "variable-product"],
+        ["title", "Variable Product"],
+        ["price", "25000", "SATS"],
+        ["type", "variable", "physical"],
+        ["image", "https://example.com/variable.png"],
+      ],
+    })
+    const variation = parseProductEvent({
+      id: "variation-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Large size option.",
+      tags: [
+        ["d", "variation-product"],
+        ["title", "Variation Product"],
+        ["price", "25000", "SATS"],
+        ["type", "variation", "physical"],
+        ["image", "https://example.com/variation.png"],
+      ],
+    })
+
+    expect(variable.type).toBe("variable")
+    expect(variable.format).toBe("physical")
+    expect(variation.type).toBe("variation")
+    expect(variation.format).toBe("physical")
   })
 
   it("falls back to tags when Markdown content is JSON-shaped but not a legacy product", () => {
@@ -162,5 +197,6 @@ describe("product listing event parsing", () => {
     expect(parsed.summary).toBe('{"material":"linen","care":"cold wash"}')
     expect(parsed.price).toBe(42_000)
     expect(parsed.currency).toBe("SATS")
+    expect(parsed.type).toBe("simple")
   })
 })

@@ -421,7 +421,7 @@ describe("commerce gateway", () => {
       dTag: "blocked-item",
       id: "event-blocked",
       createdAt: 100,
-      title: "Counterfeit display sample",
+      title: "Counterfeit goods display sample",
     })
 
     __setCommerceTestOverrides({
@@ -455,6 +455,38 @@ describe("commerce gateway", () => {
     expect(merchantDetail.data?.safety?.state).toBe("blocked")
   })
 
+  it("keeps policy-warning listings visible in Market while Merchant can inspect the warning", async () => {
+    const productEvent = makeProductEvent({
+      pubkey: "merchant",
+      dTag: "warning-item",
+      id: "event-warning",
+      createdAt: 100,
+      title: "CBD wellness balm",
+    })
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([productEvent] as never)
+          : [],
+    })
+
+    const marketResult = await getMerchantStorefront({
+      merchantPubkey: "merchant",
+      limit: 10,
+    })
+    const merchantResult = await getMerchantStorefront({
+      merchantPubkey: "merchant",
+      includeMarketHidden: true,
+      limit: 10,
+    })
+
+    expect(marketResult.data).toHaveLength(1)
+    expect(marketResult.data[0]?.safety?.state).toBe("flagged")
+    expect(merchantResult.data).toHaveLength(1)
+    expect(merchantResult.data[0]?.safety?.state).toBe("flagged")
+  })
+
   it("does not resurrect an older cached active listing after a newer blocked replacement", async () => {
     cachedProducts.push({
       id: "30402:merchant:replacement-item",
@@ -476,7 +508,7 @@ describe("commerce gateway", () => {
       dTag: "replacement-item",
       id: "event-blocked-replacement",
       createdAt: 200,
-      title: "Counterfeit display sample",
+      title: "Counterfeit goods display sample",
     })
 
     __setCommerceTestOverrides({
@@ -499,12 +531,12 @@ describe("commerce gateway", () => {
     expect(marketResult.data).toHaveLength(0)
     expect(merchantResult.data).toHaveLength(1)
     expect(merchantResult.data[0]?.product.title).toBe(
-      "Counterfeit display sample"
+      "Counterfeit goods display sample"
     )
     expect(
       cachedProducts.find((row) => row.id === "30402:merchant:replacement-item")
         ?.title
-    ).toBe("Counterfeit display sample")
+    ).toBe("Counterfeit goods display sample")
 
     __setCommerceTestOverrides({
       fetchEventsFanout: async () => [],

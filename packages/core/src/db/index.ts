@@ -70,7 +70,7 @@ export interface CachedProduct {
     currency: string
     normalizedCurrency: string
   }
-  type?: "simple" | "variable"
+  type?: "simple" | "variable" | "variation"
   format?: "physical" | "digital"
   shippingCostSats?: number
   sourceShippingCost?: {

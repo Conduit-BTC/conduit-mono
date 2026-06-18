@@ -47,25 +47,48 @@ describe("listing safety", () => {
     expect(isListingPurchasable(safety)).toBe(false)
   })
 
-  it("flags launch-restricted tags and terms", () => {
-    const safety = evaluateListingSafety(
-      product({
-        title: "Vintage firearm accessory",
-        tags: ["gear"],
-      })
-    )
+  it("keeps policy-warning listings visible and purchasable", () => {
+    const examples = [
+      product({ tags: ["adult"] }),
+      product({ title: "CBD wellness balm" }),
+      product({ title: "Pocket knife sheath" }),
+    ]
 
-    expect(safety.state).toBe("flagged")
-    expect(safety.reasons.map((reason) => reason.code)).toContain(
-      "restricted_term"
-    )
-    expect(isListingMarketVisible(safety)).toBe(false)
+    for (const example of examples) {
+      const safety = evaluateListingSafety(example)
+      const display = getListingSafetyDisplay(safety)
+
+      expect(safety.state).toBe("flagged")
+      expect(isListingMarketVisible(safety)).toBe(true)
+      expect(isListingPurchasable(safety)).toBe(true)
+      expect(display.label).toBe("Policy warning")
+      expect(display.summary).toContain("remains active")
+    }
   })
 
-  it("blocks counterfeit or stolen-goods terms", () => {
+  it("blocks high-confidence CSAM, weapons, and controlled-substance categories", () => {
+    const examples = [
+      product({ tags: ["csam"] }),
+      product({ title: "Firearm listing" }),
+      product({ title: "Controlled substance listing" }),
+    ]
+
+    for (const example of examples) {
+      const safety = evaluateListingSafety(example)
+
+      expect(safety.state).toBe("blocked")
+      expect(safety.reasons.map((reason) => reason.code)).toContain(
+        "blocked_term"
+      )
+      expect(isListingMarketVisible(safety)).toBe(false)
+      expect(isListingPurchasable(safety)).toBe(false)
+    }
+  })
+
+  it("blocks high-confidence counterfeit or stolen-goods phrases", () => {
     const safety = evaluateListingSafety(
       product({
-        title: "Counterfeit display sample",
+        title: "Counterfeit goods display sample",
       })
     )
 
@@ -76,10 +99,26 @@ describe("listing safety", () => {
     expect(isListingPurchasable(safety)).toBe(false)
   })
 
+  it("does not block broad ambiguous terms by themselves", () => {
+    const examples = [
+      product({ title: "Stolen moments photo book" }),
+      product({ title: "Workshop tool organizer" }),
+      product({ title: "Adult medium jacket" }),
+    ]
+
+    for (const example of examples) {
+      const safety = evaluateListingSafety(example)
+
+      expect(safety.state).toBe("active")
+      expect(isListingMarketVisible(safety)).toBe(true)
+      expect(isListingPurchasable(safety)).toBe(true)
+    }
+  })
+
   it("shows display copy for the final safety state when multiple reasons match", () => {
     const safety = evaluateListingSafety(
       product({
-        title: "Counterfeit display sample",
+        title: "Counterfeit goods display sample",
         images: [],
       })
     )
@@ -96,10 +135,15 @@ describe("listing safety", () => {
   })
 
   it("marks unsupported product types separately from moderation", () => {
-    const safety = evaluateListingSafety(product({ type: "variable" }))
+    const variable = evaluateListingSafety(product({ type: "variable" }))
+    const variation = evaluateListingSafety(product({ type: "variation" }))
 
-    expect(safety.state).toBe("unsupported")
-    expect(safety.reasons.map((reason) => reason.code)).toContain(
+    expect(variable.state).toBe("unsupported")
+    expect(variable.reasons.map((reason) => reason.code)).toContain(
+      "unsupported_product_type"
+    )
+    expect(variation.state).toBe("unsupported")
+    expect(variation.reasons.map((reason) => reason.code)).toContain(
       "unsupported_product_type"
     )
   })

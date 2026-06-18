@@ -220,6 +220,7 @@ function ListingSafetySummary({
 }) {
   const display = getListingSafetyDisplay(item.safety)
   const isActive = item.safety.state === "active"
+  const isPolicyWarning = item.safety.state === "flagged"
 
   if (isActive) {
     return (
@@ -256,13 +257,13 @@ function ListingSafetySummary({
           <span className="font-medium text-[var(--text-primary)]">
             Market visibility:
           </span>{" "}
-          Hidden
+          {isPolicyWarning ? "Active" : "Hidden"}
         </div>
         <div>
           <span className="font-medium text-[var(--text-primary)]">
             Checkout:
           </span>{" "}
-          Disabled
+          {isPolicyWarning ? "Available" : "Disabled"}
         </div>
       </div>
 
@@ -270,7 +271,7 @@ function ListingSafetySummary({
         {display.merchantAction}
       </p>
       <Button variant="outline" size="sm" className="mt-3" onClick={onEdit}>
-        Fix listing
+        {isPolicyWarning ? "Review listing" : "Fix listing"}
       </Button>
     </article>
   )
