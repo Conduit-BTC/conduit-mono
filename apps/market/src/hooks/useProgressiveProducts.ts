@@ -53,6 +53,7 @@ type ProgressiveListQuery =
       catalogSource?: ProductCatalogSourceMode
       merchantPubkey?: string
       perspectivePubkey?: string | null
+      authenticatedPubkey?: string | null
       seedAuthorPubkeys?: string[]
       textQuery?: string
       tags?: string[]
@@ -63,6 +64,7 @@ type ProgressiveListQuery =
   | {
       scope: "storefront"
       merchantPubkey: string
+      authenticatedPubkey?: string | null
       textQuery?: string
       tag?: string
       sort?: SortOption
@@ -225,6 +227,7 @@ async function fetchNetworkList(
     return await getMarketplaceProducts({
       merchantPubkey: input.merchantPubkey,
       authorPubkeys,
+      authenticatedPubkey: input.authenticatedPubkey,
       textQuery: readsPerspectiveCatalog ? undefined : input.textQuery,
       tags: readsPerspectiveCatalog ? undefined : input.tags,
       sort: readsPerspectiveCatalog ? "newest" : input.sort,
@@ -235,6 +238,7 @@ async function fetchNetworkList(
 
   return await getMerchantStorefront({
     merchantPubkey: input.merchantPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
     textQuery: input.textQuery,
     tag: input.tag,
     sort: input.sort,
@@ -257,6 +261,7 @@ export function useProgressiveProducts(
     input.scope === "marketplace" && !input.merchantPubkey
       ? normalizePubkey(input.perspectivePubkey)
       : null
+  const authenticatedPubkey = normalizePubkey(input.authenticatedPubkey)
   const usesPerspectiveGraph =
     input.scope === "marketplace" && !!perspectivePubkey
   const streamsNetwork = queryEnabled && input.scope === "marketplace"
@@ -277,8 +282,16 @@ export function useProgressiveProducts(
     [perspectivePubkey, seededAuthors, usesPerspectiveGraph]
   )
   const firstDegreeQuery = useQuery({
-    queryKey: ["market-perspective-follows", perspectivePubkey],
-    queryFn: () => getFollowPubkeys({ pubkey: perspectivePubkey! }),
+    queryKey: [
+      "market-perspective-follows",
+      perspectivePubkey,
+      authenticatedPubkey,
+    ],
+    queryFn: () =>
+      getFollowPubkeys({
+        pubkey: perspectivePubkey!,
+        authenticatedPubkey,
+      }),
     enabled:
       queryEnabled && usesPerspectiveGraph && catalogSource !== "conduit",
     staleTime: 60_000,
@@ -536,6 +549,7 @@ export function useProgressiveProducts(
           tags: perspectiveMarketplaceRead ? undefined : marketplaceTags,
           sort: perspectiveMarketplaceRead ? "newest" : input.sort,
           limit: input.limit,
+          authenticatedPubkey,
           readPolicy,
         },
         (result) => {
@@ -631,6 +645,7 @@ export function useProgressiveProducts(
     inputTagsKey,
     marketplaceTags,
     perspectiveMarketplaceRead,
+    authenticatedPubkey,
     streamsNetwork,
   ])
 

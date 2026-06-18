@@ -85,6 +85,26 @@ describe("parseRelayListEvent", () => {
     expect(list.writeRelayUrls).toEqual(["wss://relay.example.com"])
   })
 
+  it("preserves insecure relay urls while parsing NIP-65 tags", () => {
+    const list = parseRelayListEvent(
+      makeRelayListEvent({
+        pubkey: "alice",
+        tags: [
+          ["r", "ws://Artshop:4848/"],
+          ["r", "wss://relay.example.com"],
+        ],
+      })
+    )
+    expect(list.readRelayUrls).toEqual([
+      "ws://artshop:4848",
+      "wss://relay.example.com",
+    ])
+    expect(list.writeRelayUrls).toEqual([
+      "ws://artshop:4848",
+      "wss://relay.example.com",
+    ])
+  })
+
   it("captures source relay urls when provided", () => {
     const list = parseRelayListEvent(makeRelayListEvent({ pubkey: "alice" }), {
       sourceRelayUrls: ["wss://Origin.example.com"],
@@ -220,6 +240,84 @@ describe("getRelayList / getRelayLists cache behavior", () => {
     await getRelayLists(["alice", "alice", "  ", ""])
     expect(fetchCalls.length).toBe(1)
     expect(fetchCalls[0]?.authors).toEqual(["alice"])
+  })
+
+  it("filters insecure relays from third-party lookup results without mutating the raw cache", async () => {
+    __setRelayListTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        fetchCalls.push({ authors: (filter.authors as string[]) ?? [] })
+        return [
+          makeRelayListEvent({
+            pubkey: "alice",
+            tags: [
+              ["r", "ws://artshop:4848"],
+              ["r", "wss://relay-alice.example.com"],
+            ],
+          }),
+        ] as unknown as NDKEvent[]
+      },
+    })
+
+    const list = await getRelayList("alice")
+    expect(list?.readRelayUrls).toEqual(["wss://relay-alice.example.com"])
+    expect(cache.get("alice")?.readRelayUrls).toEqual([
+      "ws://artshop:4848",
+      "wss://relay-alice.example.com",
+    ])
+  })
+
+  it("preserves insecure relays when the lookup matches the authenticated pubkey", async () => {
+    __setRelayListTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        fetchCalls.push({ authors: (filter.authors as string[]) ?? [] })
+        return [
+          makeRelayListEvent({
+            pubkey: "alice",
+            tags: [
+              ["r", "ws://artshop:4848"],
+              ["r", "wss://relay-alice.example.com"],
+            ],
+          }),
+        ] as unknown as NDKEvent[]
+      },
+    })
+
+    const list = await getRelayList("alice", {
+      allowInsecureRelayUrlsForPubkey: "alice",
+    })
+    expect(list?.readRelayUrls).toEqual([
+      "ws://artshop:4848",
+      "wss://relay-alice.example.com",
+    ])
+  })
+
+  it("filters insecure relays only for non-authenticated pubkeys in batched lookups", async () => {
+    __setRelayListTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        const authors = (filter.authors as string[]) ?? []
+        fetchCalls.push({ authors })
+        return authors.map((pubkey) =>
+          makeRelayListEvent({
+            pubkey,
+            tags: [
+              ["r", `ws://local-${pubkey}:4848`],
+              ["r", `wss://relay-${pubkey}.example.com`],
+            ],
+          })
+        ) as unknown as NDKEvent[]
+      },
+    })
+
+    const result = await getRelayLists(["alice", "bob"], {
+      allowInsecureRelayUrlsForPubkey: "alice",
+    })
+    expect(result.get("alice")?.readRelayUrls).toEqual([
+      "ws://local-alice:4848",
+      "wss://relay-alice.example.com",
+    ])
+    expect(result.get("bob")?.readRelayUrls).toEqual([
+      "wss://relay-bob.example.com",
+    ])
   })
 
   it("ingestRelayListEvent warms the cache without a network call", async () => {

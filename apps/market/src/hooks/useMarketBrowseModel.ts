@@ -59,6 +59,7 @@ export function useMarketBrowseModel({
     catalogSource: effectiveCatalogSource,
     perspectivePubkey:
       status === "connected" && pubkey ? pubkey : guestMarket.perspectivePubkey,
+    authenticatedPubkey: status === "connected" ? pubkey : null,
     seedAuthorPubkeys: guestMarket.seedAuthorPubkeys,
     sort: "newest",
   })

@@ -200,6 +200,7 @@ async function publishOrderConversationMessage(params: {
   await publishWithPlanner(wrappedToBuyer, {
     intent: "recipient_event",
     authorPubkey: params.merchantPubkey,
+    authenticatedPubkey: params.merchantPubkey,
     recipientPubkeys: [params.buyerPubkey],
     refreshRelayLists: true,
     deliveryMode: "critical",
@@ -209,6 +210,7 @@ async function publishOrderConversationMessage(params: {
     await publishWithPlanner(wrappedToMerchant, {
       intent: "recipient_event",
       authorPubkey: params.merchantPubkey,
+      authenticatedPubkey: params.merchantPubkey,
       recipientPubkeys: [params.merchantPubkey],
       refreshRelayLists: true,
       deliveryMode: "critical",

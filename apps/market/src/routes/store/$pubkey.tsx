@@ -171,6 +171,7 @@ function StorefrontPage() {
   const productsQuery = useProgressiveProducts({
     scope: "storefront",
     merchantPubkey: pubkey,
+    authenticatedPubkey: status === "connected" ? viewerPubkey : null,
     textQuery: search.q,
   })
   const profileRelayHints = useMemo(

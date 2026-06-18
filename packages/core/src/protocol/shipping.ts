@@ -220,6 +220,7 @@ export async function publishShippingOptions(
   await publishWithPlanner(event, {
     intent: "author_event",
     authorPubkey: signerPubkey,
+    authenticatedPubkey: signerPubkey,
     deliveryMode: "critical",
   })
 }

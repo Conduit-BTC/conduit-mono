@@ -44,6 +44,12 @@ export interface RelayListLookupOptions {
   cacheOnly?: boolean
   /** Custom relay set to scan; defaults to user's general read relays. */
   relayUrls?: readonly string[]
+  /**
+   * Preserve ws:// relay URLs only when the requested kind-10002 owner matches
+   * this authenticated pubkey. Third-party local relays are not useful from the
+   * public web app and trigger browser mixed-content failures.
+   */
+  allowInsecureRelayUrlsForPubkey?: string | null
   /** Override `Date.now()` (test seam). */
   now?: () => number
 }
@@ -82,6 +88,54 @@ function dedupeUrls(urls: readonly string[]): string[] {
     out.push(normalized.url)
   }
   return out
+}
+
+function comparisonPubkey(pubkey: string | null | undefined): string | null {
+  const normalized = pubkey?.trim().toLowerCase()
+  return normalized ? normalized : null
+}
+
+export function isInsecureRelayUrl(url: string): boolean {
+  try {
+    const protocol = new URL(url).protocol
+    return protocol === "ws:" || protocol === "http:"
+  } catch {
+    return false
+  }
+}
+
+function allowsInsecureRelayUrls(
+  listPubkey: string,
+  allowedPubkey: string | null | undefined
+): boolean {
+  const owner = comparisonPubkey(listPubkey)
+  const allowed = comparisonPubkey(allowedPubkey)
+  return !!owner && owner === allowed
+}
+
+export function filterRelayListForContext(
+  list: RelayList,
+  options: Pick<RelayListLookupOptions, "allowInsecureRelayUrlsForPubkey"> = {}
+): RelayList {
+  if (
+    allowsInsecureRelayUrls(
+      list.pubkey,
+      options.allowInsecureRelayUrlsForPubkey
+    )
+  ) {
+    return list
+  }
+
+  return {
+    ...list,
+    readRelayUrls: list.readRelayUrls.filter((url) => !isInsecureRelayUrl(url)),
+    writeRelayUrls: list.writeRelayUrls.filter(
+      (url) => !isInsecureRelayUrl(url)
+    ),
+    sourceRelayUrls: list.sourceRelayUrls?.filter(
+      (url) => !isInsecureRelayUrl(url)
+    ),
+  }
 }
 
 function preferencesToReadWrite(preferences: RelayPreference[]): {
@@ -175,6 +229,13 @@ async function putCached(list: RelayList): Promise<void> {
   }
 }
 
+function filterLookupRelayList(
+  list: RelayList | undefined,
+  opts: RelayListLookupOptions
+): RelayList | undefined {
+  return list ? filterRelayListForContext(list, opts) : undefined
+}
+
 /**
  * Pick the most recent NIP-65 event for the requested pubkey.
  *
@@ -219,9 +280,9 @@ export async function getRelayList(
 
   const cached = opts.skipCache ? undefined : await loadCached(pubkey)
   if (cached && now(opts) - cached.cachedAt < RELAY_LIST_CACHE_TTL_MS) {
-    return cached
+    return filterLookupRelayList(cached, opts)
   }
-  if (opts.cacheOnly) return cached
+  if (opts.cacheOnly) return filterLookupRelayList(cached, opts)
 
   const relayUrls =
     opts.relayUrls ??
@@ -234,13 +295,13 @@ export async function getRelayList(
     )
     const latest = pickLatestRelayListEvent(events, pubkey)
     if (!latest) {
-      return cached
+      return filterLookupRelayList(cached, opts)
     }
     const list = parseRelayListEvent(latest, { cachedAt: now(opts) })
     await putCached(list)
-    return list
+    return filterLookupRelayList(list, opts)
   } catch {
-    return cached
+    return filterLookupRelayList(cached, opts)
   }
 }
 
@@ -264,9 +325,9 @@ export async function getRelayLists(
     for (const pubkey of unique) {
       const cached = await loadCached(pubkey)
       if (cached && now(opts) - cached.cachedAt < RELAY_LIST_CACHE_TTL_MS) {
-        out.set(pubkey, cached)
+        out.set(pubkey, filterRelayListForContext(cached, opts))
       } else {
-        if (cached) out.set(pubkey, cached)
+        if (cached) out.set(pubkey, filterRelayListForContext(cached, opts))
         missing.push(pubkey)
       }
     }
@@ -296,7 +357,7 @@ export async function getRelayLists(
       if (!latest) continue
       const list = parseRelayListEvent(latest, { cachedAt: now(opts) })
       await putCached(list)
-      out.set(pubkey, list)
+      out.set(pubkey, filterRelayListForContext(list, opts))
     }
   } catch {
     // best-effort; cached entries already merged above
@@ -319,5 +380,5 @@ export async function ingestRelayListEvent(
     cachedAt: Date.now(),
   })
   await putCached(list)
-  return list
+  return filterRelayListForContext(list)
 }

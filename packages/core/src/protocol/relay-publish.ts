@@ -38,6 +38,8 @@ const CRITICAL_RETRY_PUBLISH_TIMEOUT_MS = 15_000
 export interface PublishWithPlannerInput {
   intent: RelayWriteIntent
   authorPubkey?: string
+  /** Authenticated pubkey whose own NIP-65 local relays may be used. */
+  authenticatedPubkey?: string | null
   recipientPubkeys?: readonly string[]
   /** Fetch missing NIP-65 hints before planning instead of cache-only lookup. */
   refreshRelayLists?: boolean
@@ -424,6 +426,7 @@ export async function planPublishRelays(
     hintPubkeys.length > 0
       ? await getRelayLists(hintPubkeys, {
           cacheOnly: input.refreshRelayLists !== true,
+          allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
         })
       : undefined
 
@@ -432,6 +435,7 @@ export async function planPublishRelays(
     authorPubkey: input.authorPubkey,
     recipientPubkeys: input.recipientPubkeys,
     relayLists,
+    authenticatedPubkey: input.authenticatedPubkey,
     maxPrimaryRelays: input.deliveryMode === "critical" ? 0 : undefined,
     maxBroadcastRelays: input.deliveryMode === "critical" ? 0 : undefined,
     skipHealthFilter:

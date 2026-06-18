@@ -145,6 +145,57 @@ describe("planRelayReads", () => {
     expect(plan.hintRelayUrls).toEqual(["wss://alice-write.example.com"])
   })
 
+  it("ignores insecure author relays from third-party NIP-65 hints", () => {
+    const state = settings([
+      entry("wss://commerce.example.com", { section: "commerce" }),
+    ])
+    const lists = new Map<string, RelayList>([
+      [
+        "alice",
+        relayList(
+          "alice",
+          ["wss://alice-read.example.com"],
+          ["ws://artshop:4848", "wss://alice-write.example.com"]
+        ),
+      ],
+    ])
+    const plan = planRelayReads({
+      intent: "author_products",
+      authors: ["alice"],
+      relayLists: lists,
+      settings: state,
+    })
+    expect(plan.hintRelayUrls).toEqual(["wss://alice-write.example.com"])
+    expect(plan.relayUrls).not.toContain("ws://artshop:4848")
+  })
+
+  it("allows insecure author relays from the authenticated user's own NIP-65", () => {
+    const state = settings([
+      entry("wss://commerce.example.com", { section: "commerce" }),
+    ])
+    const lists = new Map<string, RelayList>([
+      [
+        "alice",
+        relayList(
+          "alice",
+          ["wss://alice-read.example.com"],
+          ["ws://artshop:4848", "wss://alice-write.example.com"]
+        ),
+      ],
+    ])
+    const plan = planRelayReads({
+      intent: "author_products",
+      authors: ["alice"],
+      authenticatedPubkey: "alice",
+      relayLists: lists,
+      settings: state,
+    })
+    expect(plan.hintRelayUrls).toEqual([
+      "ws://artshop:4848",
+      "wss://alice-write.example.com",
+    ])
+  })
+
   it("uses recipient read relays as hints for dm_inbox", () => {
     const state = settings([entry("wss://general.example.com")])
     const lists = new Map<string, RelayList>([
@@ -306,6 +357,69 @@ describe("planRelayWrites", () => {
       settings: state,
     })
     expect(plan.primaryRelayUrls).toEqual(["wss://bob-inbox.example.com"])
+    expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.example.com"])
+  })
+
+  it("treats third-party recipient NIP-65 lists with only insecure relays as missing", () => {
+    const state = settings([
+      entry("wss://outbox.example.com", {
+        section: "commerce",
+        writeEnabled: true,
+        capabilities: {
+          nip11: true,
+          search: false,
+          dm: true,
+          auth: true,
+          commerce: true,
+          protectedMessages: true,
+          listings: true,
+          cleanup: true,
+        },
+      }),
+    ])
+    const lists = new Map<string, RelayList>([
+      ["bob", relayList("bob", ["ws://umbrel.local:4848"], [])],
+    ])
+    const plan = planRelayWrites({
+      intent: "recipient_event",
+      recipientPubkeys: ["bob"],
+      relayLists: lists,
+      settings: state,
+    })
+    expect(plan.primaryRelayUrls).toEqual(
+      config.commerceDmFallbackRelayUrls.slice(0, 4)
+    )
+    expect(plan.primaryRelayUrls).not.toContain("ws://umbrel.local:4848")
+  })
+
+  it("allows insecure recipient relays for authenticated self-copy delivery", () => {
+    const state = settings([
+      entry("wss://outbox.example.com", {
+        section: "commerce",
+        writeEnabled: true,
+        capabilities: {
+          nip11: true,
+          search: false,
+          dm: true,
+          auth: true,
+          commerce: true,
+          protectedMessages: true,
+          listings: true,
+          cleanup: true,
+        },
+      }),
+    ])
+    const lists = new Map<string, RelayList>([
+      ["alice", relayList("alice", ["ws://umbrel.local:4848"], [])],
+    ])
+    const plan = planRelayWrites({
+      intent: "recipient_event",
+      authenticatedPubkey: "alice",
+      recipientPubkeys: ["alice"],
+      relayLists: lists,
+      settings: state,
+    })
+    expect(plan.primaryRelayUrls).toEqual(["ws://umbrel.local:4848"])
     expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.example.com"])
   })
 
