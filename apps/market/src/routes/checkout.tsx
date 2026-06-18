@@ -24,8 +24,6 @@ import {
   fetchLnurlInvoice,
   fetchLnurlPayMetadata,
   fetchZapInvoice,
-  getListingSafetyDisplay,
-  getProductDetail,
   getPriceSats,
   getShippingCostSats,
   getTelemetryAmountBucket,
@@ -34,7 +32,6 @@ import {
   getNdk,
   getShippingOptions,
   getShippingDestinationEligibility,
-  isListingPurchasable,
   normalizePubkey,
   normalizeLightningInvoice,
   parseOrderMessageRumorEvent,
@@ -147,11 +144,6 @@ type CheckoutCompletionSnapshot = {
   merchantPubkey: string
   items: CartItem[]
   totalSats: number
-}
-
-type CheckoutListingSafetyIssue = {
-  title: string
-  message: string
 }
 
 // Shipping is session-scoped: pre-fills within a browser session, never
@@ -683,8 +675,6 @@ function CheckoutPage() {
   const [weblnAvailable, setWeblnAvailable] = useState(false)
   const [pendingManualInvoice, setPendingManualInvoice] =
     useState<PendingCheckoutManualInvoice | null>(null)
-  const [listingSafetyCheckPending, setListingSafetyCheckPending] =
-    useState(false)
   const [pricingRefreshPending, setPricingRefreshPending] = useState(false)
   const [pricingRefreshFailedAt, setPricingRefreshFailedAt] = useState<
     number | null
@@ -1042,75 +1032,7 @@ function CheckoutPage() {
     }
   }
 
-  async function getCheckoutListingSafetyIssues(): Promise<
-    CheckoutListingSafetyIssue[]
-  > {
-    const results = await Promise.all(
-      checkoutItems.map(async (item) => {
-        try {
-          const result = await getProductDetail({
-            productId: item.productId,
-            includeMarketHidden: true,
-          })
-          if (!result.data) {
-            return {
-              title: item.title,
-              message:
-                "Listing is unavailable from the current relay view. Remove it from the cart or try again after the listing refreshes.",
-            }
-          }
-
-          const safety = result.data.safety
-          if (!safety || isListingPurchasable(safety)) return null
-
-          const display = getListingSafetyDisplay(safety)
-          return {
-            title: item.title,
-            message: `${display.label} listings are not available for checkout right now. Remove this item or wait for the merchant to update it.`,
-          }
-        } catch {
-          return {
-            title: item.title,
-            message:
-              "Listing state could not be refreshed. Try again before sending an order.",
-          }
-        }
-      })
-    )
-
-    return results.filter(
-      (issue): issue is CheckoutListingSafetyIssue => issue !== null
-    )
-  }
-
-  function formatCheckoutListingSafetyIssues(
-    issues: CheckoutListingSafetyIssue[]
-  ): string {
-    if (issues.length === 1) {
-      const issue = issues[0]!
-      return `${issue.title}: ${issue.message}`
-    }
-
-    return `Some cart items are no longer available for checkout: ${issues
-      .map((issue) => issue.title)
-      .join(", ")}. Remove those items or wait for the merchant to update them.`
-  }
-
-  async function validateCheckoutListings(): Promise<boolean> {
-    setListingSafetyCheckPending(true)
-    try {
-      const issues = await getCheckoutListingSafetyIssues()
-      if (issues.length > 0) {
-        setError(formatCheckoutListingSafetyIssues(issues))
-        return false
-      }
-      return true
-    } finally {
-      setListingSafetyCheckPending(false)
-    }
-  }
-
-  async function continueToPayment(): Promise<void> {
+  function continueToPayment(): void {
     setShippingAttempted(true)
     const errors = validateShippingFields(shipping)
     setShippingErrors(errors)
@@ -1127,7 +1049,6 @@ function CheckoutPage() {
       setError(blockingMessage)
       return
     }
-    if (!(await validateCheckoutListings())) return
     recordCheckoutStepResult({
       checkoutMode: "checkout",
       status: "success",
@@ -1323,10 +1244,6 @@ function CheckoutPage() {
 
     setError(null)
     setPaidNotice(null)
-    if (!(await validateCheckoutListings())) {
-      setStep("payment")
-      return
-    }
     setStep("signing")
     recordCheckoutStepResult({
       checkoutMode: "order_first",
@@ -1823,10 +1740,6 @@ function CheckoutPage() {
         stepName: "direct_payment",
       })
       setError("Merchant does not have a Lightning address.")
-      return
-    }
-    if (!(await validateCheckoutListings())) {
-      setOverlayPlaying(false)
       return
     }
     // Reject a concurrent attempt: a double-clicked "Pay now" must not publish
@@ -2419,12 +2332,9 @@ function CheckoutPage() {
 
                   <Button
                     className="mt-2 h-11 w-full text-sm"
-                    disabled={listingSafetyCheckPending}
-                    onClick={() => void continueToPayment()}
+                    onClick={continueToPayment}
                   >
-                    {listingSafetyCheckPending
-                      ? "Checking listings..."
-                      : "Continue to Send Order"}
+                    Continue to Send Order
                   </Button>
 
                   <p className="text-xs leading-6 text-[var(--text-muted)]">
@@ -2750,7 +2660,6 @@ function CheckoutPage() {
                       {fastEligible && (
                         <Button
                           className="h-11 px-5 text-sm"
-                          disabled={listingSafetyCheckPending}
                           onClick={() => {
                             // Show the lightning-strike animation immediately
                             // so the buyer gets click feedback within ~100ms
@@ -2790,13 +2699,10 @@ function CheckoutPage() {
                             : "primary"
                         }
                         className="h-11 px-5 text-sm"
-                        disabled={listingSafetyCheckPending}
-                        onClick={() => void placeOrder()}
+                        onClick={placeOrder}
                       >
                         <OrderIcon className="h-4 w-4" />
-                        {listingSafetyCheckPending
-                          ? "Checking listings..."
-                          : "Send order"}
+                        Send order
                       </Button>
                     </>
                   )}

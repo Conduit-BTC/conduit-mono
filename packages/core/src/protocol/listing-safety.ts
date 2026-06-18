@@ -297,6 +297,37 @@ export function isListingPurchasable(
   return evaluation.purchasable
 }
 
+function getReasonState(
+  reason: Pick<ListingSafetyReason, "code">
+): ListingSafetyState | null {
+  switch (reason.code) {
+    case "merchant_hidden":
+    case "missing_market_image":
+      return "hidden"
+    case "restricted_tag":
+    case "restricted_term":
+      return "flagged"
+    case "blocked_term":
+      return "blocked"
+    case "unsupported_product_type":
+      return "unsupported"
+    case "pending_review":
+      return "pending_review"
+    case "external_decision":
+      return null
+  }
+}
+
+function getPrimaryDisplayReason(
+  evaluation: Pick<ListingSafetyEvaluation, "state" | "reasons">
+): ListingSafetyReason | undefined {
+  return (
+    evaluation.reasons.find(
+      (reason) => getReasonState(reason) === evaluation.state
+    ) ?? evaluation.reasons[0]
+  )
+}
+
 export function getListingSafetyDisplay(
   evaluation: Pick<ListingSafetyEvaluation, "state" | "reasons">
 ): {
@@ -305,7 +336,7 @@ export function getListingSafetyDisplay(
   merchantAction: string
   tone: "success" | "warning" | "error" | "info" | "neutral"
 } {
-  const firstReason = evaluation.reasons[0]
+  const primaryReason = getPrimaryDisplayReason(evaluation)
 
   switch (evaluation.state) {
     case "active":
@@ -318,9 +349,9 @@ export function getListingSafetyDisplay(
     case "hidden":
       return {
         label: "Hidden",
-        summary: firstReason?.detail ?? "This listing is hidden from Market.",
+        summary: primaryReason?.detail ?? "This listing is hidden from Market.",
         merchantAction:
-          firstReason?.merchantAction ??
+          primaryReason?.merchantAction ??
           "Update the listing before publishing.",
         tone: "warning",
       }
@@ -328,10 +359,10 @@ export function getListingSafetyDisplay(
       return {
         label: "Flagged",
         summary:
-          firstReason?.detail ??
+          primaryReason?.detail ??
           "This listing is suppressed from Market during review.",
         merchantAction:
-          firstReason?.merchantAction ??
+          primaryReason?.merchantAction ??
           "Edit the listing to resolve the flagged content.",
         tone: "warning",
       }
@@ -339,10 +370,10 @@ export function getListingSafetyDisplay(
       return {
         label: "Blocked",
         summary:
-          firstReason?.detail ??
+          primaryReason?.detail ??
           "This listing is blocked from Market and checkout.",
         merchantAction:
-          firstReason?.merchantAction ??
+          primaryReason?.merchantAction ??
           "Edit or remove the listing before it can be visible.",
         tone: "error",
       }
@@ -350,10 +381,10 @@ export function getListingSafetyDisplay(
       return {
         label: "Unsupported",
         summary:
-          firstReason?.detail ??
+          primaryReason?.detail ??
           "This listing cannot be safely interpreted by the current client.",
         merchantAction:
-          firstReason?.merchantAction ??
+          primaryReason?.merchantAction ??
           "Update the listing to a supported format.",
         tone: "error",
       }
@@ -361,10 +392,11 @@ export function getListingSafetyDisplay(
       return {
         label: "Pending review",
         summary:
-          firstReason?.detail ??
+          primaryReason?.detail ??
           "This listing is waiting for review before it appears in Market.",
         merchantAction:
-          firstReason?.merchantAction ?? "Wait for review or edit the listing.",
+          primaryReason?.merchantAction ??
+          "Wait for review or edit the listing.",
         tone: "info",
       }
   }

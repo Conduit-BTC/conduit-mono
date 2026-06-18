@@ -76,6 +76,25 @@ describe("listing safety", () => {
     expect(isListingPurchasable(safety)).toBe(false)
   })
 
+  it("shows display copy for the final safety state when multiple reasons match", () => {
+    const safety = evaluateListingSafety(
+      product({
+        title: "Counterfeit display sample",
+        images: [],
+      })
+    )
+    const display = getListingSafetyDisplay(safety)
+
+    expect(safety.state).toBe("blocked")
+    expect(safety.reasons.map((reason) => reason.code)).toEqual([
+      "missing_market_image",
+      "blocked_term",
+    ])
+    expect(display.label).toBe("Blocked")
+    expect(display.summary).toContain("counterfeit or stolen-goods")
+    expect(display.merchantAction).toContain("counterfeit or stolen-goods")
+  })
+
   it("marks unsupported product types separately from moderation", () => {
     const safety = evaluateListingSafety(product({ type: "variable" }))
 
