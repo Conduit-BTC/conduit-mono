@@ -1,10 +1,8 @@
 /**
  * Social commerce event-graph hydrator (scaffold).
  *
- * This module implements the API surface called for in
- * `docs/knowledge/future/social_commerce_performance_checkpoint.md` Layers 5
- * and "Engagement Summary APIs". It does not ship any UI — surfaces
- * (product cards, profile headers, etc.) will adopt it incrementally.
+ * This module implements the shared social-summary hydration API used by
+ * product cards, profile headers, and related commerce surfaces.
  *
  * Design rules:
  *  - Cache-first: surfaces read from Dexie immediately and let the

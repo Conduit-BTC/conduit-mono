@@ -4,7 +4,7 @@
 
 Conduit Market is the buyer-facing marketplace for discovering products, evaluating merchant trust context, managing a cart, placing orders, sending payments, and tracking buyer-merchant communication over Nostr-native protocols.
 
-This spec covers current Market scope. Store Builder, monetization, billing, and service-operated checkout automation are parked under `docs/knowledge/future/` and are not Market implementation requirements.
+This spec covers current Market scope.
 
 ## References
 

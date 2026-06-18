@@ -13,7 +13,7 @@
 - Repo: https://github.com/PlebeianApp/market
 - Notes: Gamma Markets / NIP-99 compliant (per partner claims); used to catch practical interoperability footguns.
 
-### Additional external markets (future)
+### Additional external markets
 
 - (Add here as new partners become relevant)
 
@@ -22,7 +22,7 @@
 Define the bounds of interoperability between Conduit and external Gamma/NIP-99 marketplaces, starting with Plebeian, while preserving:
 
 - protocol correctness
-- Conduit business requirements (checkout into Conduit merchants)
+- Conduit merchant checkout requirements
 - development velocity
 - architectural integrity (no silent coupling to any single app)
 
@@ -34,10 +34,10 @@ Define the bounds of interoperability between Conduit and external Gamma/NIP-99 
 2. Network interoperability
    - Conduit-created listings render and are discoverable in external Gamma/NIP-99 markets.
    - External Gamma/NIP-99 listings render and are discoverable in Conduit.
-3. Conduit business viability
+3. Conduit merchant checkout
    - Enable external discovery -> checkout with Conduit merchants wherever feasible.
 4. Velocity and design quality
-   - Do not block Conduit roadmap to mirror non-spec or fragile external patterns.
+   - Do not block spec-correct implementation to mirror non-spec or fragile external patterns.
    - If we observe issues, we surface them; we don’t silently adopt them.
 
 ## Interoperability Levels
@@ -168,4 +168,3 @@ Add short entries here as they arise:
 - Conduit behavior: ...
 - Risk: Level 1 / Level 2 / Level 3
 - Action: adapter / escalate / ignore (with reason)
-

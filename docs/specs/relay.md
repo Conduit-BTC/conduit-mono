@@ -102,7 +102,7 @@ VITE_APP_WRITE_RELAY_URLS=
 
 The canonical reset/fallback list is code-owned in `packages/core/src/config.ts` and currently starts with `wss://conduitl2.fly.dev`. Retired Conduit relay hosts must not be used in active examples.
 
-Future Phase 2B work is expected to add a more explicit source-aware relay outcome model and read frontier. That direction should be documented before replacing current NDK-backed helpers with a custom relay substrate.
+New source-aware relay outcome work should be documented before replacing current shared helpers with a custom relay substrate.
 
 ## Success Metrics
 

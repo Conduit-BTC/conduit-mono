@@ -6,7 +6,7 @@ Conduit is a decentralized commerce platform built on Nostr protocol. This monor
 
 - **Market** (`apps/market`) - Buyer-facing marketplace for product discovery and purchase
 - **Merchant Portal** (`apps/merchant`) - Seller dashboard for product management, orders, and communications
-- **Store Builder** (`apps/store-builder`) - Placeholder app for future standalone merchant storefront work
+- **Store Builder** (`apps/store-builder`) - Placeholder app shell
 
 ## Architecture
 
@@ -17,14 +17,13 @@ conduit-mono/
 ├── apps/
 │   ├── market/           # Buyer marketplace
 │   ├── merchant/         # Seller dashboard
-│   └── store-builder/    # Future storefront placeholder
+│   └── store-builder/    # Placeholder app shell
 ├── packages/
 │   ├── core/             # Types, protocol, schemas, utilities
 │   └── ui/               # Shared React components
 ├── docs/
 │   ├── README.md         # Docs index and source-of-truth guide
 │   ├── DESIGN.md         # Shared design system and theming guidance
-│   ├── plans/            # ROADMAP.md, IMPLEMENTATION.md
 │   ├── specs/            # Feature specifications
 │   └── knowledge/        # Supporting notes and references
 └── context/              # Ephemeral files (gitignored)
@@ -70,8 +69,7 @@ Nostr-sensitive work must read `docs/knowledge/external-nostr-references.md` and
 1. **Start**: Read `AGENTS.md`, then:
    - `docs/README.md` - Documentation layout and source-of-truth rules
    - `docs/ARCHITECTURE.md` - System diagrams, protocol, data flow
-   - `docs/plans/ROADMAP.md` - Strategic epochs and direction
-   - `docs/plans/IMPLEMENTATION.md` - Current build phases and deliverables
+   - `docs/DESIGN.md` - Shared design system and theming guidance
    - `docs/knowledge/self-healing-agent-system.md` - Public-safe agent automation boundary
 
 2. **Before building**: Read the relevant `docs/specs/*.md` for feature details
@@ -88,7 +86,7 @@ Nostr-sensitive work must read `docs/knowledge/external-nostr-references.md` and
    - The reviewer decides: `No docs follow-up needed`, `Docs-only PR after merge`, or `Docs/spec PR required before merge`.
    - Draft docs-only follow-up PRs only when a reviewer or maintainer asks.
 
-6. **End**: Report validation and any doc/status follow-ups. Do not edit planning status checkboxes unless the user explicitly asks; live execution status belongs in Linear. When Phase 2 exit criteria appear complete, prompt the user that it may be time to archive or delete `docs/plans/PHASE_2_IMPLEMENTATION.md`.
+6. **End**: Report validation and any doc/status follow-ups. Do not add product strategy, sequencing, private commercial, or private planning notes to tracked docs.
 
 ## Nostr Task Routing
 
@@ -106,7 +104,6 @@ Treat these as Nostr-sensitive changes: `packages/core/src/protocol/*`, relay se
 Do not modify without explicit confirmation:
 
 - `docs/ARCHITECTURE.md` - System architecture and diagrams
-- `docs/plans/IMPLEMENTATION.md` - Technical build guide
 - `docs/specs/*.md` - Feature specifications
 
 ## Public Repo Posture
@@ -134,7 +131,7 @@ Keep public language focused on:
 - protocol/spec implementation
 - trust, provenance, and open-source-safe engineering context
 
-If discussing future repo boundaries, keep `conduit-services` clearly separate from the current `conduit-mono` scope unless the repo structure has actually changed.
+If discussing separate repositories, keep them clearly separate from the current `conduit-mono` scope unless the repo structure has actually changed.
 
 Keep private company context out of tracked public history unless explicitly requested.
 

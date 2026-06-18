@@ -4,7 +4,7 @@
 
 The Merchant Portal is the seller workspace for product publishing, order handling, payment readiness, shipping readiness, profile setup, relay/network settings, and customer communication.
 
-This spec covers current Merchant scope. Store Builder, billing, monetization, and service-operated automation are parked under `docs/knowledge/future/` and are not Merchant implementation requirements.
+This spec covers current Merchant scope.
 
 ## References
 
@@ -113,7 +113,7 @@ Product identity should preserve:
 5. Publish to selected `OUT` relays, prioritizing commerce-compatible relays for commerce events
 6. Preserve local signed state while relay convergence completes
 
-Current Phase 2A work may continue using the shared NDK-backed helpers. When new work needs explicit per-relay outcomes, source health, or source-aware convergence, leave room for the Phase 2B relay/read architecture instead of adding route-local NDK fanout.
+Current work may continue using the shared NDK-backed helpers. When new work needs explicit per-relay outcomes, source health, or source-aware convergence, prefer shared protocol and relay helpers instead of adding route-local NDK fanout.
 
 ## Deletion Flow
 

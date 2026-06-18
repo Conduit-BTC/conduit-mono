@@ -2,8 +2,6 @@
 
 System architecture and technical design for the current `conduit-mono` client repository.
 
-Execution sequencing lives in Linear. This document describes repo-local architecture and should not be used to pull future service, billing, or generated-store scope into current Market and Merchant milestones.
-
 ---
 
 ## System Overview
@@ -20,7 +18,7 @@ Store Builder ──┘
 | -------------------- | ------------------------------------------------------------------------------------------------------ |
 | `apps/market`        | Buyer marketplace: browse, cart, checkout, orders, messages, wallet, network settings                  |
 | `apps/merchant`      | Seller workspace: readiness dashboard, products, orders, profile, payments, shipping, network settings |
-| `apps/store-builder` | Placeholder app for future standalone storefront work                                                  |
+| `apps/store-builder` | Placeholder app shell                                                                                  |
 
 | Package         | Current role                                                                                                             |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------ |
@@ -33,13 +31,13 @@ Store Builder ──┘
 
 ## Public Domains
 
-| Domain                   | Purpose                      |
-| ------------------------ | ---------------------------- |
-| `conduit.market`         | Marketing / landing page     |
-| `shop.conduit.market`    | Market app                   |
-| `sell.conduit.market`    | Merchant Portal              |
-| `build.conduit.market`   | Future Store Builder surface |
-| `blossom.conduit.market` | Blossom media hosting        |
+| Domain                   | Purpose                  |
+| ------------------------ | ------------------------ |
+| `conduit.market`         | Marketing / landing page |
+| `shop.conduit.market`    | Market app               |
+| `sell.conduit.market`    | Merchant Portal          |
+| `build.conduit.market`   | Store Builder app shell  |
+| `blossom.conduit.market` | Blossom media hosting    |
 
 The canonical relay reset list is code-owned in `packages/core/src/config.ts` and currently starts with `wss://conduitl2.fly.dev`. Retired Conduit relay hosts should not appear in active docs or examples.
 
@@ -93,7 +91,7 @@ apps/store-builder/src/routes/
 └── index.tsx
 ```
 
-Do not document Store Builder as a generated-store platform until that scope has an accepted spec and implementation plan.
+Do not document Store Builder behavior beyond implemented routes and shared app infrastructure.
 
 ---
 
@@ -119,7 +117,7 @@ Do not document Store Builder as a generated-store platform until that scope has
 | `31989` | Application recommendation   | NIP-89                            |
 | `31990` | Application handler metadata | NIP-89                            |
 
-Authentication is external-signer-only. The repo policy allows NIP-07 and NIP-46 style external signers, but broad NIP-46 UX is not a Phase 2A blocker.
+Authentication is external-signer-only. The repo policy allows NIP-07 and NIP-46 style external signers.
 
 ### Product Discovery
 
@@ -129,13 +127,13 @@ Product listings are replaceable addressable events:
 30402:<merchant_pubkey>:<d_tag>
 ```
 
-Routes should prefer shared product parsing, dedupe, relay-planning, and cache helpers instead of inventing per-route event semantics. Current code may still use NDK as the edge library. Future Phase 2B architecture is expected to move more relay execution/source-health behavior behind an explicit shared boundary, but current closeout work should not introduce a broad custom substrate before that architecture is accepted.
+Routes should prefer shared product parsing, dedupe, relay-planning, and cache helpers instead of inventing per-route event semantics. Current code may still use NDK as the edge library.
 
 ### Orders And Messages
 
 Buyer-merchant communication uses NIP-17 encrypted messages. A Conduit order message payload is kind `16`, encrypted/sealed/wrapped before publishing. General buyer/merchant DMs use kind `14` inside the same private-message transport and should stay distinct from order-linked kind `16` conversations in product state.
 
-Phase 2A secure messaging work should move route-level send/read behavior behind a Conduit-owned private-message boundary in `@conduit/core`. That boundary should preserve NIP-44 v2 compatibility, keep NIP-44 v3 readiness visible as emerging Linear-tracked work, require public draft/client references and capability detection before v3 is used, parse kind `10050` private-message relay hints, and keep decrypt/unwrap diagnostics content-free. NWC remains conservative and should not move to NIP-44 v3 unless wallet capability discovery and public draft/client references explicitly support it.
+New private-message work should use a Conduit-owned private-message boundary in `@conduit/core` instead of route-local send/read implementations. That boundary should preserve NIP-44 v2 compatibility, require public draft/client references and capability detection before any newer encryption version is used, parse kind `10050` private-message relay hints, and keep decrypt/unwrap diagnostics content-free. NWC remains conservative and should not move beyond NIP-44 v2 unless wallet capability discovery and public draft/client references explicitly support it.
 
 Standard order message types:
 
@@ -216,9 +214,7 @@ wss://relay.minibits.cash
 
 Conduit-hosted deploys should leave relay env vars empty unless an operator intentionally needs an override. This keeps the public code defaults auditable.
 
-Future Phase 2B work is expected to add a more explicit source-aware read frontier, relay health model, and local-first performance layer. Current Phase 2A work should keep relay behavior typed and recoverable without making that future architecture a milestone blocker.
-
-Phase 2A also includes an essential commerce outbox slice for signed orders, messages, merchant replies, payment proofs, and product publish/delete actions. This is a minimum usability layer for locally visible, retryable signed commerce writes; the broader generic write frontier remains Phase 2B architecture work.
+Signed commerce writes for orders, messages, merchant replies, payment proofs, and product publish/delete actions should remain locally visible and retryable where implemented. Relay behavior should stay typed, recoverable, and shared rather than being rebuilt in routes.
 
 ---
 
@@ -242,8 +238,6 @@ Payment proof is receipt-style evidence, not custody. Product UI should avoid co
 - proof received
 - confirmed paid
 - mismatch/unverified/disputed
-
-Future service automation may improve offline merchant availability, but it belongs outside current `conduit-mono` scope unless a service repo/spec is accepted.
 
 ---
 
@@ -295,21 +289,8 @@ VITE_BLOSSOM_SERVER_URL=https://blossom.conduit.market
 
 ---
 
-## Future Direction Notes
-
-These notes are directional, not current-phase blockers:
-
-- Phase 2B should introduce an accepted local-first app architecture before route code is broadly refactored around a new commerce substrate.
-- NDK may remain useful at the edges, but future source-aware relay execution may be better served by Nostrify or a Conduit-owned adapter around signed events and relay outcomes.
-- Future service, billing, monetization, and generated-store concepts live under `docs/knowledge/future/` until they have their own accepted repo boundary and implementation contract.
-
----
-
 ## References
 
-- [PLAN.md](../PLAN.md) - Current planning index
-- [IMPLEMENTATION.md](./plans/IMPLEMENTATION.md) - Current implementation status
-- [ROADMAP.md](./plans/ROADMAP.md) - Strategic epochs
 - [Protocol spec](./specs/protocol.md) - Protocol and message contracts
 - [Relay spec](./specs/relay.md) - Relay compatibility and settings model
 - [Nostr NIPs](https://github.com/nostr-protocol/nips) - Protocol specifications

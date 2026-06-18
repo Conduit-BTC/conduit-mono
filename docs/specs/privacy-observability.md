@@ -2,7 +2,7 @@
 
 ## Goal
 
-Provide aggregate proof of product usage, reliability, and business health without user surveillance.
+Provide aggregate proof of product usage and reliability without user surveillance.
 
 ## Principles
 
@@ -11,7 +11,6 @@ Provide aggregate proof of product usage, reliability, and business health witho
 3. No persistent identifiers for active users in product analytics.
 4. Public commerce page identifiers may be used only as sanitized page context for aggregate storefront performance reporting.
 5. No storage of message/order/payment content in telemetry systems.
-6. Future centralized billing, if accepted under a separate service boundary, is allowed for accounting and entitlements only.
 
 ## Identity Boundary
 
@@ -76,19 +75,6 @@ Permitted public page context:
 - product, profile, order, query string, unknown route, and active user
   identifiers must remain redacted
 
-### Future Billing & Revenue Metrics
-
-Centralized data for monetization and accounting is future service scope, not a current `conduit-mono` client requirement:
-
-- Active subscriptions by tier
-- MRR/ARR
-- Credit top-ups and credit spend totals
-- Churn and renewal rates
-
-Constraint:
-
-- Billing tables must not be used to reconstruct behavior timelines of specific users for product analytics.
-
 ## Allowed Tooling
 
 - `Plausible` (optional): aggregate traffic only, no custom user identifiers.
@@ -104,7 +90,6 @@ Expose only aggregate KPIs:
 - Weekly order-event count
 - Product catalog growth
 - Checkout success rate (aggregate)
-- MRR and credit economy metrics
 
 No per-user journey replay, no active-user identity drilldowns, and no joining
 public page performance data to signer, buyer, wallet, or session identity.

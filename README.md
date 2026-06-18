@@ -14,7 +14,7 @@ Conduit code is MIT-licensed. Conduit trademarks, names, and logos are reserved.
 | ---------------------------------------- | ---- | ------------------------------------------------------------------------ |
 | **Market** (`apps/market`)               | 3000 | Buyer marketplace: browse products, cart, checkout, order tracking       |
 | **Merchant Portal** (`apps/merchant`)    | 3001 | Seller dashboard: product CRUD, order management, payments, DM workspace |
-| **Store Builder** (`apps/store-builder`) | 3002 | Placeholder app for future standalone merchant storefront work           |
+| **Store Builder** (`apps/store-builder`) | 3002 | Placeholder app shell                                                    |
 
 ## Shared Packages
 
@@ -218,21 +218,16 @@ conduit-mono/
 ├── apps/
 │   ├── market/              # Buyer marketplace
 │   ├── merchant/            # Seller portal
-│   └── store-builder/       # Future merchant storefront surface
+│   └── store-builder/       # Placeholder app shell
 ├── packages/
 │   ├── core/                # Types, protocol, schemas, hooks, DB, utils
 │   └── ui/                  # Components, theme, styles
 ├── docs/
-│   ├── README.md          # Docs index and source-of-truth guide
+│   ├── README.md            # Docs index and source-of-truth guide
 │   ├── ARCHITECTURE.md      # System diagrams and data flow
-│   ├── DESIGN.md          # Shared design system and theming guidance
-│   ├── plans/
-│   │   ├── ROADMAP.md       # Strategic epochs
-│   │   ├── IMPLEMENTATION.md # Current implementation index
-│   │   └── PHASE_2_IMPLEMENTATION.md # Current Phase 2 closeout deliverables
+│   ├── DESIGN.md            # Shared design system and theming guidance
 │   ├── specs/               # Active feature specifications
-│   └── knowledge/           # Supporting notes, references, and future concepts
-├── PLAN.md                  # Current planning index
+│   └── knowledge/           # Supporting notes and references
 └── scripts/                 # Dev tooling, CI helpers, seed data
 ```
 
@@ -271,19 +266,6 @@ See [OPEN_SOURCE.md](./OPEN_SOURCE.md) for reproducible-build notes and [TRADEMA
 - **Profiles**: Kind 0 metadata events (NIP-01)
 
 See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for system diagrams and protocol details.
-
-## Roadmap
-
-See [PLAN.md](PLAN.md) for the current planning index, [ROADMAP.md](docs/plans/ROADMAP.md) for strategic epochs, and [IMPLEMENTATION.md](docs/plans/IMPLEMENTATION.md) for the current implementation index.
-
-| Epoch         | Status   | Focus                                        |
-| ------------- | -------- | -------------------------------------------- |
-| Genesis       | Complete | Architecture, infrastructure, wireframes     |
-| Core Function | Complete | Market + Merchant Portal MVP                 |
-| Phase 2A      | Active   | Secure messaging, closeout, readiness, trust |
-| Phase 2B      | Planned  | Local-first performance and app architecture |
-| Added Value   | Future   | Social features and enhanced discovery       |
-| Scale         | Future   | Multi-language and enterprise readiness      |
 
 ## Docs
 
