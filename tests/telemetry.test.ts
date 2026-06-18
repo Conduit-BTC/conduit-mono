@@ -7,6 +7,7 @@ import {
   getConduitPostHogConfig,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
+  pubkeyToNpub,
   resolveBrowserTelemetryConfig,
   sanitizeTelemetryEventProperties,
   sanitizePostHogCaptureEvent,
@@ -16,6 +17,10 @@ import {
 } from "@conduit/core"
 
 describe("browser telemetry", () => {
+  const storePubkey =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  const storeNpub = pubkeyToNpub(storePubkey)
+
   it("is disabled by default", () => {
     const config = resolveBrowserTelemetryConfig("market", {})
 
@@ -60,7 +65,13 @@ describe("browser telemetry", () => {
         "/products/30402%3Amerchant%3Atesting-digital-jxwwl7?order=abc"
       )
     ).toBe("/products/:productId")
-    expect(sanitizeTelemetryPath("/store/abcdef123456")).toBe("/store/:pubkey")
+    expect(sanitizeTelemetryPath(`/store/${storePubkey}`)).toBe(
+      `/store/${storeNpub}`
+    )
+    expect(sanitizeTelemetryPath(`/store/${storeNpub}?q=raw`)).toBe(
+      `/store/${storeNpub}`
+    )
+    expect(sanitizeTelemetryPath("/store/not-a-pubkey")).toBe("/store/:pubkey")
     expect(sanitizeTelemetryPath("/u/npub1example")).toBe("/u/:profileRef")
     expect(sanitizeTelemetryPath("/orders?order=local-secret")).toBe("/orders")
     expect(sanitizeTelemetryPath("/npub1example")).toBe("/:param")
@@ -80,11 +91,11 @@ describe("browser telemetry", () => {
     expect(
       buildTelemetryEventPageContext({
         origin: "https://shop.conduit.market/",
-        pathname: "/store/abcdef123456?q=buyer-search",
+        pathname: `/store/${storePubkey}?q=buyer-search`,
       })
     ).toEqual({
-      page_path: "/store/:pubkey",
-      page_url: "https://shop.conduit.market/store/:pubkey",
+      page_path: `/store/${storeNpub}`,
+      page_url: `https://shop.conduit.market/store/${storeNpub}`,
     })
   })
 

@@ -1,3 +1,5 @@
+import { normalizePubkey, pubkeyToNpub } from "./utils"
+
 export type ConduitTelemetryApp = "market" | "merchant"
 
 export const browserTelemetryEventNames = [
@@ -283,13 +285,19 @@ export function sanitizeTelemetryPath(pathname: string): string {
   if (section === "products") {
     return segments.length > 1 ? "/products/:productId" : "/products"
   }
-  if (section === "store") return "/store/:pubkey"
+  if (section === "store") return getStoreTelemetryPath(segments[1])
   if (section === "u") return "/u/:profileRef"
   if (section === "orders") return "/orders"
 
   if (!staticTelemetryRouteSegments.has(section)) return "/:param"
   if (segments.length === 1) return `/${section}`
   return `/${section}/:param`
+}
+
+function getStoreTelemetryPath(storeRef: string | undefined): string {
+  const pubkey = normalizePubkey(storeRef)
+  if (!pubkey) return "/store/:pubkey"
+  return `/store/${pubkeyToNpub(pubkey)}`
 }
 
 export function buildTelemetryPageUrl(input: {

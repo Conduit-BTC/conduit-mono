@@ -29,11 +29,12 @@ Runtime telemetry events may only use these fields:
 - `amount_bucket`
 - `product_type`
 
-Do not include pubkeys, npubs, invoices, order contents, product titles,
+Do not include raw pubkeys, invoices, order contents, product titles,
 addresses, message contents, IPs, fingerprints, signer connection strings, NWC
 URIs, raw URLs, raw paths, query strings, or user journey identifiers. Browser
-custom events may include only route-redacted `page_url` and `page_path` values
-from the shared telemetry helper.
+custom events may include only shared-helper route context through `page_url`
+and `page_path`; store route context may include the public store `npub`, while
+product, profile, order, and unknown route identifiers stay redacted.
 
 ## Events
 
