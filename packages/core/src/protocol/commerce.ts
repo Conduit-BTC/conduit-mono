@@ -33,7 +33,7 @@ import {
   getCommerceReadRelayUrls,
   getGeneralReadRelayUrls,
 } from "./relay-settings"
-import { getRelayLists } from "./relay-list"
+import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
 import { planRelayReads, type RelayReadIntent } from "./relay-planner"
 
 const PRODUCT_CACHE_TTL_MS = 24 * 60 * 60_000
@@ -94,6 +94,7 @@ export interface CommerceProductRecord {
 export interface MarketplaceProductsQuery {
   merchantPubkey?: string
   authorPubkeys?: string[]
+  authenticatedPubkey?: string | null
   textQuery?: string
   tags?: string[]
   sort?: CommerceSortMode
@@ -104,6 +105,7 @@ export interface MarketplaceProductsQuery {
 
 export interface MerchantStorefrontQuery {
   merchantPubkey: string
+  authenticatedPubkey?: string | null
   textQuery?: string
   tag?: string
   sort?: CommerceSortMode
@@ -122,6 +124,7 @@ export interface ProductDetailQuery {
 
 export interface ProfileBatchQuery {
   pubkeys: string[]
+  authenticatedPubkey?: string | null
   skipCache?: boolean
   priority?: "visible" | "background"
   readPolicy?: CommerceReadPolicy
@@ -131,6 +134,7 @@ export interface ProfileBatchQuery {
 
 export interface FollowListQuery {
   pubkey: string
+  authenticatedPubkey?: string | null
 }
 
 export interface ConversationListQuery {
@@ -282,6 +286,7 @@ async function planCommerceReadRelays(input: {
   intent: RelayReadIntent
   authors?: readonly string[]
   recipients?: readonly string[]
+  authenticatedPubkey?: string | null
   maxRelays?: number
   relayHintMode?: "auto" | "skip" | "force"
   extraRelayUrls?: readonly string[]
@@ -302,7 +307,14 @@ async function planCommerceReadRelays(input: {
   const relayLists = shouldFetchRelayHints
     ? await getRelayLists(
         hintPubkeys,
-        testOverrides.fetchEventsFanout ? { cacheOnly: true } : {}
+        testOverrides.fetchEventsFanout
+          ? {
+              cacheOnly: true,
+              allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
+            }
+          : {
+              allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
+            }
       )
     : undefined
 
@@ -311,6 +323,7 @@ async function planCommerceReadRelays(input: {
     authors: input.authors,
     recipients: input.recipients,
     relayLists,
+    authenticatedPubkey: input.authenticatedPubkey,
     maxRelays: input.maxRelays,
   })
 
@@ -329,14 +342,17 @@ async function planCommerceReadRelays(input: {
     input.relayHintMode !== "force" &&
     (input.intent === "commerce_products" ||
       (input.intent === "author_products" && (input.authors?.length ?? 0) > 1))
+  const externalRelayHints = (input.extraRelayUrls ?? []).filter(
+    (url) => !isInsecureRelayUrl(url)
+  )
   const plannedRelayUrls = preferFallbackFirst
     ? uniqueStrings([
         ...fallbackRelayUrls,
-        ...(input.extraRelayUrls ?? []),
+        ...externalRelayHints,
         ...plan.relayUrls,
       ])
     : uniqueStrings([
-        ...(input.extraRelayUrls ?? []),
+        ...externalRelayHints,
         ...plan.relayUrls,
         ...fallbackRelayUrls,
       ])
@@ -953,6 +969,7 @@ async function fetchDeletionTimestamps(
   options: {
     readPolicy?: CommerceReadPolicy
     fallbackWhenEmpty?: boolean
+    authenticatedPubkey?: string | null
   } = {}
 ): Promise<DeletionTimestamps> {
   const byEventId = new Map<string, number>()
@@ -980,6 +997,7 @@ async function fetchDeletionTimestamps(
   const deletionRelayUrls = await planCommerceReadRelays({
     intent: "author_products",
     authors: [merchantPubkey],
+    authenticatedPubkey: options.authenticatedPubkey,
     maxRelays: options.readPolicy?.maxRelays,
   })
   const fanoutOptions = {
@@ -1113,6 +1131,7 @@ async function fetchPublicProductRecords(query: {
   authors?: string[]
   ids?: string[]
   dTags?: string[]
+  authenticatedPubkey?: string | null
   limit?: number
   readPolicy?: CommerceReadPolicy
 }): Promise<CommerceProductRecord[]> {
@@ -1131,6 +1150,7 @@ async function fetchPublicProductRecords(query: {
         ? "author_products"
         : "commerce_products",
     authors: query.authors,
+    authenticatedPubkey: query.authenticatedPubkey,
     maxRelays: query.readPolicy?.maxRelays,
   })
 
@@ -1148,6 +1168,7 @@ async function fetchPublicProductRecordsProgressive(
     authors?: string[]
     ids?: string[]
     dTags?: string[]
+    authenticatedPubkey?: string | null
     limit?: number
     readPolicy?: CommerceReadPolicy
   },
@@ -1177,6 +1198,7 @@ async function fetchPublicProductRecordsProgressive(
         ? "author_products"
         : "commerce_products",
     authors: query.authors,
+    authenticatedPubkey: query.authenticatedPubkey,
     maxRelays: query.readPolicy?.maxRelays,
     relayHintMode: "skip",
   })
@@ -1187,6 +1209,7 @@ async function fetchPublicProductRecordsProgressive(
     ? planCommerceReadRelays({
         intent: "author_products",
         authors: query.authors,
+        authenticatedPubkey: query.authenticatedPubkey,
         maxRelays: query.readPolicy?.maxRelays,
         relayHintMode: "force",
       })
@@ -1258,6 +1281,7 @@ export async function getFollowPubkeys(
   const relayUrls = await planCommerceReadRelays({
     intent: "profile_social_feed",
     authors: [pubkey],
+    authenticatedPubkey: query.authenticatedPubkey,
   })
   const events = await runFetchEventsFanout(
     {
@@ -1301,6 +1325,7 @@ export async function getMarketplaceProducts(
         authorPubkeys && authorPubkeys.length > 0
           ? uniqueStrings(authorPubkeys)
           : undefined,
+      authenticatedPubkey: query.authenticatedPubkey,
       limit: query.limit,
       readPolicy: query.readPolicy,
     })
@@ -1386,6 +1411,7 @@ export async function getMarketplaceProductsProgressive(
         authorPubkeys && authorPubkeys.length > 0
           ? uniqueStrings(authorPubkeys)
           : undefined,
+      authenticatedPubkey: query.authenticatedPubkey,
       limit,
       readPolicy: query.readPolicy,
     },
@@ -1457,6 +1483,7 @@ export async function getMerchantStorefront(
     const relayUrls = await planCommerceReadRelays({
       intent: "author_products",
       authors: [query.merchantPubkey],
+      authenticatedPubkey: query.authenticatedPubkey,
     })
     const productFilter: NDKFilter = {
       kinds: [EVENT_KINDS.PRODUCT],
@@ -1480,6 +1507,7 @@ export async function getMerchantStorefront(
       {
         readPolicy: query.deletionReadPolicy,
         fallbackWhenEmpty: query.deletionFallbackWhenEmpty,
+        authenticatedPubkey: query.authenticatedPubkey,
       }
     )
 
@@ -1812,6 +1840,7 @@ export async function getProfiles(
     const relayUrls = await planCommerceReadRelays({
       intent: "profiles",
       authors: missing,
+      authenticatedPubkey: query.authenticatedPubkey,
       maxRelays: query.readPolicy?.maxRelays ?? (visible ? 8 : 4),
       extraRelayUrls: sourceRelayHints,
     })
@@ -2004,6 +2033,7 @@ async function fetchParsedOrderMessages(
     const dmRelayUrls = await planCommerceReadRelays({
       intent: "dm_inbox",
       recipients: [principalPubkey],
+      authenticatedPubkey: principalPubkey,
       maxRelays: DM_INBOX_READ_FANOUT,
       extraRelayUrls: config.appWriteRelayUrls,
     })

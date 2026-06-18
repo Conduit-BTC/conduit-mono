@@ -32,7 +32,7 @@ import {
   type RelayPlanOptions,
   type RelaySettingsState,
 } from "./relay-settings"
-import type { RelayList } from "./relay-list"
+import { filterRelayListForContext, type RelayList } from "./relay-list"
 import { partitionByHealth } from "./relay-health"
 
 export type RelayReadIntent =
@@ -71,6 +71,8 @@ export interface RelayReadPlanInput {
   recipients?: readonly string[]
   /** Cached relay lists keyed by pubkey. Missing keys fall back to defaults. */
   relayLists?: ReadonlyMap<string, RelayList>
+  /** Authenticated pubkey whose own NIP-65 local relays may be used. */
+  authenticatedPubkey?: string | null
   /** Maximum number of relays to query (bounded fanout). */
   maxRelays?: number
   /** Skip per-relay health filtering (test seam / last-resort retries). */
@@ -99,6 +101,8 @@ export interface RelayWritePlanInput {
   recipientPubkeys?: readonly string[]
   /** Cached relay lists keyed by pubkey. */
   relayLists?: ReadonlyMap<string, RelayList>
+  /** Authenticated pubkey whose own NIP-65 local relays may be used. */
+  authenticatedPubkey?: string | null
   /** Cap the primary relay count. */
   maxPrimaryRelays?: number
   /** Cap the broadcast relay count (best-effort, beyond primary). */
@@ -175,12 +179,18 @@ function defaultRecipientWriteFallbackRelayUrls(): string[] {
 
 function hintReadRelaysForAuthors(
   authors: readonly string[],
-  relayLists: ReadonlyMap<string, RelayList> | undefined
+  relayLists: ReadonlyMap<string, RelayList> | undefined,
+  authenticatedPubkey: string | null | undefined
 ): string[] {
   if (!relayLists || authors.length === 0) return []
   const out: string[] = []
   for (const pubkey of authors) {
-    const list = relayLists.get(pubkey)
+    const rawList = relayLists.get(pubkey)
+    const list = rawList
+      ? filterRelayListForContext(rawList, {
+          allowInsecureRelayUrlsForPubkey: authenticatedPubkey,
+        })
+      : undefined
     if (!list) continue
     // Reads target where the author *writes*. For DM inbox reads, the
     // caller passes recipients instead and uses `hintReadRelaysForRecipients`.
@@ -191,16 +201,35 @@ function hintReadRelaysForAuthors(
 
 function hintReadRelaysForRecipients(
   recipients: readonly string[],
-  relayLists: ReadonlyMap<string, RelayList> | undefined
+  relayLists: ReadonlyMap<string, RelayList> | undefined,
+  authenticatedPubkey: string | null | undefined
 ): string[] {
   if (!relayLists || recipients.length === 0) return []
   const out: string[] = []
   for (const pubkey of recipients) {
-    const list = relayLists.get(pubkey)
+    const rawList = relayLists.get(pubkey)
+    const list = rawList
+      ? filterRelayListForContext(rawList, {
+          allowInsecureRelayUrlsForPubkey: authenticatedPubkey,
+        })
+      : undefined
     if (!list) continue
     out.push(...list.readRelayUrls)
   }
   return out
+}
+
+function hasRecipientReadRelays(input: {
+  pubkey: string
+  relayLists: ReadonlyMap<string, RelayList> | undefined
+  authenticatedPubkey: string | null | undefined
+}): boolean {
+  const rawList = input.relayLists?.get(input.pubkey)
+  if (!rawList) return false
+  const list = filterRelayListForContext(rawList, {
+    allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
+  })
+  return list.readRelayUrls.length > 0
 }
 
 function applyHealthFilter(
@@ -264,11 +293,13 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
 
   const authorHints = hintReadRelaysForAuthors(
     input.authors ?? [],
-    input.relayLists
+    input.relayLists,
+    input.authenticatedPubkey
   )
   const recipientHints = hintReadRelaysForRecipients(
     input.recipients ?? [],
-    input.relayLists
+    input.relayLists,
+    input.authenticatedPubkey
   )
   const hintRelayUrls = dedupeOrdered([...authorHints, ...recipientHints])
 
@@ -341,7 +372,8 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
   const recipients = input.recipientPubkeys ?? []
   const recipientHints = hintReadRelaysForRecipients(
     recipients,
-    input.relayLists
+    input.relayLists,
+    input.authenticatedPubkey
   )
 
   // Recipients with no cached list contribute nothing. Use the shared
@@ -349,7 +381,12 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
   // outbox relays; otherwise a buyer-only write ACK can look deliverable while
   // the recipient inbox has no reason to read that relay.
   const missingRecipientFallback = recipients.some(
-    (pubkey) => !input.relayLists?.get(pubkey)?.readRelayUrls.length
+    (pubkey) =>
+      !hasRecipientReadRelays({
+        pubkey,
+        relayLists: input.relayLists,
+        authenticatedPubkey: input.authenticatedPubkey,
+      })
   )
     ? defaultRecipientWriteFallbackRelayUrls()
     : []

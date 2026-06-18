@@ -214,6 +214,7 @@ export async function publishContactListUpdate({
   await publishWithPlanner(event, {
     intent: "author_event",
     authorPubkey: normalizedOwnerPubkey,
+    authenticatedPubkey: normalizedOwnerPubkey,
     replaceableSafety,
   })
 }

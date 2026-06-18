@@ -248,6 +248,7 @@ export function useRelaySettings(
 
         const cachedRelayList = await getRelayList(pubkey, {
           cacheOnly: true,
+          allowInsecureRelayUrlsForPubkey: pubkey,
         })
         if (cancelled) return
 
@@ -281,6 +282,7 @@ export function useRelaySettings(
         )
         const relayList = await getRelayList(pubkey, {
           skipCache: true,
+          allowInsecureRelayUrlsForPubkey: pubkey,
           relayUrls:
             relayListSearchUrls.length > 0 ? relayListSearchUrls : undefined,
         })
@@ -451,6 +453,7 @@ export function useRelaySettings(
       await publishWithPlanner(event, {
         intent: "author_event",
         authorPubkey: pubkey,
+        authenticatedPubkey: pubkey,
         skipHealthFilter: true,
       })
       setPublishedRelayListUpdatedAt(event.created_at ?? null)

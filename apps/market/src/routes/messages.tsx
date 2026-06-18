@@ -330,6 +330,7 @@ function MessagesPage() {
       await publishWithPlanner(wrappedToMerchant, {
         intent: "recipient_event",
         authorPubkey: pubkey,
+        authenticatedPubkey: pubkey,
         recipientPubkeys: [selectedConversation.merchantPubkey],
         refreshRelayLists: true,
         deliveryMode: "critical",
@@ -339,6 +340,7 @@ function MessagesPage() {
         await publishWithPlanner(wrappedToBuyer, {
           intent: "recipient_event",
           authorPubkey: pubkey,
+          authenticatedPubkey: pubkey,
           recipientPubkeys: [pubkey],
           refreshRelayLists: true,
           deliveryMode: "critical",

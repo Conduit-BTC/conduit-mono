@@ -1201,6 +1201,7 @@ function CheckoutPage() {
     await publishWithPlanner(wrappedToMerchant, {
       intent: "recipient_event",
       authorPubkey: buyerPubkey,
+      authenticatedPubkey: buyerPubkey,
       recipientPubkeys: [merchantPubkey],
       refreshRelayLists: true,
       deliveryMode: "critical",
@@ -1211,6 +1212,7 @@ function CheckoutPage() {
       await publishWithPlanner(wrappedToSelf, {
         intent: "recipient_event",
         authorPubkey: buyerPubkey,
+        authenticatedPubkey: buyerPubkey,
         recipientPubkeys: [buyerPubkey],
         refreshRelayLists: true,
         deliveryMode: "critical",
