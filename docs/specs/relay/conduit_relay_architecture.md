@@ -27,8 +27,6 @@ Users should not manually categorize relays. Conduit categorizes relays from NIP
 
 This document defines the current product and implementation contract for that model.
 
-Future Phase 2B work is expected to add a deeper source-aware read frontier, relay health history, and local-first performance layer. That future work should extend this model rather than turning relays into user-managed app roles. It should also get its own accepted architecture/spec before replacing the current shared NDK-backed helpers with Nostrify or a custom relay substrate.
-
 ---
 
 ## References
@@ -259,7 +257,6 @@ Optional or extended requirements:
 
 - `kind:30406` shipping options
 - product reviews
-- richer payment and service-assisted order processing flows
 - Conduit-specific commerce probes or registry checks
 
 ### Minimum compatibility checks
@@ -537,7 +534,7 @@ The settings screen should communicate:
 
 ### Keep implementation extensible
 
-The model should support future improvements without changing the user contract:
+The model should support implementation improvements without changing the user contract:
 
 - compatibility registry
 - active relay probes

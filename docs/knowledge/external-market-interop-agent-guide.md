@@ -9,7 +9,7 @@ Source policy: `docs/knowledge/external-market-interop-policy.md` (2026-02-10).
 1. Spec correctness (Gamma/NIP-99)
 2. Discovery parity (Conduit <-> external listings render + are discoverable)
 3. External discovery -> Conduit checkout (critical path)
-4. Velocity + design (no roadmapping hostage to external quirks)
+4. Velocity + design (do not let external quirks override spec-correct implementation)
 
 ## Rules Of Engagement
 

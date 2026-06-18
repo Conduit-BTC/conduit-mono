@@ -33,6 +33,6 @@ other surfaces.
 ## Scope
 
 This contract applies to Market merchant identity surfaces and Merchant buyer
-identity surfaces such as orders and messages. Future profile, trust, social, or
-review features should build on these shared hooks instead of opening new relay
-profile reads inside page components.
+identity surfaces such as orders and messages. Profile, trust, social, or review
+features should build on these shared hooks instead of opening new relay profile
+reads inside page components.

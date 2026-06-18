@@ -1,11 +1,9 @@
 # Relay Settings Boundaries
 
-Tracking context: CND-72 and Phase 2A relay settings closeout.
-
 This note clarifies the current implementation boundary without replacing the
-relay architecture spec. It is intentionally narrow: Phase 2A should make relay
-settings honest and recoverable, while broader source-aware frontier work stays
-future architecture.
+relay architecture spec. It is intentionally narrow: relay settings should stay
+honest and recoverable without pulling broader source-aware execution work into
+the settings surface.
 
 ## Current Boundary
 
@@ -17,9 +15,8 @@ Conduit works with three different relay sets:
 - Discovery hints: cached NIP-65 lists for other pubkeys, product authors, or
   message recipients. These hints may guide reads and writes, but they must not
   be merged into the user's relay settings.
-- Execution frontier: the future source-aware planning layer that can combine
-  user settings, cached hints, relay health, observed read/write outcomes, and
-  active probes.
+- Execution planning: shared runtime behavior that can combine user settings,
+  cached hints, relay health, observed read/write outcomes, and active probes.
 
 The user relay list is the sacred cross-client object. Conduit may add local
 metadata around it, but should not pollute it with relays learned while browsing
@@ -62,8 +59,7 @@ metadata:
 
 ## Probe Scope
 
-Active probing belongs with the future execution frontier. When that work lands,
-probes should be bounded:
+Active probing should be bounded:
 
 - dedupe by normalized relay URL
 - respect TTLs and avoid route-load probe storms
@@ -71,5 +67,5 @@ probes should be bounded:
 - cache failures and successes as observations
 - never mutate the user's NIP-65 settings from probe discovery alone
 
-Phase 2A should prefer passive runtime observations and explicit user-managed
-scans over broad probing.
+Current relay settings should prefer passive runtime observations and explicit
+user-managed scans over broad probing.

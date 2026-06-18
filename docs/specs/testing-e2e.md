@@ -2,7 +2,7 @@
 
 ## Goal
 
-Maintain deterministic automated coverage for the Market + Merchant + Relay core loop without blocking current Phase 2 delivery velocity.
+Maintain deterministic automated coverage for the Market + Merchant + Relay core loop without slowing normal delivery.
 
 Playwright smoke coverage is part of the current repo baseline. This spec defines the desired coverage shape; package scripts and CI wiring should be read from `package.json` and `.github/workflows/*`.
 

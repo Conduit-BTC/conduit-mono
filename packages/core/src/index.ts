@@ -130,13 +130,6 @@ export {
   type StoredPaymentAttempt,
 } from "./db"
 
-// Billing
-export {
-  getEntitlements,
-  type Entitlements,
-  type BillingTier,
-} from "./billing/entitlements"
-
 // Context
 export {
   AuthProvider,

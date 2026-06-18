@@ -8,19 +8,13 @@ References:
 - One-way checkout architecture note: `docs/knowledge/one-way-checkout-multi-rail-payments.md`
 - External protocol references: `docs/knowledge/external-nostr-references.md`
 
-Non-goals for current Phase 2A:
+Non-goals for the current client repository:
 
 - key custody, key generation, escrow, refunds, or balance management
 - broad NIP-46 product UX beyond the external-signer policy already allowed by architecture
 - service-operated checkout automation
 - making NIP-44 v3 the default send path before public draft/client references, signer support, and recipient capability detection exist
-- replacing the current NDK-backed protocol helpers with a new relay substrate before the future architecture spec lands
-
-Future direction:
-
-- Phase 2B is expected to define a stronger local-first commerce/read architecture.
-- New source-aware relay work should avoid leaking NDK objects into durable records or product contracts, but current Phase 2A work may continue using the existing shared NDK-backed helpers where that is the least risky path.
-- Phase 2A secure messaging should introduce a shared Conduit-owned NIP-17/NIP-44 boundary before adding more route-local private-message send paths.
+- replacing the current shared protocol helpers with route-local relay substrates
 
 ## Authentication
 
@@ -29,7 +23,7 @@ Conduit apps use external signers only.
 | Signer path           | Status                  | Notes                                         |
 | --------------------- | ----------------------- | --------------------------------------------- |
 | NIP-07 browser signer | Current client support  | Required path for current interactive signing |
-| NIP-46 remote signer  | Architecture-compatible | Broad product UX is not a Phase 2A blocker    |
+| NIP-46 remote signer  | Architecture-compatible | Product UX depends on explicit implementation |
 | App-generated keys    | Prohibited              | No key custody or private-key storage         |
 
 ## Event Kinds
@@ -60,7 +54,7 @@ Product listings are addressable events:
 30402:<merchant_pubkey>:<d_tag>
 ```
 
-Implementations must not dedupe only by `d` tag because different merchants can publish the same `d` value. Product identity, cart references, order item tags, cache records, and future source-aware graph records should preserve the full addressable coordinate.
+Implementations must not dedupe only by `d` tag because different merchants can publish the same `d` value. Product identity, cart references, order item tags, and cache records should preserve the full addressable coordinate.
 
 ## Client Hydration And Relay Hints
 
@@ -102,9 +96,9 @@ Buyer-merchant communication is sent as NIP-17 encrypted messages:
 
 The kind `16` payload is never published directly. It is encrypted and delivered through NIP-17 wrapping. Kind `14` general DMs should remain separate from order-linked kind `16` conversations in product state.
 
-Current private-message code may continue to interoperate with NIP-44 v2, which is the current public NIP-44 encryption version. NIP-44 v3 readiness is intentional Phase 2A/Linear planning because the ecosystem is moving in that direction, but implementation must be source-gated until public draft/client references and capabilities are explicit.
+Current private-message code may continue to interoperate with NIP-44 v2, which is the current public NIP-44 encryption version. Any newer encryption-version work must be source-gated until public draft/client references and capabilities are explicit.
 
-New Phase 2A secure messaging work should route sends and unwraps through a shared `@conduit/core` boundary that:
+New secure messaging work should route sends and unwraps through a shared `@conduit/core` boundary that:
 
 - preserves NIP-44 v2 fallback for existing signers and peers
 - keeps NIP-44 v3 readiness visible without making it the default send path before source and capability gates are satisfied
@@ -239,9 +233,8 @@ Merchant payment readiness may come from:
 - Lightning Address / LNURL-pay data on profile metadata such as `lud16`
 - NWC/WebLN setup in the merchant workspace
 - order-specific payment requests
-- future structured payment metadata after a separate spec is accepted
 
-Current Phase 2A should keep fast checkout gated by explicit merchant readiness and buyer payment capability. The manual invoice/payment-request path remains the fallback baseline.
+Fast checkout should stay gated by explicit merchant readiness and buyer payment capability. The manual invoice/payment-request path remains the fallback baseline.
 
 ## Versioning And Provenance
 

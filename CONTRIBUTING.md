@@ -34,18 +34,16 @@ Create branches from `main` with short prefixes:
 
 Examples: `feat/product-search`, `fix/invoice-qr-case`, `chore/upgrade-ndk`
 
-### Planning and Specs
+### Specs and Repo Context
 
-Conduit uses a combined Linear + docs workflow:
+Public `conduit-mono` docs are implementation guidance for the code in this repository:
 
-- Linear tracks live execution, ownership, priority, sequencing, status, and merge order
-- `docs/plans/*` tracks phase boundaries, exit criteria, and temporary delivery contracts
 - `docs/specs/*` tracks implementation requirements
+- `docs/ARCHITECTURE.md` tracks system boundaries, protocol surfaces, and data flow
+- `docs/DESIGN.md` tracks shared visual and UI-system guidance
 - `docs/knowledge/*` holds supporting notes and references, not the final source of truth
 
-If Linear conflicts with `docs/plans/*` on ticket status, owner, sequencing, or merge order, Linear wins. If Linear conflicts with `docs/specs/*` or `docs/ARCHITECTURE.md` on implementation behavior, update the repo contract before coding.
-
-When a temporary phase document's exit criteria appear complete, contributors and agents should prompt maintainers to archive or delete it and move the next phase fully to Linear-owned planning.
+Product strategy, ticket sequencing, ownership, private commercial plans, and private operating context live outside this public repository. If an external tracker conflicts with `docs/specs/*` or `docs/ARCHITECTURE.md` on implementation behavior, update the repo contract before coding.
 
 If work changes product requirements, protocol behavior, shared UX rules, or cross-team implementation expectations:
 
@@ -69,7 +67,7 @@ During review, mark one of:
 
 Use `Docs/spec PR required before merge` when the PR changes behavior that needs a stable contract before code lands. Use `Docs-only PR after merge` when the code fits existing contracts but reveals stale docs, missing agent routing, missing source references, or completed phase criteria.
 
-Docs follow-up PRs should be docs-only, reference the merged implementation PR and Linear issue, and be reviewed separately. Agents may draft them only when a reviewer or maintainer asks.
+Docs follow-up PRs should be docs-only, reference the merged implementation PR and relevant tracker issue when available, and be reviewed separately. Agents may draft them only when a reviewer or maintainer asks.
 
 ### Commits
 
@@ -127,7 +125,7 @@ bun run telemetry:check # Must pass when telemetry/analytics surfaces are affect
 - Keep PRs focused on a single concern
 - Use the repo PR template in `.github/pull_request_template.md`
 - Write a clear description of what changed and why
-- Link the relevant Linear issue
+- Link the relevant tracker issue when available
 - If applicable, link the docs/spec PR that established the implementation contract
 - Include a test plan (how to verify the changes work)
 - PRs require review before merging to `main`
@@ -307,4 +305,3 @@ packages/ui/src/
 - Check [ARCHITECTURE.md](docs/ARCHITECTURE.md) for system design
 - Check [DESIGN.md](docs/DESIGN.md) for shared design and theming guidance
 - Check [docs/specs/](docs/specs/) for feature specifications
-- Check [IMPLEMENTATION.md](docs/plans/IMPLEMENTATION.md) for build phases

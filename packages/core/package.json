@@ -14,7 +14,6 @@
     "./utils": "./src/utils/index.ts",
     "./config": "./src/config.ts",
     "./db": "./src/db/index.ts",
-    "./billing": "./src/billing/entitlements.ts",
     "./context/*": "./src/context/*.tsx",
     "./hooks/*": "./src/hooks/*.ts"
   },

@@ -10,9 +10,9 @@
 
 ## Tracking
 
-- Linear issue:
+- Tracker issue:
 - Workstream:
-- Phase: `Phase 2A` | `Phase 2B` | `Support` | `Future`
+- Planning context checked: <!-- Check the relevant tracker/Linear context for current workstream or phase; do not copy private planning details into this public PR. -->
 - Source docs/specs:
 - Docs/spec PR:
 
