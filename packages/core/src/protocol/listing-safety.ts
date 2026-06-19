@@ -48,6 +48,19 @@ export interface ListingSafetyDecision {
   evaluatedAt?: number
 }
 
+type ListingSafetyRuleTerm =
+  | string
+  | {
+      term: string
+      except?: string[]
+    }
+
+type ListingSafetyCompoundTerm = {
+  terms: string[]
+  match: string
+  except?: string[]
+}
+
 type ListingSafetyRule = {
   id: string
   state: "flagged" | "blocked"
@@ -56,7 +69,8 @@ type ListingSafetyRule = {
   detail: string
   merchantAction: string
   tags: string[]
-  terms: string[]
+  terms: ListingSafetyRuleTerm[]
+  compoundTerms?: ListingSafetyCompoundTerm[]
 }
 
 const WARNING_RULES: ListingSafetyRule[] = [
@@ -75,7 +89,14 @@ const WARNING_RULES: ListingSafetyRule[] = [
       "adult material",
       "explicit content",
       "nsfw",
+      "porn",
+      "pornography",
       "pornographic",
+      "erotic art",
+      "boudoir",
+      "adult video",
+      "adult toy",
+      "sex toy",
     ],
   },
   {
@@ -106,6 +127,8 @@ const WARNING_RULES: ListingSafetyRule[] = [
       "pocket knife",
       "multi tool",
       "multitool",
+      "machete",
+      "sword",
     ],
   },
   {
@@ -117,8 +140,60 @@ const WARNING_RULES: ListingSafetyRule[] = [
       "This listing uses lower-confidence substance-adjacent language. It remains active in Conduit alpha, but may be limited by other marketplaces or future policy controls.",
     merchantAction:
       "Confirm the listing is legal where sold and shipped, or clarify the listing copy and tags.",
-    tags: ["cbd", "hemp", "supplement", "supplements", "kratom", "cannabis"],
-    terms: ["cbd", "hemp", "supplement", "supplements", "kratom", "cannabis"],
+    tags: [
+      "cbd",
+      "hemp",
+      "supplement",
+      "supplements",
+      "kratom",
+      "cannabis",
+      "thc",
+      "delta-8",
+      "delta-9",
+    ],
+    terms: [
+      "cbd",
+      "hemp",
+      "supplement",
+      "supplements",
+      "kratom",
+      "cannabis",
+      "thc",
+      "delta 8",
+      "delta 9",
+      "mushroom supplement",
+      "nootropic",
+      "weight loss",
+      "detox",
+      "cleanse",
+      "bong",
+      "dab rig",
+      "rolling papers",
+      "herb grinder",
+      "weed grinder",
+      "vape pen",
+    ],
+  },
+  {
+    id: "warning-replica-imitation",
+    state: "flagged",
+    code: "restricted_term",
+    label: "Replica or imitation warning",
+    detail:
+      "This listing uses replica or imitation language. It remains active in Conduit alpha, but brand-confusing counterfeit listings may be blocked by Conduit or other marketplaces.",
+    merchantAction:
+      "Clarify that the listing is legal, accurately described, and not presented as a genuine branded product if it is not one.",
+    tags: ["replica", "imitation", "faux"],
+    terms: [
+      "replica",
+      "imitation",
+      "faux",
+      "movie prop replica",
+      "costume prop",
+      "prop replica",
+      "faux leather",
+      "imitation pearl",
+    ],
   },
 ]
 
@@ -134,12 +209,16 @@ const BLOCKING_RULES: ListingSafetyRule[] = [
       "Remove this content from Conduit-facing listings. Conduit will not present it as Market inventory.",
     tags: [
       "csam",
+      "csem",
       "child-sexual-abuse-material",
+      "child-sexual-exploitation-material",
       "child-exploitation-material",
     ],
     terms: [
       "csam",
+      "csem",
       "child sexual abuse material",
+      "child sexual exploitation material",
       "child exploitation material",
       "child pornography",
     ],
@@ -156,23 +235,145 @@ const BLOCKING_RULES: ListingSafetyRule[] = [
     tags: [
       "weapon",
       "weapons",
+      "gun",
+      "guns",
       "firearm",
       "firearms",
+      "handgun",
+      "handguns",
+      "pistol",
+      "pistols",
+      "rifle",
+      "rifles",
+      "shotgun",
+      "shotguns",
+      "revolver",
+      "revolvers",
       "ammunition",
       "ammo",
       "explosive",
       "explosives",
+      "grenade",
+      "grenades",
     ],
     terms: [
+      "weapon",
+      "weapons",
+      {
+        term: "gun",
+        except: [
+          "glue gun",
+          "heat gun",
+          "massage gun",
+          "nail gun",
+          "price gun",
+          "spray gun",
+          "staple gun",
+          "tattoo gun",
+          "toy gun",
+          "water gun",
+          "nerf gun",
+        ],
+      },
+      {
+        term: "guns",
+        except: [
+          "guns n roses",
+          "guns and roses",
+          "toy guns",
+          "water guns",
+          "nerf guns",
+        ],
+      },
       "firearm",
       "firearms",
+      "handgun",
+      "handguns",
+      "pistol",
+      "pistols",
+      "rifle",
+      "rifles",
+      "shotgun",
+      "shotguns",
+      "revolver",
+      "revolvers",
+      "ar 15",
+      "ar15",
+      "ak 47",
+      "ak47",
+      "glock",
+      "uzi",
       "ammunition",
       "ammo",
+      {
+        term: "bullet",
+        except: [
+          "bullet journal",
+          "bullet point",
+          "silver bullet",
+          "bullet necklace",
+          "bullet earrings",
+          "bulletproof",
+        ],
+      },
+      {
+        term: "bullets",
+        except: [
+          "bullet journal",
+          "bullet points",
+          "silver bullets",
+          "bullet necklace",
+          "bullet earrings",
+        ],
+      },
+      "ammunition cartridge",
+      "ammunition cartridges",
+      "rifle cartridge",
+      "rifle cartridges",
+      "shotgun shell",
+      "shotgun shells",
+      "9mm ammo",
+      "12 gauge shotgun",
+      "12 gauge shells",
+      "suppressor",
+      "silencer",
+      "auto sear",
+      "bump stock",
+      "ghost gun",
+      "80 lower",
+      "80 percent lower",
+      "unfinished receiver",
+      "glock switch",
       "explosive",
       "explosives",
+      {
+        term: "bomb",
+        except: ["bath bomb", "seed bomb", "yarn bomb"],
+      },
+      {
+        term: "bombs",
+        except: ["bath bombs", "seed bombs", "yarn bombs"],
+      },
+      "grenade",
+      "grenades",
+      "detonator",
+      "detonators",
+      "blasting cap",
+      "blasting caps",
+      "dynamite",
+      "tnt",
+      "c4 explosive",
+      "c 4 explosive",
+      "pipe bomb",
+      "ied",
       "controlled weapon",
       "weapon sale",
       "weapons sale",
+      "stun gun",
+      "stun guns",
+      "taser",
+      "tasers",
+      "brass knuckles",
     ],
   },
   {
@@ -190,6 +391,14 @@ const BLOCKING_RULES: ListingSafetyRule[] = [
       "narcotic",
       "narcotics",
       "illegal-drugs",
+      "fentanyl",
+      "heroin",
+      "cocaine",
+      "methamphetamine",
+      "mdma",
+      "lsd",
+      "dmt",
+      "pcp",
     ],
     terms: [
       "controlled substance",
@@ -198,6 +407,33 @@ const BLOCKING_RULES: ListingSafetyRule[] = [
       "narcotics",
       "illegal drug",
       "illegal drugs",
+      "fentanyl",
+      "heroin",
+      "cocaine",
+      "crack cocaine",
+      "meth",
+      "methamphetamine",
+      "mdma",
+      "ecstasy",
+      "lsd",
+      "dmt",
+      "pcp",
+      "ghb",
+      "ketamine",
+      "oxycontin",
+      "oxycodone",
+      "percocet",
+      "xanax",
+      "adderall",
+      "hydrocodone",
+      "morphine",
+      "pill press",
+      "pill presses",
+      "tableting machine",
+      "tablet press",
+      "encapsulating machine",
+      "pill die",
+      "pill mold",
     ],
   },
   {
@@ -211,12 +447,65 @@ const BLOCKING_RULES: ListingSafetyRule[] = [
       "Remove counterfeit or stolen-goods language before publishing a Market-visible listing.",
     tags: ["counterfeit", "counterfeit-goods", "stolen-goods"],
     terms: [
+      "counterfeit",
       "counterfeit goods",
       "counterfeit item",
       "counterfeit items",
       "stolen goods",
       "stolen item",
       "stolen items",
+      "stolen iphone",
+      "stolen phone",
+      "stolen laptop",
+      "stolen credit card",
+      "stolen gift card",
+      "fake designer",
+      "fake rolex",
+      "fake gucci",
+      "fake louis vuitton",
+      "fake lv",
+      "fake nike",
+      "fake prada",
+      "fake chanel",
+      "fake hermes",
+      "knockoff rolex",
+      "knockoff gucci",
+      "knockoff louis vuitton",
+      "knockoff lv",
+      "knockoff nike",
+      "knockoff prada",
+      "knockoff chanel",
+      "knockoff hermes",
+      "knock off rolex",
+      "knock off gucci",
+      "knock off louis vuitton",
+      "knock off lv",
+      "knock off nike",
+      "knock off prada",
+      "knock off chanel",
+      "knock off hermes",
+      "replica rolex",
+      "replica gucci",
+      "replica louis vuitton",
+      "replica lv",
+      "replica nike",
+      "replica prada",
+      "replica chanel",
+      "replica hermes",
+    ],
+    compoundTerms: [
+      {
+        terms: ["fake", "designer"],
+        match: "fake designer",
+      },
+      {
+        terms: ["replica", "designer"],
+        match: "replica designer",
+      },
+      {
+        terms: ["knockoff", "designer"],
+        match: "knockoff designer",
+      },
     ],
   },
 ]
@@ -259,6 +548,20 @@ function textIncludesTerm(text: string, term: string): boolean {
   return normalizedTerm ? normalizedText.includes(` ${normalizedTerm} `) : false
 }
 
+function getRuleTermValue(term: ListingSafetyRuleTerm): string {
+  return typeof term === "string" ? term : term.term
+}
+
+function hasRuleTermException(
+  text: string,
+  term: ListingSafetyRuleTerm
+): boolean {
+  return (
+    typeof term !== "string" &&
+    term.except?.some((exception) => textIncludesTerm(text, exception)) === true
+  )
+}
+
 function getRuleMatches(product: Product, rule: ListingSafetyRule): string[] {
   const normalizedTags = new Set(
     product.tags.map((tag) => normalizeRuleText(tag)).filter(Boolean)
@@ -267,10 +570,23 @@ function getRuleMatches(product: Product, rule: ListingSafetyRule): string[] {
     normalizedTags.has(normalizeRuleText(tag))
   )
   const haystack = `${product.title}\n${product.summary ?? ""}`
-  const matchedTerms = rule.terms.filter((term) =>
-    textIncludesTerm(haystack, term)
-  )
-  return [...matchedTags, ...matchedTerms]
+  const matchedTerms = rule.terms
+    .filter(
+      (term) =>
+        textIncludesTerm(haystack, getRuleTermValue(term)) &&
+        !hasRuleTermException(haystack, term)
+    )
+    .map(getRuleTermValue)
+  const matchedCompoundTerms = (rule.compoundTerms ?? [])
+    .filter(
+      (term) =>
+        term.terms.every((termPart) => textIncludesTerm(haystack, termPart)) &&
+        term.except?.some((exception) =>
+          textIncludesTerm(haystack, exception)
+        ) !== true
+    )
+    .map((term) => term.match)
+  return [...matchedTags, ...matchedTerms, ...matchedCompoundTerms]
 }
 
 function reasonFromRule(rule: ListingSafetyRule): ListingSafetyReason {
