@@ -10,15 +10,17 @@ import {
   appendConduitClientTag,
   buildProductListingEventDraft,
   canonicalizeProductPrice,
+  evaluateListingSafety,
   getCachedMerchantStorefront,
+  getListingSafetyDisplay,
   getShippingOptionAddress,
   getMerchantStorefront,
   getProductImageCandidates,
   getProductPriceDisplay,
-  hasMarketVisibleProductImage,
   publishWithPlanner,
   requireNdkConnected,
   type CommerceResult,
+  type ListingSafetyEvaluation,
   type ProductSchema,
   useAuth,
 } from "@conduit/core"
@@ -40,6 +42,7 @@ import {
   SelectTrigger,
   SelectValue,
   SignedActionStatus,
+  StatusPill,
   Textarea,
 } from "@conduit/ui"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
@@ -63,6 +66,7 @@ type MerchantProduct = {
   dTag: string | null
   eventCreatedAt: number
   product: ProductSchema
+  safety: ListingSafetyEvaluation
 }
 
 type ProductFormState = {
@@ -201,6 +205,78 @@ function getPublishErrorMessage(
   return error.message
 }
 
+function getStatusPillVariant(
+  tone: ReturnType<typeof getListingSafetyDisplay>["tone"]
+): "success" | "warning" | "error" | "info" | "neutral" {
+  return tone
+}
+
+function ListingSafetySummary({
+  item,
+  onEdit,
+}: {
+  item: MerchantProduct
+  onEdit: () => void
+}) {
+  const display = getListingSafetyDisplay(item.safety)
+  const isActive = item.safety.state === "active"
+  const isPolicyWarning = item.safety.state === "flagged"
+
+  if (isActive) {
+    return (
+      <div className="flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2">
+        <StatusPill variant="success" className="text-[10px]">
+          {display.label}
+        </StatusPill>
+        <span className="text-xs text-[var(--text-muted)]">
+          Visible in Market
+        </span>
+      </div>
+    )
+  }
+
+  return (
+    <article className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="font-semibold text-[var(--text-primary)]">
+            {item.product.title}
+          </div>
+          <div className="mt-2 leading-6">{display.summary}</div>
+        </div>
+        <StatusPill
+          variant={getStatusPillVariant(display.tone)}
+          className="text-[10px]"
+        >
+          {display.label}
+        </StatusPill>
+      </div>
+
+      <div className="mt-3 grid gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 text-xs text-[var(--text-secondary)] sm:grid-cols-2">
+        <div>
+          <span className="font-medium text-[var(--text-primary)]">
+            Market visibility:
+          </span>{" "}
+          {isPolicyWarning ? "Active" : "Hidden"}
+        </div>
+        <div>
+          <span className="font-medium text-[var(--text-primary)]">
+            Checkout:
+          </span>{" "}
+          {isPolicyWarning ? "Available" : "Disabled"}
+        </div>
+      </div>
+
+      <p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">
+        {display.merchantAction}
+      </p>
+      <Button variant="outline" size="sm" className="mt-3" onClick={onEdit}>
+        {isPolicyWarning ? "Review listing" : "Fix listing"}
+      </Button>
+    </article>
+  )
+}
+
 async function fetchMerchantProducts(
   merchantPubkey: string
 ): Promise<CommerceResult<MerchantProduct[]>> {
@@ -216,6 +292,7 @@ async function fetchMerchantProducts(
       dTag: record.dTag,
       eventCreatedAt: record.eventCreatedAt,
       product: record.product,
+      safety: record.safety ?? evaluateListingSafety(record.product),
     })),
     meta: result.meta,
   }
@@ -236,6 +313,7 @@ async function fetchCachedMerchantProducts(
       dTag: record.dTag,
       eventCreatedAt: record.eventCreatedAt,
       product: record.product,
+      safety: record.safety ?? evaluateListingSafety(record.product),
     })),
     meta: result.meta,
   }
@@ -710,75 +788,64 @@ function ProductsPage() {
               item.product,
               btcUsdRateQuery.data ?? null
             )
-            const marketVisible = hasMarketVisibleProductImage(item.product)
 
-            if (!marketVisible) {
+            if (!item.safety.marketVisible) {
               return (
-                <article
+                <ListingSafetySummary
                   key={item.addressId}
-                  className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning"
-                >
-                  <div className="font-semibold text-[var(--text-primary)]">
-                    {item.product.title}
-                  </div>
-                  <div className="mt-2 leading-6">
-                    Missing a valid image URL. This listing is hidden from
-                    Market until it is fixed.
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="mt-3"
-                    onClick={() => openEditDialog(item)}
-                  >
-                    Fix listing
-                  </Button>
-                </article>
+                  item={item}
+                  onEdit={() => openEditDialog(item)}
+                />
               )
             }
 
             return (
-              <ProductCard
-                key={item.addressId}
-                title={item.product.title}
-                merchantName="Your store"
-                images={getProductImageCandidates(item.product)}
-                primaryPrice={primary}
-                secondaryPrice={secondary}
-                imageLoading="lazy"
-                action={
-                  <div className="flex gap-1">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 px-2 text-xs"
-                      onClick={(event) => {
-                        event.preventDefault()
-                        event.stopPropagation()
-                        openEditDialog(item)
-                      }}
-                    >
-                      Edit
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 px-2 text-xs"
-                      disabled={isDeleting}
-                      onClick={(event) => {
-                        event.preventDefault()
-                        event.stopPropagation()
-                        const ok = window.confirm(
-                          `Delete "${item.product.title}"?`
-                        )
-                        if (ok) deleteMutation.mutate(item)
-                      }}
-                    >
-                      {isDeleting ? "..." : "Delete"}
-                    </Button>
-                  </div>
-                }
-              />
+              <div key={item.addressId} className="grid gap-2">
+                <ListingSafetySummary
+                  item={item}
+                  onEdit={() => openEditDialog(item)}
+                />
+                <ProductCard
+                  title={item.product.title}
+                  merchantName="Your store"
+                  images={getProductImageCandidates(item.product)}
+                  primaryPrice={primary}
+                  secondaryPrice={secondary}
+                  imageLoading="lazy"
+                  action={
+                    <div className="flex gap-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={(event) => {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          openEditDialog(item)
+                        }}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        disabled={isDeleting}
+                        onClick={(event) => {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          const ok = window.confirm(
+                            `Delete "${item.product.title}"?`
+                          )
+                          if (ok) deleteMutation.mutate(item)
+                        }}
+                      >
+                        {isDeleting ? "..." : "Delete"}
+                      </Button>
+                    </div>
+                  }
+                />
+              </div>
             )
           })}
         </div>

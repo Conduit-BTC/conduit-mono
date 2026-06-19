@@ -27,6 +27,11 @@ import {
   parseOrderMessageRumorEvent,
   type ParsedOrderMessage,
 } from "./orders"
+import {
+  evaluateListingSafety,
+  isListingMarketVisible,
+  type ListingSafetyEvaluation,
+} from "./listing-safety"
 import { parseProductEvent } from "./products"
 import { parseProfileEvent } from "./profiles"
 import {
@@ -84,6 +89,7 @@ export interface CommerceResult<T> {
 
 export interface CommerceProductRecord {
   product: Product
+  safety?: ListingSafetyEvaluation
   eventId: string
   addressId: string
   dTag: string | null
@@ -120,6 +126,7 @@ export interface MerchantStorefrontQuery {
 export interface ProductDetailQuery {
   productId: string
   revalidateCanonical?: boolean
+  includeMarketHidden?: boolean
 }
 
 export interface ProfileBatchQuery {
@@ -602,6 +609,32 @@ export function hasMarketProductImage(
   return product.images.some((image) => isValidProductImageUrl(image.url))
 }
 
+function withListingSafety(
+  record: Omit<CommerceProductRecord, "safety"> & {
+    safety?: ListingSafetyEvaluation
+  }
+): CommerceProductRecord {
+  return {
+    ...record,
+    safety: record.safety ?? evaluateListingSafety(record.product),
+  }
+}
+
+function isMarketRenderableRecord(record: CommerceProductRecord): boolean {
+  return isListingMarketVisible(
+    record.safety ?? evaluateListingSafety(record.product)
+  )
+}
+
+function filterProductRecordsForRead(
+  records: CommerceProductRecord[],
+  options: { includeMarketHidden?: boolean } = {}
+): CommerceProductRecord[] {
+  return options.includeMarketHidden
+    ? records
+    : records.filter(isMarketRenderableRecord)
+}
+
 function toCachedProduct(record: CommerceProductRecord) {
   const { product } = record
   return {
@@ -663,14 +696,14 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
   const dTag = product.id.startsWith("30402:")
     ? product.id.split(":").slice(2).join(":")
     : null
-  return {
+  return withListingSafety({
     product,
     eventId: product.id,
     addressId: product.id,
     dTag,
     eventCreatedAt: Math.floor(product.createdAt / 1000),
     sourceRelayUrls: row.sourceRelayUrls,
-  }
+  })
 }
 
 async function loadProductSourceRelayHints(
@@ -729,19 +762,15 @@ async function getCachedProductRecords(
     .map(fromCachedProduct)
     .filter(
       (record) =>
-        options.includeMarketHidden || hasMarketProductImage(record.product)
+        options.includeMarketHidden || isMarketRenderableRecord(record)
     )
 }
 
 async function cacheProductRecords(
-  records: CommerceProductRecord[],
-  options: { includeMarketHidden?: boolean } = {}
+  records: CommerceProductRecord[]
 ): Promise<void> {
-  const cacheable = options.includeMarketHidden
-    ? records
-    : records.filter((record) => hasMarketProductImage(record.product))
-  if (cacheable.length === 0) return
-  await storeCachedProducts(cacheable.map(toCachedProduct))
+  if (records.length === 0) return
+  await storeCachedProducts(records.map(toCachedProduct))
 }
 
 async function loadCachedProfiles(
@@ -1053,16 +1082,14 @@ function isDeletedByNip09(
 
 function dedupeProductEvents(
   events: NDKEvent[],
-  deletionTimestamps?: DeletionTimestamps,
-  options: { includeMarketHidden?: boolean } = {}
+  deletionTimestamps?: DeletionTimestamps
 ): CommerceProductRecord[] {
   const byAddress = new Map<string, CommerceProductRecord>()
 
   for (const event of events) {
     try {
       const parsed = parseProductEvent(event)
-      if (!options.includeMarketHidden && !hasMarketProductImage(parsed))
-        continue
+      const safety = evaluateListingSafety(parsed)
 
       const dTag = getTagValue(event.tags ?? [], "d")
       const addressId = dTag ? `30402:${event.pubkey}:${dTag}` : parsed.id
@@ -1076,6 +1103,7 @@ function dedupeProductEvents(
 
       const candidate: CommerceProductRecord = {
         product: parsed,
+        safety,
         eventId: event.id,
         addressId,
         dTag,
@@ -1083,10 +1111,9 @@ function dedupeProductEvents(
         sourceRelayUrls: getEventSourceRelayUrls(event),
       }
 
-      const dedupeKey = dTag ?? parsed.id
-      const existing = byAddress.get(dedupeKey)
+      const existing = byAddress.get(addressId)
       if (!existing || candidate.eventCreatedAt >= existing.eventCreatedAt) {
-        byAddress.set(dedupeKey, candidate)
+        byAddress.set(addressId, candidate)
       }
     } catch {
       // ignore malformed product events
@@ -1329,16 +1356,18 @@ export async function getMarketplaceProducts(
       limit: query.limit,
       readPolicy: query.readPolicy,
     })
+    await cacheProductRecords(records)
 
     const filtered = applyProductLimit(
       sortProducts(
-        records.filter((record) => productMatchesQuery(record, query)),
+        filterProductRecordsForRead(records).filter((record) =>
+          productMatchesQuery(record, query)
+        ),
         query.sort
       ),
       query.limit
     )
 
-    await cacheProductRecords(filtered)
     return {
       data: filtered,
       meta: createMeta("marketplace_products", "public", PRODUCT_CAPABILITIES),
@@ -1397,7 +1426,9 @@ export async function getMarketplaceProductsProgressive(
   const toResult = (records: CommerceProductRecord[]) => ({
     data: applyProductLimit(
       sortProducts(
-        records.filter((record) => productMatchesQuery(record, query)),
+        filterProductRecordsForRead(records).filter((record) =>
+          productMatchesQuery(record, query)
+        ),
         query.sort
       ),
       limit
@@ -1421,7 +1452,7 @@ export async function getMarketplaceProductsProgressive(
   )
 
   const result = toResult(records)
-  await cacheProductRecords(result.data)
+  await cacheProductRecords(records)
   return result
 }
 
@@ -1511,9 +1542,7 @@ export async function getMerchantStorefront(
       }
     )
 
-    const liveRecords = dedupeProductEvents(rawEvents, deletionTimestamps, {
-      includeMarketHidden: query.includeMarketHidden,
-    })
+    const liveRecords = dedupeProductEvents(rawEvents, deletionTimestamps)
     const mergedRecords = mergeCachedAndLiveProductRecords({
       cached,
       live: liveRecords,
@@ -1521,7 +1550,9 @@ export async function getMerchantStorefront(
     })
 
     const sorted = sortProducts(
-      mergedRecords.filter((record) =>
+      filterProductRecordsForRead(mergedRecords, {
+        includeMarketHidden: query.includeMarketHidden,
+      }).filter((record) =>
         productMatchesQuery(record, {
           merchantPubkey: query.merchantPubkey,
           textQuery: query.textQuery,
@@ -1534,9 +1565,7 @@ export async function getMerchantStorefront(
     )
     const filtered = applyProductLimit(sorted, query.limit)
 
-    await cacheProductRecords(filtered, {
-      includeMarketHidden: query.includeMarketHidden,
-    })
+    await cacheProductRecords(mergedRecords)
     return {
       data: filtered,
       meta:
@@ -1676,9 +1705,12 @@ export async function getProductDetail(
         dTags: [address.d],
         limit: 10,
       })
-      const record = direct.find((item) => item.addressId === addressId) ?? null
+      await cacheProductRecords(direct)
+      const record =
+        filterProductRecordsForRead(direct, {
+          includeMarketHidden: query.includeMarketHidden,
+        }).find((item) => item.addressId === addressId) ?? null
       if (record) {
-        await cacheProductRecords([record])
         return {
           data: record,
           meta: createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES),
@@ -1687,6 +1719,7 @@ export async function getProductDetail(
 
       const storefront = await getMerchantStorefront({
         merchantPubkey: address.pubkey,
+        includeMarketHidden: query.includeMarketHidden,
       })
       const fallbackRecord =
         storefront.data.find((item) => item.addressId === addressId) ?? null
@@ -1701,17 +1734,21 @@ export async function getProductDetail(
         ids: [decodedId],
         limit: 1,
       })
-      const record = records[0] ?? null
-      if (record) {
-        await cacheProductRecords([record])
-      }
+      await cacheProductRecords(records)
+      const record =
+        filterProductRecordsForRead(records, {
+          includeMarketHidden: query.includeMarketHidden,
+        })[0] ?? null
       return {
         data: record,
         meta: createMeta("product_detail", "public", PRODUCT_CAPABILITIES),
       }
     }
   } catch (error) {
-    const cached = await getCachedProductRecords()
+    const cached = await getCachedProductRecords(undefined, {
+      includeStale: true,
+      includeMarketHidden: query.includeMarketHidden,
+    })
     const lookupIds = [decodedId, addressId].filter(Boolean)
     const record =
       cached.find(
@@ -1733,7 +1770,10 @@ export async function getProductDetail(
     throw error
   }
 
-  const cached = await getCachedProductRecords()
+  const cached = await getCachedProductRecords(undefined, {
+    includeStale: true,
+    includeMarketHidden: query.includeMarketHidden,
+  })
   const lookupIds = [decodedId, addressId].filter(Boolean)
   const record =
     cached.find(

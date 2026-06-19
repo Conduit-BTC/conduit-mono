@@ -17,7 +17,7 @@ export interface Product {
     currency: string
     normalizedCurrency: string
   }
-  type: "simple" | "variable"
+  type: "simple" | "variable" | "variation"
   /** Whether the product requires physical shipping. Defaults to "physical". */
   format: "physical" | "digital"
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */

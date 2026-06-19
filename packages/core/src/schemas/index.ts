@@ -18,7 +18,7 @@ export const productSchema = z.object({
       normalizedCurrency: z.string(),
     })
     .optional(),
-  type: z.enum(["simple", "variable"]).default("simple"),
+  type: z.enum(["simple", "variable", "variation"]).default("simple"),
   /** Whether the product requires physical shipping. Defaults to "physical". */
   format: z.enum(["physical", "digital"]).default("physical"),
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */

@@ -161,6 +161,39 @@ describe("commerce gateway", () => {
     ])
   })
 
+  it("keeps same d-tag listings from different merchants separate", async () => {
+    const productEvents = [
+      makeProductEvent({
+        pubkey: "merchant-a",
+        dTag: "shared-item",
+        id: "event-a",
+        createdAt: 101,
+        title: "Merchant A Item",
+      }),
+      makeProductEvent({
+        pubkey: "merchant-b",
+        dTag: "shared-item",
+        id: "event-b",
+        createdAt: 102,
+        title: "Merchant B Item",
+      }),
+    ]
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? (productEvents as never)
+          : [],
+    })
+
+    const result = await getMarketplaceProducts({ sort: "newest" })
+
+    expect(result.data.map((record) => record.addressId).sort()).toEqual([
+      "30402:merchant-a:shared-item",
+      "30402:merchant-b:shared-item",
+    ])
+  })
+
   it("falls back to local cached marketplace products without changing shape", async () => {
     cachedProducts.push({
       id: "30402:merchant:cached-item",
@@ -380,6 +413,147 @@ describe("commerce gateway", () => {
     expect(marketResult.data).toHaveLength(0)
     expect(merchantResult.data).toHaveLength(1)
     expect(merchantResult.data[0]?.product.title).toBe("Needs Image")
+  })
+
+  it("suppresses blocked launch-safety listings from Market while Merchant can inspect them", async () => {
+    const productEvent = makeProductEvent({
+      pubkey: "merchant",
+      dTag: "blocked-item",
+      id: "event-blocked",
+      createdAt: 100,
+      title: "Counterfeit goods display sample",
+    })
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([productEvent] as never)
+          : [],
+    })
+
+    const marketResult = await getMerchantStorefront({
+      merchantPubkey: "merchant",
+      limit: 10,
+    })
+    const merchantResult = await getMerchantStorefront({
+      merchantPubkey: "merchant",
+      includeMarketHidden: true,
+      limit: 10,
+    })
+    const publicDetail = await getProductDetail({
+      productId: "30402:merchant:blocked-item",
+    })
+    const merchantDetail = await getProductDetail({
+      productId: "30402:merchant:blocked-item",
+      includeMarketHidden: true,
+    })
+
+    expect(marketResult.data).toHaveLength(0)
+    expect(publicDetail.data).toBeNull()
+    expect(merchantResult.data).toHaveLength(1)
+    expect(merchantResult.data[0]?.safety?.state).toBe("blocked")
+    expect(merchantDetail.data?.safety?.state).toBe("blocked")
+  })
+
+  it("keeps policy-warning listings visible in Market while Merchant can inspect the warning", async () => {
+    const productEvent = makeProductEvent({
+      pubkey: "merchant",
+      dTag: "warning-item",
+      id: "event-warning",
+      createdAt: 100,
+      title: "CBD wellness balm",
+    })
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([productEvent] as never)
+          : [],
+    })
+
+    const marketResult = await getMerchantStorefront({
+      merchantPubkey: "merchant",
+      limit: 10,
+    })
+    const merchantResult = await getMerchantStorefront({
+      merchantPubkey: "merchant",
+      includeMarketHidden: true,
+      limit: 10,
+    })
+
+    expect(marketResult.data).toHaveLength(1)
+    expect(marketResult.data[0]?.safety?.state).toBe("flagged")
+    expect(merchantResult.data).toHaveLength(1)
+    expect(merchantResult.data[0]?.safety?.state).toBe("flagged")
+  })
+
+  it("does not resurrect an older cached active listing after a newer blocked replacement", async () => {
+    cachedProducts.push({
+      id: "30402:merchant:replacement-item",
+      pubkey: "merchant",
+      title: "Previously Safe Item",
+      summary: "cached summary",
+      price: 25,
+      currency: "USD",
+      type: "simple",
+      visibility: "public",
+      images: [{ url: "https://example.com/product.png" }],
+      tags: ["cached"],
+      createdAt: 100_000,
+      updatedAt: 100_000,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+    const blockedEvent = makeProductEvent({
+      pubkey: "merchant",
+      dTag: "replacement-item",
+      id: "event-blocked-replacement",
+      createdAt: 200,
+      title: "Counterfeit goods display sample",
+    })
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([blockedEvent] as never)
+          : [],
+    })
+
+    const marketResult = await getMerchantStorefront({
+      merchantPubkey: "merchant",
+      limit: 10,
+    })
+    const merchantResult = await getMerchantStorefront({
+      merchantPubkey: "merchant",
+      includeMarketHidden: true,
+      limit: 10,
+    })
+
+    expect(marketResult.data).toHaveLength(0)
+    expect(merchantResult.data).toHaveLength(1)
+    expect(merchantResult.data[0]?.product.title).toBe(
+      "Counterfeit goods display sample"
+    )
+    expect(
+      cachedProducts.find((row) => row.id === "30402:merchant:replacement-item")
+        ?.title
+    ).toBe("Counterfeit goods display sample")
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+    })
+
+    const cachedMarketResult = await getMerchantStorefront({
+      merchantPubkey: "merchant",
+      limit: 10,
+    })
+    const cachedMerchantResult = await getMerchantStorefront({
+      merchantPubkey: "merchant",
+      includeMarketHidden: true,
+      limit: 10,
+    })
+
+    expect(cachedMarketResult.data).toHaveLength(0)
+    expect(cachedMerchantResult.data[0]?.safety?.state).toBe("blocked")
   })
 
   it("resolves product detail from a NIP-89 naddr handler URL", async () => {

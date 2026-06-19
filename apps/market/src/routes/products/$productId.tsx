@@ -8,6 +8,7 @@ import {
 import { createFileRoute, Link } from "@tanstack/react-router"
 import {
   formatNpub,
+  getListingSafetyDisplay,
   getProfileName,
   pubkeyToNpub,
   useProfile,
@@ -81,6 +82,12 @@ function ProductPage() {
 
   const productQuery = useProgressiveProductDetail(productId)
   const product = productQuery.product
+  const listingSafety = productQuery.listingSafety
+  const listingSafetyDisplay = listingSafety
+    ? getListingSafetyDisplay(listingSafety)
+    : null
+  const productUnavailable =
+    !!product && !!listingSafety && !productQuery.isMarketVisible
 
   const merchantProfile = useProfile(product?.pubkey, {
     relayHints: product
@@ -93,7 +100,7 @@ function ProductPage() {
   const relatedProductsQuery = useProgressiveProducts({
     scope: "marketplace",
     merchantPubkey: product?.pubkey ?? "",
-    enabled: !!product,
+    enabled: !!product && !productUnavailable,
     sort: "newest",
   })
   const relatedProducts = useMemo(
@@ -314,7 +321,44 @@ function ProductPage() {
         </section>
       )}
 
-      {product && (
+      {productUnavailable && product && listingSafetyDisplay && (
+        <section className="rounded-3xl border border-warning/30 bg-warning/10 p-8 text-center sm:p-10">
+          <div className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-warning/30 bg-warning/10 text-warning">
+            <SearchX className="h-6 w-6" />
+          </div>
+          <h2 className="mt-5 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
+            {listingSafety.state === "unsupported"
+              ? "Listing unsupported"
+              : "Listing not available"}
+          </h2>
+          <p className="mx-auto mt-3 max-w-xl text-sm leading-7 text-[var(--text-secondary)]">
+            {listingSafety.state === "unsupported"
+              ? "This listing uses a product format the current Market client cannot safely support yet."
+              : "This listing is not visible in Market or available for checkout right now."}
+          </p>
+          <div className="mx-auto mt-4 max-w-xl rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--text-secondary)]">
+            Current state:{" "}
+            <span className="font-medium text-[var(--text-primary)]">
+              {listingSafetyDisplay.label}
+            </span>
+          </div>
+          <div className="mt-6 flex flex-wrap justify-center gap-3">
+            <Button asChild className="h-11 px-5 text-sm">
+              <Link to="/products">Browse products</Link>
+            </Button>
+            <Button asChild variant="outline" className="h-11 px-5 text-sm">
+              <Link
+                to="/store/$pubkey"
+                params={{ pubkey: pubkeyToNpub(product.pubkey) }}
+              >
+                View store
+              </Link>
+            </Button>
+          </div>
+        </section>
+      )}
+
+      {product && !productUnavailable && (
         <>
           <div
             className={`grid min-w-0 max-w-full items-start gap-5 lg:gap-6 ${hasMultipleImages ? "lg:grid-cols-[88px_minmax(0,1fr)_minmax(320px,420px)]" : "lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]"}`}
