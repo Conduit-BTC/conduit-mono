@@ -28,6 +28,11 @@ import {
   parseRelayFailureMessage,
   type PaymentTrackerInput,
 } from "../apps/market/src/lib/checkout-payment"
+import {
+  getCartShippingDestinationEligibility,
+  getCartShippingOptionsAvailable,
+  hasPhysicalItemsMissingShippingZone,
+} from "../apps/market/src/lib/cart-shipping-options"
 import type { CartItem } from "../apps/market/src/hooks/useCart"
 import {
   fetchLnurlPayMetadata,
@@ -1107,6 +1112,62 @@ describe("shipping destination eligibility", () => {
       restrictTo: ["787**"],
       exclude: ["78799"],
     })
+  })
+
+  it("uses product-level custom shipping rules without a preset option id", () => {
+    const item = cartItem({
+      shippingCountryRules: [
+        {
+          code: "US",
+          name: "United States",
+          restrictTo: ["787**"],
+          exclude: ["78799"],
+        },
+      ],
+      shippingCountries: ["US"],
+    })
+
+    expect(hasPhysicalItemsMissingShippingZone([item])).toBe(false)
+    expect(getCartShippingOptionsAvailable([item], [])).toBe(true)
+    expect(
+      getCartShippingDestinationEligibility(
+        { country: "US", postalCode: "78704" },
+        [item],
+        []
+      )
+    ).toEqual({ eligible: true })
+    expect(
+      getCartShippingDestinationEligibility(
+        { country: "US", postalCode: "78799" },
+        [item],
+        []
+      )
+    ).toEqual({ eligible: false, reason: "postal_restricted" })
+  })
+
+  it("requires every physical item shipping rule to allow the destination", () => {
+    const firstItem = cartItem({
+      productId: "product-1",
+      shippingCountryRules: [
+        { code: "US", name: "United States", restrictTo: [], exclude: [] },
+      ],
+      shippingCountries: ["US"],
+    })
+    const secondItem = cartItem({
+      productId: "product-2",
+      shippingCountryRules: [
+        { code: "CA", name: "Canada", restrictTo: [], exclude: [] },
+      ],
+      shippingCountries: ["CA"],
+    })
+
+    expect(
+      getCartShippingDestinationEligibility(
+        { country: "US", postalCode: "78704" },
+        [firstItem, secondItem],
+        []
+      )
+    ).toEqual({ eligible: false, reason: "country_unsupported" })
   })
 
   it("parses postal include and exclude rules", () => {

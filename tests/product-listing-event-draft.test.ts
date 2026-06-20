@@ -124,6 +124,38 @@ describe("product listing event drafts", () => {
     expectTag(draft.tags, ["shipping_cost", "5", "USD"])
     expect(draft.tags).not.toContainEqual(["shipping_cost", "5"])
   })
+
+  it("emits custom product shipping rules without a preset option reference", () => {
+    const product = baseProduct({
+      shippingOptionId: undefined,
+      shippingOptionDTag: undefined,
+      shippingCountries: ["US", "CA"],
+      shippingCountryRules: [
+        {
+          code: "US",
+          name: "United States",
+          restrictTo: ["787**"],
+          exclude: ["78799"],
+        },
+        {
+          code: "CA",
+          name: "Canada",
+          restrictTo: [],
+          exclude: [],
+        },
+      ],
+    })
+
+    const draft = buildProductListingEventDraft({
+      product,
+      dTag: "custom-shipping-product",
+    })
+
+    expect(draft.tags.some((tag) => tag[0] === "shipping_option")).toBe(false)
+    expectTag(draft.tags, ["shipping_country", "US", "CA"])
+    expectTag(draft.tags, ["shipping_restrict", "US", "787**"])
+    expectTag(draft.tags, ["shipping_exclude", "US", "78799"])
+  })
 })
 
 describe("product listing event parsing", () => {
