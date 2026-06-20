@@ -46,6 +46,23 @@ export type CommerceShippingCostLike = {
 
 export type CommercePriceSortDirection = "asc" | "desc"
 
+export type CurrencyAmountNormalization =
+  | {
+      status: "ok"
+      amount: number
+      normalizedCurrency: string
+      fractionDigits: number
+      rounded: boolean
+    }
+  | {
+      status: "invalid"
+      amount: number
+      normalizedCurrency: string
+      fractionDigits: number
+      rounded: false
+      reason: string
+    }
+
 export const SUPPORTED_PRODUCT_PRICE_CURRENCIES = [
   "SATS",
   "USD",
@@ -115,6 +132,80 @@ export function isFiatCurrencyCode(currency: string): boolean {
     !isMsatsLikeCurrency(normalized) &&
     !isBtcLikeCurrency(normalized)
   )
+}
+
+const CUSTOM_CURRENCY_FRACTION_DIGITS: Record<string, number> = {
+  SAT: 0,
+  SATS: 0,
+  MSAT: 0,
+  MSATS: 0,
+  BTC: 8,
+  XBT: 8,
+}
+
+export function getCurrencyFractionDigits(currency: string): number {
+  const normalized = normalizeCurrencyCode(currency)
+  const customDigits = CUSTOM_CURRENCY_FRACTION_DIGITS[normalized]
+  if (typeof customDigits === "number") return customDigits
+  if (!/^[A-Z]{3}$/.test(normalized)) return 2
+
+  try {
+    const fractionDigits = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: normalized,
+    }).resolvedOptions().maximumFractionDigits
+    return typeof fractionDigits === "number" ? fractionDigits : 2
+  } catch {
+    return 2
+  }
+}
+
+export function getCurrencyAmountStep(currency: string): string {
+  const fractionDigits = getCurrencyFractionDigits(currency)
+  if (fractionDigits <= 0) return "1"
+  return `0.${"0".repeat(fractionDigits - 1)}1`
+}
+
+export function normalizeCurrencyAmount(
+  amount: number,
+  currency: string
+): CurrencyAmountNormalization {
+  const normalizedCurrency = normalizeCurrencyCode(currency)
+  const fractionDigits = getCurrencyFractionDigits(normalizedCurrency)
+
+  if (!Number.isFinite(amount)) {
+    return {
+      status: "invalid",
+      amount,
+      normalizedCurrency,
+      fractionDigits,
+      rounded: false,
+      reason: "Amount must be a finite number",
+    }
+  }
+
+  const factor = 10 ** fractionDigits
+  const rounded = Math.round((amount + Number.EPSILON) * factor) / factor
+  const normalizedAmount = Object.is(rounded, -0) ? 0 : rounded
+
+  if (!Number.isSafeInteger(Math.round(normalizedAmount * factor))) {
+    return {
+      status: "invalid",
+      amount,
+      normalizedCurrency,
+      fractionDigits,
+      rounded: false,
+      reason: "Amount is too large",
+    }
+  }
+
+  return {
+    status: "ok",
+    amount: normalizedAmount,
+    normalizedCurrency,
+    fractionDigits,
+    rounded: Math.abs(amount - normalizedAmount) > 1 / factor / 1_000_000,
+  }
 }
 
 function sourceQuote(amount: number, currency: string): SourcePriceQuote {
@@ -345,6 +436,27 @@ export function getPriceSats(
   )
   if (normalized.status !== "ok") return null
   return { sats: normalized.sats, approximate: normalized.approximate }
+}
+
+export function canonicalizeShippingCost(
+  amount: number | undefined,
+  currency: string
+): CommerceShippingCostLike {
+  if (typeof amount !== "number") return {}
+  if (!Number.isFinite(amount) || amount < 0) return {}
+
+  const source = sourceQuote(amount, currency)
+  if (amount === 0) return { shippingCostSats: 0, sourceShippingCost: source }
+
+  const normalized = normalizeCommercePrice(amount, currency)
+  if (normalized.status === "ok" && !normalized.approximate) {
+    return {
+      shippingCostSats: normalized.sats,
+      sourceShippingCost: normalized.source,
+    }
+  }
+
+  return { sourceShippingCost: normalized.source }
 }
 
 export function getShippingCostSats(

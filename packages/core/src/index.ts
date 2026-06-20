@@ -62,9 +62,12 @@ export {
   SATS_PER_BTC,
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
   canonicalizeProductPrice,
+  canonicalizeShippingCost,
   compareCommercePrices,
   formatApproxUsdFromSats,
   formatFiatPrice,
+  getCurrencyAmountStep,
+  getCurrencyFractionDigits,
   getPriceSats,
   getShippingCostSats,
   isBtcLikeCurrency,
@@ -72,6 +75,7 @@ export {
   isSatsLikeCurrency,
   isUsdCurrencyCode,
   normalizeCommercePrice,
+  normalizeCurrencyAmount,
   normalizeCurrencyCode,
 } from "./pricing"
 export {
@@ -90,6 +94,7 @@ export type {
   CommercePriceSortDirection,
   CommercePriceLike,
   CommercePriceNormalization,
+  CurrencyAmountNormalization,
   PricingRateInput,
   SourcePriceQuote,
   SupportedProductPriceCurrency,

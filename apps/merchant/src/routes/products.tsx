@@ -48,8 +48,10 @@ import {
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { requireAuth } from "../lib/auth"
 import {
-  assertPublishableProductPrice,
+  canonicalizeProductShippingCost,
   getProductPriceInputStep,
+  getProductShippingCurrencyLabel,
+  normalizePublishableProductPrice,
 } from "../lib/productPriceForm"
 import { isShippingComplete, loadShippingConfig } from "../lib/readiness"
 
@@ -75,7 +77,7 @@ type ProductFormState = {
   price: string
   currency: string
   format: "physical" | "digital"
-  shippingCostSats: string
+  shippingCost: string
   usePresetShippingZone: boolean
   imageUrl: string
   tags: string
@@ -89,7 +91,7 @@ const EMPTY_FORM: ProductFormState = {
   price: "0",
   currency: "USD",
   format: "physical",
-  shippingCostSats: "",
+  shippingCost: "",
   usePresetShippingZone: true,
   imageUrl: "",
   tags: "",
@@ -109,16 +111,19 @@ function randomSuffix(): string {
 
 function productToForm(product: ProductSchema): ProductFormState {
   const source = product.sourcePrice
+  const sourceShippingCost = product.sourceShippingCost
   return {
     title: product.title,
     summary: product.summary ?? "",
     price: String(source?.amount ?? product.price),
     currency: source?.normalizedCurrency ?? product.currency,
     format: product.format,
-    shippingCostSats:
-      typeof product.shippingCostSats === "number"
-        ? String(product.shippingCostSats)
-        : "",
+    shippingCost:
+      typeof sourceShippingCost?.amount === "number"
+        ? String(sourceShippingCost.amount)
+        : typeof product.shippingCostSats === "number"
+          ? String(product.shippingCostSats)
+          : "",
     usePresetShippingZone: !!product.shippingOptionId,
     imageUrl: product.images[0]?.url ?? "",
     tags: product.tags.join(", "),
@@ -162,24 +167,26 @@ function parseTags(tagsCsv: string): string[] {
 
 function getShippingCostHelpText(
   value: string,
-  format: ProductFormState["format"]
+  format: ProductFormState["format"],
+  currency: string
 ): string {
   if (format === "digital") {
     return "Digital products do not need shipping details or preset shipping zones."
   }
 
   const trimmed = value.trim()
+  const currencyLabel = getProductShippingCurrencyLabel(currency)
   if (!trimmed) {
     return "Shipping is coordinated with the buyer after order request; direct pay is disabled for physical carts."
   }
-  const sats = Number(trimmed)
-  if (Number.isSafeInteger(sats) && sats === 0) {
+  const amount = Number(trimmed)
+  if (Number.isFinite(amount) && amount === 0) {
     return "Shipping included. Buyers can pay immediately without a separate shipping request."
   }
-  if (Number.isSafeInteger(sats) && sats > 0) {
-    return "Added to buyer total at checkout."
+  if (Number.isFinite(amount) && amount > 0) {
+    return `Added to buyer total at checkout in ${currencyLabel}.`
   }
-  return "Enter a whole-number shipping amount in sats."
+  return `Enter a non-negative shipping amount in ${currencyLabel}.`
 }
 
 function getPublishErrorMessage(
@@ -336,24 +343,22 @@ async function publishProduct(
 
   const price = Number(form.price)
   const isDigital = form.format === "digital"
-  const shippingCostInput = isDigital ? "" : form.shippingCostSats.trim()
-  const shippingCostSats =
+  const shippingCostInput = isDigital ? "" : form.shippingCost.trim()
+  const shippingCostAmount =
     shippingCostInput.length > 0 ? Number(shippingCostInput) : undefined
 
   const currency = form.currency.trim().toUpperCase() || "USD"
-  assertPublishableProductPrice(price, currency)
-  if (
-    typeof shippingCostSats === "number" &&
-    (!Number.isSafeInteger(shippingCostSats) || shippingCostSats < 0)
-  ) {
-    throw new Error("Shipping must be a whole-number sats amount or blank.")
-  }
+  const normalizedPrice = normalizePublishableProductPrice(price, currency)
+  const shippingCost = canonicalizeProductShippingCost(
+    shippingCostAmount,
+    currency
+  )
   const shippingMetadata = isDigital
     ? {}
     : buildShippingMetadata(signerPubkey, form.usePresetShippingZone)
   if (
     !isDigital &&
-    typeof shippingCostSats === "number" &&
+    typeof shippingCostAmount === "number" &&
     !shippingMetadata.shippingOptionId
   ) {
     throw new Error(
@@ -379,11 +384,11 @@ async function publishProduct(
     pubkey: signerPubkey,
     title,
     summary: summary || undefined,
-    price,
+    price: normalizedPrice,
     currency,
     type: "simple",
     format: form.format,
-    shippingCostSats,
+    ...shippingCost,
     ...shippingMetadata,
     visibility: "public",
     stock: undefined,
@@ -953,8 +958,8 @@ function ProductsPage() {
                       return {
                         ...prev,
                         format,
-                        shippingCostSats:
-                          format === "digital" ? "" : prev.shippingCostSats,
+                        shippingCost:
+                          format === "digital" ? "" : prev.shippingCost,
                         usePresetShippingZone:
                           format === "digital"
                             ? false
@@ -974,18 +979,20 @@ function ProductsPage() {
               </div>
 
               <div className="grid gap-1.5">
-                <Label htmlFor="product-shipping">Shipping</Label>
+                <Label htmlFor="product-shipping">
+                  Shipping ({getProductShippingCurrencyLabel(form.currency)})
+                </Label>
                 <Input
                   id="product-shipping"
                   type="number"
                   min="0"
-                  step="1"
-                  value={form.shippingCostSats}
+                  step={getProductPriceInputStep(form.currency)}
+                  value={form.shippingCost}
                   disabled={productIsDigital}
                   onChange={(event) =>
                     setForm((prev) => ({
                       ...prev,
-                      shippingCostSats: event.target.value,
+                      shippingCost: event.target.value,
                     }))
                   }
                   placeholder={productIsDigital ? "Not required" : "0"}
@@ -994,8 +1001,12 @@ function ProductsPage() {
               <div className="text-xs leading-5 text-[var(--text-muted)] sm:col-span-4">
                 {productIsDigital
                   ? "Digital listings skip checkout shipping rules."
-                  : "Enter the shipping amount to charge for this item. Use 0 only if shipping is included in the product price."}{" "}
-                {getShippingCostHelpText(form.shippingCostSats, form.format)}
+                  : `Enter the shipping amount to charge for this item in ${getProductShippingCurrencyLabel(form.currency)}. Use 0 only if shipping is included in the product price.`}{" "}
+                {getShippingCostHelpText(
+                  form.shippingCost,
+                  form.format,
+                  form.currency
+                )}
               </div>
               <label className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm sm:col-span-4">
                 <input
