@@ -18,12 +18,21 @@ const Command = React.forwardRef<
 ))
 Command.displayName = CommandPrimitive.displayName
 
+type CommandInputProps = React.ComponentPropsWithoutRef<
+  typeof CommandPrimitive.Input
+> & {
+  wrapperClassName?: string
+}
+
 const CommandInput = React.forwardRef<
   React.ComponentRef<typeof CommandPrimitive.Input>,
-  React.ComponentPropsWithoutRef<typeof CommandPrimitive.Input>
->(({ className, ...props }, ref) => (
+  CommandInputProps
+>(({ className, wrapperClassName, ...props }, ref) => (
   <div
-    className="flex items-center border-b border-[var(--border)] px-3"
+    className={cn(
+      "flex items-center border-b border-[var(--border)] px-3",
+      wrapperClassName
+    )}
     cmdk-input-wrapper=""
   >
     <Search className="mr-2 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
@@ -39,13 +48,38 @@ const CommandInput = React.forwardRef<
 ))
 CommandInput.displayName = CommandPrimitive.Input.displayName
 
+function getNormalizedWheelDeltaY(event: WheelEvent): number {
+  switch (event.deltaMode) {
+    case WheelEvent.DOM_DELTA_LINE:
+      return event.deltaY * 16
+    case WheelEvent.DOM_DELTA_PAGE:
+      return event.deltaY * window.innerHeight
+    default:
+      return event.deltaY
+  }
+}
+
 const CommandList = React.forwardRef<
   React.ComponentRef<typeof CommandPrimitive.List>,
   React.ComponentPropsWithoutRef<typeof CommandPrimitive.List>
->(({ className, ...props }, ref) => (
+>(({ className, onWheel, ...props }, ref) => (
   <CommandPrimitive.List
     ref={ref}
-    className={cn("max-h-72 overflow-y-auto overflow-x-hidden", className)}
+    className={cn(
+      "max-h-72 overflow-y-auto overflow-x-hidden overscroll-contain",
+      className
+    )}
+    onWheel={(event) => {
+      onWheel?.(event)
+      if (event.defaultPrevented) return
+
+      const list = event.currentTarget
+      if (list.scrollHeight <= list.clientHeight) return
+
+      event.preventDefault()
+      event.stopPropagation()
+      list.scrollTop += getNormalizedWheelDeltaY(event.nativeEvent)
+    }}
     {...props}
   />
 ))

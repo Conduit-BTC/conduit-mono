@@ -161,7 +161,9 @@ function CountrySelector({
       searchPlaceholder="Search countries to add..."
       emptyText="No countries available."
       triggerClassName="h-9 text-sm"
-      contentClassName="max-h-64 overflow-hidden rounded-xl border-[var(--border-overlay)] bg-[var(--surface-overlay)]"
+      contentClassName="overflow-hidden rounded-xl border-[var(--border-overlay)] bg-[var(--surface-overlay)]"
+      listClassName="max-h-[min(18rem,var(--radix-popover-content-available-height))] overscroll-contain"
+      searchInTrigger
     />
   )
 }
