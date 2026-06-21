@@ -29,21 +29,33 @@ export const allowedProviderTelemetryEventNames = new Set([
   "pageview",
 ])
 
-export const bannedTelemetryPackages = [
+export const bannedPrivacyPackages = [
   "@amplitude/analytics-browser",
   "@amplitude/analytics-node",
   "@fullstory/browser",
   "@hotjar/browser",
+  "@rudderstack/analytics-js",
   "@sentry/browser",
   "@sentry/react",
   "@segment/analytics-next",
+  "cookie",
+  "cookie-es",
   "amplitude-js",
   "clarity-js",
   "fullstory",
+  "ga-gtag",
+  "gtag.js",
   "hotjar",
+  "js-cookie",
   "logrocket",
   "mixpanel-browser",
+  "react-cookie",
+  "react-ga",
+  "react-ga4",
   "rrweb",
+  "rudder-sdk-js",
+  "universal-cookie",
+  "vue-cookies",
 ]
 
 export const sensitiveTelemetryPropertyNames = new Set([
@@ -117,6 +129,18 @@ const unsafeTelemetryConfigPatterns: Array<[RegExp, string]> = [
   [
     /\badvanced_disable_flags\s*:\s*false\b/,
     "PostHog flags endpoint must stay disabled",
+  ],
+]
+
+const forbiddenCookieSourcePatterns: Array<[RegExp, string]> = [
+  [
+    /\bdocument\s*\.\s*cookie\b/,
+    "document.cookie is not allowed in product clients",
+  ],
+  [/\bcookieStore\s*\./, "Cookie Store API is not allowed in product clients"],
+  [
+    /\bSet-Cookie\b/i,
+    "Set-Cookie headers are not allowed in Conduit-operated app surfaces",
   ],
 ]
 
@@ -247,6 +271,14 @@ export function validateTelemetrySourceUsage(input: {
     }
   }
 
+  for (const [pattern, message] of forbiddenCookieSourcePatterns) {
+    if (pattern.test(input.source)) {
+      errors.push(
+        `${input.relativePath} violates cookieless policy: ${message}`
+      )
+    }
+  }
+
   return errors
 }
 
@@ -373,10 +405,10 @@ export function checkPackageManifests(repoRoot: string): string[] {
       ...manifest.optionalDependencies,
     }
 
-    for (const packageName of bannedTelemetryPackages) {
+    for (const packageName of bannedPrivacyPackages) {
       if (dependencies[packageName]) {
         errors.push(
-          `${relative(repoRoot, manifestPath)} includes banned telemetry package ${packageName}`
+          `${relative(repoRoot, manifestPath)} includes privacy-policy-blocked package ${packageName}`
         )
       }
     }

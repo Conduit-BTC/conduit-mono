@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a problem with Conduit Market, Merchant Portal, or Store Builder.
+description: Report a problem with Conduit Market or Merchant Portal.
 title: "[Bug]: "
 labels:
   - bug
@@ -8,7 +8,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a bug. Do not include Nostr secret keys (`nsec`), signer connection URLs or codes, seed phrases, passwords, NWC connection strings, payment credentials, full shipping addresses, phone numbers, or other sensitive personal information.
+        Thanks for reporting a bug. Use this form for Conduit Market or Merchant Portal. Store Builder is not available or supported yet.
+
+        Do not include Nostr secret keys (`nsec`), signer connection URLs or codes, seed phrases, passwords, NWC connection strings, payment credentials, full shipping addresses, phone numbers, or other sensitive personal information.
 
   - type: dropdown
     id: app
@@ -18,7 +20,6 @@ body:
       options:
         - Conduit Market
         - Conduit Merchant Portal
-        - Conduit Store Builder
         - Not sure
     validations:
       required: true

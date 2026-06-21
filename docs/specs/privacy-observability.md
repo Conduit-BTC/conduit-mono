@@ -11,6 +11,7 @@ Provide aggregate proof of product usage and reliability without user surveillan
 3. No persistent identifiers for active users in product analytics.
 4. Public commerce page identifiers may be used only as sanitized page context for aggregate storefront performance reporting.
 5. No storage of message/order/payment content in telemetry systems.
+6. Product clients and telemetry stay cookieless.
 
 ## Identity Boundary
 
@@ -75,10 +76,31 @@ Permitted public page context:
 - product, profile, order, query string, unknown route, and active user
   identifiers must remain redacted
 
+## Cookieless Client Policy
+
+Conduit product clients should not set or depend on cookies for app behavior,
+telemetry, or support diagnostics.
+
+- No `document.cookie` or Cookie Store API usage in Market, Merchant,
+  placeholder app shells, shared UI, or shared client code.
+- No `Set-Cookie` headers from Conduit-operated app surfaces unless a future
+  spec change approves a narrow non-tracking infrastructure exception.
+- No cookie-setting analytics SDKs, ad pixels, retargeting pixels, session
+  replay, cross-context behavioral tracking, or browser fingerprinting.
+- Telemetry, when enabled, must remain default-off, aggregate-only, cookieless,
+  and free of persistent product analytics identifiers.
+- Operational monitoring may collect system counters only, such as app load
+  success/failure counts, relay connect/publish success rates, latency buckets,
+  and error counts by category.
+- Honor Global Privacy Control as a privacy signal where applicable.
+
 ## Allowed Tooling
 
-- `Plausible` (optional): aggregate traffic only, no custom user identifiers.
-- `PostHog` (optional): operational events and feature flags only; self-hosted preferred.
+- `Plausible` (optional): aggregate traffic only, no custom user identifiers,
+  no automatic pageview capture, and no cookies.
+- `PostHog` (optional): operational events and feature flags only; self-hosted
+  preferred, memory-only persistence, no person profiles, no session replay,
+  and no heatmaps.
 - Self-hosted stack strongly preferred for both.
 
 ## Aggregate Reporting Requirements
@@ -97,8 +119,9 @@ public page performance data to signer, buyer, wallet, or session identity.
 ## Enforcement
 
 1. Maintain telemetry event allowlist in code/docs.
-2. CI check to block banned telemetry SDKs unless explicitly approved.
-3. Production defaults:
+2. CI check to block banned telemetry/cookie SDKs unless explicitly approved.
+3. CI/static checks block cookie APIs and `Set-Cookie` usage in client source.
+4. Production defaults:
    - telemetry disabled unless `ENABLE_TELEMETRY=true`
    - high-verbosity logs disabled
-4. Document retention windows and redaction policy.
+5. Document retention windows and redaction policy.

@@ -5,7 +5,7 @@ import {
   type ConduitBuildInfo,
 } from "./build-info"
 
-export type BugReportAppId = "market" | "merchant" | "store-builder"
+export type BugReportAppId = "market" | "merchant"
 
 export interface BugReportUrlInput {
   app: BugReportAppId
@@ -16,7 +16,6 @@ export interface BugReportUrlInput {
 const appLabels: Record<BugReportAppId, string> = {
   market: "Conduit Market",
   merchant: "Conduit Merchant Portal",
-  "store-builder": "Conduit Store Builder",
 }
 
 export function getBugReportAppLabel(app: BugReportAppId): string {

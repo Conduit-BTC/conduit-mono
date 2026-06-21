@@ -159,7 +159,8 @@ function WalletPage() {
               <p className="mt-4 max-w-xl text-base leading-7 text-[var(--text-secondary)]">
                 Connect a Lightning wallet using Nostr Wallet Connect (NWC) to
                 zap out when a merchant supports direct Lightning payment. Your
-                wallet connection is private and stored only on this device.
+                NWC connection is a wallet authorization secret stored only on
+                this device.
               </p>
             </div>
 
@@ -168,7 +169,8 @@ function WalletPage() {
               <Info className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
               <p className="leading-6">
                 This connection authorizes outgoing Lightning payments from your
-                wallet to merchants. It cannot receive payments on your behalf.
+                wallet to merchants. It cannot receive payments on your behalf,
+                and it should not be shared in support reports or public issues.
               </p>
             </div>
 
@@ -345,6 +347,8 @@ function WalletPage() {
                     nostr+walletconnect://
                   </code>{" "}
                   URI from your Lightning wallet app (Alby, Rizful, Zeus, etc.).
+                  Conduit keeps it in this browser so your wallet can approve
+                  payments.
                 </p>
 
                 <div className="mt-3 rounded-[1.5rem] border border-dashed border-[var(--border)] bg-[var(--surface)] p-4">
@@ -404,7 +408,8 @@ function WalletPage() {
             {isConnected && (
               <div className="rounded-[1.5rem] border border-dashed border-[var(--border)] bg-[var(--surface)] p-4 text-sm leading-6 text-[var(--text-secondary)]">
                 To use a different wallet, disconnect the current one above,
-                then paste a new connection string.
+                then paste a new connection string. Disconnecting clears the
+                saved NWC secret from this browser.
               </div>
             )}
 
