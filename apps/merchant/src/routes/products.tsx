@@ -1116,7 +1116,7 @@ function ProductsPage() {
                       only and do not change your preset Shipping tab settings.
                     </p>
                   </div>
-                  <div className="mt-3 max-h-[22rem] overflow-y-auto pr-1">
+                  <div className="mt-3 max-h-[22rem] overflow-y-auto p-1">
                     <ShippingDestinationsEditor
                       compact
                       config={form.customShippingConfig}

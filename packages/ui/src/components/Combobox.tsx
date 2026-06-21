@@ -116,6 +116,7 @@ export function Combobox({
   const [search, setSearch] = useState("")
   const [activeValue, setActiveValue] = useState("")
   const listRef = useRef<ElementRef<typeof CommandList>>(null)
+  const inputRef = useRef<ElementRef<typeof CommandInput>>(null)
   const selectedOption = options.find((option) => option.value === value)
   const label = selectedLabel ?? selectedOption?.label
   const filteredOptions = useMemo(
@@ -154,6 +155,12 @@ export function Combobox({
   function handleOpenChange(nextOpen: boolean): void {
     setOpen(nextOpen)
     if (!nextOpen) setSearch("")
+  }
+
+  function focusSearchInput(): void {
+    if (disabled) return
+    setOpen(true)
+    inputRef.current?.focus()
   }
 
   const optionList = (
@@ -209,14 +216,22 @@ export function Combobox({
           <PopoverAnchor asChild>
             <div
               className={cn(
-                "flex h-10 w-full items-center rounded-md border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] focus-within:outline-none focus-within:ring-2 focus-within:ring-primary-500 focus-within:ring-offset-2 focus-within:ring-offset-[var(--background)]",
+                "flex h-10 w-full cursor-text items-center rounded-md border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] focus-within:outline-none focus-within:ring-2 focus-within:ring-primary-500 focus-within:ring-offset-2 focus-within:ring-offset-[var(--background)]",
                 invalid && "border-error/50 focus-within:ring-error/30",
                 disabled && "cursor-not-allowed opacity-50",
                 className,
                 triggerClassName
               )}
+              data-combobox-search-trigger=""
+              onMouseDown={(event) => {
+                if (event.target === inputRef.current) return
+                event.preventDefault()
+                focusSearchInput()
+              }}
+              onClick={focusSearchInput}
             >
               <CommandInput
+                ref={inputRef}
                 id={id}
                 value={search}
                 onValueChange={(next) => {
@@ -233,11 +248,11 @@ export function Combobox({
                 aria-label={searchPlaceholder ?? placeholder}
                 aria-expanded={open}
                 aria-invalid={invalid || undefined}
-                wrapperClassName="min-w-0 flex-1 border-0 px-3"
-                className="h-full py-0"
+                wrapperClassName="flex h-full min-w-0 flex-1 border-0 px-3"
+                className="h-full py-0 text-sm leading-6"
               />
               <ChevronsUpDown
-                className="mr-3 h-4 w-4 shrink-0 opacity-50"
+                className="pointer-events-none mr-3 h-4 w-4 shrink-0 opacity-50"
                 aria-hidden="true"
               />
             </div>

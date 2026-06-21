@@ -21,14 +21,32 @@ test("merchant shipping country combobox supports search and selection", async (
   const countryPicker = page.getByRole("combobox", {
     name: "Search countries to add...",
   })
+  const countryPickerTrigger = page
+    .locator("[data-combobox-search-trigger]")
+    .filter({ has: countryPicker })
+  const triggerBox = await countryPickerTrigger.boundingBox()
+  if (!triggerBox) {
+    throw new Error("Country picker trigger was not visible")
+  }
 
-  await countryPicker.click()
+  await page.mouse.click(
+    triggerBox.x + 12,
+    triggerBox.y + triggerBox.height / 2
+  )
+  await expect(countryPicker).toBeFocused()
   await countryPicker.fill("un")
   await expect(page.getByRole("option").first()).toContainText("United")
 
   await countryPicker.fill("")
   await expect(page.getByRole("option").first()).toContainText("Åland Islands")
 
+  await page.getByRole("heading", { name: "Shipping" }).click()
+  await expect(countryPicker).not.toBeFocused()
+  await page.mouse.click(
+    triggerBox.x + triggerBox.width - 12,
+    triggerBox.y + triggerBox.height / 2
+  )
+  await expect(countryPicker).toBeFocused()
   await countryPicker.fill("canada")
   await page.getByRole("option", { name: /CA Canada/i }).click()
 
