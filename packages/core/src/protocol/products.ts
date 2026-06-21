@@ -1,9 +1,8 @@
 import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   canonicalizeProductPrice,
-  normalizeCommercePrice,
-  normalizeCurrencyCode,
-  type SourcePriceQuote,
+  canonicalizeShippingCost,
+  type CommerceShippingCostLike,
 } from "../pricing"
 import { productSchema, type ProductSchema } from "../schemas"
 import { EVENT_KINDS } from "./kinds"
@@ -140,10 +139,9 @@ function parsePriceTag(
   return null
 }
 
-function parseShippingCostTag(tags: string[][] | undefined): {
-  shippingCostSats?: number
-  sourceShippingCost?: SourcePriceQuote
-} {
+function parseShippingCostTag(
+  tags: string[][] | undefined
+): CommerceShippingCostLike {
   const tag = tags?.find((t) => t[0] === "shipping_cost")
   const raw = tag?.[1]
   if (typeof raw !== "string") return {}
@@ -152,25 +150,7 @@ function parseShippingCostTag(tags: string[][] | undefined): {
   const currency = typeof tag?.[2] === "string" ? tag[2] : "SATS"
   if (!Number.isFinite(amount) || amount < 0) return {}
 
-  const sourceShippingCost = {
-    amount,
-    currency,
-    normalizedCurrency: normalizeCurrencyCode(currency),
-  }
-
-  if (amount === 0) {
-    return { shippingCostSats: 0, sourceShippingCost }
-  }
-
-  const normalized = normalizeCommercePrice(amount, currency)
-  if (normalized.status === "ok" && !normalized.approximate) {
-    return {
-      shippingCostSats: normalized.sats,
-      sourceShippingCost,
-    }
-  }
-
-  return { sourceShippingCost }
+  return canonicalizeShippingCost(amount, currency)
 }
 
 function parseShippingOptionTag(tags: string[][] | undefined): {

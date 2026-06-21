@@ -2,11 +2,15 @@ import { describe, expect, it } from "bun:test"
 import {
   BTC_USD_RATE_STALE_MS,
   type BtcUsdRateQuote,
+  canonicalizeShippingCost,
   compareCommercePrices,
+  getCurrencyAmountStep,
+  getCurrencyFractionDigits,
   getProductPriceDisplay,
   getShippingCostSats,
   isBtcUsdRateQuoteFresh,
   normalizeCommercePrice,
+  normalizeCurrencyAmount,
   orderSchema,
   parseProductEvent,
 } from "@conduit/core"
@@ -32,6 +36,41 @@ const testRates: BtcUsdRateQuote = {
 }
 
 describe("commerce pricing", () => {
+  it("derives amount precision from supported currency units", () => {
+    expect(getCurrencyFractionDigits("USD")).toBe(2)
+    expect(getCurrencyAmountStep("USD")).toBe("0.01")
+    expect(getCurrencyFractionDigits("JPY")).toBe(0)
+    expect(getCurrencyAmountStep("JPY")).toBe("1")
+    expect(getCurrencyFractionDigits("KWD")).toBe(3)
+    expect(getCurrencyAmountStep("KWD")).toBe("0.001")
+    expect(getCurrencyFractionDigits("SATS")).toBe(0)
+    expect(getCurrencyFractionDigits("BTC")).toBe(8)
+    expect(getCurrencyAmountStep("BTC")).toBe("0.00000001")
+  })
+
+  it("normalizes currency amounts to the nearest accepted unit", () => {
+    expect(normalizeCurrencyAmount(6.666, "USD")).toMatchObject({
+      status: "ok",
+      amount: 6.67,
+      rounded: true,
+    })
+    expect(normalizeCurrencyAmount(6.6, "JPY")).toMatchObject({
+      status: "ok",
+      amount: 7,
+      rounded: true,
+    })
+    expect(normalizeCurrencyAmount(1.5, "SATS")).toMatchObject({
+      status: "ok",
+      amount: 2,
+      rounded: true,
+    })
+    expect(normalizeCurrencyAmount(0.000000014, "BTC")).toMatchObject({
+      status: "ok",
+      amount: 0.00000001,
+      rounded: true,
+    })
+  })
+
   it("normalizes bitcoin-denominated prices into exact integer sats", () => {
     expectSats(250_000, "SAT", 250_000)
     expectSats(250_000, "SATS", 250_000)
@@ -79,6 +118,34 @@ describe("commerce pricing", () => {
       expect(gbp.sats).toBe(25_000)
       expect(gbp.approximate).toBe(true)
     }
+  })
+
+  it("canonicalizes shipping costs without assuming fiat amounts are sats", () => {
+    expect(canonicalizeShippingCost(5, "USD")).toEqual({
+      sourceShippingCost: {
+        amount: 5,
+        currency: "USD",
+        normalizedCurrency: "USD",
+      },
+    })
+
+    expect(canonicalizeShippingCost(5, "SATS")).toEqual({
+      shippingCostSats: 5,
+      sourceShippingCost: {
+        amount: 5,
+        currency: "SATS",
+        normalizedCurrency: "SATS",
+      },
+    })
+
+    expect(canonicalizeShippingCost(0, "USD")).toEqual({
+      shippingCostSats: 0,
+      sourceShippingCost: {
+        amount: 0,
+        currency: "USD",
+        normalizedCurrency: "USD",
+      },
+    })
   })
 
   it("parses tag-only NIP-99 SAT listings as sats-canonical products", () => {

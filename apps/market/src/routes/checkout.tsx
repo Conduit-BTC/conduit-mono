@@ -31,7 +31,6 @@ import {
   hasWebLN,
   getNdk,
   getShippingOptions,
-  getShippingDestinationEligibility,
   normalizePubkey,
   normalizeLightningInvoice,
   parseOrderMessageRumorEvent,
@@ -44,7 +43,6 @@ import {
   useProfile,
   type Profile,
   type PricingRateInput,
-  type ParsedShippingOption,
   type ShippingAddressSchema,
 } from "@conduit/core"
 import {
@@ -68,6 +66,12 @@ import { type CartItem, useCart } from "../hooks/useCart"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
 import { useWallet } from "../hooks/useWallet"
 import { requireAuth } from "../lib/auth"
+import {
+  getCartShippingDestinationEligibility,
+  getCartShippingOptionsAvailable,
+  hasPhysicalItemsMissingShippingSnapshot,
+  hasPhysicalItemsMissingShippingZone,
+} from "../lib/cart-shipping-options"
 import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
 import { PaymentTracker } from "../components/PaymentTracker"
 import {
@@ -311,35 +315,6 @@ function CheckoutBreadcrumb({
 function getCountryLabel(code: string): string {
   const country = SHIPPING_COUNTRIES.find((option) => option.code === code)
   return country ? `${country.name} (${country.code})` : code
-}
-
-function getCartShippingOptionSnapshots(
-  items: CartItem[]
-): ParsedShippingOption[] {
-  return items
-    .filter((item) => item.format !== "digital")
-    .filter(
-      (item) =>
-        item.shippingOptionId &&
-        item.shippingOptionDTag &&
-        item.shippingCountryRules &&
-        item.shippingCountryRules.length > 0
-    )
-    .map((item) => ({
-      id: item.shippingOptionId!,
-      pubkey: item.merchantPubkey,
-      dTag: item.shippingOptionDTag!,
-      title: "Product shipping zone",
-      currency: item.sourceShippingCost?.normalizedCurrency ?? "SATS",
-      price: item.sourceShippingCost?.amount ?? item.shippingCostSats ?? 0,
-      countries:
-        item.shippingCountries ??
-        item.shippingCountryRules?.map((rule) => rule.code) ??
-        [],
-      countryRules: item.shippingCountryRules!,
-      service: "standard",
-      createdAt: 0,
-    }))
 }
 
 function getCheckoutTelemetryProductType(items: CartItem[]): string {
@@ -708,21 +683,10 @@ function CheckoutPage() {
     [checkoutItems]
   )
 
-  const productShippingOptions = useMemo(
-    () => getCartShippingOptionSnapshots(checkoutItems),
-    [checkoutItems]
-  )
-  const physicalItemsMissingShippingZone = checkoutItems.some(
-    (item) => item.format !== "digital" && !item.shippingOptionId
-  )
-  const physicalItemsMissingShippingSnapshot = checkoutItems.some(
-    (item) =>
-      item.format !== "digital" &&
-      (!item.shippingOptionId ||
-        !item.shippingOptionDTag ||
-        !item.shippingCountryRules ||
-        item.shippingCountryRules.length === 0)
-  )
+  const physicalItemsMissingShippingZone =
+    hasPhysicalItemsMissingShippingZone(checkoutItems)
+  const physicalItemsMissingShippingSnapshot =
+    hasPhysicalItemsMissingShippingSnapshot(checkoutItems)
   const hasCompleteCartShippingSnapshot =
     !isAllDigital &&
     checkoutItems.length > 0 &&
@@ -740,6 +704,10 @@ function CheckoutPage() {
     staleTime: 5 * 60 * 1000,
   })
   const merchantShippingOptions = shippingOptionsQuery.data ?? []
+  const shippingOptionsAvailable = getCartShippingOptionsAvailable(
+    checkoutItems,
+    merchantShippingOptions
+  )
 
   const checkoutShippingCost = useMemo(
     () => getCheckoutShippingCost(checkoutItems, btcUsdRate),
@@ -891,18 +859,15 @@ function CheckoutPage() {
     void refreshCheckoutPricing(false)
   }, [pricingPreviewIsStale, pricingRefreshFailedAt, refreshCheckoutPricing])
 
-  const shippingOptionsForEligibility =
-    merchantShippingOptions.length > 0
-      ? merchantShippingOptions
-      : productShippingOptions
   const destinationEligibility = isAllDigital
     ? ({ eligible: true } as const)
-    : getShippingDestinationEligibility(
+    : getCartShippingDestinationEligibility(
         {
           country: shipping.country,
           postalCode: shipping.postalCode,
         },
-        shippingOptionsForEligibility
+        checkoutItems,
+        merchantShippingOptions
       )
 
   const shippingCheckoutState: ShippingCheckoutState = getShippingCheckoutState(
@@ -910,7 +875,7 @@ function CheckoutPage() {
       isAllDigital,
       shippingLookupPending: shippingOptionsQuery.isLoading,
       physicalItemsMissingShippingZone,
-      shippingOptionsAvailable: shippingOptionsForEligibility.length > 0,
+      shippingOptionsAvailable,
       destinationEligibility,
     }
   )

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import {
   buildProductListingEventDraft,
   canonicalizeProductPrice,
+  canonicalizeShippingCost,
   EVENT_KINDS,
   parseProductEvent,
   type ProductSchema,
@@ -96,6 +97,64 @@ describe("product listing event drafts", () => {
     expect(product.price).toBe(250_000)
     expect(product.currency).toBe("SATS")
     expectTag(draft.tags, ["price", "0.0025", "BTC"])
+  })
+
+  it("preserves source shipping currency in the public shipping cost tag", () => {
+    const product = canonicalizeProductPrice({
+      ...baseProduct({
+        price: 15,
+        currency: "USD",
+        shippingCostSats: undefined,
+      }),
+      ...canonicalizeShippingCost(5, "USD"),
+    })
+
+    const draft = buildProductListingEventDraft({
+      product,
+      dTag: "usd-shipping-product",
+    })
+
+    expect(product.sourceShippingCost).toEqual({
+      amount: 5,
+      currency: "USD",
+      normalizedCurrency: "USD",
+    })
+    expect(product.shippingCostSats).toBeUndefined()
+    expectTag(draft.tags, ["price", "15", "USD"])
+    expectTag(draft.tags, ["shipping_cost", "5", "USD"])
+    expect(draft.tags).not.toContainEqual(["shipping_cost", "5"])
+  })
+
+  it("emits custom product shipping rules without a preset option reference", () => {
+    const product = baseProduct({
+      shippingOptionId: undefined,
+      shippingOptionDTag: undefined,
+      shippingCountries: ["US", "CA"],
+      shippingCountryRules: [
+        {
+          code: "US",
+          name: "United States",
+          restrictTo: ["787**"],
+          exclude: ["78799"],
+        },
+        {
+          code: "CA",
+          name: "Canada",
+          restrictTo: [],
+          exclude: [],
+        },
+      ],
+    })
+
+    const draft = buildProductListingEventDraft({
+      product,
+      dTag: "custom-shipping-product",
+    })
+
+    expect(draft.tags.some((tag) => tag[0] === "shipping_option")).toBe(false)
+    expectTag(draft.tags, ["shipping_country", "US", "CA"])
+    expectTag(draft.tags, ["shipping_restrict", "US", "787**"])
+    expectTag(draft.tags, ["shipping_exclude", "US", "78799"])
   })
 })
 

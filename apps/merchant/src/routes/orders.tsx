@@ -11,6 +11,7 @@ import {
   extractOrderSummary,
   formatNpub,
   getCachedMerchantConversationList,
+  getCurrencyAmountStep,
   getNdk,
   getProductPriceDisplay,
   getProfileName,
@@ -19,6 +20,7 @@ import {
   hasWebLN,
   isInvoiceCompatibleWithCurrentNetwork,
   mockMakeInvoice,
+  normalizeCurrencyAmount,
   nwcMakeInvoice,
   parseOrderMessageRumorEvent,
   publishWithPlanner,
@@ -494,7 +496,12 @@ function OrdersPage() {
     null
   )
   const signerConnected = status === "connected" && !!pubkey
-  const invoiceAmountNumber = Number(invoiceAmount) || 0
+  const invoiceAmountNumber = useMemo(() => {
+    const amount = Number(invoiceAmount)
+    if (!Number.isFinite(amount) || amount < 0) return 0
+    const normalized = normalizeCurrencyAmount(amount, invoiceCurrency)
+    return normalized.status === "ok" ? normalized.amount : 0
+  }, [invoiceAmount, invoiceCurrency])
   const invoiceAmountSats = useMemo(
     () =>
       invoiceCurrency
@@ -1149,7 +1156,7 @@ function OrdersPage() {
                               id="invoice-amount"
                               type="number"
                               min="0"
-                              step={invoiceCurrency === "USD" ? "0.01" : "1"}
+                              step={getCurrencyAmountStep(invoiceCurrency)}
                               value={invoiceAmount}
                               onChange={(event) =>
                                 setInvoiceAmount(event.target.value)

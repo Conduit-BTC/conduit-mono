@@ -22,6 +22,9 @@ export const Route = createRootRoute({
   notFoundComponent: RootNotFound,
 })
 
+const SHOW_DEVTOOLS =
+  import.meta.env.DEV && import.meta.env.VITE_DISABLE_DEVTOOLS !== "true"
+
 function RootShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen min-w-0 flex-col overflow-x-hidden pb-24 sm:pb-16">
@@ -39,7 +42,7 @@ function RootShell({ children }: { children: React.ReactNode }) {
           </Link>
         }
       />
-      {import.meta.env.DEV && <TanStackRouterDevtools />}
+      {SHOW_DEVTOOLS && <TanStackRouterDevtools />}
     </div>
   )
 }

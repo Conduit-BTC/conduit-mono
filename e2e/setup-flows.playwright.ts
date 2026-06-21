@@ -12,23 +12,47 @@ const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? 
 test("merchant shipping country combobox supports search and selection", async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 375, height: 667 })
   await installTestSigner(page, TEST_MERCHANT_PUBKEY)
   await page.goto(`${merchantUrl}/shipping`)
 
   await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
 
-  const countryPicker = page
-    .locator('button[role="combobox"]')
-    .filter({ hasText: "Search countries to add..." })
+  const countryPicker = page.getByRole("combobox", {
+    name: "Search countries to add...",
+  })
+  const countryPickerTrigger = page
+    .locator("[data-combobox-search-trigger]")
+    .filter({ has: countryPicker })
+  const triggerBox = await countryPickerTrigger.boundingBox()
+  if (!triggerBox) {
+    throw new Error("Country picker trigger was not visible")
+  }
 
-  await countryPicker.click()
-  await page.getByPlaceholder("Search countries to add...").fill("canada")
+  await page.mouse.click(
+    triggerBox.x + 12,
+    triggerBox.y + triggerBox.height / 2
+  )
+  await page.keyboard.type("un")
+  await expect(countryPicker).toHaveValue("un")
+  await expect(page.getByRole("option").first()).toContainText("United")
+
+  await countryPicker.fill("")
+  await expect(page.getByRole("option").first()).toContainText("Åland Islands")
+
+  await page.getByRole("heading", { name: "Shipping" }).click()
+  await page.mouse.click(
+    triggerBox.x + triggerBox.width - 12,
+    triggerBox.y + triggerBox.height / 2
+  )
+  await page.keyboard.type("canada")
+  await expect(countryPicker).toHaveValue("canada")
   await page.getByRole("option", { name: /CA Canada/i }).click()
 
   await expect(
     page.locator("span").filter({ hasText: /^Canada$/ })
   ).toBeVisible()
-  await expect(countryPicker).toBeVisible()
+  await expect(countryPicker).toHaveValue("")
 })
 
 test("market checkout country combobox supports search and selection", async ({

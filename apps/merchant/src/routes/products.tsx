@@ -5,6 +5,7 @@ import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { Plus, Search } from "lucide-react"
 import {
   EVENT_KINDS,
+  SHIPPING_COUNTRIES,
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   appendConduitClientTag,
@@ -44,14 +45,23 @@ import {
   SignedActionStatus,
   StatusPill,
   Textarea,
+  cn,
 } from "@conduit/ui"
+import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { requireAuth } from "../lib/auth"
 import {
-  assertPublishableProductPrice,
+  canonicalizeProductShippingCost,
   getProductPriceInputStep,
+  getProductShippingCostHelpText,
+  getProductShippingCurrencyLabel,
+  normalizePublishableProductPrice,
 } from "../lib/productPriceForm"
-import { isShippingComplete, loadShippingConfig } from "../lib/readiness"
+import {
+  isShippingComplete,
+  loadShippingConfig,
+  type ShippingConfig,
+} from "../lib/readiness"
 
 export const Route = createFileRoute("/products")({
   beforeLoad: () => {
@@ -75,25 +85,33 @@ type ProductFormState = {
   price: string
   currency: string
   format: "physical" | "digital"
-  shippingCostSats: string
+  shippingCost: string
   usePresetShippingZone: boolean
+  customShippingConfig: ShippingConfig
   imageUrl: string
   tags: string
 }
 
 type ProductSort = "updated_desc" | "title_asc" | "price_asc" | "price_desc"
 
-const EMPTY_FORM: ProductFormState = {
-  title: "",
-  summary: "",
-  price: "0",
-  currency: "USD",
-  format: "physical",
-  shippingCostSats: "",
-  usePresetShippingZone: true,
-  imageUrl: "",
-  tags: "",
+function createEmptyProductForm(
+  usePresetShippingZone = true
+): ProductFormState {
+  return {
+    title: "",
+    summary: "",
+    price: "0",
+    currency: "USD",
+    format: "physical",
+    shippingCost: "",
+    usePresetShippingZone,
+    customShippingConfig: { countries: [] },
+    imageUrl: "",
+    tags: "",
+  }
 }
+
+const EMPTY_FORM: ProductFormState = createEmptyProductForm()
 
 function slugify(input: string): string {
   return input
@@ -107,19 +125,56 @@ function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 8)
 }
 
-function productToForm(product: ProductSchema): ProductFormState {
+function getShippingCountryName(code: string, fallback?: string): string {
+  const normalized = code.trim().toUpperCase()
+  const country = SHIPPING_COUNTRIES.find((entry) => entry.code === normalized)
+  return country?.name ?? fallback?.trim() ?? normalized
+}
+
+function productShippingConfigFromProduct(
+  product: ProductSchema
+): ShippingConfig {
+  if (product.shippingCountryRules && product.shippingCountryRules.length > 0) {
+    return {
+      countries: product.shippingCountryRules.map((rule) => ({
+        code: rule.code.trim().toUpperCase(),
+        name: getShippingCountryName(rule.code, rule.name),
+        restrictTo: rule.restrictTo,
+        exclude: rule.exclude,
+      })),
+    }
+  }
+
+  return {
+    countries: (product.shippingCountries ?? []).map((code) => ({
+      code: code.trim().toUpperCase(),
+      name: getShippingCountryName(code),
+      restrictTo: [],
+      exclude: [],
+    })),
+  }
+}
+
+function productToForm(
+  product: ProductSchema,
+  presetAvailable = true
+): ProductFormState {
   const source = product.sourcePrice
+  const sourceShippingCost = product.sourceShippingCost
   return {
     title: product.title,
     summary: product.summary ?? "",
     price: String(source?.amount ?? product.price),
     currency: source?.normalizedCurrency ?? product.currency,
     format: product.format,
-    shippingCostSats:
-      typeof product.shippingCostSats === "number"
-        ? String(product.shippingCostSats)
-        : "",
-    usePresetShippingZone: !!product.shippingOptionId,
+    shippingCost:
+      typeof sourceShippingCost?.amount === "number"
+        ? String(sourceShippingCost.amount)
+        : typeof product.shippingCostSats === "number"
+          ? String(product.shippingCostSats)
+          : "",
+    usePresetShippingZone: presetAvailable && !!product.shippingOptionId,
+    customShippingConfig: productShippingConfigFromProduct(product),
     imageUrl: product.images[0]?.url ?? "",
     tags: product.tags.join(", "),
   }
@@ -127,7 +182,8 @@ function productToForm(product: ProductSchema): ProductFormState {
 
 function buildShippingMetadata(
   merchantPubkey: string,
-  usePresetShippingZone: boolean
+  usePresetShippingZone: boolean,
+  customShippingConfig: ShippingConfig
 ): Pick<
   ProductSchema,
   | "shippingOptionId"
@@ -135,14 +191,18 @@ function buildShippingMetadata(
   | "shippingCountries"
   | "shippingCountryRules"
 > {
-  if (!usePresetShippingZone) return {}
-
-  const shippingConfig = loadShippingConfig(merchantPubkey)
+  const shippingConfig = usePresetShippingZone
+    ? loadShippingConfig(merchantPubkey)
+    : customShippingConfig
   if (!isShippingComplete(shippingConfig)) return {}
 
   return {
-    shippingOptionId: getShippingOptionAddress(merchantPubkey),
-    shippingOptionDTag: CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
+    ...(usePresetShippingZone
+      ? {
+          shippingOptionId: getShippingOptionAddress(merchantPubkey),
+          shippingOptionDTag: CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
+        }
+      : {}),
     shippingCountries: shippingConfig.countries.map((country) => country.code),
     shippingCountryRules: shippingConfig.countries.map((country) => ({
       code: country.code,
@@ -158,28 +218,6 @@ function parseTags(tagsCsv: string): string[] {
     .split(",")
     .map((t) => t.trim())
     .filter(Boolean)
-}
-
-function getShippingCostHelpText(
-  value: string,
-  format: ProductFormState["format"]
-): string {
-  if (format === "digital") {
-    return "Digital products do not need shipping details or preset shipping zones."
-  }
-
-  const trimmed = value.trim()
-  if (!trimmed) {
-    return "Shipping is coordinated with the buyer after order request; direct pay is disabled for physical carts."
-  }
-  const sats = Number(trimmed)
-  if (Number.isSafeInteger(sats) && sats === 0) {
-    return "Shipping included. Buyers can pay immediately without a separate shipping request."
-  }
-  if (Number.isSafeInteger(sats) && sats > 0) {
-    return "Added to buyer total at checkout."
-  }
-  return "Enter a whole-number shipping amount in sats."
 }
 
 function getPublishErrorMessage(
@@ -336,28 +374,35 @@ async function publishProduct(
 
   const price = Number(form.price)
   const isDigital = form.format === "digital"
-  const shippingCostInput = isDigital ? "" : form.shippingCostSats.trim()
-  const shippingCostSats =
+  const shippingCostInput = isDigital ? "" : form.shippingCost.trim()
+  const shippingCostAmount =
     shippingCostInput.length > 0 ? Number(shippingCostInput) : undefined
 
   const currency = form.currency.trim().toUpperCase() || "USD"
-  assertPublishableProductPrice(price, currency)
-  if (
-    typeof shippingCostSats === "number" &&
-    (!Number.isSafeInteger(shippingCostSats) || shippingCostSats < 0)
-  ) {
-    throw new Error("Shipping must be a whole-number sats amount or blank.")
-  }
+  const normalizedPrice = normalizePublishableProductPrice(price, currency)
+  const shippingCost = canonicalizeProductShippingCost(
+    shippingCostAmount,
+    currency
+  )
   const shippingMetadata = isDigital
     ? {}
-    : buildShippingMetadata(signerPubkey, form.usePresetShippingZone)
+    : buildShippingMetadata(
+        signerPubkey,
+        form.usePresetShippingZone,
+        form.customShippingConfig
+      )
+  const hasShippingZone =
+    (shippingMetadata.shippingCountries?.length ?? 0) > 0 ||
+    (shippingMetadata.shippingCountryRules?.length ?? 0) > 0
   if (
     !isDigital &&
-    typeof shippingCostSats === "number" &&
-    !shippingMetadata.shippingOptionId
+    typeof shippingCostAmount === "number" &&
+    !hasShippingZone
   ) {
     throw new Error(
-      "Attach your preset shipping zone before publishing a physical product with a fixed shipping cost."
+      form.usePresetShippingZone
+        ? "Attach your preset shipping zone before publishing a physical product with a fixed shipping cost."
+        : "Add at least one custom shipping destination before publishing a physical product with a fixed shipping cost."
     )
   }
   const summary = form.summary.trim()
@@ -379,11 +424,11 @@ async function publishProduct(
     pubkey: signerPubkey,
     title,
     summary: summary || undefined,
-    price,
+    price: normalizedPrice,
     currency,
     type: "simple",
     format: form.format,
-    shippingCostSats,
+    ...shippingCost,
     ...shippingMetadata,
     visibility: "public",
     stock: undefined,
@@ -476,6 +521,8 @@ function ProductsPage() {
     () => productsQuery.data?.data ?? cachedProductsQuery.data?.data ?? [],
     [cachedProductsQuery.data?.data, productsQuery.data?.data]
   )
+  const shippingConfig = loadShippingConfig(pubkey)
+  const hasPresetShippingZone = isShippingComplete(shippingConfig)
 
   const saveMutation = useMutation({
     mutationFn: async (payload: {
@@ -486,7 +533,7 @@ function ProductsPage() {
     },
     onSuccess: async () => {
       setEditing(null)
-      setForm(EMPTY_FORM)
+      setForm(createEmptyProductForm(hasPresetShippingZone))
       setProductDialogOpen(false)
       await queryClient.invalidateQueries({
         queryKey: ["merchant-products", pubkey ?? "none"],
@@ -514,8 +561,11 @@ function ProductsPage() {
   const isSaving = saveMutation.isPending
   const isDeleting = deleteMutation.isPending
   const savedProductForm = useMemo(
-    () => (editing ? productToForm(editing.product) : EMPTY_FORM),
-    [editing]
+    () =>
+      editing
+        ? productToForm(editing.product, hasPresetShippingZone)
+        : createEmptyProductForm(hasPresetShippingZone),
+    [editing, hasPresetShippingZone]
   )
   const hasProductChanges = useMemo(
     () => JSON.stringify(form) !== JSON.stringify(savedProductForm),
@@ -585,28 +635,30 @@ function ProductsPage() {
   const productStatusLabel = productsQuery.isFetching
     ? "Updating listings"
     : `${visibleProducts.length} of ${merchantProducts.length} listings`
-  const shippingConfig = loadShippingConfig(pubkey)
-  const hasPresetShippingZone = isShippingComplete(shippingConfig)
   const productIsDigital = form.format === "digital"
+  const customShippingZoneActive =
+    !productIsDigital && (!hasPresetShippingZone || !form.usePresetShippingZone)
+  const presetShippingZoneUnavailable =
+    productIsDigital || !hasPresetShippingZone
 
   function closeProductDialog(): void {
     setProductDialogOpen(false)
     setEditing(null)
-    setForm(EMPTY_FORM)
+    setForm(createEmptyProductForm(hasPresetShippingZone))
     saveMutation.reset()
   }
 
   function openCreateDialog(): void {
     saveMutation.reset()
     setEditing(null)
-    setForm(EMPTY_FORM)
+    setForm(createEmptyProductForm(hasPresetShippingZone))
     setProductDialogOpen(true)
   }
 
   function openEditDialog(item: MerchantProduct): void {
     saveMutation.reset()
     setEditing(item)
-    setForm(productToForm(item.product))
+    setForm(productToForm(item.product, hasPresetShippingZone))
     setProductDialogOpen(true)
   }
 
@@ -953,12 +1005,14 @@ function ProductsPage() {
                       return {
                         ...prev,
                         format,
-                        shippingCostSats:
-                          format === "digital" ? "" : prev.shippingCostSats,
+                        shippingCost:
+                          format === "digital" ? "" : prev.shippingCost,
                         usePresetShippingZone:
+                          format === "digital" ? false : hasPresetShippingZone,
+                        customShippingConfig:
                           format === "digital"
-                            ? false
-                            : prev.usePresetShippingZone,
+                            ? { countries: [] }
+                            : prev.customShippingConfig,
                       }
                     })
                   }
@@ -974,30 +1028,47 @@ function ProductsPage() {
               </div>
 
               <div className="grid gap-1.5">
-                <Label htmlFor="product-shipping">Shipping</Label>
+                <Label htmlFor="product-shipping">
+                  Shipping ({getProductShippingCurrencyLabel(form.currency)})
+                </Label>
                 <Input
                   id="product-shipping"
                   type="number"
                   min="0"
-                  step="1"
-                  value={form.shippingCostSats}
+                  step={getProductPriceInputStep(form.currency)}
+                  value={form.shippingCost}
                   disabled={productIsDigital}
+                  aria-describedby="product-shipping-help"
                   onChange={(event) =>
                     setForm((prev) => ({
                       ...prev,
-                      shippingCostSats: event.target.value,
+                      shippingCost: event.target.value,
                     }))
                   }
-                  placeholder={productIsDigital ? "Not required" : "0"}
+                  placeholder={
+                    productIsDigital ? "Not required" : "Leave blank"
+                  }
                 />
               </div>
-              <div className="text-xs leading-5 text-[var(--text-muted)] sm:col-span-4">
-                {productIsDigital
-                  ? "Digital listings skip checkout shipping rules."
-                  : "Enter the shipping amount to charge for this item. Use 0 only if shipping is included in the product price."}{" "}
-                {getShippingCostHelpText(form.shippingCostSats, form.format)}
+              <div
+                id="product-shipping-help"
+                className="text-xs leading-5 text-[var(--text-muted)] sm:col-span-4"
+              >
+                {getProductShippingCostHelpText(
+                  form.shippingCost,
+                  form.format,
+                  form.currency
+                )}
               </div>
-              <label className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm sm:col-span-4">
+              <label
+                className={cn(
+                  "flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm sm:col-span-4",
+                  presetShippingZoneUnavailable
+                    ? "cursor-not-allowed border-dashed opacity-60"
+                    : "cursor-pointer"
+                )}
+                aria-disabled={presetShippingZoneUnavailable}
+              >
                 <input
                   type="checkbox"
                   checked={
@@ -1005,28 +1076,61 @@ function ProductsPage() {
                     hasPresetShippingZone &&
                     form.usePresetShippingZone
                   }
-                  disabled={productIsDigital || !hasPresetShippingZone}
+                  disabled={presetShippingZoneUnavailable}
+                  aria-describedby="product-preset-shipping-help"
                   onChange={(event) =>
                     setForm((prev) => ({
                       ...prev,
                       usePresetShippingZone: event.target.checked,
                     }))
                   }
-                  className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500"
+                  className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500 disabled:cursor-not-allowed disabled:opacity-50"
                 />
                 <span className="grid gap-1">
                   <span className="font-medium text-[var(--text-primary)]">
                     Use my preset shipping zone for this product
                   </span>
-                  <span className="text-xs leading-5 text-[var(--text-muted)]">
+                  <span
+                    id="product-preset-shipping-help"
+                    className="text-xs leading-5 text-[var(--text-muted)]"
+                  >
                     {productIsDigital
                       ? "Digital products do not need shipping zones."
                       : hasPresetShippingZone
-                        ? "Direct checkout will use your published shipping countries and postal rules."
-                        : "Set up Shipping before direct checkout can use a fixed item shipping cost."}
+                        ? form.usePresetShippingZone
+                          ? "Direct checkout will use your published shipping countries and postal rules."
+                          : "Use custom destinations for this product instead of the published preset."
+                        : "No preset shipping zone is available. Add custom destinations for this product below."}
                   </span>
                 </span>
               </label>
+
+              {customShippingZoneActive && (
+                <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:col-span-4">
+                  <div className="space-y-1">
+                    <div className="text-sm font-medium text-[var(--text-primary)]">
+                      Custom shipping destinations
+                    </div>
+                    <p className="text-xs leading-5 text-[var(--text-muted)]">
+                      These destinations are emitted on this product listing
+                      only and do not change your preset Shipping tab settings.
+                    </p>
+                  </div>
+                  <div className="mt-3 max-h-[22rem] overflow-y-auto p-1">
+                    <ShippingDestinationsEditor
+                      compact
+                      config={form.customShippingConfig}
+                      emptyText="No custom destinations added yet."
+                      onChange={(customShippingConfig) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          customShippingConfig,
+                        }))
+                      }
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="grid gap-1.5">
