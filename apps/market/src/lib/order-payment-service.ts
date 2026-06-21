@@ -287,6 +287,9 @@ export async function runOrderPayment(
           invoiceStatus: "manual_required",
           paymentStatus: "manual_required",
           invoice,
+          // We won't watch for a zap receipt on the external-wallet path, so
+          // don't leave a public_zap order stuck in "waiting" (CND-120).
+          zapReceiptStatus: "not_applicable",
           lastError: payResult.reason,
         },
         { running: false, stage: null }

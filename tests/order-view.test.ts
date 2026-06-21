@@ -136,6 +136,17 @@ describe("computeOrderTimelineStatuses", () => {
     expect(statuses.invoice).toBe("complete")
     expect(statuses.payment).toBe("in_progress")
   })
+
+  it("flags an ambiguous payment for review without marking it complete", () => {
+    const statuses = computeOrderTimelineStatuses(
+      vmFromLifecycle({
+        paymentStatus: "ambiguous",
+        proofDeliveryStatus: "not_started",
+      })
+    )
+    expect(statuses.payment).toBe("retry_needed")
+    expect(statuses.merchant_confirmation).toBe("waiting")
+  })
 })
 
 describe("buildOrderTimeline", () => {
@@ -144,6 +155,19 @@ describe("buildOrderTimeline", () => {
     expect(rows).toHaveLength(7)
     const paymentRow = rows.find((r) => r.key === "payment")
     expect(paymentRow?.subtitle).toContain("111 sats")
+  })
+
+  it("rewrites the payment row copy when the payment is ambiguous", () => {
+    const rows = buildOrderTimeline(
+      vmFromLifecycle({
+        paymentStatus: "ambiguous",
+        proofDeliveryStatus: "not_started",
+      })
+    )
+    const paymentRow = rows.find((r) => r.key === "payment")
+    expect(paymentRow?.status).toBe("retry_needed")
+    expect(paymentRow?.title).toBe("Payment needs review")
+    expect(paymentRow?.subtitle).toContain("couldn't confirm")
   })
 })
 
@@ -176,6 +200,18 @@ describe("deriveOrderHeaderStatus", () => {
       })
     )
     expect(status.primaryLabel).toBe("Action needed")
+    expect(status.actionNeeded).toBe(true)
+  })
+
+  it("Payment unclear when the rail leaves payment ambiguous", () => {
+    const status = deriveOrderHeaderStatus(
+      vmFromLifecycle({
+        paymentStatus: "ambiguous",
+        proofDeliveryStatus: "not_started",
+      })
+    )
+    expect(status.primaryLabel).toBe("Payment unclear")
+    expect(status.tone).toBe("warning")
     expect(status.actionNeeded).toBe(true)
   })
 

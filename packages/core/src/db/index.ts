@@ -313,6 +313,13 @@ export interface OrderLifecycle {
     fiatSource?: string
   }
 
+  /**
+   * Zap-request comment captured at checkout, replayed verbatim when a
+   * route-independent payment retry re-requests the invoice (CND-122). Public
+   * zap metadata, not PII; stays local and is not forwarded to telemetry.
+   */
+  zapContent?: string
+
   /** Local-only address + contact snapshot. Never sent to telemetry. */
   shippingAddress?: {
     name: string

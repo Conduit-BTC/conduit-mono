@@ -34,6 +34,7 @@ import {
   type AddressValidityResult,
   type OrderAddressValidity,
   type OrderLifecycleItem,
+  type OrderShippingZoneEligibility,
   type Profile,
   type PricingRateInput,
   type ShippingAddressSchema,
@@ -806,6 +807,16 @@ function CheckoutPage() {
     shippingCheckoutState === "not_required" ||
     shippingCheckoutState === "allowed"
 
+  // Merchant shipping-zone coverage recorded on the order lifecycle. Distinct
+  // from buyer-input address validity (CND-127); `null` eligibility is unknown.
+  const shippingZoneEligibility: OrderShippingZoneEligibility = isAllDigital
+    ? "not_required"
+    : destinationEligibility.eligible === true
+      ? "eligible"
+      : destinationEligibility.eligible === false
+        ? "ineligible"
+        : "unknown"
+
   const canTrySavedNwcWallet =
     !!wallet.connection &&
     wallet.status !== "unsupported" &&
@@ -1150,7 +1161,7 @@ function CheckoutPage() {
         shippingAddress: shippingAddress ?? undefined,
         contactNote: buildContactNote(),
         addressValidity: addressValidity.status as OrderAddressValidity,
-        shippingZoneEligibility: isAllDigital ? "not_required" : "eligible",
+        shippingZoneEligibility,
         orderDeliveryStatus: "sent",
         invoiceStatus: "not_requested",
         paymentStatus: "not_started",
@@ -1353,10 +1364,11 @@ function CheckoutPage() {
                 : undefined,
             }
           : undefined,
+        zapContent,
         shippingAddress: shippingAddress ?? undefined,
         contactNote: buildContactNote(),
         addressValidity: addressValidity.status as OrderAddressValidity,
-        shippingZoneEligibility: isAllDigital ? "not_required" : "eligible",
+        shippingZoneEligibility,
         orderDeliveryStatus: "sent",
         invoiceStatus: "not_requested",
         paymentStatus: "not_started",
@@ -1417,9 +1429,22 @@ function CheckoutPage() {
   // the main checkout grid so the OrderSummary stays visible alongside the
   // PaymentTracker (CND-2A: replace dead-air interrupt with in-page tracker).
 
+  // The fast-zap lightning-strike is `fixed inset-0 z-50` click feedback. It
+  // must sit ABOVE whichever screen is mounted (including the "Sending your
+  // order…" transition), so it renders alongside every early return rather
+  // than only inside the main checkout grid — otherwise `setStep("sending")`
+  // swaps the grid out before the storm ever mounts.
+  const lightningOverlay = (
+    <LightningStrikeOverlay
+      open={overlayPlaying}
+      onComplete={() => setOverlayPlaying(false)}
+    />
+  )
+
   if (step === "sending") {
     return (
       <div className="flex min-h-[70vh] items-center justify-center">
+        {lightningOverlay}
         <section className="w-full max-w-3xl rounded-[2rem] bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--tertiary-500)_35%,transparent),transparent_55%),linear-gradient(180deg,var(--primary-500),var(--primary-600))] px-8 py-14 text-center text-white shadow-[0_24px_60px_color-mix(in_srgb,var(--primary-500)_40%,transparent)] sm:px-12">
           <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-[color-mix(in_srgb,var(--text-inverse)_20%,transparent)] bg-[color-mix(in_srgb,var(--text-inverse)_10%,transparent)]">
             <SpinnerIcon className="h-8 w-8 animate-spin" />
@@ -2163,10 +2188,7 @@ function CheckoutPage() {
         />
       </div>
 
-      <LightningStrikeOverlay
-        open={overlayPlaying}
-        onComplete={() => setOverlayPlaying(false)}
-      />
+      {lightningOverlay}
     </div>
   )
 }

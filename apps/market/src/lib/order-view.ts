@@ -227,6 +227,7 @@ export function buildOrderViewModel(
   const actionNeeded =
     paymentStatus === "manual_required" ||
     paymentStatus === "failed" ||
+    paymentStatus === "ambiguous" ||
     orderDeliveryStatus === "failed" ||
     proofDeliveryStatus === "retry_needed" ||
     proofDeliveryStatus === "failed"
@@ -447,6 +448,8 @@ export function computeOrderTimelineStatuses(
   else if (vm.paymentStatus === "paying" || vm.paymentStatus === "manual_required")
     payment = "in_progress"
   else if (vm.paymentStatus === "failed") payment = "failed"
+  // Funds may or may not have moved — flag for review, never auto-retry.
+  else if (vm.paymentStatus === "ambiguous") payment = "retry_needed"
 
   // 4. Receipt sent
   let receipt: StatusStepperRowStatus = "waiting"
@@ -489,8 +492,13 @@ export function buildOrderTimeline(vm: OrderViewModel): StatusStepperRow[] {
   return TIMELINE_ROW_ORDER.map((key) => {
     const status = statuses[key]
     const copy = copyFor(key, status)
+    let title = copy.title
     let subtitle = copy.subtitle
-    if (
+    if (key === "payment" && vm.paymentStatus === "ambiguous") {
+      title = "Payment needs review"
+      subtitle =
+        "We couldn't confirm this payment moved. Check your wallet, then message the merchant before retrying."
+    } else if (
       key === "payment" &&
       status === "complete" &&
       typeof vm.totalSats === "number"
@@ -500,7 +508,7 @@ export function buildOrderTimeline(vm: OrderViewModel): StatusStepperRow[] {
     if (key === "fulfillment" && vm.tracking?.number) {
       subtitle = `Tracking: ${vm.tracking.number}`
     }
-    return { key, title: copy.title, subtitle, status }
+    return { key, title, subtitle, status }
   })
 }
 
@@ -547,6 +555,14 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       tone: "error",
       primaryLabel: "Payment failed",
       detailLabel: "Try payment again",
+      actionNeeded: true,
+    }
+  }
+  if (vm.paymentStatus === "ambiguous") {
+    return {
+      tone: "warning",
+      primaryLabel: "Payment unclear",
+      detailLabel: "Check wallet before retrying",
       actionNeeded: true,
     }
   }

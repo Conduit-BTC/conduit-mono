@@ -84,7 +84,10 @@ export const Route = createFileRoute("/orders")({
 })
 
 const TONE_CLASS: Record<OrderHeaderStatus["tone"], string> = {
-  success: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+  // Mirror the StatusStepper "complete" check so the Paid pill green matches the
+  // checked stepper rows (both keyed off the --success token).
+  success:
+    "border-[color-mix(in_srgb,var(--success)_55%,transparent)] bg-[color-mix(in_srgb,var(--success)_16%,transparent)] text-[var(--success)]",
   info: "border-secondary-500/40 bg-secondary-500/10 text-secondary-300",
   warning: "border-amber-500/40 bg-amber-500/10 text-amber-300",
   error: "border-error/40 bg-error/10 text-error",
@@ -162,7 +165,8 @@ function OrderListCard({
       className={[
         "w-full rounded-[1.1rem] border p-3 text-left transition-[border-color,background-color]",
         active
-          ? "border-[var(--text-secondary)] bg-[var(--surface)]"
+          ? // Selected: subtle purple wash from the primary token.
+            "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)]"
           : "border-[var(--border)] bg-[var(--surface-elevated)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]",
       ].join(" ")}
     >
@@ -336,7 +340,7 @@ function OrderDetail({
         lc.checkoutMode === "private_checkout"
           ? "private_checkout"
           : "public_zap",
-      zapContent: "",
+      zapContent: lc.zapContent ?? "",
       totalSats: lc.totalSats,
       totalMsats: lc.totalMsats,
       walletConnection: wallet.connection,
@@ -634,6 +638,22 @@ function OrdersPage() {
   const [searchValue, setSearchValue] = useState("")
   const [tab, setTab] = useState<PhaseTab>("all")
   const [changeOrderOpen, setChangeOrderOpen] = useState(false)
+  // The phase tabs only exist on the mobile layout. Track the desktop breakpoint
+  // (xl = 1280px) so a tab chosen on a narrow viewport doesn't silently filter
+  // the tab-less desktop rail after a resize.
+  const [isDesktop, setIsDesktop] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      window.matchMedia("(min-width: 1280px)").matches
+  )
+  useEffect(() => {
+    const mql = window.matchMedia("(min-width: 1280px)")
+    const onChange = () => setIsDesktop(mql.matches)
+    onChange()
+    mql.addEventListener("change", onChange)
+    return () => mql.removeEventListener("change", onChange)
+  }, [])
+  const effectiveTab: PhaseTab = isDesktop ? "all" : tab
   const [refreshButtonState, setRefreshButtonState] = useState<
     "idle" | "refreshing" | "done"
   >("idle")
@@ -763,9 +783,9 @@ function OrdersPage() {
   const filteredOrders = useMemo(() => {
     const query = searchValue.trim().toLowerCase()
     return orders.filter((row) => {
-      if (tab !== "all" && row.vm.phase !== tab) {
+      if (effectiveTab !== "all" && row.vm.phase !== effectiveTab) {
         // "in_progress" tab also surfaces failed/action-needed active orders.
-        if (!(tab === "in_progress" && row.headerStatus.actionNeeded))
+        if (!(effectiveTab === "in_progress" && row.headerStatus.actionNeeded))
           return false
       }
       if (!query) return true
@@ -779,7 +799,7 @@ function OrdersPage() {
         )
       )
     })
-  }, [merchantName, orders, searchValue, tab])
+  }, [effectiveTab, merchantName, orders, searchValue])
 
   const selectedOrderId = useMemo(() => {
     if (selectedFromUrl && orders.some((o) => o.orderId === selectedFromUrl)) {
