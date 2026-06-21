@@ -8,6 +8,8 @@ import {
   normalizeCurrencyCode,
 } from "@conduit/core"
 
+export type ProductFulfillmentFormat = "physical" | "digital"
+
 export function getProductPriceInputStep(currency: string): string {
   return getCurrencyAmountStep(currency)
 }
@@ -71,6 +73,33 @@ export function assertPublishableProductShippingCost(
   currency: string
 ): void {
   normalizePublishableProductShippingCost(amount, currency)
+}
+
+export function getProductShippingCostHelpText(
+  value: string,
+  format: ProductFulfillmentFormat,
+  currency: string
+): string {
+  if (format === "digital") {
+    return "Digital products do not need shipping details or preset shipping zones."
+  }
+
+  const trimmed = value.trim()
+  const currencyLabel = getProductShippingCurrencyLabel(currency)
+  if (!trimmed) {
+    return `Blank means shipping will be coordinated with the buyer after the order request. Enter a fixed amount in ${currencyLabel} only when shipping can be charged at checkout.`
+  }
+
+  const amount = Number(trimmed)
+  if (Number.isFinite(amount) && amount === 0) {
+    return "0 means shipping is included in the product price."
+  }
+
+  if (Number.isFinite(amount) && amount > 0) {
+    return `This fixed shipping amount will be added to the buyer total at checkout in ${currencyLabel}.`
+  }
+
+  return `Enter a non-negative shipping amount in ${currencyLabel}, leave blank to coordinate later, or enter 0 when shipping is included.`
 }
 
 export function canonicalizeProductShippingCost(

@@ -4,6 +4,7 @@ import {
   assertPublishableProductShippingCost,
   canonicalizeProductShippingCost,
   getProductPriceInputStep,
+  getProductShippingCostHelpText,
   getProductShippingCurrencyLabel,
   normalizePublishableProductPrice,
   normalizePublishableProductShippingCost,
@@ -23,6 +24,21 @@ describe("merchant product price form", () => {
     expect(getProductShippingCurrencyLabel("USD")).toBe("USD")
     expect(getProductShippingCurrencyLabel("SAT")).toBe("sats")
     expect(getProductShippingCurrencyLabel("SATS")).toBe("sats")
+  })
+
+  it("explains blank, zero, and fixed shipping as distinct states", () => {
+    expect(getProductShippingCostHelpText("", "physical", "USD")).toContain(
+      "Blank means shipping will be coordinated"
+    )
+    expect(getProductShippingCostHelpText("0", "physical", "USD")).toContain(
+      "0 means shipping is included"
+    )
+    expect(getProductShippingCostHelpText("5", "physical", "USD")).toContain(
+      "added to the buyer total"
+    )
+    expect(getProductShippingCostHelpText("", "digital", "USD")).toContain(
+      "Digital products do not need shipping"
+    )
   })
 
   it("allows publishable positive source prices", () => {

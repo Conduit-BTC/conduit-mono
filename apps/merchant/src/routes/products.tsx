@@ -53,6 +53,7 @@ import { requireAuth } from "../lib/auth"
 import {
   canonicalizeProductShippingCost,
   getProductPriceInputStep,
+  getProductShippingCostHelpText,
   getProductShippingCurrencyLabel,
   normalizePublishableProductPrice,
 } from "../lib/productPriceForm"
@@ -217,30 +218,6 @@ function parseTags(tagsCsv: string): string[] {
     .split(",")
     .map((t) => t.trim())
     .filter(Boolean)
-}
-
-function getShippingCostHelpText(
-  value: string,
-  format: ProductFormState["format"],
-  currency: string
-): string {
-  if (format === "digital") {
-    return "Digital products do not need shipping details or preset shipping zones."
-  }
-
-  const trimmed = value.trim()
-  const currencyLabel = getProductShippingCurrencyLabel(currency)
-  if (!trimmed) {
-    return "Leave blank when shipping should be coordinated with the buyer after the order request."
-  }
-  const amount = Number(trimmed)
-  if (Number.isFinite(amount) && amount === 0) {
-    return "Shipping included. Buyers can pay immediately without a separate shipping request."
-  }
-  if (Number.isFinite(amount) && amount > 0) {
-    return `Added to buyer total at checkout in ${currencyLabel}.`
-  }
-  return `Enter a non-negative shipping amount in ${currencyLabel}.`
 }
 
 function getPublishErrorMessage(
@@ -1061,20 +1038,23 @@ function ProductsPage() {
                   step={getProductPriceInputStep(form.currency)}
                   value={form.shippingCost}
                   disabled={productIsDigital}
+                  aria-describedby="product-shipping-help"
                   onChange={(event) =>
                     setForm((prev) => ({
                       ...prev,
                       shippingCost: event.target.value,
                     }))
                   }
-                  placeholder={productIsDigital ? "Not required" : "0"}
+                  placeholder={
+                    productIsDigital ? "Not required" : "Leave blank"
+                  }
                 />
               </div>
-              <div className="text-xs leading-5 text-[var(--text-muted)] sm:col-span-4">
-                {productIsDigital
-                  ? "Digital listings skip checkout shipping rules."
-                  : `Enter the shipping amount to charge for this item in ${getProductShippingCurrencyLabel(form.currency)}. Use 0 only if shipping is included in the product price.`}{" "}
-                {getShippingCostHelpText(
+              <div
+                id="product-shipping-help"
+                className="text-xs leading-5 text-[var(--text-muted)] sm:col-span-4"
+              >
+                {getProductShippingCostHelpText(
                   form.shippingCost,
                   form.format,
                   form.currency
