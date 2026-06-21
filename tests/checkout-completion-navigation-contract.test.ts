@@ -5,13 +5,17 @@ describe("checkout completion navigation contracts", () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"
     ).text()
+    // CND-122: completed checkout flows navigate to the status-first Orders
+    // tracker via a deep link (`?order=<id>`), so Orders can render the order
+    // immediately from durable local lifecycle state.
     const ordersNavigations =
-      checkoutRoute.match(/navigate\(\{ to: "\/orders", replace: true \}\)/g) ??
-      []
+      checkoutRoute.match(
+        /navigate\(\{\s*to: "\/orders",\s*search: \{ order: orderId \},\s*replace: true,?\s*\}\)/g
+      ) ?? []
 
     expect(checkoutRoute).toContain("const navigate = useNavigate()")
-    expect(ordersNavigations.length).toBeGreaterThanOrEqual(3)
-    expect(checkoutRoute).toContain('<Link to="/orders">')
+    expect(ordersNavigations.length).toBeGreaterThanOrEqual(2)
+    expect(checkoutRoute).toContain("createOrderLifecycle(")
   })
 
   it("does not offer cart as a terminal paid-checkout action", async () => {
