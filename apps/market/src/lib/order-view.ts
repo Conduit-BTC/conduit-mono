@@ -65,7 +65,11 @@ export interface OrderViewModel {
     | "complete"
     | "cancelled"
     | null
-  tracking: { carrier: string | null; number: string | null; url: string | null } | null
+  tracking: {
+    carrier: string | null
+    number: string | null
+    url: string | null
+  } | null
 
   phase: OrderLifecyclePhase
 
@@ -141,8 +145,7 @@ export function buildOrderViewModel(
   input: BuildOrderViewModelInput
 ): OrderViewModel {
   const { lifecycle, conversation, paymentAttempt } = input
-  const messages =
-    input.messages ?? conversation?.messages ?? undefined
+  const messages = input.messages ?? conversation?.messages ?? undefined
   const summary: OrderSummary | null = messages
     ? extractOrderSummary(messages)
     : null
@@ -170,11 +173,7 @@ export function buildOrderViewModel(
         currency: item.currency,
       }))
 
-  const totalSats =
-    lifecycle?.totalSats ??
-    (summary
-      ? summary.subtotal
-      : null)
+  const totalSats = lifecycle?.totalSats ?? (summary ? summary.subtotal : null)
 
   // --- Buyer-side statuses (lifecycle wins; else derive from messages) ----
   const hasOrderMessage = !!summary && summary.items.length > 0
@@ -237,12 +236,12 @@ export function buildOrderViewModel(
     merchantPubkey,
     checkoutMode: lifecycle?.checkoutMode ?? null,
     createdAt: lifecycle?.createdAt ?? conversation?.latestAt ?? Date.now(),
-    updatedAt:
-      lifecycle?.updatedAt ?? conversation?.latestAt ?? Date.now(),
+    updatedAt: lifecycle?.updatedAt ?? conversation?.latestAt ?? Date.now(),
     items,
     totalSats,
     currency: lifecycle?.currency ?? summary?.currency ?? "SATS",
-    shippingAddress: lifecycle?.shippingAddress ?? summary?.shippingAddress ?? null,
+    shippingAddress:
+      lifecycle?.shippingAddress ?? summary?.shippingAddress ?? null,
     contactNote: lifecycle?.contactNote ?? summary?.orderNote ?? null,
     orderDeliveryStatus,
     invoiceStatus,
@@ -445,7 +444,10 @@ export function computeOrderTimelineStatuses(
   // 3. Payment sent
   let payment: StatusStepperRowStatus = "waiting"
   if (paid) payment = "complete"
-  else if (vm.paymentStatus === "paying" || vm.paymentStatus === "manual_required")
+  else if (
+    vm.paymentStatus === "paying" ||
+    vm.paymentStatus === "manual_required"
+  )
     payment = "in_progress"
   else if (vm.paymentStatus === "failed") payment = "failed"
   // Funds may or may not have moved — flag for review, never auto-retry.

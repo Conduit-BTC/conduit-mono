@@ -1,8 +1,4 @@
-import {
-  db,
-  type OrderLifecycle,
-  type OrderLifecyclePhase,
-} from "../db"
+import { db, type OrderLifecycle, type OrderLifecyclePhase } from "../db"
 
 /**
  * Durable buyer-side order lifecycle repository (CND-122).

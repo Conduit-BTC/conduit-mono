@@ -127,9 +127,7 @@ const US_STATE_NAME_TO_CODE: Record<string, string> = {
   "puerto rico": "PR",
 }
 
-const US_STATE_CODES = new Set([
-  ...Object.values(US_STATE_NAME_TO_CODE),
-])
+const US_STATE_CODES = new Set([...Object.values(US_STATE_NAME_TO_CODE)])
 
 /** Normalize a free-text US state into its 2-letter code, or `null`. */
 export function normalizeUsState(input: string | undefined): string | null {
@@ -295,7 +293,8 @@ export function validateAddressConsistency(
     issues.push({
       field: "postalCode",
       code: "postal_format",
-      message: "Postal code doesn't match the expected format for this country.",
+      message:
+        "Postal code doesn't match the expected format for this country.",
     })
     return { status: "inconsistent", issues }
   }

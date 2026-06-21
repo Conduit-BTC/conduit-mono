@@ -1033,7 +1033,11 @@ function CheckoutPage() {
       shippingCostSats?: number
       shippingOptionId?: string
       shippingOptionDTag?: string
-      sourcePrice?: { amount: number; currency: string; normalizedCurrency: string }
+      sourcePrice?: {
+        amount: number
+        currency: string
+        normalizedCurrency: string
+      }
     }>
   ): OrderLifecycleItem[] {
     return items.map((item) => ({
@@ -1053,7 +1057,6 @@ function CheckoutPage() {
         : undefined,
     }))
   }
-
 
   // ─── Order-first path (existing flow) ───────────────────────────────────
 
@@ -1179,7 +1182,11 @@ function CheckoutPage() {
         checkoutMode: "order_first",
         status: "order_sent",
       })
-      void navigate({ to: "/orders", search: { order: orderId }, replace: true })
+      void navigate({
+        to: "/orders",
+        search: { order: orderId },
+        replace: true,
+      })
     } catch (e) {
       recordCheckoutStepResult({
         amountSats: total,

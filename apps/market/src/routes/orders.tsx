@@ -109,7 +109,10 @@ interface OrderRow {
 function StatusPill({ status }: { status: OrderHeaderStatus }) {
   return (
     <span className="inline-flex items-center gap-2">
-      <Badge variant="outline" className={`capitalize ${TONE_CLASS[status.tone]}`}>
+      <Badge
+        variant="outline"
+        className={`capitalize ${TONE_CLASS[status.tone]}`}
+      >
         {status.primaryLabel}
       </Badge>
       <span className="text-xs text-[var(--text-secondary)]">
@@ -292,13 +295,7 @@ function ExternalWalletPanel({
   )
 }
 
-function OrderDetail({
-  row,
-  pubkey,
-}: {
-  row: OrderRow
-  pubkey: string
-}) {
+function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
   const { vm, headerStatus } = row
   const wallet = useWallet()
   const btcUsdRateQuery = useBtcUsdRate()
@@ -319,7 +316,8 @@ function OrderDetail({
       string,
       Awaited<ReturnType<typeof fetchStoreProducts>>["data"][number]
     >()
-    for (const product of productsQuery.data?.data ?? []) map.set(product.id, product)
+    for (const product of productsQuery.data?.data ?? [])
+      map.set(product.id, product)
     return map
   }, [productsQuery.data])
 
@@ -483,7 +481,9 @@ function OrderDetail({
                     price: item.priceAtPurchase,
                     currency: item.currency,
                     priceSats:
-                      item.currency === "SATS" ? item.priceAtPurchase : undefined,
+                      item.currency === "SATS"
+                        ? item.priceAtPurchase
+                        : undefined,
                   },
                   btcUsdRateQuery.data ?? null
                 )
@@ -497,7 +497,9 @@ function OrderDetail({
                         {image ? (
                           <img
                             src={image.url}
-                            alt={image.alt ?? product?.title ?? item.displayTitle}
+                            alt={
+                              image.alt ?? product?.title ?? item.displayTitle
+                            }
                             loading="lazy"
                             className="h-full w-full object-cover"
                           />
@@ -529,7 +531,10 @@ function OrderDetail({
                   Shipping address
                 </h3>
                 <Button asChild variant="ghost" className="h-8 px-3 text-xs">
-                  <Link to="/messages" search={{ tab: "merchants", thread: vm.orderId }}>
+                  <Link
+                    to="/messages"
+                    search={{ tab: "merchants", thread: vm.orderId }}
+                  >
                     Edit
                   </Link>
                 </Button>
@@ -541,7 +546,9 @@ function OrderDetail({
                 <div>{vm.shippingAddress.street}</div>
                 <div>
                   {vm.shippingAddress.city}
-                  {vm.shippingAddress.state ? `, ${vm.shippingAddress.state}` : ""}{" "}
+                  {vm.shippingAddress.state
+                    ? `, ${vm.shippingAddress.state}`
+                    : ""}{" "}
                   {vm.shippingAddress.postalCode}
                 </div>
                 <div>{vm.shippingAddress.country}</div>
@@ -657,7 +664,9 @@ function OrdersPage() {
   const [refreshButtonState, setRefreshButtonState] = useState<
     "idle" | "refreshing" | "done"
   >("idle")
-  const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const refreshResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  )
 
   const lifecyclesQuery = useQuery({
     queryKey: ["order-lifecycles", pubkey ?? "none"],
@@ -705,7 +714,8 @@ function OrdersPage() {
 
   useEffect(
     () => () => {
-      if (refreshResetTimerRef.current) clearTimeout(refreshResetTimerRef.current)
+      if (refreshResetTimerRef.current)
+        clearTimeout(refreshResetTimerRef.current)
     },
     []
   )
@@ -742,7 +752,9 @@ function OrdersPage() {
     const rows: OrderRow[] = []
     for (const [orderId, entry] of byId) {
       const merchantPubkey =
-        entry.lifecycle?.merchantPubkey ?? entry.conversation?.merchantPubkey ?? ""
+        entry.lifecycle?.merchantPubkey ??
+        entry.conversation?.merchantPubkey ??
+        ""
       const vm = buildOrderViewModel({
         orderId,
         merchantPubkey,
@@ -816,7 +828,11 @@ function OrdersPage() {
   const selectOrder = useCallback(
     (orderId: string) => {
       setChangeOrderOpen(false)
-      void navigate({ to: "/orders", search: { order: orderId }, replace: true })
+      void navigate({
+        to: "/orders",
+        search: { order: orderId },
+        replace: true,
+      })
     },
     [navigate]
   )
@@ -826,7 +842,8 @@ function OrdersPage() {
   const paymentAttemptQuery = useQuery({
     queryKey: ["buyer-payment-attempt", selected?.orderId ?? "none"],
     enabled: !!selected?.orderId,
-    queryFn: async () => (await db.paymentAttempts.get(selected!.orderId)) ?? null,
+    queryFn: async () =>
+      (await db.paymentAttempts.get(selected!.orderId)) ?? null,
   })
   useEffect(() => {
     if (!selected?.orderId) return
@@ -973,7 +990,10 @@ function OrdersPage() {
                       <ChevronRight className="h-4 w-4" />
                     </Button>
                   </SheetTrigger>
-                  <SheetContent side="bottom" className="max-h-[80vh] overflow-y-auto">
+                  <SheetContent
+                    side="bottom"
+                    className="max-h-[80vh] overflow-y-auto"
+                  >
                     <SheetHeader>
                       <SheetTitle>Your orders</SheetTitle>
                     </SheetHeader>

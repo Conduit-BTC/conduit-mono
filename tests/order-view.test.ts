@@ -8,7 +8,9 @@ import {
   type OrderViewModel,
 } from "../apps/market/src/lib/order-view"
 
-function baseLifecycle(overrides: Partial<OrderLifecycle> = {}): OrderLifecycle {
+function baseLifecycle(
+  overrides: Partial<OrderLifecycle> = {}
+): OrderLifecycle {
   return {
     orderId: "order-1",
     buyerPubkey: "buyer",
@@ -41,7 +43,9 @@ function baseLifecycle(overrides: Partial<OrderLifecycle> = {}): OrderLifecycle 
   }
 }
 
-function vmFromLifecycle(overrides: Partial<OrderLifecycle> = {}): OrderViewModel {
+function vmFromLifecycle(
+  overrides: Partial<OrderLifecycle> = {}
+): OrderViewModel {
   return buildOrderViewModel({
     orderId: "order-1",
     lifecycle: baseLifecycle(overrides),

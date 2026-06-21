@@ -59,8 +59,8 @@ attempt into an `OrderViewModel`, and derives:
   Payment sent → Receipt sent → Merchant confirmation → Fulfillment/Shipping →
   Complete.
 - A header **status pill** (`deriveOrderHeaderStatus`), e.g. `Paid · Receipt
-  sent`, `Pending · Awaiting invoice`, `Action needed · Pay with external
-  wallet`, `Completed · Delivered`, plus an `actionNeeded` flag for the list
+sent`, `Pending · Awaiting invoice`, `Action needed · Pay with external
+wallet`, `Completed · Delivered`, plus an `actionNeeded` flag for the list
   marker.
 
 ## Idempotency and recovery invariants
@@ -86,7 +86,7 @@ shipping-zone coverage:
 - US addresses are cross-checked with a bundled, offline USPS SCF prefix → state
   table (each 3-digit ZIP prefix maps to a state; ambiguous prefixes resolve to
   multiple states and are treated leniently). Example: `90210 / Beverly Hills /
-  Texas` is `inconsistent` (90210 is California), and is **blocked** before
+Texas` is `inconsistent` (90210 is California), and is **blocked** before
   direct payment / zap-out.
 - Non-US addresses get structural + postal-format validation; locality agreement
   is `unknown` (non-blocking) where no offline data exists.

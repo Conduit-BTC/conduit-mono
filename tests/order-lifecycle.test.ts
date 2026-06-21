@@ -55,11 +55,11 @@ describe("deriveOrderLifecyclePhase", () => {
   })
 
   it("honors explicit terminal phases (completed/cancelled are sticky)", () => {
-    expect(
-      deriveOrderLifecyclePhase({ ...base, phase: "completed" })
-    ).toBe("completed")
-    expect(
-      deriveOrderLifecyclePhase({ ...base, phase: "cancelled" })
-    ).toBe("cancelled")
+    expect(deriveOrderLifecyclePhase({ ...base, phase: "completed" })).toBe(
+      "completed"
+    )
+    expect(deriveOrderLifecyclePhase({ ...base, phase: "cancelled" })).toBe(
+      "cancelled"
+    )
   })
 })

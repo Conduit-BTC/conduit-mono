@@ -188,8 +188,15 @@ export async function runOrderPayment(
   if (!ctx.merchantLud16) {
     await patchAndEmit(
       orderId,
-      { paymentStatus: "failed", lastError: "Merchant does not have a Lightning address." },
-      { running: false, stage: null, error: "Merchant does not have a Lightning address." }
+      {
+        paymentStatus: "failed",
+        lastError: "Merchant does not have a Lightning address.",
+      },
+      {
+        running: false,
+        stage: null,
+        error: "Merchant does not have a Lightning address.",
+      }
     )
     inFlight.delete(orderId)
     return runtimeStates.get(orderId)!
