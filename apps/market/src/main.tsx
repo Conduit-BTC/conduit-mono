@@ -25,6 +25,8 @@ import "./styles/index.css"
 const queryClient = new QueryClient()
 
 const router = createRouter({ routeTree })
+const SHOW_DEVTOOLS =
+  import.meta.env.DEV && import.meta.env.VITE_DISABLE_DEVTOOLS !== "true"
 const criticalMarketFontUrls = [
   bricolageRegularUrl,
   bricolageMediumUrl,
@@ -100,7 +102,7 @@ createRoot(document.getElementById("root")!).render(
           </MarketAuthQueryBoundary>
         </ConduitSessionProvider>
       </AuthProvider>
-      {import.meta.env.DEV && <ReactQueryDevtools />}
+      {SHOW_DEVTOOLS && <ReactQueryDevtools />}
     </QueryClientProvider>
   </StrictMode>
 )

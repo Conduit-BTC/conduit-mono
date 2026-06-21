@@ -29,6 +29,8 @@ export const Route = createRootRoute({
 })
 
 const AUTH_GATE_GRACE_MS = 650
+const SHOW_DEVTOOLS =
+  import.meta.env.DEV && import.meta.env.VITE_DISABLE_DEVTOOLS !== "true"
 
 function RootShell({ children }: { children: ReactNode }) {
   return (
@@ -49,7 +51,7 @@ function RootShell({ children }: { children: ReactNode }) {
           </div>
         </div>
       </MerchantReadinessProvider>
-      {import.meta.env.DEV && <TanStackRouterDevtools />}
+      {SHOW_DEVTOOLS && <TanStackRouterDevtools />}
     </div>
   )
 }
@@ -166,7 +168,7 @@ function RootLayout() {
 function AuthGateGrace() {
   return (
     <div className="min-h-screen bg-[var(--background)] text-[var(--text-primary)]">
-      {import.meta.env.DEV && <TanStackRouterDevtools />}
+      {SHOW_DEVTOOLS && <TanStackRouterDevtools />}
     </div>
   )
 }
@@ -298,7 +300,7 @@ function ConnectGate() {
           onConnect={handleConnect}
         />
       </main>
-      {import.meta.env.DEV && <TanStackRouterDevtools />}
+      {SHOW_DEVTOOLS && <TanStackRouterDevtools />}
     </div>
   )
 }
