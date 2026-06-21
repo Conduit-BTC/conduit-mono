@@ -12,23 +12,30 @@ const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? 
 test("merchant shipping country combobox supports search and selection", async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 375, height: 667 })
   await installTestSigner(page, TEST_MERCHANT_PUBKEY)
   await page.goto(`${merchantUrl}/shipping`)
 
   await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
 
-  const countryPicker = page
-    .locator('button[role="combobox"]')
-    .filter({ hasText: "Search countries to add..." })
+  const countryPicker = page.getByRole("combobox", {
+    name: "Search countries to add...",
+  })
 
   await countryPicker.click()
-  await page.getByPlaceholder("Search countries to add...").fill("canada")
+  await countryPicker.fill("un")
+  await expect(page.getByRole("option").first()).toContainText("United")
+
+  await countryPicker.fill("")
+  await expect(page.getByRole("option").first()).toContainText("Åland Islands")
+
+  await countryPicker.fill("canada")
   await page.getByRole("option", { name: /CA Canada/i }).click()
 
   await expect(
     page.locator("span").filter({ hasText: /^Canada$/ })
   ).toBeVisible()
-  await expect(countryPicker).toBeVisible()
+  await expect(countryPicker).toHaveValue("")
 })
 
 test("market checkout country combobox supports search and selection", async ({

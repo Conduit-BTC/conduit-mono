@@ -1,5 +1,5 @@
 import { Check, ChevronsUpDown } from "lucide-react"
-import { useState } from "react"
+import { type ElementRef, useEffect, useMemo, useRef, useState } from "react"
 import { cn } from "../utils"
 import { Button } from "./Button"
 import {
@@ -43,6 +43,58 @@ export interface ComboboxProps {
   searchInTrigger?: boolean
 }
 
+function normalizeComboboxSearch(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+}
+
+function getSearchScore(option: ComboboxOption, query: string): number | null {
+  const label = normalizeComboboxSearch(option.label)
+  const meta = normalizeComboboxSearch(option.meta ?? "")
+  const searchText = normalizeComboboxSearch(
+    option.searchText ?? `${option.meta ?? ""} ${option.label}`
+  )
+  const labelWords = label.split(/\s+/).filter(Boolean)
+
+  if (meta === query || label === query) return 0
+  if (label.startsWith(query)) return 1
+  if (labelWords.some((word) => word.startsWith(query))) return 2
+  if (meta.startsWith(query)) return 3
+  if (searchText.startsWith(query)) return 4
+  if (label.includes(query)) return 5
+  if (searchText.includes(query)) return 6
+  return null
+}
+
+export function getFilteredComboboxOptions(
+  options: ComboboxOption[],
+  search: string
+): ComboboxOption[] {
+  const query = normalizeComboboxSearch(search)
+  if (!query) return options
+
+  return options
+    .map((option, index) => ({
+      index,
+      option,
+      score: getSearchScore(option, query),
+    }))
+    .filter(
+      (
+        entry
+      ): entry is {
+        index: number
+        option: ComboboxOption
+        score: number
+      } => entry.score !== null
+    )
+    .sort((a, b) => a.score - b.score || a.index - b.index)
+    .map((entry) => entry.option)
+}
+
 export function Combobox({
   id,
   value,
@@ -62,46 +114,98 @@ export function Combobox({
 }: ComboboxProps) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState("")
+  const [activeValue, setActiveValue] = useState("")
+  const listRef = useRef<ElementRef<typeof CommandList>>(null)
   const selectedOption = options.find((option) => option.value === value)
   const label = selectedLabel ?? selectedOption?.label
+  const filteredOptions = useMemo(
+    () => getFilteredComboboxOptions(options, search),
+    [options, search]
+  )
+
+  useEffect(() => {
+    if (!open) return
+    const selectedValue =
+      !search &&
+      value &&
+      filteredOptions.some((option) => option.value === value)
+        ? value
+        : filteredOptions[0]?.value
+    setActiveValue(selectedValue ?? "")
+    const list = listRef.current
+    if (!list) return
+
+    const resetScroll = () => {
+      list.scrollTop = 0
+    }
+    const frames: number[] = []
+    resetScroll()
+    frames.push(
+      window.requestAnimationFrame(() => {
+        resetScroll()
+        frames.push(window.requestAnimationFrame(resetScroll))
+      })
+    )
+    return () => {
+      frames.forEach((frame) => window.cancelAnimationFrame(frame))
+    }
+  }, [filteredOptions, open, search, value])
+
+  function handleOpenChange(nextOpen: boolean): void {
+    setOpen(nextOpen)
+    if (!nextOpen) setSearch("")
+  }
+
   const optionList = (
-    <CommandList className={listClassName}>
-      <CommandEmpty>{emptyText}</CommandEmpty>
-      <CommandGroup>
-        {options.map((option) => (
-          <CommandItem
-            key={option.value}
-            value={option.searchText ?? `${option.meta ?? ""} ${option.label}`}
-            disabled={option.disabled}
-            onSelect={() => {
-              onValueChange(option.value)
-              setSearch("")
-              setOpen(false)
-            }}
-          >
-            <Check
-              className={cn(
-                "h-4 w-4",
-                value === option.value ? "opacity-100" : "opacity-0"
-              )}
-              aria-hidden="true"
-            />
-            {option.meta ? (
-              <span className="w-8 shrink-0 font-mono text-xs text-[var(--text-muted)]">
-                {option.meta}
-              </span>
-            ) : null}
-            <span className="min-w-0 truncate">{option.label}</span>
-          </CommandItem>
-        ))}
-      </CommandGroup>
+    <CommandList
+      key={normalizeComboboxSearch(search)}
+      ref={listRef}
+      className={listClassName}
+    >
+      {filteredOptions.length === 0 ? (
+        <CommandEmpty>{emptyText}</CommandEmpty>
+      ) : (
+        <CommandGroup>
+          {filteredOptions.map((option) => (
+            <CommandItem
+              key={option.value}
+              value={option.value}
+              disabled={option.disabled}
+              onSelect={() => {
+                onValueChange(option.value)
+                setSearch("")
+                setOpen(false)
+              }}
+            >
+              <Check
+                className={cn(
+                  "h-4 w-4",
+                  value === option.value ? "opacity-100" : "opacity-0"
+                )}
+                aria-hidden="true"
+              />
+              {option.meta ? (
+                <span className="w-8 shrink-0 font-mono text-xs text-[var(--text-muted)]">
+                  {option.meta}
+                </span>
+              ) : null}
+              <span className="min-w-0 truncate">{option.label}</span>
+            </CommandItem>
+          ))}
+        </CommandGroup>
+      )}
     </CommandList>
   )
 
   if (searchInTrigger) {
     return (
-      <Popover open={open} onOpenChange={setOpen}>
-        <Command className="overflow-visible rounded-none bg-transparent">
+      <Popover open={open} onOpenChange={handleOpenChange}>
+        <Command
+          shouldFilter={false}
+          value={activeValue}
+          onValueChange={setActiveValue}
+          className="overflow-visible rounded-none bg-transparent"
+        >
           <PopoverAnchor asChild>
             <div
               className={cn(
@@ -126,6 +230,7 @@ export function Combobox({
                 }}
                 placeholder={label ?? searchPlaceholder ?? placeholder}
                 disabled={disabled}
+                aria-label={searchPlaceholder ?? placeholder}
                 aria-expanded={open}
                 aria-invalid={invalid || undefined}
                 wrapperClassName="min-w-0 flex-1 border-0 px-3"
@@ -142,7 +247,7 @@ export function Combobox({
             collisionPadding={8}
             onOpenAutoFocus={(event) => event.preventDefault()}
             className={cn(
-              "w-[--radix-popover-trigger-width] p-0",
+              "w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-1rem)] p-0",
               contentClassName
             )}
           >
@@ -154,7 +259,7 @@ export function Combobox({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <Button
           id={id}
@@ -184,12 +289,20 @@ export function Combobox({
         align="start"
         collisionPadding={8}
         className={cn(
-          "w-[--radix-popover-trigger-width] p-0",
+          "w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-1rem)] p-0",
           contentClassName
         )}
       >
-        <Command>
-          <CommandInput placeholder={searchPlaceholder} />
+        <Command
+          shouldFilter={false}
+          value={activeValue}
+          onValueChange={setActiveValue}
+        >
+          <CommandInput
+            value={search}
+            onValueChange={setSearch}
+            placeholder={searchPlaceholder}
+          />
           {optionList}
         </Command>
       </PopoverContent>
