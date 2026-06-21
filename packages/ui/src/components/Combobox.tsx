@@ -152,6 +152,14 @@ export function Combobox({
     }
   }, [filteredOptions, open, search, value])
 
+  useEffect(() => {
+    if (!open || !searchInTrigger || disabled) return
+    const frame = window.requestAnimationFrame(() => {
+      inputRef.current?.focus({ preventScroll: true })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [disabled, open, searchInTrigger])
+
   function handleOpenChange(nextOpen: boolean): void {
     setOpen(nextOpen)
     if (!nextOpen) setSearch("")
