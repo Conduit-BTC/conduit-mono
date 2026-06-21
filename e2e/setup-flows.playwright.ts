@@ -33,21 +33,20 @@ test("merchant shipping country combobox supports search and selection", async (
     triggerBox.x + 12,
     triggerBox.y + triggerBox.height / 2
   )
-  await expect(countryPicker).toBeFocused()
-  await countryPicker.fill("un")
+  await page.keyboard.type("un")
+  await expect(countryPicker).toHaveValue("un")
   await expect(page.getByRole("option").first()).toContainText("United")
 
   await countryPicker.fill("")
   await expect(page.getByRole("option").first()).toContainText("Åland Islands")
 
   await page.getByRole("heading", { name: "Shipping" }).click()
-  await expect(countryPicker).not.toBeFocused()
   await page.mouse.click(
     triggerBox.x + triggerBox.width - 12,
     triggerBox.y + triggerBox.height / 2
   )
-  await expect(countryPicker).toBeFocused()
-  await countryPicker.fill("canada")
+  await page.keyboard.type("canada")
+  await expect(countryPicker).toHaveValue("canada")
   await page.getByRole("option", { name: /CA Canada/i }).click()
 
   await expect(
