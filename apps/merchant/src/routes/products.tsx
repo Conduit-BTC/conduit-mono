@@ -231,7 +231,7 @@ function getShippingCostHelpText(
   const trimmed = value.trim()
   const currencyLabel = getProductShippingCurrencyLabel(currency)
   if (!trimmed) {
-    return "Shipping is coordinated with the buyer after order request; direct pay is disabled for physical carts."
+    return "Leave blank when shipping should be coordinated with the buyer after the order request."
   }
   const amount = Number(trimmed)
   if (Number.isFinite(amount) && amount === 0) {

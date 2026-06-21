@@ -34,7 +34,29 @@ const COUNTRY_NAME_OVERRIDES: Record<string, string> = {
   VE: "Venezuela",
 }
 
+export const UNAVAILABLE_SHIPPING_COUNTRY_CODES = [
+  "AF",
+  "BY",
+  "CU",
+  "ER",
+  "HT",
+  "IR",
+  "KP",
+  "RU",
+  "SD",
+  "SS",
+  "SY",
+  "TM",
+  "UA",
+  "YE",
+] as const
+
+const UNAVAILABLE_SHIPPING_COUNTRY_CODE_SET = new Set<string>(
+  UNAVAILABLE_SHIPPING_COUNTRY_CODES
+)
+
 export const SHIPPING_COUNTRIES: CountryOption[] = getData()
+  .filter((country) => !UNAVAILABLE_SHIPPING_COUNTRY_CODE_SET.has(country.code))
   .map((country) => ({
     code: country.code,
     name: COUNTRY_NAME_OVERRIDES[country.code] ?? country.name,
