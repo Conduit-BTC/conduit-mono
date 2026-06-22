@@ -39,22 +39,46 @@ jobs:
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      SUDDEN_AGENT_API_KEY: ${{ secrets.SUDDEN_AGENT_API_KEY }}
-      SUDDEN_AGENT_AUTH_FILE: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
     steps:
+      - name: Check Sudden Agent auth
+        id: sudden_auth
+        shell: bash
+        env:
+          SUDDEN_AGENT_API_KEY: ${{ secrets.SUDDEN_AGENT_API_KEY }}
+          SUDDEN_AGENT_AUTH_FILE: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$SUDDEN_AGENT_AUTH_FILE" ]]; then
+            echo "has_auth_file=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_auth_file=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [[ -n "$SUDDEN_AGENT_API_KEY" ]]; then
+            echo "has_api_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_api_key=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [[ -n "$SUDDEN_AGENT_AUTH_FILE" || -n "$SUDDEN_AGENT_API_KEY" ]]; then
+            echo "has_auth=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_auth=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Skip when Sudden Agent auth is unavailable
-        if: env.SUDDEN_AGENT_API_KEY == '' && env.SUDDEN_AGENT_AUTH_FILE == ''
+        if: steps.sudden_auth.outputs.has_auth != 'true'
         run: echo "Sudden Agent auth is not configured; skipping agent review."
 
       - uses: actions/checkout@v6
-        if: env.SUDDEN_AGENT_API_KEY != '' || env.SUDDEN_AGENT_AUTH_FILE != ''
+        if: steps.sudden_auth.outputs.has_auth == 'true'
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Run Sudden Agent review with auth file
-        if: env.SUDDEN_AGENT_AUTH_FILE != ''
+        if: steps.sudden_auth.outputs.has_auth_file == 'true'
         uses: sudden-network/agent@b45254b54e09c4ba01662a93aa52ab2f27b26919
         with:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
@@ -89,7 +113,7 @@ jobs:
             list residual test or preview risks.
 
       - name: Run Sudden Agent review with API key
-        if: env.SUDDEN_AGENT_AUTH_FILE == '' && env.SUDDEN_AGENT_API_KEY != ''
+        if: steps.sudden_auth.outputs.has_auth_file != 'true' && steps.sudden_auth.outputs.has_api_key == 'true'
         uses: sudden-network/agent@b45254b54e09c4ba01662a93aa52ab2f27b26919
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
