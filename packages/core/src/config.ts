@@ -12,7 +12,7 @@ export interface RelayBucketConfig {
   relayUrls: string[]
 }
 
-export const CANONICAL_APP_BACKPLANE_RELAYS = ["wss://conduitl2.fly.dev"]
+export const CANONICAL_APP_BACKPLANE_RELAYS = ["wss://relay.conduit.market"]
 export const CANONICAL_APP_WRITE_RELAYS = CANONICAL_APP_BACKPLANE_RELAYS
 export const CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS = [
   "wss://nos.lol",
@@ -21,7 +21,7 @@ export const CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS = [
 ]
 export const CANONICAL_SEARCH_INDEX_RELAYS = ["wss://relay.nostr.band"]
 export const CANONICAL_COMMERCE_DM_FALLBACK_RELAYS = [
-  "wss://conduitl2.fly.dev",
+  "wss://relay.conduit.market",
   "wss://inbox.azzamo.net",
   "wss://nos.lol",
   "wss://relay.damus.io",
@@ -42,7 +42,7 @@ export const CANONICAL_DEFAULT_RELAYS = [
   ...CANONICAL_APP_BACKPLANE_RELAYS,
   ...CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS,
 ]
-const RETIRED_DEFAULT_RELAYS = new Set(["wss://relay.conduit.market"])
+const RETIRED_DEFAULT_RELAYS = new Set<string>()
 const FALLBACK_RELAY_URL = "wss://nos.lol"
 const PUBLIC_REPO_ISSUES_URL =
   "https://github.com/Conduit-BTC/conduit-mono/issues"
