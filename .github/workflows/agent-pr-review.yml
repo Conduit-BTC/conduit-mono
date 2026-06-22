@@ -41,19 +41,55 @@ jobs:
     timeout-minutes: 30
     env:
       SUDDEN_AGENT_API_KEY: ${{ secrets.SUDDEN_AGENT_API_KEY }}
+      SUDDEN_AGENT_AUTH_FILE: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
     steps:
-      - name: Skip when Sudden Agent secret is unavailable
-        if: env.SUDDEN_AGENT_API_KEY == ''
-        run: echo "SUDDEN_AGENT_API_KEY is not configured; skipping agent review."
+      - name: Skip when Sudden Agent auth is unavailable
+        if: env.SUDDEN_AGENT_API_KEY == '' && env.SUDDEN_AGENT_AUTH_FILE == ''
+        run: echo "Sudden Agent auth is not configured; skipping agent review."
 
       - uses: actions/checkout@v6
-        if: env.SUDDEN_AGENT_API_KEY != ''
+        if: env.SUDDEN_AGENT_API_KEY != '' || env.SUDDEN_AGENT_AUTH_FILE != ''
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Run Sudden Agent review
-        if: env.SUDDEN_AGENT_API_KEY != ''
+      - name: Run Sudden Agent review with auth file
+        if: env.SUDDEN_AGENT_AUTH_FILE != ''
+        uses: sudden-network/agent@b45254b54e09c4ba01662a93aa52ab2f27b26919
+        with:
+          agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
+          github_token: ${{ github.token }}
+          resume: true
+          prompt: |
+            You are reviewing Conduit public repository changes.
+
+            Stay read-only. Do not edit files, push commits, create branches, or
+            change labels. If the author asks for fixes, explain that the
+            separate Agent PR Harden workflow must be triggered after maintainer
+            gating.
+
+            Review priorities:
+            1. Functional correctness and regressions.
+            2. Protocol/auth/privacy/payment constraints.
+            3. Reliability and failure-mode handling.
+            4. Test coverage and verifiability.
+            5. Maintainability.
+
+            Mandatory constraints:
+            - external signer auth only; no key custody
+            - no behavioral tracking or profiling
+            - no message, order, payment, address, signer, or wallet secret inspection
+            - payments remain non-custodial
+            - telemetry must follow docs/analytics/events.md
+            - public repo content must not include private runbooks, credentials,
+              dashboard exports, or private company planning context
+
+            Output findings first with P0/P1/P2 severity and concrete file/line
+            references. If there are no blocking findings, say so explicitly and
+            list residual test or preview risks.
+
+      - name: Run Sudden Agent review with API key
+        if: env.SUDDEN_AGENT_AUTH_FILE == '' && env.SUDDEN_AGENT_API_KEY != ''
         uses: sudden-network/agent@b45254b54e09c4ba01662a93aa52ab2f27b26919
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}

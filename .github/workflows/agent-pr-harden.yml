@@ -38,18 +38,19 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       SUDDEN_AGENT_API_KEY: ${{ secrets.SUDDEN_AGENT_API_KEY }}
+      SUDDEN_AGENT_AUTH_FILE: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
     steps:
-      - name: Skip when Sudden Agent secret is unavailable
-        if: env.SUDDEN_AGENT_API_KEY == ''
-        run: echo "SUDDEN_AGENT_API_KEY is not configured; skipping agent hardening."
+      - name: Skip when Sudden Agent auth is unavailable
+        if: env.SUDDEN_AGENT_API_KEY == '' && env.SUDDEN_AGENT_AUTH_FILE == ''
+        run: echo "Sudden Agent auth is not configured; skipping agent hardening."
 
       - uses: actions/checkout@v6
-        if: env.SUDDEN_AGENT_API_KEY != ''
+        if: env.SUDDEN_AGENT_API_KEY != '' || env.SUDDEN_AGENT_AUTH_FILE != ''
         with:
           fetch-depth: 0
 
       - name: Validate maintainer gate
-        if: env.SUDDEN_AGENT_API_KEY != ''
+        if: env.SUDDEN_AGENT_API_KEY != '' || env.SUDDEN_AGENT_AUTH_FILE != ''
         shell: bash
         run: |
           set -euo pipefail
@@ -74,11 +75,44 @@ jobs:
           fi
 
       - name: Check out pull request branch
-        if: env.SUDDEN_AGENT_API_KEY != ''
+        if: env.SUDDEN_AGENT_API_KEY != '' || env.SUDDEN_AGENT_AUTH_FILE != ''
         run: gh pr checkout "${{ inputs.pr_number }}"
 
-      - name: Run Sudden Agent hardening
-        if: env.SUDDEN_AGENT_API_KEY != ''
+      - name: Run Sudden Agent hardening with auth file
+        if: env.SUDDEN_AGENT_AUTH_FILE != ''
+        uses: sudden-network/agent@b45254b54e09c4ba01662a93aa52ab2f27b26919
+        with:
+          agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
+          github_token: ${{ github.token }}
+          resume: true
+          sudo: true
+          prompt: |
+            You are hardening PR #${{ inputs.pr_number }} for Conduit.
+
+            Task:
+            ${{ inputs.task }}
+
+            Risk class: ${{ inputs.risk_class }}
+
+            You may edit files and push commits to the PR branch. Keep the
+            change narrowly scoped to the requested task. Do not change workflow
+            files. Do not handle high-risk protocol, auth, payment, privacy,
+            security, or release-policy decisions beyond the explicitly
+            approved task.
+
+            Required validation before final comment:
+            - bun run format:check
+            - bun run typecheck
+            - bun run lint
+            - bun run telemetry:check
+            - relevant focused tests, or bun test if broad behavior changed
+
+            Never add secrets, private runbooks, telemetry payloads, dashboard
+            exports, message/order/payment contents, signer codes, Nostr secret
+            keys, NWC URIs, or wallet credentials to tracked files.
+
+      - name: Run Sudden Agent hardening with API key
+        if: env.SUDDEN_AGENT_AUTH_FILE == '' && env.SUDDEN_AGENT_API_KEY != ''
         uses: sudden-network/agent@b45254b54e09c4ba01662a93aa52ab2f27b26919
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
