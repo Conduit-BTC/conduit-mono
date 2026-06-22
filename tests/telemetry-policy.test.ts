@@ -157,4 +157,23 @@ describe("telemetry policy", () => {
       "apps/market/src/analytics.ts has unsafe telemetry config: PostHog flags endpoint must stay disabled"
     )
   })
+
+  it("rejects cookie APIs in client source", () => {
+    const errors = validateTelemetrySourceUsage({
+      source:
+        'document.cookie = "session=1"; cookieStore.set("x", "y"); new Headers({ "Set-Cookie": "x=y" })',
+      relativePath: "apps/market/src/cookies.ts",
+      allowedEventNames: new Set(),
+    })
+
+    expect(errors).toContain(
+      "apps/market/src/cookies.ts violates cookieless policy: document.cookie is not allowed in product clients"
+    )
+    expect(errors).toContain(
+      "apps/market/src/cookies.ts violates cookieless policy: Cookie Store API is not allowed in product clients"
+    )
+    expect(errors).toContain(
+      "apps/market/src/cookies.ts violates cookieless policy: Set-Cookie headers are not allowed in Conduit-operated app surfaces"
+    )
+  })
 })

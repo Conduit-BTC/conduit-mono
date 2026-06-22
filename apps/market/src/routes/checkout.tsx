@@ -2387,8 +2387,8 @@ function CheckoutPage() {
                       {pricingOnlyFastCheckoutBlocker
                         ? "The cart total is visible, but direct payment needs a fresh conversion before funds can move. Conduit is refreshing it now."
                         : requiresPublicZap
-                          ? "Conduit will deliver the order, request a public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."
-                          : "Conduit will deliver the order, request a private LNURL invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."}
+                          ? "Conduit will deliver the order, request a public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet. Payment goes directly to the merchant, so Conduit cannot reverse it after funds move."
+                          : "Conduit will deliver the order, request a private LNURL invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet. Payment goes directly to the merchant, so Conduit cannot reverse it after funds move."}
                     </p>
                   </div>
                 )}
@@ -2540,7 +2540,9 @@ function CheckoutPage() {
                     <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
                       Automatic payment did not complete. Open or copy this
                       invoice with your wallet; Conduit will not mark the order
-                      paid until payment proof is available.
+                      paid until payment proof is available. Pay when the amount
+                      looks right; Conduit cannot reverse Lightning payments
+                      after funds move.
                     </p>
                     {pendingManualInvoice.reason && (
                       <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
