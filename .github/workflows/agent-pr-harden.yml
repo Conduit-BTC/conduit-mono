@@ -67,7 +67,7 @@ jobs:
         if: steps.sudden_auth.outputs.has_auth != 'true'
         run: echo "Sudden Agent auth is not configured; skipping agent hardening."
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: steps.sudden_auth.outputs.has_auth == 'true'
         with:
           fetch-depth: 0
