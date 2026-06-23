@@ -178,9 +178,10 @@ describe("buildOrderTimeline", () => {
 describe("deriveOrderHeaderStatus", () => {
   it("Paid · Receipt sent when proof delivered and merchant has not confirmed", () => {
     const status = deriveOrderHeaderStatus(vmFromLifecycle())
-    expect(status.primaryLabel).toBe("Paid")
-    expect(status.detailLabel).toBe("Receipt sent")
+    expect(status.primaryLabel).toBe("Merchant confirmation")
+    expect(status.detailLabel).toBe("Waiting for merchant")
     expect(status.actionNeeded).toBe(false)
+    expect(status.showSpinner).toBe(true)
   })
 
   it("Pending · Awaiting invoice after order send", () => {
@@ -193,6 +194,7 @@ describe("deriveOrderHeaderStatus", () => {
     )
     expect(status.primaryLabel).toBe("Pending")
     expect(status.detailLabel).toBe("Awaiting invoice")
+    expect(status.showSpinner).toBe(false)
   })
 
   it("Action needed for manual external payment", () => {
@@ -205,6 +207,7 @@ describe("deriveOrderHeaderStatus", () => {
     )
     expect(status.primaryLabel).toBe("Action needed")
     expect(status.actionNeeded).toBe(true)
+    expect(status.showSpinner).toBe(false)
   })
 
   it("Payment unclear when the rail leaves payment ambiguous", () => {
@@ -217,6 +220,7 @@ describe("deriveOrderHeaderStatus", () => {
     expect(status.primaryLabel).toBe("Payment unclear")
     expect(status.tone).toBe("warning")
     expect(status.actionNeeded).toBe(true)
+    expect(status.showSpinner).toBe(false)
   })
 
   it("prefers the wallet-check warning over normal retry guidance", () => {
@@ -251,5 +255,6 @@ describe("deriveOrderHeaderStatus", () => {
     expect(status.primaryLabel).toBe("Completed")
     expect(status.detailLabel).toBe("Delivered")
     expect(vm.phase).toBe("completed")
+    expect(status.showSpinner).toBe(false)
   })
 })

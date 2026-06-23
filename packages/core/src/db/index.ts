@@ -299,6 +299,7 @@ export interface OrderLifecycle {
   buyerPubkey: string
   merchantPubkey: string
   checkoutMode: OrderCheckoutMode
+  merchantLightningAddress?: string
 
   items: OrderLifecycleItem[]
   itemSubtotalSats: number

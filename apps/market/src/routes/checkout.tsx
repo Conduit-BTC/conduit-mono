@@ -1065,6 +1065,8 @@ function CheckoutPage() {
 
   async function placeOrder(): Promise<void> {
     if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
+    if (paymentInFlightRef.current) return
+    paymentInFlightRef.current = true
 
     let publishedOrderId: string | null = null
     let orderDelivered = false
@@ -1160,6 +1162,7 @@ function CheckoutPage() {
         buyerPubkey: pubkey,
         merchantPubkey: selectedMerchant,
         checkoutMode: "pay_later",
+        merchantLightningAddress: merchantLud16 ?? undefined,
         items: buildLifecycleItems(items),
         itemSubtotalSats: total - checkoutShippingCost.totalSats,
         shippingCostSats:
@@ -1185,6 +1188,7 @@ function CheckoutPage() {
       setSentOrderId(orderId)
       setShowSentGlow(true)
       setStep("sent")
+      paymentInFlightRef.current = false
       recordCheckoutSuccess({
         amountSats: total,
         checkoutMode: "order_first",
@@ -1204,6 +1208,7 @@ function CheckoutPage() {
         setSentOrderId(publishedOrderId)
         setShowSentGlow(true)
         setStep("sent")
+        paymentInFlightRef.current = false
         void navigate({
           to: "/orders",
           search: { order: publishedOrderId },
@@ -1220,6 +1225,7 @@ function CheckoutPage() {
       })
       setError(e instanceof Error ? e.message : "Failed to send order")
       setStep("payment")
+      paymentInFlightRef.current = false
     }
   }
 
@@ -1384,6 +1390,7 @@ function CheckoutPage() {
         buyerPubkey: pubkey,
         merchantPubkey: selectedMerchant,
         checkoutMode: canAutoPay ? zapVisibility : "external_wallet",
+        merchantLightningAddress: merchantLud16,
         items: buildLifecycleItems(pricingIntent.items),
         itemSubtotalSats: pricingIntent.itemSubtotalSats,
         shippingCostSats: pricingIntent.shippingCost.totalSats,

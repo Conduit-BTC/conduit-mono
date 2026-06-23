@@ -15,23 +15,21 @@ import {
   type OrderLifecycle,
 } from "@conduit/core"
 import {
-  Badge,
   Button,
   Sheet,
   SheetContent,
   SheetHeader,
   SheetTitle,
   SheetTrigger,
+  StatusPill,
   StatusStepper,
-  Tabs,
-  TabsList,
-  TabsTrigger,
 } from "@conduit/ui"
 import {
   CheckCircle2,
   ChevronRight,
   Copy,
   ExternalLink,
+  LoaderCircle,
   MessageCircle,
   ReceiptText,
   RotateCw,
@@ -83,16 +81,15 @@ export const Route = createFileRoute("/orders")({
   component: OrdersPage,
 })
 
-const TONE_CLASS: Record<OrderHeaderStatus["tone"], string> = {
-  // Mirror the StatusStepper "complete" check so the Paid pill green matches the
-  // checked stepper rows (both keyed off the --success token).
-  success:
-    "border-[color-mix(in_srgb,var(--success)_55%,transparent)] bg-[color-mix(in_srgb,var(--success)_16%,transparent)] text-[var(--success)]",
-  info: "border-secondary-500/40 bg-secondary-500/10 text-secondary-300",
-  warning: "border-amber-500/40 bg-amber-500/10 text-amber-300",
-  error: "border-error/40 bg-error/10 text-error",
-  neutral:
-    "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)]",
+const TONE_VARIANT: Record<
+  OrderHeaderStatus["tone"],
+  "warning" | "success" | "info" | "error" | "neutral"
+> = {
+  success: "success",
+  info: "info",
+  warning: "warning",
+  error: "error",
+  neutral: "neutral",
 }
 
 /** A merged order: durable local lifecycle and/or relay conversation. */
@@ -106,19 +103,53 @@ interface OrderRow {
   updatedAt: number
 }
 
-function StatusPill({ status }: { status: OrderHeaderStatus }) {
+function OrderHeaderPill({ status }: { status: OrderHeaderStatus }) {
+  const showCustomSpinner = status.showSpinner
+
   return (
     <span className="inline-flex items-center gap-2">
-      <Badge
-        variant="outline"
-        className={`capitalize ${TONE_CLASS[status.tone]}`}
+      <StatusPill
+        variant={TONE_VARIANT[status.tone]}
+        className="capitalize"
+        noIcon={showCustomSpinner}
       >
+        {showCustomSpinner ? (
+          <LoaderCircle className="h-3 w-3 animate-spin" />
+        ) : null}
         {status.primaryLabel}
-      </Badge>
+      </StatusPill>
       <span className="text-xs text-[var(--text-secondary)]">
         · {status.detailLabel}
       </span>
     </span>
+  )
+}
+
+function StatusNotice({
+  variant,
+  title,
+  detail,
+  children,
+}: {
+  variant: "warning" | "success" | "info" | "error" | "neutral"
+  title: string
+  detail?: string
+  children: React.ReactNode
+}) {
+  return (
+    <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <StatusPill variant={variant}>{title}</StatusPill>
+          {detail ? (
+            <span className="text-sm text-[var(--text-secondary)]">
+              {detail}
+            </span>
+          ) : null}
+        </div>
+        <div>{children}</div>
+      </div>
+    </section>
   )
 }
 
@@ -197,7 +228,16 @@ function OrderListCard({
             </div>
           )}
           <div className="mt-2 flex items-center gap-2">
-            <StatusPill status={row.headerStatus} />
+            <StatusPill
+              variant={TONE_VARIANT[row.headerStatus.tone]}
+              className="capitalize"
+              noIcon={row.headerStatus.showSpinner}
+            >
+              {row.headerStatus.showSpinner ? (
+                <LoaderCircle className="h-3 w-3 animate-spin" />
+              ) : null}
+              {row.headerStatus.primaryLabel}
+            </StatusPill>
             {row.headerStatus.actionNeeded && (
               <span className="h-2 w-2 shrink-0 rounded-full bg-amber-400" />
             )}
@@ -205,6 +245,202 @@ function OrderListCard({
         </div>
       </div>
     </button>
+  )
+}
+
+function MobileOrderFilterPills({
+  tab,
+  onChange,
+}: {
+  tab: PhaseTab
+  onChange: (tab: PhaseTab) => void
+}) {
+  const options: Array<{ value: PhaseTab; label: string }> = [
+    { value: "all", label: "All" },
+    { value: "pending", label: "Pending" },
+    { value: "in_progress", label: "In Progress" },
+    { value: "completed", label: "Completed" },
+  ]
+
+  return (
+    <div className="relative py-1">
+      <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-12 bg-gradient-to-l from-[var(--page-background)] via-[color-mix(in_srgb,var(--page-background)_90%,transparent)] to-transparent" />
+      <div className="flex gap-2 overflow-x-auto overscroll-x-contain px-1 py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {options.map((option) => {
+          const active = tab === option.value
+          return (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => onChange(option.value)}
+              className={[
+                "shrink-0 rounded-full border px-4 py-2 text-sm font-medium transition-[border-color,background-color,color]",
+                active
+                  ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] text-[var(--text-primary)]"
+                  : "border-[var(--border)] bg-[color-mix(in_srgb,var(--surface-elevated)_92%,transparent)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+              ].join(" ")}
+              aria-pressed={active}
+            >
+              {option.label}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function MobileOrdersScroller({
+  rows,
+  selectedOrderId,
+  merchantName,
+  onSelect,
+}: {
+  rows: OrderRow[]
+  selectedOrderId: string | null
+  merchantName: (pk: string) => string
+  onSelect: (orderId: string) => void
+}) {
+  const orderedRows = useMemo(() => {
+    if (!selectedOrderId) return rows
+    const selectedRow = rows.find((row) => row.orderId === selectedOrderId)
+    if (!selectedRow) return rows
+    return [
+      selectedRow,
+      ...rows.filter((row) => row.orderId !== selectedOrderId),
+    ]
+  }, [rows, selectedOrderId])
+
+  return (
+    <section className="min-w-0 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+      {rows.length === 0 ? (
+        <div className="rounded-[1.25rem] border border-dashed border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+          No orders match this filter.
+        </div>
+      ) : (
+        <div className="relative min-w-0">
+          <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-20 bg-gradient-to-l from-[var(--surface)] via-[color-mix(in_srgb,var(--surface)_92%,transparent)] to-transparent" />
+          <div className="overflow-x-auto overscroll-x-contain touch-pan-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <div className="flex min-w-max gap-3 pb-1 pr-14 snap-x snap-mandatory">
+              {orderedRows.map((row) => {
+                const active = row.orderId === selectedOrderId
+                return (
+                  <button
+                    key={row.orderId}
+                    type="button"
+                    onClick={() => onSelect(row.orderId)}
+                    className={[
+                      "w-[16.5rem] shrink-0 snap-start rounded-[1.25rem] border p-4 text-left transition-[border-color,background-color,transform]",
+                      active
+                        ? "border-[color-mix(in_srgb,var(--primary-500)_45%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_7%,transparent)]"
+                        : "border-[var(--border)] bg-[var(--surface-elevated)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]",
+                    ].join(" ")}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-[var(--text-primary)]">
+                          {merchantName(row.merchantPubkey)}
+                        </div>
+                        <div className="mt-1 truncate text-sm text-[var(--text-secondary)]">
+                          {row.vm.items[0]?.displayTitle ?? "Order"}
+                        </div>
+                      </div>
+                      <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
+                    </div>
+                    <div className="mt-3 flex items-center gap-2">
+                      <StatusPill
+                        variant={TONE_VARIANT[row.headerStatus.tone]}
+                        className="capitalize"
+                        noIcon={row.headerStatus.showSpinner}
+                      >
+                        {row.headerStatus.showSpinner ? (
+                          <LoaderCircle className="h-3 w-3 animate-spin" />
+                        ) : null}
+                        {row.headerStatus.primaryLabel}
+                      </StatusPill>
+                      {typeof row.vm.totalSats === "number" && (
+                        <span className="text-xs font-medium text-secondary-300">
+                          {row.vm.totalSats.toLocaleString()} sats
+                        </span>
+                      )}
+                      {row.headerStatus.actionNeeded ? (
+                        <span className="h-2 w-2 shrink-0 rounded-full bg-amber-400" />
+                      ) : null}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function OrderItemsSection({
+  vm,
+  productsById,
+  btcUsdRate,
+}: {
+  vm: OrderViewModel
+  productsById: Map<
+    string,
+    Awaited<ReturnType<typeof fetchStoreProducts>>["data"][number]
+  >
+  btcUsdRate: ReturnType<typeof useBtcUsdRate>["data"] | null
+}) {
+  return (
+    <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+      <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+        <ShoppingBag className="h-4 w-4" /> Items
+      </h3>
+      <div className="mt-3 space-y-3">
+        {vm.items.map((item, index) => {
+          const product = productsById.get(item.productId)
+          const image = product?.images[0]
+          const price = getProductPriceDisplay(
+            {
+              price: item.priceAtPurchase,
+              currency: item.currency,
+              priceSats:
+                item.currency === "SATS" ? item.priceAtPurchase : undefined,
+            },
+            btcUsdRate
+          )
+          return (
+            <div
+              key={`${item.productId}-${index}`}
+              className="flex items-start justify-between gap-3 text-sm"
+            >
+              <div className="flex min-w-0 items-start gap-3">
+                <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]">
+                  {image ? (
+                    <img
+                      src={image.url}
+                      alt={image.alt ?? product?.title ?? item.displayTitle}
+                      loading="lazy"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : null}
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[var(--text-primary)]">
+                    {product?.title ?? item.displayTitle}
+                  </div>
+                  <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
+                    Qty {item.quantity}
+                  </div>
+                </div>
+              </div>
+              <div className="shrink-0 text-right text-[var(--text-secondary)]">
+                {price.primary}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </section>
   )
 }
 
@@ -329,11 +565,12 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
   function buildServiceCtx(): OrderPaymentContext | null {
     const lc = row.lifecycle
     if (!lc) return null
+    if (!lc.merchantLightningAddress) return null
     return {
       orderId: vm.orderId,
       buyerPubkey: pubkey,
       merchantPubkey: row.merchantPubkey,
-      merchantLud16: profile?.lud16 ?? null,
+      merchantLud16: lc.merchantLightningAddress ?? null,
       visibility:
         lc.checkoutMode === "private_checkout"
           ? "private_checkout"
@@ -375,64 +612,112 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
   return (
     <div className="space-y-4">
       {/* Hero */}
-      <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div className="flex min-w-0 items-center gap-3">
-            <MerchantAvatar
-              pubkey={row.merchantPubkey}
-              name={merchantName}
-              picture={profile?.picture}
-            />
-            <div className="min-w-0">
-              <Link
-                to="/store/$pubkey"
-                params={{ pubkey: pubkeyToNpub(row.merchantPubkey) }}
-                className="truncate text-lg font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
-              >
-                {merchantName}
-              </Link>
-              <div className="mt-0.5 text-sm text-[var(--text-secondary)]">
-                {vm.items[0]?.displayTitle ?? "Order"}
+      <>
+        <section className="hidden rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 xl:block">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="flex min-w-0 items-center gap-3">
+              <MerchantAvatar
+                pubkey={row.merchantPubkey}
+                name={merchantName}
+                picture={profile?.picture}
+              />
+              <div className="min-w-0">
+                <Link
+                  to="/store/$pubkey"
+                  params={{ pubkey: pubkeyToNpub(row.merchantPubkey) }}
+                  className="truncate text-lg font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
+                >
+                  {merchantName}
+                </Link>
+                <div className="mt-0.5 text-sm text-[var(--text-secondary)]">
+                  {vm.items[0]?.displayTitle ?? "Order"}
+                </div>
+                {typeof vm.totalSats === "number" && (
+                  <div className="text-sm font-medium text-secondary-300">
+                    {vm.totalSats.toLocaleString()} sats
+                  </div>
+                )}
+                <div className="mt-2">
+                  <OrderHeaderPill status={headerStatus} />
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 lg:justify-end">
+              {messageMerchant}
+            </div>
+          </div>
+        </section>
+
+        <section className="space-y-3 xl:hidden">
+          <OrderItemsSection
+            vm={vm}
+            productsById={productsById}
+            btcUsdRate={btcUsdRateQuery.data ?? null}
+          />
+          <div className="px-3">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex min-w-0 items-center gap-3">
+                <MerchantAvatar
+                  pubkey={row.merchantPubkey}
+                  name={merchantName}
+                  picture={profile?.picture}
+                />
+                <div className="min-w-0">
+                  <Link
+                    to="/store/$pubkey"
+                    params={{ pubkey: pubkeyToNpub(row.merchantPubkey) }}
+                    className="truncate text-lg font-semibold leading-none text-[var(--text-primary)] underline-offset-2 hover:underline"
+                  >
+                    {merchantName}
+                  </Link>
+                </div>
               </div>
               {typeof vm.totalSats === "number" && (
-                <div className="text-sm font-medium text-secondary-300">
+                <div className="shrink-0 text-right text-base font-semibold leading-none text-[var(--text-primary)]">
                   {vm.totalSats.toLocaleString()} sats
                 </div>
               )}
-              <div className="mt-2">
-                <StatusPill status={headerStatus} />
-              </div>
             </div>
           </div>
-          <div className="flex flex-wrap gap-2 lg:justify-end">
-            <Button asChild className="h-10 px-4 text-sm">
-              <Link to="/products">
-                <ShoppingBag className="h-4 w-4" />
-                Keep shopping
-              </Link>
-            </Button>
-            {messageMerchant}
+          <div className="px-3">
+            <div className="flex flex-wrap gap-2">{messageMerchant}</div>
           </div>
-        </div>
-      </section>
+        </section>
+      </>
 
       {showExternalWallet && (
-        <ExternalWalletPanel
-          vm={vm}
-          busy={busy}
-          onMarkPaid={() =>
-            void withBusy(() => submitExternalPaymentProof(vm.orderId))
-          }
-        />
+        <div className="space-y-3">
+          <StatusNotice
+            variant="warning"
+            title="Action needed"
+            detail="Pay with an external wallet"
+          >
+            <p className="text-sm text-[var(--text-secondary)]">
+              No automatic wallet was available. Pay the invoice below, then
+              send the receipt to the merchant.
+            </p>
+          </StatusNotice>
+          <ExternalWalletPanel
+            vm={vm}
+            busy={busy}
+            onMarkPaid={() =>
+              void withBusy(() => submitExternalPaymentProof(vm.orderId))
+            }
+          />
+        </div>
       )}
 
       {(showRetryPayment || showAmbiguousPayment || showResendProof) && (
-        <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+        <StatusNotice
+          variant={TONE_VARIANT[headerStatus.tone]}
+          title={headerStatus.primaryLabel}
+          detail={headerStatus.detailLabel}
+        >
           <div className="flex flex-wrap items-center gap-3">
             {showRetryPayment && (
               <Button
                 className="h-10 px-4 text-sm"
-                disabled={busy}
+                disabled={busy || !buildServiceCtx()}
                 onClick={() => {
                   const ctx = buildServiceCtx()
                   if (ctx) void withBusy(() => runOrderPayment(ctx))
@@ -458,73 +743,27 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
             <span className="text-xs text-[var(--text-secondary)]">
               {showAmbiguousPayment
                 ? "Your wallet may have received the payment request, but Conduit couldn't confirm whether funds moved. Check your wallet and merchant messages before trying again."
-                : showRetryPayment
-                  ? "No funds moved. You can retry payment for this order."
-                  : "Payment went through; the receipt didn't reach the merchant."}
+                : showRetryPayment && !buildServiceCtx()
+                  ? "This order did not keep a checkout-time Lightning target, so retry is unavailable from Orders. Message the merchant before attempting another payment path."
+                  : showRetryPayment
+                    ? "No funds moved. You can retry payment for this order."
+                    : "Payment went through; the receipt didn't reach the merchant."}
             </span>
           </div>
-        </section>
+        </StatusNotice>
       )}
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
         <OrderTimeline vm={vm} />
 
         <div className="space-y-4">
-          {/* Items */}
-          <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
-            <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
-              <ShoppingBag className="h-4 w-4" /> Items
-            </h3>
-            <div className="mt-3 space-y-3">
-              {vm.items.map((item, index) => {
-                const product = productsById.get(item.productId)
-                const image = product?.images[0]
-                const price = getProductPriceDisplay(
-                  {
-                    price: item.priceAtPurchase,
-                    currency: item.currency,
-                    priceSats:
-                      item.currency === "SATS"
-                        ? item.priceAtPurchase
-                        : undefined,
-                  },
-                  btcUsdRateQuery.data ?? null
-                )
-                return (
-                  <div
-                    key={`${item.productId}-${index}`}
-                    className="flex items-start justify-between gap-3 text-sm"
-                  >
-                    <div className="flex min-w-0 items-start gap-3">
-                      <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]">
-                        {image ? (
-                          <img
-                            src={image.url}
-                            alt={
-                              image.alt ?? product?.title ?? item.displayTitle
-                            }
-                            loading="lazy"
-                            className="h-full w-full object-cover"
-                          />
-                        ) : null}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-[var(--text-primary)]">
-                          {product?.title ?? item.displayTitle}
-                        </div>
-                        <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
-                          Qty {item.quantity}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="shrink-0 text-right text-[var(--text-secondary)]">
-                      {price.primary}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </section>
+          <div className="hidden xl:block">
+            <OrderItemsSection
+              vm={vm}
+              productsById={productsById}
+              btcUsdRate={btcUsdRateQuery.data ?? null}
+            />
+          </div>
 
           {/* Shipping address */}
           {vm.shippingAddress && (
@@ -817,17 +1056,19 @@ function OrdersPage() {
   }, [effectiveTab, merchantName, orders, searchValue])
 
   const selectedOrderId = useMemo(() => {
-    if (selectedFromUrl && orders.some((o) => o.orderId === selectedFromUrl)) {
+    if (
+      selectedFromUrl &&
+      filteredOrders.some((o) => o.orderId === selectedFromUrl)
+    ) {
       return selectedFromUrl
     }
-    return filteredOrders[0]?.orderId ?? orders[0]?.orderId ?? null
-  }, [filteredOrders, orders, selectedFromUrl])
+    return filteredOrders[0]?.orderId ?? null
+  }, [filteredOrders, selectedFromUrl])
 
   const selected = useMemo(
     () => orders.find((o) => o.orderId === selectedOrderId) ?? null,
     [orders, selectedOrderId]
   )
-
   const selectOrder = useCallback(
     (orderId: string) => {
       setChangeOrderOpen(false)
@@ -953,78 +1194,52 @@ function OrdersPage() {
             </section>
           </aside>
 
-          {/* Mobile: tabs + current order card + change-order sheet */}
-          <div className="space-y-4 xl:hidden">
-            <Tabs
-              value={tab}
-              onValueChange={(value) => setTab(value as PhaseTab)}
-            >
-              <TabsList className="w-full">
-                <TabsTrigger value="all">All</TabsTrigger>
-                <TabsTrigger value="pending">Pending</TabsTrigger>
-                <TabsTrigger value="in_progress">In progress</TabsTrigger>
-                <TabsTrigger value="completed">Completed</TabsTrigger>
-              </TabsList>
-            </Tabs>
-            {selectedRow && (
-              <Sheet open={changeOrderOpen} onOpenChange={setChangeOrderOpen}>
-                <section className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                        Current order
-                      </div>
-                      <div className="mt-1 text-sm text-[var(--text-secondary)]">
-                        Open another order or keep following this one.
-                      </div>
-                    </div>
-                    <SheetTrigger asChild>
-                      <Button
-                        variant="outline"
-                        className="h-10 shrink-0 justify-between px-4 text-sm"
-                      >
-                        Change order
-                        <ChevronRight className="h-4 w-4" />
-                      </Button>
-                    </SheetTrigger>
-                  </div>
-                  <div className="mt-3">
-                    <OrderListCard
-                      row={selectedRow}
-                      merchantName={merchantName(selectedRow.merchantPubkey)}
-                      merchantPicture={
-                        merchantProfilesQuery.data?.[selectedRow.merchantPubkey]
-                          ?.picture
-                      }
-                      active
-                      onClick={() => setChangeOrderOpen(true)}
-                    />
-                  </div>
-                  <SheetContent
-                    side="bottom"
-                    className="max-h-[80vh] overflow-y-auto"
+          {/* Mobile: filter pills + browse sheet + horizontal orders */}
+          <div className="min-w-0 space-y-4 overflow-visible xl:hidden">
+            <Sheet open={changeOrderOpen} onOpenChange={setChangeOrderOpen}>
+              <div className="flex flex-wrap items-center gap-2 overflow-visible">
+                <div className="min-w-full flex-1 overflow-visible sm:min-w-[14rem]">
+                  <MobileOrderFilterPills tab={tab} onChange={setTab} />
+                </div>
+                <SheetTrigger asChild>
+                  <button
+                    type="button"
+                    className="inline-flex h-10 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)]"
                   >
-                    <SheetHeader>
-                      <SheetTitle>Your orders</SheetTitle>
-                    </SheetHeader>
-                    <SearchBox value={searchValue} onChange={setSearchValue} />
-                    <OrderList
-                      rows={filteredOrders}
-                      selectedOrderId={selectedOrderId}
-                      merchantName={merchantName}
-                      merchantPicture={(pk) =>
-                        merchantProfilesQuery.data?.[pk]?.picture
-                      }
-                      onSelect={selectOrder}
-                    />
-                  </SheetContent>
-                </section>
-              </Sheet>
-            )}
+                    Browse
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </SheetTrigger>
+              </div>
+              <MobileOrdersScroller
+                rows={filteredOrders}
+                selectedOrderId={selectedOrderId}
+                merchantName={merchantName}
+                onSelect={selectOrder}
+              />
+              <SheetContent
+                side="bottom"
+                className="max-h-[80vh] overflow-y-auto"
+              >
+                <SheetHeader>
+                  <SheetTitle>Your orders</SheetTitle>
+                </SheetHeader>
+                <SearchBox value={searchValue} onChange={setSearchValue} />
+                <OrderList
+                  rows={filteredOrders}
+                  selectedOrderId={selectedOrderId}
+                  merchantName={merchantName}
+                  merchantPicture={(pk) =>
+                    merchantProfilesQuery.data?.[pk]?.picture
+                  }
+                  onSelect={selectOrder}
+                />
+              </SheetContent>
+            </Sheet>
           </div>
 
           {/* Detail */}
-          <section>
+          <section className="min-w-0">
             {selectedRow ? (
               <OrderDetail row={selectedRow} pubkey={pubkey!} />
             ) : (

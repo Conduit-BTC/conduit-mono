@@ -521,6 +521,7 @@ export interface OrderHeaderStatus {
   primaryLabel: string
   detailLabel: string
   actionNeeded: boolean
+  showSpinner: boolean
 }
 
 /**
@@ -534,6 +535,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       primaryLabel: "Cancelled",
       detailLabel: "Order cancelled",
       actionNeeded: false,
+      showSpinner: false,
     }
   }
   if (vm.merchantStatus === "complete") {
@@ -542,6 +544,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       primaryLabel: "Completed",
       detailLabel: "Delivered",
       actionNeeded: false,
+      showSpinner: false,
     }
   }
   if (vm.orderDeliveryStatus === "failed") {
@@ -550,6 +553,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       primaryLabel: "Failed",
       detailLabel: "Order not sent",
       actionNeeded: true,
+      showSpinner: false,
     }
   }
   if (vm.paymentStatus === "failed") {
@@ -558,6 +562,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       primaryLabel: "Payment failed",
       detailLabel: "Try payment again",
       actionNeeded: true,
+      showSpinner: false,
     }
   }
   if (vm.paymentStatus === "ambiguous") {
@@ -566,6 +571,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       primaryLabel: "Payment unclear",
       detailLabel: "Check wallet before retrying",
       actionNeeded: true,
+      showSpinner: false,
     }
   }
   if (vm.paymentStatus === "manual_required") {
@@ -574,6 +580,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       primaryLabel: "Action needed",
       detailLabel: "Pay with external wallet",
       actionNeeded: true,
+      showSpinner: false,
     }
   }
   if (vm.paymentStatus === "paid") {
@@ -583,6 +590,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
         primaryLabel: "In progress",
         detailLabel: "Shipped",
         actionNeeded: false,
+        showSpinner: false,
       }
     }
     if (vm.merchantStatus === "processing") {
@@ -591,6 +599,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
         primaryLabel: "In progress",
         detailLabel: "Merchant confirmed",
         actionNeeded: false,
+        showSpinner: false,
       }
     }
     if (
@@ -602,21 +611,24 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
         primaryLabel: "Paid",
         detailLabel: "Receipt delivery incomplete",
         actionNeeded: true,
+        showSpinner: false,
       }
     }
     if (vm.proofDeliveryStatus === "sent") {
       return {
-        tone: "success",
-        primaryLabel: "Paid",
-        detailLabel: "Receipt sent",
+        tone: "info",
+        primaryLabel: "Merchant confirmation",
+        detailLabel: "Waiting for merchant",
         actionNeeded: false,
+        showSpinner: true,
       }
     }
     return {
       tone: "info",
-      primaryLabel: "Paid",
-      detailLabel: "Waiting confirmation",
+      primaryLabel: "Merchant confirmation",
+      detailLabel: "Waiting for merchant",
       actionNeeded: false,
+      showSpinner: true,
     }
   }
   if (vm.paymentStatus === "paying") {
@@ -625,6 +637,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       primaryLabel: "In progress",
       detailLabel: "Sending payment",
       actionNeeded: false,
+      showSpinner: true,
     }
   }
   if (vm.invoiceStatus === "received") {
@@ -633,6 +646,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       primaryLabel: "In progress",
       detailLabel: "Invoice ready",
       actionNeeded: false,
+      showSpinner: false,
     }
   }
   if (vm.orderDeliveryStatus === "sent") {
@@ -641,6 +655,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       primaryLabel: "Pending",
       detailLabel: "Awaiting invoice",
       actionNeeded: false,
+      showSpinner: false,
     }
   }
   return {
@@ -648,5 +663,6 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
     primaryLabel: "Pending",
     detailLabel: "Starting order",
     actionNeeded: false,
+    showSpinner: false,
   }
 }
