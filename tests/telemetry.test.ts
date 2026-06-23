@@ -27,6 +27,7 @@ describe("browser telemetry", () => {
     expect(config).toEqual({
       app: "market",
       enabled: false,
+      allowedHosts: [],
       plausible: null,
       posthog: null,
     })
@@ -39,9 +40,28 @@ describe("browser telemetry", () => {
     })
 
     expect(config.enabled).toBe(true)
+    expect(config.allowedHosts).toEqual([])
     expect(config.plausible).toEqual({
       domain: "sell.conduit.market",
       scriptSrc: "https://plausible.io/js/script.js",
+    })
+    expect(config.posthog).toBeNull()
+  })
+
+  it("supports site-specific Plausible scripts without a legacy domain", () => {
+    const config = resolveBrowserTelemetryConfig("market", {
+      VITE_ENABLE_TELEMETRY: "true",
+      VITE_TELEMETRY_ALLOWED_HOSTS: "shop.conduit.market, sell.conduit.market",
+      VITE_PLAUSIBLE_SRC: "https://plausible.io/js/pa-pAMu39wt9pA9w4vD44Iv-.js",
+    })
+
+    expect(config.allowedHosts).toEqual([
+      "shop.conduit.market",
+      "sell.conduit.market",
+    ])
+    expect(config.plausible).toEqual({
+      domain: null,
+      scriptSrc: "https://plausible.io/js/pa-pAMu39wt9pA9w4vD44Iv-.js",
     })
     expect(config.posthog).toBeNull()
   })
@@ -151,6 +171,7 @@ describe("browser telemetry", () => {
         event: "cart_add",
         properties: {
           $browser: "Chrome",
+          app: "market",
           $current_url:
             "https://shop.conduit.market/products/30402:merchant:item?q=raw",
           $host: "shop.conduit.market",
@@ -168,9 +189,32 @@ describe("browser telemetry", () => {
         $current_url: "https://shop.conduit.market/products/:productId",
         $pathname: "/products/:productId",
         action: "add",
+        app: "market",
         page_path: "/products/:productId",
         page_url: "https://shop.conduit.market/products/:productId",
         status: "success",
+      },
+    })
+  })
+
+  it("keeps PostHog pageviews split by client app", () => {
+    expect(
+      sanitizePostHogCaptureEvent({
+        event: "$pageview",
+        properties: {
+          app: "merchant",
+          page_path: "/products",
+          page_url: "https://sell.conduit.market/products",
+        },
+      })
+    ).toEqual({
+      event: "$pageview",
+      properties: {
+        $current_url: "https://sell.conduit.market/products",
+        $pathname: "/products",
+        app: "merchant",
+        page_path: "/products",
+        page_url: "https://sell.conduit.market/products",
       },
     })
   })

@@ -58,6 +58,7 @@ export type BrowserTelemetryEventProperties = Partial<
 
 export interface BrowserTelemetryEnv {
   VITE_ENABLE_TELEMETRY?: string
+  VITE_TELEMETRY_ALLOWED_HOSTS?: string
   VITE_PLAUSIBLE_DOMAIN?: string
   VITE_PLAUSIBLE_SRC?: string
   VITE_POSTHOG_KEY?: string
@@ -65,7 +66,7 @@ export interface BrowserTelemetryEnv {
 }
 
 export interface PlausibleTelemetryConfig {
-  domain: string
+  domain: string | null
   scriptSrc: string
 }
 
@@ -77,6 +78,7 @@ export interface PostHogTelemetryConfig {
 export interface BrowserTelemetryConfig {
   app: ConduitTelemetryApp
   enabled: boolean
+  allowedHosts: string[]
   plausible: PlausibleTelemetryConfig | null
   posthog: PostHogTelemetryConfig | null
 }
@@ -226,6 +228,8 @@ function getTelemetryEnv(): BrowserTelemetryEnv {
   if (typeof import.meta !== "undefined" && import.meta.env) {
     return {
       VITE_ENABLE_TELEMETRY: import.meta.env.VITE_ENABLE_TELEMETRY,
+      VITE_TELEMETRY_ALLOWED_HOSTS: import.meta.env
+        .VITE_TELEMETRY_ALLOWED_HOSTS,
       VITE_PLAUSIBLE_DOMAIN: import.meta.env.VITE_PLAUSIBLE_DOMAIN,
       VITE_PLAUSIBLE_SRC: import.meta.env.VITE_PLAUSIBLE_SRC,
       VITE_POSTHOG_KEY: import.meta.env.VITE_POSTHOG_KEY,
@@ -240,18 +244,19 @@ export function resolveBrowserTelemetryConfig(
   env: BrowserTelemetryEnv = getTelemetryEnv()
 ): BrowserTelemetryConfig {
   const enabled = isEnabled(env.VITE_ENABLE_TELEMETRY)
+  const plausibleScriptSrc = clean(env.VITE_PLAUSIBLE_SRC)
   const plausibleDomain = clean(env.VITE_PLAUSIBLE_DOMAIN)
   const posthogKey = clean(env.VITE_POSTHOG_KEY)
 
   return {
     app,
     enabled,
+    allowedHosts: parseAllowedTelemetryHosts(env.VITE_TELEMETRY_ALLOWED_HOSTS),
     plausible:
-      enabled && plausibleDomain
+      enabled && (plausibleDomain || plausibleScriptSrc)
         ? {
             domain: plausibleDomain,
-            scriptSrc:
-              clean(env.VITE_PLAUSIBLE_SRC) ?? DEFAULT_PLAUSIBLE_SCRIPT_SRC,
+            scriptSrc: plausibleScriptSrc ?? DEFAULT_PLAUSIBLE_SCRIPT_SRC,
           }
         : null,
     posthog:
@@ -462,6 +467,7 @@ export function recordBrowserTelemetryEvent(input: TelemetryEventInput): void {
 
   const config = resolveBrowserTelemetryConfig(input.app)
   if (!config.enabled) return
+  if (!isTelemetryAllowedForCurrentHost(config)) return
 
   const properties = {
     ...sanitizeTelemetryEventProperties(input),
@@ -497,6 +503,7 @@ export function recordBrowserTelemetryPageView(
 
   const config = resolveBrowserTelemetryConfig(input.app)
   if (!config.enabled) return
+  if (!isTelemetryAllowedForCurrentHost(config)) return
 
   const pageUrl = buildTelemetryPageUrl({
     origin: input.origin ?? window.location.origin,
@@ -554,8 +561,25 @@ function sanitizeTelemetryPropertyValue(value: string): string | null {
   return normalized
 }
 
+function parseAllowedTelemetryHosts(raw: string | undefined): string[] {
+  return (
+    raw
+      ?.split(",")
+      .map((host) => host.trim().toLowerCase())
+      .filter(Boolean) ?? []
+  )
+}
+
+function isTelemetryAllowedForCurrentHost(
+  config: BrowserTelemetryConfig
+): boolean {
+  if (config.allowedHosts.length === 0) return true
+  return config.allowedHosts.includes(window.location.hostname.toLowerCase())
+}
+
 function ensurePlausible(config: PlausibleTelemetryConfig): void {
-  if (plausibleInitializedFor === config.domain) return
+  const configKey = config.domain ?? config.scriptSrc
+  if (plausibleInitializedFor === configKey) return
 
   const existing = window.plausible
   const plausible: PlausibleFunction =
@@ -574,13 +598,14 @@ function ensurePlausible(config: PlausibleTelemetryConfig): void {
   window.plausible.init?.({ autoCapturePageviews: false, logging: false })
 
   const alreadyLoaded = document.querySelector<HTMLScriptElement>(
-    `script[data-conduit-telemetry="plausible"][data-domain="${config.domain}"]`
+    `script[data-conduit-telemetry="plausible"][data-config-key="${configKey}"]`
   )
   if (!alreadyLoaded) {
     const script = document.createElement("script")
-    script.defer = true
+    script.async = true
     script.src = config.scriptSrc
-    script.dataset.domain = config.domain
+    if (config.domain) script.dataset.domain = config.domain
+    script.dataset.configKey = configKey
     script.dataset.conduitTelemetry = "plausible"
     script.addEventListener("load", () => {
       window.plausible?.init?.({ autoCapturePageviews: false, logging: false })
@@ -588,7 +613,7 @@ function ensurePlausible(config: PlausibleTelemetryConfig): void {
     document.head.appendChild(script)
   }
 
-  plausibleInitializedFor = config.domain
+  plausibleInitializedFor = configKey
 }
 
 async function ensurePostHog(
