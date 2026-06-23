@@ -126,8 +126,8 @@ The canonical fallback/reset relay list is code-owned in `packages/core/src/conf
 
 ```text
 wss://relay.conduit.market
-wss://relay.damus.io
 wss://nos.lol
+wss://relay.damus.io
 wss://relay.nostr.net
 ```
 

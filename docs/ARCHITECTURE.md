@@ -39,7 +39,7 @@ Store Builder ──┘
 | `build.conduit.market`   | Store Builder app shell  |
 | `blossom.conduit.market` | Blossom media hosting    |
 
-The canonical relay reset list is code-owned in `packages/core/src/config.ts` and currently starts with `wss://conduitl2.fly.dev`. Retired Conduit relay hosts should not appear in active docs or examples.
+The canonical relay reset list is code-owned in `packages/core/src/config.ts` and currently starts with `wss://relay.conduit.market`. Retired Conduit relay hosts should not appear in active docs or examples.
 
 ---
 
@@ -202,14 +202,10 @@ User-facing relay settings expose:
 The current canonical fallback/reset relay list lives in `packages/core/src/config.ts`:
 
 ```text
-wss://conduitl2.fly.dev
-wss://relay.plebeian.market
-wss://relay.primal.net
-wss://relay.damus.io
+wss://relay.conduit.market
 wss://nos.lol
-wss://nostr.mom
+wss://relay.damus.io
 wss://relay.nostr.net
-wss://relay.minibits.cash
 ```
 
 Conduit-hosted deploys should leave relay env vars empty unless an operator intentionally needs an override. This keeps the public code defaults auditable.
