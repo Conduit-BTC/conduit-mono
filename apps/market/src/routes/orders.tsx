@@ -263,9 +263,16 @@ function MobileOrderFilterPills({
   ]
 
   return (
-    <div className="relative py-1">
-      <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-12 bg-gradient-to-l from-[var(--page-background)] via-[color-mix(in_srgb,var(--page-background)_90%,transparent)] to-transparent" />
-      <div className="flex gap-2 overflow-x-auto overscroll-x-contain px-1 py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <div className="py-1">
+      <div
+        className="flex gap-2 overflow-x-auto overscroll-x-contain px-1 py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        style={{
+          maskImage:
+            "linear-gradient(to right, black 0, black calc(100% - 12px), transparent 100%)",
+          WebkitMaskImage:
+            "linear-gradient(to right, black 0, black calc(100% - 12px), transparent 100%)",
+        }}
+      >
         {options.map((option) => {
           const active = tab === option.value
           return (
@@ -318,59 +325,64 @@ function MobileOrdersScroller({
           No orders match this filter.
         </div>
       ) : (
-        <div className="relative min-w-0">
-          <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-20 bg-gradient-to-l from-[var(--surface)] via-[color-mix(in_srgb,var(--surface)_92%,transparent)] to-transparent" />
-          <div className="overflow-x-auto overscroll-x-contain touch-pan-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            <div className="flex min-w-max gap-3 pb-1 pr-14 snap-x snap-mandatory">
-              {orderedRows.map((row) => {
-                const active = row.orderId === selectedOrderId
-                return (
-                  <button
-                    key={row.orderId}
-                    type="button"
-                    onClick={() => onSelect(row.orderId)}
-                    className={[
-                      "w-[16.5rem] shrink-0 snap-start rounded-[1.25rem] border p-4 text-left transition-[border-color,background-color,transform]",
-                      active
-                        ? "border-[color-mix(in_srgb,var(--primary-500)_45%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_7%,transparent)]"
-                        : "border-[var(--border)] bg-[var(--surface-elevated)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]",
-                    ].join(" ")}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-[var(--text-primary)]">
-                          {merchantName(row.merchantPubkey)}
-                        </div>
-                        <div className="mt-1 truncate text-sm text-[var(--text-secondary)]">
-                          {row.vm.items[0]?.displayTitle ?? "Order"}
-                        </div>
+        <div
+          className="min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          style={{
+            maskImage:
+              "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
+            WebkitMaskImage:
+              "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
+          }}
+        >
+          <div className="flex min-w-max gap-3 pb-1 pr-14 snap-x snap-mandatory">
+            {orderedRows.map((row) => {
+              const active = row.orderId === selectedOrderId
+              return (
+                <button
+                  key={row.orderId}
+                  type="button"
+                  onClick={() => onSelect(row.orderId)}
+                  className={[
+                    "w-[16.5rem] shrink-0 snap-start rounded-[1.25rem] border p-4 text-left transition-[border-color,background-color,transform]",
+                    active
+                      ? "border-[color-mix(in_srgb,var(--primary-500)_45%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_7%,transparent)]"
+                      : "border-[var(--border)] bg-[var(--surface-elevated)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]",
+                  ].join(" ")}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-[var(--text-primary)]">
+                        {merchantName(row.merchantPubkey)}
                       </div>
-                      <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
+                      <div className="mt-1 truncate text-sm text-[var(--text-secondary)]">
+                        {row.vm.items[0]?.displayTitle ?? "Order"}
+                      </div>
                     </div>
-                    <div className="mt-3 flex items-center gap-2">
-                      <StatusPill
-                        variant={TONE_VARIANT[row.headerStatus.tone]}
-                        className="capitalize"
-                        noIcon={row.headerStatus.showSpinner}
-                      >
-                        {row.headerStatus.showSpinner ? (
-                          <LoaderCircle className="h-3 w-3 animate-spin" />
-                        ) : null}
-                        {row.headerStatus.primaryLabel}
-                      </StatusPill>
-                      {typeof row.vm.totalSats === "number" && (
-                        <span className="text-xs font-medium text-secondary-300">
-                          {row.vm.totalSats.toLocaleString()} sats
-                        </span>
-                      )}
-                      {row.headerStatus.actionNeeded ? (
-                        <span className="h-2 w-2 shrink-0 rounded-full bg-amber-400" />
+                    <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
+                  </div>
+                  <div className="mt-3 flex items-center gap-2">
+                    <StatusPill
+                      variant={TONE_VARIANT[row.headerStatus.tone]}
+                      className="capitalize"
+                      noIcon={row.headerStatus.showSpinner}
+                    >
+                      {row.headerStatus.showSpinner ? (
+                        <LoaderCircle className="h-3 w-3 animate-spin" />
                       ) : null}
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
+                      {row.headerStatus.primaryLabel}
+                    </StatusPill>
+                    {typeof row.vm.totalSats === "number" && (
+                      <span className="text-xs font-medium text-secondary-300">
+                        {row.vm.totalSats.toLocaleString()} sats
+                      </span>
+                    )}
+                    {row.headerStatus.actionNeeded ? (
+                      <span className="h-2 w-2 shrink-0 rounded-full bg-amber-400" />
+                    ) : null}
+                  </div>
+                </button>
+              )
+            })}
           </div>
         </div>
       )}
