@@ -136,6 +136,19 @@ jobs:
             4. Test coverage and verifiability.
             5. Maintainability.
 
+            Review comment behavior:
+            - When a finding has a concrete, safe patch, leave an inline GitHub
+              review comment on the exact changed line with a ```suggestion
+              fenced block that replaces the current line or lines.
+            - Keep each suggestion minimal and directly applicable so the PR
+              author can accept it from GitHub.
+            - Do not use suggestion blocks for uncertain fixes, explanatory
+              prose, generated secrets, large refactors, or changes outside the
+              PR diff.
+            - If there is no safe diff to suggest, leave a normal actionable
+              inline or summary comment with the issue, impact, and recommended
+              fix.
+
             Mandatory constraints:
             - external signer auth only; no key custody
             - no behavioral tracking or profiling
@@ -173,6 +186,19 @@ jobs:
             4. Test coverage and verifiability.
             5. Maintainability.
 
+            Review comment behavior:
+            - When a finding has a concrete, safe patch, leave an inline GitHub
+              review comment on the exact changed line with a ```suggestion
+              fenced block that replaces the current line or lines.
+            - Keep each suggestion minimal and directly applicable so the PR
+              author can accept it from GitHub.
+            - Do not use suggestion blocks for uncertain fixes, explanatory
+              prose, generated secrets, large refactors, or changes outside the
+              PR diff.
+            - If there is no safe diff to suggest, leave a normal actionable
+              inline or summary comment with the issue, impact, and recommended
+              fix.
+
             Mandatory constraints:
             - external signer auth only; no key custody
             - no behavioral tracking or profiling
@@ -209,6 +235,19 @@ jobs:
             3. Reliability and failure-mode handling.
             4. Test coverage and verifiability.
             5. Maintainability.
+
+            Review comment behavior:
+            - When a finding has a concrete, safe patch, leave an inline GitHub
+              review comment on the exact changed line with a ```suggestion
+              fenced block that replaces the current line or lines.
+            - Keep each suggestion minimal and directly applicable so the PR
+              author can accept it from GitHub.
+            - Do not use suggestion blocks for uncertain fixes, explanatory
+              prose, generated secrets, large refactors, or changes outside the
+              PR diff.
+            - If there is no safe diff to suggest, leave a normal actionable
+              inline or summary comment with the issue, impact, and recommended
+              fix.
 
             Mandatory constraints:
             - external signer auth only; no key custody
