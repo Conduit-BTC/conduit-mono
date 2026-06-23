@@ -8,4 +8,26 @@ describe("Market wallet route contracts", () => {
     expect(content).toContain("parseNwcUri(trimmed)")
     expect(content).not.toContain('startsWith("nostr+walletconnect://")')
   })
+
+  it("renders connected wallet balance copy and refresh controls on the wallet route", async () => {
+    const content = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+
+    expect(content).toContain("Connected wallet balance")
+    expect(content).toContain("formatWalletBalanceSats")
+    expect(content).toContain("wallet.refreshBalance")
+    expect(content).toContain("Wallet does not advertise get_balance")
+    expect(content).toContain(
+      'balance.status === "available" || balance.status === "error"'
+    )
+  })
+
+  it("does not put wallet balance in the global Market header by default", async () => {
+    const content = await readFile(
+      "apps/market/src/components/MarketHeader.tsx",
+      "utf8"
+    )
+
+    expect(content).not.toContain("Connected wallet balance")
+    expect(content).not.toContain("balanceMsats")
+  })
 })

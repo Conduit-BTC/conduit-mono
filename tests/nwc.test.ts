@@ -5,6 +5,7 @@ import {
   classifyNwcPaymentError,
   getNwcConnectionDiagnostics,
   getNwcRelayDiagnostics,
+  nwcGetBalance,
   nwcGetInfo,
   nwcMakeInvoice,
   nwcPayInvoice,
@@ -20,6 +21,9 @@ type FakeNwcClient = {
     pubkey?: string
     network?: string
     block_height?: number
+  }>
+  getBalance: () => Promise<{
+    balance: number
   }>
   makeInvoice: (request: {
     amount: number
@@ -220,6 +224,23 @@ describe("NWC SDK adapter", () => {
       pubkey: "wallet-node-pubkey",
       network: "bitcoin",
       blockHeight: 850_000,
+    })
+    expect(closed).toBe(true)
+  })
+
+  it("maps get_balance responses as raw millisats and closes the SDK client", async () => {
+    let closed = false
+    __nwcTestInternals.__setNwcClientFactory(() =>
+      fakeClient({
+        getBalance: async () => ({ balance: 12_345_678 }),
+        close: () => {
+          closed = true
+        },
+      })
+    )
+
+    await expect(nwcGetBalance(connection, 100, "market")).resolves.toEqual({
+      balanceMsats: 12_345_678,
     })
     expect(closed).toBe(true)
   })
@@ -476,6 +497,7 @@ describe("NWC SDK adapter", () => {
 function fakeClient(overrides: Partial<FakeNwcClient>): FakeNwcClient {
   return {
     getInfo: async () => ({ methods: [] }),
+    getBalance: async () => ({ balance: 0 }),
     makeInvoice: async () => ({
       invoice: "lnbc1default",
       payment_hash: "hash",

@@ -9,6 +9,7 @@ import {
 } from "@getalby/sdk/nwc"
 import type {
   NewNWCClientOptions,
+  Nip47GetBalanceResponse,
   Nip47GetInfoResponse,
   Nip47PayInvoiceRequest,
   Nip47PayResponse,
@@ -29,11 +30,26 @@ export type NwcSessionStatus =
   | "error"
 
 export type NwcSessionPaymentPhase = "before_publish" | "after_publish"
+export type NwcSessionBalanceStatus =
+  | "unchecked"
+  | "checking"
+  | "available"
+  | "unavailable"
+  | "error"
+
+export interface NwcSessionBalanceState {
+  status: NwcSessionBalanceStatus
+  /** Raw wallet-reported millisats. Never persisted. */
+  balanceMsats: number | null
+  fetchedAt: number | null
+  error: string | null
+}
 
 export interface NwcSessionSnapshot {
   status: NwcSessionStatus
   connection: NwcConnection | null
   info: NwcGetInfoResult | null
+  balance: NwcSessionBalanceState
   lastWarmAt: number | null
   error: string | null
 }
@@ -71,6 +87,7 @@ export interface NwcSessionPayInvoiceInput {
 
 type NwcSessionClientLike = {
   getInfo(): Promise<Nip47GetInfoResponse>
+  getBalance(): Promise<Nip47GetBalanceResponse>
   payInvoice(request: Nip47PayInvoiceRequest): Promise<Nip47PayResponse>
   close(): void
   pool?: {
@@ -88,6 +105,7 @@ type NwcSessionClientFactory = (
 type NwcSessionListener = (snapshot: NwcSessionSnapshot) => void
 
 const NWC_WARM_RELAY_TIMEOUT_MS = 10_000
+const NWC_BALANCE_TIMEOUT_MS = 10_000
 const NWC_PAYMENT_RELAY_CONNECT_TIMEOUTS_MS = [10_000, 15_000, 20_000] as const
 
 let clientFactory: NwcSessionClientFactory = createSdkNwcClient
@@ -100,6 +118,7 @@ export class BuyerNwcSession {
   private listeners = new Set<NwcSessionListener>()
   private snapshot: NwcSessionSnapshot = disconnectedSnapshot()
   private version = 0
+  private balanceRefreshVersion = 0
 
   setConnection(connection: NwcConnection | null): NwcSessionSnapshot {
     const nextKey = connection ? getConnectionKey(connection) : null
@@ -113,11 +132,13 @@ export class BuyerNwcSession {
     this.connection = connection
     this.connectionKey = nextKey
     this.version += 1
+    this.balanceRefreshVersion += 1
     this.snapshot = connection
       ? {
           status: "unreachable",
           connection,
           info: null,
+          balance: emptyBalanceState(),
           lastWarmAt: null,
           error: null,
         }
@@ -222,6 +243,7 @@ export class BuyerNwcSession {
         error: null,
       }
       this.notify()
+      void this.refreshBalance()
 
       return {
         status: "paid",
@@ -273,8 +295,86 @@ export class BuyerNwcSession {
     this.connectionKey = null
     this.warmPromise = null
     this.version += 1
+    this.balanceRefreshVersion += 1
     this.snapshot = disconnectedSnapshot()
     this.notify()
+  }
+
+  async refreshBalance(): Promise<NwcSessionSnapshot> {
+    const connection = this.connection
+    if (!connection) {
+      this.snapshot = disconnectedSnapshot()
+      this.notify()
+      return this.snapshot
+    }
+
+    const info = this.snapshot.info
+    if (!info?.methods.includes("get_balance")) {
+      this.snapshot = {
+        ...this.snapshot,
+        balance: unavailableBalanceState(),
+      }
+      this.notify()
+      return this.snapshot
+    }
+
+    const version = this.version
+    const balanceRefreshVersion = ++this.balanceRefreshVersion
+    this.snapshot = {
+      ...this.snapshot,
+      balance: {
+        ...this.snapshot.balance,
+        status: "checking",
+        error: null,
+      },
+    }
+    this.notify()
+
+    try {
+      const client = this.getOrCreateClient(connection)
+      await connectNwcRelays(client, connection, NWC_WARM_RELAY_TIMEOUT_MS)
+      const result = await withTimeout(
+        client.getBalance(),
+        NWC_BALANCE_TIMEOUT_MS,
+        "get_balance"
+      )
+      if (
+        !this.isCurrentConnection(connection, version) ||
+        balanceRefreshVersion !== this.balanceRefreshVersion
+      ) {
+        return this.snapshot
+      }
+
+      this.snapshot = {
+        ...this.snapshot,
+        balance: {
+          status: "available",
+          balanceMsats: parseGetBalanceMsats(result),
+          fetchedAt: Date.now(),
+          error: null,
+        },
+      }
+      this.notify()
+    } catch (error) {
+      if (
+        !this.isCurrentConnection(connection, version) ||
+        balanceRefreshVersion !== this.balanceRefreshVersion
+      ) {
+        return this.snapshot
+      }
+
+      this.snapshot = {
+        ...this.snapshot,
+        balance: {
+          ...this.snapshot.balance,
+          status: "error",
+          error: getErrorMessage(error, "Could not refresh wallet balance."),
+        },
+      }
+      this.notify()
+    }
+
+    return this.snapshot
   }
 
   private async warmConnection(
@@ -296,6 +396,9 @@ export class BuyerNwcSession {
         status,
         connection,
         info,
+        balance: info.methods.includes("get_balance")
+          ? emptyBalanceState()
+          : unavailableBalanceState(),
         lastWarmAt: Date.now(),
         error:
           status === "unsupported"
@@ -303,6 +406,10 @@ export class BuyerNwcSession {
             : null,
       }
       this.notify()
+
+      if (info.methods.includes("get_balance")) {
+        void this.refreshBalance()
+      }
     } catch (error) {
       if (!this.isCurrentConnection(connection, version)) return this.snapshot
 
@@ -311,6 +418,7 @@ export class BuyerNwcSession {
         status: "unreachable",
         connection,
         info: this.snapshot.info,
+        balance: this.snapshot.balance,
         lastWarmAt: Date.now(),
         error: getErrorMessage(
           error,
@@ -454,6 +562,14 @@ function parseGetInfoResult(result: Nip47GetInfoResponse): NwcGetInfoResult {
   }
 }
 
+function parseGetBalanceMsats(result: Nip47GetBalanceResponse): number {
+  if (typeof result.balance !== "number" || !Number.isFinite(result.balance)) {
+    throw new Error("Invalid NWC get_balance response: missing balance")
+  }
+
+  return result.balance
+}
+
 function getNwcPayInvoiceAmount(
   input: NwcSessionPayInvoiceInput
 ): number | undefined {
@@ -495,7 +611,26 @@ function disconnectedSnapshot(): NwcSessionSnapshot {
     status: "disconnected",
     connection: null,
     info: null,
+    balance: emptyBalanceState(),
     lastWarmAt: null,
+    error: null,
+  }
+}
+
+function emptyBalanceState(): NwcSessionBalanceState {
+  return {
+    status: "unchecked",
+    balanceMsats: null,
+    fetchedAt: null,
+    error: null,
+  }
+}
+
+function unavailableBalanceState(): NwcSessionBalanceState {
+  return {
+    status: "unavailable",
+    balanceMsats: null,
+    fetchedAt: null,
     error: null,
   }
 }

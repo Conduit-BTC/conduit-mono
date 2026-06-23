@@ -4,6 +4,7 @@ import {
   ExternalLink,
   Info,
   Loader2,
+  RefreshCw,
   Wallet,
   Zap,
 } from "lucide-react"
@@ -11,7 +12,11 @@ import { useState } from "react"
 import { parseNwcUri, pubkeyToNpub, type NwcDiagnostic } from "@conduit/core"
 import { Button, Input, Label, StatusPill } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
-import { useWallet, type WalletConnectionStatus } from "../hooks/useWallet"
+import {
+  useWallet,
+  type WalletBalanceState,
+  type WalletConnectionStatus,
+} from "../hooks/useWallet"
 
 export const Route = createFileRoute("/wallet")({
   beforeLoad: () => {
@@ -99,6 +104,97 @@ function WalletDiagnostics({
           <p className="mt-3 font-medium">{diagnostic.action}</p>
         </div>
       ))}
+    </div>
+  )
+}
+
+function formatWalletBalanceSats(balanceMsats: number): string {
+  return Math.floor(balanceMsats / 1_000).toLocaleString()
+}
+
+function formatBalanceFreshness(fetchedAt: number | null): string | null {
+  if (!fetchedAt) return null
+
+  const elapsedSeconds = Math.max(
+    0,
+    Math.floor((Date.now() - fetchedAt) / 1000)
+  )
+  if (elapsedSeconds < 60) return "Updated just now"
+
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60)
+  if (elapsedMinutes < 60) {
+    return `Updated ${elapsedMinutes} min ago`
+  }
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60)
+  if (elapsedHours < 24) {
+    return `Updated ${elapsedHours} hr ago`
+  }
+
+  const elapsedDays = Math.floor(elapsedHours / 24)
+  return `Updated ${elapsedDays} day${elapsedDays === 1 ? "" : "s"} ago`
+}
+
+function WalletBalanceRow({
+  balance,
+  onRefresh,
+}: {
+  balance: WalletBalanceState
+  onRefresh: () => Promise<void>
+}) {
+  const hasBalance = balance.balanceMsats !== null
+  const canRefresh =
+    balance.status === "available" || balance.status === "error"
+  const freshness = formatBalanceFreshness(balance.fetchedAt)
+  const value =
+    hasBalance && balance.balanceMsats !== null
+      ? `${formatWalletBalanceSats(balance.balanceMsats)} sats`
+      : balance.status === "checking"
+        ? "Checking..."
+        : balance.status === "error"
+          ? "Unable to refresh"
+          : balance.status === "unavailable"
+            ? "Unavailable"
+            : "Not checked yet"
+  const detail =
+    balance.status === "checking" && hasBalance
+      ? "Refreshing..."
+      : balance.status === "error" && hasBalance
+        ? "Refresh failed"
+        : balance.status === "error"
+          ? "Wallet did not return a balance"
+          : balance.status === "unavailable"
+            ? "Wallet does not advertise get_balance"
+            : freshness
+
+  return (
+    <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <dt className="shrink-0 text-xs text-[var(--text-muted)]">
+        Connected wallet balance
+      </dt>
+      <dd className="flex min-w-0 flex-col gap-2 sm:items-end">
+        <div className="text-sm font-medium text-[var(--text-primary)]">
+          {value}
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-[0.7rem] text-[var(--text-muted)] sm:justify-end">
+          {detail && <span>{detail}</span>}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 rounded-full px-2 text-[0.7rem]"
+            disabled={!canRefresh || balance.status === "checking"}
+            onClick={() => void onRefresh()}
+          >
+            {balance.status === "checking" ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3 w-3" />
+            )}
+            Refresh
+          </Button>
+        </div>
+      </dd>
     </div>
   )
 }
@@ -252,6 +348,10 @@ function WalletPage() {
                           </dd>
                         </div>
                       )}
+                      <WalletBalanceRow
+                        balance={wallet.balance}
+                        onRefresh={wallet.refreshBalance}
+                      />
                       {wallet.info?.methods &&
                         wallet.info.methods.length > 0 && (
                           <div className="flex items-start justify-between gap-4 px-4 py-3">

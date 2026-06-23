@@ -15,6 +15,9 @@ type FakeNwcClient = {
     network?: string
     block_height?: number
   }>
+  getBalance: () => Promise<{
+    balance: number
+  }>
   payInvoice: (request: {
     invoice: string
     amount?: number
@@ -117,6 +120,152 @@ describe("BuyerNwcSession", () => {
       "warming",
       "reachable",
     ])
+  })
+
+  it("keeps balance unavailable and never calls get_balance when capability is missing", async () => {
+    let balanceCalls = 0
+
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        getInfo: async () => ({ methods: ["pay_invoice"] }),
+        getBalance: async () => {
+          balanceCalls += 1
+          return { balance: 10_000 }
+        },
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await session.warm()
+    await flushPromises()
+
+    expect(balanceCalls).toBe(0)
+    expect(session.getSnapshot().balance).toEqual({
+      status: "unavailable",
+      balanceMsats: null,
+      fetchedAt: null,
+      error: null,
+    })
+
+    await session.refreshBalance()
+    expect(balanceCalls).toBe(0)
+  })
+
+  it("refreshes advertised balances on warm and after successful payment", async () => {
+    const balances = [25_000, 19_000]
+    let balanceCalls = 0
+
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        getInfo: async () => ({ methods: ["pay_invoice", "get_balance"] }),
+        getBalance: async () => ({
+          balance: balances[balanceCalls++] ?? 19_000,
+        }),
+        payInvoice: async () => ({ preimage: "paid-preimage", fees_paid: 1 }),
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await session.warm()
+    await flushPromises()
+    expect(session.getSnapshot().balance).toMatchObject({
+      status: "available",
+      balanceMsats: 25_000,
+      error: null,
+    })
+
+    await expect(
+      session.payInvoice({
+        invoice: "lnbc1test",
+        amountMsats: 1_000,
+        timeoutMs: 100,
+        appId: "market",
+      })
+    ).resolves.toMatchObject({
+      status: "paid",
+      preimage: "paid-preimage",
+    })
+    await flushPromises()
+
+    expect(balanceCalls).toBe(2)
+    expect(session.getSnapshot().balance).toMatchObject({
+      status: "available",
+      balanceMsats: 19_000,
+      error: null,
+    })
+  })
+
+  it("keeps the newest balance refresh when same-wallet requests overlap", async () => {
+    const firstBalance = deferred<{ balance: number }>()
+    const secondBalance = deferred<{ balance: number }>()
+    let balanceCalls = 0
+
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        getInfo: async () => ({ methods: ["pay_invoice", "get_balance"] }),
+        getBalance: () => {
+          balanceCalls += 1
+          return balanceCalls === 1
+            ? firstBalance.promise
+            : secondBalance.promise
+        },
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await session.warm()
+    await flushPromises()
+    expect(balanceCalls).toBe(1)
+
+    const manualRefresh = session.refreshBalance()
+    await flushPromises()
+    expect(balanceCalls).toBe(2)
+
+    secondBalance.resolve({ balance: 20_000 })
+    await manualRefresh
+    expect(session.getSnapshot().balance).toMatchObject({
+      status: "available",
+      balanceMsats: 20_000,
+    })
+
+    firstBalance.resolve({ balance: 30_000 })
+    await flushPromises()
+
+    expect(session.getSnapshot().balance).toMatchObject({
+      status: "available",
+      balanceMsats: 20_000,
+    })
+  })
+
+  it("clears balance state when the wallet disconnects", async () => {
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        getInfo: async () => ({ methods: ["pay_invoice", "get_balance"] }),
+        getBalance: async () => ({ balance: 25_000 }),
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await session.warm()
+    await flushPromises()
+    expect(session.getSnapshot().balance.balanceMsats).toBe(25_000)
+
+    session.setConnection(null)
+
+    expect(session.getSnapshot().balance).toEqual({
+      status: "unchecked",
+      balanceMsats: null,
+      fetchedAt: null,
+      error: null,
+    })
   })
 
   it("stops notifying subscribers after unsubscribe", () => {
@@ -445,6 +594,7 @@ describe("BuyerNwcSession", () => {
 function fakeClient(overrides: Partial<FakeNwcClient>): FakeNwcClient {
   return {
     getInfo: async () => ({ methods: ["pay_invoice"] }),
+    getBalance: async () => ({ balance: 0 }),
     payInvoice: async () => ({ preimage: "preimage", fees_paid: 0 }),
     close: () => {},
     pool: {
@@ -452,4 +602,23 @@ function fakeClient(overrides: Partial<FakeNwcClient>): FakeNwcClient {
     },
     ...overrides,
   }
+}
+
+async function flushPromises(times = 3): Promise<void> {
+  for (let index = 0; index < times; index += 1) {
+    await Promise.resolve()
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  await Promise.resolve()
+}
+
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+} {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
 }

@@ -18,6 +18,7 @@ import {
 } from "@getalby/sdk/nwc"
 import type {
   NewNWCClientOptions,
+  Nip47GetBalanceResponse,
   Nip47GetInfoResponse,
   Nip47MakeInvoiceRequest,
   Nip47PayInvoiceRequest,
@@ -75,8 +76,14 @@ export interface NwcGetInfoResult {
   blockHeight?: number
 }
 
+export interface NwcGetBalanceResult {
+  /** Wallet-reported balance in millisats. This is external wallet state. */
+  balanceMsats: number
+}
+
 type NwcClientLike = {
   getInfo(): Promise<Nip47GetInfoResponse>
+  getBalance(): Promise<Nip47GetBalanceResponse>
   makeInvoice(request: Nip47MakeInvoiceRequest): Promise<Nip47Transaction>
   payInvoice(request: Nip47PayInvoiceRequest): Promise<Nip47PayResponse>
   close(): void
@@ -276,6 +283,49 @@ function parseGetInfoResult(result: Nip47GetInfoResponse): NwcGetInfoResult {
     network: typeof result.network === "string" ? result.network : undefined,
     blockHeight:
       typeof result.block_height === "number" ? result.block_height : undefined,
+  }
+}
+
+// --- get_balance -------------------------------------------------------------
+
+/**
+ * Read the connected NWC wallet's external balance.
+ *
+ * The returned value is raw millisats from NIP-47. Callers must not persist it
+ * or treat it as a Conduit-held account balance.
+ */
+export async function nwcGetBalance(
+  connection: NwcConnection,
+  timeoutMs = 10_000,
+  clientAppId: ConduitAppId
+): Promise<NwcGetBalanceResult> {
+  void clientAppId
+  const client = await createPreparedNwcClient(connection, "probe")
+
+  try {
+    const result = await withNwcTimeout(
+      client.getBalance(),
+      timeoutMs,
+      "get_balance"
+    )
+
+    return parseGetBalanceResult(result)
+  } catch (error) {
+    throw normalizeNwcError(error)
+  } finally {
+    client.close()
+  }
+}
+
+function parseGetBalanceResult(
+  result: Nip47GetBalanceResponse
+): NwcGetBalanceResult {
+  if (typeof result.balance !== "number" || !Number.isFinite(result.balance)) {
+    throw new Error("Invalid NWC get_balance response: missing balance")
+  }
+
+  return {
+    balanceMsats: result.balance,
   }
 }
 
