@@ -112,11 +112,27 @@ jobs:
         if: steps.agent_auth.outputs.has_auth != 'true'
         run: echo "CODEX_AUTH_JSON or Sudden Agent auth is not configured; skipping Codex first-shot."
 
-      - name: Block risk C code-changing first shots
-        if: steps.agent_auth.outputs.has_auth == 'true' && env.RISK_CLASS == 'C' && env.DRY_RUN != 'true'
+      - name: Normalize risk class
+        if: steps.agent_auth.outputs.has_auth == 'true'
+        shell: bash
         run: |
-          echo "Risk C requires human-owned planning before code-changing Codex first shots."
-          exit 1
+          set -euo pipefail
+
+          normalized_risk="$(printf '%s' "$RISK_CLASS" | sed -E 's/^risk://I' | tr '[:lower:]' '[:upper:]')"
+          case "$normalized_risk" in
+            A|B|C) ;;
+            *)
+              echo "Unsupported risk class: $RISK_CLASS"
+              exit 1
+              ;;
+          esac
+
+          if [[ "$normalized_risk" == "C" && "$DRY_RUN" != "true" ]]; then
+            echo "Risk C requires human-owned planning before code-changing Codex first shots."
+            exit 1
+          fi
+
+          echo "RISK_CLASS=$normalized_risk" >> "$GITHUB_ENV"
 
       - name: Validate dispatch gate
         if: steps.agent_auth.outputs.has_auth == 'true'
