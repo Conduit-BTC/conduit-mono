@@ -468,6 +468,7 @@ export function recordBrowserTelemetryEvent(input: TelemetryEventInput): void {
   const config = resolveBrowserTelemetryConfig(input.app)
   if (!config.enabled) return
   if (!isTelemetryAllowedForCurrentHost(config)) return
+  if (isGlobalPrivacyControlEnabled()) return
 
   const properties = {
     ...sanitizeTelemetryEventProperties(input),
@@ -504,6 +505,7 @@ export function recordBrowserTelemetryPageView(
   const config = resolveBrowserTelemetryConfig(input.app)
   if (!config.enabled) return
   if (!isTelemetryAllowedForCurrentHost(config)) return
+  if (isGlobalPrivacyControlEnabled()) return
 
   const pageUrl = buildTelemetryPageUrl({
     origin: input.origin ?? window.location.origin,
@@ -575,6 +577,14 @@ function isTelemetryAllowedForCurrentHost(
 ): boolean {
   if (config.allowedHosts.length === 0) return true
   return config.allowedHosts.includes(window.location.hostname.toLowerCase())
+}
+
+function isGlobalPrivacyControlEnabled(): boolean {
+  if (typeof navigator === "undefined") return false
+  return (
+    (navigator as Navigator & { globalPrivacyControl?: boolean })
+      .globalPrivacyControl === true
+  )
 }
 
 function ensurePlausible(config: PlausibleTelemetryConfig): void {

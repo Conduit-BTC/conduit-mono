@@ -8,6 +8,7 @@ import {
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
   pubkeyToNpub,
+  recordBrowserTelemetryPageView,
   resolveBrowserTelemetryConfig,
   sanitizeTelemetryEventProperties,
   sanitizePostHogCaptureEvent,
@@ -165,6 +166,76 @@ describe("browser telemetry", () => {
     expect(plausible.q).toBeUndefined()
   })
 
+  it("honors Global Privacy Control before loading analytics providers", () => {
+    const previousDocument = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "document"
+    )
+    const previousNavigator = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "navigator"
+    )
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+    const previousEnableTelemetry = process.env.VITE_ENABLE_TELEMETRY
+    const previousAllowedHosts = process.env.VITE_TELEMETRY_ALLOWED_HOSTS
+    const previousPlausibleSrc = process.env.VITE_PLAUSIBLE_SRC
+
+    const appendedScripts: unknown[] = []
+    const fakeDocument = {
+      createElement: () => ({
+        addEventListener: () => undefined,
+        async: false,
+        dataset: {} as Record<string, string>,
+        src: "",
+      }),
+      head: {
+        appendChild: (script: unknown) => {
+          appendedScripts.push(script)
+        },
+      },
+      querySelector: () => null,
+    } as unknown as Document
+    const fakeWindow = {
+      location: {
+        hostname: "shop.conduit.market",
+        origin: "https://shop.conduit.market",
+        pathname: "/products/demo",
+      },
+    } as unknown as Window
+
+    try {
+      process.env.VITE_ENABLE_TELEMETRY = "true"
+      process.env.VITE_TELEMETRY_ALLOWED_HOSTS = "shop.conduit.market"
+      process.env.VITE_PLAUSIBLE_SRC =
+        "https://plausible.io/js/pa-pAMu39wt9pA9w4vD44Iv-.js"
+      replaceGlobalProperty("document", fakeDocument)
+      replaceGlobalProperty("navigator", {
+        globalPrivacyControl: true,
+      } as Navigator & { globalPrivacyControl: boolean })
+      replaceGlobalProperty("window", fakeWindow)
+
+      recordBrowserTelemetryPageView({
+        app: "market",
+        pathname: "/products/demo",
+      })
+
+      expect(appendedScripts).toEqual([])
+      expect(
+        (fakeWindow as Window & { plausible?: PlausibleFunction }).plausible
+      ).toBeUndefined()
+    } finally {
+      restoreProcessEnvValue("VITE_ENABLE_TELEMETRY", previousEnableTelemetry)
+      restoreProcessEnvValue(
+        "VITE_TELEMETRY_ALLOWED_HOSTS",
+        previousAllowedHosts
+      )
+      restoreProcessEnvValue("VITE_PLAUSIBLE_SRC", previousPlausibleSrc)
+      restoreGlobalProperty("document", previousDocument)
+      restoreGlobalProperty("navigator", previousNavigator)
+      restoreGlobalProperty("window", previousWindow)
+    }
+  })
+
   it("strips PostHog SDK defaults from outgoing events", () => {
     expect(
       sanitizePostHogCaptureEvent({
@@ -273,3 +344,33 @@ describe("browser telemetry", () => {
     })
   })
 })
+
+function restoreProcessEnvValue(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key]
+    return
+  }
+  process.env[key] = value
+}
+
+function replaceGlobalProperty(
+  key: "document" | "navigator" | "window",
+  value: Document | Navigator | Window
+): void {
+  Object.defineProperty(globalThis, key, {
+    configurable: true,
+    value,
+    writable: true,
+  })
+}
+
+function restoreGlobalProperty(
+  key: "document" | "navigator" | "window",
+  descriptor: PropertyDescriptor | undefined
+): void {
+  if (descriptor) {
+    Object.defineProperty(globalThis, key, descriptor)
+    return
+  }
+  delete (globalThis as Record<string, unknown>)[key]
+}
