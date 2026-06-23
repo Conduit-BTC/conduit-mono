@@ -212,6 +212,12 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
 
+      - name: Require app token for code-changing first shots
+        if: steps.agent_auth.outputs.has_auth == 'true' && env.DRY_RUN != 'true' && steps.app_token.outputs.token == ''
+        run: |
+          echo "Code-changing first-shot runs require WORKFLOW_AGENT_GITHUB_APP_ID and WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY."
+          exit 1
+
       - name: Run Codex first-shot with CODEX_AUTH_JSON
         id: run_codex_auth_json
         if: steps.agent_auth.outputs.has_codex_auth_json == 'true'
