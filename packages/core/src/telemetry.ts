@@ -135,8 +135,10 @@ type PostHogModule = {
 export interface ConduitPostHogConfig {
   api_host: string
   autocapture: false
+  capture_dead_clicks: false
   capture_pageview: false
   capture_pageleave: false
+  rageclick: false
   disable_session_recording: true
   disable_surveys: true
   disable_web_experiments: true
@@ -382,8 +384,10 @@ export function getConduitPostHogConfig(
   return {
     api_host: input.host,
     autocapture: false,
+    capture_dead_clicks: false,
     capture_pageview: false,
     capture_pageleave: false,
+    rageclick: false,
     disable_session_recording: true,
     disable_surveys: true,
     disable_web_experiments: true,
