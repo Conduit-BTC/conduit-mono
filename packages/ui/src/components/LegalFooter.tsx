@@ -65,7 +65,7 @@ export function LegalFooter({
   return (
     <footer
       className={cn(
-        "fixed bottom-0 left-0 right-0 z-40 border-t border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-[var(--text-secondary)] shadow-[0_-1px_0_color-mix(in_srgb,var(--foreground)_8%,transparent)]",
+        "border-t border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-[var(--text-secondary)] shadow-[0_-1px_0_color-mix(in_srgb,var(--foreground)_8%,transparent)] sm:fixed sm:bottom-0 sm:left-0 sm:right-0 sm:z-40",
         className
       )}
     >

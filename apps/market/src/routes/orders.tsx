@@ -452,6 +452,16 @@ function OrderItemsSection({
           )
         })}
       </div>
+      {typeof vm.totalSats === "number" ? (
+        <div className="mt-4 flex items-center justify-between border-t border-[var(--border)] pt-4 text-sm">
+          <span className="font-medium text-[var(--text-secondary)]">
+            Total
+          </span>
+          <span className="text-base font-semibold text-[var(--text-primary)]">
+            {vm.totalSats.toLocaleString()} sats
+          </span>
+        </div>
+      ) : null}
     </section>
   )
 }
@@ -660,40 +670,12 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
           </div>
         </section>
 
-        <section className="space-y-3 xl:hidden">
+        <section className="xl:hidden">
           <OrderItemsSection
             vm={vm}
             productsById={productsById}
             btcUsdRate={btcUsdRateQuery.data ?? null}
           />
-          <div className="px-3">
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex min-w-0 items-center gap-3">
-                <MerchantAvatar
-                  pubkey={row.merchantPubkey}
-                  name={merchantName}
-                  picture={profile?.picture}
-                />
-                <div className="min-w-0">
-                  <Link
-                    to="/store/$pubkey"
-                    params={{ pubkey: pubkeyToNpub(row.merchantPubkey) }}
-                    className="truncate text-lg font-semibold leading-none text-[var(--text-primary)] underline-offset-2 hover:underline"
-                  >
-                    {merchantName}
-                  </Link>
-                </div>
-              </div>
-              {typeof vm.totalSats === "number" && (
-                <div className="shrink-0 text-right text-base font-semibold leading-none text-[var(--text-primary)]">
-                  {vm.totalSats.toLocaleString()} sats
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="px-3">
-            <div className="flex flex-wrap gap-2">{messageMerchant}</div>
-          </div>
         </section>
       </>
 
@@ -853,6 +835,23 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
                 </DetailRow>
               </div>
             )}
+          </section>
+
+          <section className="flex items-center gap-3 px-1 xl:hidden">
+            <MerchantAvatar
+              pubkey={row.merchantPubkey}
+              name={merchantName}
+              picture={profile?.picture}
+            />
+            <div className="min-w-0">
+              <Link
+                to="/store/$pubkey"
+                params={{ pubkey: pubkeyToNpub(row.merchantPubkey) }}
+                className="truncate text-base font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
+              >
+                {merchantName}
+              </Link>
+            </div>
           </section>
 
           {/* Need help */}
@@ -1231,7 +1230,7 @@ function OrdersPage() {
               />
               <SheetContent
                 side="bottom"
-                className="max-h-[80vh] overflow-y-auto"
+                className="h-[100dvh] overflow-y-auto"
               >
                 <SheetHeader>
                   <SheetTitle>Your orders</SheetTitle>
