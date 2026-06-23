@@ -9,6 +9,7 @@ import {
 } from "react"
 import { NDKNip07Signer } from "@nostr-dev-kit/ndk"
 import { setSigner, removeSigner } from "../protocol/ndk"
+import { isTransientNip07BridgeError } from "../protocol/signing-retry"
 
 export type AuthStatus =
   | "disconnected"
@@ -116,17 +117,8 @@ function getSignerBridgeReadyMessage(mode: AuthConnectMode): string {
   return "Your signer extension was not ready yet. Unlock or reopen your signer, then try again."
 }
 
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message
-  return typeof error === "string" ? error : ""
-}
-
 export function isTransientNip07ConnectError(error: unknown): boolean {
-  const message = getErrorMessage(error)
-
-  return /could not establish connection|receiving end does not exist|message port closed|extension context invalidated|chrome\.runtime\.lastError/i.test(
-    message
-  )
+  return isTransientNip07BridgeError(error)
 }
 
 function normalizeSignerConnectError(

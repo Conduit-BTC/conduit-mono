@@ -151,6 +151,7 @@ export {
   AuthProvider,
   useAuth,
   hasNip07,
+  isTransientNip07ConnectError,
   type AuthStatus,
   type AuthContextValue,
 } from "./context/AuthContext"

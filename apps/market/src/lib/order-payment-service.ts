@@ -8,6 +8,7 @@ import {
   getNdk,
   getOrderLifecycle,
   patchOrderLifecycle,
+  signNdkEventWithTransientNip07Retry,
   validateLightningInvoiceForPayment,
   waitForZapReceipt,
   type NwcConnection,
@@ -258,7 +259,7 @@ export async function runOrderPayment(
           zapRequest.created_at = draft.createdAt
           zapRequest.content = draft.content
           zapRequest.tags = draft.tags
-          await zapRequest.sign(ndk.signer)
+          await signNdkEventWithTransientNip07Retry(zapRequest, ndk.signer)
           return { id: zapRequest.id, rawEvent: zapRequest.rawEvent() }
         },
       }

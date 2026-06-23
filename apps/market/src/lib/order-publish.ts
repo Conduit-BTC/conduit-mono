@@ -4,8 +4,10 @@ import {
   appendConduitClientTag,
   cacheParsedOrderMessage,
   getNdk,
+  withTransientNip07Retry,
   parseOrderMessageRumorEvent,
   publishWithPlanner,
+  type TransientNip07RetryOptions,
 } from "@conduit/core"
 
 /**
@@ -49,6 +51,37 @@ async function cacheBuyerOrderRumor(rumor: NDKEvent): Promise<string | null> {
   }
 }
 
+type GiftWrapDependency = typeof giftWrap
+
+export async function createBuyerGiftWrapsForMerchantAndSelf(
+  rumor: NDKEvent,
+  ndk: ReturnType<typeof getNdk>,
+  merchantPubkey: string,
+  buyerPubkey: string,
+  options: TransientNip07RetryOptions & {
+    giftWrapFn?: GiftWrapDependency
+  } = {}
+): Promise<{
+  wrappedToMerchant: NDKEvent
+  wrappedToSelf: NDKEvent
+}> {
+  const giftWrapFn = options.giftWrapFn ?? giftWrap
+  const merchantUser = new NDKUser({ pubkey: merchantPubkey })
+  const buyerUser = new NDKUser({ pubkey: buyerPubkey })
+  const wrapParams = { rumorKind: EVENT_KINDS.ORDER }
+
+  const wrappedToMerchant = await withTransientNip07Retry(
+    () => giftWrapFn(rumor, merchantUser, ndk.signer, wrapParams),
+    options
+  )
+  const wrappedToSelf = await withTransientNip07Retry(
+    () => giftWrapFn(rumor, buyerUser, ndk.signer, wrapParams),
+    options
+  )
+
+  return { wrappedToMerchant, wrappedToSelf }
+}
+
 /**
  * Translate a delivery result into a buyer-facing notice when a non-critical
  * leg (local cache or buyer self-copy) needs retry. The merchant copy is always
@@ -78,16 +111,13 @@ export async function publishWrappedToMerchantAndSelf(
 ): Promise<BuyerMessageDeliveryResult> {
   prepareBuyerRumor(rumor, buyerPubkey)
 
-  const merchantUser = new NDKUser({ pubkey: merchantPubkey })
-  const buyerUser = new NDKUser({ pubkey: buyerPubkey })
-  const [wrappedToMerchant, wrappedToSelf] = await Promise.all([
-    giftWrap(rumor, merchantUser, ndk.signer, {
-      rumorKind: EVENT_KINDS.ORDER,
-    }),
-    giftWrap(rumor, buyerUser, ndk.signer, {
-      rumorKind: EVENT_KINDS.ORDER,
-    }),
-  ])
+  const { wrappedToMerchant, wrappedToSelf } =
+    await createBuyerGiftWrapsForMerchantAndSelf(
+      rumor,
+      ndk,
+      merchantPubkey,
+      buyerPubkey
+    )
 
   await publishWithPlanner(wrappedToMerchant, {
     intent: "recipient_event",
