@@ -182,7 +182,6 @@ jobs:
       - name: Run Sudden Agent review with auth file
         id: review_auth_file
         if: >-
-          always() &&
           steps.sudden_auth.outputs.has_auth_file == 'true' &&
           (steps.sudden_auth.outputs.has_codex_auth_json != 'true' ||
             steps.review_codex_auth_json.outcome == 'failure')
@@ -237,7 +236,6 @@ jobs:
 
       - name: Run Sudden Agent review with API key
         if: >-
-          always() &&
           steps.sudden_auth.outputs.has_api_key == 'true' &&
           (steps.sudden_auth.outputs.has_codex_auth_json != 'true' ||
             steps.review_codex_auth_json.outcome == 'failure') &&
