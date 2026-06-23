@@ -219,6 +219,16 @@ describe("deriveOrderHeaderStatus", () => {
     expect(status.actionNeeded).toBe(true)
   })
 
+  it("prefers the wallet-check warning over normal retry guidance", () => {
+    const status = deriveOrderHeaderStatus(
+      vmFromLifecycle({
+        paymentStatus: "ambiguous",
+        proofDeliveryStatus: "not_started",
+      })
+    )
+    expect(status.detailLabel).toBe("Check wallet before retrying")
+  })
+
   it("Completed · Delivered when the merchant marks the order complete", () => {
     const vm = buildOrderViewModel({
       orderId: "order-1",

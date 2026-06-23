@@ -107,6 +107,13 @@ export interface OrderPaymentRuntimeState {
   lifecycle: OrderLifecycle | null
 }
 
+function isAmbiguousPaymentError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return /Check your wallet before trying another payment path\./i.test(
+    error.message
+  )
+}
+
 type Listener = (state: OrderPaymentRuntimeState) => void
 
 const runtimeStates = new Map<string, OrderPaymentRuntimeState>()
@@ -426,6 +433,12 @@ export async function runOrderPayment(
         orderId,
         { paymentStatus: "paid", proofDeliveryStatus: "retry_needed" },
         { running: false, stage: null }
+      )
+    } else if (isAmbiguousPaymentError(e)) {
+      await patchAndEmit(
+        orderId,
+        { paymentStatus: "ambiguous", lastError: message },
+        { running: false, stage: null, error: message }
       )
     } else {
       await patchAndEmit(

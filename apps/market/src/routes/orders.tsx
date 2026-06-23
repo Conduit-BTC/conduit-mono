@@ -356,6 +356,7 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
   }, [])
 
   const showRetryPayment = vm.paymentStatus === "failed"
+  const showAmbiguousPayment = vm.paymentStatus === "ambiguous"
   const showExternalWallet = vm.paymentStatus === "manual_required"
   const showResendProof =
     vm.paymentStatus === "paid" &&
@@ -425,7 +426,7 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
         />
       )}
 
-      {(showRetryPayment || showResendProof) && (
+      {(showRetryPayment || showAmbiguousPayment || showResendProof) && (
         <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
           <div className="flex flex-wrap items-center gap-3">
             {showRetryPayment && (
@@ -455,9 +456,11 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
               </Button>
             )}
             <span className="text-xs text-[var(--text-secondary)]">
-              {showRetryPayment
-                ? "No funds moved. You can retry payment for this order."
-                : "Payment went through; the receipt didn't reach the merchant."}
+              {showAmbiguousPayment
+                ? "Your wallet may have received the payment request, but Conduit couldn't confirm whether funds moved. Check your wallet and merchant messages before trying again."
+                : showRetryPayment
+                  ? "No funds moved. You can retry payment for this order."
+                  : "Payment went through; the receipt didn't reach the merchant."}
             </span>
           </div>
         </section>
@@ -964,32 +967,39 @@ function OrdersPage() {
               </TabsList>
             </Tabs>
             {selectedRow && (
-              <section className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4">
-                <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                  Current order
-                </div>
-                <div className="mt-2">
-                  <OrderListCard
-                    row={selectedRow}
-                    merchantName={merchantName(selectedRow.merchantPubkey)}
-                    merchantPicture={
-                      merchantProfilesQuery.data?.[selectedRow.merchantPubkey]
-                        ?.picture
-                    }
-                    active
-                    onClick={() => setChangeOrderOpen(true)}
-                  />
-                </div>
-                <Sheet open={changeOrderOpen} onOpenChange={setChangeOrderOpen}>
-                  <SheetTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className="mt-3 h-10 w-full justify-between px-4 text-sm"
-                    >
-                      Change order
-                      <ChevronRight className="h-4 w-4" />
-                    </Button>
-                  </SheetTrigger>
+              <Sheet open={changeOrderOpen} onOpenChange={setChangeOrderOpen}>
+                <section className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                        Current order
+                      </div>
+                      <div className="mt-1 text-sm text-[var(--text-secondary)]">
+                        Open another order or keep following this one.
+                      </div>
+                    </div>
+                    <SheetTrigger asChild>
+                      <Button
+                        variant="outline"
+                        className="h-10 shrink-0 justify-between px-4 text-sm"
+                      >
+                        Change order
+                        <ChevronRight className="h-4 w-4" />
+                      </Button>
+                    </SheetTrigger>
+                  </div>
+                  <div className="mt-3">
+                    <OrderListCard
+                      row={selectedRow}
+                      merchantName={merchantName(selectedRow.merchantPubkey)}
+                      merchantPicture={
+                        merchantProfilesQuery.data?.[selectedRow.merchantPubkey]
+                          ?.picture
+                      }
+                      active
+                      onClick={() => setChangeOrderOpen(true)}
+                    />
+                  </div>
                   <SheetContent
                     side="bottom"
                     className="max-h-[80vh] overflow-y-auto"
@@ -1008,8 +1018,8 @@ function OrdersPage() {
                       onSelect={selectOrder}
                     />
                   </SheetContent>
-                </Sheet>
-              </section>
+                </section>
+              </Sheet>
             )}
           </div>
 

@@ -828,10 +828,13 @@ function CheckoutPage() {
     lnurlPayAvailable,
     lnurlAllowsNostr,
   })
+  const allowsManualLightningFallback =
+    !!merchantLud16 && lnurlReadyForSelectedPayment
   const fastEligibilityInput = {
     walletPayCapable: canAttemptLightningPayment,
     merchantLud16,
     lnurlAllowsNostr: lnurlReadyForSelectedPayment,
+    allowsManualFallback: allowsManualLightningFallback,
     requiresNostrZap: requiresPublicZap,
     pricingReady: pricingPreview.status === "ok",
     shippingEligible: shippingEligibleForFastCheckout,
@@ -1063,6 +1066,9 @@ function CheckoutPage() {
   async function placeOrder(): Promise<void> {
     if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
 
+    let publishedOrderId: string | null = null
+    let orderDelivered = false
+
     setError(null)
     setPaidNotice(null)
     setStep("signing")
@@ -1081,6 +1087,7 @@ function CheckoutPage() {
       }
 
       const orderId = crypto.randomUUID()
+      publishedOrderId = orderId
       const currency = "SATS"
       const items = checkoutItems.map((item) => ({
         productId: item.productId,
@@ -1139,6 +1146,7 @@ function CheckoutPage() {
         publishWrappedToMerchantAndSelf(rumor, ndk, selectedMerchant, pubkey),
         new Promise((resolve) => window.setTimeout(resolve, 900)),
       ])
+      orderDelivered = true
       const deliveryNotice = getDeliveryNotice(delivery, "Order")
       if (deliveryNotice) setPaidNotice(deliveryNotice)
 
@@ -1188,6 +1196,22 @@ function CheckoutPage() {
         replace: true,
       })
     } catch (e) {
+      if (orderDelivered && publishedOrderId) {
+        cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
+        setPaidNotice(
+          "Your order was sent, but local order tracking could not be saved on this device. Check Orders or message the merchant before trying again."
+        )
+        setSentOrderId(publishedOrderId)
+        setShowSentGlow(true)
+        setStep("sent")
+        void navigate({
+          to: "/orders",
+          search: { order: publishedOrderId },
+          replace: true,
+        })
+        return
+      }
+
       recordCheckoutStepResult({
         amountSats: total,
         checkoutMode: "order_first",
@@ -1236,6 +1260,9 @@ function CheckoutPage() {
    */
   async function payNow(): Promise<void> {
     if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
+    let publishedOrderId: string | null = null
+    let orderDelivered = false
+
     const webLnAvailableNow = hasWebLN()
     if (webLnAvailableNow !== weblnAvailable)
       setWeblnAvailable(webLnAvailableNow)
@@ -1303,6 +1330,7 @@ function CheckoutPage() {
       }
 
       const orderId = crypto.randomUUID()
+      publishedOrderId = orderId
       const currency = "SATS"
       const ndk = getNdk()
       const orderPayload = {
@@ -1345,6 +1373,7 @@ function CheckoutPage() {
         selectedMerchant,
         pubkey
       )
+      orderDelivered = true
       const orderDeliveryNotice = getDeliveryNotice(orderDelivery, "Order")
 
       const canAutoPay = canTrySavedNwcWallet || webLnAvailableNow
@@ -1407,7 +1436,13 @@ function CheckoutPage() {
         walletConnection: wallet.connection,
         tryNwc: canTrySavedNwcWallet,
       }
-      void runOrderPayment(serviceCtx)
+
+      try {
+        void runOrderPayment(serviceCtx)
+      } catch {
+        // runOrderPayment is async and should not throw synchronously, but keep
+        // checkout navigation independent from payment service startup.
+      }
 
       paymentInFlightRef.current = false
       void navigate({
@@ -1416,9 +1451,28 @@ function CheckoutPage() {
         replace: true,
       })
     } catch (e) {
+      const message = e instanceof Error ? e.message : "Payment failed"
+      // Once the order is delivered, later failures (like local lifecycle
+      // persistence) must not return the buyer to a retry path that republishes.
+      if (orderDelivered && publishedOrderId) {
+        cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
+        setPaidNotice(
+          "Your order was sent, but local order tracking could not be saved on this device. Check Orders or message the merchant before trying again."
+        )
+        setSentOrderId(publishedOrderId)
+        setShowSentGlow(true)
+        setStep("sent")
+        paymentInFlightRef.current = false
+        void navigate({
+          to: "/orders",
+          search: { order: publishedOrderId },
+          replace: true,
+        })
+        return
+      }
+
       // Failure before the order reached the merchant. No order was published,
       // so a full retry can't create a duplicate.
-      const message = e instanceof Error ? e.message : "Payment failed"
       recordCheckoutStepResult({
         amountSats: total,
         checkoutMode: zapVisibility,
