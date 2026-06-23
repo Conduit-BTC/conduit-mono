@@ -115,8 +115,8 @@ bun run dev:merchant:mainnet
 | `VITE_ENABLE_TELEMETRY`        | `false`                    | Enables privacy-filtered Plausible/PostHog telemetry     |
 | `VITE_TELEMETRY_ALLOWED_HOSTS` | —                          | Optional comma-separated host allowlist for telemetry    |
 | `VITE_PLAUSIBLE_DOMAIN`        | —                          | Optional legacy Plausible site domain                    |
-| `VITE_PLAUSIBLE_SRC`           | —                          | Optional site-specific Plausible script URL              |
-| `VITE_POSTHOG_KEY`             | —                          | Optional PostHog browser project key                     |
+| `VITE_PLAUSIBLE_SRC`           | —                          | Optional deploy-time Plausible script URL                |
+| `VITE_POSTHOG_KEY`             | —                          | Optional deploy-time PostHog browser project key         |
 | `VITE_POSTHOG_HOST`            | `https://us.i.posthog.com` | Optional PostHog API host                                |
 | `VITE_NIP89_RELAY_HINT`        | `VITE_RELAY_URL`           | Relay hint for Conduit NIP-89 handler metadata           |
 | `VITE_NIP89_MARKET_PUBKEY`     | —                          | Official Conduit Market handler pubkey                   |

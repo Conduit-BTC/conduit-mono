@@ -53,7 +53,7 @@ describe("browser telemetry", () => {
     const config = resolveBrowserTelemetryConfig("market", {
       VITE_ENABLE_TELEMETRY: "true",
       VITE_TELEMETRY_ALLOWED_HOSTS: "shop.conduit.market, sell.conduit.market",
-      VITE_PLAUSIBLE_SRC: "https://plausible.io/js/pa-pAMu39wt9pA9w4vD44Iv-.js",
+      VITE_PLAUSIBLE_SRC: "https://plausible.io/js/pa-example-market.js",
     })
 
     expect(config.allowedHosts).toEqual([
@@ -62,7 +62,7 @@ describe("browser telemetry", () => {
     ])
     expect(config.plausible).toEqual({
       domain: null,
-      scriptSrc: "https://plausible.io/js/pa-pAMu39wt9pA9w4vD44Iv-.js",
+      scriptSrc: "https://plausible.io/js/pa-example-market.js",
     })
     expect(config.posthog).toBeNull()
   })
@@ -209,7 +209,7 @@ describe("browser telemetry", () => {
       process.env.VITE_ENABLE_TELEMETRY = "true"
       process.env.VITE_TELEMETRY_ALLOWED_HOSTS = "shop.conduit.market"
       process.env.VITE_PLAUSIBLE_SRC =
-        "https://plausible.io/js/pa-pAMu39wt9pA9w4vD44Iv-.js"
+        "https://plausible.io/js/pa-example-market.js"
       replaceGlobalProperty("document", fakeDocument)
       replaceGlobalProperty("navigator", {
         globalPrivacyControl: true,
