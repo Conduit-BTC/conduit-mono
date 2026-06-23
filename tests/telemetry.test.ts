@@ -8,6 +8,7 @@ import {
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
   pubkeyToNpub,
+  recordBrowserTelemetryPageView,
   resolveBrowserTelemetryConfig,
   sanitizeTelemetryEventProperties,
   sanitizePostHogCaptureEvent,
@@ -27,6 +28,7 @@ describe("browser telemetry", () => {
     expect(config).toEqual({
       app: "market",
       enabled: false,
+      allowedHosts: [],
       plausible: null,
       posthog: null,
     })
@@ -39,9 +41,28 @@ describe("browser telemetry", () => {
     })
 
     expect(config.enabled).toBe(true)
+    expect(config.allowedHosts).toEqual([])
     expect(config.plausible).toEqual({
       domain: "sell.conduit.market",
       scriptSrc: "https://plausible.io/js/script.js",
+    })
+    expect(config.posthog).toBeNull()
+  })
+
+  it("supports site-specific Plausible scripts without a legacy domain", () => {
+    const config = resolveBrowserTelemetryConfig("market", {
+      VITE_ENABLE_TELEMETRY: "true",
+      VITE_TELEMETRY_ALLOWED_HOSTS: "shop.conduit.market, sell.conduit.market",
+      VITE_PLAUSIBLE_SRC: "https://plausible.io/js/pa-example-market.js",
+    })
+
+    expect(config.allowedHosts).toEqual([
+      "shop.conduit.market",
+      "sell.conduit.market",
+    ])
+    expect(config.plausible).toEqual({
+      domain: null,
+      scriptSrc: "https://plausible.io/js/pa-example-market.js",
     })
     expect(config.posthog).toBeNull()
   })
@@ -108,8 +129,10 @@ describe("browser telemetry", () => {
     expect(config).toMatchObject({
       api_host: "https://us.i.posthog.com",
       autocapture: false,
+      capture_dead_clicks: false,
       capture_pageview: false,
       capture_pageleave: false,
+      rageclick: false,
       disable_session_recording: true,
       disable_surveys: true,
       disable_web_experiments: true,
@@ -145,12 +168,83 @@ describe("browser telemetry", () => {
     expect(plausible.q).toBeUndefined()
   })
 
+  it("honors Global Privacy Control before loading analytics providers", () => {
+    const previousDocument = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "document"
+    )
+    const previousNavigator = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "navigator"
+    )
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+    const previousEnableTelemetry = process.env.VITE_ENABLE_TELEMETRY
+    const previousAllowedHosts = process.env.VITE_TELEMETRY_ALLOWED_HOSTS
+    const previousPlausibleSrc = process.env.VITE_PLAUSIBLE_SRC
+
+    const appendedScripts: unknown[] = []
+    const fakeDocument = {
+      createElement: () => ({
+        addEventListener: () => undefined,
+        async: false,
+        dataset: {} as Record<string, string>,
+        src: "",
+      }),
+      head: {
+        appendChild: (script: unknown) => {
+          appendedScripts.push(script)
+        },
+      },
+      querySelector: () => null,
+    } as unknown as Document
+    const fakeWindow = {
+      location: {
+        hostname: "shop.conduit.market",
+        origin: "https://shop.conduit.market",
+        pathname: "/products/demo",
+      },
+    } as unknown as Window
+
+    try {
+      process.env.VITE_ENABLE_TELEMETRY = "true"
+      process.env.VITE_TELEMETRY_ALLOWED_HOSTS = "shop.conduit.market"
+      process.env.VITE_PLAUSIBLE_SRC =
+        "https://plausible.io/js/pa-example-market.js"
+      replaceGlobalProperty("document", fakeDocument)
+      replaceGlobalProperty("navigator", {
+        globalPrivacyControl: true,
+      } as Navigator & { globalPrivacyControl: boolean })
+      replaceGlobalProperty("window", fakeWindow)
+
+      recordBrowserTelemetryPageView({
+        app: "market",
+        pathname: "/products/demo",
+      })
+
+      expect(appendedScripts).toEqual([])
+      expect(
+        (fakeWindow as Window & { plausible?: PlausibleFunction }).plausible
+      ).toBeUndefined()
+    } finally {
+      restoreProcessEnvValue("VITE_ENABLE_TELEMETRY", previousEnableTelemetry)
+      restoreProcessEnvValue(
+        "VITE_TELEMETRY_ALLOWED_HOSTS",
+        previousAllowedHosts
+      )
+      restoreProcessEnvValue("VITE_PLAUSIBLE_SRC", previousPlausibleSrc)
+      restoreGlobalProperty("document", previousDocument)
+      restoreGlobalProperty("navigator", previousNavigator)
+      restoreGlobalProperty("window", previousWindow)
+    }
+  })
+
   it("strips PostHog SDK defaults from outgoing events", () => {
     expect(
       sanitizePostHogCaptureEvent({
         event: "cart_add",
         properties: {
           $browser: "Chrome",
+          app: "market",
           $current_url:
             "https://shop.conduit.market/products/30402:merchant:item?q=raw",
           $host: "shop.conduit.market",
@@ -168,9 +262,32 @@ describe("browser telemetry", () => {
         $current_url: "https://shop.conduit.market/products/:productId",
         $pathname: "/products/:productId",
         action: "add",
+        app: "market",
         page_path: "/products/:productId",
         page_url: "https://shop.conduit.market/products/:productId",
         status: "success",
+      },
+    })
+  })
+
+  it("keeps PostHog pageviews split by client app", () => {
+    expect(
+      sanitizePostHogCaptureEvent({
+        event: "$pageview",
+        properties: {
+          app: "merchant",
+          page_path: "/products",
+          page_url: "https://sell.conduit.market/products",
+        },
+      })
+    ).toEqual({
+      event: "$pageview",
+      properties: {
+        $current_url: "https://sell.conduit.market/products",
+        $pathname: "/products",
+        app: "merchant",
+        page_path: "/products",
+        page_url: "https://sell.conduit.market/products",
       },
     })
   })
@@ -229,3 +346,33 @@ describe("browser telemetry", () => {
     })
   })
 })
+
+function restoreProcessEnvValue(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key]
+    return
+  }
+  process.env[key] = value
+}
+
+function replaceGlobalProperty(
+  key: "document" | "navigator" | "window",
+  value: Document | Navigator | Window
+): void {
+  Object.defineProperty(globalThis, key, {
+    configurable: true,
+    value,
+    writable: true,
+  })
+}
+
+function restoreGlobalProperty(
+  key: "document" | "navigator" | "window",
+  descriptor: PropertyDescriptor | undefined
+): void {
+  if (descriptor) {
+    Object.defineProperty(globalThis, key, descriptor)
+    return
+  }
+  delete (globalThis as Record<string, unknown>)[key]
+}

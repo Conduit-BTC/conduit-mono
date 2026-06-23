@@ -101,26 +101,32 @@ bun run dev:merchant:mainnet
 
 `.env.local` should remain for personal overrides only. Keep mode files minimal and let the shared core relay defaults handle the broader fallback strategy unless a mode truly needs different values.
 
-| Variable                     | Default (dev)         | Description                                              |
-| ---------------------------- | --------------------- | -------------------------------------------------------- |
-| `VITE_RELAY_URL`             | —                     | Optional single relay hint also added to fallback relays |
-| `VITE_DEFAULT_RELAY_URL`     | —                     | Optional single relay added to fallback relay discovery  |
-| `VITE_DEFAULT_RELAYS`        | —                     | Optional comma-separated relays added to fallback reads  |
-| `VITE_APP_WRITE_RELAY_URLS`  | —                     | Optional comma-separated app write relay additions       |
-| `VITE_PUBLIC_RELAY_URLS`     | —                     | Optional comma-separated public relay override/additions |
-| `VITE_COMMERCE_RELAY_URLS`   | —                     | Optional comma-separated commerce relay additions        |
-| `VITE_LIGHTNING_NETWORK`     | `mainnet`             | `mainnet`, `signet`, `testnet`, or `mock`                |
-| `VITE_BLOSSOM_SERVER_URL`    | —                     | Blossom media server for product images                  |
-| `VITE_CACHE_API_URL`         | —                     | Optional cache/acceleration API endpoint                 |
-| `VITE_NIP89_RELAY_HINT`      | `VITE_RELAY_URL`      | Relay hint for Conduit NIP-89 handler metadata           |
-| `VITE_NIP89_MARKET_PUBKEY`   | —                     | Official Conduit Market handler pubkey                   |
-| `VITE_NIP89_MERCHANT_PUBKEY` | —                     | Official Conduit Merchant Portal handler pubkey          |
-| `VITE_APP_VERSION`           | app package version   | Build-time app version surfaced on About pages           |
-| `VITE_BUILD_COMMIT`          | current git commit    | Commit SHA surfaced on About pages                       |
-| `VITE_BUILD_BRANCH`          | current git branch    | Branch or preview ref surfaced on About pages            |
-| `VITE_BUILD_TIME`            | current build time    | Build timestamp surfaced on About pages                  |
-| `VITE_SOURCE_URL`            | GitHub repository URL | Source repository link surfaced on About pages           |
-| `VITE_RELEASE_CHANNEL`       | local/preview/prod    | Release channel surfaced on About pages                  |
+| Variable                       | Default (dev)              | Description                                              |
+| ------------------------------ | -------------------------- | -------------------------------------------------------- |
+| `VITE_RELAY_URL`               | —                          | Optional single relay hint also added to fallback relays |
+| `VITE_DEFAULT_RELAY_URL`       | —                          | Optional single relay added to fallback relay discovery  |
+| `VITE_DEFAULT_RELAYS`          | —                          | Optional comma-separated relays added to fallback reads  |
+| `VITE_APP_WRITE_RELAY_URLS`    | —                          | Optional comma-separated app write relay additions       |
+| `VITE_PUBLIC_RELAY_URLS`       | —                          | Optional comma-separated public relay override/additions |
+| `VITE_COMMERCE_RELAY_URLS`     | —                          | Optional comma-separated commerce relay additions        |
+| `VITE_LIGHTNING_NETWORK`       | `mainnet`                  | `mainnet`, `signet`, `testnet`, or `mock`                |
+| `VITE_BLOSSOM_SERVER_URL`      | —                          | Blossom media server for product images                  |
+| `VITE_CACHE_API_URL`           | —                          | Optional cache/acceleration API endpoint                 |
+| `VITE_ENABLE_TELEMETRY`        | `false`                    | Enables privacy-filtered Plausible/PostHog telemetry     |
+| `VITE_TELEMETRY_ALLOWED_HOSTS` | —                          | Optional comma-separated host allowlist for telemetry    |
+| `VITE_PLAUSIBLE_DOMAIN`        | —                          | Optional legacy Plausible site domain                    |
+| `VITE_PLAUSIBLE_SRC`           | —                          | Optional deploy-time Plausible script URL                |
+| `VITE_POSTHOG_KEY`             | —                          | Optional deploy-time PostHog browser project key         |
+| `VITE_POSTHOG_HOST`            | `https://us.i.posthog.com` | Optional PostHog API host                                |
+| `VITE_NIP89_RELAY_HINT`        | `VITE_RELAY_URL`           | Relay hint for Conduit NIP-89 handler metadata           |
+| `VITE_NIP89_MARKET_PUBKEY`     | —                          | Official Conduit Market handler pubkey                   |
+| `VITE_NIP89_MERCHANT_PUBKEY`   | —                          | Official Conduit Merchant Portal handler pubkey          |
+| `VITE_APP_VERSION`             | app package version        | Build-time app version surfaced on About pages           |
+| `VITE_BUILD_COMMIT`            | current git commit         | Commit SHA surfaced on About pages                       |
+| `VITE_BUILD_BRANCH`            | current git branch         | Branch or preview ref surfaced on About pages            |
+| `VITE_BUILD_TIME`              | current build time         | Build timestamp surfaced on About pages                  |
+| `VITE_SOURCE_URL`              | GitHub repository URL      | Source repository link surfaced on About pages           |
+| `VITE_RELEASE_CHANNEL`         | local/preview/prod         | Release channel surfaced on About pages                  |
 
 The canonical fallback/reset relay list is code-owned in `packages/core/src/config.ts` and currently starts from:
 

@@ -29,6 +29,13 @@ Runtime telemetry events may only use these fields:
 - `amount_bucket`
 - `product_type`
 
+## PostHog Dashboard Split
+
+PostHog dashboards should split Market and Merchant traffic with the shared
+`app` property. Use `app = market` for Market client panels and
+`app = merchant` for Merchant Portal panels. Do not use PostHog identity,
+grouping, person profile, or session replay features to create this split.
+
 Do not include active user, signer, buyer, wallet, or session pubkeys/npubs,
 invoices, order contents, product titles, addresses, message contents, IPs,
 fingerprints, signer connection strings, NWC URIs, raw URLs, raw paths, query
