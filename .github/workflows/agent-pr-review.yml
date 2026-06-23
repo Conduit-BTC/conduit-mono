@@ -40,14 +40,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Check Sudden Agent auth
+      - name: Check agent auth
         id: sudden_auth
         shell: bash
         env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
           SUDDEN_AGENT_API_KEY: ${{ secrets.SUDDEN_AGENT_API_KEY }}
           SUDDEN_AGENT_AUTH_FILE: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
         run: |
           set -euo pipefail
+
+          if [[ -n "$CODEX_AUTH_JSON" ]]; then
+            echo "has_codex_auth_json=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_codex_auth_json=false" >> "$GITHUB_OUTPUT"
+          fi
 
           if [[ -n "$SUDDEN_AGENT_AUTH_FILE" ]]; then
             echo "has_auth_file=true" >> "$GITHUB_OUTPUT"
@@ -61,15 +68,15 @@ jobs:
             echo "has_api_key=false" >> "$GITHUB_OUTPUT"
           fi
 
-          if [[ -n "$SUDDEN_AGENT_AUTH_FILE" || -n "$SUDDEN_AGENT_API_KEY" ]]; then
+          if [[ -n "$CODEX_AUTH_JSON" || -n "$SUDDEN_AGENT_AUTH_FILE" || -n "$SUDDEN_AGENT_API_KEY" ]]; then
             echo "has_auth=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_auth=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Skip when Sudden Agent auth is unavailable
+      - name: Skip when agent auth is unavailable
         if: steps.sudden_auth.outputs.has_auth != 'true'
-        run: echo "Sudden Agent auth is not configured; skipping agent review."
+        run: echo "CODEX_AUTH_JSON or Sudden Agent auth is not configured; skipping agent review."
 
       - uses: actions/checkout@v7
         if: steps.sudden_auth.outputs.has_auth == 'true'
@@ -77,12 +84,49 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Run Sudden Agent review with CODEX_AUTH_JSON
+        if: steps.sudden_auth.outputs.has_codex_auth_json == 'true'
+        uses: sudden-network/agent@v1.11.2
+        with:
+          agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
+          github_token: ${{ github.token }}
+          model: gpt-5.4/xhigh
+          resume: true
+          prompt: |
+            You are reviewing Conduit public repository changes.
+
+            Stay read-only. Do not edit files, push commits, create branches, or
+            change labels. If the author asks for fixes, explain that the
+            separate Agent PR Harden workflow must be triggered after maintainer
+            gating.
+
+            Review priorities:
+            1. Functional correctness and regressions.
+            2. Protocol/auth/privacy/payment constraints.
+            3. Reliability and failure-mode handling.
+            4. Test coverage and verifiability.
+            5. Maintainability.
+
+            Mandatory constraints:
+            - external signer auth only; no key custody
+            - no behavioral tracking or profiling
+            - no message, order, payment, address, signer, or wallet secret inspection
+            - payments remain non-custodial
+            - telemetry must follow docs/analytics/events.md
+            - public repo content must not include private runbooks, credentials,
+              dashboard exports, or private company planning context
+
+            Output findings first with P0/P1/P2 severity and concrete file/line
+            references. If there are no blocking findings, say so explicitly and
+            list residual test or preview risks.
+
       - name: Run Sudden Agent review with auth file
-        if: steps.sudden_auth.outputs.has_auth_file == 'true'
-        uses: sudden-network/agent@b45254b54e09c4ba01662a93aa52ab2f27b26919
+        if: steps.sudden_auth.outputs.has_codex_auth_json != 'true' && steps.sudden_auth.outputs.has_auth_file == 'true'
+        uses: sudden-network/agent@v1.11.2
         with:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
           github_token: ${{ github.token }}
+          model: gpt-5.4/xhigh
           resume: true
           prompt: |
             You are reviewing Conduit public repository changes.
@@ -113,11 +157,12 @@ jobs:
             list residual test or preview risks.
 
       - name: Run Sudden Agent review with API key
-        if: steps.sudden_auth.outputs.has_auth_file != 'true' && steps.sudden_auth.outputs.has_api_key == 'true'
-        uses: sudden-network/agent@b45254b54e09c4ba01662a93aa52ab2f27b26919
+        if: steps.sudden_auth.outputs.has_codex_auth_json != 'true' && steps.sudden_auth.outputs.has_auth_file != 'true' && steps.sudden_auth.outputs.has_api_key == 'true'
+        uses: sudden-network/agent@v1.11.2
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
           github_token: ${{ github.token }}
+          model: gpt-5.4/xhigh
           resume: true
           prompt: |
             You are reviewing Conduit public repository changes.
