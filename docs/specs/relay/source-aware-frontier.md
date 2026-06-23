@@ -117,6 +117,104 @@ or restricted relay use, but lack of auth does not prove that a relay is unsafe.
 The UI may warn or limit use when policy requires stronger access-control
 signals.
 
+## Event Integrity And Signature Verification
+
+Relay-published events are evidence, not trusted truth. The frontier must model
+event integrity explicitly so high-volume marketplace hydration can stay fast
+without letting unverified or invalid events become durable critical state.
+
+Every ingest path should attach one of these verification states to plain event
+records and cached graph projections:
+
+- `unverified`: event shape is usable enough for optimistic public rendering,
+  but no signature work has completed.
+- `verification_deferred`: verification is queued behind higher-priority
+  frontier work.
+- `verified_strict`: canonical NIP-01 event id and strict BIP-340 signature
+  verification passed.
+- `verified_nostr_fast`: canonical NIP-01 event id passed and a Nostr-only fast
+  verifier accepted the signature.
+- `invalid_id`: the event id does not match the canonical NIP-01 event hash.
+- `invalid_signature`: the event id is valid, but signature verification failed.
+- `malformed`: cheap structural checks failed before hashing or crypto.
+
+The required verification pipeline is:
+
+1. reject malformed events with cheap field, length, and hex checks
+2. recompute the canonical NIP-01 event id from
+   `[0, pubkey, created_at, kind, tags, content]`
+3. require the computed id to match `event.id`
+4. verify the Schnorr signature over that event id
+5. cache the verification result by event id
+6. feed malformed, invalid id, invalid signature, and verification timing
+   counts into source outcomes
+
+Critical commerce paths require strict verification before durable acceptance:
+
+- protected order, payment proof, and message confirmations read from relays
+- checkout and cart product terms
+- product detail events when they gate purchase or merchant readiness
+- payment and NWC-adjacent events unless a narrower Nostr-only exception is
+  explicitly specified
+
+Broad public hydration may render optimistically while verification is deferred:
+
+- cold-start `kind:30402` marketplace ingestion
+- profile and follow-list hydration
+- social or trust backfill
+- large relay bursts where synchronous verification would block visible product
+  discovery
+
+Optimistic state must remain marked unverified until the verification worker
+settles it. Invalid events must be evicted, quarantined, or excluded from
+durable graph truth once verification completes. The app must not treat a relay
+ACK, successful subscription delivery, or cached event row as proof of signature
+validity.
+
+Amethyst's Nostr verification implementation is useful prior art. It uses the
+standard NIP-01 event id check followed by BIP-340 Schnorr signature
+verification. Its Nostr-only `verifySchnorrFast` optimization skips the final
+even-y parity check after the core Schnorr equation succeeds. That optimization
+may reduce CPU cost for high-volume Nostr ingestion, but it must be scoped as a
+Nostr event verifier only, not a generic crypto helper.
+
+Conduit may define these verification modes behind a core-owned integrity
+interface:
+
+```ts
+type NostrEventSignatureMode =
+  | "StrictBip340"
+  | "NostrFast"
+  | "NostrFastWithSampling"
+```
+
+`NostrFast` and `NostrFastWithSampling` are callable only after canonical NIP-01
+event id recomputation has passed and only when the message is exactly
+`event.id`, the pubkey is exactly `event.pubkey`, and the context is plain
+Nostr event signature verification. The fast path must not be exported or named
+as a generic Schnorr helper. Prefer names such as
+`verifyNostrEventSignatureFast`, not `schnorrVerifyFast`.
+
+The fast path must never be used for Bitcoin, Taproot, wallet, PSBT, Cashu, NWC
+credentials, or arbitrary Schnorr verification. Initial rollout should use
+`NostrFastWithSampling`: fast-verify broad-ingestion events, strict-compare a
+small sample, and record only privacy-safe aggregate disagreement counters. Do
+not emit raw event ids, pubkeys, npubs, plaintext, ciphertext, invoices,
+addresses, NWC URIs, order contents, or message bodies in analytics,
+diagnostics, or logs.
+
+Verification work must be frontier-scheduled, not route-local:
+
+- dedupe by event id
+- cache repeated pubkey lift/decompression work
+- run in a worker or idle-budget queue rather than the network read loop
+- prioritize visible products, product detail, cart, checkout, orders, and
+  messages
+- preempt background verification during checkout, order, and message critical
+  modes
+- never synchronously verify the full cold marketplace dataset on the main
+  thread
+
 ## Graph And Source Model
 
 The frontier hydrates graph state, not route-local arrays. Route code should
@@ -380,7 +478,8 @@ Every relay job should emit structured outcomes. At minimum:
 - filter or publish intent
 - connection state and timing
 - EOSE, CLOSED, NOTICE, OK, timeout, and error observations
-- event counts, duplicate counts, malformed counts, and useful-yield counts
+- event counts, duplicate counts, malformed counts, invalid id counts, invalid
+  signature counts, verification timing, and useful-yield counts
 - source hints discovered
 - freshness and confidence metadata
 - whether the relay was parked, retained, or evicted
@@ -427,6 +526,18 @@ Future implementation work against this spec must cover:
   frontier bucket diagnostics
 - capability scans distinguish NIP-11 evidence from observed commerce
   usefulness
+- invalid event ids are rejected before signature verification
+- invalid signatures are not accepted as durable critical truth
+- broad marketplace products can render as `unverified`, then disappear or move
+  to quarantine after invalid verification
+- product detail and checkout block or degrade safely on invalid product
+  verification
+- duplicate events received from multiple relays reuse one cached verification
+  result
+- fast-with-sampling verification records only privacy-safe aggregate
+  disagreement counters
+- Nostr fast verification cannot be imported, named, or used as a generic crypto
+  helper
 - diagnostics and telemetry remain content-free
 
 ## References
@@ -448,6 +559,8 @@ Future implementation work against this spec must cover:
   frontier substrate.
 - [nostr-tools](https://github.com/nbd-wtf/nostr-tools): low-level Nostr
   primitives.
+- [Amethyst](https://github.com/vitorpamplona/amethyst): Nostr client
+  implementation reference for event signature verification performance tradeoffs.
 - [Page Visibility API](https://developer.mozilla.org/en-US/docs/Web/API/Page_Visibility_API):
   browser visibility lifecycle.
 - [WebSocket close event](https://developer.mozilla.org/en-US/docs/Web/API/WebSocket/close_event):
