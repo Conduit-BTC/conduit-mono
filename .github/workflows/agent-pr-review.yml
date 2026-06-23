@@ -111,14 +111,12 @@ jobs:
           permission-contents: read
           permission-issues: write
           permission-pull-requests: write
-          permission-secrets: write
 
       - name: Run Sudden Agent review with CODEX_AUTH_JSON
         if: steps.sudden_auth.outputs.has_codex_auth_json == 'true'
         uses: sudden-network/agent@v1.13.1
         with:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
-          agent_auth_file_secret_name: CODEX_AUTH_JSON
           github_token: ${{ steps.app_token.outputs.token || github.token }}
           github_token_actor: ${{ steps.app_token.outputs['app-slug'] && format('{0}[bot]', steps.app_token.outputs['app-slug']) || '' }}
           model: gpt-5.4/xhigh
@@ -156,7 +154,6 @@ jobs:
         uses: sudden-network/agent@v1.13.1
         with:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
-          agent_auth_file_secret_name: SUDDEN_AGENT_AUTH_FILE
           github_token: ${{ steps.app_token.outputs.token || github.token }}
           github_token_actor: ${{ steps.app_token.outputs['app-slug'] && format('{0}[bot]', steps.app_token.outputs['app-slug']) || '' }}
           model: gpt-5.4/xhigh
