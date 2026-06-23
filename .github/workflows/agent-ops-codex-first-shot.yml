@@ -1,0 +1,387 @@
+name: Agent Ops Codex First Shot
+
+on:
+  repository_dispatch:
+    types: [agent-ops-codex-first-shot]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run Codex read-only and do not open a PR
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      gate_label:
+        description: Linear agent gate label
+        required: true
+        default: agent-ready
+        type: choice
+        options:
+          - agent-ready
+          - agent-fix
+          - advisory-only
+          - human-plan-required
+      incident_summary:
+        description: Sanitized incident summary
+        required: true
+        type: string
+      linear_issue:
+        description: Linear issue key, if one exists
+        required: false
+        type: string
+      linear_url:
+        description: Linear issue URL, if one exists
+        required: false
+        type: string
+      risk_class:
+        description: Risk class for the incident
+        required: true
+        default: B
+        type: choice
+        options:
+          - A
+          - B
+          - C
+      target_branch:
+        description: Integration branch for the PR
+        required: true
+        default: main
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: agent-ops-codex-first-shot-${{ github.event.client_payload.dedupe_key || inputs.linear_issue || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  codex-first-shot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DEDUPE_KEY: ${{ github.event.client_payload.dedupe_key || '' }}
+      DRY_RUN: ${{ github.event_name == 'repository_dispatch' && toJSON(github.event.client_payload.dry_run) != 'null' && format('{0}', github.event.client_payload.dry_run) || inputs.dry_run || 'true' }}
+      GATE_LABEL: ${{ github.event.client_payload.gate_label || inputs.gate_label || 'advisory-only' }}
+      INCIDENT_SUMMARY: ${{ github.event.client_payload.incident_summary || inputs.incident_summary }}
+      LINEAR_ISSUE: ${{ github.event.client_payload.linear_issue || inputs.linear_issue }}
+      LINEAR_URL: ${{ github.event.client_payload.linear_url || inputs.linear_url }}
+      RISK_CLASS: ${{ github.event.client_payload.risk_class || inputs.risk_class || 'B' }}
+      TARGET_BRANCH: ${{ github.event.client_payload.target_branch || inputs.target_branch || 'main' }}
+    steps:
+      - name: Check agent auth
+        id: agent_auth
+        shell: bash
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          SUDDEN_AGENT_API_KEY: ${{ secrets.SUDDEN_AGENT_API_KEY }}
+          SUDDEN_AGENT_AUTH_FILE: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$CODEX_AUTH_JSON" ]]; then
+            echo "has_codex_auth_json=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_codex_auth_json=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [[ -n "$SUDDEN_AGENT_AUTH_FILE" ]]; then
+            echo "has_sudden_auth_file=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_sudden_auth_file=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [[ -n "$SUDDEN_AGENT_API_KEY" ]]; then
+            echo "has_sudden_api_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_sudden_api_key=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [[ -n "$CODEX_AUTH_JSON" || -n "$SUDDEN_AGENT_AUTH_FILE" || -n "$SUDDEN_AGENT_API_KEY" ]]; then
+            echo "has_auth=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_auth=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip when agent auth is unavailable
+        if: steps.agent_auth.outputs.has_auth != 'true'
+        run: echo "CODEX_AUTH_JSON or Sudden Agent auth is not configured; skipping Codex first-shot."
+
+      - name: Normalize risk class
+        if: steps.agent_auth.outputs.has_auth == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          normalized_risk="$(printf '%s' "$RISK_CLASS" | sed -E 's/^risk://I' | tr '[:lower:]' '[:upper:]')"
+          case "$normalized_risk" in
+            A|B|C) ;;
+            *)
+              echo "Unsupported risk class: $RISK_CLASS"
+              exit 1
+              ;;
+          esac
+
+          if [[ "$normalized_risk" == "C" && "$DRY_RUN" != "true" ]]; then
+            echo "Risk C requires human-owned planning before code-changing Codex first shots."
+            exit 1
+          fi
+
+          echo "RISK_CLASS=$normalized_risk" >> "$GITHUB_ENV"
+
+      - name: Validate dispatch gate
+        if: steps.agent_auth.outputs.has_auth == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$GATE_LABEL" in
+            agent-ready|agent-fix|advisory-only|human-plan-required) ;;
+            *)
+              echo "Unsupported gate label: $GATE_LABEL"
+              exit 1
+              ;;
+          esac
+
+          if [[ "$GATE_LABEL" == "human-plan-required" && "$DRY_RUN" != "true" ]]; then
+            echo "human-plan-required must run as dry-run."
+            exit 1
+          fi
+
+          if [[ "$GATE_LABEL" != "agent-ready" && "$GATE_LABEL" != "agent-fix" && "$DRY_RUN" != "true" ]]; then
+            echo "Only agent-ready or agent-fix can create code-changing first-shot PRs."
+            exit 1
+          fi
+
+          case "$TARGET_BRANCH" in
+            main) ;;
+            *)
+              echo "Unsupported target branch: $TARGET_BRANCH"
+              exit 1
+              ;;
+          esac
+
+      - name: Checkout target branch
+        if: steps.agent_auth.outputs.has_auth == 'true'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.TARGET_BRANCH }}
+
+      - name: Create working branch
+        if: steps.agent_auth.outputs.has_auth == 'true' && env.DRY_RUN != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          issue_slug="$(printf '%s' "${LINEAR_ISSUE:-agent-ops}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-')"
+          branch="agent/linear-${issue_slug}-${GITHUB_RUN_ID}"
+          git switch -c "$branch"
+          echo "AGENT_BRANCH=$branch" >> "$GITHUB_ENV"
+
+      - name: Check workflow agent GitHub App auth
+        id: app_auth
+        if: steps.agent_auth.outputs.has_auth == 'true'
+        shell: bash
+        env:
+          WORKFLOW_AGENT_GITHUB_APP_ID: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_ID }}
+          WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$WORKFLOW_AGENT_GITHUB_APP_ID" && -n "$WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY" ]]; then
+            echo "has_app=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_app=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create workflow agent GitHub App token
+        id: app_token
+        if: steps.app_auth.outputs.has_app == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_ID }}
+          private-key: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
+          permission-actions: read
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Require workflow agent GitHub App token
+        if: steps.agent_auth.outputs.has_auth == 'true' && steps.app_token.outputs.token == ''
+        run: |
+          echo "Agent Ops Codex First Shot requires the conduit-sudden-agent GitHub App token."
+          exit 1
+
+      - name: Run Codex first-shot with CODEX_AUTH_JSON
+        id: run_codex_auth_json
+        if: steps.agent_auth.outputs.has_codex_auth_json == 'true'
+        uses: sudden-network/agent@v1.13.1
+        with:
+          agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
+          model: gpt-5.4/xhigh
+          resume: true
+          sudo: ${{ env.DRY_RUN != 'true' }}
+          prompt: |
+            You are Codex working on Conduit-BTC/conduit-mono.
+
+            Sanitized agent request:
+            ${{ env.INCIDENT_SUMMARY }}
+
+            Linear issue: ${{ env.LINEAR_ISSUE }}
+            Linear URL: ${{ env.LINEAR_URL }}
+            Dedupe key: ${{ env.DEDUPE_KEY }}
+            Gate label: ${{ env.GATE_LABEL }}
+            Risk class: ${{ env.RISK_CLASS }}
+            Dry run: ${{ env.DRY_RUN }}
+            Target branch: ${{ env.TARGET_BRANCH }}
+
+            Goals:
+            - Investigate the likely root cause from repository code and public-safe context only.
+            - For dry-run, leave a concise final report with files/functions likely involved and recommended validation.
+            - For non-dry-run risk A/B, make the smallest defensible fix if the cause is clear.
+            - Add or update targeted tests when appropriate.
+            - Run targeted validation when feasible and include results in the final message.
+
+            Hard rules:
+            - Read AGENTS.md, CONTRIBUTING.md, docs/README.md, and docs/knowledge/self-healing-agent-system.md before editing.
+            - Do not deploy, merge, force-push, alter production secrets, run destructive commands, or touch .env files.
+            - Do not commit secrets, private runbooks, telemetry exports, dashboard exports, message/order/payment contents, addresses, signer codes, Nostr secret keys, NWC URIs, wallet credentials, Linear tokens, or unbounded Linear text.
+            - Treat protocol, auth, payment, privacy, security, release policy, production secret, and broad architecture work as risk C and stop with an advisory report.
+            - Keep public PR text focused on the sanitized issue, code change, validation, and residual risk.
+
+      - name: Run Codex first-shot with Sudden auth file
+        id: run_sudden_auth_file
+        if: steps.agent_auth.outputs.has_codex_auth_json != 'true' && steps.agent_auth.outputs.has_sudden_auth_file == 'true'
+        uses: sudden-network/agent@v1.13.1
+        with:
+          agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
+          model: gpt-5.4/xhigh
+          resume: true
+          sudo: ${{ env.DRY_RUN != 'true' }}
+          prompt: |
+            You are Codex working on Conduit-BTC/conduit-mono.
+
+            Sanitized agent request:
+            ${{ env.INCIDENT_SUMMARY }}
+
+            Linear issue: ${{ env.LINEAR_ISSUE }}
+            Linear URL: ${{ env.LINEAR_URL }}
+            Dedupe key: ${{ env.DEDUPE_KEY }}
+            Gate label: ${{ env.GATE_LABEL }}
+            Risk class: ${{ env.RISK_CLASS }}
+            Dry run: ${{ env.DRY_RUN }}
+            Target branch: ${{ env.TARGET_BRANCH }}
+
+            Goals:
+            - Investigate the likely root cause from repository code and public-safe context only.
+            - For dry-run, leave a concise final report with files/functions likely involved and recommended validation.
+            - For non-dry-run risk A/B, make the smallest defensible fix if the cause is clear.
+            - Add or update targeted tests when appropriate.
+            - Run targeted validation when feasible and include results in the final message.
+
+            Hard rules:
+            - Read AGENTS.md, CONTRIBUTING.md, docs/README.md, and docs/knowledge/self-healing-agent-system.md before editing.
+            - Do not deploy, merge, force-push, alter production secrets, run destructive commands, or touch .env files.
+            - Do not commit secrets, private runbooks, telemetry exports, dashboard exports, message/order/payment contents, addresses, signer codes, Nostr secret keys, NWC URIs, wallet credentials, Linear tokens, or unbounded Linear text.
+            - Treat protocol, auth, payment, privacy, security, release policy, production secret, and broad architecture work as risk C and stop with an advisory report.
+            - Keep public PR text focused on the sanitized issue, code change, validation, and residual risk.
+
+      - name: Run Codex first-shot with Sudden API key
+        id: run_sudden_api_key
+        if: steps.agent_auth.outputs.has_codex_auth_json != 'true' && steps.agent_auth.outputs.has_sudden_auth_file != 'true' && steps.agent_auth.outputs.has_sudden_api_key == 'true'
+        uses: sudden-network/agent@v1.13.1
+        with:
+          agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
+          model: gpt-5.4/xhigh
+          resume: true
+          sudo: ${{ env.DRY_RUN != 'true' }}
+          prompt: |
+            You are Codex working on Conduit-BTC/conduit-mono.
+
+            Sanitized agent request:
+            ${{ env.INCIDENT_SUMMARY }}
+
+            Linear issue: ${{ env.LINEAR_ISSUE }}
+            Linear URL: ${{ env.LINEAR_URL }}
+            Dedupe key: ${{ env.DEDUPE_KEY }}
+            Gate label: ${{ env.GATE_LABEL }}
+            Risk class: ${{ env.RISK_CLASS }}
+            Dry run: ${{ env.DRY_RUN }}
+            Target branch: ${{ env.TARGET_BRANCH }}
+
+            Goals:
+            - Investigate the likely root cause from repository code and public-safe context only.
+            - For dry-run, leave a concise final report with files/functions likely involved and recommended validation.
+            - For non-dry-run risk A/B, make the smallest defensible fix if the cause is clear.
+            - Add or update targeted tests when appropriate.
+            - Run targeted validation when feasible and include results in the final message.
+
+            Hard rules:
+            - Read AGENTS.md, CONTRIBUTING.md, docs/README.md, and docs/knowledge/self-healing-agent-system.md before editing.
+            - Do not deploy, merge, force-push, alter production secrets, run destructive commands, or touch .env files.
+            - Do not commit secrets, private runbooks, telemetry exports, dashboard exports, message/order/payment contents, addresses, signer codes, Nostr secret keys, NWC URIs, wallet credentials, Linear tokens, or unbounded Linear text.
+            - Treat protocol, auth, payment, privacy, security, release policy, production secret, and broad architecture work as risk C and stop with an advisory report.
+            - Keep public PR text focused on the sanitized issue, code change, validation, and residual risk.
+
+      - name: Create PR for Codex changes
+        if: steps.agent_auth.outputs.has_auth == 'true' && env.DRY_RUN != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          GIT_PUSH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$(git status --porcelain)" ]]; then
+            echo "Codex did not make file changes."
+            exit 0
+          fi
+
+          git config user.name "conduit-agent-ops"
+          git config user.email "agent-ops@conduit.market"
+          git add -A
+          git commit -m "fix(agent): address linear agent request"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${GIT_PUSH_TOKEN}" push --set-upstream origin "$AGENT_BRANCH"
+
+          body_file="$(mktemp)"
+          {
+            if [[ -n "${LINEAR_ISSUE:-}" ]]; then
+              echo "Related Linear: ${LINEAR_ISSUE}"
+              echo
+            fi
+            echo "## Summary"
+            echo "- Codex first-shot response to a sanitized Linear agent request."
+            echo "- Request: ${INCIDENT_SUMMARY}"
+            echo
+            echo "## Validation"
+            echo "- See the Agent Ops Codex First Shot workflow logs for the agent final report."
+            echo
+            echo "## Safety"
+            echo "- Gate label: ${GATE_LABEL}"
+            echo "- Risk class: ${RISK_CLASS}"
+          } > "$body_file"
+
+          pr_url="$(gh pr create \
+            --base "$TARGET_BRANCH" \
+            --head "$AGENT_BRANCH" \
+            --title "fix(agent): address linear agent request" \
+            --body-file "$body_file")"
+
+          gh pr edit "$pr_url" \
+            --add-label AGENT \
+            --add-label agent-created \
+            --add-label "$GATE_LABEL" \
+            --add-label "risk:${RISK_CLASS}"
+          echo "Created $pr_url"

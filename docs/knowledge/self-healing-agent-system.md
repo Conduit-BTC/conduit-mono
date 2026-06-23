@@ -44,6 +44,23 @@ Feature work should be groomed before implementation. If product requirements,
 protocol behavior, or shared expectations change, land the relevant public docs
 or spec update before implementation.
 
+## Linear Label Kickoff
+
+Linear label-driven code-changing kickoff is split across private and public
+surfaces:
+
+- private agent ops intake verifies the Linear webhook and normalizes the issue
+  label event
+- public `conduit-mono` receives only a sanitized `repository_dispatch` payload
+- `agent-ready` or `agent-fix` plus `risk:A` or `risk:B` can open an agent PR
+  against `main`
+- `risk:C` remains advisory-only and must not create a code-changing first-shot
+  run without human-owned planning
+
+`repository_dispatch` workflows run from the default branch, so new dispatch
+workflow changes must be merged to `main` before Linear label events can use
+them.
+
 ## Risk Classes
 
 - `A`: low-risk docs, tests, copy, formatting, config, or isolated UI polish.

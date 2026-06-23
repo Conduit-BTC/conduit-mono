@@ -40,14 +40,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Check Sudden Agent auth
+      - name: Check agent auth
         id: sudden_auth
         shell: bash
         env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
           SUDDEN_AGENT_API_KEY: ${{ secrets.SUDDEN_AGENT_API_KEY }}
           SUDDEN_AGENT_AUTH_FILE: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
         run: |
           set -euo pipefail
+
+          if [[ -n "$CODEX_AUTH_JSON" ]]; then
+            echo "has_codex_auth_json=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_codex_auth_json=false" >> "$GITHUB_OUTPUT"
+          fi
 
           if [[ -n "$SUDDEN_AGENT_AUTH_FILE" ]]; then
             echo "has_auth_file=true" >> "$GITHUB_OUTPUT"
@@ -61,15 +68,15 @@ jobs:
             echo "has_api_key=false" >> "$GITHUB_OUTPUT"
           fi
 
-          if [[ -n "$SUDDEN_AGENT_AUTH_FILE" || -n "$SUDDEN_AGENT_API_KEY" ]]; then
+          if [[ -n "$CODEX_AUTH_JSON" || -n "$SUDDEN_AGENT_AUTH_FILE" || -n "$SUDDEN_AGENT_API_KEY" ]]; then
             echo "has_auth=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_auth=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Skip when Sudden Agent auth is unavailable
+      - name: Skip when agent auth is unavailable
         if: steps.sudden_auth.outputs.has_auth != 'true'
-        run: echo "Sudden Agent auth is not configured; skipping agent review."
+        run: echo "CODEX_AUTH_JSON or Sudden Agent auth is not configured; skipping agent review."
 
       - uses: actions/checkout@v7
         if: steps.sudden_auth.outputs.has_auth == 'true'
@@ -77,12 +84,59 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Run Sudden Agent review with auth file
-        if: steps.sudden_auth.outputs.has_auth_file == 'true'
-        uses: sudden-network/agent@b45254b54e09c4ba01662a93aa52ab2f27b26919
+      - uses: oven-sh/setup-bun@v2
+        if: steps.sudden_auth.outputs.has_auth == 'true'
         with:
-          agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
-          github_token: ${{ github.token }}
+          bun-version: "1.3.5"
+
+      - name: Install dependencies for agent validation
+        if: steps.sudden_auth.outputs.has_auth == 'true'
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Check workflow agent GitHub App auth
+        id: app_auth
+        if: steps.sudden_auth.outputs.has_auth == 'true'
+        shell: bash
+        env:
+          WORKFLOW_AGENT_GITHUB_APP_ID: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_ID }}
+          WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$WORKFLOW_AGENT_GITHUB_APP_ID" && -n "$WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY" ]]; then
+            echo "has_app=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_app=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create workflow agent GitHub App token
+        id: app_token
+        if: steps.app_auth.outputs.has_app == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_ID }}
+          private-key: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
+          permission-actions: read
+          permission-contents: read
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Require workflow agent GitHub App token
+        if: steps.sudden_auth.outputs.has_auth == 'true' && steps.app_token.outputs.token == ''
+        run: |
+          echo "Agent PR Review requires the conduit-sudden-agent GitHub App token."
+          exit 1
+
+      - name: Run Sudden Agent review with CODEX_AUTH_JSON
+        id: review_codex_auth_json
+        if: steps.sudden_auth.outputs.has_codex_auth_json == 'true'
+        continue-on-error: ${{ steps.sudden_auth.outputs.has_auth_file == 'true' || steps.sudden_auth.outputs.has_api_key == 'true' }}
+        uses: sudden-network/agent@v1.13.1
+        with:
+          agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
+          model: gpt-5.4/xhigh
           resume: true
           prompt: |
             You are reviewing Conduit public repository changes.
@@ -98,6 +152,74 @@ jobs:
             3. Reliability and failure-mode handling.
             4. Test coverage and verifiability.
             5. Maintainability.
+
+            Review comment behavior:
+            - When a finding has a concrete, safe patch, leave an inline GitHub
+              review comment on the exact changed line with a ```suggestion
+              fenced block that replaces the current line or lines.
+            - Keep each suggestion minimal and directly applicable so the PR
+              author can accept it from GitHub.
+            - Do not use suggestion blocks for uncertain fixes, explanatory
+              prose, generated secrets, large refactors, or changes outside the
+              PR diff.
+            - If there is no safe diff to suggest, leave a normal actionable
+              inline or summary comment with the issue, impact, and recommended
+              fix.
+
+            Mandatory constraints:
+            - external signer auth only; no key custody
+            - no behavioral tracking or profiling
+            - no message, order, payment, address, signer, or wallet secret inspection
+            - payments remain non-custodial
+            - telemetry must follow docs/analytics/events.md
+            - public repo content must not include private runbooks, credentials,
+              dashboard exports, or private company planning context
+
+            Output findings first with P0/P1/P2 severity and concrete file/line
+            references. If there are no blocking findings, say so explicitly and
+            list residual test or preview risks.
+
+      - name: Run Sudden Agent review with auth file
+        id: review_auth_file
+        if: >-
+          steps.sudden_auth.outputs.has_auth_file == 'true' &&
+          (steps.sudden_auth.outputs.has_codex_auth_json != 'true' ||
+            steps.review_codex_auth_json.outcome == 'failure')
+        continue-on-error: ${{ steps.sudden_auth.outputs.has_api_key == 'true' }}
+        uses: sudden-network/agent@v1.13.1
+        with:
+          agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
+          model: gpt-5.4/xhigh
+          resume: true
+          prompt: |
+            You are reviewing Conduit public repository changes.
+
+            Stay read-only. Do not edit files, push commits, create branches, or
+            change labels. If the author asks for fixes, explain that the
+            separate Agent PR Harden workflow must be triggered after maintainer
+            gating.
+
+            Review priorities:
+            1. Functional correctness and regressions.
+            2. Protocol/auth/privacy/payment constraints.
+            3. Reliability and failure-mode handling.
+            4. Test coverage and verifiability.
+            5. Maintainability.
+
+            Review comment behavior:
+            - When a finding has a concrete, safe patch, leave an inline GitHub
+              review comment on the exact changed line with a ```suggestion
+              fenced block that replaces the current line or lines.
+            - Keep each suggestion minimal and directly applicable so the PR
+              author can accept it from GitHub.
+            - Do not use suggestion blocks for uncertain fixes, explanatory
+              prose, generated secrets, large refactors, or changes outside the
+              PR diff.
+            - If there is no safe diff to suggest, leave a normal actionable
+              inline or summary comment with the issue, impact, and recommended
+              fix.
 
             Mandatory constraints:
             - external signer auth only; no key custody
@@ -113,11 +235,18 @@ jobs:
             list residual test or preview risks.
 
       - name: Run Sudden Agent review with API key
-        if: steps.sudden_auth.outputs.has_auth_file != 'true' && steps.sudden_auth.outputs.has_api_key == 'true'
-        uses: sudden-network/agent@b45254b54e09c4ba01662a93aa52ab2f27b26919
+        if: >-
+          steps.sudden_auth.outputs.has_api_key == 'true' &&
+          (steps.sudden_auth.outputs.has_codex_auth_json != 'true' ||
+            steps.review_codex_auth_json.outcome == 'failure') &&
+          (steps.sudden_auth.outputs.has_auth_file != 'true' ||
+            steps.review_auth_file.outcome == 'failure')
+        uses: sudden-network/agent@v1.13.1
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
-          github_token: ${{ github.token }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
+          model: gpt-5.4/xhigh
           resume: true
           prompt: |
             You are reviewing Conduit public repository changes.
@@ -133,6 +262,19 @@ jobs:
             3. Reliability and failure-mode handling.
             4. Test coverage and verifiability.
             5. Maintainability.
+
+            Review comment behavior:
+            - When a finding has a concrete, safe patch, leave an inline GitHub
+              review comment on the exact changed line with a ```suggestion
+              fenced block that replaces the current line or lines.
+            - Keep each suggestion minimal and directly applicable so the PR
+              author can accept it from GitHub.
+            - Do not use suggestion blocks for uncertain fixes, explanatory
+              prose, generated secrets, large refactors, or changes outside the
+              PR diff.
+            - If there is no safe diff to suggest, leave a normal actionable
+              inline or summary comment with the issue, impact, and recommended
+              fix.
 
             Mandatory constraints:
             - external signer auth only; no key custody

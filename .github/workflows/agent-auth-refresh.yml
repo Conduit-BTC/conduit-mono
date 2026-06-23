@@ -1,0 +1,119 @@
+name: Agent Auth Refresh
+
+on:
+  workflow_dispatch:
+    inputs:
+      auth_secret_name:
+        description: "Agent auth secret to refresh"
+        required: true
+        default: CODEX_AUTH_JSON
+        type: choice
+        options:
+          - CODEX_AUTH_JSON
+          - SUDDEN_AGENT_AUTH_FILE
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.auth_secret_name || 'CODEX_AUTH_JSON' }}
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      AUTH_SECRET_NAME: ${{ inputs.auth_secret_name || 'CODEX_AUTH_JSON' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check requested auth secret
+        id: auth
+        shell: bash
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          SUDDEN_AGENT_AUTH_FILE: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
+        run: |
+          set -euo pipefail
+
+          case "$AUTH_SECRET_NAME" in
+            CODEX_AUTH_JSON)
+              if [[ -z "$CODEX_AUTH_JSON" ]]; then
+                echo "CODEX_AUTH_JSON is not configured."
+                exit 1
+              fi
+              ;;
+            SUDDEN_AGENT_AUTH_FILE)
+              if [[ -z "$SUDDEN_AGENT_AUTH_FILE" ]]; then
+                echo "SUDDEN_AGENT_AUTH_FILE is not configured."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Unsupported auth secret: $AUTH_SECRET_NAME"
+              exit 1
+              ;;
+          esac
+
+      - name: Check workflow agent GitHub App auth
+        id: app_auth
+        shell: bash
+        env:
+          WORKFLOW_AGENT_GITHUB_APP_ID: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_ID }}
+          WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$WORKFLOW_AGENT_GITHUB_APP_ID" || -z "$WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY" ]]; then
+            echo "WORKFLOW_AGENT_GITHUB_APP_ID and WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY are required."
+            exit 1
+          fi
+
+      - name: Create workflow agent GitHub App token
+        id: app_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_ID }}
+          private-key: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-secrets: write
+
+      - name: Refresh CODEX_AUTH_JSON
+        if: env.AUTH_SECRET_NAME == 'CODEX_AUTH_JSON'
+        uses: sudden-network/agent@v1.13.1
+        with:
+          agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
+          agent_auth_file_secret_name: CODEX_AUTH_JSON
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
+          model: gpt-5.4/xhigh
+          resume: false
+          prompt: |
+            Refresh the injected Codex auth file if the CLI requires a token
+            refresh. Do not inspect repository code, edit files, create
+            comments, open pull requests, change labels, or perform any
+            repository maintenance. Reply with a single sentence indicating
+            whether authentication succeeded.
+
+      - name: Refresh SUDDEN_AGENT_AUTH_FILE
+        if: env.AUTH_SECRET_NAME == 'SUDDEN_AGENT_AUTH_FILE'
+        uses: sudden-network/agent@v1.13.1
+        with:
+          agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
+          agent_auth_file_secret_name: SUDDEN_AGENT_AUTH_FILE
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
+          model: gpt-5.4/xhigh
+          resume: false
+          prompt: |
+            Refresh the injected Codex auth file if the CLI requires a token
+            refresh. Do not inspect repository code, edit files, create
+            comments, open pull requests, change labels, or perform any
+            repository maintenance. Reply with a single sentence indicating
+            whether authentication succeeded.
