@@ -212,10 +212,10 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
 
-      - name: Require app token for code-changing first shots
-        if: steps.agent_auth.outputs.has_auth == 'true' && env.DRY_RUN != 'true' && steps.app_token.outputs.token == ''
+      - name: Require workflow agent GitHub App token
+        if: steps.agent_auth.outputs.has_auth == 'true' && steps.app_token.outputs.token == ''
         run: |
-          echo "Code-changing first-shot runs require WORKFLOW_AGENT_GITHUB_APP_ID and WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY."
+          echo "Agent Ops Codex First Shot requires the conduit-sudden-agent GitHub App token."
           exit 1
 
       - name: Run Codex first-shot with CODEX_AUTH_JSON
@@ -224,8 +224,8 @@ jobs:
         uses: sudden-network/agent@v1.13.1
         with:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
-          github_token: ${{ steps.app_token.outputs.token || github.token }}
-          github_token_actor: ${{ steps.app_token.outputs['app-slug'] && format('{0}[bot]', steps.app_token.outputs['app-slug']) || '' }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
           model: gpt-5.4/xhigh
           resume: true
           sudo: ${{ env.DRY_RUN != 'true' }}
@@ -263,8 +263,8 @@ jobs:
         uses: sudden-network/agent@v1.13.1
         with:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
-          github_token: ${{ steps.app_token.outputs.token || github.token }}
-          github_token_actor: ${{ steps.app_token.outputs['app-slug'] && format('{0}[bot]', steps.app_token.outputs['app-slug']) || '' }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
           model: gpt-5.4/xhigh
           resume: true
           sudo: ${{ env.DRY_RUN != 'true' }}
@@ -302,8 +302,8 @@ jobs:
         uses: sudden-network/agent@v1.13.1
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
-          github_token: ${{ steps.app_token.outputs.token || github.token }}
-          github_token_actor: ${{ steps.app_token.outputs['app-slug'] && format('{0}[bot]', steps.app_token.outputs['app-slug']) || '' }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
           model: gpt-5.4/xhigh
           resume: true
           sudo: ${{ env.DRY_RUN != 'true' }}
@@ -339,8 +339,8 @@ jobs:
         if: steps.agent_auth.outputs.has_auth == 'true' && env.DRY_RUN != 'true'
         shell: bash
         env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token || github.token }}
-          GIT_PUSH_TOKEN: ${{ steps.app_token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          GIT_PUSH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
           set -euo pipefail
 

@@ -84,6 +84,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - uses: oven-sh/setup-bun@v2
+        if: steps.sudden_auth.outputs.has_auth == 'true'
+        with:
+          bun-version: "1.3.5"
+
+      - name: Install dependencies for agent validation
+        if: steps.sudden_auth.outputs.has_auth == 'true'
+        run: bun install --frozen-lockfile --ignore-scripts
+
       - name: Check workflow agent GitHub App auth
         id: app_auth
         if: steps.sudden_auth.outputs.has_auth == 'true'
@@ -112,13 +121,21 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
 
+      - name: Require workflow agent GitHub App token
+        if: steps.sudden_auth.outputs.has_auth == 'true' && steps.app_token.outputs.token == ''
+        run: |
+          echo "Agent PR Review requires the conduit-sudden-agent GitHub App token."
+          exit 1
+
       - name: Run Sudden Agent review with CODEX_AUTH_JSON
+        id: review_codex_auth_json
         if: steps.sudden_auth.outputs.has_codex_auth_json == 'true'
+        continue-on-error: ${{ steps.sudden_auth.outputs.has_auth_file == 'true' || steps.sudden_auth.outputs.has_api_key == 'true' }}
         uses: sudden-network/agent@v1.13.1
         with:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
-          github_token: ${{ steps.app_token.outputs.token || github.token }}
-          github_token_actor: ${{ steps.app_token.outputs['app-slug'] && format('{0}[bot]', steps.app_token.outputs['app-slug']) || '' }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
           model: gpt-5.4/xhigh
           resume: true
           prompt: |
@@ -163,12 +180,17 @@ jobs:
             list residual test or preview risks.
 
       - name: Run Sudden Agent review with auth file
-        if: steps.sudden_auth.outputs.has_codex_auth_json != 'true' && steps.sudden_auth.outputs.has_auth_file == 'true'
+        id: review_auth_file
+        if: >-
+          steps.sudden_auth.outputs.has_auth_file == 'true' &&
+          (steps.sudden_auth.outputs.has_codex_auth_json != 'true' ||
+            steps.review_codex_auth_json.outcome == 'failure')
+        continue-on-error: ${{ steps.sudden_auth.outputs.has_api_key == 'true' }}
         uses: sudden-network/agent@v1.13.1
         with:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
-          github_token: ${{ steps.app_token.outputs.token || github.token }}
-          github_token_actor: ${{ steps.app_token.outputs['app-slug'] && format('{0}[bot]', steps.app_token.outputs['app-slug']) || '' }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
           model: gpt-5.4/xhigh
           resume: true
           prompt: |
@@ -213,12 +235,17 @@ jobs:
             list residual test or preview risks.
 
       - name: Run Sudden Agent review with API key
-        if: steps.sudden_auth.outputs.has_codex_auth_json != 'true' && steps.sudden_auth.outputs.has_auth_file != 'true' && steps.sudden_auth.outputs.has_api_key == 'true'
+        if: >-
+          steps.sudden_auth.outputs.has_api_key == 'true' &&
+          (steps.sudden_auth.outputs.has_codex_auth_json != 'true' ||
+            steps.review_codex_auth_json.outcome == 'failure') &&
+          (steps.sudden_auth.outputs.has_auth_file != 'true' ||
+            steps.review_auth_file.outcome == 'failure')
         uses: sudden-network/agent@v1.13.1
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
-          github_token: ${{ steps.app_token.outputs.token || github.token }}
-          github_token_actor: ${{ steps.app_token.outputs['app-slug'] && format('{0}[bot]', steps.app_token.outputs['app-slug']) || '' }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
           model: gpt-5.4/xhigh
           resume: true
           prompt: |

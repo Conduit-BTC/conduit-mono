@@ -74,44 +74,6 @@ jobs:
         if: steps.sudden_auth.outputs.has_auth != 'true'
         run: echo "CODEX_AUTH_JSON or Sudden Agent auth is not configured; skipping agent hardening."
 
-      - uses: actions/checkout@v7
-        if: steps.sudden_auth.outputs.has_auth == 'true'
-        with:
-          fetch-depth: 0
-
-      - name: Validate maintainer gate
-        if: steps.sudden_auth.outputs.has_auth == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          metadata="$(gh pr view "${{ inputs.pr_number }}" --json isCrossRepository,labels)"
-          is_cross_repo="$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.isCrossRepository ? "true" : "false")' "$metadata")"
-          has_gate_label="$(node -e 'const data = JSON.parse(process.argv[1]); const labels = data.labels.map((label) => label.name); console.log(labels.includes("agent-ready") || labels.includes("agent-fix") ? "true" : "false")' "$metadata")"
-
-          if [[ "${{ inputs.risk_class }}" == "C" ]]; then
-            echo "Risk class C requires human-owned planning before agent code changes."
-            exit 1
-          fi
-
-          if [[ "$is_cross_repo" == "true" ]]; then
-            echo "Agent hardening is disabled for cross-repository pull requests."
-            exit 1
-          fi
-
-          if [[ "$has_gate_label" != "true" ]]; then
-            echo "Add agent-ready or agent-fix before running code-changing agent hardening."
-            exit 1
-          fi
-
-      - name: Check out pull request branch
-        if: steps.sudden_auth.outputs.has_auth == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh pr checkout "${{ inputs.pr_number }}"
-
       - name: Check workflow agent GitHub App auth
         id: app_auth
         if: steps.sudden_auth.outputs.has_auth == 'true'
@@ -140,13 +102,58 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
 
+      - name: Require workflow agent GitHub App token
+        if: steps.sudden_auth.outputs.has_auth == 'true' && steps.app_token.outputs.token == ''
+        run: |
+          echo "Agent PR Harden requires the conduit-sudden-agent GitHub App token."
+          exit 1
+
+      - uses: actions/checkout@v7
+        if: steps.sudden_auth.outputs.has_auth == 'true'
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app_token.outputs.token }}
+
+      - name: Validate maintainer gate
+        if: steps.sudden_auth.outputs.has_auth == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          metadata="$(gh pr view "${{ inputs.pr_number }}" --json isCrossRepository,labels)"
+          is_cross_repo="$(node -e 'const data = JSON.parse(process.argv[1]); console.log(data.isCrossRepository ? "true" : "false")' "$metadata")"
+          has_gate_label="$(node -e 'const data = JSON.parse(process.argv[1]); const labels = data.labels.map((label) => label.name); console.log(labels.includes("agent-ready") || labels.includes("agent-fix") ? "true" : "false")' "$metadata")"
+
+          if [[ "${{ inputs.risk_class }}" == "C" ]]; then
+            echo "Risk class C requires human-owned planning before agent code changes."
+            exit 1
+          fi
+
+          if [[ "$is_cross_repo" == "true" ]]; then
+            echo "Agent hardening is disabled for cross-repository pull requests."
+            exit 1
+          fi
+
+          if [[ "$has_gate_label" != "true" ]]; then
+            echo "Add agent-ready or agent-fix before running code-changing agent hardening."
+            exit 1
+          fi
+
+      - name: Check out pull request branch
+        if: steps.sudden_auth.outputs.has_auth == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: gh pr checkout "${{ inputs.pr_number }}"
+
       - name: Run Sudden Agent hardening with CODEX_AUTH_JSON
         if: steps.sudden_auth.outputs.has_codex_auth_json == 'true'
         uses: sudden-network/agent@v1.13.1
         with:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
-          github_token: ${{ steps.app_token.outputs.token || github.token }}
-          github_token_actor: ${{ steps.app_token.outputs['app-slug'] && format('{0}[bot]', steps.app_token.outputs['app-slug']) || '' }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
           model: gpt-5.4/xhigh
           resume: true
           sudo: true
@@ -180,8 +187,8 @@ jobs:
         uses: sudden-network/agent@v1.13.1
         with:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
-          github_token: ${{ steps.app_token.outputs.token || github.token }}
-          github_token_actor: ${{ steps.app_token.outputs['app-slug'] && format('{0}[bot]', steps.app_token.outputs['app-slug']) || '' }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
           model: gpt-5.4/xhigh
           resume: true
           sudo: true
@@ -215,8 +222,8 @@ jobs:
         uses: sudden-network/agent@v1.13.1
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
-          github_token: ${{ steps.app_token.outputs.token || github.token }}
-          github_token_actor: ${{ steps.app_token.outputs['app-slug'] && format('{0}[bot]', steps.app_token.outputs['app-slug']) || '' }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
           model: gpt-5.4/xhigh
           resume: true
           sudo: true
