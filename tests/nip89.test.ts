@@ -20,14 +20,14 @@ describe("nip89 helpers", () => {
     const tag = buildNip89ClientTag({
       name: "Conduit Market",
       address: "31990:abc123:conduit-market",
-      relayHint: "wss://conduitl2.fly.dev",
+      relayHint: "wss://relay.conduit.market",
     })
 
     expect(tag).toEqual([
       "client",
       "Conduit Market",
       "31990:abc123:conduit-market",
-      "wss://conduitl2.fly.dev",
+      "wss://relay.conduit.market",
     ])
   })
 
@@ -124,7 +124,7 @@ describe("nip89 with gift wrap", () => {
       buildNip89ClientTag({
         name: "Conduit Market",
         address: "31990:abc123:conduit-market",
-        relayHint: "wss://conduitl2.fly.dev",
+        relayHint: "wss://relay.conduit.market",
       })
     )
     rumor.content = JSON.stringify({ note: "hello" })

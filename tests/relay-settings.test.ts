@@ -123,9 +123,11 @@ function entry(
 }
 
 describe("relay settings protocol helpers", () => {
-  it("keeps relay defaults canonical and excludes retired relay domains", () => {
-    expect(CANONICAL_APP_BACKPLANE_RELAYS).toEqual(["wss://conduitl2.fly.dev"])
-    expect(CANONICAL_APP_WRITE_RELAYS).toEqual(["wss://conduitl2.fly.dev"])
+  it("keeps relay defaults canonical and excludes legacy default domains", () => {
+    expect(CANONICAL_APP_BACKPLANE_RELAYS).toEqual([
+      "wss://relay.conduit.market",
+    ])
+    expect(CANONICAL_APP_WRITE_RELAYS).toEqual(["wss://relay.conduit.market"])
     expect(CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS).toEqual([
       "wss://nos.lol",
       "wss://relay.damus.io",
@@ -133,7 +135,7 @@ describe("relay settings protocol helpers", () => {
     ])
     expect(CANONICAL_SEARCH_INDEX_RELAYS).toEqual(["wss://relay.nostr.band"])
     expect(CANONICAL_COMMERCE_DM_FALLBACK_RELAYS).toEqual([
-      "wss://conduitl2.fly.dev",
+      "wss://relay.conduit.market",
       "wss://inbox.azzamo.net",
       "wss://nos.lol",
       "wss://relay.damus.io",
@@ -151,7 +153,7 @@ describe("relay settings protocol helpers", () => {
       "wss://relay.nostr.band",
     ])
     expect(CANONICAL_DEFAULT_RELAYS).toEqual([
-      "wss://conduitl2.fly.dev",
+      "wss://relay.conduit.market",
       "wss://nos.lol",
       "wss://relay.damus.io",
       "wss://relay.nostr.net",
@@ -180,9 +182,9 @@ describe("relay settings protocol helpers", () => {
       "dm_inbox_default",
       "zap_public",
     ])
-    expect(config.commerceRelayUrls).toContain("wss://conduitl2.fly.dev")
-    expect(config.nip89RelayHint).toBe("wss://conduitl2.fly.dev")
-    expect(config.defaultRelays).not.toContain("wss://relay.conduit.market")
+    expect(config.commerceRelayUrls).toContain("wss://relay.conduit.market")
+    expect(config.nip89RelayHint).toBe("wss://relay.conduit.market")
+    expect(config.defaultRelays).not.toContain("wss://conduitl2.fly.dev")
     expect(config.defaultRelays).not.toContain("wss://relay.plebeian.market")
     expect(config.defaultRelays).not.toContain("wss://relay.primal.net")
     expect(config.defaultRelays).not.toContain("wss://nostr.mom")
@@ -194,6 +196,7 @@ describe("relay settings protocol helpers", () => {
     })
 
     expect(settings.entries.map((relay) => relay.url)).toEqual([
+      "wss://relay.conduit.market",
       "wss://nos.lol",
     ])
     expect(settings.entries.every((relay) => relay.readEnabled)).toBe(true)
@@ -357,8 +360,8 @@ describe("relay settings protocol helpers", () => {
   })
 
   it("does not mark configured relays as commerce without NIP-11 evidence", () => {
-    const scanned = deriveRelayScanResult("wss://conduitl2.fly.dev", null, {
-      commerceRelayUrls: ["wss://conduitl2.fly.dev"],
+    const scanned = deriveRelayScanResult("wss://relay.conduit.market", null, {
+      commerceRelayUrls: ["wss://relay.conduit.market"],
     })
 
     expect(scanned.reachable).toBe(false)

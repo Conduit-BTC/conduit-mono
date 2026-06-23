@@ -131,14 +131,10 @@ bun run dev:merchant:mainnet
 The canonical fallback/reset relay list is code-owned in `packages/core/src/config.ts` and currently starts from:
 
 ```text
-wss://conduitl2.fly.dev
-wss://relay.plebeian.market
-wss://relay.primal.net
-wss://relay.damus.io
+wss://relay.conduit.market
 wss://nos.lol
-wss://nostr.mom
+wss://relay.damus.io
 wss://relay.nostr.net
-wss://relay.minibits.cash
 ```
 
 Browser builds print a relay map in DevTools showing the code defaults, raw/normalized relay env vars, and the final resolved relay lists. Conduit-hosted deploys should leave relay env vars empty so reviewers can compare the open-source code defaults with the deployed behavior.
@@ -184,8 +180,8 @@ Actions variables are used when explicit `VITE_BUILD_*` overrides are absent.
 Dry-run first:
 
 ```bash
-NIP89_APP=market NIP89_NSEC=<market-nsec> NIP89_RELAY_URLS=wss://conduitl2.fly.dev bun run nip89:publish-handler -- --dry-run
-NIP89_APP=merchant NIP89_NSEC=<merchant-nsec> NIP89_RELAY_URLS=wss://conduitl2.fly.dev bun run nip89:publish-handler -- --dry-run
+NIP89_APP=market NIP89_NSEC=<market-nsec> NIP89_RELAY_URLS=wss://relay.conduit.market bun run nip89:publish-handler -- --dry-run
+NIP89_APP=merchant NIP89_NSEC=<merchant-nsec> NIP89_RELAY_URLS=wss://relay.conduit.market bun run nip89:publish-handler -- --dry-run
 ```
 
 Then publish without `--dry-run` and verify the resulting `31990` events on the

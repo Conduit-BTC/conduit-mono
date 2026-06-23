@@ -100,7 +100,7 @@ VITE_APP_WRITE_RELAY_URLS=
 
 `VITE_RELAY_URL` remains a default relay hint for legacy and NIP-89-related flows, not a user-facing relay role.
 
-The canonical reset/fallback list is code-owned in `packages/core/src/config.ts` and currently starts with `wss://conduitl2.fly.dev`. Retired Conduit relay hosts must not be used in active examples.
+The canonical reset/fallback list is code-owned in `packages/core/src/config.ts` and currently starts with `wss://relay.conduit.market`. Retired Conduit relay hosts must not be used in active examples.
 
 New source-aware relay outcome work should be documented before replacing current shared helpers with a custom relay substrate.
 

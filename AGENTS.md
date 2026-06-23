@@ -253,7 +253,7 @@ VITE_DEFAULT_RELAYS=
 VITE_BLOSSOM_SERVER_URL=https://blossom.conduit.market
 ```
 
-The canonical relay reset list lives in `packages/core/src/config.ts` and currently starts with `wss://conduitl2.fly.dev`. Do not add retired Conduit relay hosts to active docs or examples.
+The canonical relay reset list lives in `packages/core/src/config.ts` and currently starts with `wss://relay.conduit.market`. Do not add retired Conduit relay hosts to active docs or examples.
 
 ## GitHub CI/CD
 

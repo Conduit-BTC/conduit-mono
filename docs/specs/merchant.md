@@ -194,7 +194,7 @@ Example:
 const relayListEvent = {
   kind: 10002,
   tags: [
-    ["r", "wss://conduitl2.fly.dev", "read", "write"],
+    ["r", "wss://relay.conduit.market", "read", "write"],
     ["r", "wss://relay.plebeian.market", "read"],
     ["r", "wss://nos.lol", "read"],
   ],
