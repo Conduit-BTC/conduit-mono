@@ -243,7 +243,6 @@ export class BuyerNwcSession {
         error: null,
       }
       this.notify()
-      void this.refreshBalance()
 
       return {
         status: "paid",
@@ -406,10 +405,6 @@ export class BuyerNwcSession {
             : null,
       }
       this.notify()
-
-      if (info.methods.includes("get_balance")) {
-        void this.refreshBalance()
-      }
     } catch (error) {
       if (!this.isCurrentConnection(connection, version)) return this.snapshot
 

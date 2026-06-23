@@ -70,6 +70,10 @@ export interface UseWalletReturn extends WalletState {
   disconnect: () => void
 }
 
+export interface UseWalletOptions {
+  refreshBalance?: boolean
+}
+
 function readStoredConnection(): NwcConnection | null {
   if (typeof window === "undefined") return null
   try {
@@ -272,7 +276,7 @@ function getStateFromSessionSnapshot(
   }
 }
 
-export function useWallet(): UseWalletReturn {
+export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
   const [state, setState] = useState<Omit<WalletState, "unavailableReason">>({
     status: "disconnected",
     connection: null,
@@ -496,6 +500,27 @@ export function useWallet(): UseWalletReturn {
     const snapshot = await session.refreshBalance()
     setState(getStateFromSessionSnapshot(snapshot, state.info))
   }, [state.info])
+
+  useEffect(() => {
+    if (
+      !options.refreshBalance ||
+      !connection ||
+      !info?.methods.includes("get_balance") ||
+      state.balance.status !== "unchecked"
+    ) {
+      return
+    }
+
+    void refreshBalance().catch((error: unknown) => {
+      console.warn("Failed to refresh NWC wallet balance", error)
+    })
+  }, [
+    connection,
+    info,
+    options.refreshBalance,
+    refreshBalance,
+    state.balance.status,
+  ])
 
   const unavailableReason = deriveUnavailableReason(status)
   const diagnostics = connection

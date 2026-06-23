@@ -200,7 +200,7 @@ function WalletBalanceRow({
 }
 
 function WalletPage() {
-  const wallet = useWallet()
+  const wallet = useWallet({ refreshBalance: true })
   const [uriInput, setUriInput] = useState("")
   const [pending, setPending] = useState(false)
   const [inputError, setInputError] = useState<string | null>(null)

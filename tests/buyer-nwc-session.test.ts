@@ -153,15 +153,14 @@ describe("BuyerNwcSession", () => {
     expect(balanceCalls).toBe(0)
   })
 
-  it("refreshes advertised balances on warm and after successful payment", async () => {
-    const balances = [25_000, 19_000]
+  it("does not refresh advertised balances during warm or payment probes", async () => {
     let balanceCalls = 0
 
     __buyerNwcSessionTestInternals.__setClientFactory(() =>
       fakeClient({
         getInfo: async () => ({ methods: ["pay_invoice", "get_balance"] }),
         getBalance: async () => ({
-          balance: balances[balanceCalls++] ?? 19_000,
+          balance: ++balanceCalls === 1 ? 25_000 : 19_000,
         }),
         payInvoice: async () => ({ preimage: "paid-preimage", fees_paid: 1 }),
       })
@@ -172,9 +171,11 @@ describe("BuyerNwcSession", () => {
 
     await session.warm()
     await flushPromises()
-    expect(session.getSnapshot().balance).toMatchObject({
-      status: "available",
-      balanceMsats: 25_000,
+    expect(balanceCalls).toBe(0)
+    expect(session.getSnapshot().balance).toEqual({
+      status: "unchecked",
+      balanceMsats: null,
+      fetchedAt: null,
       error: null,
     })
 
@@ -191,10 +192,19 @@ describe("BuyerNwcSession", () => {
     })
     await flushPromises()
 
-    expect(balanceCalls).toBe(2)
+    expect(balanceCalls).toBe(0)
+    expect(session.getSnapshot().balance).toEqual({
+      status: "unchecked",
+      balanceMsats: null,
+      fetchedAt: null,
+      error: null,
+    })
+
+    await session.refreshBalance()
+    expect(balanceCalls).toBe(1)
     expect(session.getSnapshot().balance).toMatchObject({
       status: "available",
-      balanceMsats: 19_000,
+      balanceMsats: 25_000,
       error: null,
     })
   })
@@ -221,20 +231,25 @@ describe("BuyerNwcSession", () => {
 
     await session.warm()
     await flushPromises()
+    expect(balanceCalls).toBe(0)
+
+    const firstRefresh = session.refreshBalance()
+    await flushPromises()
     expect(balanceCalls).toBe(1)
 
-    const manualRefresh = session.refreshBalance()
+    const secondRefresh = session.refreshBalance()
     await flushPromises()
     expect(balanceCalls).toBe(2)
 
     secondBalance.resolve({ balance: 20_000 })
-    await manualRefresh
+    await secondRefresh
     expect(session.getSnapshot().balance).toMatchObject({
       status: "available",
       balanceMsats: 20_000,
     })
 
     firstBalance.resolve({ balance: 30_000 })
+    await firstRefresh
     await flushPromises()
 
     expect(session.getSnapshot().balance).toMatchObject({
@@ -255,6 +270,7 @@ describe("BuyerNwcSession", () => {
     session.setConnection(connection)
 
     await session.warm()
+    await session.refreshBalance()
     await flushPromises()
     expect(session.getSnapshot().balance.balanceMsats).toBe(25_000)
 

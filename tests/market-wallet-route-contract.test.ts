@@ -14,6 +14,7 @@ describe("Market wallet route contracts", () => {
 
     expect(content).toContain("Connected wallet balance")
     expect(content).toContain("formatWalletBalanceSats")
+    expect(content).toContain("useWallet({ refreshBalance: true })")
     expect(content).toContain("wallet.refreshBalance")
     expect(content).toContain("Wallet does not advertise get_balance")
     expect(content).toContain(
@@ -29,5 +30,16 @@ describe("Market wallet route contracts", () => {
 
     expect(content).not.toContain("Connected wallet balance")
     expect(content).not.toContain("balanceMsats")
+    expect(content).not.toContain("refreshBalance: true")
+  })
+
+  it("keeps checkout wallet status probes balance-refresh opt-out", async () => {
+    const content = await readFile(
+      "apps/market/src/routes/checkout.tsx",
+      "utf8"
+    )
+
+    expect(content).toContain("const wallet = useWallet()")
+    expect(content).not.toContain("refreshBalance: true")
   })
 })
