@@ -91,7 +91,7 @@ jobs:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
           agent_auth_file_secret_name: CODEX_AUTH_JSON
           github_token: ${{ steps.app_token.outputs.token }}
-          github_token_actor: ${{ steps.app_token.outputs['app-slug'] && format('{0}[bot]', steps.app_token.outputs['app-slug']) || '' }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
           model: gpt-5.4/xhigh
           resume: false
           prompt: |
@@ -108,7 +108,7 @@ jobs:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
           agent_auth_file_secret_name: SUDDEN_AGENT_AUTH_FILE
           github_token: ${{ steps.app_token.outputs.token }}
-          github_token_actor: ${{ steps.app_token.outputs['app-slug'] && format('{0}[bot]', steps.app_token.outputs['app-slug']) || '' }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
           model: gpt-5.4/xhigh
           resume: false
           prompt: |

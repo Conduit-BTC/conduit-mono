@@ -121,6 +121,12 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
 
+      - name: Require workflow agent GitHub App token
+        if: steps.sudden_auth.outputs.has_auth == 'true' && steps.app_token.outputs.token == ''
+        run: |
+          echo "Agent PR Review requires the conduit-sudden-agent GitHub App token."
+          exit 1
+
       - name: Run Sudden Agent review with CODEX_AUTH_JSON
         id: review_codex_auth_json
         if: steps.sudden_auth.outputs.has_codex_auth_json == 'true'
@@ -128,8 +134,8 @@ jobs:
         uses: sudden-network/agent@v1.13.1
         with:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
-          github_token: ${{ steps.app_token.outputs.token || github.token }}
-          github_token_actor: ${{ steps.app_token.outputs['app-slug'] && format('{0}[bot]', steps.app_token.outputs['app-slug']) || '' }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
           model: gpt-5.4/xhigh
           resume: true
           prompt: |
@@ -184,8 +190,8 @@ jobs:
         uses: sudden-network/agent@v1.13.1
         with:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
-          github_token: ${{ steps.app_token.outputs.token || github.token }}
-          github_token_actor: ${{ steps.app_token.outputs['app-slug'] && format('{0}[bot]', steps.app_token.outputs['app-slug']) || '' }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
           model: gpt-5.4/xhigh
           resume: true
           prompt: |
@@ -240,8 +246,8 @@ jobs:
         uses: sudden-network/agent@v1.13.1
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
-          github_token: ${{ steps.app_token.outputs.token || github.token }}
-          github_token_actor: ${{ steps.app_token.outputs['app-slug'] && format('{0}[bot]', steps.app_token.outputs['app-slug']) || '' }}
+          github_token: ${{ steps.app_token.outputs.token }}
+          github_token_actor: ${{ format('{0}[bot]', steps.app_token.outputs['app-slug']) }}
           model: gpt-5.4/xhigh
           resume: true
           prompt: |
