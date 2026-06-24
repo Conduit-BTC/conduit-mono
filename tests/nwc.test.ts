@@ -205,6 +205,7 @@ describe("NWC SDK adapter", () => {
       fakeClient({
         getInfo: async () => ({
           methods: ["pay_invoice", "get_balance"],
+          notifications: ["payment_received"],
           alias: "Test Wallet",
           color: "#ffcc00",
           pubkey: "wallet-node-pubkey",
@@ -219,6 +220,7 @@ describe("NWC SDK adapter", () => {
 
     await expect(nwcGetInfo(connection, 100, "market")).resolves.toEqual({
       methods: ["pay_invoice", "get_balance"],
+      notifications: ["payment_received"],
       alias: "Test Wallet",
       color: "#ffcc00",
       pubkey: "wallet-node-pubkey",

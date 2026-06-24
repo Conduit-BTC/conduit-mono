@@ -307,15 +307,16 @@ function CheckoutWalletReadiness({
         )}
       </div>
       {constraint && (
-        <div className="mt-4 rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] p-3 text-xs leading-5 text-[var(--warning)]">
+        <div className="mt-4 rounded-xl border border-[color-mix(in_srgb,var(--warning)_55%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,transparent)] p-3 text-xs leading-5 text-[var(--text-secondary)]">
           <div className="flex items-start gap-2">
-            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--warning)]" />
             <div>
-              <div className="font-medium">{constraint.reason}</div>
+              <div className="font-medium text-[var(--warning)]">
+                Automatic wallet payment will be skipped
+              </div>
               <div className="mt-1">
-                {constraint.detail} Conduit will skip automatic NWC payment and
-                use another available payment rail or show the Lightning invoice
-                after the order is sent.
+                {constraint.detail} We&apos;ll send the order and show a
+                Lightning invoice so you can pay manually.
               </div>
             </div>
           </div>
@@ -2337,8 +2338,8 @@ function CheckoutPage() {
                         ? "The cart total is visible, but direct payment needs a fresh conversion before funds can move. Conduit is refreshing it now."
                         : walletPaymentConstraint
                           ? requiresPublicZap
-                            ? "Conduit will deliver the order, request a public zap invoice, and skip the connected NWC wallet because it cannot pay this total automatically."
-                            : "Conduit will deliver the order, request a private LNURL invoice, and skip the connected NWC wallet because it cannot pay this total automatically."
+                            ? "Conduit will deliver the order and request a public zap invoice. Your connected wallet will be skipped for this total."
+                            : "Conduit will deliver the order and request a private LNURL invoice. Your connected wallet will be skipped for this total."
                           : requiresPublicZap
                             ? "Conduit will deliver the order, request a public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."
                             : "Conduit will deliver the order, request a private LNURL invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."}
@@ -2494,16 +2495,15 @@ function CheckoutPage() {
                     <Button
                       className="h-11 px-5 text-sm"
                       onClick={() => {
-                        // Show the lightning-strike animation immediately so the
-                        // buyer gets click feedback while order publish runs;
-                        // payNow navigates to Orders once the order is created.
-                        setOverlayPlaying(true)
+                        if (canAttemptLightningPayment) {
+                          setOverlayPlaying(true)
+                        }
                         void payNow()
                       }}
                     >
                       <LightningIcon className="h-4 w-4" />
                       {walletPaymentConstraint && !weblnAvailable
-                        ? "Send order for invoice"
+                        ? "Send order and show invoice"
                         : "Zap out"}
                     </Button>
                   )}

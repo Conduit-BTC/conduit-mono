@@ -667,8 +667,11 @@ function parseGetInfoResult(result: Nip47GetInfoResponse): NwcGetInfoResult {
   const methods = Array.isArray(result.methods)
     ? result.methods.filter((m) => typeof m === "string")
     : []
+  const notifications = Array.isArray(result.notifications)
+    ? result.notifications.filter((n) => typeof n === "string")
+    : []
 
-  return {
+  const parsed: NwcGetInfoResult = {
     methods,
     alias: typeof result.alias === "string" ? result.alias : undefined,
     color: typeof result.color === "string" ? result.color : undefined,
@@ -677,6 +680,10 @@ function parseGetInfoResult(result: Nip47GetInfoResponse): NwcGetInfoResult {
     blockHeight:
       typeof result.block_height === "number" ? result.block_height : undefined,
   }
+  if (notifications.length > 0) {
+    parsed.notifications = notifications
+  }
+  return parsed
 }
 
 function parseGetBalanceMsats(result: Nip47GetBalanceResponse): number {

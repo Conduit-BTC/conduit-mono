@@ -22,6 +22,7 @@ import {
   formatBalanceFreshness,
   formatWalletMsatsAsSats,
 } from "../lib/wallet-readiness"
+import { getWalletCapabilityPills } from "../lib/wallet-capabilities"
 
 export const Route = createFileRoute("/wallet")({
   beforeLoad: () => {
@@ -127,43 +128,22 @@ function useFreshnessNow(fetchedAt: number | null): number {
   return now
 }
 
-const WALLET_CAPABILITIES = [
-  { method: "pay_invoice", label: "Pay invoices" },
-  { method: "get_balance", label: "Read balance" },
-  { method: "get_budget", label: "Read budget" },
-  { method: "lookup_invoice", label: "Lookup invoices" },
-  { method: "list_transactions", label: "List activity" },
-] as const
-
-function WalletCapabilities({ methods }: { methods: readonly string[] }) {
-  const methodSet = new Set(methods)
-  const knownMethods = new Set<string>(
-    WALLET_CAPABILITIES.map((capability) => capability.method)
-  )
-  const extras = methods.filter((method) => !knownMethods.has(method))
+function WalletCapabilities({
+  info,
+}: {
+  info: { methods: readonly string[]; notifications?: readonly string[] }
+}) {
+  const capabilities = getWalletCapabilityPills(info)
 
   return (
     <div className="flex min-w-0 flex-wrap justify-end gap-1.5">
-      {WALLET_CAPABILITIES.map((capability) => {
-        const supported = methodSet.has(capability.method)
-        return (
-          <StatusPill
-            key={capability.method}
-            variant={supported ? "success" : "neutral"}
-            noIcon={!supported}
-            className="font-mono text-[0.65rem]"
-          >
-            {capability.label}
-          </StatusPill>
-        )
-      })}
-      {extras.map((method) => (
+      {capabilities.map((capability) => (
         <StatusPill
-          key={method}
-          variant="success"
+          key={capability.id}
+          variant={capability.variant}
           className="font-mono text-[0.65rem]"
         >
-          {method}
+          {capability.label}
         </StatusPill>
       ))}
     </div>
@@ -436,9 +416,7 @@ function WalletPage() {
                               Capabilities
                             </dt>
                             <dd>
-                              <WalletCapabilities
-                                methods={wallet.info.methods}
-                              />
+                              <WalletCapabilities info={wallet.info} />
                             </dd>
                           </div>
                         )}
