@@ -204,6 +204,160 @@ export interface StoredPaymentAttempt {
   updatedAt: number
 }
 
+/** How the buyer initiated payment for this order. */
+export type OrderCheckoutMode =
+  | "public_zap"
+  | "private_checkout"
+  | "pay_later"
+  | "external_wallet"
+
+/**
+ * Buyer-input address validity (CND-127). Distinct from
+ * {@link OrderLifecycle.shippingZoneEligibility}, which is the merchant
+ * fulfillment-coverage check.
+ */
+export type OrderAddressValidity =
+  | "not_required"
+  | "valid"
+  | "missing"
+  | "inconsistent"
+  | "unknown"
+
+/** Merchant shipping-zone coverage for the destination. */
+export type OrderShippingZoneEligibility =
+  | "not_required"
+  | "eligible"
+  | "ineligible"
+  | "unknown"
+
+export type OrderDeliveryStatus = "not_started" | "pending" | "sent" | "failed"
+
+export type OrderInvoiceStatus =
+  | "not_requested"
+  | "requesting"
+  | "received"
+  | "manual_required"
+  | "failed"
+
+export type OrderPaymentStatus =
+  | "not_started"
+  | "paying"
+  | "paid"
+  | "manual_required"
+  | "failed"
+  | "ambiguous"
+
+export type OrderProofDeliveryStatus =
+  | "not_started"
+  | "pending"
+  | "sent"
+  | "retry_needed"
+  | "failed"
+
+export type OrderZapReceiptStatus =
+  | "not_applicable"
+  | "waiting"
+  | "observed"
+  | "timed_out"
+
+/** Coarse bucket used for Orders list filtering (All/Pending/In progress/...). */
+export type OrderLifecyclePhase =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "cancelled"
+
+export interface OrderLifecycleItem {
+  productId: string
+  quantity: number
+  priceAtPurchase: number
+  currency: string
+  shippingCostSats?: number
+  shippingOptionId?: string
+  shippingOptionDTag?: string
+  sourcePrice?: {
+    amount: number
+    currency: string
+    normalizedCurrency: string
+  }
+}
+
+/**
+ * Durable buyer-side order lifecycle record (CND-122).
+ *
+ * Created at checkout *before* long async work so the Orders page can render an
+ * active order immediately — before relay readback, before automatic payment
+ * succeeds, and during manual/external-wallet payment. Relay-observed messages
+ * enrich this record but are not required to display the order.
+ *
+ * Privacy: sensitive fields (invoice, preimage, shipping address, contact note)
+ * stay local and MUST NOT be forwarded to telemetry.
+ */
+export interface OrderLifecycle {
+  orderId: string
+  buyerPubkey: string
+  merchantPubkey: string
+  checkoutMode: OrderCheckoutMode
+  merchantLightningAddress?: string
+
+  items: OrderLifecycleItem[]
+  itemSubtotalSats: number
+  shippingCostSats: number
+  totalSats: number
+  totalMsats: number
+  currency: "SATS"
+  pricingQuote?: {
+    rate: number
+    fetchedAt: number
+    source: string
+    fiatSource?: string
+  }
+
+  /**
+   * Zap-request comment captured at checkout, replayed verbatim when a
+   * route-independent payment retry re-requests the invoice (CND-122). Public
+   * zap metadata, not PII; stays local and is not forwarded to telemetry.
+   */
+  zapContent?: string
+
+  /** Local-only address + contact snapshot. Never sent to telemetry. */
+  shippingAddress?: {
+    name: string
+    street: string
+    city: string
+    state?: string
+    postalCode: string
+    country: string
+  }
+  contactNote?: string
+
+  addressValidity: OrderAddressValidity
+  shippingZoneEligibility: OrderShippingZoneEligibility
+
+  orderDeliveryStatus: OrderDeliveryStatus
+  invoiceStatus: OrderInvoiceStatus
+  paymentStatus: OrderPaymentStatus
+  proofDeliveryStatus: OrderProofDeliveryStatus
+  zapReceiptStatus: OrderZapReceiptStatus
+
+  invoice?: string
+  paymentHash?: string
+  preimage?: string
+  feeMsats?: number
+  zapRequestId?: string
+  zapReceiptId?: string
+
+  /** Coarse bucket derived from the status fields above for list filtering. */
+  phase: OrderLifecyclePhase
+  lastError?: string
+  deliveryNotice?: string
+
+  createdAt: number
+  updatedAt: number
+  completedAt?: number
+}
+
 class ConduitDB extends Dexie {
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
@@ -214,6 +368,7 @@ class ConduitDB extends Dexie {
   productSocialSummaries!: EntityTable<CachedProductSocialSummary, "key">
   nip05Verifications!: EntityTable<CachedNip05Verification, "id">
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
+  orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
 
   constructor() {
     super("conduit")
@@ -281,6 +436,23 @@ class ConduitDB extends Dexie {
         "id, pubkey, normalizedIdentifier, status, expiresAt, cachedAt",
       paymentAttempts:
         "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
+    })
+
+    this.version(7).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
+      productSocialSummaries: "key, cachedAt",
+      nip05Verifications:
+        "id, pubkey, normalizedIdentifier, status, expiresAt, cachedAt",
+      paymentAttempts:
+        "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
+      orderLifecycles:
+        "orderId, buyerPubkey, merchantPubkey, phase, updatedAt, createdAt",
     })
   }
 }

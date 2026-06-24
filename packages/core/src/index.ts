@@ -133,6 +133,17 @@ export {
   type CachedOrderMessage,
   type CachedNip05Verification,
   type StoredPaymentAttempt,
+  type OrderLifecycle,
+  type OrderLifecycleItem,
+  type OrderLifecyclePhase,
+  type OrderCheckoutMode,
+  type OrderAddressValidity,
+  type OrderShippingZoneEligibility,
+  type OrderDeliveryStatus,
+  type OrderInvoiceStatus,
+  type OrderPaymentStatus,
+  type OrderProofDeliveryStatus,
+  type OrderZapReceiptStatus,
 } from "./db"
 
 // Context
@@ -140,6 +151,7 @@ export {
   AuthProvider,
   useAuth,
   hasNip07,
+  isTransientNip07ConnectError,
   type AuthStatus,
   type AuthContextValue,
 } from "./context/AuthContext"

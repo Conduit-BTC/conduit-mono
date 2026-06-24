@@ -267,6 +267,17 @@ describe("isFastCheckoutEligible", () => {
     ).toBe(false)
   })
 
+  it("allows fast checkout when LNURL is ready and external-wallet fallback is available", () => {
+    expect(
+      isFastCheckoutEligible({
+        walletPayCapable: false,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        allowsManualFallback: true,
+      })
+    ).toBe(true)
+  })
+
   it("returns false when merchantLud16 is missing", () => {
     expect(
       isFastCheckoutEligible({
@@ -359,6 +370,17 @@ describe("isFastCheckoutEligible", () => {
         merchantLud16: "merchant@wallet.example",
         lnurlAllowsNostr: true,
         requiresNostrZap: false,
+      })
+    ).toEqual([])
+  })
+
+  it("does not report a wallet-capability blocker when manual fallback can continue", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: false,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        allowsManualFallback: true,
       })
     ).toEqual([])
   })

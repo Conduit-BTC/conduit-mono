@@ -31,12 +31,12 @@ Use Figma MCP tools to extract design context for screen work. Do not rely on ol
 ### Checkout
 
 1. Review cart
-2. Enter or confirm shipping/contact details
-3. Create a signed order message for each merchant
-4. Use fast checkout when merchant readiness and buyer wallet capability allow it
-5. Fall back to merchant payment request/manual invoice flow when fast checkout is unavailable
-6. Attach payment proof to the order conversation when payment is sent
-7. Track order/payment/shipping state from the order conversation
+2. Enter or confirm shipping/contact details (validated for internal consistency before direct payment — see address validity below)
+3. Create a signed order message for each merchant, persist a durable order lifecycle record, and navigate to the status-first Orders tracker (`/orders?order=<orderId>`)
+4. Use fast checkout when merchant readiness and buyer wallet capability allow it; otherwise the order still starts and Orders surfaces an external-wallet QR fallback
+5. Payment, payment proof, and order/payment/shipping state are owned by Orders, not an inline checkout dead-end
+
+Checkout collects intent and **starts** the order; Orders owns everything after an order exists. See `docs/specs/order-lifecycle.md` for the durable lifecycle record, status-first tracker, retry idempotency, external-wallet fallback, and the address-validity policy.
 
 ### Messaging
 
@@ -117,6 +117,35 @@ Market checkout should distinguish:
 - failed, expired, disputed, or unverifiable payment state
 
 Fast checkout must remain explicitly gated. The fallback merchant payment-request path is a required baseline, not a deprecated edge case.
+
+## Orders Surface
+
+Orders is the canonical status and order-history surface. It renders interpreted
+order state from the durable lifecycle record (and relay messages), not a raw
+conversation/message-count replay.
+
+- Deep-linkable selection via `/orders?order=<orderId>`; the selected order is
+  visible immediately from local state before relay readback.
+- A status-first detail view: header status pill + next action, a 7-stage
+  timeline (order sent → invoice received → payment sent → receipt sent →
+  merchant confirmation → fulfillment/shipping → complete), items, shipping
+  address, and collapsed technical details. No primary `Conversation` section.
+- External-wallet QR/copy/open fallback for signed-in buyers who can request an
+  invoice but lack automatic NWC/WebLN payment; after paying externally the buyer
+  sends the receipt from the same order.
+- Recovery actions appear only when safe (retry payment only when funds did not
+  move; resend receipt only after payment moved); retries reuse the original
+  `orderId` and never duplicate the merchant order.
+- `Message merchant` / `Open in messages` remains as a secondary support escape
+  hatch. Desktop is master/detail; mobile lands on the current order with a
+  `Change order` selector and All/Pending/In progress/Completed filters.
+
+### Address validity
+
+Before direct payment / zap-out, physical-shipping addresses are validated for
+internal consistency locally and offline (no third-party browser calls; no
+address/contact data to analytics). This is distinct from merchant shipping-zone
+coverage. See `docs/specs/order-lifecycle.md` for the full policy.
 
 ## Protocol Events
 
