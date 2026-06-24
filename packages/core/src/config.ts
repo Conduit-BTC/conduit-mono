@@ -46,6 +46,31 @@ const RETIRED_DEFAULT_RELAYS = new Set<string>()
 const FALLBACK_RELAY_URL = "wss://nos.lol"
 const PUBLIC_REPO_ISSUES_URL =
   "https://github.com/Conduit-BTC/conduit-mono/issues"
+const CONDUIT_RELAY_DEBUG_BANNER = [
+  "\x1b[38;2;187;0;255m                 ⣾⣿⡆",
+  "            ⢰⣿⣷  ⣿⣿⡇ ⣼⣿⣷",
+  "            ⢸⣿⣿  ⣿⣿⡇ ⣿⣿⣿",
+  "            ⢸⣿⣿  ⣿⣿⡇ ⣿⣿⣿",
+  "            ⢸⣿⣿  ⣿⣿⡇ ⣿⣿⣿",
+  "        ⣠⡀  ⢸⣿⣿  ⣿⣿⡇ ⣿⣿⣿  ⢀⣠⡀",
+  "        ⣿⣿⡆ ⢸⣿⣿  ⣿⣿⡇ ⣿⣿⣿ ⢠⣾⣿⡇",
+  "        ⣿⣿⣏ ⢸⣿⣿⣄⣰⣿⣿⣧⣀⣿⣿⣿ ⢸⣿⣿⡇",
+  "        ⣿⣿⣷⣀⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣄⣼⣿⣿⡇",
+  "        ⣿⣿⣿⣿⣿⣿⣿⣿⣿⠏ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇",
+  "        ⣿⣿⣿⣿⣿⣿⣿⡿⠁ ⠸⠿⠿⠿⣿⣿⣿⣿⣿⣿⠁",
+  "        ⠸⣿⣿⣿⣿⣿⡏      ⣠⣿⣿⣿⣿⣿⡟",
+  "         ⠹⣿⣿⣿⣿⣿⣿⣿⡿ ⢀⣾⣿⣿⣿⣿⣿⡿⠁",
+  "          ⠘⢿⣿⣿⣿⣿⣿⣇⣰⣿⣿⣿⣿⣿⡿⠋",
+  "            ⠈⠛⠿⢿⣿⣿⣿⣿⣿⠿⠟⠋",
+  "",
+  "      ____ ___  _   _ ____  _   _ ___ _____",
+  "     / ___/ _ \\| \\ | |  _ \\| | | |_ _|_   _|",
+  "    | |  | | | |  \\| | | | | | | || |  | |",
+  "    | |__| |_| | |\\  | |_| | |_| || |  | |",
+  "     \\____\\___/|_| \\_|____/ \\___/|___| |_|",
+  "",
+  "                 RELAY MAP\x1b[0m",
+].join("\n")
 
 export interface ConduitConfig {
   relayUrl: string
@@ -218,9 +243,7 @@ function logRelayDebugConfig(input: {
 
   console.log(
     [
-      "   .----------------------------------------.",
-      "  /  C O N D U I T   R E L A Y   M A P     \\",
-      "  \\________________________________________/",
+      CONDUIT_RELAY_DEBUG_BANNER,
       "",
       "Code defaults:",
       formatRelayDebugList(input.codeDefaults),
