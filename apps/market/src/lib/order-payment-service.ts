@@ -193,263 +193,263 @@ export async function runOrderPayment(
   }
   inFlight.add(orderId)
 
-  if (!ctx.merchantLud16) {
-    await patchAndEmit(
-      orderId,
-      {
-        paymentStatus: "failed",
-        lastError: "Merchant does not have a Lightning address.",
-      },
-      {
-        running: false,
-        stage: null,
-        error: "Merchant does not have a Lightning address.",
-      }
-    )
-    inFlight.delete(orderId)
-    return runtimeStates.get(orderId)!
-  }
-
-  const currency = "SATS"
-  let paymentMoved = false
-
-  emit(orderId, { running: true, error: null, stage: "requesting_invoice" })
-  await patchAndEmit(orderId, {
-    invoiceStatus: "requesting",
-    paymentStatus: "paying",
-    lastError: undefined,
-  })
-
   try {
-    const ndk = getNdk()
-    const lnurlMeta = await fetchLnurlPayMetadata(ctx.merchantLud16)
-    const isPublicZap = ctx.visibility === "public_zap"
-    if (isPublicZap && !lnurlMeta.allowsNostr) {
-      throw new Error(
-        "Merchant Lightning Address does not advertise Nostr zap support."
-      )
-    }
-    if (
-      ctx.totalMsats < lnurlMeta.minSendable ||
-      ctx.totalMsats > lnurlMeta.maxSendable
-    ) {
-      throw new Error(
-        `Order amount (${ctx.totalMsats} msats) is outside merchant's accepted range ` +
-          `(${lnurlMeta.minSendable}-${lnurlMeta.maxSendable} msats).`
-      )
-    }
-
-    const invoiceRequest = await requestCheckoutLnurlInvoice(
-      {
-        visibility: ctx.visibility,
-        lnurlCallback: lnurlMeta.callback,
-        amountMsats: ctx.totalMsats,
-        lnurl: lnurlMeta.lnurl,
-        recipientPubkey: ctx.merchantPubkey,
-        zapContent: ctx.zapContent,
-        explicitRelayUrls: ndk.explicitRelayUrls ?? [],
-        zapRelayUrls: config.zapRelayUrls,
-      },
-      {
-        fetchLnurlInvoice,
-        fetchZapInvoice,
-        signZapRequest: async (draft) => {
-          const zapRequest = new NDKEvent(ndk)
-          zapRequest.kind = draft.kind
-          zapRequest.created_at = draft.createdAt
-          zapRequest.content = draft.content
-          zapRequest.tags = draft.tags
-          await signNdkEventWithTransientNip07Retry(zapRequest, ndk.signer)
-          return { id: zapRequest.id, rawEvent: zapRequest.rawEvent() }
-        },
-      }
-    )
-    const { invoice, zapRelayUrls, zapRequestId } = invoiceRequest
-
-    const invoiceValidation = validateLightningInvoiceForPayment({
-      invoice,
-      expectedAmountMsats: ctx.totalMsats,
-    })
-    if (!invoiceValidation.ok) throw new Error(invoiceValidation.reason)
-
-    await patchAndEmit(
-      orderId,
-      { invoiceStatus: "received", invoice, zapRequestId },
-      { stage: "paying_invoice" }
-    )
-
-    const payResult = await payCheckoutInvoice({
-      invoice,
-      amountMsats: ctx.totalMsats,
-      walletConnection: ctx.walletConnection,
-      tryNwc: ctx.tryNwc,
-      timeoutMs: 60_000,
-      appId: "market",
-      metadata: {
-        app: "conduit-market",
-        action: isPublicZap ? "checkout-zap" : "private-checkout",
-        amountMsats: ctx.totalMsats,
-      },
-    })
-
-    if (payResult.status === "manual_required") {
-      // No automatic rail. Surface the invoice on Orders for an external wallet
-      // (CND-120). The order stays put; the buyer pays externally and sends a
-      // receipt afterwards.
+    if (!ctx.merchantLud16) {
       await patchAndEmit(
         orderId,
         {
-          invoiceStatus: "manual_required",
-          paymentStatus: "manual_required",
-          invoice,
-          // We won't watch for a zap receipt on the external-wallet path, so
-          // don't leave a public_zap order stuck in "waiting" (CND-120).
-          zapReceiptStatus: "not_applicable",
-          lastError: payResult.reason,
+          paymentStatus: "failed",
+          lastError: "Merchant does not have a Lightning address.",
         },
-        { running: false, stage: null }
+        {
+          running: false,
+          stage: null,
+          error: "Merchant does not have a Lightning address.",
+        }
       )
-      inFlight.delete(orderId)
       return runtimeStates.get(orderId)!
     }
 
-    paymentMoved = true
-    try {
-      await savePaymentAttempt({
-        id: orderId,
-        orderId,
-        buyerPubkey: ctx.buyerPubkey,
-        merchantPubkey: ctx.merchantPubkey,
-        amountMsats: ctx.totalMsats,
-        currency: "SATS",
-        invoice,
-        paymentHash: payResult.paymentHash,
-        preimage: payResult.preimage,
-        feeMsats: payResult.feeMsats,
-        zapRequestId,
-        proofDeliveryStatus: "pending",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      })
-    } catch (e) {
-      console.warn("Failed to persist payment attempt", e)
-    }
+    const currency = "SATS"
+    let paymentMoved = false
 
-    await patchAndEmit(
-      orderId,
-      {
-        paymentStatus: "paid",
-        proofDeliveryStatus: "pending",
-        invoice,
-        paymentHash: payResult.paymentHash,
-        preimage: payResult.preimage,
-        feeMsats: payResult.feeMsats,
-        zapRequestId,
-      },
-      { stage: "sending_receipt" }
-    )
-
-    const proofPayload = buildLightningPaymentProofMessage({
-      orderId,
-      action: isPublicZap ? "zap" : "private_checkout",
-      amount: ctx.totalSats,
-      amountMsats: ctx.totalMsats,
-      currency,
-      invoice,
-      preimage: payResult.preimage,
-      paymentHash: payResult.paymentHash,
-      feeMsats: payResult.feeMsats,
-      ...(zapRequestId ? { zapRequestId } : {}),
-      source: payResult.rail,
-      proofDeliveryStatus: "pending",
-      note: `Payment for order ${orderId}`,
-    })
-    const proofRumor = buildPaymentProofRumor({
-      merchantPubkey: ctx.merchantPubkey,
-      orderId,
-      amountSats: ctx.totalSats,
-      currency,
-      content: JSON.stringify(proofPayload),
+    emit(orderId, { running: true, error: null, stage: "requesting_invoice" })
+    await patchAndEmit(orderId, {
+      invoiceStatus: "requesting",
+      paymentStatus: "paying",
+      lastError: undefined,
     })
 
-    let deliveryNotice: string | null = null
     try {
-      const proofDelivery = await publishWrappedToMerchantAndSelf(
-        proofRumor,
-        ndk,
-        ctx.merchantPubkey,
-        ctx.buyerPubkey
-      )
-      deliveryNotice = getDeliveryNotice(proofDelivery, "Payment proof")
-      await updatePaymentAttempt(orderId, {
-        proofDeliveryStatus: "sent",
-      }).catch((e) => console.warn("Failed to update proof status", e))
-      await patchAndEmit(orderId, {
-        proofDeliveryStatus: "sent",
-        deliveryNotice: deliveryNotice ?? undefined,
-      })
-    } catch {
-      await updatePaymentAttempt(orderId, {
-        proofDeliveryStatus: "retry_needed",
-      }).catch((e) => console.warn("Failed to mark proof retry", e))
-      await patchAndEmit(orderId, { proofDeliveryStatus: "retry_needed" })
-    }
-
-    if (invoiceRequest.shouldWaitForZapReceipt && zapRequestId) {
-      emit(orderId, { stage: "checking_receipt" })
-      const receipt = await waitForZapReceipt({
-        zapRequestId,
-        recipientPubkey: ctx.merchantPubkey,
-        expectedAmountMsats: ctx.totalMsats,
-        expectedLnurl: lnurlMeta.lnurl,
-        lnurlNostrPubkey: lnurlMeta.nostrPubkey,
-        relayUrls: zapRelayUrls,
-        timeoutMs: ZAP_RECEIPT_WAIT_MS,
-      }).catch((e) => {
-        console.warn("Failed to observe zap receipt", e)
-        return null
-      })
-      if (receipt) {
-        await updatePaymentAttempt(orderId, {
-          zapReceiptId: receipt.id,
-        }).catch((e) => console.warn("Failed to persist zap receipt id", e))
-        await patchAndEmit(orderId, {
-          zapReceiptStatus: "observed",
-          zapReceiptId: receipt.id,
-        })
-      } else {
-        await patchAndEmit(orderId, { zapReceiptStatus: "timed_out" })
+      const ndk = getNdk()
+      const lnurlMeta = await fetchLnurlPayMetadata(ctx.merchantLud16)
+      const isPublicZap = ctx.visibility === "public_zap"
+      if (isPublicZap && !lnurlMeta.allowsNostr) {
+        throw new Error(
+          "Merchant Lightning Address does not advertise Nostr zap support."
+        )
       }
-    }
+      if (
+        ctx.totalMsats < lnurlMeta.minSendable ||
+        ctx.totalMsats > lnurlMeta.maxSendable
+      ) {
+        throw new Error(
+          `Order amount (${ctx.totalMsats} msats) is outside merchant's accepted range ` +
+            `(${lnurlMeta.minSendable}-${lnurlMeta.maxSendable} msats).`
+        )
+      }
 
-    emit(orderId, { running: false, stage: null })
-    inFlight.delete(orderId)
-    return runtimeStates.get(orderId)!
-  } catch (e) {
-    const message = e instanceof Error ? e.message : "Payment failed"
-    if (paymentMoved) {
-      // Funds moved but a tail step threw — still terminal success for the
-      // buyer; only the best-effort proof needs retry.
+      const invoiceRequest = await requestCheckoutLnurlInvoice(
+        {
+          visibility: ctx.visibility,
+          lnurlCallback: lnurlMeta.callback,
+          amountMsats: ctx.totalMsats,
+          lnurl: lnurlMeta.lnurl,
+          recipientPubkey: ctx.merchantPubkey,
+          zapContent: ctx.zapContent,
+          explicitRelayUrls: ndk.explicitRelayUrls ?? [],
+          zapRelayUrls: config.zapRelayUrls,
+        },
+        {
+          fetchLnurlInvoice,
+          fetchZapInvoice,
+          signZapRequest: async (draft) => {
+            const zapRequest = new NDKEvent(ndk)
+            zapRequest.kind = draft.kind
+            zapRequest.created_at = draft.createdAt
+            zapRequest.content = draft.content
+            zapRequest.tags = draft.tags
+            await signNdkEventWithTransientNip07Retry(zapRequest, ndk.signer)
+            return { id: zapRequest.id, rawEvent: zapRequest.rawEvent() }
+          },
+        }
+      )
+      const { invoice, zapRelayUrls, zapRequestId } = invoiceRequest
+
+      const invoiceValidation = validateLightningInvoiceForPayment({
+        invoice,
+        expectedAmountMsats: ctx.totalMsats,
+      })
+      if (!invoiceValidation.ok) throw new Error(invoiceValidation.reason)
+
       await patchAndEmit(
         orderId,
-        { paymentStatus: "paid", proofDeliveryStatus: "retry_needed" },
-        { running: false, stage: null }
+        { invoiceStatus: "received", invoice, zapRequestId },
+        { stage: "paying_invoice" }
       )
-    } else if (isAmbiguousPaymentError(e)) {
+
+      const payResult = await payCheckoutInvoice({
+        invoice,
+        amountMsats: ctx.totalMsats,
+        walletConnection: ctx.walletConnection,
+        tryNwc: ctx.tryNwc,
+        timeoutMs: 60_000,
+        appId: "market",
+        metadata: {
+          app: "conduit-market",
+          action: isPublicZap ? "checkout-zap" : "private-checkout",
+          amountMsats: ctx.totalMsats,
+        },
+      })
+
+      if (payResult.status === "manual_required") {
+        // No automatic rail. Surface the invoice on Orders for an external wallet
+        // (CND-120). The order stays put; the buyer pays externally and sends a
+        // receipt afterwards.
+        await patchAndEmit(
+          orderId,
+          {
+            invoiceStatus: "manual_required",
+            paymentStatus: "manual_required",
+            invoice,
+            // We won't watch for a zap receipt on the external-wallet path, so
+            // don't leave a public_zap order stuck in "waiting" (CND-120).
+            zapReceiptStatus: "not_applicable",
+            lastError: payResult.reason,
+          },
+          { running: false, stage: null }
+        )
+        return runtimeStates.get(orderId)!
+      }
+
+      paymentMoved = true
+      try {
+        await savePaymentAttempt({
+          id: orderId,
+          orderId,
+          buyerPubkey: ctx.buyerPubkey,
+          merchantPubkey: ctx.merchantPubkey,
+          amountMsats: ctx.totalMsats,
+          currency: "SATS",
+          invoice,
+          paymentHash: payResult.paymentHash,
+          preimage: payResult.preimage,
+          feeMsats: payResult.feeMsats,
+          zapRequestId,
+          proofDeliveryStatus: "pending",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        })
+      } catch (e) {
+        console.warn("Failed to persist payment attempt", e)
+      }
+
       await patchAndEmit(
         orderId,
-        { paymentStatus: "ambiguous", lastError: message },
-        { running: false, stage: null, error: message }
+        {
+          paymentStatus: "paid",
+          proofDeliveryStatus: "pending",
+          invoice,
+          paymentHash: payResult.paymentHash,
+          preimage: payResult.preimage,
+          feeMsats: payResult.feeMsats,
+          zapRequestId,
+        },
+        { stage: "sending_receipt" }
       )
-    } else {
-      await patchAndEmit(
+
+      const proofPayload = buildLightningPaymentProofMessage({
         orderId,
-        { paymentStatus: "failed", lastError: message },
-        { running: false, stage: null, error: message }
-      )
+        action: isPublicZap ? "zap" : "private_checkout",
+        amount: ctx.totalSats,
+        amountMsats: ctx.totalMsats,
+        currency,
+        invoice,
+        preimage: payResult.preimage,
+        paymentHash: payResult.paymentHash,
+        feeMsats: payResult.feeMsats,
+        ...(zapRequestId ? { zapRequestId } : {}),
+        source: payResult.rail,
+        proofDeliveryStatus: "pending",
+        note: `Payment for order ${orderId}`,
+      })
+      const proofRumor = buildPaymentProofRumor({
+        merchantPubkey: ctx.merchantPubkey,
+        orderId,
+        amountSats: ctx.totalSats,
+        currency,
+        content: JSON.stringify(proofPayload),
+      })
+
+      let deliveryNotice: string | null = null
+      try {
+        const proofDelivery = await publishWrappedToMerchantAndSelf(
+          proofRumor,
+          ndk,
+          ctx.merchantPubkey,
+          ctx.buyerPubkey
+        )
+        deliveryNotice = getDeliveryNotice(proofDelivery, "Payment proof")
+        await updatePaymentAttempt(orderId, {
+          proofDeliveryStatus: "sent",
+        }).catch((e) => console.warn("Failed to update proof status", e))
+        await patchAndEmit(orderId, {
+          proofDeliveryStatus: "sent",
+          deliveryNotice: deliveryNotice ?? undefined,
+        })
+      } catch {
+        await updatePaymentAttempt(orderId, {
+          proofDeliveryStatus: "retry_needed",
+        }).catch((e) => console.warn("Failed to mark proof retry", e))
+        await patchAndEmit(orderId, { proofDeliveryStatus: "retry_needed" })
+      }
+
+      if (invoiceRequest.shouldWaitForZapReceipt && zapRequestId) {
+        emit(orderId, { stage: "checking_receipt" })
+        const receipt = await waitForZapReceipt({
+          zapRequestId,
+          recipientPubkey: ctx.merchantPubkey,
+          expectedAmountMsats: ctx.totalMsats,
+          expectedLnurl: lnurlMeta.lnurl,
+          lnurlNostrPubkey: lnurlMeta.nostrPubkey,
+          relayUrls: zapRelayUrls,
+          timeoutMs: ZAP_RECEIPT_WAIT_MS,
+        }).catch((e) => {
+          console.warn("Failed to observe zap receipt", e)
+          return null
+        })
+        if (receipt) {
+          await updatePaymentAttempt(orderId, {
+            zapReceiptId: receipt.id,
+          }).catch((e) => console.warn("Failed to persist zap receipt id", e))
+          await patchAndEmit(orderId, {
+            zapReceiptStatus: "observed",
+            zapReceiptId: receipt.id,
+          })
+        } else {
+          await patchAndEmit(orderId, { zapReceiptStatus: "timed_out" })
+        }
+      }
+
+      emit(orderId, { running: false, stage: null })
+      return runtimeStates.get(orderId)!
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Payment failed"
+      if (paymentMoved) {
+        // Funds moved but a tail step threw — still terminal success for the
+        // buyer; only the best-effort proof needs retry.
+        await patchAndEmit(
+          orderId,
+          { paymentStatus: "paid", proofDeliveryStatus: "retry_needed" },
+          { running: false, stage: null }
+        )
+      } else if (isAmbiguousPaymentError(e)) {
+        await patchAndEmit(
+          orderId,
+          { paymentStatus: "ambiguous", lastError: message },
+          { running: false, stage: null, error: message }
+        )
+      } else {
+        await patchAndEmit(
+          orderId,
+          { paymentStatus: "failed", lastError: message },
+          { running: false, stage: null, error: message }
+        )
+      }
+      return runtimeStates.get(orderId)!
     }
+  } finally {
     inFlight.delete(orderId)
-    return runtimeStates.get(orderId)!
   }
 }
 
