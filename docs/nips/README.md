@@ -12,3 +12,4 @@ Use this order:
 Current notes:
 
 - [Client hydration and relay hints](./client-hydration.md)
+- [OMF zapout marker](./omf-zapout.md)

@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from "bun:test"
-import { EVENT_KINDS } from "@conduit/core"
+import { EVENT_KINDS, OMF_ZAPOUT_MARKER_TAG } from "@conduit/core"
 import {
   isAnonZapSignerConfigured,
   signCheckoutZapRequestWithAnonSigner,
@@ -51,6 +51,29 @@ describe("Anon zap signer client", () => {
     expect(result).toEqual({
       ok: false,
       reason: "Zap request contains private tags.",
+    })
+  })
+
+  it("allows the canonical OMF zapout marker before signer authorization", () => {
+    const result = validateAnonZapSignerDraft(
+      draft({
+        tags: [...draft().tags, [...OMF_ZAPOUT_MARKER_TAG]],
+      })
+    )
+
+    expect(result).toEqual({ ok: true })
+  })
+
+  it("rejects expanded OMF marker payloads before signer authorization", () => {
+    const result = validateAnonZapSignerDraft(
+      draft({
+        tags: [...draft().tags, ["omf", "zapout", "order-123"]],
+      })
+    )
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "Zap request tag payload is invalid.",
     })
   })
 
