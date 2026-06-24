@@ -18,6 +18,15 @@ type FakeNwcClient = {
   getBalance: () => Promise<{
     balance: number
   }>
+  getBudget?: () => Promise<
+    | {
+        used_budget: number
+        total_budget: number
+        renews_at?: number
+        renewal_period: string
+      }
+    | Record<string, never>
+  >
   payInvoice: (request: {
     invoice: string
     amount?: number
@@ -51,6 +60,14 @@ const nextConnection = parseNwcUri(NEXT_NWC_URI)
 
 class Nip47PublishError extends Error {}
 class Nip47ReplyTimeoutError extends Error {}
+class Nip47WalletError extends Error {
+  code: string
+
+  constructor(message: string, code: string) {
+    super(message)
+    this.code = code
+  }
+}
 
 afterEach(() => {
   __buyerNwcSessionTestInternals.__setClientFactory(null)
@@ -280,6 +297,46 @@ describe("BuyerNwcSession", () => {
       status: "unchecked",
       balanceMsats: null,
       fetchedAt: null,
+      error: null,
+    })
+  })
+
+  it("refreshes advertised wallet budget with balance readiness", async () => {
+    let budgetCalls = 0
+
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        getInfo: async () => ({
+          methods: ["pay_invoice", "get_balance", "get_budget"],
+        }),
+        getBalance: async () => ({ balance: 50_000 }),
+        getBudget: async () => {
+          budgetCalls += 1
+          return {
+            used_budget: 10_000,
+            total_budget: 40_000,
+            renews_at: 1_700_000_000,
+            renewal_period: "daily",
+          }
+        },
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await session.warm()
+    await session.refreshBalance()
+    await flushPromises()
+
+    expect(budgetCalls).toBe(1)
+    expect(session.getSnapshot().budget).toMatchObject({
+      status: "available",
+      usedMsats: 10_000,
+      totalMsats: 40_000,
+      remainingMsats: 30_000,
+      renewsAt: 1_700_000_000,
+      renewalPeriod: "daily",
       error: null,
     })
   })
@@ -579,6 +636,32 @@ describe("BuyerNwcSession", () => {
       status: "published_timeout",
       phase: "after_publish",
       reason: "NWC request timed out.",
+    })
+  })
+
+  it("includes NIP-47 wallet error codes in safe payment failures", async () => {
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        payInvoice: async () => {
+          throw new Nip47WalletError("budget exceeded", "QUOTA_EXCEEDED")
+        },
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await expect(
+      session.payInvoice({
+        invoice: "lnbc1test",
+        amountMsats: 1_000,
+        timeoutMs: 100,
+        appId: "market",
+      })
+    ).resolves.toEqual({
+      status: "wallet_error",
+      phase: "after_publish",
+      reason: "QUOTA_EXCEEDED: budget exceeded",
     })
   })
 

@@ -67,7 +67,7 @@ export interface NwcPayInvoiceResult {
 }
 
 export interface NwcGetInfoResult {
-  /** NWC methods this wallet supports, e.g. ["pay_invoice", "make_invoice", "get_balance"]. */
+  /** NWC methods this wallet supports, e.g. ["pay_invoice", "get_balance", "get_budget"]. */
   methods: string[]
   alias?: string
   color?: string

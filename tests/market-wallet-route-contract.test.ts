@@ -13,10 +13,12 @@ describe("Market wallet route contracts", () => {
     const content = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
 
     expect(content).toContain("Connected wallet balance")
-    expect(content).toContain("formatWalletBalanceSats")
+    expect(content).toContain("formatWalletMsatsAsSats")
     expect(content).toContain("useWallet({ refreshBalance: true })")
     expect(content).toContain("wallet.refreshBalance")
     expect(content).toContain("Wallet does not advertise get_balance")
+    expect(content).toContain("Read balance")
+    expect(content).toContain("Read budget")
     expect(content).toContain(
       'balance.status === "available" || balance.status === "error"'
     )
@@ -33,13 +35,16 @@ describe("Market wallet route contracts", () => {
     expect(content).not.toContain("refreshBalance: true")
   })
 
-  it("keeps checkout wallet status probes balance-refresh opt-out", async () => {
+  it("opts checkout into wallet readiness reads for zap out", async () => {
     const content = await readFile(
       "apps/market/src/routes/checkout.tsx",
       "utf8"
     )
 
-    expect(content).toContain("const wallet = useWallet()")
-    expect(content).not.toContain("refreshBalance: true")
+    expect(content).toContain(
+      "const wallet = useWallet({ refreshBalance: true })"
+    )
+    expect(content).toContain("Wallet balance")
+    expect(content).toContain("getKnownWalletPaymentConstraint")
   })
 })

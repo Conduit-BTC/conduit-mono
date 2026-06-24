@@ -18,6 +18,7 @@ import {
 import {
   getBuyerNwcSession,
   type NwcSessionBalanceState,
+  type NwcSessionBudgetState,
   type NwcSessionSnapshot,
 } from "../lib/buyer-nwc-session"
 
@@ -45,6 +46,7 @@ export interface WalletState {
   connection: NwcConnection | null
   info: NwcGetInfoResult | null
   balance: NwcSessionBalanceState
+  budget: NwcSessionBudgetState
   reachability: NwcReachability
   lastProbeAt: number | null
   /** Plain-language reason the wallet cannot be used to zap out, if any. */
@@ -55,6 +57,7 @@ export interface WalletState {
 }
 
 export type WalletBalanceState = NwcSessionBalanceState
+export type WalletBudgetState = NwcSessionBudgetState
 
 type StoredWalletCapability = {
   walletPubkey: string
@@ -261,6 +264,7 @@ function getStateFromSessionSnapshot(
     connection: snapshot.connection,
     info,
     balance: snapshot.balance,
+    budget: snapshot.budget,
     status,
     reachability: getReachabilityFromSessionSnapshot(snapshot),
     lastProbeAt: snapshot.lastWarmAt,
@@ -282,6 +286,7 @@ export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
     connection: null,
     info: null,
     balance: emptyWalletBalance(),
+    budget: emptyWalletBudget(),
     reachability: "unchecked",
     lastProbeAt: null,
     diagnostics: [],
@@ -308,6 +313,7 @@ export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
       connection,
       info: s.info ?? cached?.info ?? null,
       balance: s.balance,
+      budget: s.budget,
       status: "connecting",
       reachability: "checking",
       error: null,
@@ -349,6 +355,7 @@ export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
       connection: stored,
       info: cached?.info ?? null,
       balance: s.balance,
+      budget: s.budget,
       status: "connecting",
       reachability: "checking",
       diagnostics: getNwcConnectionDiagnostics({
@@ -404,6 +411,7 @@ export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
       ...s,
       status: "connecting",
       balance: emptyWalletBalance(),
+      budget: emptyWalletBudget(),
       diagnostics: [],
       error: null,
     }))
@@ -466,6 +474,7 @@ export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
         connection: conn,
         info: snapshot.info,
         balance: snapshot.balance,
+        budget: snapshot.budget,
         status: "unreachable",
         reachability: "unreachable",
         lastProbeAt: Date.now(),
@@ -488,6 +497,7 @@ export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
       connection: null,
       info: null,
       balance: emptyWalletBalance(),
+      budget: emptyWalletBudget(),
       reachability: "unchecked",
       lastProbeAt: null,
       diagnostics: [],
@@ -505,8 +515,11 @@ export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
     if (
       !options.refreshBalance ||
       !connection ||
-      !info?.methods.includes("get_balance") ||
-      state.balance.status !== "unchecked"
+      !info?.methods.some(
+        (method) => method === "get_balance" || method === "get_budget"
+      ) ||
+      (state.balance.status !== "unchecked" &&
+        state.budget.status !== "unchecked")
     ) {
       return
     }
@@ -520,6 +533,7 @@ export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
     options.refreshBalance,
     refreshBalance,
     state.balance.status,
+    state.budget.status,
   ])
 
   const unavailableReason = deriveUnavailableReason(status)
@@ -537,6 +551,7 @@ export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
     connection,
     info,
     balance: state.balance,
+    budget: state.budget,
     reachability: state.reachability,
     lastProbeAt: state.lastProbeAt,
     diagnostics,
@@ -553,6 +568,19 @@ function emptyWalletBalance(): NwcSessionBalanceState {
   return {
     status: "unchecked",
     balanceMsats: null,
+    fetchedAt: null,
+    error: null,
+  }
+}
+
+function emptyWalletBudget(): NwcSessionBudgetState {
+  return {
+    status: "unchecked",
+    usedMsats: null,
+    totalMsats: null,
+    remainingMsats: null,
+    renewsAt: null,
+    renewalPeriod: null,
     fetchedAt: null,
     error: null,
   }
