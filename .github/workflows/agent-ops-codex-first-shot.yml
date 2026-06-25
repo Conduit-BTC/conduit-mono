@@ -184,6 +184,15 @@ jobs:
           git switch -c "$branch"
           echo "AGENT_BRANCH=$branch" >> "$GITHUB_ENV"
 
+      - uses: oven-sh/setup-bun@v2
+        if: steps.agent_auth.outputs.has_auth == 'true'
+        with:
+          bun-version: "1.3.5"
+
+      - name: Install dependencies for agent validation
+        if: steps.agent_auth.outputs.has_auth == 'true'
+        run: bun install --frozen-lockfile --ignore-scripts
+
       - name: Check workflow agent GitHub App auth
         id: app_auth
         if: steps.agent_auth.outputs.has_auth == 'true'
