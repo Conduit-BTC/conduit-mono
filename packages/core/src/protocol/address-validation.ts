@@ -106,7 +106,7 @@ export const ADDRESS_VALIDATION_V1_COUNTRIES = [
 type ProfiledCountryCode = (typeof ADDRESS_VALIDATION_V1_COUNTRIES)[number]
 
 type RegionPrefixRule = {
-  prefix: string | RegExp
+  prefix: string | RegExp | ((postalCode: string) => boolean)
   regions: string[]
 }
 
@@ -130,8 +130,8 @@ type CountryAddressProfile = {
 
 const CONTACT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const PHONE_ALLOWED_CHARS_RE = /[\d\s()+-]/
-const STREET_ALLOWED_RE = /^[A-Za-z0-9][A-Za-z0-9\s.,'#/&()-]*$/
-const CITY_ALLOWED_RE = /^[A-Za-z][A-Za-z\s.'-]*$/
+const STREET_ALLOWED_RE = /^[\p{L}\p{N}][\p{L}\p{M}\p{N}\s.,'‘’#/&()-]*$/u
+const CITY_ALLOWED_RE = /^[\p{L}][\p{L}\p{M}\s.'‘’-]*$/u
 
 /**
  * Whether a legacy coarse validity status should block a checkout step. Newer
@@ -165,7 +165,13 @@ export function sanitizePhoneInput(value: string): string {
 }
 
 function normalizeLookup(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, " ")
+  return value
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[‘’]/g, "'")
+    .replace(/\s+/g, " ")
 }
 
 function normalizePostal(value: string): string {
@@ -373,6 +379,20 @@ function prefixRange(
   }
 }
 
+function postalRange(
+  lo: number,
+  hi: number,
+  regions: string[]
+): RegionPrefixRule {
+  return {
+    prefix: (postalCode) => {
+      const value = Number(postalCode.slice(0, 4))
+      return Number.isInteger(value) && value >= lo && value <= hi
+    },
+    regions,
+  }
+}
+
 const US_REGION_PREFIX_RULES: RegionPrefixRule[] = [
   prefixRange(350, 369, ["AL"]),
   prefixRange(995, 999, ["AK"]),
@@ -462,7 +482,8 @@ const PROFILES: Record<ProfiledCountryCode, CountryAddressProfile> = {
     regionAliases: CA_PROVINCE_NAME_TO_CODE,
     regionCodes: CA_PROVINCE_CODES,
     regionPrefixRules: [
-      { prefix: /^[AB]/, regions: ["NL", "NS"] },
+      { prefix: "A", regions: ["NL"] },
+      { prefix: "B", regions: ["NS"] },
       { prefix: "C", regions: ["PE"] },
       { prefix: "E", regions: ["NB"] },
       { prefix: /^[GHJ]/, regions: ["QC"] },
@@ -507,7 +528,11 @@ const PROFILES: Record<ProfiledCountryCode, CountryAddressProfile> = {
     regionAliases: AU_STATE_NAME_TO_CODE,
     regionCodes: AU_STATE_CODES,
     regionPrefixRules: [
-      { prefix: /^[12]/, regions: ["NSW", "ACT"] },
+      postalRange(2000, 2599, ["NSW"]),
+      postalRange(2619, 2899, ["NSW"]),
+      postalRange(2921, 2999, ["NSW"]),
+      postalRange(2600, 2618, ["ACT"]),
+      postalRange(2900, 2920, ["ACT"]),
       { prefix: /^3/, regions: ["VIC"] },
       { prefix: /^4/, regions: ["QLD"] },
       { prefix: /^5/, regions: ["SA"] },
@@ -556,6 +581,7 @@ function matchRule(
   postalCode: string,
   rule: RegionPrefixRule | PostalLocalityRule
 ): boolean {
+  if (typeof rule.prefix === "function") return rule.prefix(postalCode)
   if (typeof rule.prefix === "string") return postalCode.startsWith(rule.prefix)
   return rule.prefix.test(postalCode)
 }
@@ -589,7 +615,7 @@ function localityMatches(input: string, expected: string[]): boolean {
 
 function validateStreet(value: string): AddressValidationIssue | null {
   const text = normalizeHumanText(value)
-  if (text.length < 5 || !/[A-Za-z]/.test(text)) {
+  if (text.length < 5 || !/\p{L}/u.test(text)) {
     return issue(
       "street",
       "street_plausibility",

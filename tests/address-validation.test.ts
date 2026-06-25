@@ -168,6 +168,133 @@ describe("validateAddressConsistency", () => {
     )
   })
 
+  it("accepts accented Canadian locality and street text", () => {
+    const montreal = validateAddressConsistency({
+      name: "Jane Doe",
+      street: "380 Saint-Antoine O",
+      city: "Montréal",
+      state: "QC",
+      postalCode: "H2Y 1C6",
+      country: "CA",
+    })
+    expect(montreal.status).toBe("valid")
+    expect(montreal.level).toBe("locality_consistent")
+    expect(montreal.canDirectPay).toBe(true)
+
+    const quebec = validateAddressConsistency({
+      name: "Jane Doe",
+      street: "1 Côte de la Fabrique",
+      city: "Québec",
+      state: "QC",
+      postalCode: "G1R 4P5",
+      country: "CA",
+    })
+    expect(quebec.status).toBe("valid")
+    expect(
+      quebec.issues.some((item) => item.code === "street_plausibility")
+    ).toBe(false)
+    expect(
+      quebec.issues.some((item) => item.code === "locality_plausibility")
+    ).toBe(false)
+    expect(quebec.canDirectPay).toBe(true)
+  })
+
+  it("accepts apostrophes and accents in street and locality text", () => {
+    const result = validateAddressConsistency({
+      name: "Jane Doe",
+      street: "1 Rue de l'Église",
+      city: "St. John's",
+      state: "NL",
+      postalCode: "A1C 5X1",
+      country: "CA",
+    })
+    expect(result.status).toBe("valid")
+    expect(
+      result.issues.some((item) => item.code === "street_plausibility")
+    ).toBe(false)
+    expect(
+      result.issues.some((item) => item.code === "locality_plausibility")
+    ).toBe(false)
+    expect(result.level).toBe("postal_region_consistent")
+
+    const smartQuoteResult = validateAddressConsistency({
+      name: "Jane Doe",
+      street: "1 Rue de l’Église",
+      city: "St. John’s",
+      state: "NL",
+      postalCode: "A1C 5X1",
+      country: "CA",
+    })
+    expect(smartQuoteResult.status).toBe("valid")
+    expect(
+      smartQuoteResult.issues.some(
+        (item) => item.code === "street_plausibility"
+      )
+    ).toBe(false)
+    expect(
+      smartQuoteResult.issues.some(
+        (item) => item.code === "locality_plausibility"
+      )
+    ).toBe(false)
+  })
+
+  it("splits Canadian A and B postal prefixes by province", () => {
+    const novaScotia = validateAddressConsistency({
+      name: "Jane Doe",
+      street: "123 Main St",
+      city: "Halifax",
+      state: "NS",
+      postalCode: "B3H 1Y2",
+      country: "CA",
+    })
+    expect(novaScotia.status).toBe("valid")
+    expect(novaScotia.level).toBe("postal_region_consistent")
+    expect(novaScotia.canDirectPay).toBe(true)
+
+    const newfoundland = validateAddressConsistency({
+      name: "Jane Doe",
+      street: "123 Main St",
+      city: "St. John's",
+      state: "NL",
+      postalCode: "A1C 5X1",
+      country: "CA",
+    })
+    expect(newfoundland.status).toBe("valid")
+    expect(newfoundland.level).toBe("postal_region_consistent")
+    expect(newfoundland.canDirectPay).toBe(true)
+
+    const bInNewfoundland = validateAddressConsistency({
+      name: "Jane Doe",
+      street: "123 Main St",
+      city: "Halifax",
+      state: "NL",
+      postalCode: "B3H 1Y2",
+      country: "CA",
+    })
+    expect(bInNewfoundland.status).toBe("inconsistent")
+    expect(
+      bInNewfoundland.issues.some(
+        (item) => item.code === "state_postal_mismatch"
+      )
+    ).toBe(true)
+
+    const aInNovaScotia = validateAddressConsistency({
+      name: "Jane Doe",
+      street: "123 Main St",
+      city: "St. John's",
+      state: "NS",
+      postalCode: "A1C 5X1",
+      country: "CA",
+    })
+    expect(aInNovaScotia.status).toBe("inconsistent")
+    expect(
+      aInNovaScotia.issues.some((item) => item.code === "state_postal_mismatch")
+    ).toBe(true)
+    expect(
+      aInNovaScotia.issues.some((item) => item.code === "locality_plausibility")
+    ).toBe(false)
+  })
+
   it("validates a well-formed UK postcode structurally", () => {
     const result = validateAddressConsistency({
       name: "Jane Doe",
@@ -223,6 +350,59 @@ describe("validateAddressConsistency", () => {
     ).toBe(true)
   })
 
+  it("splits Australian NSW and ACT postcode ranges for direct payment", () => {
+    const sydney = validateAddressConsistency({
+      name: "Jane Doe",
+      street: "1 Macquarie St",
+      city: "Sydney",
+      state: "NSW",
+      postalCode: "2000",
+      country: "AU",
+    })
+    expect(sydney.status).toBe("valid")
+    expect(sydney.canDirectPay).toBe(true)
+
+    const canberra = validateAddressConsistency({
+      name: "Jane Doe",
+      street: "1 London Circuit",
+      city: "Canberra",
+      state: "ACT",
+      postalCode: "2600",
+      country: "AU",
+    })
+    expect(canberra.status).toBe("valid")
+    expect(canberra.level).toBe("postal_region_consistent")
+    expect(canberra.canDirectPay).toBe(true)
+
+    const sydneyInAct = validateAddressConsistency({
+      name: "Jane Doe",
+      street: "1 Macquarie St",
+      city: "Sydney",
+      state: "ACT",
+      postalCode: "2000",
+      country: "AU",
+    })
+    expect(sydneyInAct.status).toBe("inconsistent")
+    expect(
+      sydneyInAct.issues.some((item) => item.code === "state_postal_mismatch")
+    ).toBe(true)
+    expect(sydneyInAct.canDirectPay).toBe(false)
+
+    const canberraInNsw = validateAddressConsistency({
+      name: "Jane Doe",
+      street: "1 London Circuit",
+      city: "Canberra",
+      state: "NSW",
+      postalCode: "2600",
+      country: "AU",
+    })
+    expect(canberraInNsw.status).toBe("inconsistent")
+    expect(
+      canberraInNsw.issues.some((item) => item.code === "state_postal_mismatch")
+    ).toBe(true)
+    expect(canberraInNsw.canDirectPay).toBe(false)
+  })
+
   it("validates New Zealand postal/locality basics", () => {
     const result = validateAddressConsistency({
       name: "Jane Doe",
@@ -242,6 +422,21 @@ describe("validateAddressConsistency", () => {
       street: "12 George St",
       city: "Timaru",
       postalCode: "7910",
+      country: "NZ",
+    })
+    expect(result.status).toBe("valid")
+    expect(result.canSubmitOrder).toBe(true)
+    expect(result.level).toBe("street_plausible")
+    expect(result.canDirectPay).toBe(false)
+  })
+
+  it("accepts accented New Zealand locality text without direct-payment evidence", () => {
+    const result = validateAddressConsistency({
+      name: "Jane Doe",
+      street: "1 Massey Rd",
+      city: "Māngere",
+      state: "Auckland",
+      postalCode: "2022",
       country: "NZ",
     })
     expect(result.status).toBe("valid")
