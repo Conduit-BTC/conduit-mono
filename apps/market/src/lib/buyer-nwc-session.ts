@@ -452,7 +452,19 @@ export class BuyerNwcSession {
     try {
       const client = this.getOrCreateClient(connection)
       if (typeof client.getBudget !== "function") {
-        throw new Error("NWC client does not expose get_budget.")
+        if (
+          !this.isCurrentConnection(connection, version) ||
+          budgetRefreshVersion !== this.budgetRefreshVersion
+        ) {
+          return this.snapshot
+        }
+
+        this.snapshot = {
+          ...this.snapshot,
+          budget: unavailableBudgetState(),
+        }
+        this.notify()
+        return this.snapshot
       }
       await connectNwcRelays(client, connection, NWC_WARM_RELAY_TIMEOUT_MS)
       const result = await withTimeout(

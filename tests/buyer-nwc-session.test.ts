@@ -341,6 +341,54 @@ describe("BuyerNwcSession", () => {
     })
   })
 
+  it("treats missing SDK getBudget support as non-blocking budget unavailability", async () => {
+    let payCalls = 0
+
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        getInfo: async () => ({
+          methods: ["pay_invoice", "get_balance", "get_budget"],
+        }),
+        getBalance: async () => ({ balance: 50_000 }),
+        payInvoice: async () => {
+          payCalls += 1
+          return { preimage: "paid-preimage" }
+        },
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await session.warm()
+    await session.refreshBalance()
+    await flushPromises()
+
+    expect(session.getSnapshot().budget).toEqual({
+      status: "unavailable",
+      usedMsats: null,
+      totalMsats: null,
+      remainingMsats: null,
+      renewsAt: null,
+      renewalPeriod: null,
+      fetchedAt: null,
+      error: null,
+    })
+
+    await expect(
+      session.payInvoice({
+        invoice: "lnbc1test",
+        amountMsats: 1_000,
+        timeoutMs: 100,
+        appId: "market",
+      })
+    ).resolves.toMatchObject({
+      status: "paid",
+      preimage: "paid-preimage",
+    })
+    expect(payCalls).toBe(1)
+  })
+
   it("stops notifying subscribers after unsubscribe", () => {
     const session = new BuyerNwcSession()
     const statuses: string[] = []

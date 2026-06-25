@@ -604,6 +604,20 @@ describe("wallet payment readiness", () => {
     })
   })
 
+  it("does not block automatic NWC payment when budget support is unavailable", () => {
+    expect(
+      getKnownWalletPaymentConstraint({
+        amountMsats: 25_000,
+        methods: ["pay_invoice", "get_budget"],
+        balance: emptyWalletBalance(),
+        budget: {
+          ...emptyWalletBudget(),
+          status: "unavailable",
+        },
+      })
+    ).toBeNull()
+  })
+
   it("does not block when balance and budget cover the invoice", () => {
     expect(
       getKnownWalletPaymentConstraint({
