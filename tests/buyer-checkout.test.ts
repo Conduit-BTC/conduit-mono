@@ -9,6 +9,7 @@ import {
   getFastCheckoutUnavailableReasons,
   getShippingCheckoutState,
   getShippingStepBlockingMessage,
+  sanitizeShippingPhoneInput,
   type ShippingFormState,
 } from "../apps/market/src/lib/checkout-validation"
 import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
@@ -124,8 +125,48 @@ describe("validateShippingFields", () => {
   })
 
   it("accepts lowercase country code (normalised internally)", () => {
-    const errors = validateShippingFields(validShipping({ country: "gb" }))
+    const errors = validateShippingFields(
+      validShipping({
+        country: "gb",
+        street: "10 Downing St",
+        city: "London",
+        state: "",
+        postalCode: "SW1A 2AA",
+      })
+    )
     expect(errors.some((e) => e.field === "country")).toBe(false)
+  })
+
+  it("requires region for countries whose profiles expect it", () => {
+    const errors = validateShippingFields(validShipping({ state: "" }))
+    expect(errors.some((e) => e.field === "state")).toBe(true)
+  })
+
+  it("rejects postal/region mismatches", () => {
+    const errors = validateShippingFields(
+      validShipping({ postalCode: "90210", city: "Beverly Hills", state: "TX" })
+    )
+    expect(errors.some((e) => e.field === "state")).toBe(true)
+  })
+
+  it("rejects known city/postal mismatches", () => {
+    const errors = validateShippingFields(
+      validShipping({
+        postalCode: "90210",
+        city: "Costa Banana",
+        state: "CA",
+      })
+    )
+    expect(errors.some((e) => e.field === "city")).toBe(true)
+  })
+
+  it("rejects obvious street junk", () => {
+    const errors = validateShippingFields(
+      validShipping({
+        street: "3400 Avenue of the Arts12312!!! 1<<CC>> ,.,s,d,,",
+      })
+    )
+    expect(errors.some((e) => e.field === "street")).toBe(true)
   })
 
   it("rejects malformed email when provided", () => {
@@ -160,6 +201,12 @@ describe("validateShippingFields", () => {
 
   it("allows blank phone (optional field)", () => {
     expect(validateShippingFields(validShipping({ phone: "" }))).toEqual([])
+  })
+
+  it("sanitizes pasted phone input to international-safe characters", () => {
+    expect(sanitizeShippingPhoneInput("abc +1 (800) 555-1234 ext nope")).toBe(
+      "+1 (800) 555-1234"
+    )
   })
 
   it("accumulates multiple errors at once", () => {
@@ -423,6 +470,19 @@ describe("isFastCheckoutEligible", () => {
       })
     ).toEqual([
       "Shipping cost is coordinated with the merchant, so direct payment is disabled.",
+    ])
+  })
+
+  it("blocks fast checkout when address validity lacks direct-payment confidence", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        addressValidForDirectPayment: false,
+      })
+    ).toEqual([
+      "Enter a locally consistent delivery address before direct payment.",
     ])
   })
 })

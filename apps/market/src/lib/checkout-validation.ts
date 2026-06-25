@@ -1,4 +1,10 @@
-import { SHIPPING_COUNTRIES, type ShippingAddressSchema } from "@conduit/core"
+import {
+  SHIPPING_COUNTRIES,
+  sanitizePhoneInput,
+  validateAddressConsistency,
+  type AddressValidationIssue,
+  type ShippingAddressSchema,
+} from "@conduit/core"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -17,6 +23,7 @@ export type ShippingFieldKey =
   | "street"
   | "postalCode"
   | "city"
+  | "state"
   | "email"
   | "phone"
 
@@ -30,15 +37,11 @@ export type ShippingValidationError = {
 /** ISO 3166-1 alpha-2: exactly 2 uppercase ASCII letters. */
 export const ISO_COUNTRY_RE = /^[A-Z]{2}$/
 
-/** Minimal e-mail shape check. */
-export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-
-/** Accept blank phone, or a string with 7-20 digit/space/+/- chars. */
-export const PHONE_RE = /^[\d\s\-+().]{7,20}$/
-
 const SHIPPING_COUNTRY_CODES = new Set(
   SHIPPING_COUNTRIES.map((country) => country.code)
 )
+
+export const sanitizeShippingPhoneInput = sanitizePhoneInput
 
 // ─── Validation ───────────────────────────────────────────────────────────────
 
@@ -75,29 +78,55 @@ export function validateShippingFields(
     })
   }
 
-  if (shipping.street.trim().length === 0) {
-    errors.push({ field: "street", message: "Street address is required" })
-  }
+  const addressResult = validateAddressConsistency({
+    name: `${firstName} ${lastName}`.trim(),
+    street: shipping.street,
+    city: shipping.city,
+    state: shipping.state,
+    postalCode: shipping.postalCode,
+    country,
+    email: shipping.email,
+    phone: shipping.phone,
+  })
 
-  if (shipping.postalCode.trim().length === 0) {
-    errors.push({ field: "postalCode", message: "Postal code is required" })
-  }
+  const hasNameError =
+    errors.some((e) => e.field === "firstName") ||
+    errors.some((e) => e.field === "lastName")
 
-  if (shipping.city.trim().length === 0) {
-    errors.push({ field: "city", message: "City is required" })
-  }
-
-  const email = shipping.email.trim()
-  if (email.length > 0 && !EMAIL_RE.test(email)) {
-    errors.push({ field: "email", message: "Enter a valid email address" })
-  }
-
-  const phone = shipping.phone.trim()
-  if (phone.length > 0 && !PHONE_RE.test(phone)) {
-    errors.push({ field: "phone", message: "Enter a valid phone number" })
+  for (const issue of addressResult.issues) {
+    const error = shippingErrorFromAddressIssue(issue, hasNameError)
+    if (error && !errors.some((item) => item.field === error.field)) {
+      errors.push(error)
+    }
   }
 
   return errors
+}
+
+function shippingErrorFromAddressIssue(
+  issue: AddressValidationIssue,
+  hasNameError: boolean
+): ShippingValidationError | null {
+  switch (issue.field) {
+    case "name":
+      return hasNameError
+        ? null
+        : { field: "firstName", message: issue.message }
+    case "street":
+      return { field: "street", message: issue.message }
+    case "city":
+      return { field: "city", message: issue.message }
+    case "state":
+      return { field: "state", message: issue.message }
+    case "postalCode":
+      return { field: "postalCode", message: issue.message }
+    case "country":
+      return { field: "country", message: issue.message }
+    case "email":
+      return { field: "email", message: issue.message }
+    case "phone":
+      return { field: "phone", message: issue.message }
+  }
 }
 
 export function getValidationErrorFields(
@@ -117,9 +146,11 @@ export function shippingFieldLabel(field: ShippingFieldKey): string {
     case "street":
       return "Street address"
     case "postalCode":
-      return "Postal code"
+      return "Postal/ZIP code"
     case "city":
       return "City"
+    case "state":
+      return "State / Province / Region"
     case "email":
       return "Email"
     case "phone":
@@ -155,6 +186,7 @@ export function isFastCheckoutEligible(params: {
   shippingState?: ShippingCheckoutState
   shippingPriced?: boolean
   relayReady?: boolean
+  addressValidForDirectPayment?: boolean
 }): boolean {
   return getFastCheckoutUnavailableReasons(params).length === 0
 }
@@ -206,6 +238,7 @@ export function getFastCheckoutUnavailableReasons(params: {
   shippingState?: ShippingCheckoutState
   shippingPriced?: boolean
   relayReady?: boolean
+  addressValidForDirectPayment?: boolean
 }): string[] {
   const reasons: string[] = []
   const canStartLightningFlow =
@@ -261,6 +294,11 @@ export function getFastCheckoutUnavailableReasons(params: {
   if (params.shippingPriced === false) {
     reasons.push(
       "Shipping cost is coordinated with the merchant, so direct payment is disabled."
+    )
+  }
+  if (params.addressValidForDirectPayment === false) {
+    reasons.push(
+      "Enter a locally consistent delivery address before direct payment."
     )
   }
   if (params.relayReady === false) {

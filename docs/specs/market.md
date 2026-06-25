@@ -142,10 +142,24 @@ conversation/message-count replay.
 
 ### Address validity
 
-Before direct payment / zap-out, physical-shipping addresses are validated for
-internal consistency locally and offline (no third-party browser calls; no
-address/contact data to analytics). This is distinct from merchant shipping-zone
-coverage. See `docs/specs/order-lifecycle.md` for the full policy.
+Before order submission and direct payment / zap-out, physical-shipping
+addresses and optional contact fields are validated locally and offline (no
+third-party browser address calls; no address/contact data to analytics, logs, or
+observability). This is distinct from merchant shipping-zone coverage.
+
+Checkout uses v1 country profiles for `US`, `CA`, `GB`, `AU`, and `NZ`.
+Profiled countries can earn direct-payment confidence only after required
+field, postal-format, contact, and lightweight street-plausibility checks pass
+and the local profile can prove postal-to-region or postal-to-locality
+consistency. Unsupported countries or profiled countries without enough bundled
+consistency evidence may still use order-first fallback when the input is
+plausible, but direct payment remains unavailable until the profile can grant
+confidence.
+
+The checkout UI must show address/contact validity separately from merchant
+shipping-zone eligibility. Shipping-zone success must not be the only green/pass
+state while address/contact validity is missing, invalid, or unverified. See
+`docs/specs/order-lifecycle.md` for the full policy.
 
 ## Protocol Events
 
