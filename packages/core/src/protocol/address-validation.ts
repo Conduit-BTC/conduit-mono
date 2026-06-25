@@ -130,6 +130,8 @@ type CountryAddressProfile = {
 
 const CONTACT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const PHONE_ALLOWED_CHARS_RE = /[\d\s()+-]/
+const PHONE_FORMAT_MESSAGE =
+  "Enter a valid phone number. Use + country code if it differs from the delivery country."
 const STREET_ALLOWED_RE = /^[\p{L}\p{N}][\p{L}\p{M}\p{N}\s.,'‘’#/&()-]*$/u
 const CITY_ALLOWED_RE = /^[\p{L}][\p{L}\p{M}\s.'‘’-]*$/u
 
@@ -203,7 +205,7 @@ function normalizePhone(
       issue: {
         field: "phone",
         code: "phone_format",
-        message: "Enter a valid phone number for this country.",
+        message: PHONE_FORMAT_MESSAGE,
       },
     }
   }
@@ -219,7 +221,7 @@ function normalizePhone(
       issue: {
         field: "phone",
         code: "phone_format",
-        message: "Enter a valid phone number for this country.",
+        message: PHONE_FORMAT_MESSAGE,
       },
     }
   }

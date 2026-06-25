@@ -2,6 +2,7 @@
  * Unit tests for buyer checkout validation, fast-checkout eligibility,
  * LNURL helpers, and NWC URI parsing.
  */
+import { readFile } from "node:fs/promises"
 import { describe, expect, it, mock, afterEach } from "bun:test"
 import {
   validateShippingFields,
@@ -74,6 +75,21 @@ function validShipping(
 }
 
 // ─── validateShippingFields ───────────────────────────────────────────────────
+
+describe("checkout phone helper copy", () => {
+  it("links the optional phone input to the international calling-code hint", async () => {
+    const content = await readFile(
+      "apps/market/src/routes/checkout.tsx",
+      "utf8"
+    )
+
+    expect(content).toContain('id="ship-phone-help"')
+    expect(content).toContain("ship-phone-help ship-phone-error")
+    expect(content).toContain(
+      "Use + country code if this number is outside the"
+    )
+  })
+})
 
 describe("validateShippingFields", () => {
   it("returns no errors for a fully valid form", () => {

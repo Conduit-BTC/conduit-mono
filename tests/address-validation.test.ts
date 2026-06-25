@@ -467,6 +467,11 @@ describe("validateAddressConsistency", () => {
     expect(result.issues.some((item) => item.code === "phone_format")).toBe(
       true
     )
+    expect(
+      result.issues.find((item) => item.code === "phone_format")?.message
+    ).toBe(
+      "Enter a valid phone number. Use + country code if it differs from the delivery country."
+    )
   })
 
   it("normalizes valid phone values", () => {
@@ -477,6 +482,17 @@ describe("validateAddressConsistency", () => {
     })
     expect(result.status).toBe("valid")
     expect(result.normalized.phone).toBe("+18005551234")
+  })
+
+  it("accepts international phone values outside the delivery country", () => {
+    const result = validateAddressConsistency({
+      ...beverlyHills,
+      state: "CA",
+      country: "US",
+      phone: "+44 20 7946 0958",
+    })
+    expect(result.status).toBe("valid")
+    expect(result.normalized.phone).toBe("+442079460958")
   })
 
   it("keeps unsupported countries on order-first fallback without direct-payment confidence", () => {

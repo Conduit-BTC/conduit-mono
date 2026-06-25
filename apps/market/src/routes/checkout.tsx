@@ -2026,10 +2026,25 @@ function CheckoutPage() {
                           autoComplete="tel"
                           placeholder="+1 555 123 4567"
                           aria-invalid={fieldInvalid("phone")}
+                          aria-describedby={
+                            fieldInvalid("phone")
+                              ? "ship-phone-help ship-phone-error"
+                              : "ship-phone-help"
+                          }
                           className={fieldClassName("phone")}
                         />
+                        <p
+                          id="ship-phone-help"
+                          className="text-xs text-[var(--text-muted)]"
+                        >
+                          Use + country code if this number is outside the
+                          delivery country.
+                        </p>
                         {fieldInvalid("phone") && (
-                          <p className="text-xs text-error">
+                          <p
+                            id="ship-phone-error"
+                            className="text-xs text-error"
+                          >
                             {fieldError("phone")}
                           </p>
                         )}
