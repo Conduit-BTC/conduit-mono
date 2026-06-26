@@ -180,8 +180,12 @@ function productToForm(
           : "",
     usePresetShippingZone: presetAvailable && !!product.shippingOptionId,
     customShippingConfig: productShippingConfigFromProduct(product),
-    publicZapEnabled: product.publicZapEnabled,
-    zapMessagePolicy: product.zapMessagePolicy,
+    publicZapEnabled: product.publicZapPolicyKnown
+      ? product.publicZapEnabled
+      : false,
+    zapMessagePolicy: product.publicZapPolicyKnown
+      ? product.zapMessagePolicy
+      : "generic_only",
     imageUrl: product.images[0]?.url ?? "",
     tags: product.tags.join(", "),
   }

@@ -238,6 +238,29 @@ describe("product listing event parsing", () => {
     expect(parsed.publicZapPolicyKnown).toBe(true)
   })
 
+  it("requires valid zap policy tags before treating legacy JSON policy as known", () => {
+    const product = baseProduct({
+      publicZapEnabled: false,
+      zapMessagePolicy: "custom",
+      publicZapPolicyKnown: true,
+    })
+    const parsed = parseProductEvent({
+      id: "legacy-content-only-policy-event",
+      pubkey: product.pubkey,
+      created_at: 1_779_762_725,
+      content: JSON.stringify(product),
+      tags: [
+        ["d", "legacy-content-only-policy"],
+        ["title", "Ignored title"],
+        ["price", "99", "USD"],
+      ],
+    })
+
+    expect(parsed.publicZapEnabled).toBe(true)
+    expect(parsed.zapMessagePolicy).toBe("generic_only")
+    expect(parsed.publicZapPolicyKnown).toBe(false)
+  })
+
   it("parses spec-aligned tag/content product listings", () => {
     const parsed = parseProductEvent({
       id: "spec-event",
