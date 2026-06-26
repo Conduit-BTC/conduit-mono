@@ -746,13 +746,15 @@ export function getPaymentTrackerRowCopy(
   return PAYMENT_TRACKER_ROW_COPY[key][state]
 }
 
+export const SHOPPER_PUBLIC_ZAP_DEFAULT_CONTENT =
+  "Supported this merchant on Conduit ⚡"
+
 export function buildDefaultZapContent(params: {
   items: CartItem[]
   merchantName: string
 }): string {
-  const itemCount = params.items.reduce((sum, item) => sum + item.quantity, 0)
-  const itemLabel = itemCount === 1 ? "item" : "items"
-  return `Paid for ${itemCount} ${itemLabel} from ${params.merchantName} on Conduit.`
+  void params
+  return SHOPPER_PUBLIC_ZAP_DEFAULT_CONTENT
 }
 
 export function sanitizePublicZapContent(content: string): string {

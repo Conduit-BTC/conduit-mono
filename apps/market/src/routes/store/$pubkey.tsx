@@ -814,6 +814,9 @@ function StorefrontPage() {
                         shippingOptionDTag: product.shippingOptionDTag,
                         shippingCountries: product.shippingCountries,
                         shippingCountryRules: product.shippingCountryRules,
+                        publicZapEnabled: product.publicZapEnabled,
+                        zapMessagePolicy: product.zapMessagePolicy,
+                        publicZapPolicyKnown: product.publicZapPolicyKnown,
                       })
                     }
                     onIncrement={() =>
@@ -834,6 +837,9 @@ function StorefrontPage() {
                         shippingOptionDTag: product.shippingOptionDTag,
                         shippingCountries: product.shippingCountries,
                         shippingCountryRules: product.shippingCountryRules,
+                        publicZapEnabled: product.publicZapEnabled,
+                        zapMessagePolicy: product.zapMessagePolicy,
+                        publicZapPolicyKnown: product.publicZapPolicyKnown,
                       })
                     }
                     onDecrement={() => {

@@ -4,11 +4,19 @@ import {
   canonicalizeShippingCost,
   type CommerceShippingCostLike,
 } from "../pricing"
-import { productSchema, type ProductSchema } from "../schemas"
+import {
+  productSchema,
+  type ProductSchema,
+  type ProductZapMessagePolicy,
+} from "../schemas"
 import { EVENT_KINDS } from "./kinds"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 
 const PRODUCT_IMAGE_URL_PATTERN = /^https?:\/\//i
+export const PRODUCT_PUBLIC_ZAPS_TAG = "checkout_public_zaps"
+export const PRODUCT_ZAP_MESSAGE_POLICY_TAG = "checkout_zap_message_policy"
+const PRODUCT_PUBLIC_ZAPS_LEGACY_TAG = "public_zaps"
+const PRODUCT_ZAP_MESSAGE_POLICY_LEGACY_TAG = "zap_message_policy"
 
 export interface ProductListingEventDraft {
   kind: typeof EVENT_KINDS.PRODUCT
@@ -46,6 +54,14 @@ export function buildProductListingEventDraft({
     ["title", product.title],
     ["price", String(priceAmount), priceCurrency],
     ["type", product.type, product.format],
+    [
+      PRODUCT_PUBLIC_ZAPS_TAG,
+      product.publicZapEnabled === false ? "false" : "true",
+    ],
+    [
+      PRODUCT_ZAP_MESSAGE_POLICY_TAG,
+      product.zapMessagePolicy ?? "generic_only",
+    ],
   ]
 
   if (content) tags.push(["summary", content])
@@ -206,6 +222,85 @@ function parseShippingCountryRules(tags: string[][] | undefined): {
   }
 }
 
+type ParsedProductPublicZapEnabled = {
+  value: boolean
+  known: boolean
+}
+
+type ParsedProductZapMessagePolicy = {
+  value: ProductZapMessagePolicy
+  known: boolean
+}
+
+function parseProductPublicZapEnabled(
+  tags: string[][] | undefined
+): ParsedProductPublicZapEnabled {
+  const raw =
+    getTagValue(tags, PRODUCT_PUBLIC_ZAPS_TAG) ??
+    getTagValue(tags, PRODUCT_PUBLIC_ZAPS_LEGACY_TAG)
+  const normalized = raw?.trim().toLowerCase()
+
+  switch (normalized) {
+    case "false":
+    case "disabled":
+    case "disable":
+    case "no":
+    case "0":
+      return { value: false, known: true }
+    case "true":
+    case "enabled":
+    case "enable":
+    case "yes":
+    case "1":
+      return { value: true, known: true }
+    case undefined:
+      return { value: true, known: false }
+    default:
+      return { value: true, known: false }
+  }
+}
+
+function parseProductZapMessagePolicy(
+  tags: string[][] | undefined
+): ParsedProductZapMessagePolicy {
+  const raw =
+    getTagValue(tags, PRODUCT_ZAP_MESSAGE_POLICY_TAG) ??
+    getTagValue(tags, PRODUCT_ZAP_MESSAGE_POLICY_LEGACY_TAG)
+  const normalized = raw?.trim().toLowerCase()
+
+  switch (normalized) {
+    case "product_reference":
+    case "product":
+      return { value: "product_reference", known: true }
+    case "custom":
+    case "shopper_custom":
+      return { value: "custom", known: true }
+    case "generic_only":
+    case "generic":
+      return { value: "generic_only", known: true }
+    case undefined:
+      return { value: "generic_only", known: false }
+    default:
+      return { value: "generic_only", known: false }
+  }
+}
+
+function parseProductZapPolicy(
+  tags: string[][] | undefined
+): Pick<
+  ProductSchema,
+  "publicZapEnabled" | "zapMessagePolicy" | "publicZapPolicyKnown"
+> {
+  const publicZapEnabled = parseProductPublicZapEnabled(tags)
+  const zapMessagePolicy = parseProductZapMessagePolicy(tags)
+
+  return {
+    publicZapEnabled: publicZapEnabled.value,
+    zapMessagePolicy: zapMessagePolicy.value,
+    publicZapPolicyKnown: publicZapEnabled.known && zapMessagePolicy.known,
+  }
+}
+
 /**
  * Best-effort parser for kind-30402 product events.
  *
@@ -220,6 +315,7 @@ export function parseProductEvent(
 ): ProductSchema {
   const createdAtMs = (event.created_at ?? 0) * 1000
   const dTag = getTagValue(event.tags, "d")
+  const zapPolicy = parseProductZapPolicy(event.tags)
 
   // Try legacy Conduit JSON content first for already-published listings.
   try {
@@ -228,6 +324,7 @@ export function parseProductEvent(
       ...parsed,
       id: parsed.id ?? (dTag ? `30402:${event.pubkey}:${dTag}` : event.id),
       pubkey: parsed.pubkey ?? event.pubkey,
+      ...zapPolicy,
       createdAt: parsed.createdAt ?? createdAtMs,
       updatedAt: parsed.updatedAt ?? createdAtMs,
     }
@@ -288,6 +385,7 @@ export function parseProductEvent(
       ...shippingCost,
       ...shippingOption,
       ...shippingRules,
+      ...zapPolicy,
       images,
       tags,
       location: locationTag ?? undefined,

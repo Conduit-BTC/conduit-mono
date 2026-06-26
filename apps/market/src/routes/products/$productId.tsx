@@ -561,6 +561,9 @@ function ProductPage() {
                           shippingOptionDTag: product.shippingOptionDTag,
                           shippingCountries: product.shippingCountries,
                           shippingCountryRules: product.shippingCountryRules,
+                          publicZapEnabled: product.publicZapEnabled,
+                          zapMessagePolicy: product.zapMessagePolicy,
+                          publicZapPolicyKnown: product.publicZapPolicyKnown,
                         },
                         quantity
                       )
@@ -789,6 +792,10 @@ function ProductPage() {
                                 relatedProduct.shippingCountries,
                               shippingCountryRules:
                                 relatedProduct.shippingCountryRules,
+                              publicZapEnabled: relatedProduct.publicZapEnabled,
+                              zapMessagePolicy: relatedProduct.zapMessagePolicy,
+                              publicZapPolicyKnown:
+                                relatedProduct.publicZapPolicyKnown,
                             },
                             1
                           )
@@ -816,6 +823,10 @@ function ProductPage() {
                                 relatedProduct.shippingCountries,
                               shippingCountryRules:
                                 relatedProduct.shippingCountryRules,
+                              publicZapEnabled: relatedProduct.publicZapEnabled,
+                              zapMessagePolicy: relatedProduct.zapMessagePolicy,
+                              publicZapPolicyKnown:
+                                relatedProduct.publicZapPolicyKnown,
                             },
                             1
                           )

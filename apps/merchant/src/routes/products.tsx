@@ -23,6 +23,7 @@ import {
   type CommerceResult,
   type ListingSafetyEvaluation,
   type ProductSchema,
+  type ProductZapMessagePolicy,
   useAuth,
 } from "@conduit/core"
 import {
@@ -88,6 +89,8 @@ type ProductFormState = {
   shippingCost: string
   usePresetShippingZone: boolean
   customShippingConfig: ShippingConfig
+  publicZapEnabled: boolean
+  zapMessagePolicy: ProductZapMessagePolicy
   imageUrl: string
   tags: string
 }
@@ -106,6 +109,8 @@ function createEmptyProductForm(
     shippingCost: "",
     usePresetShippingZone,
     customShippingConfig: { countries: [] },
+    publicZapEnabled: true,
+    zapMessagePolicy: "generic_only",
     imageUrl: "",
     tags: "",
   }
@@ -175,6 +180,8 @@ function productToForm(
           : "",
     usePresetShippingZone: presetAvailable && !!product.shippingOptionId,
     customShippingConfig: productShippingConfigFromProduct(product),
+    publicZapEnabled: product.publicZapEnabled,
+    zapMessagePolicy: product.zapMessagePolicy,
     imageUrl: product.images[0]?.url ?? "",
     tags: product.tags.join(", "),
   }
@@ -249,6 +256,20 @@ function getStatusPillVariant(
   return tone
 }
 
+function getZapPolicyLabel(product: ProductSchema): string {
+  if (!product.publicZapPolicyKnown) return "Zap policy: unknown"
+  if (!product.publicZapEnabled) return "Private invoice only"
+
+  switch (product.zapMessagePolicy) {
+    case "custom":
+      return "Public zap: shopper custom"
+    case "product_reference":
+      return "Public zap: product reference"
+    case "generic_only":
+      return "Public zap: generic"
+  }
+}
+
 function ListingSafetySummary({
   item,
   onEdit,
@@ -259,15 +280,16 @@ function ListingSafetySummary({
   const display = getListingSafetyDisplay(item.safety)
   const isActive = item.safety.state === "active"
   const isPolicyWarning = item.safety.state === "flagged"
+  const zapPolicyLabel = getZapPolicyLabel(item.product)
 
   if (isActive) {
     return (
-      <div className="flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2">
         <StatusPill variant="success" className="text-[10px]">
           {display.label}
         </StatusPill>
-        <span className="text-xs text-[var(--text-muted)]">
-          Visible in Market
+        <span className="text-xs text-[var(--text-secondary)]">
+          {zapPolicyLabel}
         </span>
       </div>
     )
@@ -302,6 +324,12 @@ function ListingSafetySummary({
             Checkout:
           </span>{" "}
           {isPolicyWarning ? "Available" : "Disabled"}
+        </div>
+        <div>
+          <span className="font-medium text-[var(--text-primary)]">
+            Zap checkout:
+          </span>{" "}
+          {zapPolicyLabel}
         </div>
       </div>
 
@@ -434,6 +462,9 @@ async function publishProduct(
     stock: undefined,
     images: [{ url: imageUrl }],
     tags,
+    publicZapEnabled: form.publicZapEnabled,
+    zapMessagePolicy: form.zapMessagePolicy,
+    publicZapPolicyKnown: true,
     location: undefined,
     createdAt: existing?.product.createdAt ?? now,
     updatedAt: now,
@@ -1131,6 +1162,65 @@ function ProductsPage() {
                   </div>
                 </div>
               )}
+            </div>
+
+            <div className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+              <label className="flex items-start gap-3 text-sm">
+                <input
+                  type="checkbox"
+                  checked={form.publicZapEnabled}
+                  onChange={(event) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      publicZapEnabled: event.target.checked,
+                    }))
+                  }
+                  className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500"
+                />
+                <span className="grid gap-1">
+                  <span className="font-medium text-[var(--text-primary)]">
+                    Enable public zaps for purchases
+                  </span>
+                  <span className="text-xs leading-5 text-[var(--text-muted)]">
+                    When disabled, checkout uses a private Lightning invoice for
+                    this product.
+                  </span>
+                </span>
+              </label>
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="product-zap-message-policy">
+                  Zap message policy
+                </Label>
+                <Select
+                  value={form.zapMessagePolicy}
+                  disabled={!form.publicZapEnabled}
+                  onValueChange={(value) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      zapMessagePolicy: value as ProductZapMessagePolicy,
+                    }))
+                  }
+                >
+                  <SelectTrigger id="product-zap-message-policy">
+                    <SelectValue placeholder="Choose policy" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="generic_only">Generic only</SelectItem>
+                    <SelectItem value="product_reference">
+                      Allow product reference
+                    </SelectItem>
+                    <SelectItem value="custom">
+                      Allow shopper custom message
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <div className="text-xs leading-5 text-[var(--text-muted)]">
+                  {form.publicZapEnabled
+                    ? "Generic public zaps never include product names, quantities, order metadata, contact details, private notes, or wallet data."
+                    : "This listing will publish a private-invoice checkout policy; buyers cannot choose public zap checkout for this product."}
+                </div>
+              </div>
             </div>
 
             <div className="grid gap-1.5">

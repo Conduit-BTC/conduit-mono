@@ -66,6 +66,7 @@ import {
   hasPhysicalItemsMissingShippingSnapshot,
   hasPhysicalItemsMissingShippingZone,
 } from "../lib/cart-shipping-options"
+import { getCartPublicZapPolicy } from "../lib/cart-model"
 import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
 import {
   isFastCheckoutEligible,
@@ -597,6 +598,27 @@ function CheckoutPage() {
     if (!selectedMerchant) return []
     return cart.items.filter((item) => item.merchantPubkey === selectedMerchant)
   }, [cart.items, selectedMerchant])
+  const publicZapPolicy = useMemo(
+    () => getCartPublicZapPolicy(checkoutItems),
+    [checkoutItems]
+  )
+  const publicZapPolicyMessage =
+    publicZapPolicy.disabledProductIds.length > 0
+      ? "At least one product in this cart does not allow public zaps, so checkout will use a private invoice."
+      : publicZapPolicy.missingPolicyProductIds.length > 0
+        ? "At least one product is missing public zap policy metadata, so checkout will use a private invoice."
+        : null
+  const zapContentEditable =
+    publicZapPolicy.effectiveZapMessagePolicy === "custom"
+  const publicZapModeDescription = publicZapPolicyMessage
+    ? publicZapPolicyMessage
+    : !lnurlAllowsNostr
+      ? "This merchant wallet does not advertise public zap receipts."
+      : zapContentEditable
+        ? "Include an editable public zap comment."
+        : publicZapPolicy.effectiveZapMessagePolicy === "product_reference"
+          ? "Use a merchant-approved public zap comment; product references are allowed, but private details stay out."
+          : "Use the merchant's generic public zap comment."
 
   // True when every item in the cart is a digital product (no shipping needed)
   const isAllDigital = useMemo(
@@ -662,6 +684,18 @@ function CheckoutPage() {
       buildDefaultZapContent({ items: checkoutItems, merchantName })
     )
   }, [checkoutItems, merchantName, zapContentEdited])
+
+  useEffect(() => {
+    if (!publicZapPolicy.publicZapsAllowed && zapVisibility === "public_zap") {
+      setZapVisibility("private_checkout")
+    }
+  }, [publicZapPolicy.publicZapsAllowed, zapVisibility])
+
+  useEffect(() => {
+    if (!zapContentEditable && zapContentEdited) {
+      setZapContentEdited(false)
+    }
+  }, [zapContentEditable, zapContentEdited])
 
   useEffect(() => {
     const check = () => setWeblnAvailable(hasWebLN())
@@ -823,11 +857,13 @@ function CheckoutPage() {
     wallet.status !== "error"
   const canAttemptLightningPayment = canTrySavedNwcWallet || weblnAvailable
   const requiresPublicZap = zapVisibility === "public_zap"
-  const lnurlReadyForSelectedPayment = getLnurlReadyForCheckoutPayment({
-    visibility: zapVisibility,
-    lnurlPayAvailable,
-    lnurlAllowsNostr,
-  })
+  const lnurlReadyForSelectedPayment =
+    getLnurlReadyForCheckoutPayment({
+      visibility: zapVisibility,
+      lnurlPayAvailable,
+      lnurlAllowsNostr,
+    }) &&
+    (!requiresPublicZap || publicZapPolicy.publicZapsAllowed)
   const allowsManualLightningFallback =
     !!merchantLud16 && lnurlReadyForSelectedPayment
   const fastEligibilityInput = {
@@ -2068,22 +2104,26 @@ function CheckoutPage() {
                       <button
                         type="button"
                         aria-pressed={zapVisibility === "public_zap"}
-                        disabled={!lnurlAllowsNostr}
+                        disabled={
+                          !lnurlAllowsNostr ||
+                          !publicZapPolicy.publicZapsAllowed
+                        }
                         onClick={() => setZapVisibility("public_zap")}
                         className={[
                           "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
                           zapVisibility === "public_zap"
                             ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
-                            : !lnurlAllowsNostr
+                            : !lnurlAllowsNostr ||
+                                !publicZapPolicy.publicZapsAllowed
                               ? "cursor-not-allowed border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] opacity-70"
                               : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
                         ].join(" ")}
                       >
-                        <span className="block font-medium">Public zap</span>
+                        <span className="block font-medium">
+                          Public zap as shopper
+                        </span>
                         <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
-                          {lnurlAllowsNostr
-                            ? "Include an editable public zap comment."
-                            : "This merchant wallet does not advertise public zap receipts."}
+                          {publicZapModeDescription}
                         </span>
                       </button>
                       <button
@@ -2113,17 +2153,23 @@ function CheckoutPage() {
                           id="zap-content"
                           value={zapContent}
                           onChange={(e) => {
+                            if (!zapContentEditable) return
                             setZapContent(e.target.value)
                             setZapContentEdited(true)
                           }}
+                          disabled={!zapContentEditable}
+                          readOnly={!zapContentEditable}
                           rows={1}
                           maxLength={280}
                           className="min-h-[2.75rem] rounded-xl bg-[var(--surface)] py-2.5 focus-visible:border-primary-500 focus-visible:ring-primary-500/30"
                         />
                         <p className="text-xs leading-6 text-[var(--text-muted)]">
-                          Public zap receipts can expose this comment. Shipping
-                          address, contact details, private notes, wallet data,
-                          payment evidence, and order IDs are never added here.
+                          {zapContentEditable
+                            ? "Public zap receipts can expose this comment. Shipping address, contact details, private notes, wallet data, payment evidence, and order IDs are never added here."
+                            : publicZapPolicy.effectiveZapMessagePolicy ===
+                                "product_reference"
+                              ? "This cart allows product references, but checkout defaults to a generic public comment unless shopper-custom messaging is allowed."
+                              : "The merchant only allows generic public zap comments for this cart."}
                         </p>
                       </div>
                     )}

@@ -3,6 +3,16 @@ import { z } from "zod"
 /**
  * Product schema for validation
  */
+export const productZapMessagePolicySchema = z.enum([
+  "generic_only",
+  "product_reference",
+  "custom",
+])
+
+export type ProductZapMessagePolicy = z.infer<
+  typeof productZapMessagePolicySchema
+>
+
 export const productSchema = z.object({
   id: z.string(),
   pubkey: z.string(),
@@ -56,6 +66,9 @@ export const productSchema = z.object({
     )
     .default([]),
   tags: z.array(z.string()).default([]),
+  publicZapEnabled: z.boolean().default(true),
+  zapMessagePolicy: productZapMessagePolicySchema.default("generic_only"),
+  publicZapPolicyKnown: z.boolean().default(false),
   location: z.string().optional(),
   createdAt: z.number(),
   updatedAt: z.number(),

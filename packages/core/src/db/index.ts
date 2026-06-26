@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable, type Table } from "dexie"
 import { config } from "../config"
+import type { ProductZapMessagePolicy } from "../schemas"
 
 export interface StoredOrder {
   id: string
@@ -91,6 +92,9 @@ export interface CachedProduct {
   stock?: number
   images: Array<{ url: string; alt?: string }>
   tags: string[]
+  publicZapEnabled?: boolean
+  zapMessagePolicy?: ProductZapMessagePolicy
+  publicZapPolicyKnown?: boolean
   location?: string
   createdAt?: number
   updatedAt?: number

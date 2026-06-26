@@ -129,6 +129,9 @@ describeIfRelay("merchant products CRUD (relay smoke)", () => {
       stock: undefined,
       images: [],
       tags: ["test", "merchant-crud"],
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
       location: undefined,
       createdAt,
       updatedAt: createdAt,
@@ -173,6 +176,9 @@ describeIfRelay("merchant products CRUD (relay smoke)", () => {
       ...productV1,
       title: `${baseTitle} (updated)`,
       price: 99.99,
+      publicZapEnabled: false,
+      zapMessagePolicy: "custom",
+      publicZapPolicyKnown: true,
       createdAt: productV1.createdAt,
       updatedAt,
     }
@@ -210,6 +216,17 @@ describeIfRelay("merchant products CRUD (relay smoke)", () => {
     const parsedAfterUpdate = parseProductEvent(latestAfterUpdate)
     expect(parsedAfterUpdate.title).toBe(`${baseTitle} (updated)`)
     expect(parsedAfterUpdate.price).toBe(99.99)
+    expect(parsedAfterUpdate.publicZapEnabled).toBe(false)
+    expect(parsedAfterUpdate.zapMessagePolicy).toBe("custom")
+    expect(parsedAfterUpdate.publicZapPolicyKnown).toBe(true)
+    expect(latestAfterUpdate.tags).toContainEqual([
+      "checkout_public_zaps",
+      "false",
+    ])
+    expect(latestAfterUpdate.tags).toContainEqual([
+      "checkout_zap_message_policy",
+      "custom",
+    ])
 
     const deletion = new NDKEvent(ndk)
     deletion.kind = EVENT_KINDS.DELETION

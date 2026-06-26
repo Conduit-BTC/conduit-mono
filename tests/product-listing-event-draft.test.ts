@@ -34,6 +34,9 @@ function baseProduct(overrides: Partial<ProductSchema> = {}): ProductSchema {
     stock: undefined,
     images: [{ url: "https://example.com/product.png" }],
     tags: ["test", "commerce"],
+    publicZapEnabled: true,
+    zapMessagePolicy: "generic_only",
+    publicZapPolicyKnown: true,
     location: undefined,
     createdAt: 1_779_762_725_963,
     updatedAt: 1_779_762_725_963,
@@ -69,6 +72,8 @@ describe("product listing event drafts", () => {
     expectTag(draft.tags, ["image", "https://example.com/product.png"])
     expectTag(draft.tags, ["t", "test"])
     expectTag(draft.tags, ["t", "commerce"])
+    expectTag(draft.tags, ["checkout_public_zaps", "true"])
+    expectTag(draft.tags, ["checkout_zap_message_policy", "generic_only"])
   })
 
   it("emits empty content and no summary tag when summary is blank", () => {
@@ -156,6 +161,34 @@ describe("product listing event drafts", () => {
     expectTag(draft.tags, ["shipping_restrict", "US", "787**"])
     expectTag(draft.tags, ["shipping_exclude", "US", "78799"])
   })
+
+  it("defaults omitted runtime public zap policy fields to enabled and generic-only when emitting", () => {
+    const product = baseProduct() as Partial<ProductSchema>
+    delete product.publicZapEnabled
+    delete product.zapMessagePolicy
+    delete product.publicZapPolicyKnown
+
+    const draft = buildProductListingEventDraft({
+      product: product as ProductSchema,
+      dTag: "runtime-default-policy",
+    })
+
+    expectTag(draft.tags, ["checkout_public_zaps", "true"])
+    expectTag(draft.tags, ["checkout_zap_message_policy", "generic_only"])
+  })
+
+  it("emits explicit public zap opt-out and shopper-custom message policy tags", () => {
+    const draft = buildProductListingEventDraft({
+      product: baseProduct({
+        publicZapEnabled: false,
+        zapMessagePolicy: "custom",
+      }),
+      dTag: "private-product",
+    })
+
+    expectTag(draft.tags, ["checkout_public_zaps", "false"])
+    expectTag(draft.tags, ["checkout_zap_message_policy", "custom"])
+  })
 })
 
 describe("product listing event parsing", () => {
@@ -177,6 +210,32 @@ describe("product listing event parsing", () => {
     expect(parsed.summary).toBe(product.summary)
     expect(parsed.price).toBe(product.price)
     expect(parsed.currency).toBe(product.currency)
+    expect(parsed.publicZapEnabled).toBe(true)
+    expect(parsed.zapMessagePolicy).toBe("generic_only")
+    expect(parsed.publicZapPolicyKnown).toBe(false)
+  })
+
+  it("lets explicit zap policy tags override legacy JSON-content defaults", () => {
+    const product = baseProduct({
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+    })
+    const parsed = parseProductEvent({
+      id: "legacy-event-with-policy-tags",
+      pubkey: product.pubkey,
+      created_at: 1_779_762_725,
+      content: JSON.stringify(product),
+      tags: [
+        ["d", "overbudget"],
+        ["checkout_public_zaps", "false"],
+        ["checkout_zap_message_policy", "custom"],
+      ],
+    })
+
+    expect(parsed.publicZapEnabled).toBe(false)
+    expect(parsed.zapMessagePolicy).toBe("custom")
+    expect(parsed.publicZapPolicyKnown).toBe(true)
   })
 
   it("parses spec-aligned tag/content product listings", () => {
@@ -190,6 +249,8 @@ describe("product listing event parsing", () => {
         ["title", "Spec Product"],
         ["price", "25000", "SATS"],
         ["type", "simple", "digital"],
+        ["checkout_public_zaps", "false"],
+        ["checkout_zap_message_policy", "product_reference"],
         ["image", "https://example.com/spec.png"],
       ],
     })
@@ -201,6 +262,63 @@ describe("product listing event parsing", () => {
     expect(parsed.currency).toBe("SATS")
     expect(parsed.type).toBe("simple")
     expect(parsed.format).toBe("digital")
+    expect(parsed.publicZapEnabled).toBe(false)
+    expect(parsed.zapMessagePolicy).toBe("product_reference")
+    expect(parsed.publicZapPolicyKnown).toBe(true)
+  })
+
+  it("defaults missing or unknown public zap tags to generic public-zap-safe policy", () => {
+    const missing = parseProductEvent({
+      id: "missing-policy-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Legacy listing",
+      tags: [
+        ["d", "missing-policy"],
+        ["title", "Missing Policy Product"],
+        ["price", "25000", "SATS"],
+      ],
+    })
+    const malformed = parseProductEvent({
+      id: "malformed-policy-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Malformed listing",
+      tags: [
+        ["d", "malformed-policy"],
+        ["title", "Malformed Policy Product"],
+        ["price", "25000", "SATS"],
+        ["checkout_public_zaps", "maybe"],
+        ["checkout_zap_message_policy", "ship_everything"],
+      ],
+    })
+
+    expect(missing.publicZapEnabled).toBe(true)
+    expect(missing.zapMessagePolicy).toBe("generic_only")
+    expect(missing.publicZapPolicyKnown).toBe(false)
+    expect(malformed.publicZapEnabled).toBe(true)
+    expect(malformed.zapMessagePolicy).toBe("generic_only")
+    expect(malformed.publicZapPolicyKnown).toBe(false)
+  })
+
+  it("parses the earlier public_zaps tag candidate for compatibility", () => {
+    const parsed = parseProductEvent({
+      id: "legacy-candidate-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Earlier tag candidate listing",
+      tags: [
+        ["d", "legacy-candidate"],
+        ["title", "Legacy Candidate Product"],
+        ["price", "25000", "SATS"],
+        ["public_zaps", "disabled"],
+        ["zap_message_policy", "shopper_custom"],
+      ],
+    })
+
+    expect(parsed.publicZapEnabled).toBe(false)
+    expect(parsed.zapMessagePolicy).toBe("custom")
+    expect(parsed.publicZapPolicyKnown).toBe(true)
   })
 
   it("parses variable and variation product types from spec type tags", () => {

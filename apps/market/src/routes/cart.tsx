@@ -870,6 +870,9 @@ function CartPage() {
                       shippingOptionDTag: item.shippingOptionDTag,
                       shippingCountries: item.shippingCountries,
                       shippingCountryRules: item.shippingCountryRules,
+                      publicZapEnabled: item.publicZapEnabled,
+                      zapMessagePolicy: item.zapMessagePolicy,
+                      publicZapPolicyKnown: item.publicZapPolicyKnown,
                     },
                     1
                   )
@@ -970,6 +973,9 @@ function CartPage() {
                         shippingOptionDTag: product.shippingOptionDTag,
                         shippingCountries: product.shippingCountries,
                         shippingCountryRules: product.shippingCountryRules,
+                        publicZapEnabled: product.publicZapEnabled,
+                        zapMessagePolicy: product.zapMessagePolicy,
+                        publicZapPolicyKnown: product.publicZapPolicyKnown,
                       })
                     }
                   />
