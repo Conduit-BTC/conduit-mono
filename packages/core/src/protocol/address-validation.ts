@@ -589,6 +589,13 @@ function getProfile(country: string): CountryAddressProfile | undefined {
   return PROFILES[country as ProfiledCountryCode]
 }
 
+export function isAddressRegionRequired(country: string): boolean {
+  return (
+    getProfile(normalizeHumanText(country).toUpperCase())?.regionRequired ??
+    false
+  )
+}
+
 function matchRule(
   postalCode: string,
   rule: RegionPrefixRule | PostalLocalityRule

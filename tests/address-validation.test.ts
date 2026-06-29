@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import {
   ADDRESS_VALIDATION_V1_COUNTRIES,
   isAddressDirectPaymentBlocking,
+  isAddressRegionRequired,
   isAddressValidityBlocking,
   normalizeUsState,
   sanitizePhoneInput,
@@ -25,6 +26,15 @@ describe("validateAddressConsistency", () => {
       "AU",
       "NZ",
     ])
+  })
+
+  it("reports when a country profile expects a state, province, or region", () => {
+    expect(isAddressRegionRequired("US")).toBe(true)
+    expect(isAddressRegionRequired("CA")).toBe(true)
+    expect(isAddressRegionRequired("AU")).toBe(true)
+    expect(isAddressRegionRequired("GB")).toBe(false)
+    expect(isAddressRegionRequired("NZ")).toBe(false)
+    expect(isAddressRegionRequired("DE")).toBe(false)
   })
 
   it("warns on the CND-127 example (90210 / Beverly Hills / Texas)", () => {
