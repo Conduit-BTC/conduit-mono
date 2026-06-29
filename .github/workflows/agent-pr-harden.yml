@@ -114,6 +114,11 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app_token.outputs.token }}
 
+      - uses: oven-sh/setup-bun@v2
+        if: steps.sudden_auth.outputs.has_auth == 'true'
+        with:
+          bun-version: "1.3.5"
+
       - name: Validate maintainer gate
         if: steps.sudden_auth.outputs.has_auth == 'true'
         shell: bash
@@ -146,6 +151,10 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: gh pr checkout "${{ inputs.pr_number }}"
+
+      - name: Install dependencies for agent validation
+        if: steps.sudden_auth.outputs.has_auth == 'true'
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Run Sudden Agent hardening with CODEX_AUTH_JSON
         if: steps.sudden_auth.outputs.has_codex_auth_json == 'true'
