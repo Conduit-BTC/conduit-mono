@@ -25,7 +25,6 @@ import {
   hasWebLN,
   getNdk,
   getShippingOptions,
-  isAddressRegionRequired,
   normalizePubkey,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
@@ -851,7 +850,6 @@ function CheckoutPage() {
         : "unknown"
 
   const currentAddressValidity = computeAddressValidity(buildShippingAddress())
-  const stateRegionRequired = isAddressRegionRequired(shipping.country)
 
   const canTrySavedNwcWallet =
     !!wallet.connection &&
@@ -1988,12 +1986,6 @@ function CheckoutPage() {
                     <div className="grid gap-1.5">
                       <Label htmlFor="ship-state">
                         State / Province / Region
-                        {stateRegionRequired && (
-                          <>
-                            {" "}
-                            <span className="text-error">*</span>
-                          </>
-                        )}
                       </Label>
                       <Input
                         id="ship-state"
