@@ -43,6 +43,17 @@ const SHIPPING_COUNTRY_CODES = new Set(
 
 export const sanitizeShippingPhoneInput = sanitizePhoneInput
 
+export const SHIPPING_PHONE_HELP_ID = "ship-phone-help"
+export const SHIPPING_PHONE_ERROR_ID = "ship-phone-error"
+export const SHIPPING_PHONE_HELP_COPY =
+  "Use + country code if this number is outside the delivery country."
+
+export function getShippingPhoneDescribedBy(hasError: boolean): string {
+  return hasError
+    ? `${SHIPPING_PHONE_HELP_ID} ${SHIPPING_PHONE_ERROR_ID}`
+    : SHIPPING_PHONE_HELP_ID
+}
+
 // ─── Validation ───────────────────────────────────────────────────────────────
 
 export function validateShippingFields(

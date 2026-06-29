@@ -2,15 +2,18 @@
  * Unit tests for buyer checkout validation, fast-checkout eligibility,
  * LNURL helpers, and NWC URI parsing.
  */
-import { readFile } from "node:fs/promises"
 import { describe, expect, it, mock, afterEach } from "bun:test"
 import {
   validateShippingFields,
   isFastCheckoutEligible,
   getFastCheckoutUnavailableReasons,
+  getShippingPhoneDescribedBy,
   getShippingCheckoutState,
   getShippingStepBlockingMessage,
   sanitizeShippingPhoneInput,
+  SHIPPING_PHONE_ERROR_ID,
+  SHIPPING_PHONE_HELP_COPY,
+  SHIPPING_PHONE_HELP_ID,
   type ShippingFormState,
 } from "../apps/market/src/lib/checkout-validation"
 import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
@@ -77,16 +80,15 @@ function validShipping(
 // ─── validateShippingFields ───────────────────────────────────────────────────
 
 describe("checkout phone helper copy", () => {
-  it("links the optional phone input to the international calling-code hint", async () => {
-    const content = await readFile(
-      "apps/market/src/routes/checkout.tsx",
-      "utf8"
+  it("links the optional phone input to the international calling-code hint", () => {
+    expect(SHIPPING_PHONE_HELP_ID).toBe("ship-phone-help")
+    expect(SHIPPING_PHONE_ERROR_ID).toBe("ship-phone-error")
+    expect(getShippingPhoneDescribedBy(false)).toBe(SHIPPING_PHONE_HELP_ID)
+    expect(getShippingPhoneDescribedBy(true)).toBe(
+      `${SHIPPING_PHONE_HELP_ID} ${SHIPPING_PHONE_ERROR_ID}`
     )
-
-    expect(content).toContain('id="ship-phone-help"')
-    expect(content).toContain("ship-phone-help ship-phone-error")
-    expect(content).toContain(
-      "Use + country code if this number is outside the"
+    expect(SHIPPING_PHONE_HELP_COPY).toBe(
+      "Use + country code if this number is outside the delivery country."
     )
   })
 })
@@ -153,19 +155,19 @@ describe("validateShippingFields", () => {
     expect(errors.some((e) => e.field === "country")).toBe(false)
   })
 
-  it("requires region for countries whose profiles expect it", () => {
+  it("does not block when a profiled country is missing region confidence", () => {
     const errors = validateShippingFields(validShipping({ state: "" }))
-    expect(errors.some((e) => e.field === "state")).toBe(true)
+    expect(errors.some((e) => e.field === "state")).toBe(false)
   })
 
-  it("rejects postal/region mismatches", () => {
+  it("does not block postal/region mismatches", () => {
     const errors = validateShippingFields(
       validShipping({ postalCode: "90210", city: "Beverly Hills", state: "TX" })
     )
-    expect(errors.some((e) => e.field === "state")).toBe(true)
+    expect(errors.some((e) => e.field === "state")).toBe(false)
   })
 
-  it("rejects known city/postal mismatches", () => {
+  it("does not block known city/postal mismatches", () => {
     const errors = validateShippingFields(
       validShipping({
         postalCode: "90210",
@@ -173,7 +175,14 @@ describe("validateShippingFields", () => {
         state: "CA",
       })
     )
-    expect(errors.some((e) => e.field === "city")).toBe(true)
+    expect(errors.some((e) => e.field === "city")).toBe(false)
+  })
+
+  it("does not block street addresses without building numbers", () => {
+    const errors = validateShippingFields(
+      validShipping({ street: "Main Street" })
+    )
+    expect(errors.some((e) => e.field === "street")).toBe(false)
   })
 
   it("rejects obvious street junk", () => {
@@ -489,7 +498,7 @@ describe("isFastCheckoutEligible", () => {
     ])
   })
 
-  it("blocks fast checkout when address validity lacks direct-payment confidence", () => {
+  it("blocks fast checkout when address validity has hard errors", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: true,
@@ -500,6 +509,18 @@ describe("isFastCheckoutEligible", () => {
     ).toEqual([
       "Enter a locally consistent delivery address before direct payment.",
     ])
+  })
+
+  it("allows fast checkout when address validity only has warnings", () => {
+    expect(
+      isFastCheckoutEligible({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        shippingEligible: true,
+        addressValidForDirectPayment: true,
+      })
+    ).toBe(true)
   })
 })
 

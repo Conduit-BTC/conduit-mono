@@ -66,6 +66,7 @@ export type AddressValidationIssueCode =
   | "locality_plausibility"
   | "email_format"
   | "phone_format"
+  | "validation_incomplete"
   | "unknown_country"
 
 export interface AddressValidationIssue {
@@ -89,6 +90,7 @@ export interface AddressValidityResult {
   status: AddressValidityStatus
   level: AddressConfidenceLevel
   issues: AddressValidationIssue[]
+  warnings: AddressValidationIssue[]
   normalized: NormalizedAddressForValidation
   canSubmitOrder: boolean
   canDirectPay: boolean
@@ -245,6 +247,14 @@ function hasDisallowedPhoneCharacters(value: string): boolean {
 }
 
 function issue(
+  field: AddressValidationField,
+  code: AddressValidationIssueCode,
+  message: string
+): AddressValidationIssue {
+  return { field, code, message }
+}
+
+function warning(
   field: AddressValidationField,
   code: AddressValidationIssueCode,
   message: string
@@ -615,30 +625,39 @@ function localityMatches(input: string, expected: string[]): boolean {
   )
 }
 
-function validateStreet(value: string): AddressValidationIssue | null {
+function validateStreet(value: string): {
+  issue?: AddressValidationIssue
+  warning?: AddressValidationIssue
+} {
   const text = normalizeHumanText(value)
   if (text.length < 5 || !/\p{L}/u.test(text)) {
-    return issue(
-      "street",
-      "street_plausibility",
-      "Enter a real street address."
-    )
-  }
-  if (!/\d/.test(text)) {
-    return issue(
-      "street",
-      "street_plausibility",
-      "Street address should include a house or building number."
-    )
+    return {
+      issue: issue(
+        "street",
+        "street_plausibility",
+        "Enter a real street address."
+      ),
+    }
   }
   if (!STREET_ALLOWED_RE.test(text) || symbolRatio(text) > 0.28) {
-    return issue(
-      "street",
-      "street_plausibility",
-      "Street address contains unsupported characters."
-    )
+    return {
+      issue: issue(
+        "street",
+        "street_plausibility",
+        "Street address contains unsupported characters."
+      ),
+    }
   }
-  return null
+  if (!/\d/.test(text)) {
+    return {
+      warning: warning(
+        "street",
+        "street_plausibility",
+        "Street address does not include a house or building number. Review it carefully before paying."
+      ),
+    }
+  }
+  return {}
 }
 
 function validateCity(value: string): AddressValidationIssue | null {
@@ -651,7 +670,7 @@ function validateCity(value: string): AddressValidationIssue | null {
 
 function symbolRatio(value: string): number {
   if (!value) return 0
-  const symbols = value.replace(/[A-Za-z0-9\s]/g, "").length
+  const symbols = value.replace(/[\p{L}\p{M}\p{N}\s]/gu, "").length
   return symbols / value.length
 }
 
@@ -702,6 +721,7 @@ export function validateAddressConsistency(
   if (phone.normalized) normalized.phone = phone.normalized
 
   const issues: AddressValidationIssue[] = []
+  const warnings: AddressValidationIssue[] = []
   for (const [field, value] of [
     ["name", normalized.name],
     ["street", normalized.street],
@@ -720,8 +740,9 @@ export function validateAddressConsistency(
   if (phone.issue) issues.push(phone.issue)
 
   if (normalized.street) {
-    const streetIssue = validateStreet(normalized.street)
-    if (streetIssue) issues.push(streetIssue)
+    const streetResult = validateStreet(normalized.street)
+    if (streetResult.issue) issues.push(streetResult.issue)
+    if (streetResult.warning) warnings.push(streetResult.warning)
   }
   if (normalized.city) {
     const cityIssue = validateCity(normalized.city)
@@ -731,13 +752,23 @@ export function validateAddressConsistency(
   const profile = getProfile(country)
   if (!profile) {
     const status = statusFromIssues(issues)
+    if (status === "valid") {
+      warnings.push(
+        warning(
+          "country",
+          "unknown_country",
+          "We could not fully validate this address locally. Review it carefully before paying; the merchant may need to confirm details."
+        )
+      )
+    }
     return {
       status: status === "valid" ? "unknown" : status,
       level: status === "valid" ? "unsupported_country" : "invalid",
       issues,
+      warnings,
       normalized,
       canSubmitOrder: issues.length === 0,
-      canDirectPay: false,
+      canDirectPay: issues.length === 0,
       profiledCountry: false,
     }
   }
@@ -750,16 +781,24 @@ export function validateAddressConsistency(
   if (normalizedRegion) normalized.state = normalizedRegion
 
   if (profile.regionRequired && !normalizedRegion) {
-    issues.push(
-      issue("state", "region_required", `Enter a valid ${profile.regionLabel}.`)
+    warnings.push(
+      warning(
+        "state",
+        "region_required",
+        `We could not validate the ${profile.regionLabel} locally. Review it carefully before paying.`
+      )
     )
   } else if (
     normalized.state &&
     !normalizedRegion &&
     profile.regionCodes.size > 0
   ) {
-    issues.push(
-      issue("state", "region_unknown", `Enter a valid ${profile.regionLabel}.`)
+    warnings.push(
+      warning(
+        "state",
+        "region_unknown",
+        `We could not validate the ${profile.regionLabel} locally. Review it carefully before paying.`
+      )
     )
   }
 
@@ -777,11 +816,11 @@ export function validateAddressConsistency(
     const postalRegions = getPostalRegions(profile, normalized.postalCode)
     if (postalRegions && postalRegions.length > 0) {
       if (!postalRegions.includes(normalizedRegion)) {
-        issues.push(
-          issue(
+        warnings.push(
+          warning(
             "state",
             "state_postal_mismatch",
-            `${labelFor("postalCode")} does not match the selected ${profile.regionLabel}.`
+            `${labelFor("postalCode")} may not match the selected ${profile.regionLabel}. Review it carefully before paying.`
           )
         )
       } else {
@@ -798,11 +837,11 @@ export function validateAddressConsistency(
     )
     if (expectedLocalities && expectedLocalities.length > 0) {
       if (!localityMatches(normalized.city, expectedLocalities)) {
-        issues.push(
-          issue(
+        warnings.push(
+          warning(
             "city",
             "city_postal_mismatch",
-            "City does not match the postal code."
+            "City may not match the postal code. Review it carefully before paying."
           )
         )
       } else {
@@ -817,6 +856,7 @@ export function validateAddressConsistency(
       status,
       level: status === "missing" ? "missing_required" : "invalid",
       issues,
+      warnings,
       normalized,
       canSubmitOrder: false,
       canDirectPay: false,
@@ -831,14 +871,24 @@ export function validateAddressConsistency(
       : "street_plausible"
 
   const canDirectPay = localityConsistent || regionConsistent
+  if (!canDirectPay) {
+    warnings.push(
+      warning(
+        "country",
+        "validation_incomplete",
+        "We could not fully validate this address locally. Review it carefully before paying; the merchant may need to confirm details."
+      )
+    )
+  }
 
   return {
     status: "valid",
     level,
     issues: [],
+    warnings,
     normalized,
     canSubmitOrder: true,
-    canDirectPay,
+    canDirectPay: true,
     profiledCountry: true,
   }
 }

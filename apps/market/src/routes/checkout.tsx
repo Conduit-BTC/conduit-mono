@@ -72,8 +72,12 @@ import {
   getFastCheckoutUnavailableReasons,
   getShippingCheckoutState,
   getShippingStepBlockingMessage,
+  getShippingPhoneDescribedBy,
   getValidationErrorFields,
   sanitizeShippingPhoneInput,
+  SHIPPING_PHONE_ERROR_ID,
+  SHIPPING_PHONE_HELP_COPY,
+  SHIPPING_PHONE_HELP_ID,
   shippingFieldLabel,
   validateShippingFields,
   type ShippingFormState,
@@ -151,6 +155,12 @@ const SHIPPING_VALIDATION_FIELDS: ShippingFieldKey[] = [
   "phone",
   "email",
 ]
+
+function isValidationField(
+  field: keyof ShippingFormState
+): field is ShippingFieldKey {
+  return SHIPPING_VALIDATION_FIELDS.includes(field as ShippingFieldKey)
+}
 
 const COUNTRY_COMBOBOX_OPTIONS = SHIPPING_COUNTRIES.map((country) => ({
   value: country.code,
@@ -892,11 +902,11 @@ function CheckoutPage() {
         "Fix address/contact details before sending the order."
       )
     }
-    if (!currentAddressValidity.profiledCountry) {
-      return "Address format looks plausible. Direct payment needs a supported country profile."
-    }
-    if (!currentAddressValidity.canDirectPay) {
-      return "Address format looks plausible. Direct payment needs stronger local consistency."
+    if (currentAddressValidity.warnings.length > 0) {
+      return (
+        currentAddressValidity.warnings[0]?.message ??
+        "We could not fully validate this address locally. Review it carefully before paying; the merchant may need to confirm details."
+      )
     }
     if (currentAddressValidity.level === "locality_consistent") {
       return "Address format and locality look consistent."
@@ -1027,12 +1037,6 @@ function CheckoutPage() {
     })
   }
 
-  function isValidationField(
-    field: keyof ShippingFormState
-  ): field is ShippingFieldKey {
-    return SHIPPING_VALIDATION_FIELDS.includes(field as ShippingFieldKey)
-  }
-
   useEffect(() => {
     if (!showSentGlow) return
     const id = window.setTimeout(() => setShowSentGlow(false), 650)
@@ -1095,6 +1099,7 @@ function CheckoutPage() {
         status: "not_required",
         level: "not_required",
         issues: [],
+        warnings: [],
         normalized: {
           name: "",
           street: "",
@@ -1411,8 +1416,9 @@ function CheckoutPage() {
         )
       }
 
-      // Address validity gate (CND-127): block zap-out unless the local,
-      // offline profile can grant direct-payment confidence.
+      // Address validity gate (CND-127): block zap-out only on hard input
+      // errors. Local confidence gaps are shown as warnings that buyers can
+      // consciously override.
       const shippingAddress = buildShippingAddress()
       const addressValidity = computeAddressValidity(shippingAddress)
       if (!addressValidity.canDirectPay) {
@@ -2026,23 +2032,20 @@ function CheckoutPage() {
                           autoComplete="tel"
                           placeholder="+1 555 123 4567"
                           aria-invalid={fieldInvalid("phone")}
-                          aria-describedby={
+                          aria-describedby={getShippingPhoneDescribedBy(
                             fieldInvalid("phone")
-                              ? "ship-phone-help ship-phone-error"
-                              : "ship-phone-help"
-                          }
+                          )}
                           className={fieldClassName("phone")}
                         />
                         <p
-                          id="ship-phone-help"
+                          id={SHIPPING_PHONE_HELP_ID}
                           className="text-xs text-[var(--text-muted)]"
                         >
-                          Use + country code if this number is outside the
-                          delivery country.
+                          {SHIPPING_PHONE_HELP_COPY}
                         </p>
                         {fieldInvalid("phone") && (
                           <p
-                            id="ship-phone-error"
+                            id={SHIPPING_PHONE_ERROR_ID}
                             className="text-xs text-error"
                           >
                             {fieldError("phone")}
@@ -2086,10 +2089,10 @@ function CheckoutPage() {
                         <div className="flex items-start gap-2">
                           {!currentAddressValidity.canSubmitOrder ? (
                             <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-error" />
-                          ) : currentAddressValidity.canDirectPay ? (
-                            <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
-                          ) : (
+                          ) : currentAddressValidity.warnings.length > 0 ? (
                             <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+                          ) : (
+                            <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
                           )}
                           <div>
                             <div className="font-medium text-[var(--text-primary)]">

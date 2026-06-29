@@ -27,16 +27,20 @@ describe("validateAddressConsistency", () => {
     ])
   })
 
-  it("flags the CND-127 example (90210 / Beverly Hills / Texas) as inconsistent", () => {
+  it("warns on the CND-127 example (90210 / Beverly Hills / Texas)", () => {
     const result = validateAddressConsistency({
       ...beverlyHills,
       state: "Texas",
     })
-    expect(result.status).toBe("inconsistent")
-    expect(result.issues[0]?.code).toBe("state_postal_mismatch")
-    expect(result.canSubmitOrder).toBe(false)
-    expect(result.canDirectPay).toBe(false)
-    expect(isAddressValidityBlocking(result.status)).toBe(true)
+    expect(result.status).toBe("valid")
+    expect(result.issues).toEqual([])
+    expect(
+      result.warnings.some((item) => item.code === "state_postal_mismatch")
+    ).toBe(true)
+    expect(result.canSubmitOrder).toBe(true)
+    expect(result.canDirectPay).toBe(true)
+    expect(isAddressDirectPaymentBlocking(result)).toBe(false)
+    expect(isAddressValidityBlocking(result.status)).toBe(false)
   })
 
   it("accepts the same ZIP with the correct state", () => {
@@ -46,6 +50,7 @@ describe("validateAddressConsistency", () => {
     })
     expect(result.status).toBe("valid")
     expect(result.level).toBe("locality_consistent")
+    expect(result.warnings).toEqual([])
     expect(result.canSubmitOrder).toBe(true)
     expect(result.canDirectPay).toBe(true)
     expect(isAddressValidityBlocking(result.status)).toBe(false)
@@ -84,28 +89,32 @@ describe("validateAddressConsistency", () => {
     expect(result.issues[0]?.code).toBe("postal_format")
   })
 
-  it("requires region for countries whose profiles expect one", () => {
+  it("warns when countries whose profiles expect a region do not have one", () => {
     const result = validateAddressConsistency({
       ...beverlyHills,
       state: "",
     })
-    expect(result.status).toBe("inconsistent")
-    expect(result.issues.some((item) => item.code === "region_required")).toBe(
-      true
-    )
-    expect(result.canSubmitOrder).toBe(false)
+    expect(result.status).toBe("valid")
+    expect(result.issues).toEqual([])
+    expect(
+      result.warnings.some((item) => item.code === "region_required")
+    ).toBe(true)
+    expect(result.canSubmitOrder).toBe(true)
+    expect(result.canDirectPay).toBe(true)
   })
 
-  it("rejects a known US city/postal mismatch", () => {
+  it("warns on a known US city/postal mismatch", () => {
     const result = validateAddressConsistency({
       ...beverlyHills,
       city: "Costa Banana",
       state: "CA",
     })
-    expect(result.status).toBe("inconsistent")
+    expect(result.status).toBe("valid")
+    expect(result.issues).toEqual([])
     expect(
-      result.issues.some((item) => item.code === "city_postal_mismatch")
+      result.warnings.some((item) => item.code === "city_postal_mismatch")
     ).toBe(true)
+    expect(result.canDirectPay).toBe(true)
   })
 
   it("rejects obvious street-address junk", () => {
@@ -123,6 +132,21 @@ describe("validateAddressConsistency", () => {
     ).toBe(true)
   })
 
+  it("warns but allows direct payment when the street has no building number", () => {
+    const result = validateAddressConsistency({
+      ...beverlyHills,
+      street: "Rexford Drive",
+      state: "CA",
+    })
+    expect(result.status).toBe("valid")
+    expect(result.issues).toEqual([])
+    expect(
+      result.warnings.some((item) => item.code === "street_plausibility")
+    ).toBe(true)
+    expect(result.canSubmitOrder).toBe(true)
+    expect(result.canDirectPay).toBe(true)
+  })
+
   it("validates Canadian postal/province consistency", () => {
     const result = validateAddressConsistency({
       name: "Jane Doe",
@@ -138,7 +162,7 @@ describe("validateAddressConsistency", () => {
     expect(result.canDirectPay).toBe(true)
   })
 
-  it("rejects Canadian postal/province mismatches", () => {
+  it("warns on Canadian postal/province mismatches", () => {
     const result = validateAddressConsistency({
       name: "Jane Doe",
       street: "301 Front St W",
@@ -147,10 +171,12 @@ describe("validateAddressConsistency", () => {
       postalCode: "M5V 2T6",
       country: "CA",
     })
-    expect(result.status).toBe("inconsistent")
+    expect(result.status).toBe("valid")
+    expect(result.issues).toEqual([])
     expect(
-      result.issues.some((item) => item.code === "state_postal_mismatch")
+      result.warnings.some((item) => item.code === "state_postal_mismatch")
     ).toBe(true)
+    expect(result.canDirectPay).toBe(true)
   })
 
   it("rejects invalid Canadian postal-code letters", () => {
@@ -271,12 +297,13 @@ describe("validateAddressConsistency", () => {
       postalCode: "B3H 1Y2",
       country: "CA",
     })
-    expect(bInNewfoundland.status).toBe("inconsistent")
+    expect(bInNewfoundland.status).toBe("valid")
     expect(
-      bInNewfoundland.issues.some(
+      bInNewfoundland.warnings.some(
         (item) => item.code === "state_postal_mismatch"
       )
     ).toBe(true)
+    expect(bInNewfoundland.canDirectPay).toBe(true)
 
     const aInNovaScotia = validateAddressConsistency({
       name: "Jane Doe",
@@ -286,9 +313,11 @@ describe("validateAddressConsistency", () => {
       postalCode: "A1C 5X1",
       country: "CA",
     })
-    expect(aInNovaScotia.status).toBe("inconsistent")
+    expect(aInNovaScotia.status).toBe("valid")
     expect(
-      aInNovaScotia.issues.some((item) => item.code === "state_postal_mismatch")
+      aInNovaScotia.warnings.some(
+        (item) => item.code === "state_postal_mismatch"
+      )
     ).toBe(true)
     expect(
       aInNovaScotia.issues.some((item) => item.code === "locality_plausibility")
@@ -308,7 +337,7 @@ describe("validateAddressConsistency", () => {
     expect(result.canDirectPay).toBe(true)
   })
 
-  it("keeps UK addresses without locality evidence on order-first fallback", () => {
+  it("allows UK direct payment with a warning when locality evidence is incomplete", () => {
     const result = validateAddressConsistency({
       name: "Jane Doe",
       street: "22 High St",
@@ -319,7 +348,10 @@ describe("validateAddressConsistency", () => {
     expect(result.status).toBe("valid")
     expect(result.canSubmitOrder).toBe(true)
     expect(result.level).toBe("street_plausible")
-    expect(result.canDirectPay).toBe(false)
+    expect(
+      result.warnings.some((item) => item.code === "validation_incomplete")
+    ).toBe(true)
+    expect(result.canDirectPay).toBe(true)
   })
 
   it("validates Australian postal/state consistency", () => {
@@ -335,7 +367,7 @@ describe("validateAddressConsistency", () => {
     expect(result.canDirectPay).toBe(true)
   })
 
-  it("rejects Australian postal/state mismatches", () => {
+  it("warns on Australian postal/state mismatches", () => {
     const result = validateAddressConsistency({
       name: "Jane Doe",
       street: "1 Macquarie St",
@@ -344,10 +376,12 @@ describe("validateAddressConsistency", () => {
       postalCode: "2000",
       country: "AU",
     })
-    expect(result.status).toBe("inconsistent")
+    expect(result.status).toBe("valid")
+    expect(result.issues).toEqual([])
     expect(
-      result.issues.some((item) => item.code === "state_postal_mismatch")
+      result.warnings.some((item) => item.code === "state_postal_mismatch")
     ).toBe(true)
+    expect(result.canDirectPay).toBe(true)
   })
 
   it("splits Australian NSW and ACT postcode ranges for direct payment", () => {
@@ -382,11 +416,11 @@ describe("validateAddressConsistency", () => {
       postalCode: "2000",
       country: "AU",
     })
-    expect(sydneyInAct.status).toBe("inconsistent")
+    expect(sydneyInAct.status).toBe("valid")
     expect(
-      sydneyInAct.issues.some((item) => item.code === "state_postal_mismatch")
+      sydneyInAct.warnings.some((item) => item.code === "state_postal_mismatch")
     ).toBe(true)
-    expect(sydneyInAct.canDirectPay).toBe(false)
+    expect(sydneyInAct.canDirectPay).toBe(true)
 
     const canberraInNsw = validateAddressConsistency({
       name: "Jane Doe",
@@ -396,11 +430,13 @@ describe("validateAddressConsistency", () => {
       postalCode: "2600",
       country: "AU",
     })
-    expect(canberraInNsw.status).toBe("inconsistent")
+    expect(canberraInNsw.status).toBe("valid")
     expect(
-      canberraInNsw.issues.some((item) => item.code === "state_postal_mismatch")
+      canberraInNsw.warnings.some(
+        (item) => item.code === "state_postal_mismatch"
+      )
     ).toBe(true)
-    expect(canberraInNsw.canDirectPay).toBe(false)
+    expect(canberraInNsw.canDirectPay).toBe(true)
   })
 
   it("validates New Zealand postal/locality basics", () => {
@@ -416,7 +452,7 @@ describe("validateAddressConsistency", () => {
     expect(result.canDirectPay).toBe(true)
   })
 
-  it("keeps New Zealand addresses without locality evidence on order-first fallback", () => {
+  it("allows New Zealand direct payment with a warning when locality evidence is incomplete", () => {
     const result = validateAddressConsistency({
       name: "Jane Doe",
       street: "12 George St",
@@ -427,10 +463,13 @@ describe("validateAddressConsistency", () => {
     expect(result.status).toBe("valid")
     expect(result.canSubmitOrder).toBe(true)
     expect(result.level).toBe("street_plausible")
-    expect(result.canDirectPay).toBe(false)
+    expect(
+      result.warnings.some((item) => item.code === "validation_incomplete")
+    ).toBe(true)
+    expect(result.canDirectPay).toBe(true)
   })
 
-  it("accepts accented New Zealand locality text without direct-payment evidence", () => {
+  it("accepts accented New Zealand locality text with advisory direct payment", () => {
     const result = validateAddressConsistency({
       name: "Jane Doe",
       street: "1 Massey Rd",
@@ -442,7 +481,10 @@ describe("validateAddressConsistency", () => {
     expect(result.status).toBe("valid")
     expect(result.canSubmitOrder).toBe(true)
     expect(result.level).toBe("street_plausible")
-    expect(result.canDirectPay).toBe(false)
+    expect(
+      result.warnings.some((item) => item.code === "validation_incomplete")
+    ).toBe(true)
+    expect(result.canDirectPay).toBe(true)
   })
 
   it("rejects invalid email values when provided", () => {
@@ -495,18 +537,21 @@ describe("validateAddressConsistency", () => {
     expect(result.normalized.phone).toBe("+442079460958")
   })
 
-  it("keeps unsupported countries on order-first fallback without direct-payment confidence", () => {
+  it("keeps unprofiled countries direct-payment eligible with a warning", () => {
     const result = validateAddressConsistency({
       name: "Jane Doe",
-      street: "1 Test Rd",
-      city: "Testville",
-      postalCode: "0000",
-      country: "ZZ",
+      street: "1 Teststrasse",
+      city: "Berlin",
+      postalCode: "10115",
+      country: "DE",
     })
     expect(result.status).toBe("unknown")
     expect(result.canSubmitOrder).toBe(true)
-    expect(result.canDirectPay).toBe(false)
-    expect(isAddressDirectPaymentBlocking(result)).toBe(true)
+    expect(result.canDirectPay).toBe(true)
+    expect(
+      result.warnings.some((item) => item.code === "unknown_country")
+    ).toBe(true)
+    expect(isAddressDirectPaymentBlocking(result)).toBe(false)
     expect(isAddressValidityBlocking(result.status)).toBe(false)
   })
 })
