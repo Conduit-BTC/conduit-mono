@@ -76,6 +76,16 @@ Permitted public page context:
 - product, profile, order, query string, unknown route, and active user
   identifiers must remain redacted
 
+## Public Zap Message Boundary
+
+Public zap requests and receipts are public protocol content. When product
+policy allows a public zap payment, client-generated public comment text must
+stay within the merchant's selected policy and must not include order contents,
+cart contents, shipping/contact data, invoices, payment request strings,
+private message contents, signer details, wallet connection details, or active
+buyer identity. Public listing context may be referenced only when the product
+policy permits `product_reference`.
+
 ## Cookieless Client Policy
 
 Conduit product clients should not set or depend on cookies for app behavior,
