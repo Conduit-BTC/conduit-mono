@@ -184,6 +184,15 @@ jobs:
           git switch -c "$branch"
           echo "AGENT_BRANCH=$branch" >> "$GITHUB_ENV"
 
+      - uses: oven-sh/setup-bun@v2
+        if: steps.agent_auth.outputs.has_auth == 'true'
+        with:
+          bun-version: "1.3.5"
+
+      - name: Install dependencies for agent validation
+        if: steps.agent_auth.outputs.has_auth == 'true'
+        run: bun install --frozen-lockfile --ignore-scripts
+
       - name: Check workflow agent GitHub App auth
         id: app_auth
         if: steps.agent_auth.outputs.has_auth == 'true'
@@ -203,7 +212,7 @@ jobs:
       - name: Create workflow agent GitHub App token
         id: app_token
         if: steps.app_auth.outputs.has_app == 'true'
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_ID }}
           private-key: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
@@ -221,7 +230,7 @@ jobs:
       - name: Run Codex first-shot with CODEX_AUTH_JSON
         id: run_codex_auth_json
         if: steps.agent_auth.outputs.has_codex_auth_json == 'true'
-        uses: sudden-network/agent@v1.13.1
+        uses: sudden-network/agent@v1.14.0
         with:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
           github_token: ${{ steps.app_token.outputs.token }}
@@ -260,7 +269,7 @@ jobs:
       - name: Run Codex first-shot with Sudden auth file
         id: run_sudden_auth_file
         if: steps.agent_auth.outputs.has_codex_auth_json != 'true' && steps.agent_auth.outputs.has_sudden_auth_file == 'true'
-        uses: sudden-network/agent@v1.13.1
+        uses: sudden-network/agent@v1.14.0
         with:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
           github_token: ${{ steps.app_token.outputs.token }}
@@ -299,7 +308,7 @@ jobs:
       - name: Run Codex first-shot with Sudden API key
         id: run_sudden_api_key
         if: steps.agent_auth.outputs.has_codex_auth_json != 'true' && steps.agent_auth.outputs.has_sudden_auth_file != 'true' && steps.agent_auth.outputs.has_sudden_api_key == 'true'
-        uses: sudden-network/agent@v1.13.1
+        uses: sudden-network/agent@v1.14.0
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
           github_token: ${{ steps.app_token.outputs.token }}
