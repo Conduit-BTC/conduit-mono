@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test"
+import { Nip47PublishTimeoutError } from "@getalby/sdk/nwc"
 
 import {
   __nwcTestInternals,
   classifyNwcPaymentError,
   getNwcConnectionDiagnostics,
   getNwcRelayDiagnostics,
+  nwcGetBalance,
   nwcGetInfo,
   nwcMakeInvoice,
   nwcPayInvoice,
@@ -20,6 +22,9 @@ type FakeNwcClient = {
     pubkey?: string
     network?: string
     block_height?: number
+  }>
+  getBalance: () => Promise<{
+    balance: number
   }>
   makeInvoice: (request: {
     amount: number
@@ -201,6 +206,7 @@ describe("NWC SDK adapter", () => {
       fakeClient({
         getInfo: async () => ({
           methods: ["pay_invoice", "get_balance"],
+          notifications: ["payment_received"],
           alias: "Test Wallet",
           color: "#ffcc00",
           pubkey: "wallet-node-pubkey",
@@ -215,11 +221,29 @@ describe("NWC SDK adapter", () => {
 
     await expect(nwcGetInfo(connection, 100, "market")).resolves.toEqual({
       methods: ["pay_invoice", "get_balance"],
+      notifications: ["payment_received"],
       alias: "Test Wallet",
       color: "#ffcc00",
       pubkey: "wallet-node-pubkey",
       network: "bitcoin",
       blockHeight: 850_000,
+    })
+    expect(closed).toBe(true)
+  })
+
+  it("maps get_balance responses as raw millisats and closes the SDK client", async () => {
+    let closed = false
+    __nwcTestInternals.__setNwcClientFactory(() =>
+      fakeClient({
+        getBalance: async () => ({ balance: 12_345_678 }),
+        close: () => {
+          closed = true
+        },
+      })
+    )
+
+    await expect(nwcGetBalance(connection, 100, "market")).resolves.toEqual({
+      balanceMsats: 12_345_678,
     })
     expect(closed).toBe(true)
   })
@@ -305,6 +329,28 @@ describe("NWC SDK adapter", () => {
       },
     ])
     expect(paymentAttempted).toBe(true)
+  })
+
+  it("treats publish timeouts as ambiguous payment timeouts", async () => {
+    __nwcTestInternals.__setNwcClientFactory(() =>
+      fakeClient({
+        payInvoice: async () => {
+          throw new Nip47PublishTimeoutError("publish timeout", "INTERNAL")
+        },
+      })
+    )
+
+    await expect(
+      nwcPayInvoice(
+        connection,
+        {
+          invoice: minimalBolt11Invoice("lnbc1110n"),
+          amountMsats: 111_000,
+        },
+        100,
+        "market"
+      )
+    ).rejects.toThrow("NWC request timed out.")
   })
 
   it("retries relay bootstrap with a fresh client before publishing pay_invoice", async () => {
@@ -476,6 +522,7 @@ describe("NWC SDK adapter", () => {
 function fakeClient(overrides: Partial<FakeNwcClient>): FakeNwcClient {
   return {
     getInfo: async () => ({ methods: [] }),
+    getBalance: async () => ({ balance: 0 }),
     makeInvoice: async () => ({
       invoice: "lnbc1default",
       payment_hash: "hash",

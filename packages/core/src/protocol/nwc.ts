@@ -18,6 +18,7 @@ import {
 } from "@getalby/sdk/nwc"
 import type {
   NewNWCClientOptions,
+  Nip47GetBalanceResponse,
   Nip47GetInfoResponse,
   Nip47MakeInvoiceRequest,
   Nip47PayInvoiceRequest,
@@ -66,8 +67,10 @@ export interface NwcPayInvoiceResult {
 }
 
 export interface NwcGetInfoResult {
-  /** NWC methods this wallet supports, e.g. ["pay_invoice", "make_invoice", "get_balance"]. */
+  /** NWC methods this wallet supports, e.g. ["pay_invoice", "get_balance", "get_budget"]. */
   methods: string[]
+  /** NWC notification types this wallet supports for this connection. */
+  notifications?: string[]
   alias?: string
   color?: string
   pubkey?: string
@@ -75,8 +78,14 @@ export interface NwcGetInfoResult {
   blockHeight?: number
 }
 
+export interface NwcGetBalanceResult {
+  /** Wallet-reported balance in millisats. This is external wallet state. */
+  balanceMsats: number
+}
+
 type NwcClientLike = {
   getInfo(): Promise<Nip47GetInfoResponse>
+  getBalance(): Promise<Nip47GetBalanceResponse>
   makeInvoice(request: Nip47MakeInvoiceRequest): Promise<Nip47Transaction>
   payInvoice(request: Nip47PayInvoiceRequest): Promise<Nip47PayResponse>
   close(): void
@@ -267,8 +276,11 @@ function parseGetInfoResult(result: Nip47GetInfoResponse): NwcGetInfoResult {
   const methods = Array.isArray(result.methods)
     ? result.methods.filter((m) => typeof m === "string")
     : []
+  const notifications = Array.isArray(result.notifications)
+    ? result.notifications.filter((n) => typeof n === "string")
+    : []
 
-  return {
+  const parsed: NwcGetInfoResult = {
     methods,
     alias: typeof result.alias === "string" ? result.alias : undefined,
     color: typeof result.color === "string" ? result.color : undefined,
@@ -276,6 +288,53 @@ function parseGetInfoResult(result: Nip47GetInfoResponse): NwcGetInfoResult {
     network: typeof result.network === "string" ? result.network : undefined,
     blockHeight:
       typeof result.block_height === "number" ? result.block_height : undefined,
+  }
+  if (notifications.length > 0) {
+    parsed.notifications = notifications
+  }
+  return parsed
+}
+
+// --- get_balance -------------------------------------------------------------
+
+/**
+ * Read the connected NWC wallet's external balance.
+ *
+ * The returned value is raw millisats from NIP-47. Callers must not persist it
+ * or treat it as a Conduit-held account balance.
+ */
+export async function nwcGetBalance(
+  connection: NwcConnection,
+  timeoutMs = 10_000,
+  clientAppId: ConduitAppId
+): Promise<NwcGetBalanceResult> {
+  void clientAppId
+  const client = await createPreparedNwcClient(connection, "probe")
+
+  try {
+    const result = await withNwcTimeout(
+      client.getBalance(),
+      timeoutMs,
+      "get_balance"
+    )
+
+    return parseGetBalanceResult(result)
+  } catch (error) {
+    throw normalizeNwcError(error)
+  } finally {
+    client.close()
+  }
+}
+
+function parseGetBalanceResult(
+  result: Nip47GetBalanceResponse
+): NwcGetBalanceResult {
+  if (typeof result.balance !== "number" || !Number.isFinite(result.balance)) {
+    throw new Error("Invalid NWC get_balance response: missing balance")
+  }
+
+  return {
+    balanceMsats: result.balance,
   }
 }
 
@@ -381,14 +440,14 @@ async function withNwcTimeout<T>(
 function normalizeNwcError(error: unknown): Error {
   if (
     error instanceof Nip47NetworkError ||
-    error instanceof Nip47PublishError ||
-    error instanceof Nip47PublishTimeoutError
+    error instanceof Nip47PublishError
   ) {
     return new Error("Failed to connect to NWC relay(s).")
   }
 
   if (
     error instanceof Nip47TimeoutError ||
+    error instanceof Nip47PublishTimeoutError ||
     error instanceof Nip47ReplyTimeoutError
   ) {
     return new Error("NWC request timed out.")

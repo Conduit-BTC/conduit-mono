@@ -18,6 +18,7 @@ import {
   type ShippingFormState,
 } from "../apps/market/src/lib/checkout-validation"
 import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
+import { getKnownWalletPaymentConstraint } from "../apps/market/src/lib/wallet-readiness"
 import {
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
@@ -560,6 +561,89 @@ describe("isFastCheckoutEligible", () => {
 
 // ─── checkout payment helpers ────────────────────────────────────────────────
 
+describe("wallet payment readiness", () => {
+  it("blocks automatic NWC payment when the known balance is too low", () => {
+    expect(
+      getKnownWalletPaymentConstraint({
+        amountMsats: 25_000,
+        methods: ["pay_invoice", "get_balance"],
+        balance: {
+          status: "available",
+          balanceMsats: 20_000,
+          fetchedAt: Date.now(),
+          error: null,
+        },
+        budget: emptyWalletBudget(),
+      })
+    ).toMatchObject({
+      code: "insufficient_balance",
+      reason: "Connected wallet balance is below this invoice total.",
+    })
+  })
+
+  it("blocks automatic NWC payment when the known budget is too low", () => {
+    expect(
+      getKnownWalletPaymentConstraint({
+        amountMsats: 25_000,
+        methods: ["pay_invoice", "get_budget"],
+        balance: emptyWalletBalance(),
+        budget: {
+          status: "available",
+          usedMsats: 10_000,
+          totalMsats: 30_000,
+          remainingMsats: 20_000,
+          renewsAt: null,
+          renewalPeriod: "daily",
+          fetchedAt: Date.now(),
+          error: null,
+        },
+      })
+    ).toMatchObject({
+      code: "budget_exhausted",
+      reason: "Connected wallet budget is below this invoice total.",
+    })
+  })
+
+  it("does not block automatic NWC payment when budget support is unavailable", () => {
+    expect(
+      getKnownWalletPaymentConstraint({
+        amountMsats: 25_000,
+        methods: ["pay_invoice", "get_budget"],
+        balance: emptyWalletBalance(),
+        budget: {
+          ...emptyWalletBudget(),
+          status: "unavailable",
+        },
+      })
+    ).toBeNull()
+  })
+
+  it("does not block when balance and budget cover the invoice", () => {
+    expect(
+      getKnownWalletPaymentConstraint({
+        amountMsats: 25_000,
+        methods: ["pay_invoice", "get_balance", "get_budget"],
+        balance: {
+          status: "available",
+          balanceMsats: 50_000,
+          fetchedAt: Date.now(),
+          error: null,
+        },
+        budget: {
+          status: "available",
+          usedMsats: 10_000,
+          totalMsats: 60_000,
+          remainingMsats: 50_000,
+          renewsAt: null,
+          renewalPeriod: "daily",
+          fetchedAt: Date.now(),
+          error: null,
+        },
+      })
+    ).toBeNull()
+  })
+})
+
 function cartItem(overrides: Partial<CartItem> = {}): CartItem {
   return {
     productId: "product-1",
@@ -569,6 +653,28 @@ function cartItem(overrides: Partial<CartItem> = {}): CartItem {
     currency: "SATS",
     quantity: 1,
     ...overrides,
+  }
+}
+
+function emptyWalletBalance() {
+  return {
+    status: "unchecked" as const,
+    balanceMsats: null,
+    fetchedAt: null,
+    error: null,
+  }
+}
+
+function emptyWalletBudget() {
+  return {
+    status: "unchecked" as const,
+    usedMsats: null,
+    totalMsats: null,
+    remainingMsats: null,
+    renewsAt: null,
+    renewalPeriod: null,
+    fetchedAt: null,
+    error: null,
   }
 }
 
@@ -1176,6 +1282,41 @@ describe("payCheckoutInvoice", () => {
     })
     expect(result.reason).toContain("NWC relay unreachable")
     expect(result.reason).not.toContain(connection.secret)
+  })
+
+  it("returns manual fallback when NWC reports a budget or balance limit", async () => {
+    const result = await payCheckoutInvoice(
+      {
+        invoice: "lnbc1test",
+        amountMsats: 1000,
+        walletConnection: connection,
+        tryNwc: true,
+        timeoutMs: 60_000,
+        appId: "market",
+      },
+      {
+        nwcSessionPayInvoice: mock(async () => ({
+          status: "wallet_error" as const,
+          phase: "after_publish" as const,
+          reason: "QUOTA_EXCEEDED: wallet budget exceeded",
+        })) as never,
+        hasWebLN: () => false,
+        weblnSendPayment: mock(async () => {
+          throw new Error("should not use WebLN")
+        }) as never,
+      }
+    )
+
+    expect(result).toMatchObject({
+      status: "manual_required",
+      diagnostics: [
+        {
+          code: "permission_or_budget",
+          safeManualFallback: true,
+        },
+      ],
+    })
+    expect(result.reason).toContain("Wallet app connection rejected payment")
   })
 
   it("does not fall back after an ambiguous NWC request failure", async () => {

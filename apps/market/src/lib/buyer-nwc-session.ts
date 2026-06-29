@@ -9,6 +9,8 @@ import {
 } from "@getalby/sdk/nwc"
 import type {
   NewNWCClientOptions,
+  Nip47GetBalanceResponse,
+  Nip47GetBudgetResponse,
   Nip47GetInfoResponse,
   Nip47PayInvoiceRequest,
   Nip47PayResponse,
@@ -29,11 +31,47 @@ export type NwcSessionStatus =
   | "error"
 
 export type NwcSessionPaymentPhase = "before_publish" | "after_publish"
+export type NwcSessionBalanceStatus =
+  | "unchecked"
+  | "checking"
+  | "available"
+  | "unavailable"
+  | "error"
+export type NwcSessionBudgetStatus =
+  | "unchecked"
+  | "checking"
+  | "available"
+  | "unavailable"
+  | "error"
+
+export interface NwcSessionBalanceState {
+  status: NwcSessionBalanceStatus
+  /** Raw wallet-reported millisats. Never persisted. */
+  balanceMsats: number | null
+  fetchedAt: number | null
+  error: string | null
+}
+
+export interface NwcSessionBudgetState {
+  status: NwcSessionBudgetStatus
+  /** Raw wallet-reported millisats. Never persisted. */
+  usedMsats: number | null
+  /** Raw wallet-reported millisats. Never persisted. */
+  totalMsats: number | null
+  /** Raw wallet-reported millisats. Never persisted. */
+  remainingMsats: number | null
+  renewsAt: number | null
+  renewalPeriod: string | null
+  fetchedAt: number | null
+  error: string | null
+}
 
 export interface NwcSessionSnapshot {
   status: NwcSessionStatus
   connection: NwcConnection | null
   info: NwcGetInfoResult | null
+  balance: NwcSessionBalanceState
+  budget: NwcSessionBudgetState
   lastWarmAt: number | null
   error: string | null
 }
@@ -71,6 +109,8 @@ export interface NwcSessionPayInvoiceInput {
 
 type NwcSessionClientLike = {
   getInfo(): Promise<Nip47GetInfoResponse>
+  getBalance(): Promise<Nip47GetBalanceResponse>
+  getBudget?(): Promise<Nip47GetBudgetResponse>
   payInvoice(request: Nip47PayInvoiceRequest): Promise<Nip47PayResponse>
   close(): void
   pool?: {
@@ -88,6 +128,7 @@ type NwcSessionClientFactory = (
 type NwcSessionListener = (snapshot: NwcSessionSnapshot) => void
 
 const NWC_WARM_RELAY_TIMEOUT_MS = 10_000
+const NWC_BALANCE_TIMEOUT_MS = 10_000
 const NWC_PAYMENT_RELAY_CONNECT_TIMEOUTS_MS = [10_000, 15_000, 20_000] as const
 
 let clientFactory: NwcSessionClientFactory = createSdkNwcClient
@@ -100,6 +141,8 @@ export class BuyerNwcSession {
   private listeners = new Set<NwcSessionListener>()
   private snapshot: NwcSessionSnapshot = disconnectedSnapshot()
   private version = 0
+  private balanceRefreshVersion = 0
+  private budgetRefreshVersion = 0
 
   setConnection(connection: NwcConnection | null): NwcSessionSnapshot {
     const nextKey = connection ? getConnectionKey(connection) : null
@@ -113,11 +156,15 @@ export class BuyerNwcSession {
     this.connection = connection
     this.connectionKey = nextKey
     this.version += 1
+    this.balanceRefreshVersion += 1
+    this.budgetRefreshVersion += 1
     this.snapshot = connection
       ? {
           status: "unreachable",
           connection,
           info: null,
+          balance: emptyBalanceState(),
+          budget: emptyBudgetState(),
           lastWarmAt: null,
           error: null,
         }
@@ -219,6 +266,16 @@ export class BuyerNwcSession {
         ...this.snapshot,
         status: "reachable",
         connection: this.connection,
+        balance:
+          this.snapshot.info?.methods.includes("get_balance") &&
+          this.snapshot.balance.status === "available"
+            ? emptyBalanceState()
+            : this.snapshot.balance,
+        budget:
+          this.snapshot.info?.methods.includes("get_budget") &&
+          this.snapshot.budget.status === "available"
+            ? emptyBudgetState()
+            : this.snapshot.budget,
         error: null,
       }
       this.notify()
@@ -231,11 +288,11 @@ export class BuyerNwcSession {
       }
     } catch (error) {
       const reason = getErrorMessage(error, "NWC payment failed.")
-      if (error instanceof Nip47WalletError) {
+      if (isNip47WalletError(error)) {
         return {
           status: "wallet_error",
           phase: "after_publish",
-          reason,
+          reason: getNip47WalletErrorMessage(error, reason),
         }
       }
 
@@ -273,8 +330,180 @@ export class BuyerNwcSession {
     this.connectionKey = null
     this.warmPromise = null
     this.version += 1
+    this.balanceRefreshVersion += 1
+    this.budgetRefreshVersion += 1
     this.snapshot = disconnectedSnapshot()
     this.notify()
+  }
+
+  async refreshBalance(): Promise<NwcSessionSnapshot> {
+    const connection = this.connection
+    if (!connection) {
+      this.snapshot = disconnectedSnapshot()
+      this.notify()
+      return this.snapshot
+    }
+
+    const info = this.snapshot.info
+    const refreshes: Array<Promise<NwcSessionSnapshot>> = []
+
+    if (info?.methods.includes("get_balance")) {
+      refreshes.push(this.refreshBalanceState(connection))
+    } else {
+      this.snapshot = {
+        ...this.snapshot,
+        balance: unavailableBalanceState(),
+      }
+      this.notify()
+    }
+
+    if (info?.methods.includes("get_budget")) {
+      refreshes.push(this.refreshBudgetState(connection))
+    } else {
+      this.snapshot = {
+        ...this.snapshot,
+        budget: unavailableBudgetState(),
+      }
+      this.notify()
+    }
+
+    if (refreshes.length === 0) return this.snapshot
+    await Promise.all(refreshes)
+    return this.snapshot
+  }
+
+  private async refreshBalanceState(
+    connection: NwcConnection
+  ): Promise<NwcSessionSnapshot> {
+    const version = this.version
+    const balanceRefreshVersion = ++this.balanceRefreshVersion
+    this.snapshot = {
+      ...this.snapshot,
+      balance: {
+        ...this.snapshot.balance,
+        status: "checking",
+        error: null,
+      },
+    }
+    this.notify()
+
+    try {
+      const client = this.getOrCreateClient(connection)
+      await connectNwcRelays(client, connection, NWC_WARM_RELAY_TIMEOUT_MS)
+      const result = await withTimeout(
+        client.getBalance(),
+        NWC_BALANCE_TIMEOUT_MS,
+        "get_balance"
+      )
+      if (
+        !this.isCurrentConnection(connection, version) ||
+        balanceRefreshVersion !== this.balanceRefreshVersion
+      ) {
+        return this.snapshot
+      }
+
+      this.snapshot = {
+        ...this.snapshot,
+        balance: {
+          status: "available",
+          balanceMsats: parseGetBalanceMsats(result),
+          fetchedAt: Date.now(),
+          error: null,
+        },
+      }
+      this.notify()
+    } catch (error) {
+      if (
+        !this.isCurrentConnection(connection, version) ||
+        balanceRefreshVersion !== this.balanceRefreshVersion
+      ) {
+        return this.snapshot
+      }
+
+      this.snapshot = {
+        ...this.snapshot,
+        balance: {
+          ...this.snapshot.balance,
+          status: "error",
+          error: getErrorMessage(error, "Could not refresh wallet balance."),
+        },
+      }
+      this.notify()
+    }
+
+    return this.snapshot
+  }
+
+  private async refreshBudgetState(
+    connection: NwcConnection
+  ): Promise<NwcSessionSnapshot> {
+    const version = this.version
+    const budgetRefreshVersion = ++this.budgetRefreshVersion
+    this.snapshot = {
+      ...this.snapshot,
+      budget: {
+        ...this.snapshot.budget,
+        status: "checking",
+        error: null,
+      },
+    }
+    this.notify()
+
+    try {
+      const client = this.getOrCreateClient(connection)
+      if (typeof client.getBudget !== "function") {
+        if (
+          !this.isCurrentConnection(connection, version) ||
+          budgetRefreshVersion !== this.budgetRefreshVersion
+        ) {
+          return this.snapshot
+        }
+
+        this.snapshot = {
+          ...this.snapshot,
+          budget: unavailableBudgetState(),
+        }
+        this.notify()
+        return this.snapshot
+      }
+      await connectNwcRelays(client, connection, NWC_WARM_RELAY_TIMEOUT_MS)
+      const result = await withTimeout(
+        client.getBudget(),
+        NWC_BALANCE_TIMEOUT_MS,
+        "get_budget"
+      )
+      if (
+        !this.isCurrentConnection(connection, version) ||
+        budgetRefreshVersion !== this.budgetRefreshVersion
+      ) {
+        return this.snapshot
+      }
+
+      this.snapshot = {
+        ...this.snapshot,
+        budget: parseGetBudgetState(result),
+      }
+      this.notify()
+    } catch (error) {
+      if (
+        !this.isCurrentConnection(connection, version) ||
+        budgetRefreshVersion !== this.budgetRefreshVersion
+      ) {
+        return this.snapshot
+      }
+
+      this.snapshot = {
+        ...this.snapshot,
+        budget: {
+          ...this.snapshot.budget,
+          status: "error",
+          error: getErrorMessage(error, "Could not refresh wallet budget."),
+        },
+      }
+      this.notify()
+    }
+
+    return this.snapshot
   }
 
   private async warmConnection(
@@ -296,6 +525,12 @@ export class BuyerNwcSession {
         status,
         connection,
         info,
+        balance: info.methods.includes("get_balance")
+          ? emptyBalanceState()
+          : unavailableBalanceState(),
+        budget: info.methods.includes("get_budget")
+          ? emptyBudgetState()
+          : unavailableBudgetState(),
         lastWarmAt: Date.now(),
         error:
           status === "unsupported"
@@ -311,6 +546,8 @@ export class BuyerNwcSession {
         status: "unreachable",
         connection,
         info: this.snapshot.info,
+        balance: this.snapshot.balance,
+        budget: this.snapshot.budget,
         lastWarmAt: Date.now(),
         error: getErrorMessage(
           error,
@@ -442,8 +679,11 @@ function parseGetInfoResult(result: Nip47GetInfoResponse): NwcGetInfoResult {
   const methods = Array.isArray(result.methods)
     ? result.methods.filter((m) => typeof m === "string")
     : []
+  const notifications = Array.isArray(result.notifications)
+    ? result.notifications.filter((n) => typeof n === "string")
+    : []
 
-  return {
+  const parsed: NwcGetInfoResult = {
     methods,
     alias: typeof result.alias === "string" ? result.alias : undefined,
     color: typeof result.color === "string" ? result.color : undefined,
@@ -452,6 +692,66 @@ function parseGetInfoResult(result: Nip47GetInfoResponse): NwcGetInfoResult {
     blockHeight:
       typeof result.block_height === "number" ? result.block_height : undefined,
   }
+  if (notifications.length > 0) {
+    parsed.notifications = notifications
+  }
+  return parsed
+}
+
+function parseGetBalanceMsats(result: Nip47GetBalanceResponse): number {
+  if (typeof result.balance !== "number" || !Number.isFinite(result.balance)) {
+    throw new Error("Invalid NWC get_balance response: missing balance")
+  }
+
+  return result.balance
+}
+
+function parseGetBudgetState(
+  result: Nip47GetBudgetResponse
+): NwcSessionBudgetState {
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    !("used_budget" in result) ||
+    !("total_budget" in result)
+  ) {
+    return unavailableBudgetState()
+  }
+
+  const usedMsats = readFiniteNumber(result, "used_budget")
+  const totalMsats = readFiniteNumber(result, "total_budget")
+  if (usedMsats === null || totalMsats === null) {
+    throw new Error("Invalid NWC get_budget response: missing budget")
+  }
+
+  return {
+    status: "available",
+    usedMsats,
+    totalMsats,
+    remainingMsats: Math.max(0, totalMsats - usedMsats),
+    renewsAt: readFiniteNumber(result, "renews_at"),
+    renewalPeriod: readString(result, "renewal_period"),
+    fetchedAt: Date.now(),
+    error: null,
+  }
+}
+
+function readFiniteNumber(
+  value: Record<string, unknown>,
+  key: string
+): number | null {
+  const candidate = value[key]
+  return typeof candidate === "number" && Number.isFinite(candidate)
+    ? candidate
+    : null
+}
+
+function readString(
+  value: Record<string, unknown>,
+  key: string
+): string | null {
+  const candidate = value[key]
+  return typeof candidate === "string" ? candidate : null
 }
 
 function getNwcPayInvoiceAmount(
@@ -495,7 +795,53 @@ function disconnectedSnapshot(): NwcSessionSnapshot {
     status: "disconnected",
     connection: null,
     info: null,
+    balance: emptyBalanceState(),
+    budget: emptyBudgetState(),
     lastWarmAt: null,
+    error: null,
+  }
+}
+
+function emptyBalanceState(): NwcSessionBalanceState {
+  return {
+    status: "unchecked",
+    balanceMsats: null,
+    fetchedAt: null,
+    error: null,
+  }
+}
+
+function unavailableBalanceState(): NwcSessionBalanceState {
+  return {
+    status: "unavailable",
+    balanceMsats: null,
+    fetchedAt: null,
+    error: null,
+  }
+}
+
+function emptyBudgetState(): NwcSessionBudgetState {
+  return {
+    status: "unchecked",
+    usedMsats: null,
+    totalMsats: null,
+    remainingMsats: null,
+    renewsAt: null,
+    renewalPeriod: null,
+    fetchedAt: null,
+    error: null,
+  }
+}
+
+function unavailableBudgetState(): NwcSessionBudgetState {
+  return {
+    status: "unavailable",
+    usedMsats: null,
+    totalMsats: null,
+    remainingMsats: null,
+    renewsAt: null,
+    renewalPeriod: null,
+    fetchedAt: null,
     error: null,
   }
 }
@@ -519,15 +865,31 @@ function getErrorConstructorName(error: unknown): string | null {
   return typeof constructor?.name === "string" ? constructor.name : null
 }
 
+function getNip47ErrorCode(error: unknown): string | null {
+  if (typeof error !== "object" || error === null) return null
+  const code = (error as { code?: unknown }).code
+  return typeof code === "string" ? code : null
+}
+
+function isNip47WalletError(error: unknown): boolean {
+  return (
+    error instanceof Nip47WalletError ||
+    getErrorConstructorName(error) === "Nip47WalletError"
+  )
+}
+
+function getNip47WalletErrorMessage(error: unknown, fallback: string): string {
+  const code = getNip47ErrorCode(error)
+  return code ? `${code}: ${fallback}` : fallback
+}
+
 function isNwcPrePublishError(error: unknown): boolean {
   const name = getErrorConstructorName(error)
   return (
     error instanceof Nip47NetworkError ||
     error instanceof Nip47PublishError ||
-    error instanceof Nip47PublishTimeoutError ||
     name === "Nip47NetworkError" ||
-    name === "Nip47PublishError" ||
-    name === "Nip47PublishTimeoutError"
+    name === "Nip47PublishError"
   )
 }
 
@@ -535,8 +897,10 @@ function isNwcAmbiguousPaymentError(error: unknown): boolean {
   const name = getErrorConstructorName(error)
   return (
     error instanceof Nip47TimeoutError ||
+    error instanceof Nip47PublishTimeoutError ||
     error instanceof Nip47ReplyTimeoutError ||
     name === "Nip47TimeoutError" ||
+    name === "Nip47PublishTimeoutError" ||
     name === "Nip47ReplyTimeoutError"
   )
 }

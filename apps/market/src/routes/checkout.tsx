@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  AlertTriangle,
   Check,
   KeyRound,
   LoaderCircle,
@@ -58,7 +59,11 @@ import {
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
-import { useWallet } from "../hooks/useWallet"
+import {
+  useWallet,
+  type WalletBalanceState,
+  type WalletBudgetState,
+} from "../hooks/useWallet"
 import { requireAuth } from "../lib/auth"
 import {
   getCartShippingDestinationEligibility,
@@ -102,6 +107,12 @@ import {
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
 import { getProductPriceDisplay } from "../lib/pricing"
+import {
+  formatBalanceFreshness,
+  formatWalletMsatsAsSats,
+  getKnownWalletPaymentConstraint,
+  type WalletPaymentConstraint,
+} from "../lib/wallet-readiness"
 
 type CheckoutStep =
   | "shipping"
@@ -230,6 +241,89 @@ function CheckIcon({ className = "h-4 w-4" }: { className?: string }) {
 
 function SpinnerIcon({ className = "h-5 w-5" }: { className?: string }) {
   return <LoaderCircle className={className} />
+}
+
+function CheckoutWalletReadiness({
+  balance,
+  budget,
+  constraint,
+}: {
+  balance: WalletBalanceState
+  budget: WalletBudgetState
+  constraint: WalletPaymentConstraint | null
+}) {
+  const balanceValue =
+    balance.status === "available" && balance.balanceMsats !== null
+      ? `${formatWalletMsatsAsSats(balance.balanceMsats)} sats`
+      : balance.status === "checking"
+        ? "Checking..."
+        : balance.status === "error"
+          ? "Unable to refresh"
+          : balance.status === "unavailable"
+            ? "Not advertised"
+            : "Not checked yet"
+  const balanceFreshness = formatBalanceFreshness(balance.fetchedAt)
+  const budgetValue =
+    budget.status === "available" && budget.remainingMsats !== null
+      ? `${formatWalletMsatsAsSats(budget.remainingMsats)} sats remaining`
+      : budget.status === "checking"
+        ? "Checking..."
+        : budget.status === "error"
+          ? "Unable to refresh"
+          : budget.status === "unavailable"
+            ? null
+            : "Not checked yet"
+
+  return (
+    <div className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+      <div className="grid gap-3 text-xs sm:grid-cols-2">
+        <div>
+          <div className="font-medium text-[var(--text-muted)]">
+            Wallet balance
+          </div>
+          <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">
+            {balanceValue}
+          </div>
+          {balanceFreshness && (
+            <div className="mt-1 text-[var(--text-muted)]">
+              {balanceFreshness}
+            </div>
+          )}
+        </div>
+        {budgetValue && (
+          <div>
+            <div className="font-medium text-[var(--text-muted)]">
+              App budget
+            </div>
+            <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">
+              {budgetValue}
+            </div>
+            {budget.fetchedAt && (
+              <div className="mt-1 text-[var(--text-muted)]">
+                {formatBalanceFreshness(budget.fetchedAt)}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      {constraint && (
+        <div className="mt-4 rounded-xl border border-[color-mix(in_srgb,var(--warning)_55%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,transparent)] p-3 text-xs leading-5 text-[var(--text-secondary)]">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--warning)]" />
+            <div>
+              <div className="font-medium text-[var(--warning)]">
+                Automatic wallet payment will be skipped
+              </div>
+              <div className="mt-1">
+                {constraint.detail} We&apos;ll send the order and show a
+                Lightning invoice so you can pay manually.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function CheckoutBreadcrumb({
@@ -568,7 +662,7 @@ function CheckoutPage() {
   const search = Route.useSearch()
   const navigate = useNavigate()
   const btcUsdRateQuery = useBtcUsdRate()
-  const wallet = useWallet()
+  const wallet = useWallet({ refreshBalance: true })
 
   const [step, setStep] = useState<CheckoutStep>("shipping")
   const [shipping, setShipping] = useState<ShippingFormState>(() =>
@@ -854,11 +948,18 @@ function CheckoutPage() {
   const shippingRegionRequirement = getShippingRegionRequirement(
     shipping.country
   )
-
+  const walletPaymentConstraint = getKnownWalletPaymentConstraint({
+    amountMsats:
+      pricingPreview.status === "ok" ? pricingPreview.totalMsats : null,
+    balance: wallet.balance,
+    budget: wallet.budget,
+    methods: wallet.info?.methods,
+  })
   const canTrySavedNwcWallet =
     !!wallet.connection &&
     wallet.status !== "unsupported" &&
-    wallet.status !== "error"
+    wallet.status !== "error" &&
+    !walletPaymentConstraint
   const canAttemptLightningPayment = canTrySavedNwcWallet || weblnAvailable
   const requiresPublicZap = zapVisibility === "public_zap"
   const lnurlReadyForSelectedPayment = getLnurlReadyForCheckoutPayment({
@@ -1436,6 +1537,17 @@ function CheckoutPage() {
       if (pricingIntent.status !== "ok") {
         throw new Error(pricingIntent.reason)
       }
+      const finalWalletPaymentConstraint = getKnownWalletPaymentConstraint({
+        amountMsats: pricingIntent.totalMsats,
+        balance: wallet.balance,
+        budget: wallet.budget,
+        methods: wallet.info?.methods,
+      })
+      const shouldTrySavedNwcWallet =
+        !!wallet.connection &&
+        wallet.status !== "unsupported" &&
+        wallet.status !== "error" &&
+        !finalWalletPaymentConstraint
 
       const orderId = crypto.randomUUID()
       publishedOrderId = orderId
@@ -1484,7 +1596,7 @@ function CheckoutPage() {
       orderDelivered = true
       const orderDeliveryNotice = getDeliveryNotice(orderDelivery, "Order")
 
-      const canAutoPay = canTrySavedNwcWallet || webLnAvailableNow
+      const canAutoPay = shouldTrySavedNwcWallet || webLnAvailableNow
       // The order is now durably with the merchant. Persist the lifecycle so
       // Orders can render it immediately, then hand payment to the service.
       await createOrderLifecycle({
@@ -1543,7 +1655,7 @@ function CheckoutPage() {
         totalSats: pricingIntent.totalSats,
         totalMsats: pricingIntent.totalMsats,
         walletConnection: wallet.connection,
-        tryNwc: canTrySavedNwcWallet,
+        tryNwc: shouldTrySavedNwcWallet,
       }
 
       try {
@@ -2224,10 +2336,21 @@ function CheckoutPage() {
                     <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
                       {pricingOnlyFastCheckoutBlocker
                         ? "The cart total is visible, but direct payment needs a fresh conversion before funds can move. Conduit is refreshing it now."
-                        : requiresPublicZap
-                          ? "Conduit will deliver the order, request a public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."
-                          : "Conduit will deliver the order, request a private LNURL invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."}
+                        : walletPaymentConstraint
+                          ? requiresPublicZap
+                            ? "Conduit will deliver the order and request a public zap invoice. Your connected wallet will be skipped for this total."
+                            : "Conduit will deliver the order and request a private LNURL invoice. Your connected wallet will be skipped for this total."
+                          : requiresPublicZap
+                            ? "Conduit will deliver the order, request a public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."
+                            : "Conduit will deliver the order, request a private LNURL invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."}
                     </p>
+                    {wallet.connection && !pricingOnlyFastCheckoutBlocker && (
+                      <CheckoutWalletReadiness
+                        balance={wallet.balance}
+                        budget={wallet.budget}
+                        constraint={walletPaymentConstraint}
+                      />
+                    )}
                   </div>
                 )}
 
@@ -2372,15 +2495,16 @@ function CheckoutPage() {
                     <Button
                       className="h-11 px-5 text-sm"
                       onClick={() => {
-                        // Show the lightning-strike animation immediately so the
-                        // buyer gets click feedback while order publish runs;
-                        // payNow navigates to Orders once the order is created.
-                        setOverlayPlaying(true)
+                        if (canAttemptLightningPayment) {
+                          setOverlayPlaying(true)
+                        }
                         void payNow()
                       }}
                     >
                       <LightningIcon className="h-4 w-4" />
-                      Zap out
+                      {walletPaymentConstraint && !weblnAvailable
+                        ? "Send order and show invoice"
+                        : "Zap out"}
                     </Button>
                   )}
                   {pricingOnlyFastCheckoutBlocker && !fastEligible && (
