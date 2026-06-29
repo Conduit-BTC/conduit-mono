@@ -888,10 +888,8 @@ function isNwcPrePublishError(error: unknown): boolean {
   return (
     error instanceof Nip47NetworkError ||
     error instanceof Nip47PublishError ||
-    error instanceof Nip47PublishTimeoutError ||
     name === "Nip47NetworkError" ||
-    name === "Nip47PublishError" ||
-    name === "Nip47PublishTimeoutError"
+    name === "Nip47PublishError"
   )
 }
 
@@ -899,8 +897,10 @@ function isNwcAmbiguousPaymentError(error: unknown): boolean {
   const name = getErrorConstructorName(error)
   return (
     error instanceof Nip47TimeoutError ||
+    error instanceof Nip47PublishTimeoutError ||
     error instanceof Nip47ReplyTimeoutError ||
     name === "Nip47TimeoutError" ||
+    name === "Nip47PublishTimeoutError" ||
     name === "Nip47ReplyTimeoutError"
   )
 }

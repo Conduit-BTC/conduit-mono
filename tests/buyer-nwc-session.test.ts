@@ -59,6 +59,7 @@ const NEXT_NWC_URI =
 const nextConnection = parseNwcUri(NEXT_NWC_URI)
 
 class Nip47PublishError extends Error {}
+class Nip47PublishTimeoutError extends Error {}
 class Nip47ReplyTimeoutError extends Error {}
 class Nip47WalletError extends Error {
   code: string
@@ -658,6 +659,32 @@ describe("BuyerNwcSession", () => {
       status: "pre_publish_failed",
       phase: "before_publish",
       reason: "Failed to connect to NWC relay(s).",
+    })
+  })
+
+  it("treats SDK publish timeout as ambiguous after-publish failure", async () => {
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        payInvoice: async () => {
+          throw new Nip47PublishTimeoutError("publish timed out")
+        },
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await expect(
+      session.payInvoice({
+        invoice: "lnbc1test",
+        amountMsats: 1_000,
+        timeoutMs: 100,
+        appId: "market",
+      })
+    ).resolves.toEqual({
+      status: "published_timeout",
+      phase: "after_publish",
+      reason: "NWC request timed out.",
     })
   })
 

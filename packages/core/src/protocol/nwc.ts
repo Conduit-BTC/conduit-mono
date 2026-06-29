@@ -440,14 +440,14 @@ async function withNwcTimeout<T>(
 function normalizeNwcError(error: unknown): Error {
   if (
     error instanceof Nip47NetworkError ||
-    error instanceof Nip47PublishError ||
-    error instanceof Nip47PublishTimeoutError
+    error instanceof Nip47PublishError
   ) {
     return new Error("Failed to connect to NWC relay(s).")
   }
 
   if (
     error instanceof Nip47TimeoutError ||
+    error instanceof Nip47PublishTimeoutError ||
     error instanceof Nip47ReplyTimeoutError
   ) {
     return new Error("NWC request timed out.")

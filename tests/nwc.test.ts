@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test"
+import { Nip47PublishTimeoutError } from "@getalby/sdk/nwc"
 
 import {
   __nwcTestInternals,
@@ -328,6 +329,28 @@ describe("NWC SDK adapter", () => {
       },
     ])
     expect(paymentAttempted).toBe(true)
+  })
+
+  it("treats publish timeouts as ambiguous payment timeouts", async () => {
+    __nwcTestInternals.__setNwcClientFactory(() =>
+      fakeClient({
+        payInvoice: async () => {
+          throw new Nip47PublishTimeoutError("publish timeout", "INTERNAL")
+        },
+      })
+    )
+
+    await expect(
+      nwcPayInvoice(
+        connection,
+        {
+          invoice: minimalBolt11Invoice("lnbc1110n"),
+          amountMsats: 111_000,
+        },
+        100,
+        "market"
+      )
+    ).rejects.toThrow("NWC request timed out.")
   })
 
   it("retries relay bootstrap with a fresh client before publishing pay_invoice", async () => {
