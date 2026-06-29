@@ -7,8 +7,14 @@ import {
   validateShippingFields,
   isFastCheckoutEligible,
   getFastCheckoutUnavailableReasons,
+  getShippingPhoneDescribedBy,
   getShippingCheckoutState,
+  getShippingRegionRequirement,
   getShippingStepBlockingMessage,
+  sanitizeShippingPhoneInput,
+  SHIPPING_PHONE_ERROR_ID,
+  SHIPPING_PHONE_HELP_COPY,
+  SHIPPING_PHONE_HELP_ID,
   type ShippingFormState,
 } from "../apps/market/src/lib/checkout-validation"
 import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
@@ -74,6 +80,41 @@ function validShipping(
 
 // ─── validateShippingFields ───────────────────────────────────────────────────
 
+describe("checkout phone helper copy", () => {
+  it("links the optional phone input to the international calling-code hint", () => {
+    expect(SHIPPING_PHONE_HELP_ID).toBe("ship-phone-help")
+    expect(SHIPPING_PHONE_ERROR_ID).toBe("ship-phone-error")
+    expect(getShippingPhoneDescribedBy(false)).toBe(SHIPPING_PHONE_HELP_ID)
+    expect(getShippingPhoneDescribedBy(true)).toBe(
+      `${SHIPPING_PHONE_HELP_ID} ${SHIPPING_PHONE_ERROR_ID}`
+    )
+    expect(SHIPPING_PHONE_HELP_COPY).toBe(
+      "Use + country code if this number is outside the delivery country."
+    )
+  })
+})
+
+describe("checkout region helper copy", () => {
+  it("shows country-specific required region labels without changing advisory validation", () => {
+    expect(getShippingRegionRequirement("US")).toEqual({
+      required: true,
+      label: "State",
+    })
+    expect(getShippingRegionRequirement("CA")).toEqual({
+      required: true,
+      label: "Province / Territory",
+    })
+    expect(getShippingRegionRequirement("AE")).toEqual({
+      required: true,
+      label: "Emirate",
+    })
+    expect(getShippingRegionRequirement("GB")).toEqual({
+      required: false,
+      label: "State / Province / Region",
+    })
+  })
+})
+
 describe("validateShippingFields", () => {
   it("returns no errors for a fully valid form", () => {
     expect(validateShippingFields(validShipping())).toEqual([])
@@ -124,8 +165,67 @@ describe("validateShippingFields", () => {
   })
 
   it("accepts lowercase country code (normalised internally)", () => {
-    const errors = validateShippingFields(validShipping({ country: "gb" }))
+    const errors = validateShippingFields(
+      validShipping({
+        country: "gb",
+        street: "10 Downing St",
+        city: "London",
+        state: "",
+        postalCode: "SW1A 2AA",
+      })
+    )
     expect(errors.some((e) => e.field === "country")).toBe(false)
+  })
+
+  it("does not block when a profiled country is missing region confidence", () => {
+    const errors = validateShippingFields(validShipping({ state: "" }))
+    expect(errors.some((e) => e.field === "state")).toBe(false)
+  })
+
+  it("does not block when an unprofiled required-region country is missing region confidence", () => {
+    const errors = validateShippingFields(
+      validShipping({
+        country: "AE",
+        city: "Dubai",
+        state: "",
+        postalCode: "00000",
+      })
+    )
+    expect(errors.some((e) => e.field === "state")).toBe(false)
+  })
+
+  it("does not block postal/region mismatches", () => {
+    const errors = validateShippingFields(
+      validShipping({ postalCode: "90210", city: "Beverly Hills", state: "TX" })
+    )
+    expect(errors.some((e) => e.field === "state")).toBe(false)
+  })
+
+  it("does not block known city/postal mismatches", () => {
+    const errors = validateShippingFields(
+      validShipping({
+        postalCode: "90210",
+        city: "Costa Banana",
+        state: "CA",
+      })
+    )
+    expect(errors.some((e) => e.field === "city")).toBe(false)
+  })
+
+  it("does not block street addresses without building numbers", () => {
+    const errors = validateShippingFields(
+      validShipping({ street: "Main Street" })
+    )
+    expect(errors.some((e) => e.field === "street")).toBe(false)
+  })
+
+  it("rejects obvious street junk", () => {
+    const errors = validateShippingFields(
+      validShipping({
+        street: "3400 Avenue of the Arts12312!!! 1<<CC>> ,.,s,d,,",
+      })
+    )
+    expect(errors.some((e) => e.field === "street")).toBe(true)
   })
 
   it("rejects malformed email when provided", () => {
@@ -160,6 +260,12 @@ describe("validateShippingFields", () => {
 
   it("allows blank phone (optional field)", () => {
     expect(validateShippingFields(validShipping({ phone: "" }))).toEqual([])
+  })
+
+  it("sanitizes pasted phone input to international-safe characters", () => {
+    expect(sanitizeShippingPhoneInput("abc +1 (800) 555-1234 ext nope")).toBe(
+      "+1 (800) 555-1234"
+    )
   })
 
   it("accumulates multiple errors at once", () => {
@@ -424,6 +530,31 @@ describe("isFastCheckoutEligible", () => {
     ).toEqual([
       "Shipping cost is coordinated with the merchant, so direct payment is disabled.",
     ])
+  })
+
+  it("blocks fast checkout when address validity has hard errors", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        addressValidForDirectPayment: false,
+      })
+    ).toEqual([
+      "Enter a locally consistent delivery address before direct payment.",
+    ])
+  })
+
+  it("allows fast checkout when address validity only has warnings", () => {
+    expect(
+      isFastCheckoutEligible({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        shippingEligible: true,
+        addressValidForDirectPayment: true,
+      })
+    ).toBe(true)
   })
 })
 

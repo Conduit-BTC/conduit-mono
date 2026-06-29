@@ -28,6 +28,7 @@
     "clsx": "^2.1.1",
     "country-list": "^2.4.1",
     "dexie": "^4.0.0",
+    "libphonenumber-js": "^1.13.7",
     "posthog-js": "^1.391.2",
     "tailwind-merge": "^3.6.0",
     "zod": "^4.4.3"

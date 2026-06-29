@@ -1,4 +1,5 @@
 import {
+  AlertCircle,
   Check,
   KeyRound,
   LoaderCircle,
@@ -24,7 +25,6 @@ import {
   hasWebLN,
   getNdk,
   getShippingOptions,
-  isAddressValidityBlocking,
   normalizePubkey,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
@@ -72,7 +72,13 @@ import {
   getFastCheckoutUnavailableReasons,
   getShippingCheckoutState,
   getShippingStepBlockingMessage,
+  getShippingPhoneDescribedBy,
+  getShippingRegionRequirement,
   getValidationErrorFields,
+  sanitizeShippingPhoneInput,
+  SHIPPING_PHONE_ERROR_ID,
+  SHIPPING_PHONE_HELP_COPY,
+  SHIPPING_PHONE_HELP_ID,
   shippingFieldLabel,
   validateShippingFields,
   type ShippingFormState,
@@ -137,6 +143,24 @@ const DEFAULT_SHIPPING_FORM: ShippingFormState = {
   name: "",
   phone: "",
   email: "",
+}
+
+const SHIPPING_VALIDATION_FIELDS: ShippingFieldKey[] = [
+  "country",
+  "firstName",
+  "lastName",
+  "street",
+  "postalCode",
+  "city",
+  "state",
+  "phone",
+  "email",
+]
+
+function isValidationField(
+  field: keyof ShippingFormState
+): field is ShippingFieldKey {
+  return SHIPPING_VALIDATION_FIELDS.includes(field as ShippingFieldKey)
 }
 
 const COUNTRY_COMBOBOX_OPTIONS = SHIPPING_COUNTRIES.map((country) => ({
@@ -556,6 +580,9 @@ function CheckoutPage() {
   const [shippingErrors, setShippingErrors] = useState<
     ShippingValidationError[]
   >([])
+  const [touchedShippingFields, setTouchedShippingFields] = useState<
+    Set<ShippingFieldKey>
+  >(() => new Set())
   const [sentOrderId, setSentOrderId] = useState<string | null>(null)
   const [showSentGlow, setShowSentGlow] = useState(false)
   // paidNotice carries any non-critical delivery notice from the order publish.
@@ -580,6 +607,10 @@ function CheckoutPage() {
   const btcUsdRate = btcUsdRateQuery.data ?? null
   const refetchBtcUsdRate = btcUsdRateQuery.refetch
   const btcUsdRateIsFetching = btcUsdRateQuery.isFetching
+  const liveShippingErrors = useMemo(
+    () => validateShippingFields(shipping),
+    [shipping]
+  )
 
   // LNURL probe state
   const [lnurlPayAvailable, setLnurlPayAvailable] = useState(false)
@@ -647,6 +678,8 @@ function CheckoutPage() {
     () => checkoutItems.some((item) => !getPriceSats(item, btcUsdRate)),
     [btcUsdRate, checkoutItems]
   )
+  const shippingSubmitDisabled =
+    !isAllDigital && (hasUnpricedCheckoutItems || liveShippingErrors.length > 0)
 
   const merchantTrust = useMerchantTrustContext({
     merchantPubkey: selectedMerchant ?? null,
@@ -817,6 +850,11 @@ function CheckoutPage() {
         ? "ineligible"
         : "unknown"
 
+  const currentAddressValidity = computeAddressValidity(buildShippingAddress())
+  const shippingRegionRequirement = getShippingRegionRequirement(
+    shipping.country
+  )
+
   const canTrySavedNwcWallet =
     !!wallet.connection &&
     wallet.status !== "unsupported" &&
@@ -840,6 +878,7 @@ function CheckoutPage() {
     shippingEligible: shippingEligibleForFastCheckout,
     shippingState: shippingCheckoutState,
     shippingPriced: checkoutShippingCost.status !== "manual",
+    addressValidForDirectPayment: currentAddressValidity.canDirectPay,
   }
   const fastEligible = isFastCheckoutEligible(fastEligibilityInput)
   const fastUnavailableReasons =
@@ -852,6 +891,35 @@ function CheckoutPage() {
   const pricingOnlyFastCheckoutBlocker =
     pricingPreviewIsStale && fastUnavailableReasonsWithoutPricing.length === 0
   const showFastCheckoutSurface = fastEligible || pricingOnlyFastCheckoutBlocker
+  const addressStatusMessage = (() => {
+    if (currentAddressValidity.status === "not_required") {
+      return "This cart does not require delivery details."
+    }
+    if (!currentAddressValidity.canSubmitOrder) {
+      if (
+        currentAddressValidity.issues.some((issue) => issue.code === "required")
+      ) {
+        return "Complete required delivery details before sending the order."
+      }
+      return (
+        currentAddressValidity.issues[0]?.message ??
+        "Fix address/contact details before sending the order."
+      )
+    }
+    if (currentAddressValidity.warnings.length > 0) {
+      return (
+        currentAddressValidity.warnings[0]?.message ??
+        "We could not fully validate this address locally. Review it carefully before paying; the merchant may need to confirm details."
+      )
+    }
+    if (currentAddressValidity.level === "locality_consistent") {
+      return "Address format and locality look consistent."
+    }
+    if (currentAddressValidity.level === "postal_region_consistent") {
+      return "Address format and region look consistent."
+    }
+    return "Address format looks plausible. Deliverability is not verified."
+  })()
   const shippingStatusMessage = (() => {
     switch (shippingCheckoutState) {
       case "not_required":
@@ -863,7 +931,9 @@ function CheckoutPage() {
       case "no_published_rule":
         return "No published merchant shipping rule was found yet. You can still send the order first."
       case "allowed":
-        return "This destination is covered by the merchant shipping zone."
+        return currentAddressValidity.canDirectPay
+          ? "Merchant shipping zone covers this destination."
+          : "Merchant shipping zone may cover this destination, but address validity still needs attention."
       case "country_unsupported":
         return "Zap out is unavailable for this destination. You can still send the order first."
       case "postal_restricted":
@@ -922,20 +992,23 @@ function CheckoutPage() {
     field: K,
     value: ShippingFormState[K]
   ): void {
-    setShipping((current) => {
-      const next = { ...current, [field]: value }
-      writeSessionShipping(next)
-      return next
-    })
-    // Re-validate on field change if an attempt has been made
-    if (shippingAttempted) {
-      setShippingErrors(validateShippingFields({ ...shipping, [field]: value }))
+    const normalizedValue =
+      field === "phone"
+        ? (sanitizeShippingPhoneInput(String(value)) as ShippingFormState[K])
+        : value
+    const next = { ...shipping, [field]: normalizedValue }
+    setShipping(next)
+    writeSessionShipping(next)
+    setShippingErrors(validateShippingFields(next))
+    if (isValidationField(field)) {
+      markShippingFieldTouched(field)
     }
   }
 
   function continueToPayment(): void {
     setShippingAttempted(true)
-    const errors = validateShippingFields(shipping)
+    setTouchedShippingFields(new Set(SHIPPING_VALIDATION_FIELDS))
+    const errors = liveShippingErrors
     setShippingErrors(errors)
     const blockingMessage = getShippingStepBlockingMessage({
       hasUnpricedCheckoutItems,
@@ -957,6 +1030,15 @@ function CheckoutPage() {
     })
     setError(null)
     setStep("payment")
+  }
+
+  function markShippingFieldTouched(field: ShippingFieldKey): void {
+    setTouchedShippingFields((current) => {
+      if (current.has(field)) return current
+      const next = new Set(current)
+      next.add(field)
+      return next
+    })
   }
 
   useEffect(() => {
@@ -1016,7 +1098,24 @@ function CheckoutPage() {
   function computeAddressValidity(
     addr: ShippingAddressSchema | undefined
   ): AddressValidityResult {
-    if (isAllDigital || !addr) return { status: "not_required", issues: [] }
+    if (isAllDigital || !addr) {
+      return {
+        status: "not_required",
+        level: "not_required",
+        issues: [],
+        warnings: [],
+        normalized: {
+          name: "",
+          street: "",
+          city: "",
+          postalCode: "",
+          country: "",
+        },
+        canSubmitOrder: true,
+        canDirectPay: true,
+        profiledCountry: true,
+      }
+    }
     return validateAddressConsistency({
       name: addr.name,
       street: addr.street,
@@ -1024,6 +1123,8 @@ function CheckoutPage() {
       state: addr.state,
       postalCode: addr.postalCode,
       country: addr.country,
+      email: shipping.email,
+      phone: shipping.phone,
     })
   }
 
@@ -1319,14 +1420,15 @@ function CheckoutPage() {
         )
       }
 
-      // Address validity gate (CND-127): block zap-out on an internally
-      // inconsistent physical address. Distinct from shipping-zone coverage.
+      // Address validity gate (CND-127): block zap-out only on hard input
+      // errors. Local confidence gaps are shown as warnings that buyers can
+      // consciously override.
       const shippingAddress = buildShippingAddress()
       const addressValidity = computeAddressValidity(shippingAddress)
-      if (isAddressValidityBlocking(addressValidity.status)) {
+      if (!addressValidity.canDirectPay) {
         throw new Error(
           addressValidity.issues[0]?.message ??
-            "Enter a valid shipping address before paying."
+            "Enter a locally consistent delivery address before direct payment."
         )
       }
 
@@ -1667,14 +1769,17 @@ function CheckoutPage() {
 
   // ─── Field-level error helpers ───────────────────────────────────────────
 
-  const errorFields = getValidationErrorFields(shippingErrors)
+  const errorFields = getValidationErrorFields(liveShippingErrors)
 
   function fieldError(field: ShippingFieldKey): string | undefined {
-    return shippingErrors.find((e) => e.field === field)?.message
+    return liveShippingErrors.find((e) => e.field === field)?.message
   }
 
   function fieldInvalid(field: ShippingFieldKey): boolean {
-    return shippingAttempted && errorFields.includes(field)
+    return (
+      (shippingAttempted || touchedShippingFields.has(field)) &&
+      errorFields.includes(field)
+    )
   }
 
   function fieldClassName(field: ShippingFieldKey): string | undefined {
@@ -1766,6 +1871,7 @@ function CheckoutPage() {
                         onChange={(e) =>
                           updateShipping("firstName", e.target.value)
                         }
+                        onBlur={() => markShippingFieldTouched("firstName")}
                         autoComplete="given-name"
                         placeholder="Jane"
                         aria-invalid={fieldInvalid("firstName")}
@@ -1787,6 +1893,7 @@ function CheckoutPage() {
                         onChange={(e) =>
                           updateShipping("lastName", e.target.value)
                         }
+                        onBlur={() => markShippingFieldTouched("lastName")}
                         autoComplete="family-name"
                         placeholder="Doe"
                         aria-invalid={fieldInvalid("lastName")}
@@ -1809,6 +1916,7 @@ function CheckoutPage() {
                       id="ship-street"
                       value={shipping.street}
                       onChange={(e) => updateShipping("street", e.target.value)}
+                      onBlur={() => markShippingFieldTouched("street")}
                       autoComplete="address-line1"
                       placeholder="123 Main St"
                       aria-invalid={fieldInvalid("street")}
@@ -1839,7 +1947,7 @@ function CheckoutPage() {
                   <div className="grid gap-4 sm:grid-cols-3">
                     <div className="grid gap-1.5">
                       <Label htmlFor="ship-postal">
-                        Postal code <span className="text-error">*</span>
+                        Postal/ZIP code <span className="text-error">*</span>
                       </Label>
                       <Input
                         id="ship-postal"
@@ -1847,6 +1955,7 @@ function CheckoutPage() {
                         onChange={(e) =>
                           updateShipping("postalCode", e.target.value)
                         }
+                        onBlur={() => markShippingFieldTouched("postalCode")}
                         autoComplete="postal-code"
                         placeholder="78701"
                         aria-invalid={fieldInvalid("postalCode")}
@@ -1866,6 +1975,7 @@ function CheckoutPage() {
                         id="ship-city"
                         value={shipping.city}
                         onChange={(e) => updateShipping("city", e.target.value)}
+                        onBlur={() => markShippingFieldTouched("city")}
                         autoComplete="address-level2"
                         placeholder="Austin"
                         aria-invalid={fieldInvalid("city")}
@@ -1878,16 +1988,32 @@ function CheckoutPage() {
                       )}
                     </div>
                     <div className="grid gap-1.5">
-                      <Label htmlFor="ship-state">Region</Label>
+                      <Label htmlFor="ship-state">
+                        {shippingRegionRequirement.label}
+                        {shippingRegionRequirement.required && (
+                          <>
+                            {" "}
+                            <span className="text-error">*</span>
+                          </>
+                        )}
+                      </Label>
                       <Input
                         id="ship-state"
                         value={shipping.state}
                         onChange={(e) =>
                           updateShipping("state", e.target.value)
                         }
+                        onBlur={() => markShippingFieldTouched("state")}
                         autoComplete="address-level1"
                         placeholder="TX"
+                        aria-invalid={fieldInvalid("state")}
+                        className={fieldClassName("state")}
                       />
+                      {fieldInvalid("state") && (
+                        <p className="text-xs text-error">
+                          {fieldError("state")}
+                        </p>
+                      )}
                     </div>
                   </div>
 
@@ -1906,17 +2032,32 @@ function CheckoutPage() {
                         <Label htmlFor="ship-phone">Phone</Label>
                         <Input
                           id="ship-phone"
+                          type="tel"
+                          inputMode="tel"
                           value={shipping.phone}
                           onChange={(e) =>
                             updateShipping("phone", e.target.value)
                           }
+                          onBlur={() => markShippingFieldTouched("phone")}
                           autoComplete="tel"
                           placeholder="+1 555 123 4567"
                           aria-invalid={fieldInvalid("phone")}
+                          aria-describedby={getShippingPhoneDescribedBy(
+                            fieldInvalid("phone")
+                          )}
                           className={fieldClassName("phone")}
                         />
+                        <p
+                          id={SHIPPING_PHONE_HELP_ID}
+                          className="text-xs text-[var(--text-muted)]"
+                        >
+                          {SHIPPING_PHONE_HELP_COPY}
+                        </p>
                         {fieldInvalid("phone") && (
-                          <p className="text-xs text-error">
+                          <p
+                            id={SHIPPING_PHONE_ERROR_ID}
+                            className="text-xs text-error"
+                          >
                             {fieldError("phone")}
                           </p>
                         )}
@@ -1925,10 +2066,12 @@ function CheckoutPage() {
                         <Label htmlFor="ship-email">Email</Label>
                         <Input
                           id="ship-email"
+                          type="email"
                           value={shipping.email}
                           onChange={(e) =>
                             updateShipping("email", e.target.value)
                           }
+                          onBlur={() => markShippingFieldTouched("email")}
                           autoComplete="email"
                           placeholder="jane@example.com"
                           aria-invalid={fieldInvalid("email")}
@@ -1952,17 +2095,46 @@ function CheckoutPage() {
                           : "",
                       ].join(" ")}
                     >
-                      <div className="flex items-center gap-2">
-                        {shippingCheckoutState === "loading" && (
-                          <SpinnerIcon className="h-3.5 w-3.5 shrink-0 animate-spin text-secondary-400" />
-                        )}
-                        <span>{shippingStatusMessage}</span>
+                      <div className="grid gap-2">
+                        <div className="flex items-start gap-2">
+                          {!currentAddressValidity.canSubmitOrder ? (
+                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-error" />
+                          ) : currentAddressValidity.warnings.length > 0 ? (
+                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+                          ) : (
+                            <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
+                          )}
+                          <div>
+                            <div className="font-medium text-[var(--text-primary)]">
+                              Address/contact
+                            </div>
+                            <div>{addressStatusMessage}</div>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          {shippingCheckoutState === "loading" ? (
+                            <SpinnerIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-secondary-400" />
+                          ) : (shippingCheckoutState === "not_required" ||
+                              shippingCheckoutState === "allowed") &&
+                            currentAddressValidity.canDirectPay ? (
+                            <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
+                          ) : (
+                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+                          )}
+                          <div>
+                            <div className="font-medium text-[var(--text-primary)]">
+                              Merchant shipping zone
+                            </div>
+                            <div>{shippingStatusMessage}</div>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   )}
 
                   <Button
                     className="mt-2 h-11 w-full text-sm"
+                    disabled={shippingSubmitDisabled}
                     onClick={continueToPayment}
                   >
                     Continue to Send Order
