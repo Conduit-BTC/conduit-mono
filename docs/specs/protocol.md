@@ -62,10 +62,10 @@ Implementations must not dedupe only by `d` tag because different merchants can 
 Conduit-generated kind `30402` product listings include explicit checkout zap
 policy metadata alongside the NIP-99/GammaMarkets product tags:
 
-| Tag                           | Values                                             | Meaning                                                        |
-| ----------------------------- | -------------------------------------------------- | -------------------------------------------------------------- |
-| `checkout_public_zaps`        | `true` or `false`                                  | Whether checkout may offer a public zap payment for this item. |
-| `checkout_zap_message_policy` | `generic_only`, `product_reference`, or `custom`   | The most permissive public zap comment the merchant allows.    |
+| Tag                           | Values                                           | Meaning                                                        |
+| ----------------------------- | ------------------------------------------------ | -------------------------------------------------------------- |
+| `checkout_public_zaps`        | `true` or `false`                                | Whether checkout may offer a public zap payment for this item. |
+| `checkout_zap_message_policy` | `generic_only`, `product_reference`, or `custom` | The most permissive public zap comment the merchant allows.    |
 
 Both tags are required for Conduit to treat a product's public-zap policy as
 known. Missing tags, malformed values, or legacy JSON-content fields without
