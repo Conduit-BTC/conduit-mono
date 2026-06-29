@@ -83,28 +83,28 @@ shipping-zone coverage. The v1 implementation uses expandable country profiles
 for `US`, `CA`, `GB`, `AU`, and `NZ`.
 
 The validation boundary returns a coarse lifecycle status (`missing`,
-`inconsistent`, `unknown`, or `valid`), normalized fields, issue codes, a
-confidence level, and two gates: `canSubmitOrder` and `canDirectPay`. Profiled
-countries validate required region/admin-area fields, country postal formats,
-postal-to-region consistency, contact syntax, and lightweight street
-plausibility. Known locality/postal contradictions are rejected where bundled
-profile data can prove them.
+`inconsistent`, `unknown`, or `valid`), normalized fields, issue and warning
+codes, a confidence level, and two gates: `canSubmitOrder` and `canDirectPay`.
+Profiled countries validate required fields, country postal formats, contact
+syntax, lightweight street plausibility, and bundled postal-to-region or
+postal-to-locality consistency where data exists.
 
-Direct-payment confidence requires a profiled country plus bundled
-postal-to-region or postal-to-locality consistency evidence. Unsupported or
-not-yet-profiled countries, and profiled countries without enough bundled
-consistency evidence for the entered destination, receive shared structural
-checks and can use order-first fallback when the input is plausible, but they do
-not get direct-payment confidence. No third-party / browser address-API calls
+Direct-payment confidence is advisory rather than mandatory. Unsupported or
+not-yet-profiled countries, profiled countries without enough bundled
+consistency evidence, missing street/building numbers, and known
+postal/region/locality contradictions receive warnings when the shared
+structural checks otherwise pass. Checkout must tell the buyer that the address
+could not be fully validated locally and that the merchant may need to confirm
+details, but the buyer may still choose direct payment when merchant
+shipping-zone and payment gates pass. No third-party / browser address-API calls
 are made; no address or contact data is sent to analytics, logs, or
 observability; and local checks never claim full deliverability verification.
 
-Order-first submission is blocked for missing required fields, syntactically
-invalid contact data, obvious street/locality junk, invalid postal formats, or
-known postal/region/locality contradictions. Direct payment / zap-out (and
-external manual payment) additionally require direct-payment confidence plus
-merchant shipping-zone eligibility. Shipping-zone eligibility remains a separate
-fulfillment gate.
+Order-first submission and direct payment are blocked for hard input failures:
+missing required fields, syntactically invalid contact data, obvious
+street/locality junk, invalid postal formats, or unavailable merchant
+shipping/payment gates. Shipping-zone eligibility remains a separate fulfillment
+gate.
 
 ## Privacy
 

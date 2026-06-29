@@ -148,13 +148,15 @@ third-party browser address calls; no address/contact data to analytics, logs, o
 observability). This is distinct from merchant shipping-zone coverage.
 
 Checkout uses v1 country profiles for `US`, `CA`, `GB`, `AU`, and `NZ`.
-Profiled countries can earn direct-payment confidence only after required
-field, postal-format, contact, and lightweight street-plausibility checks pass
-and the local profile can prove postal-to-region or postal-to-locality
-consistency. Unsupported countries or profiled countries without enough bundled
-consistency evidence may still use order-first fallback when the input is
-plausible, but direct payment remains unavailable until the profile can grant
-confidence.
+Profiled countries add local confidence when required field, postal-format,
+contact, lightweight street-plausibility, and bundled postal-to-region or
+postal-to-locality checks pass. Missing required fields, syntactically invalid
+contact details, invalid postal formats, and obvious street/locality junk remain
+blocking errors. Incomplete local confidence, unprofiled countries, missing
+street/building numbers, and known postal-to-region or postal-to-locality
+contradictions are advisory warnings: checkout must tell the buyer that the
+address could not be fully validated locally, but direct payment remains
+available when merchant shipping-zone and payment gates pass.
 
 The checkout UI must show address/contact validity separately from merchant
 shipping-zone eligibility. Shipping-zone success must not be the only green/pass
