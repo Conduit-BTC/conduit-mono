@@ -93,7 +93,7 @@ jobs:
       - name: Create workflow agent GitHub App token
         id: app_token
         if: steps.app_auth.outputs.has_app == 'true'
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.WORKFLOW_AGENT_GITHUB_APP_ID }}
           private-key: ${{ secrets.WORKFLOW_AGENT_GITHUB_APP_PRIVATE_KEY }}
