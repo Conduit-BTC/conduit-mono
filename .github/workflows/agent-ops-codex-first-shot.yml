@@ -230,7 +230,7 @@ jobs:
       - name: Run Codex first-shot with CODEX_AUTH_JSON
         id: run_codex_auth_json
         if: steps.agent_auth.outputs.has_codex_auth_json == 'true'
-        uses: sudden-network/agent@v1.13.1
+        uses: sudden-network/agent@v1.14.0
         with:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
           github_token: ${{ steps.app_token.outputs.token }}
@@ -269,7 +269,7 @@ jobs:
       - name: Run Codex first-shot with Sudden auth file
         id: run_sudden_auth_file
         if: steps.agent_auth.outputs.has_codex_auth_json != 'true' && steps.agent_auth.outputs.has_sudden_auth_file == 'true'
-        uses: sudden-network/agent@v1.13.1
+        uses: sudden-network/agent@v1.14.0
         with:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
           github_token: ${{ steps.app_token.outputs.token }}
@@ -308,7 +308,7 @@ jobs:
       - name: Run Codex first-shot with Sudden API key
         id: run_sudden_api_key
         if: steps.agent_auth.outputs.has_codex_auth_json != 'true' && steps.agent_auth.outputs.has_sudden_auth_file != 'true' && steps.agent_auth.outputs.has_sudden_api_key == 'true'
-        uses: sudden-network/agent@v1.13.1
+        uses: sudden-network/agent@v1.14.0
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
           github_token: ${{ steps.app_token.outputs.token }}

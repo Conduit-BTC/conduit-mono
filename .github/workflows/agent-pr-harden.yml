@@ -158,7 +158,7 @@ jobs:
 
       - name: Run Sudden Agent hardening with CODEX_AUTH_JSON
         if: steps.sudden_auth.outputs.has_codex_auth_json == 'true'
-        uses: sudden-network/agent@v1.13.1
+        uses: sudden-network/agent@v1.14.0
         with:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
           github_token: ${{ steps.app_token.outputs.token }}
@@ -193,7 +193,7 @@ jobs:
 
       - name: Run Sudden Agent hardening with auth file
         if: steps.sudden_auth.outputs.has_codex_auth_json != 'true' && steps.sudden_auth.outputs.has_auth_file == 'true'
-        uses: sudden-network/agent@v1.13.1
+        uses: sudden-network/agent@v1.14.0
         with:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
           github_token: ${{ steps.app_token.outputs.token }}
@@ -228,7 +228,7 @@ jobs:
 
       - name: Run Sudden Agent hardening with API key
         if: steps.sudden_auth.outputs.has_codex_auth_json != 'true' && steps.sudden_auth.outputs.has_auth_file != 'true' && steps.sudden_auth.outputs.has_api_key == 'true'
-        uses: sudden-network/agent@v1.13.1
+        uses: sudden-network/agent@v1.14.0
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
           github_token: ${{ steps.app_token.outputs.token }}
