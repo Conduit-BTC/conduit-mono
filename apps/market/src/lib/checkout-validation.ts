@@ -1,7 +1,9 @@
 import {
   SHIPPING_COUNTRIES,
+  getAddressRegionRequirement,
   sanitizePhoneInput,
   validateAddressConsistency,
+  type AddressRegionRequirement,
   type AddressValidationIssue,
   type ShippingAddressSchema,
 } from "@conduit/core"
@@ -52,6 +54,12 @@ export function getShippingPhoneDescribedBy(hasError: boolean): string {
   return hasError
     ? `${SHIPPING_PHONE_HELP_ID} ${SHIPPING_PHONE_ERROR_ID}`
     : SHIPPING_PHONE_HELP_ID
+}
+
+export function getShippingRegionRequirement(
+  country: string
+): AddressRegionRequirement {
+  return getAddressRegionRequirement(country)
 }
 
 // ─── Validation ───────────────────────────────────────────────────────────────

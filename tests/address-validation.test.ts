@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import {
   ADDRESS_VALIDATION_V1_COUNTRIES,
+  REQUIRED_ADDRESS_REGION_LABELS,
+  getAddressRegionRequirement,
   isAddressDirectPaymentBlocking,
   isAddressRegionRequired,
   isAddressValidityBlocking,
@@ -17,6 +19,45 @@ const beverlyHills = {
   country: "US",
 }
 
+const requiredRegionLabels = [
+  ["AE", "Emirate"],
+  ["AS", "State"],
+  ["AU", "State / Territory"],
+  ["BR", "State"],
+  ["CA", "Province / Territory"],
+  ["CN", "Province / Municipality / Region"],
+  ["CO", "Department"],
+  ["CR", "Province"],
+  ["ES", "Province"],
+  ["FM", "State"],
+  ["HK", "Area"],
+  ["HN", "Department"],
+  ["ID", "Province"],
+  ["IN", "State / Union Territory"],
+  ["IQ", "Province"],
+  ["IT", "Province"],
+  ["JM", "Parish"],
+  ["JP", "Prefecture"],
+  ["KN", "Island"],
+  ["KR", "Province / Metropolitan City"],
+  ["KY", "Island"],
+  ["MH", "State"],
+  ["MP", "State"],
+  ["MX", "State"],
+  ["NR", "District"],
+  ["PF", "Island"],
+  ["PG", "Province"],
+  ["PW", "State"],
+  ["RU", "Oblast / Region"],
+  ["SO", "Province"],
+  ["SV", "Province"],
+  ["TW", "County / City"],
+  ["UM", "State"],
+  ["US", "State"],
+  ["VE", "State"],
+  ["VI", "State"],
+] as const
+
 describe("validateAddressConsistency", () => {
   it("declares the CND-127 v1 country tranche", () => {
     expect(ADDRESS_VALIDATION_V1_COUNTRIES).toEqual([
@@ -28,13 +69,29 @@ describe("validateAddressConsistency", () => {
     ])
   })
 
-  it("reports when a country profile expects a state, province, or region", () => {
-    expect(isAddressRegionRequired("US")).toBe(true)
-    expect(isAddressRegionRequired("CA")).toBe(true)
-    expect(isAddressRegionRequired("AU")).toBe(true)
+  it("reports country-specific region requirements and display labels", () => {
+    expect(Object.keys(REQUIRED_ADDRESS_REGION_LABELS).sort()).toEqual(
+      requiredRegionLabels.map(([code]) => code).sort()
+    )
+
+    for (const [code, label] of requiredRegionLabels) {
+      expect(isAddressRegionRequired(code)).toBe(true)
+      expect(getAddressRegionRequirement(code)).toEqual({
+        required: true,
+        label,
+      })
+    }
+
+    expect(getAddressRegionRequirement("ca")).toEqual({
+      required: true,
+      label: "Province / Territory",
+    })
     expect(isAddressRegionRequired("GB")).toBe(false)
     expect(isAddressRegionRequired("NZ")).toBe(false)
-    expect(isAddressRegionRequired("DE")).toBe(false)
+    expect(getAddressRegionRequirement("DE")).toEqual({
+      required: false,
+      label: "State / Province / Region",
+    })
   })
 
   it("warns on the CND-127 example (90210 / Beverly Hills / Texas)", () => {
@@ -108,6 +165,28 @@ describe("validateAddressConsistency", () => {
     expect(result.issues).toEqual([])
     expect(
       result.warnings.some((item) => item.code === "region_required")
+    ).toBe(true)
+    expect(result.canSubmitOrder).toBe(true)
+    expect(result.canDirectPay).toBe(true)
+  })
+
+  it("warns but allows direct payment when an unprofiled required-region country omits region", () => {
+    const result = validateAddressConsistency({
+      name: "Aisha Example",
+      street: "123 Creek Road",
+      city: "Dubai",
+      state: "",
+      postalCode: "00000",
+      country: "AE",
+    })
+    expect(result.profiledCountry).toBe(false)
+    expect(result.status).toBe("unknown")
+    expect(result.issues).toEqual([])
+    expect(
+      result.warnings.some((item) => item.code === "region_required")
+    ).toBe(true)
+    expect(
+      result.warnings.some((item) => item.code === "unknown_country")
     ).toBe(true)
     expect(result.canSubmitOrder).toBe(true)
     expect(result.canDirectPay).toBe(true)

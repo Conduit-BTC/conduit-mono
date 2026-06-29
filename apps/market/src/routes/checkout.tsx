@@ -73,6 +73,7 @@ import {
   getShippingCheckoutState,
   getShippingStepBlockingMessage,
   getShippingPhoneDescribedBy,
+  getShippingRegionRequirement,
   getValidationErrorFields,
   sanitizeShippingPhoneInput,
   SHIPPING_PHONE_ERROR_ID,
@@ -850,6 +851,9 @@ function CheckoutPage() {
         : "unknown"
 
   const currentAddressValidity = computeAddressValidity(buildShippingAddress())
+  const shippingRegionRequirement = getShippingRegionRequirement(
+    shipping.country
+  )
 
   const canTrySavedNwcWallet =
     !!wallet.connection &&
@@ -1985,7 +1989,13 @@ function CheckoutPage() {
                     </div>
                     <div className="grid gap-1.5">
                       <Label htmlFor="ship-state">
-                        State / Province / Region
+                        {shippingRegionRequirement.label}
+                        {shippingRegionRequirement.required && (
+                          <>
+                            {" "}
+                            <span className="text-error">*</span>
+                          </>
+                        )}
                       </Label>
                       <Input
                         id="ship-state"

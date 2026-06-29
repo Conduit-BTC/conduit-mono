@@ -97,6 +97,11 @@ export interface AddressValidityResult {
   profiledCountry: boolean
 }
 
+export type AddressRegionRequirement = {
+  required: boolean
+  label: string
+}
+
 export const ADDRESS_VALIDATION_V1_COUNTRIES = [
   "US",
   "CA",
@@ -263,6 +268,51 @@ function warning(
 }
 
 // --- Region metadata -------------------------------------------------------
+
+const DEFAULT_REGION_REQUIREMENT: AddressRegionRequirement = {
+  required: false,
+  label: "State / Province / Region",
+}
+
+export const REQUIRED_ADDRESS_REGION_LABELS: Readonly<Record<string, string>> =
+  {
+    AE: "Emirate",
+    AS: "State",
+    AU: "State / Territory",
+    BR: "State",
+    CA: "Province / Territory",
+    CN: "Province / Municipality / Region",
+    CO: "Department",
+    CR: "Province",
+    ES: "Province",
+    FM: "State",
+    HK: "Area",
+    HN: "Department",
+    ID: "Province",
+    IN: "State / Union Territory",
+    IQ: "Province",
+    IT: "Province",
+    JM: "Parish",
+    JP: "Prefecture",
+    KN: "Island",
+    KR: "Province / Metropolitan City",
+    KY: "Island",
+    MH: "State",
+    MP: "State",
+    MX: "State",
+    NR: "District",
+    PF: "Island",
+    PG: "Province",
+    PW: "State",
+    RU: "Oblast / Region",
+    SO: "Province",
+    SV: "Province",
+    TW: "County / City",
+    UM: "State",
+    US: "State",
+    VE: "State",
+    VI: "State",
+  }
 
 const US_STATE_NAME_TO_CODE: Record<string, string> = {
   alabama: "AL",
@@ -490,7 +540,7 @@ const PROFILES: Record<ProfiledCountryCode, CountryAddressProfile> = {
       /^[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\d[ABCEGHJ-NPRSTV-Z]\d$/,
     postalFormatMessage: "Enter a Canadian postal code like M5V 2T6.",
     regionRequired: true,
-    regionLabel: "province or territory",
+    regionLabel: "province / territory",
     regionAliases: CA_PROVINCE_NAME_TO_CODE,
     regionCodes: CA_PROVINCE_CODES,
     regionPrefixRules: [
@@ -536,7 +586,7 @@ const PROFILES: Record<ProfiledCountryCode, CountryAddressProfile> = {
     postalPattern: /^\d{4}$/,
     postalFormatMessage: "Enter a 4-digit Australian postcode.",
     regionRequired: true,
-    regionLabel: "state or territory",
+    regionLabel: "state / territory",
     regionAliases: AU_STATE_NAME_TO_CODE,
     regionCodes: AU_STATE_CODES,
     regionPrefixRules: [
@@ -590,10 +640,24 @@ function getProfile(country: string): CountryAddressProfile | undefined {
 }
 
 export function isAddressRegionRequired(country: string): boolean {
-  return (
-    getProfile(normalizeHumanText(country).toUpperCase())?.regionRequired ??
-    false
-  )
+  return getAddressRegionRequirement(country).required
+}
+
+export function getAddressRegionRequirement(
+  country: string
+): AddressRegionRequirement {
+  const code = normalizeHumanText(country).toUpperCase()
+  const label = REQUIRED_ADDRESS_REGION_LABELS[code]
+  if (!label) return { ...DEFAULT_REGION_REQUIREMENT }
+  return { required: true, label }
+}
+
+export function getAddressRegionLabel(country: string): string {
+  return getAddressRegionRequirement(country).label
+}
+
+function regionLabelForMessage(label: string): string {
+  return label.toLocaleLowerCase("en-US")
 }
 
 function matchRule(
@@ -758,6 +822,17 @@ export function validateAddressConsistency(
 
   const profile = getProfile(country)
   if (!profile) {
+    const regionRequirement = getAddressRegionRequirement(country)
+    if (regionRequirement.required && !normalized.state) {
+      warnings.push(
+        warning(
+          "state",
+          "region_required",
+          `We could not validate the ${regionLabelForMessage(regionRequirement.label)} locally. Review it carefully before paying.`
+        )
+      )
+    }
+
     const status = statusFromIssues(issues)
     if (status === "valid") {
       warnings.push(

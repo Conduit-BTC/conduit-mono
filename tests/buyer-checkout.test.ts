@@ -9,6 +9,7 @@ import {
   getFastCheckoutUnavailableReasons,
   getShippingPhoneDescribedBy,
   getShippingCheckoutState,
+  getShippingRegionRequirement,
   getShippingStepBlockingMessage,
   sanitizeShippingPhoneInput,
   SHIPPING_PHONE_ERROR_ID,
@@ -93,6 +94,27 @@ describe("checkout phone helper copy", () => {
   })
 })
 
+describe("checkout region helper copy", () => {
+  it("shows country-specific required region labels without changing advisory validation", () => {
+    expect(getShippingRegionRequirement("US")).toEqual({
+      required: true,
+      label: "State",
+    })
+    expect(getShippingRegionRequirement("CA")).toEqual({
+      required: true,
+      label: "Province / Territory",
+    })
+    expect(getShippingRegionRequirement("AE")).toEqual({
+      required: true,
+      label: "Emirate",
+    })
+    expect(getShippingRegionRequirement("GB")).toEqual({
+      required: false,
+      label: "State / Province / Region",
+    })
+  })
+})
+
 describe("validateShippingFields", () => {
   it("returns no errors for a fully valid form", () => {
     expect(validateShippingFields(validShipping())).toEqual([])
@@ -157,6 +179,18 @@ describe("validateShippingFields", () => {
 
   it("does not block when a profiled country is missing region confidence", () => {
     const errors = validateShippingFields(validShipping({ state: "" }))
+    expect(errors.some((e) => e.field === "state")).toBe(false)
+  })
+
+  it("does not block when an unprofiled required-region country is missing region confidence", () => {
+    const errors = validateShippingFields(
+      validShipping({
+        country: "AE",
+        city: "Dubai",
+        state: "",
+        postalCode: "00000",
+      })
+    )
     expect(errors.some((e) => e.field === "state")).toBe(false)
   })
 

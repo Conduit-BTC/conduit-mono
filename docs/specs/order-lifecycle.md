@@ -89,22 +89,29 @@ Profiled countries validate required fields, country postal formats, contact
 syntax, lightweight street plausibility, and bundled postal-to-region or
 postal-to-locality consistency where data exists.
 
+Some destinations also require a state/province/region-style administrative
+area for local address confidence. Checkout shows the country-specific label
+from shared region metadata (for example `State`, `Province / Territory`, or
+`Emirate`) and marks that field as expected. Missing expected region data is an
+advisory confidence warning under the current policy, not a hard order or
+payment blocker.
+
 Direct-payment confidence is advisory rather than mandatory. Unsupported or
 not-yet-profiled countries, profiled countries without enough bundled
-consistency evidence, missing street/building numbers, and known
-postal/region/locality contradictions receive warnings when the shared
-structural checks otherwise pass. Checkout must tell the buyer that the address
-could not be fully validated locally and that the merchant may need to confirm
-details, but the buyer may still choose direct payment when merchant
+consistency evidence, missing expected region data, missing street/building
+numbers, and known postal/region/locality contradictions receive warnings when
+the shared structural checks otherwise pass. Checkout must tell the buyer that
+the address could not be fully validated locally and that the merchant may need
+to confirm details, but the buyer may still choose direct payment when merchant
 shipping-zone and payment gates pass. No third-party / browser address-API calls
 are made; no address or contact data is sent to analytics, logs, or
 observability; and local checks never claim full deliverability verification.
 
 Order-first submission and direct payment are blocked for hard input failures:
-missing required fields, syntactically invalid contact data, obvious
-street/locality junk, invalid postal formats, or unavailable merchant
-shipping/payment gates. Shipping-zone eligibility remains a separate fulfillment
-gate.
+missing blocking fields (`name`, `street`, `city`, `postalCode`, or `country`),
+syntactically invalid contact data, obvious street/locality junk, invalid postal
+formats, or unavailable merchant shipping/payment gates. Shipping-zone
+eligibility remains a separate fulfillment gate.
 
 ## Privacy
 
