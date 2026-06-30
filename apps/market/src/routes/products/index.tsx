@@ -9,6 +9,9 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { ChevronDown, LoaderCircle, X } from "lucide-react"
 import { EVENT_KINDS, normalizePubkey, pubkeyToNpub } from "@conduit/core"
 import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
   Badge,
   Button,
   DropdownMenu,
@@ -17,6 +20,7 @@ import {
   DropdownMenuTrigger,
 } from "@conduit/ui"
 import { SignerSwitch } from "../../components/SignerSwitch"
+import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
 import {
   ProductGridCard,
   ProductGridCardSkeleton,
@@ -495,29 +499,40 @@ function ProductsPage() {
                   [{storeFacetTotal}]
                 </span>
               </DropdownMenuCheckboxItem>
-              {storeFacetOptions.map((option) => (
-                <DropdownMenuCheckboxItem
-                  key={option.value}
-                  checked={option.selected}
-                  onSelect={(event) => event.preventDefault()}
-                  onCheckedChange={() => toggleMerchant(option.value)}
-                  className="gap-3"
-                >
-                  <span
-                    className={[
-                      "min-w-0 flex-1 truncate",
-                      getMerchantIdentity(option.value).status === "pending"
-                        ? "animate-pulse"
-                        : "",
-                    ].join(" ")}
+              {storeFacetOptions.map((option) => {
+                const identity = getMerchantIdentity(option.value)
+                return (
+                  <DropdownMenuCheckboxItem
+                    key={option.value}
+                    checked={option.selected}
+                    onSelect={(event) => event.preventDefault()}
+                    onCheckedChange={() => toggleMerchant(option.value)}
+                    className="gap-2.5"
                   >
-                    {option.label}
-                  </span>
-                  <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
-                    [{option.count}]
-                  </span>
-                </DropdownMenuCheckboxItem>
-              ))}
+                    <Avatar className="h-5 w-5 shrink-0">
+                      <AvatarImage
+                        src={identity.picture}
+                        alt=""
+                        className="object-cover"
+                      />
+                      <AvatarFallback>
+                        <MerchantAvatarFallback iconClassName="h-2.5 w-2.5" />
+                      </AvatarFallback>
+                    </Avatar>
+                    <span
+                      className={[
+                        "min-w-0 flex-1 truncate",
+                        identity.status === "pending" ? "animate-pulse" : "",
+                      ].join(" ")}
+                    >
+                      {option.label}
+                    </span>
+                    <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
+                      [{option.count}]
+                    </span>
+                  </DropdownMenuCheckboxItem>
+                )
+              })}
             </DropdownMenuContent>
           </DropdownMenu>
           {hasActiveFilters && (

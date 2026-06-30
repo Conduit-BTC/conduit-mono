@@ -102,7 +102,10 @@ export function useMarketBrowseModel({
   )
   const merchantIdentities = useMerchantIdentities({
     allMerchantPubkeys,
-    deferBackgroundHydration: productsQuery.isHydrating,
+    // Hydrate off-screen merchants (the rest of the store dropdown) in parallel
+    // with product streaming instead of waiting for hydration to settle, so the
+    // store list shows names/avatars rather than bare npubs when first opened.
+    deferBackgroundHydration: false,
     visibleMerchantPubkeys,
     relayHintsByPubkey: productsQuery.profileRelayHintsByPubkey,
   })
