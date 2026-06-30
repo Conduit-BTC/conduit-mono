@@ -727,15 +727,27 @@ function getProfileQueryRelayHints(query: ProfileBatchQuery): string[] {
 }
 
 async function loadCachedProducts(
-  merchantPubkey?: string
+  merchantPubkey?: string,
+  authorPubkeys?: readonly string[]
 ): Promise<CachedProduct[]> {
   if (testOverrides.getCachedProducts) {
     return await testOverrides.getCachedProducts(merchantPubkey)
   }
 
-  return merchantPubkey
-    ? await db.products.where("pubkey").equals(merchantPubkey).toArray()
-    : await db.products.toArray()
+  if (merchantPubkey) {
+    return await db.products.where("pubkey").equals(merchantPubkey).toArray()
+  }
+
+  // Perspective catalog reads scope to a known author set; hit the `pubkey`
+  // index instead of scanning + filtering the whole products table in JS.
+  if (authorPubkeys && authorPubkeys.length > 0) {
+    return await db.products
+      .where("pubkey")
+      .anyOf(authorPubkeys as string[])
+      .toArray()
+  }
+
+  return await db.products.toArray()
 }
 
 async function storeCachedProducts(rows: CachedProduct[]): Promise<void> {
@@ -751,9 +763,10 @@ async function storeCachedProducts(rows: CachedProduct[]): Promise<void> {
 
 async function getCachedProductRecords(
   merchantPubkey?: string,
-  options: CachedProductReadOptions = {}
+  options: CachedProductReadOptions = {},
+  authorPubkeys?: readonly string[]
 ): Promise<CommerceProductRecord[]> {
-  const rows = await loadCachedProducts(merchantPubkey)
+  const rows = await loadCachedProducts(merchantPubkey, authorPubkeys)
   return rows
     .filter(
       (row) =>
@@ -1375,9 +1388,13 @@ export async function getMarketplaceProducts(
   } catch (error) {
     const cached = applyProductLimit(
       sortProducts(
-        (await getCachedProductRecords(query.merchantPubkey)).filter((record) =>
-          productMatchesQuery(record, query)
-        ),
+        (
+          await getCachedProductRecords(
+            query.merchantPubkey,
+            undefined,
+            query.authorPubkeys
+          )
+        ).filter((record) => productMatchesQuery(record, query)),
         query.sort
       ),
       query.limit
@@ -1480,9 +1497,13 @@ export async function getCachedMarketplaceProducts(
 
   const cached = applyProductLimit(
     sortProducts(
-      (await getCachedProductRecords(query.merchantPubkey, options)).filter(
-        (record) => productMatchesQuery(record, query)
-      ),
+      (
+        await getCachedProductRecords(
+          query.merchantPubkey,
+          options,
+          query.authorPubkeys
+        )
+      ).filter((record) => productMatchesQuery(record, query)),
       query.sort
     ),
     query.limit
