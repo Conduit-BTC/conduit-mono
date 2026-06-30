@@ -216,7 +216,10 @@ type CommerceTestOverrides = {
     signer: NDKSigner
   ) => Promise<Awaited<ReturnType<typeof giftUnwrap>> | null>
   now?: () => number
-  getCachedProducts?: (merchantPubkey?: string) => Promise<CachedProduct[]>
+  getCachedProducts?: (
+    merchantPubkey?: string,
+    authorPubkeys?: readonly string[]
+  ) => Promise<CachedProduct[]>
   putCachedProducts?: (rows: CachedProduct[]) => Promise<void>
   getCachedProfiles?: (
     pubkeys: string[]
@@ -731,7 +734,7 @@ async function loadCachedProducts(
   authorPubkeys?: readonly string[]
 ): Promise<CachedProduct[]> {
   if (testOverrides.getCachedProducts) {
-    return await testOverrides.getCachedProducts(merchantPubkey)
+    return await testOverrides.getCachedProducts(merchantPubkey, authorPubkeys)
   }
 
   if (merchantPubkey) {
