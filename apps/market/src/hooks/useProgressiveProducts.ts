@@ -529,6 +529,8 @@ export function useProgressiveProducts(
     }
 
     let cancelled = false
+    let flushHandle: number | null = null
+    let pendingResult: CommerceResult<CommerceProductRecord[]> | null = null
     const completionRead = perspectiveMarketplaceRead
     setProgressiveRead((current) => ({
       key: discoveryKey,
@@ -539,6 +541,66 @@ export function useProgressiveProducts(
       latestResult:
         current.key === discoveryKey ? current.latestResult : undefined,
     }))
+
+    // Every progressive callback delivers the full cumulative product set, so
+    // applying the latest one is equivalent to merging each delta. Coalescing
+    // to a single merge + sort + render per frame keeps the main thread free
+    // while dozens of relay callbacks land during a network pass.
+    const applyResult = (
+      result: CommerceResult<CommerceProductRecord[]>,
+      isFetching: boolean
+    ) => {
+      const incoming = toProducts(result)
+      if (incoming.length > 0) {
+        setProductAccumulator((current) => {
+          const products = mergeProducts(
+            current.key === discoveryKey ? current.products : [],
+            incoming
+          )
+          return nextProductAccumulatorState(current, {
+            key: discoveryKey,
+            catalogSource,
+            products,
+          })
+        })
+      }
+      setProgressiveRead((current) => ({
+        key: discoveryKey,
+        isFetching,
+        count: Math.max(
+          current.key === discoveryKey ? current.count : 0,
+          result.data.length
+        ),
+        meta: result.meta,
+        error: null,
+        latestResult: result,
+      }))
+    }
+
+    const flushProgress = () => {
+      flushHandle = null
+      if (cancelled || !pendingResult) return
+      const result = pendingResult
+      pendingResult = null
+      applyResult(result, true)
+    }
+    const scheduleFlush = () => {
+      if (cancelled || flushHandle !== null) return
+      flushHandle =
+        typeof requestAnimationFrame === "function"
+          ? requestAnimationFrame(flushProgress)
+          : (setTimeout(flushProgress, 16) as unknown as number)
+    }
+    const cancelScheduledFlush = () => {
+      if (flushHandle === null) return
+      if (typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(flushHandle)
+      } else {
+        clearTimeout(flushHandle)
+      }
+      flushHandle = null
+      pendingResult = null
+    }
 
     const readCatalog = async (
       readPolicy: CommerceReadPolicy
@@ -556,31 +618,8 @@ export function useProgressiveProducts(
         },
         (result) => {
           if (cancelled) return
-          const incoming = toProducts(result)
-          if (incoming.length > 0) {
-            setProductAccumulator((current) => {
-              const products = mergeProducts(
-                current.key === discoveryKey ? current.products : [],
-                incoming
-              )
-              return nextProductAccumulatorState(current, {
-                key: discoveryKey,
-                catalogSource,
-                products,
-              })
-            })
-          }
-          setProgressiveRead((current) => ({
-            key: discoveryKey,
-            isFetching: true,
-            count: Math.max(
-              current.key === discoveryKey ? current.count : 0,
-              result.data.length
-            ),
-            meta: result.meta,
-            error: null,
-            latestResult: result,
-          }))
+          pendingResult = result
+          scheduleFlush()
         }
       )
 
@@ -589,36 +628,19 @@ export function useProgressiveProducts(
       if (cancelled) return
 
       if (!completionRead) {
-        setProgressiveRead((current) => ({
-          key: discoveryKey,
-          isFetching: false,
-          count: Math.max(
-            current.key === discoveryKey ? current.count : 0,
-            fastResult.data.length
-          ),
-          meta: fastResult.meta,
-          error: null,
-          latestResult: fastResult,
-        }))
+        cancelScheduledFlush()
+        applyResult(fastResult, false)
         return
       }
 
       const completionResult = await readCatalog(CATALOG_COMPLETION_READ_POLICY)
       if (cancelled) return
 
-      setProgressiveRead((current) => ({
-        key: discoveryKey,
-        isFetching: false,
-        count: Math.max(
-          current.key === discoveryKey ? current.count : 0,
-          completionResult.data.length
-        ),
-        meta: completionResult.meta,
-        error: null,
-        latestResult: completionResult,
-      }))
+      cancelScheduledFlush()
+      applyResult(completionResult, false)
     })().catch((error) => {
       if (cancelled) return
+      cancelScheduledFlush()
       setProgressiveRead((current) => ({
         key: discoveryKey,
         isFetching: false,
@@ -632,6 +654,7 @@ export function useProgressiveProducts(
 
     return () => {
       cancelled = true
+      cancelScheduledFlush()
     }
   }, [
     catalogAuthorKey,
