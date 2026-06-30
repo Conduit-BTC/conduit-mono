@@ -30,13 +30,17 @@ import {
 import { getDefaultMarketPerspectiveFollowPubkeys } from "../lib/defaultMarketPerspective"
 import { getProductSourceRelayHintsByPubkey } from "../lib/clientHydration"
 
+// Keep the live fanout narrow: 32 relays x fast+completion passes opens far
+// more sockets than the catalog needs and floods the browser with connection
+// errors against dead NIP-65 hint relays. A small fast set paints quickly; the
+// completion pass widens modestly for coverage.
 const PERSPECTIVE_STREAM_READ_POLICY: CommerceReadPolicy = {
-  maxRelays: 32,
+  maxRelays: 8,
   connectTimeoutMs: 1_200,
   fetchTimeoutMs: 2_500,
 }
 const CATALOG_COMPLETION_READ_POLICY: CommerceReadPolicy = {
-  maxRelays: 32,
+  maxRelays: 12,
   connectTimeoutMs: 4_000,
   fetchTimeoutMs: 8_000,
 }

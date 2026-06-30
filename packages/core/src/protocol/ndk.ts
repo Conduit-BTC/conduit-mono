@@ -176,18 +176,21 @@ function resolveFanoutRelayUrls(options: FetchEventsFanoutOptions): string[] {
     .filter(Boolean)
     .filter((url, index, all) => all.indexOf(url) === index)
 
-  return options.skipHealthFilter
-    ? dedupedUrls
-    : (() => {
-        const { healthy, parked } = partitionByHealth(dedupedUrls)
-        // If health filter would leave no relays, fall back to the full set
-        // so a transient cooldown does not silently break reads.
-        return healthy.length > 0
-          ? healthy
-          : parked.length > 0
-            ? dedupedUrls
-            : []
-      })()
+  if (options.skipHealthFilter) return dedupedUrls
+
+  const { healthy, parked } = partitionByHealth(dedupedUrls)
+  if (healthy.length > 0) return healthy
+  if (parked.length === 0) return []
+
+  // Everything is parked (e.g. every relay is failing right now). Re-trying the
+  // full, hint-expanded set on every read floods the browser console with
+  // connection errors, so fall back to a small known-good subset (the canonical
+  // default relays that are in scope) and let health recovery widen again.
+  const defaultRelaySet = new Set(
+    config.defaultRelays.map((url) => url.trim()).filter(Boolean)
+  )
+  const cappedFallback = dedupedUrls.filter((url) => defaultRelaySet.has(url))
+  return cappedFallback.length > 0 ? cappedFallback : dedupedUrls.slice(0, 4)
 }
 
 function mergeEventsInto(
