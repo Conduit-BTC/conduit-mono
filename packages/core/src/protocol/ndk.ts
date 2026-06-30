@@ -183,9 +183,14 @@ function resolveFanoutRelayUrls(options: FetchEventsFanoutOptions): string[] {
   if (parked.length === 0) return []
 
   // Everything is parked (e.g. every relay is failing right now). Re-trying the
-  // full, hint-expanded set on every read floods the browser console with
-  // connection errors, so fall back to a small known-good subset (the canonical
-  // default relays that are in scope) and let health recovery widen again.
+  // global fallback set on every read floods the browser console with
+  // connection errors, so cap that implicit path. For explicit caller-provided
+  // relay plans, keep the requested set intact so author-, recipient-, and
+  // inbox-scoped reads do not get silently redirected onto unrelated default
+  // relays (which would turn a transient transport failure into a false
+  // negative read).
+  if (options.relayUrls && options.relayUrls.length > 0) return dedupedUrls
+
   const defaultRelaySet = new Set(
     config.defaultRelays.map((url) => url.trim()).filter(Boolean)
   )

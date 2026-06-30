@@ -5,6 +5,7 @@ import {
   __setCommerceTestOverrides,
   cacheParsedOrderMessage,
   getBuyerConversationList,
+  getCachedMarketplaceProducts,
   getConversationDetail,
   getMarketplaceProducts,
   getMarketplaceProductsProgressive,
@@ -223,6 +224,35 @@ describe("commerce gateway", () => {
     expect(result.meta.stale).toBe(true)
     expect(result.data).toHaveLength(1)
     expect(result.data[0]?.product.title).toBe("Cached Item")
+  })
+
+  it("scopes cached marketplace reads to the requested author set", async () => {
+    for (const pubkey of ["merchant-a", "merchant-b", "merchant-c"]) {
+      cachedProducts.push({
+        id: `30402:${pubkey}:item`,
+        pubkey,
+        title: `Item ${pubkey}`,
+        summary: "",
+        price: 10,
+        currency: "USD",
+        type: "simple",
+        visibility: "public",
+        images: [{ url: `https://example.com/${pubkey}.png` }],
+        tags: [],
+        createdAt: FIXED_NOW - 5_000,
+        updatedAt: FIXED_NOW - 5_000,
+        cachedAt: FIXED_NOW - 1_000,
+      })
+    }
+
+    const result = await getCachedMarketplaceProducts({
+      authorPubkeys: ["merchant-a", "merchant-b"],
+    })
+
+    expect(result.data.map((record) => record.product.pubkey).sort()).toEqual([
+      "merchant-a",
+      "merchant-b",
+    ])
   })
 
   it("keeps merchant storefront reads deletion-aware", async () => {
