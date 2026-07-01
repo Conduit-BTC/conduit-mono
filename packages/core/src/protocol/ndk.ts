@@ -144,7 +144,6 @@ type RawNostrEvent = {
   sig: string
 }
 
-const MAX_EVENTS_PER_RELAY_READ = 2000
 let relayReadSubCounter = 0
 
 function computeEventId(event: RawNostrEvent): string {
@@ -331,7 +330,6 @@ function readRelayEvents(
     conn.subs.set(subId, {
       onEvent: (raw) => {
         events.push(raw)
-        if (events.length >= MAX_EVENTS_PER_RELAY_READ) finish(true)
       },
       end: (reason) => finish(reason === "eose" ? true : events.length > 0),
     })
