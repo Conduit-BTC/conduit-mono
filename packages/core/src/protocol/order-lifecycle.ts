@@ -1,4 +1,10 @@
-import { db, type OrderLifecycle, type OrderLifecyclePhase } from "../db"
+import {
+  db,
+  type OrderCheckoutMode,
+  type OrderLifecycle,
+  type OrderLifecyclePhase,
+  type OrderPublicZapSigner,
+} from "../db"
 
 /**
  * Durable buyer-side order lifecycle repository (CND-122).
@@ -10,6 +16,20 @@ import { db, type OrderLifecycle, type OrderLifecyclePhase } from "../db"
  * Privacy: callers must never forward sensitive fields (invoice, preimage,
  * shipping address, contact note) to telemetry. This module performs no logging.
  */
+
+export function getOrderPublicZapSigner(
+  mode: OrderCheckoutMode
+): OrderPublicZapSigner | null {
+  if (mode === "anonymous_public_zap") return "anon"
+  if (mode === "public_zap_as_shopper" || mode === "public_zap") {
+    return "shopper"
+  }
+  return null
+}
+
+export function isOrderPublicZapMode(mode: OrderCheckoutMode): boolean {
+  return getOrderPublicZapSigner(mode) !== null
+}
 
 /**
  * Derive the coarse list-filtering bucket from the granular status fields.

@@ -210,10 +210,14 @@ export interface StoredPaymentAttempt {
 
 /** How the buyer initiated payment for this order. */
 export type OrderCheckoutMode =
+  | "anonymous_public_zap"
+  | "public_zap_as_shopper"
   | "public_zap"
   | "private_checkout"
   | "pay_later"
   | "external_wallet"
+
+export type OrderPublicZapSigner = "anon" | "shopper"
 
 /**
  * Buyer-input address validity (CND-127). Distinct from
@@ -274,6 +278,8 @@ export type OrderLifecyclePhase =
 
 export interface OrderLifecycleItem {
   productId: string
+  /** Local product-title snapshot for buyer order display. Public listing data. */
+  title?: string
   quantity: number
   priceAtPurchase: number
   currency: string
@@ -303,6 +309,7 @@ export interface OrderLifecycle {
   buyerPubkey: string
   merchantPubkey: string
   checkoutMode: OrderCheckoutMode
+  publicZapSigner?: OrderPublicZapSigner
   merchantLightningAddress?: string
 
   items: OrderLifecycleItem[]

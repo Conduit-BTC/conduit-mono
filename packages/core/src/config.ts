@@ -91,6 +91,8 @@ export interface ConduitConfig {
   nip89MerchantPubkey: string | null
   nip89MarketDTag: string
   nip89MerchantDTag: string
+  anonZapSignerUrl: string | null
+  anonZapSignerPubkey: string | null
 }
 
 // Vite only statically replaces direct property access (import.meta.env.VITE_FOO).
@@ -110,6 +112,8 @@ function getViteEnv(): {
   nip89MerchantPubkey: string
   nip89MarketDTag: string
   nip89MerchantDTag: string
+  anonZapSignerUrl: string
+  anonZapSignerPubkey: string
 } {
   if (typeof import.meta !== "undefined" && import.meta.env) {
     return {
@@ -126,6 +130,8 @@ function getViteEnv(): {
       nip89MerchantPubkey: import.meta.env.VITE_NIP89_MERCHANT_PUBKEY ?? "",
       nip89MarketDTag: import.meta.env.VITE_NIP89_MARKET_D_TAG ?? "",
       nip89MerchantDTag: import.meta.env.VITE_NIP89_MERCHANT_D_TAG ?? "",
+      anonZapSignerUrl: import.meta.env.VITE_ANON_ZAP_SIGNER_URL ?? "",
+      anonZapSignerPubkey: import.meta.env.VITE_ANON_ZAP_SIGNER_PUBKEY ?? "",
     }
   }
   return {
@@ -142,6 +148,8 @@ function getViteEnv(): {
     nip89MerchantPubkey: "",
     nip89MarketDTag: "",
     nip89MerchantDTag: "",
+    anonZapSignerUrl: "",
+    anonZapSignerPubkey: "",
   }
 }
 
@@ -353,6 +361,8 @@ export const config: ConduitConfig = {
   nip89MerchantPubkey: env.nip89MerchantPubkey.trim() || null,
   nip89MarketDTag: env.nip89MarketDTag.trim() || "conduit-market",
   nip89MerchantDTag: env.nip89MerchantDTag.trim() || "conduit-merchant",
+  anonZapSignerUrl: env.anonZapSignerUrl.trim() || null,
+  anonZapSignerPubkey: env.anonZapSignerPubkey.trim() || null,
 }
 
 logRelayDebugConfig({

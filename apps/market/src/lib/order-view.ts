@@ -160,14 +160,16 @@ export function buildOrderViewModel(
   const items: OrderViewItem[] = lifecycle
     ? lifecycle.items.map((item) => ({
         productId: item.productId,
-        displayTitle: deriveItemDisplayTitle(item.productId),
+        displayTitle:
+          item.title?.trim() || deriveItemDisplayTitle(item.productId),
         quantity: item.quantity,
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,
       }))
     : (summary?.items ?? []).map((item) => ({
         productId: item.productId,
-        displayTitle: deriveItemDisplayTitle(item.productId),
+        displayTitle:
+          item.title?.trim() || deriveItemDisplayTitle(item.productId),
         quantity: item.quantity,
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,

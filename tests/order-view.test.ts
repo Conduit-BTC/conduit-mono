@@ -62,6 +62,23 @@ describe("buildOrderViewModel", () => {
     expect(vm.paymentStatus).toBe("paid")
   })
 
+  it("prefers the lifecycle product title snapshot over a d-tag fallback", () => {
+    const vm = vmFromLifecycle({
+      items: [
+        {
+          productId:
+            "30402:merchant:cnd26-publicnd26-public-product-ref-testc-product-ref-test-ec3t68",
+          title: "CND26 Public Product Ref Test",
+          quantity: 1,
+          priceAtPurchase: 111,
+          currency: "SATS",
+        },
+      ],
+    })
+
+    expect(vm.items[0].displayTitle).toBe("CND26 Public Product Ref Test")
+  })
+
   it("derives statuses from conversation messages when no lifecycle exists", () => {
     const vm = buildOrderViewModel({
       orderId: "order-2",

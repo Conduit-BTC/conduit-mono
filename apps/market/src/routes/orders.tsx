@@ -6,6 +6,7 @@ import {
   formatNpub,
   formatPubkey,
   getProductPriceDisplay,
+  getOrderPublicZapSigner,
   listOrderLifecycles,
   normalizeLightningInvoice,
   pubkeyToNpub,
@@ -65,8 +66,24 @@ import {
   subscribeOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
+import type { CheckoutZapMode } from "../lib/checkout-payment"
 
 const ORDERS_SEARCH_DEFAULT: { order?: string } = {}
+
+function getRetryZapMode(lifecycle: OrderLifecycle): CheckoutZapMode {
+  if (
+    lifecycle.checkoutMode === "anonymous_public_zap" ||
+    lifecycle.checkoutMode === "public_zap_as_shopper" ||
+    lifecycle.checkoutMode === "private_checkout"
+  ) {
+    return lifecycle.checkoutMode
+  }
+  const signer =
+    lifecycle.publicZapSigner ?? getOrderPublicZapSigner(lifecycle.checkoutMode)
+  if (signer === "anon") return "anonymous_public_zap"
+  if (signer === "shopper") return "public_zap_as_shopper"
+  return "private_checkout"
+}
 
 export const Route = createFileRoute("/orders")({
   validateSearch: (search: Record<string, unknown>): { order?: string } => {
@@ -593,10 +610,7 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
       buyerPubkey: pubkey,
       merchantPubkey: row.merchantPubkey,
       merchantLud16: lc.merchantLightningAddress ?? null,
-      visibility:
-        lc.checkoutMode === "private_checkout"
-          ? "private_checkout"
-          : "public_zap",
+      zapMode: getRetryZapMode(lc),
       zapContent: lc.zapContent ?? "",
       totalSats: lc.totalSats,
       totalMsats: lc.totalMsats,

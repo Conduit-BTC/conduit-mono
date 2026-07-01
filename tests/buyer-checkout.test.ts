@@ -20,11 +20,14 @@ import {
 import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
 import { getKnownWalletPaymentConstraint } from "../apps/market/src/lib/wallet-readiness"
 import {
+  ANON_PUBLIC_ZAP_DEFAULT_CONTENT,
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
   buildPendingCheckoutManualInvoice,
   buildZapRequestContent,
   CHECKOUT_QUOTE_MAX_AGE_MS,
+  getCheckoutPublicZapSigner,
+  getCheckoutZapVisibility,
   getLnurlReadyForCheckoutPayment,
   getCheckoutShippingCost,
   requestCheckoutLnurlInvoice,
@@ -32,6 +35,7 @@ import {
   getPaymentTrackerHeadline,
   getPaymentTrackerOutcome,
   getPaymentTrackerRows,
+  isCheckoutPublicZapMode,
   parseRelayFailureMessage,
   type PaymentTrackerInput,
 } from "../apps/market/src/lib/checkout-payment"
@@ -986,6 +990,37 @@ describe("checkout payment helpers", () => {
 
     expect(content).toBe("Supported this merchant on Conduit ⚡")
     expect(content).not.toContain("Private Product Name")
+  })
+
+  it("uses generic anonymous zap content without product or order details", () => {
+    const content = buildDefaultZapContent({
+      items: [
+        cartItem({
+          title: "Private Product Name",
+          quantity: 2,
+        }),
+      ],
+      merchantName: "Merchant",
+      mode: "anonymous_public_zap",
+    })
+
+    expect(content).toBe(ANON_PUBLIC_ZAP_DEFAULT_CONTENT)
+    expect(content).not.toContain("Private Product Name")
+    expect(content).not.toContain("2")
+    expect(content).not.toContain("order")
+  })
+
+  it("maps checkout zap modes to visibility and signer attribution", () => {
+    expect(getCheckoutZapVisibility("anonymous_public_zap")).toBe("public_zap")
+    expect(getCheckoutPublicZapSigner("anonymous_public_zap")).toBe("anon")
+    expect(getCheckoutZapVisibility("public_zap_as_shopper")).toBe("public_zap")
+    expect(getCheckoutPublicZapSigner("public_zap_as_shopper")).toBe("shopper")
+    expect(getCheckoutZapVisibility("private_checkout")).toBe(
+      "private_checkout"
+    )
+    expect(getCheckoutPublicZapSigner("private_checkout")).toBeNull()
+    expect(isCheckoutPublicZapMode("anonymous_public_zap")).toBe(true)
+    expect(isCheckoutPublicZapMode("private_checkout")).toBe(false)
   })
 
   it("uses empty zap content for private checkout", () => {

@@ -128,6 +128,7 @@ export type ShippingAddressSchema = z.infer<typeof shippingAddressSchema>
  */
 export const orderItemSchema = z.object({
   productId: z.string(),
+  title: z.string().max(200).optional(),
   quantity: z.number().int().min(1),
   priceAtPurchase: z.number().min(0),
   currency: z.string(),

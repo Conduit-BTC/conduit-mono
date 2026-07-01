@@ -23,6 +23,7 @@ import {
   config,
   formatNpub,
   getProfileDisplayLabel,
+  pubkeyToNpub,
   useAuth,
   useProfile,
 } from "@conduit/core"
@@ -283,7 +284,8 @@ function UserMenu({ className }: { className?: string } = {}) {
     chars: 6,
   })
   const npub = formatNpub(pubkey, 12)
-  const fullNpub = formatNpub(pubkey)
+  const displayNpub = formatNpub(pubkey)
+  const fullNpub = pubkeyToNpub(pubkey)
   const setupIncomplete =
     !readiness.setupComplete && readiness.missingAreas.length > 0
 
@@ -346,7 +348,7 @@ function UserMenu({ className }: { className?: string } = {}) {
           <div className="text-sm font-semibold">{displayName}</div>
           <div className="mt-1 flex items-start gap-2">
             <div className="min-w-0 flex-1 break-all text-xs leading-5 text-[var(--text-secondary)]">
-              {fullNpub}
+              {displayNpub}
             </div>
             <button
               type="button"

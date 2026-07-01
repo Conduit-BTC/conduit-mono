@@ -3,6 +3,7 @@ import { Badge } from "./Badge"
 
 type OrderItem = {
   productId: string
+  title?: string
   quantity: number
   priceAtPurchase: number
   currency: string
@@ -108,20 +109,26 @@ export function OrderDetailCard({
             </div>
             <div className="space-y-1">
               {items.map((item, i) => {
+                const itemTitle = item.title?.trim()
                 return (
                   <div
                     key={`${item.productId}-${i}`}
-                    className="flex items-center justify-between text-sm"
+                    className="flex items-start justify-between gap-3 text-sm"
                   >
-                    <span className="text-[var(--text-primary)]">
-                      <span className="font-mono text-xs">
-                        {item.productId}
+                    <span className="min-w-0 text-[var(--text-primary)]">
+                      <span className={itemTitle ? "" : "font-mono text-xs"}>
+                        {itemTitle || item.productId}
                       </span>
-                      <span className="mx-1 text-[var(--text-secondary)]">
+                      <span className="ml-1 text-[var(--text-secondary)]">
                         x{item.quantity}
                       </span>
+                      {itemTitle && (
+                        <span className="mt-1 block truncate font-mono text-[11px] text-[var(--text-muted)]">
+                          {item.productId}
+                        </span>
+                      )}
                     </span>
-                    <span className="text-[var(--text-secondary)]">
+                    <span className="shrink-0 text-[var(--text-secondary)]">
                       {formatOrderAmount(item.priceAtPurchase, item.currency)}
                     </span>
                   </div>
