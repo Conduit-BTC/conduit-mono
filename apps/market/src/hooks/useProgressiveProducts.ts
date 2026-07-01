@@ -456,8 +456,8 @@ export function useProgressiveProducts(
     [cachedQuery.data]
   )
   const canUseCarriedProducts =
-    catalogSource === "combined" &&
-    productAccumulator.catalogSource === "combined" &&
+    perspectiveMarketplaceRead &&
+    productAccumulator.catalogSource === catalogSource &&
     productAccumulator.products.length > 0
   const accumulatedProducts =
     productAccumulator.key === discoveryKey || canUseCarriedProducts
@@ -467,8 +467,8 @@ export function useProgressiveProducts(
   useEffect(() => {
     setProductAccumulator((current) => {
       const products =
-        catalogSource === "combined" &&
-        current.catalogSource === "combined" &&
+        perspectiveMarketplaceRead &&
+        current.catalogSource === catalogSource &&
         current.products.length > 0
           ? current.products
           : []
@@ -495,7 +495,7 @@ export function useProgressiveProducts(
             latestResult: undefined,
           }
     )
-  }, [catalogSource, discoveryKey])
+  }, [catalogSource, discoveryKey, perspectiveMarketplaceRead])
 
   useEffect(() => {
     if (cachedProducts.length === 0) return
