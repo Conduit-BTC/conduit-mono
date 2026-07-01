@@ -315,7 +315,7 @@ function readRelayEvents(
       if (connectTimer) clearTimeout(connectTimer)
       if (fetchTimer) clearTimeout(fetchTimer)
       conn.subs.delete(subId)
-      if (!conn.closed && conn.isOpen) {
+      if (!conn.closed && conn.ws.readyState === WebSocket.OPEN) {
         try {
           conn.ws.send(JSON.stringify(["CLOSE", subId]))
         } catch {
@@ -345,7 +345,7 @@ function readRelayEvents(
           connectTimer = undefined
         }
         if (settled) return
-        if (conn.closed) {
+        if (conn.closed || conn.ws.readyState !== WebSocket.OPEN) {
           finish(false)
           return
         }
