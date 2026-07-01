@@ -7,11 +7,18 @@ import {
   validateShippingFields,
   isFastCheckoutEligible,
   getFastCheckoutUnavailableReasons,
+  getShippingPhoneDescribedBy,
   getShippingCheckoutState,
+  getShippingRegionRequirement,
   getShippingStepBlockingMessage,
+  sanitizeShippingPhoneInput,
+  SHIPPING_PHONE_ERROR_ID,
+  SHIPPING_PHONE_HELP_COPY,
+  SHIPPING_PHONE_HELP_ID,
   type ShippingFormState,
 } from "../apps/market/src/lib/checkout-validation"
 import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
+import { getKnownWalletPaymentConstraint } from "../apps/market/src/lib/wallet-readiness"
 import {
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
@@ -74,6 +81,41 @@ function validShipping(
 
 // ─── validateShippingFields ───────────────────────────────────────────────────
 
+describe("checkout phone helper copy", () => {
+  it("links the optional phone input to the international calling-code hint", () => {
+    expect(SHIPPING_PHONE_HELP_ID).toBe("ship-phone-help")
+    expect(SHIPPING_PHONE_ERROR_ID).toBe("ship-phone-error")
+    expect(getShippingPhoneDescribedBy(false)).toBe(SHIPPING_PHONE_HELP_ID)
+    expect(getShippingPhoneDescribedBy(true)).toBe(
+      `${SHIPPING_PHONE_HELP_ID} ${SHIPPING_PHONE_ERROR_ID}`
+    )
+    expect(SHIPPING_PHONE_HELP_COPY).toBe(
+      "Use + country code if this number is outside the delivery country."
+    )
+  })
+})
+
+describe("checkout region helper copy", () => {
+  it("shows country-specific required region labels without changing advisory validation", () => {
+    expect(getShippingRegionRequirement("US")).toEqual({
+      required: true,
+      label: "State",
+    })
+    expect(getShippingRegionRequirement("CA")).toEqual({
+      required: true,
+      label: "Province / Territory",
+    })
+    expect(getShippingRegionRequirement("AE")).toEqual({
+      required: true,
+      label: "Emirate",
+    })
+    expect(getShippingRegionRequirement("GB")).toEqual({
+      required: false,
+      label: "State / Province / Region",
+    })
+  })
+})
+
 describe("validateShippingFields", () => {
   it("returns no errors for a fully valid form", () => {
     expect(validateShippingFields(validShipping())).toEqual([])
@@ -124,8 +166,67 @@ describe("validateShippingFields", () => {
   })
 
   it("accepts lowercase country code (normalised internally)", () => {
-    const errors = validateShippingFields(validShipping({ country: "gb" }))
+    const errors = validateShippingFields(
+      validShipping({
+        country: "gb",
+        street: "10 Downing St",
+        city: "London",
+        state: "",
+        postalCode: "SW1A 2AA",
+      })
+    )
     expect(errors.some((e) => e.field === "country")).toBe(false)
+  })
+
+  it("does not block when a profiled country is missing region confidence", () => {
+    const errors = validateShippingFields(validShipping({ state: "" }))
+    expect(errors.some((e) => e.field === "state")).toBe(false)
+  })
+
+  it("does not block when an unprofiled required-region country is missing region confidence", () => {
+    const errors = validateShippingFields(
+      validShipping({
+        country: "AE",
+        city: "Dubai",
+        state: "",
+        postalCode: "00000",
+      })
+    )
+    expect(errors.some((e) => e.field === "state")).toBe(false)
+  })
+
+  it("does not block postal/region mismatches", () => {
+    const errors = validateShippingFields(
+      validShipping({ postalCode: "90210", city: "Beverly Hills", state: "TX" })
+    )
+    expect(errors.some((e) => e.field === "state")).toBe(false)
+  })
+
+  it("does not block known city/postal mismatches", () => {
+    const errors = validateShippingFields(
+      validShipping({
+        postalCode: "90210",
+        city: "Costa Banana",
+        state: "CA",
+      })
+    )
+    expect(errors.some((e) => e.field === "city")).toBe(false)
+  })
+
+  it("does not block street addresses without building numbers", () => {
+    const errors = validateShippingFields(
+      validShipping({ street: "Main Street" })
+    )
+    expect(errors.some((e) => e.field === "street")).toBe(false)
+  })
+
+  it("rejects obvious street junk", () => {
+    const errors = validateShippingFields(
+      validShipping({
+        street: "3400 Avenue of the Arts12312!!! 1<<CC>> ,.,s,d,,",
+      })
+    )
+    expect(errors.some((e) => e.field === "street")).toBe(true)
   })
 
   it("rejects malformed email when provided", () => {
@@ -160,6 +261,12 @@ describe("validateShippingFields", () => {
 
   it("allows blank phone (optional field)", () => {
     expect(validateShippingFields(validShipping({ phone: "" }))).toEqual([])
+  })
+
+  it("sanitizes pasted phone input to international-safe characters", () => {
+    expect(sanitizeShippingPhoneInput("abc +1 (800) 555-1234 ext nope")).toBe(
+      "+1 (800) 555-1234"
+    )
   })
 
   it("accumulates multiple errors at once", () => {
@@ -425,9 +532,117 @@ describe("isFastCheckoutEligible", () => {
       "Shipping cost is coordinated with the merchant, so direct payment is disabled.",
     ])
   })
+
+  it("blocks fast checkout when address validity has hard errors", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        addressValidForDirectPayment: false,
+      })
+    ).toEqual([
+      "Enter a locally consistent delivery address before direct payment.",
+    ])
+  })
+
+  it("allows fast checkout when address validity only has warnings", () => {
+    expect(
+      isFastCheckoutEligible({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        shippingEligible: true,
+        addressValidForDirectPayment: true,
+      })
+    ).toBe(true)
+  })
 })
 
 // ─── checkout payment helpers ────────────────────────────────────────────────
+
+describe("wallet payment readiness", () => {
+  it("blocks automatic NWC payment when the known balance is too low", () => {
+    expect(
+      getKnownWalletPaymentConstraint({
+        amountMsats: 25_000,
+        methods: ["pay_invoice", "get_balance"],
+        balance: {
+          status: "available",
+          balanceMsats: 20_000,
+          fetchedAt: Date.now(),
+          error: null,
+        },
+        budget: emptyWalletBudget(),
+      })
+    ).toMatchObject({
+      code: "insufficient_balance",
+      reason: "Connected wallet balance is below this invoice total.",
+    })
+  })
+
+  it("blocks automatic NWC payment when the known budget is too low", () => {
+    expect(
+      getKnownWalletPaymentConstraint({
+        amountMsats: 25_000,
+        methods: ["pay_invoice", "get_budget"],
+        balance: emptyWalletBalance(),
+        budget: {
+          status: "available",
+          usedMsats: 10_000,
+          totalMsats: 30_000,
+          remainingMsats: 20_000,
+          renewsAt: null,
+          renewalPeriod: "daily",
+          fetchedAt: Date.now(),
+          error: null,
+        },
+      })
+    ).toMatchObject({
+      code: "budget_exhausted",
+      reason: "Connected wallet budget is below this invoice total.",
+    })
+  })
+
+  it("does not block automatic NWC payment when budget support is unavailable", () => {
+    expect(
+      getKnownWalletPaymentConstraint({
+        amountMsats: 25_000,
+        methods: ["pay_invoice", "get_budget"],
+        balance: emptyWalletBalance(),
+        budget: {
+          ...emptyWalletBudget(),
+          status: "unavailable",
+        },
+      })
+    ).toBeNull()
+  })
+
+  it("does not block when balance and budget cover the invoice", () => {
+    expect(
+      getKnownWalletPaymentConstraint({
+        amountMsats: 25_000,
+        methods: ["pay_invoice", "get_balance", "get_budget"],
+        balance: {
+          status: "available",
+          balanceMsats: 50_000,
+          fetchedAt: Date.now(),
+          error: null,
+        },
+        budget: {
+          status: "available",
+          usedMsats: 10_000,
+          totalMsats: 60_000,
+          remainingMsats: 50_000,
+          renewsAt: null,
+          renewalPeriod: "daily",
+          fetchedAt: Date.now(),
+          error: null,
+        },
+      })
+    ).toBeNull()
+  })
+})
 
 function cartItem(overrides: Partial<CartItem> = {}): CartItem {
   return {
@@ -438,6 +653,28 @@ function cartItem(overrides: Partial<CartItem> = {}): CartItem {
     currency: "SATS",
     quantity: 1,
     ...overrides,
+  }
+}
+
+function emptyWalletBalance() {
+  return {
+    status: "unchecked" as const,
+    balanceMsats: null,
+    fetchedAt: null,
+    error: null,
+  }
+}
+
+function emptyWalletBudget() {
+  return {
+    status: "unchecked" as const,
+    usedMsats: null,
+    totalMsats: null,
+    remainingMsats: null,
+    renewsAt: null,
+    renewalPeriod: null,
+    fetchedAt: null,
+    error: null,
   }
 }
 
@@ -1047,6 +1284,41 @@ describe("payCheckoutInvoice", () => {
     })
     expect(result.reason).toContain("NWC relay unreachable")
     expect(result.reason).not.toContain(connection.secret)
+  })
+
+  it("returns manual fallback when NWC reports a budget or balance limit", async () => {
+    const result = await payCheckoutInvoice(
+      {
+        invoice: "lnbc1test",
+        amountMsats: 1000,
+        walletConnection: connection,
+        tryNwc: true,
+        timeoutMs: 60_000,
+        appId: "market",
+      },
+      {
+        nwcSessionPayInvoice: mock(async () => ({
+          status: "wallet_error" as const,
+          phase: "after_publish" as const,
+          reason: "QUOTA_EXCEEDED: wallet budget exceeded",
+        })) as never,
+        hasWebLN: () => false,
+        weblnSendPayment: mock(async () => {
+          throw new Error("should not use WebLN")
+        }) as never,
+      }
+    )
+
+    expect(result).toMatchObject({
+      status: "manual_required",
+      diagnostics: [
+        {
+          code: "permission_or_budget",
+          safeManualFallback: true,
+        },
+      ],
+    })
+    expect(result.reason).toContain("Wallet app connection rejected payment")
   })
 
   it("does not fall back after an ambiguous NWC request failure", async () => {

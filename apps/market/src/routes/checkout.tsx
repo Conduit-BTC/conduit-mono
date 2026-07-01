@@ -1,4 +1,6 @@
 import {
+  AlertCircle,
+  AlertTriangle,
   Check,
   KeyRound,
   LoaderCircle,
@@ -24,7 +26,6 @@ import {
   hasWebLN,
   getNdk,
   getShippingOptions,
-  isAddressValidityBlocking,
   normalizePubkey,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
@@ -58,7 +59,11 @@ import {
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
-import { useWallet } from "../hooks/useWallet"
+import {
+  useWallet,
+  type WalletBalanceState,
+  type WalletBudgetState,
+} from "../hooks/useWallet"
 import { requireAuth } from "../lib/auth"
 import {
   getCartShippingDestinationEligibility,
@@ -73,7 +78,13 @@ import {
   getFastCheckoutUnavailableReasons,
   getShippingCheckoutState,
   getShippingStepBlockingMessage,
+  getShippingPhoneDescribedBy,
+  getShippingRegionRequirement,
   getValidationErrorFields,
+  sanitizeShippingPhoneInput,
+  SHIPPING_PHONE_ERROR_ID,
+  SHIPPING_PHONE_HELP_COPY,
+  SHIPPING_PHONE_HELP_ID,
   shippingFieldLabel,
   validateShippingFields,
   type ShippingFormState,
@@ -97,6 +108,12 @@ import {
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
 import { getProductPriceDisplay } from "../lib/pricing"
+import {
+  formatBalanceFreshness,
+  formatWalletMsatsAsSats,
+  getKnownWalletPaymentConstraint,
+  type WalletPaymentConstraint,
+} from "../lib/wallet-readiness"
 
 type CheckoutStep =
   | "shipping"
@@ -138,6 +155,24 @@ const DEFAULT_SHIPPING_FORM: ShippingFormState = {
   name: "",
   phone: "",
   email: "",
+}
+
+const SHIPPING_VALIDATION_FIELDS: ShippingFieldKey[] = [
+  "country",
+  "firstName",
+  "lastName",
+  "street",
+  "postalCode",
+  "city",
+  "state",
+  "phone",
+  "email",
+]
+
+function isValidationField(
+  field: keyof ShippingFormState
+): field is ShippingFieldKey {
+  return SHIPPING_VALIDATION_FIELDS.includes(field as ShippingFieldKey)
 }
 
 const COUNTRY_COMBOBOX_OPTIONS = SHIPPING_COUNTRIES.map((country) => ({
@@ -207,6 +242,89 @@ function CheckIcon({ className = "h-4 w-4" }: { className?: string }) {
 
 function SpinnerIcon({ className = "h-5 w-5" }: { className?: string }) {
   return <LoaderCircle className={className} />
+}
+
+function CheckoutWalletReadiness({
+  balance,
+  budget,
+  constraint,
+}: {
+  balance: WalletBalanceState
+  budget: WalletBudgetState
+  constraint: WalletPaymentConstraint | null
+}) {
+  const balanceValue =
+    balance.status === "available" && balance.balanceMsats !== null
+      ? `${formatWalletMsatsAsSats(balance.balanceMsats)} sats`
+      : balance.status === "checking"
+        ? "Checking..."
+        : balance.status === "error"
+          ? "Unable to refresh"
+          : balance.status === "unavailable"
+            ? "Not advertised"
+            : "Not checked yet"
+  const balanceFreshness = formatBalanceFreshness(balance.fetchedAt)
+  const budgetValue =
+    budget.status === "available" && budget.remainingMsats !== null
+      ? `${formatWalletMsatsAsSats(budget.remainingMsats)} sats remaining`
+      : budget.status === "checking"
+        ? "Checking..."
+        : budget.status === "error"
+          ? "Unable to refresh"
+          : budget.status === "unavailable"
+            ? null
+            : "Not checked yet"
+
+  return (
+    <div className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+      <div className="grid gap-3 text-xs sm:grid-cols-2">
+        <div>
+          <div className="font-medium text-[var(--text-muted)]">
+            Wallet balance
+          </div>
+          <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">
+            {balanceValue}
+          </div>
+          {balanceFreshness && (
+            <div className="mt-1 text-[var(--text-muted)]">
+              {balanceFreshness}
+            </div>
+          )}
+        </div>
+        {budgetValue && (
+          <div>
+            <div className="font-medium text-[var(--text-muted)]">
+              App budget
+            </div>
+            <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">
+              {budgetValue}
+            </div>
+            {budget.fetchedAt && (
+              <div className="mt-1 text-[var(--text-muted)]">
+                {formatBalanceFreshness(budget.fetchedAt)}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      {constraint && (
+        <div className="mt-4 rounded-xl border border-[color-mix(in_srgb,var(--warning)_55%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,transparent)] p-3 text-xs leading-5 text-[var(--text-secondary)]">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--warning)]" />
+            <div>
+              <div className="font-medium text-[var(--warning)]">
+                Automatic wallet payment will be skipped
+              </div>
+              <div className="mt-1">
+                {constraint.detail} We&apos;ll send the order and show a
+                Lightning invoice so you can pay manually.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function CheckoutBreadcrumb({
@@ -545,7 +663,7 @@ function CheckoutPage() {
   const search = Route.useSearch()
   const navigate = useNavigate()
   const btcUsdRateQuery = useBtcUsdRate()
-  const wallet = useWallet()
+  const wallet = useWallet({ refreshBalance: true })
 
   const [step, setStep] = useState<CheckoutStep>("shipping")
   const [shipping, setShipping] = useState<ShippingFormState>(() =>
@@ -557,6 +675,9 @@ function CheckoutPage() {
   const [shippingErrors, setShippingErrors] = useState<
     ShippingValidationError[]
   >([])
+  const [touchedShippingFields, setTouchedShippingFields] = useState<
+    Set<ShippingFieldKey>
+  >(() => new Set())
   const [sentOrderId, setSentOrderId] = useState<string | null>(null)
   const [showSentGlow, setShowSentGlow] = useState(false)
   // paidNotice carries any non-critical delivery notice from the order publish.
@@ -581,6 +702,10 @@ function CheckoutPage() {
   const btcUsdRate = btcUsdRateQuery.data ?? null
   const refetchBtcUsdRate = btcUsdRateQuery.refetch
   const btcUsdRateIsFetching = btcUsdRateQuery.isFetching
+  const liveShippingErrors = useMemo(
+    () => validateShippingFields(shipping),
+    [shipping]
+  )
 
   // LNURL probe state
   const [lnurlPayAvailable, setLnurlPayAvailable] = useState(false)
@@ -669,6 +794,8 @@ function CheckoutPage() {
     () => checkoutItems.some((item) => !getPriceSats(item, btcUsdRate)),
     [btcUsdRate, checkoutItems]
   )
+  const shippingSubmitDisabled =
+    !isAllDigital && (hasUnpricedCheckoutItems || liveShippingErrors.length > 0)
 
   const merchantTrust = useMerchantTrustContext({
     merchantPubkey: selectedMerchant ?? null,
@@ -851,10 +978,22 @@ function CheckoutPage() {
         ? "ineligible"
         : "unknown"
 
+  const currentAddressValidity = computeAddressValidity(buildShippingAddress())
+  const shippingRegionRequirement = getShippingRegionRequirement(
+    shipping.country
+  )
+  const walletPaymentConstraint = getKnownWalletPaymentConstraint({
+    amountMsats:
+      pricingPreview.status === "ok" ? pricingPreview.totalMsats : null,
+    balance: wallet.balance,
+    budget: wallet.budget,
+    methods: wallet.info?.methods,
+  })
   const canTrySavedNwcWallet =
     !!wallet.connection &&
     wallet.status !== "unsupported" &&
-    wallet.status !== "error"
+    wallet.status !== "error" &&
+    !walletPaymentConstraint
   const canAttemptLightningPayment = canTrySavedNwcWallet || weblnAvailable
   const requiresPublicZap = zapVisibility === "public_zap"
   const lnurlReadyForSelectedPayment =
@@ -876,6 +1015,7 @@ function CheckoutPage() {
     shippingEligible: shippingEligibleForFastCheckout,
     shippingState: shippingCheckoutState,
     shippingPriced: checkoutShippingCost.status !== "manual",
+    addressValidForDirectPayment: currentAddressValidity.canDirectPay,
   }
   const fastEligible = isFastCheckoutEligible(fastEligibilityInput)
   const fastUnavailableReasons =
@@ -888,6 +1028,35 @@ function CheckoutPage() {
   const pricingOnlyFastCheckoutBlocker =
     pricingPreviewIsStale && fastUnavailableReasonsWithoutPricing.length === 0
   const showFastCheckoutSurface = fastEligible || pricingOnlyFastCheckoutBlocker
+  const addressStatusMessage = (() => {
+    if (currentAddressValidity.status === "not_required") {
+      return "This cart does not require delivery details."
+    }
+    if (!currentAddressValidity.canSubmitOrder) {
+      if (
+        currentAddressValidity.issues.some((issue) => issue.code === "required")
+      ) {
+        return "Complete required delivery details before sending the order."
+      }
+      return (
+        currentAddressValidity.issues[0]?.message ??
+        "Fix address/contact details before sending the order."
+      )
+    }
+    if (currentAddressValidity.warnings.length > 0) {
+      return (
+        currentAddressValidity.warnings[0]?.message ??
+        "We could not fully validate this address locally. Review it carefully before paying; the merchant may need to confirm details."
+      )
+    }
+    if (currentAddressValidity.level === "locality_consistent") {
+      return "Address format and locality look consistent."
+    }
+    if (currentAddressValidity.level === "postal_region_consistent") {
+      return "Address format and region look consistent."
+    }
+    return "Address format looks plausible. Deliverability is not verified."
+  })()
   const shippingStatusMessage = (() => {
     switch (shippingCheckoutState) {
       case "not_required":
@@ -899,7 +1068,9 @@ function CheckoutPage() {
       case "no_published_rule":
         return "No published merchant shipping rule was found yet. You can still send the order first."
       case "allowed":
-        return "This destination is covered by the merchant shipping zone."
+        return currentAddressValidity.canDirectPay
+          ? "Merchant shipping zone covers this destination."
+          : "Merchant shipping zone may cover this destination, but address validity still needs attention."
       case "country_unsupported":
         return "Zap out is unavailable for this destination. You can still send the order first."
       case "postal_restricted":
@@ -958,20 +1129,23 @@ function CheckoutPage() {
     field: K,
     value: ShippingFormState[K]
   ): void {
-    setShipping((current) => {
-      const next = { ...current, [field]: value }
-      writeSessionShipping(next)
-      return next
-    })
-    // Re-validate on field change if an attempt has been made
-    if (shippingAttempted) {
-      setShippingErrors(validateShippingFields({ ...shipping, [field]: value }))
+    const normalizedValue =
+      field === "phone"
+        ? (sanitizeShippingPhoneInput(String(value)) as ShippingFormState[K])
+        : value
+    const next = { ...shipping, [field]: normalizedValue }
+    setShipping(next)
+    writeSessionShipping(next)
+    setShippingErrors(validateShippingFields(next))
+    if (isValidationField(field)) {
+      markShippingFieldTouched(field)
     }
   }
 
   function continueToPayment(): void {
     setShippingAttempted(true)
-    const errors = validateShippingFields(shipping)
+    setTouchedShippingFields(new Set(SHIPPING_VALIDATION_FIELDS))
+    const errors = liveShippingErrors
     setShippingErrors(errors)
     const blockingMessage = getShippingStepBlockingMessage({
       hasUnpricedCheckoutItems,
@@ -993,6 +1167,15 @@ function CheckoutPage() {
     })
     setError(null)
     setStep("payment")
+  }
+
+  function markShippingFieldTouched(field: ShippingFieldKey): void {
+    setTouchedShippingFields((current) => {
+      if (current.has(field)) return current
+      const next = new Set(current)
+      next.add(field)
+      return next
+    })
   }
 
   useEffect(() => {
@@ -1052,7 +1235,24 @@ function CheckoutPage() {
   function computeAddressValidity(
     addr: ShippingAddressSchema | undefined
   ): AddressValidityResult {
-    if (isAllDigital || !addr) return { status: "not_required", issues: [] }
+    if (isAllDigital || !addr) {
+      return {
+        status: "not_required",
+        level: "not_required",
+        issues: [],
+        warnings: [],
+        normalized: {
+          name: "",
+          street: "",
+          city: "",
+          postalCode: "",
+          country: "",
+        },
+        canSubmitOrder: true,
+        canDirectPay: true,
+        profiledCountry: true,
+      }
+    }
     return validateAddressConsistency({
       name: addr.name,
       street: addr.street,
@@ -1060,6 +1260,8 @@ function CheckoutPage() {
       state: addr.state,
       postalCode: addr.postalCode,
       country: addr.country,
+      email: shipping.email,
+      phone: shipping.phone,
     })
   }
 
@@ -1355,14 +1557,15 @@ function CheckoutPage() {
         )
       }
 
-      // Address validity gate (CND-127): block zap-out on an internally
-      // inconsistent physical address. Distinct from shipping-zone coverage.
+      // Address validity gate (CND-127): block zap-out only on hard input
+      // errors. Local confidence gaps are shown as warnings that buyers can
+      // consciously override.
       const shippingAddress = buildShippingAddress()
       const addressValidity = computeAddressValidity(shippingAddress)
-      if (isAddressValidityBlocking(addressValidity.status)) {
+      if (!addressValidity.canDirectPay) {
         throw new Error(
           addressValidity.issues[0]?.message ??
-            "Enter a valid shipping address before paying."
+            "Enter a locally consistent delivery address before direct payment."
         )
       }
 
@@ -1370,6 +1573,17 @@ function CheckoutPage() {
       if (pricingIntent.status !== "ok") {
         throw new Error(pricingIntent.reason)
       }
+      const finalWalletPaymentConstraint = getKnownWalletPaymentConstraint({
+        amountMsats: pricingIntent.totalMsats,
+        balance: wallet.balance,
+        budget: wallet.budget,
+        methods: wallet.info?.methods,
+      })
+      const shouldTrySavedNwcWallet =
+        !!wallet.connection &&
+        wallet.status !== "unsupported" &&
+        wallet.status !== "error" &&
+        !finalWalletPaymentConstraint
 
       const orderId = crypto.randomUUID()
       publishedOrderId = orderId
@@ -1418,7 +1632,7 @@ function CheckoutPage() {
       orderDelivered = true
       const orderDeliveryNotice = getDeliveryNotice(orderDelivery, "Order")
 
-      const canAutoPay = canTrySavedNwcWallet || webLnAvailableNow
+      const canAutoPay = shouldTrySavedNwcWallet || webLnAvailableNow
       // The order is now durably with the merchant. Persist the lifecycle so
       // Orders can render it immediately, then hand payment to the service.
       await createOrderLifecycle({
@@ -1477,7 +1691,7 @@ function CheckoutPage() {
         totalSats: pricingIntent.totalSats,
         totalMsats: pricingIntent.totalMsats,
         walletConnection: wallet.connection,
-        tryNwc: canTrySavedNwcWallet,
+        tryNwc: shouldTrySavedNwcWallet,
       }
 
       try {
@@ -1703,14 +1917,17 @@ function CheckoutPage() {
 
   // ─── Field-level error helpers ───────────────────────────────────────────
 
-  const errorFields = getValidationErrorFields(shippingErrors)
+  const errorFields = getValidationErrorFields(liveShippingErrors)
 
   function fieldError(field: ShippingFieldKey): string | undefined {
-    return shippingErrors.find((e) => e.field === field)?.message
+    return liveShippingErrors.find((e) => e.field === field)?.message
   }
 
   function fieldInvalid(field: ShippingFieldKey): boolean {
-    return shippingAttempted && errorFields.includes(field)
+    return (
+      (shippingAttempted || touchedShippingFields.has(field)) &&
+      errorFields.includes(field)
+    )
   }
 
   function fieldClassName(field: ShippingFieldKey): string | undefined {
@@ -1802,6 +2019,7 @@ function CheckoutPage() {
                         onChange={(e) =>
                           updateShipping("firstName", e.target.value)
                         }
+                        onBlur={() => markShippingFieldTouched("firstName")}
                         autoComplete="given-name"
                         placeholder="Jane"
                         aria-invalid={fieldInvalid("firstName")}
@@ -1823,6 +2041,7 @@ function CheckoutPage() {
                         onChange={(e) =>
                           updateShipping("lastName", e.target.value)
                         }
+                        onBlur={() => markShippingFieldTouched("lastName")}
                         autoComplete="family-name"
                         placeholder="Doe"
                         aria-invalid={fieldInvalid("lastName")}
@@ -1845,6 +2064,7 @@ function CheckoutPage() {
                       id="ship-street"
                       value={shipping.street}
                       onChange={(e) => updateShipping("street", e.target.value)}
+                      onBlur={() => markShippingFieldTouched("street")}
                       autoComplete="address-line1"
                       placeholder="123 Main St"
                       aria-invalid={fieldInvalid("street")}
@@ -1875,7 +2095,7 @@ function CheckoutPage() {
                   <div className="grid gap-4 sm:grid-cols-3">
                     <div className="grid gap-1.5">
                       <Label htmlFor="ship-postal">
-                        Postal code <span className="text-error">*</span>
+                        Postal/ZIP code <span className="text-error">*</span>
                       </Label>
                       <Input
                         id="ship-postal"
@@ -1883,6 +2103,7 @@ function CheckoutPage() {
                         onChange={(e) =>
                           updateShipping("postalCode", e.target.value)
                         }
+                        onBlur={() => markShippingFieldTouched("postalCode")}
                         autoComplete="postal-code"
                         placeholder="78701"
                         aria-invalid={fieldInvalid("postalCode")}
@@ -1902,6 +2123,7 @@ function CheckoutPage() {
                         id="ship-city"
                         value={shipping.city}
                         onChange={(e) => updateShipping("city", e.target.value)}
+                        onBlur={() => markShippingFieldTouched("city")}
                         autoComplete="address-level2"
                         placeholder="Austin"
                         aria-invalid={fieldInvalid("city")}
@@ -1914,16 +2136,32 @@ function CheckoutPage() {
                       )}
                     </div>
                     <div className="grid gap-1.5">
-                      <Label htmlFor="ship-state">Region</Label>
+                      <Label htmlFor="ship-state">
+                        {shippingRegionRequirement.label}
+                        {shippingRegionRequirement.required && (
+                          <>
+                            {" "}
+                            <span className="text-error">*</span>
+                          </>
+                        )}
+                      </Label>
                       <Input
                         id="ship-state"
                         value={shipping.state}
                         onChange={(e) =>
                           updateShipping("state", e.target.value)
                         }
+                        onBlur={() => markShippingFieldTouched("state")}
                         autoComplete="address-level1"
                         placeholder="TX"
+                        aria-invalid={fieldInvalid("state")}
+                        className={fieldClassName("state")}
                       />
+                      {fieldInvalid("state") && (
+                        <p className="text-xs text-error">
+                          {fieldError("state")}
+                        </p>
+                      )}
                     </div>
                   </div>
 
@@ -1942,17 +2180,32 @@ function CheckoutPage() {
                         <Label htmlFor="ship-phone">Phone</Label>
                         <Input
                           id="ship-phone"
+                          type="tel"
+                          inputMode="tel"
                           value={shipping.phone}
                           onChange={(e) =>
                             updateShipping("phone", e.target.value)
                           }
+                          onBlur={() => markShippingFieldTouched("phone")}
                           autoComplete="tel"
                           placeholder="+1 555 123 4567"
                           aria-invalid={fieldInvalid("phone")}
+                          aria-describedby={getShippingPhoneDescribedBy(
+                            fieldInvalid("phone")
+                          )}
                           className={fieldClassName("phone")}
                         />
+                        <p
+                          id={SHIPPING_PHONE_HELP_ID}
+                          className="text-xs text-[var(--text-muted)]"
+                        >
+                          {SHIPPING_PHONE_HELP_COPY}
+                        </p>
                         {fieldInvalid("phone") && (
-                          <p className="text-xs text-error">
+                          <p
+                            id={SHIPPING_PHONE_ERROR_ID}
+                            className="text-xs text-error"
+                          >
                             {fieldError("phone")}
                           </p>
                         )}
@@ -1961,10 +2214,12 @@ function CheckoutPage() {
                         <Label htmlFor="ship-email">Email</Label>
                         <Input
                           id="ship-email"
+                          type="email"
                           value={shipping.email}
                           onChange={(e) =>
                             updateShipping("email", e.target.value)
                           }
+                          onBlur={() => markShippingFieldTouched("email")}
                           autoComplete="email"
                           placeholder="jane@example.com"
                           aria-invalid={fieldInvalid("email")}
@@ -1988,17 +2243,46 @@ function CheckoutPage() {
                           : "",
                       ].join(" ")}
                     >
-                      <div className="flex items-center gap-2">
-                        {shippingCheckoutState === "loading" && (
-                          <SpinnerIcon className="h-3.5 w-3.5 shrink-0 animate-spin text-secondary-400" />
-                        )}
-                        <span>{shippingStatusMessage}</span>
+                      <div className="grid gap-2">
+                        <div className="flex items-start gap-2">
+                          {!currentAddressValidity.canSubmitOrder ? (
+                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-error" />
+                          ) : currentAddressValidity.warnings.length > 0 ? (
+                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+                          ) : (
+                            <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
+                          )}
+                          <div>
+                            <div className="font-medium text-[var(--text-primary)]">
+                              Address/contact
+                            </div>
+                            <div>{addressStatusMessage}</div>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          {shippingCheckoutState === "loading" ? (
+                            <SpinnerIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-secondary-400" />
+                          ) : (shippingCheckoutState === "not_required" ||
+                              shippingCheckoutState === "allowed") &&
+                            currentAddressValidity.canDirectPay ? (
+                            <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
+                          ) : (
+                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+                          )}
+                          <div>
+                            <div className="font-medium text-[var(--text-primary)]">
+                              Merchant shipping zone
+                            </div>
+                            <div>{shippingStatusMessage}</div>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   )}
 
                   <Button
                     className="mt-2 h-11 w-full text-sm"
+                    disabled={shippingSubmitDisabled}
                     onClick={continueToPayment}
                   >
                     Continue to Send Order
@@ -2088,10 +2372,21 @@ function CheckoutPage() {
                     <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
                       {pricingOnlyFastCheckoutBlocker
                         ? "The cart total is visible, but direct payment needs a fresh conversion before funds can move. Conduit is refreshing it now."
-                        : requiresPublicZap
-                          ? "Conduit will deliver the order, request a public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."
-                          : "Conduit will deliver the order, request a private LNURL invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."}
+                        : walletPaymentConstraint
+                          ? requiresPublicZap
+                            ? "Conduit will deliver the order and request a public zap invoice. Your connected wallet will be skipped for this total."
+                            : "Conduit will deliver the order and request a private LNURL invoice. Your connected wallet will be skipped for this total."
+                          : requiresPublicZap
+                            ? "Conduit will deliver the order, request a public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."
+                            : "Conduit will deliver the order, request a private LNURL invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."}
                     </p>
+                    {wallet.connection && !pricingOnlyFastCheckoutBlocker && (
+                      <CheckoutWalletReadiness
+                        balance={wallet.balance}
+                        budget={wallet.budget}
+                        constraint={walletPaymentConstraint}
+                      />
+                    )}
                   </div>
                 )}
 
@@ -2246,15 +2541,16 @@ function CheckoutPage() {
                     <Button
                       className="h-11 px-5 text-sm"
                       onClick={() => {
-                        // Show the lightning-strike animation immediately so the
-                        // buyer gets click feedback while order publish runs;
-                        // payNow navigates to Orders once the order is created.
-                        setOverlayPlaying(true)
+                        if (canAttemptLightningPayment) {
+                          setOverlayPlaying(true)
+                        }
                         void payNow()
                       }}
                     >
                       <LightningIcon className="h-4 w-4" />
-                      Zap out
+                      {walletPaymentConstraint && !weblnAvailable
+                        ? "Send order and show invoice"
+                        : "Zap out"}
                     </Button>
                   )}
                   {pricingOnlyFastCheckoutBlocker && !fastEligible && (

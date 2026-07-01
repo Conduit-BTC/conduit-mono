@@ -4,14 +4,25 @@ import {
   ExternalLink,
   Info,
   Loader2,
+  RefreshCw,
   Wallet,
   Zap,
 } from "lucide-react"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { parseNwcUri, pubkeyToNpub, type NwcDiagnostic } from "@conduit/core"
 import { Button, Input, Label, StatusPill } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
-import { useWallet, type WalletConnectionStatus } from "../hooks/useWallet"
+import {
+  useWallet,
+  type WalletBalanceState,
+  type WalletBudgetState,
+  type WalletConnectionStatus,
+} from "../hooks/useWallet"
+import {
+  formatBalanceFreshness,
+  formatWalletMsatsAsSats,
+} from "../lib/wallet-readiness"
+import { getWalletCapabilityPills } from "../lib/wallet-capabilities"
 
 export const Route = createFileRoute("/wallet")({
   beforeLoad: () => {
@@ -103,8 +114,149 @@ function WalletDiagnostics({
   )
 }
 
+function useFreshnessNow(fetchedAt: number | null): number {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!fetchedAt) return
+
+    setNow(Date.now())
+    const intervalId = window.setInterval(() => setNow(Date.now()), 30_000)
+    return () => window.clearInterval(intervalId)
+  }, [fetchedAt])
+
+  return now
+}
+
+function WalletCapabilities({
+  info,
+}: {
+  info: { methods: readonly string[]; notifications?: readonly string[] }
+}) {
+  const capabilities = getWalletCapabilityPills(info)
+
+  return (
+    <div className="flex min-w-0 flex-wrap justify-end gap-1.5">
+      {capabilities.map((capability) => (
+        <StatusPill
+          key={capability.id}
+          variant={capability.variant}
+          className="font-mono text-[0.65rem]"
+        >
+          {capability.label}
+        </StatusPill>
+      ))}
+    </div>
+  )
+}
+
+function WalletBalanceRow({
+  balance,
+  onRefresh,
+}: {
+  balance: WalletBalanceState
+  onRefresh: () => Promise<void>
+}) {
+  const hasBalance = balance.balanceMsats !== null
+  const canRefresh =
+    balance.status === "available" || balance.status === "error"
+  const now = useFreshnessNow(balance.fetchedAt)
+  const freshness = formatBalanceFreshness(balance.fetchedAt, now)
+  const value =
+    hasBalance && balance.balanceMsats !== null
+      ? `${formatWalletMsatsAsSats(balance.balanceMsats)} sats`
+      : balance.status === "checking"
+        ? "Checking..."
+        : balance.status === "error"
+          ? "Unable to refresh"
+          : balance.status === "unavailable"
+            ? "Unavailable"
+            : "Not checked yet"
+  const detail =
+    balance.status === "checking" && hasBalance
+      ? "Refreshing..."
+      : balance.status === "error" && hasBalance
+        ? "Refresh failed"
+        : balance.status === "error"
+          ? "Wallet did not return a balance"
+          : balance.status === "unavailable"
+            ? "Wallet does not advertise get_balance"
+            : freshness
+
+  return (
+    <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <dt className="shrink-0 text-xs text-[var(--text-muted)]">
+        Connected wallet balance
+      </dt>
+      <dd className="flex min-w-0 flex-col gap-2 sm:items-end">
+        <div className="text-sm font-medium text-[var(--text-primary)]">
+          {value}
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-[0.7rem] text-[var(--text-muted)] sm:justify-end">
+          {detail && <span>{detail}</span>}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 rounded-full px-2 text-[0.7rem]"
+            disabled={!canRefresh || balance.status === "checking"}
+            onClick={() => void onRefresh()}
+          >
+            {balance.status === "checking" ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3 w-3" />
+            )}
+            Refresh
+          </Button>
+        </div>
+      </dd>
+    </div>
+  )
+}
+
+function WalletBudgetRow({ budget }: { budget: WalletBudgetState }) {
+  const now = useFreshnessNow(budget.fetchedAt)
+
+  if (budget.status === "unavailable") return null
+
+  const freshness = formatBalanceFreshness(budget.fetchedAt, now)
+  const value =
+    budget.status === "available" && budget.remainingMsats !== null
+      ? `${formatWalletMsatsAsSats(budget.remainingMsats)} sats`
+      : budget.status === "checking"
+        ? "Checking..."
+        : budget.status === "error"
+          ? "Unable to refresh"
+          : "Not checked yet"
+  const detail =
+    budget.status === "available" && budget.totalMsats !== null
+      ? `${formatWalletMsatsAsSats(budget.totalMsats)} sats budget${
+          freshness ? ` - ${freshness}` : ""
+        }`
+      : budget.status === "error"
+        ? "Wallet did not return a budget"
+        : freshness
+
+  return (
+    <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <dt className="shrink-0 text-xs text-[var(--text-muted)]">
+        App spending budget
+      </dt>
+      <dd className="flex min-w-0 flex-col gap-1 sm:items-end">
+        <div className="text-sm font-medium text-[var(--text-primary)]">
+          {value}
+        </div>
+        {detail && (
+          <div className="text-[0.7rem] text-[var(--text-muted)]">{detail}</div>
+        )}
+      </dd>
+    </div>
+  )
+}
+
 function WalletPage() {
-  const wallet = useWallet()
+  const wallet = useWallet({ refreshBalance: true })
   const [uriInput, setUriInput] = useState("")
   const [pending, setPending] = useState(false)
   const [inputError, setInputError] = useState<string | null>(null)
@@ -252,26 +404,19 @@ function WalletPage() {
                           </dd>
                         </div>
                       )}
+                      <WalletBalanceRow
+                        balance={wallet.balance}
+                        onRefresh={wallet.refreshBalance}
+                      />
+                      <WalletBudgetRow budget={wallet.budget} />
                       {wallet.info?.methods &&
                         wallet.info.methods.length > 0 && (
                           <div className="flex items-start justify-between gap-4 px-4 py-3">
                             <dt className="shrink-0 text-xs text-[var(--text-muted)]">
                               Capabilities
                             </dt>
-                            <dd className="flex min-w-0 flex-wrap justify-end gap-1">
-                              {wallet.info.methods.map((method) => (
-                                <span
-                                  key={method}
-                                  className={[
-                                    "rounded-full border px-2 py-0.5 font-mono text-[0.65rem]",
-                                    method === "pay_invoice"
-                                      ? "border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_10%,transparent)] text-[var(--success)]"
-                                      : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)]",
-                                  ].join(" ")}
-                                >
-                                  {method}
-                                </span>
-                              ))}
+                            <dd>
+                              <WalletCapabilities info={wallet.info} />
                             </dd>
                           </div>
                         )}

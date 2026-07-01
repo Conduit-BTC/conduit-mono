@@ -1,22 +1,20 @@
+import {
+  parsePhoneNumberFromString,
+  type CountryCode,
+} from "libphonenumber-js/min"
+
 /**
- * Local, offline, privacy-preserving address validity gates (CND-127).
+ * Local, offline, privacy-preserving address/contact validity gates (CND-127).
  *
- * This is the buyer-input validity check: does the entered address look like a
- * real, internally consistent destination? It is intentionally distinct from
- * merchant shipping-zone coverage (whether the merchant ships there), which is
- * handled separately by the cart shipping-eligibility helpers.
+ * This is the buyer-input validity check: does the entered destination and
+ * optional contact information look internally consistent enough for checkout?
+ * It is intentionally distinct from merchant shipping-zone coverage, which is
+ * handled separately by shipping-eligibility helpers.
  *
  * Hard constraints:
- *  - No third-party / browser network calls. All data is bundled and offline.
- *  - No address or contact data is logged or forwarded to analytics.
- *
- * The US cross-field check uses the USPS SCF allocation: each 3-digit ZIP prefix
- * is assigned to a single state (with a handful of cross-border exceptions). We
- * derive the prefix from the postal code and confirm it agrees with the entered
- * state. Prefixes that legitimately span states resolve to multiple states and
- * are treated leniently (never flagged), so the gate biases away from blocking
- * real buyers. City-level agreement is not asserted (returned as `unknown`),
- * matching the ticket's "deliverability uncertainty" state.
+ * - No third-party / browser address validation calls.
+ * - No address or contact data is logged or forwarded to analytics.
+ * - Local consistency checks never claim full deliverability verification.
  */
 
 export interface AddressForValidation {
@@ -26,6 +24,8 @@ export interface AddressForValidation {
   state?: string
   postalCode?: string
   country?: string
+  email?: string
+  phone?: string
 }
 
 export type AddressValidityStatus =
@@ -35,6 +35,16 @@ export type AddressValidityStatus =
   | "inconsistent"
   | "unknown"
 
+export type AddressConfidenceLevel =
+  | "not_required"
+  | "missing_required"
+  | "syntax_valid"
+  | "street_plausible"
+  | "postal_region_consistent"
+  | "locality_consistent"
+  | "unsupported_country"
+  | "invalid"
+
 export type AddressValidationField =
   | "name"
   | "street"
@@ -42,27 +52,99 @@ export type AddressValidationField =
   | "state"
   | "postalCode"
   | "country"
+  | "email"
+  | "phone"
+
+export type AddressValidationIssueCode =
+  | "required"
+  | "postal_format"
+  | "region_required"
+  | "region_unknown"
+  | "state_postal_mismatch"
+  | "city_postal_mismatch"
+  | "street_plausibility"
+  | "locality_plausibility"
+  | "email_format"
+  | "phone_format"
+  | "validation_incomplete"
+  | "unknown_country"
 
 export interface AddressValidationIssue {
   field: AddressValidationField
-  code:
-    | "required"
-    | "postal_format"
-    | "state_postal_mismatch"
-    | "unknown_country"
+  code: AddressValidationIssueCode
   message: string
+}
+
+export interface NormalizedAddressForValidation {
+  name: string
+  street: string
+  city: string
+  state?: string
+  postalCode: string
+  country: string
+  email?: string
+  phone?: string
 }
 
 export interface AddressValidityResult {
   status: AddressValidityStatus
+  level: AddressConfidenceLevel
   issues: AddressValidationIssue[]
+  warnings: AddressValidationIssue[]
+  normalized: NormalizedAddressForValidation
+  canSubmitOrder: boolean
+  canDirectPay: boolean
+  profiledCountry: boolean
 }
 
+export type AddressRegionRequirement = {
+  required: boolean
+  label: string
+}
+
+export const ADDRESS_VALIDATION_V1_COUNTRIES = [
+  "US",
+  "CA",
+  "GB",
+  "AU",
+  "NZ",
+] as const
+
+type ProfiledCountryCode = (typeof ADDRESS_VALIDATION_V1_COUNTRIES)[number]
+
+type RegionPrefixRule = {
+  prefix: string | RegExp | ((postalCode: string) => boolean)
+  regions: string[]
+}
+
+type PostalLocalityRule = {
+  prefix: string | RegExp
+  localities: string[]
+}
+
+type CountryAddressProfile = {
+  code: ProfiledCountryCode
+  postalPattern: RegExp
+  postalFormatMessage: string
+  regionRequired: boolean
+  regionLabel: string
+  regionAliases: Record<string, string>
+  regionCodes: Set<string>
+  regionPrefixRules: RegionPrefixRule[]
+  localityRules: PostalLocalityRule[]
+  directPayRequiresRegionConsistency: boolean
+}
+
+const CONTACT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const PHONE_ALLOWED_CHARS_RE = /[\d\s()+-]/
+const PHONE_FORMAT_MESSAGE =
+  "Enter a valid phone number. Use + country code if it differs from the delivery country."
+const STREET_ALLOWED_RE = /^[\p{L}\p{N}][\p{L}\p{M}\p{N}\s.,'‘’#/&()-]*$/u
+const CITY_ALLOWED_RE = /^[\p{L}][\p{L}\p{M}\s.'‘’-]*$/u
+
 /**
- * Whether a validity result should block direct payment / zap-out.
- *
- * `unknown` does NOT block — we only have partial offline data for many
- * countries and must not hold up a buyer we cannot disprove.
+ * Whether a legacy coarse validity status should block a checkout step. Newer
+ * callers should prefer `result.canSubmitOrder` / `result.canDirectPay`.
  */
 export function isAddressValidityBlocking(
   status: AddressValidityStatus
@@ -70,7 +152,167 @@ export function isAddressValidityBlocking(
   return status === "missing" || status === "inconsistent"
 }
 
-// --- US state metadata -----------------------------------------------------
+export function isAddressDirectPaymentBlocking(
+  result: Pick<AddressValidityResult, "canDirectPay">
+): boolean {
+  return !result.canDirectPay
+}
+
+export function sanitizePhoneInput(value: string): string {
+  let result = ""
+  let hasPlus = false
+  for (const char of value) {
+    if (!PHONE_ALLOWED_CHARS_RE.test(char)) continue
+    if (char === "+") {
+      const hasNonSpace = result.trim().length > 0
+      if (hasPlus || hasNonSpace) continue
+      hasPlus = true
+    }
+    result += char
+  }
+  return result.replace(/\s+/g, " ").trim()
+}
+
+function normalizeLookup(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[‘’]/g, "'")
+    .replace(/\s+/g, " ")
+}
+
+function normalizePostal(value: string): string {
+  return value.trim().toUpperCase().replace(/\s+/g, "")
+}
+
+function normalizeHumanText(value: string | undefined): string {
+  return (value ?? "").trim().replace(/\s+/g, " ")
+}
+
+function normalizeCity(value: string | undefined): string {
+  return normalizeHumanText(value)
+}
+
+function normalizeEmail(value: string | undefined): string | undefined {
+  const trimmed = normalizeHumanText(value)
+  return trimmed ? trimmed.toLowerCase() : undefined
+}
+
+function normalizePhone(
+  value: string | undefined,
+  country: string
+): { normalized?: string; issue?: AddressValidationIssue } {
+  const raw = value ?? ""
+  const sanitized = sanitizePhoneInput(raw).trim()
+  if (hasDisallowedPhoneCharacters(raw)) {
+    return {
+      normalized: sanitized,
+      issue: {
+        field: "phone",
+        code: "phone_format",
+        message: PHONE_FORMAT_MESSAGE,
+      },
+    }
+  }
+  if (!sanitized) return {}
+
+  const parsed = parsePhoneNumberFromString(
+    sanitized,
+    country ? (country as CountryCode) : undefined
+  )
+  if (!parsed || !parsed.isValid()) {
+    return {
+      normalized: sanitized,
+      issue: {
+        field: "phone",
+        code: "phone_format",
+        message: PHONE_FORMAT_MESSAGE,
+      },
+    }
+  }
+
+  return { normalized: parsed.number }
+}
+
+function hasDisallowedPhoneCharacters(value: string): boolean {
+  let hasPlus = false
+  let hasNonSpace = false
+  for (const char of value) {
+    if (!PHONE_ALLOWED_CHARS_RE.test(char)) return true
+    if (char === "+") {
+      if (hasPlus || hasNonSpace) return true
+      hasPlus = true
+    } else if (char.trim()) {
+      hasNonSpace = true
+    }
+  }
+  return false
+}
+
+function issue(
+  field: AddressValidationField,
+  code: AddressValidationIssueCode,
+  message: string
+): AddressValidationIssue {
+  return { field, code, message }
+}
+
+function warning(
+  field: AddressValidationField,
+  code: AddressValidationIssueCode,
+  message: string
+): AddressValidationIssue {
+  return { field, code, message }
+}
+
+// --- Region metadata -------------------------------------------------------
+
+const DEFAULT_REGION_REQUIREMENT: AddressRegionRequirement = {
+  required: false,
+  label: "State / Province / Region",
+}
+
+export const REQUIRED_ADDRESS_REGION_LABELS: Readonly<Record<string, string>> =
+  {
+    AE: "Emirate",
+    AS: "State",
+    AU: "State / Territory",
+    BR: "State",
+    CA: "Province / Territory",
+    CN: "Province / Municipality / Region",
+    CO: "Department",
+    CR: "Province",
+    ES: "Province",
+    FM: "State",
+    HK: "Area",
+    HN: "Department",
+    ID: "Province",
+    IN: "State / Union Territory",
+    IQ: "Province",
+    IT: "Province",
+    JM: "Parish",
+    JP: "Prefecture",
+    KN: "Island",
+    KR: "Province / Metropolitan City",
+    KY: "Island",
+    MH: "State",
+    MP: "State",
+    MX: "State",
+    NR: "District",
+    PF: "Island",
+    PG: "Province",
+    PW: "State",
+    RU: "Oblast / Region",
+    SO: "Province",
+    SV: "Province",
+    TW: "County / City",
+    UM: "State",
+    US: "State",
+    VE: "State",
+    VI: "State",
+  }
 
 const US_STATE_NAME_TO_CODE: Record<string, string> = {
   alabama: "AL",
@@ -127,206 +369,388 @@ const US_STATE_NAME_TO_CODE: Record<string, string> = {
   "puerto rico": "PR",
 }
 
-const US_STATE_CODES = new Set([...Object.values(US_STATE_NAME_TO_CODE)])
+const CA_PROVINCE_NAME_TO_CODE: Record<string, string> = {
+  alberta: "AB",
+  "british columbia": "BC",
+  manitoba: "MB",
+  "new brunswick": "NB",
+  "newfoundland and labrador": "NL",
+  "nova scotia": "NS",
+  "northwest territories": "NT",
+  nunavut: "NU",
+  ontario: "ON",
+  "prince edward island": "PE",
+  quebec: "QC",
+  saskatchewan: "SK",
+  yukon: "YT",
+}
+
+const AU_STATE_NAME_TO_CODE: Record<string, string> = {
+  "australian capital territory": "ACT",
+  "new south wales": "NSW",
+  "northern territory": "NT",
+  queensland: "QLD",
+  "south australia": "SA",
+  tasmania: "TAS",
+  victoria: "VIC",
+  "western australia": "WA",
+}
+
+const NZ_REGION_NAME_TO_CODE: Record<string, string> = {
+  auckland: "AUK",
+  canterbury: "CAN",
+  otago: "OTA",
+  wellington: "WGN",
+}
+
+const US_STATE_CODES = new Set(Object.values(US_STATE_NAME_TO_CODE))
+const CA_PROVINCE_CODES = new Set(Object.values(CA_PROVINCE_NAME_TO_CODE))
+const AU_STATE_CODES = new Set(Object.values(AU_STATE_NAME_TO_CODE))
+const NZ_REGION_CODES = new Set(Object.values(NZ_REGION_NAME_TO_CODE))
 
 /** Normalize a free-text US state into its 2-letter code, or `null`. */
 export function normalizeUsState(input: string | undefined): string | null {
+  return normalizeRegion(input, US_STATE_NAME_TO_CODE, US_STATE_CODES)
+}
+
+function normalizeRegion(
+  input: string | undefined,
+  aliases: Record<string, string>,
+  codes: Set<string>
+): string | null {
   if (!input) return null
-  const trimmed = input.trim()
+  const trimmed = normalizeHumanText(input)
   if (!trimmed) return null
   const upper = trimmed.toUpperCase()
-  if (upper.length === 2 && US_STATE_CODES.has(upper)) return upper
-  const byName = US_STATE_NAME_TO_CODE[trimmed.toLowerCase()]
-  return byName ?? null
+  if (codes.has(upper)) return upper
+  return aliases[normalizeLookup(trimmed)] ?? null
 }
 
-/**
- * USPS SCF allocation as inclusive 3-digit ZIP prefix ranges per state. Each
- * range is `[lo, hi]` over the leading three digits (000–999). Where prefixes
- * legitimately overlap state lines, both states list the prefix and the lookup
- * stays lenient.
- */
-const US_STATE_ZIP3_RANGES: Record<string, Array<[number, number]>> = {
-  AL: [[350, 369]],
-  AK: [[995, 999]],
-  AZ: [[850, 865]],
-  AR: [[716, 729]],
-  CA: [[900, 961]],
-  CO: [[800, 816]],
-  CT: [[60, 69]],
-  DE: [[197, 199]],
-  DC: [[200, 205]],
-  FL: [[320, 349]],
-  GA: [
-    [300, 319],
-    [398, 399],
-  ],
-  HI: [[967, 968]],
-  ID: [[832, 838]],
-  IL: [[600, 629]],
-  IN: [[460, 479]],
-  IA: [[500, 528]],
-  KS: [[660, 679]],
-  KY: [[400, 427]],
-  LA: [[700, 714]],
-  ME: [[39, 49]],
-  MD: [[206, 219]],
-  MA: [
-    [10, 27],
-    [55, 55],
-  ],
-  MI: [[480, 499]],
-  MN: [[550, 567]],
-  MS: [[386, 397]],
-  MO: [[630, 658]],
-  MT: [[590, 599]],
-  NE: [[680, 693]],
-  NV: [[889, 898]],
-  NH: [[30, 38]],
-  NJ: [[70, 89]],
-  NM: [[870, 884]],
-  NY: [
-    [5, 5],
-    [100, 149],
-  ],
-  NC: [[270, 289]],
-  ND: [[580, 588]],
-  OH: [[430, 459]],
-  OK: [[730, 749]],
-  OR: [[970, 979]],
-  PA: [[150, 196]],
-  PR: [[6, 9]],
-  RI: [[28, 29]],
-  SC: [[290, 299]],
-  SD: [[570, 577]],
-  TN: [[370, 385]],
-  TX: [
-    [733, 733],
-    [750, 799],
-    [885, 885],
-  ],
-  UT: [[840, 847]],
-  VT: [[50, 59]],
-  VA: [[220, 246]],
-  WA: [[980, 994]],
-  WV: [[247, 268]],
-  WI: [[530, 549]],
-  WY: [[820, 831]],
+function prefixRange(
+  lo: number,
+  hi: number,
+  regions: string[]
+): RegionPrefixRule {
+  return {
+    prefix: new RegExp(
+      `^(${Array.from({ length: hi - lo + 1 }, (_, index) =>
+        String(lo + index).padStart(3, "0")
+      ).join("|")})`
+    ),
+    regions,
+  }
 }
 
-/** prefix (0–999) -> set of state codes that own it. */
-const ZIP3_TO_STATES: Map<number, Set<string>> = (() => {
-  const map = new Map<number, Set<string>>()
-  for (const [state, ranges] of Object.entries(US_STATE_ZIP3_RANGES)) {
-    for (const [lo, hi] of ranges) {
-      for (let prefix = lo; prefix <= hi; prefix++) {
-        const set = map.get(prefix) ?? new Set<string>()
-        set.add(state)
-        map.set(prefix, set)
-      }
+function postalRange(
+  lo: number,
+  hi: number,
+  regions: string[]
+): RegionPrefixRule {
+  return {
+    prefix: (postalCode) => {
+      const value = Number(postalCode.slice(0, 4))
+      return Number.isInteger(value) && value >= lo && value <= hi
+    },
+    regions,
+  }
+}
+
+const US_REGION_PREFIX_RULES: RegionPrefixRule[] = [
+  prefixRange(350, 369, ["AL"]),
+  prefixRange(995, 999, ["AK"]),
+  prefixRange(850, 865, ["AZ"]),
+  prefixRange(716, 729, ["AR"]),
+  prefixRange(900, 961, ["CA"]),
+  prefixRange(800, 816, ["CO"]),
+  prefixRange(60, 69, ["CT"]),
+  prefixRange(197, 199, ["DE"]),
+  prefixRange(200, 205, ["DC"]),
+  prefixRange(320, 349, ["FL"]),
+  prefixRange(300, 319, ["GA"]),
+  prefixRange(398, 399, ["GA"]),
+  prefixRange(967, 968, ["HI"]),
+  prefixRange(832, 838, ["ID"]),
+  prefixRange(600, 629, ["IL"]),
+  prefixRange(460, 479, ["IN"]),
+  prefixRange(500, 528, ["IA"]),
+  prefixRange(660, 679, ["KS"]),
+  prefixRange(400, 427, ["KY"]),
+  prefixRange(700, 714, ["LA"]),
+  prefixRange(39, 49, ["ME"]),
+  prefixRange(206, 219, ["MD"]),
+  prefixRange(10, 27, ["MA"]),
+  prefixRange(55, 55, ["MA"]),
+  prefixRange(480, 499, ["MI"]),
+  prefixRange(550, 567, ["MN"]),
+  prefixRange(386, 397, ["MS"]),
+  prefixRange(630, 658, ["MO"]),
+  prefixRange(590, 599, ["MT"]),
+  prefixRange(680, 693, ["NE"]),
+  prefixRange(889, 898, ["NV"]),
+  prefixRange(30, 38, ["NH"]),
+  prefixRange(70, 89, ["NJ"]),
+  prefixRange(870, 884, ["NM"]),
+  prefixRange(5, 5, ["NY"]),
+  prefixRange(100, 149, ["NY"]),
+  prefixRange(270, 289, ["NC"]),
+  prefixRange(580, 588, ["ND"]),
+  prefixRange(430, 459, ["OH"]),
+  prefixRange(730, 749, ["OK"]),
+  prefixRange(970, 979, ["OR"]),
+  prefixRange(150, 196, ["PA"]),
+  prefixRange(6, 9, ["PR"]),
+  prefixRange(28, 29, ["RI"]),
+  prefixRange(290, 299, ["SC"]),
+  prefixRange(570, 577, ["SD"]),
+  prefixRange(370, 385, ["TN"]),
+  prefixRange(733, 733, ["TX"]),
+  prefixRange(750, 799, ["TX"]),
+  prefixRange(885, 885, ["TX"]),
+  prefixRange(840, 847, ["UT"]),
+  prefixRange(50, 59, ["VT"]),
+  prefixRange(220, 246, ["VA"]),
+  prefixRange(980, 994, ["WA"]),
+  prefixRange(247, 268, ["WV"]),
+  prefixRange(530, 549, ["WI"]),
+  prefixRange(820, 831, ["WY"]),
+]
+
+const PROFILES: Record<ProfiledCountryCode, CountryAddressProfile> = {
+  US: {
+    code: "US",
+    postalPattern: /^\d{5}(?:-\d{4})?$/,
+    postalFormatMessage: "Enter a 5-digit ZIP code.",
+    regionRequired: true,
+    regionLabel: "state",
+    regionAliases: US_STATE_NAME_TO_CODE,
+    regionCodes: US_STATE_CODES,
+    regionPrefixRules: US_REGION_PREFIX_RULES,
+    localityRules: [
+      { prefix: "90210", localities: ["Beverly Hills"] },
+      { prefix: "62701", localities: ["Springfield"] },
+      { prefix: /^7870[14]/, localities: ["Austin"] },
+      { prefix: "10001", localities: ["New York"] },
+      { prefix: "98101", localities: ["Seattle"] },
+    ],
+    directPayRequiresRegionConsistency: true,
+  },
+  CA: {
+    code: "CA",
+    postalPattern:
+      /^[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\d[ABCEGHJ-NPRSTV-Z]\d$/,
+    postalFormatMessage: "Enter a Canadian postal code like M5V 2T6.",
+    regionRequired: true,
+    regionLabel: "province / territory",
+    regionAliases: CA_PROVINCE_NAME_TO_CODE,
+    regionCodes: CA_PROVINCE_CODES,
+    regionPrefixRules: [
+      { prefix: "A", regions: ["NL"] },
+      { prefix: "B", regions: ["NS"] },
+      { prefix: "C", regions: ["PE"] },
+      { prefix: "E", regions: ["NB"] },
+      { prefix: /^[GHJ]/, regions: ["QC"] },
+      { prefix: /^[KLMNP]/, regions: ["ON"] },
+      { prefix: "R", regions: ["MB"] },
+      { prefix: "S", regions: ["SK"] },
+      { prefix: "T", regions: ["AB"] },
+      { prefix: "V", regions: ["BC"] },
+      { prefix: "X", regions: ["NT", "NU"] },
+      { prefix: "Y", regions: ["YT"] },
+    ],
+    localityRules: [
+      { prefix: "M5V", localities: ["Toronto"] },
+      { prefix: "H2Y", localities: ["Montreal"] },
+      { prefix: "V6B", localities: ["Vancouver"] },
+    ],
+    directPayRequiresRegionConsistency: true,
+  },
+  GB: {
+    code: "GB",
+    postalPattern: /^[A-Z]{1,2}\d[A-Z\d]?\d[A-Z]{2}$/,
+    postalFormatMessage: "Enter a UK postcode like SW1A 1AA.",
+    regionRequired: false,
+    regionLabel: "region",
+    regionAliases: {},
+    regionCodes: new Set<string>(),
+    regionPrefixRules: [],
+    localityRules: [
+      { prefix: /^SW1A/, localities: ["London", "Westminster"] },
+      { prefix: /^EC1A/, localities: ["London"] },
+      { prefix: /^M1/, localities: ["Manchester"] },
+      { prefix: /^EH1/, localities: ["Edinburgh"] },
+    ],
+    directPayRequiresRegionConsistency: false,
+  },
+  AU: {
+    code: "AU",
+    postalPattern: /^\d{4}$/,
+    postalFormatMessage: "Enter a 4-digit Australian postcode.",
+    regionRequired: true,
+    regionLabel: "state / territory",
+    regionAliases: AU_STATE_NAME_TO_CODE,
+    regionCodes: AU_STATE_CODES,
+    regionPrefixRules: [
+      postalRange(2000, 2599, ["NSW"]),
+      postalRange(2619, 2899, ["NSW"]),
+      postalRange(2921, 2999, ["NSW"]),
+      postalRange(2600, 2618, ["ACT"]),
+      postalRange(2900, 2920, ["ACT"]),
+      { prefix: /^3/, regions: ["VIC"] },
+      { prefix: /^4/, regions: ["QLD"] },
+      { prefix: /^5/, regions: ["SA"] },
+      { prefix: /^6/, regions: ["WA"] },
+      { prefix: /^7/, regions: ["TAS"] },
+      { prefix: /^0/, regions: ["NT"] },
+    ],
+    localityRules: [
+      { prefix: "2000", localities: ["Sydney"] },
+      { prefix: "3000", localities: ["Melbourne"] },
+      { prefix: "4000", localities: ["Brisbane"] },
+      { prefix: "5000", localities: ["Adelaide"] },
+      { prefix: "6000", localities: ["Perth"] },
+    ],
+    directPayRequiresRegionConsistency: true,
+  },
+  NZ: {
+    code: "NZ",
+    postalPattern: /^\d{4}$/,
+    postalFormatMessage: "Enter a 4-digit New Zealand postcode.",
+    regionRequired: false,
+    regionLabel: "region",
+    regionAliases: NZ_REGION_NAME_TO_CODE,
+    regionCodes: NZ_REGION_CODES,
+    regionPrefixRules: [
+      { prefix: /^10|^06/, regions: ["AUK"] },
+      { prefix: /^50|^60/, regions: ["WGN"] },
+      { prefix: /^80|^81/, regions: ["CAN"] },
+      { prefix: /^90/, regions: ["OTA"] },
+    ],
+    localityRules: [
+      { prefix: "1010", localities: ["Auckland"] },
+      { prefix: "6011", localities: ["Wellington"] },
+      { prefix: "8011", localities: ["Christchurch"] },
+      { prefix: "9016", localities: ["Dunedin"] },
+    ],
+    directPayRequiresRegionConsistency: false,
+  },
+}
+
+function getProfile(country: string): CountryAddressProfile | undefined {
+  return PROFILES[country as ProfiledCountryCode]
+}
+
+export function isAddressRegionRequired(country: string): boolean {
+  return getAddressRegionRequirement(country).required
+}
+
+export function getAddressRegionRequirement(
+  country: string
+): AddressRegionRequirement {
+  const code = normalizeHumanText(country).toUpperCase()
+  const label = REQUIRED_ADDRESS_REGION_LABELS[code]
+  if (!label) return { ...DEFAULT_REGION_REQUIREMENT }
+  return { required: true, label }
+}
+
+export function getAddressRegionLabel(country: string): string {
+  return getAddressRegionRequirement(country).label
+}
+
+function regionLabelForMessage(label: string): string {
+  return label.toLocaleLowerCase("en-US")
+}
+
+function matchRule(
+  postalCode: string,
+  rule: RegionPrefixRule | PostalLocalityRule
+): boolean {
+  if (typeof rule.prefix === "function") return rule.prefix(postalCode)
+  if (typeof rule.prefix === "string") return postalCode.startsWith(rule.prefix)
+  return rule.prefix.test(postalCode)
+}
+
+function getPostalRegions(
+  profile: CountryAddressProfile,
+  postalCode: string
+): string[] | null {
+  for (const rule of profile.regionPrefixRules) {
+    if (matchRule(postalCode, rule)) return rule.regions
+  }
+  return profile.regionPrefixRules.length > 0 ? null : []
+}
+
+function getPostalLocalities(
+  profile: CountryAddressProfile,
+  postalCode: string
+): string[] | null {
+  for (const rule of profile.localityRules) {
+    if (matchRule(postalCode, rule)) return rule.localities
+  }
+  return null
+}
+
+function localityMatches(input: string, expected: string[]): boolean {
+  const normalizedInput = normalizeLookup(input)
+  return expected.some(
+    (locality) => normalizeLookup(locality) === normalizedInput
+  )
+}
+
+function validateStreet(value: string): {
+  issue?: AddressValidationIssue
+  warning?: AddressValidationIssue
+} {
+  const text = normalizeHumanText(value)
+  if (text.length < 5 || !/\p{L}/u.test(text)) {
+    return {
+      issue: issue(
+        "street",
+        "street_plausibility",
+        "Enter a real street address."
+      ),
     }
   }
-  return map
-})()
-
-const US_POSTAL_RE = /^\d{5}(?:-\d{4})?$/
-
-/**
- * Per-country postal-format patterns for the structural check. Absence of a
- * country here means we do not assert postal shape (returns `unknown`, not a
- * failure). Patterns are deliberately permissive.
- */
-const POSTAL_FORMATS: Record<string, RegExp> = {
-  US: US_POSTAL_RE,
-  CA: /^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$/,
-  GB: /^[A-Za-z]{1,2}\d[A-Za-z\d]?\s*\d[A-Za-z]{2}$/,
-  DE: /^\d{5}$/,
-  FR: /^\d{5}$/,
-  AU: /^\d{4}$/,
-  NL: /^\d{4}\s*[A-Za-z]{2}$/,
-}
-
-function usZip3(postalCode: string): number | null {
-  const digits = postalCode.trim().slice(0, 3)
-  if (!/^\d{3}$/.test(digits)) return null
-  return Number.parseInt(digits, 10)
-}
-
-/**
- * Validate that an address is internally consistent. Assumes the caller has
- * already determined a physical address is required (digital orders should pass
- * `status: "not_required"` without calling this).
- */
-export function validateAddressConsistency(
-  address: AddressForValidation
-): AddressValidityResult {
-  const issues: AddressValidationIssue[] = []
-  const country = (address.country ?? "").trim().toUpperCase()
-
-  // Required physical fields (shape). Mirrors checkout-validation's required set
-  // but expressed as validity issues so callers get a single result object.
-  const requiredText: Array<[AddressValidationField, string | undefined]> = [
-    ["name", address.name],
-    ["street", address.street],
-    ["city", address.city],
-    ["postalCode", address.postalCode],
-    ["country", address.country],
-  ]
-  for (const [field, value] of requiredText) {
-    if (!value || !value.trim()) {
-      issues.push({
-        field,
-        code: "required",
-        message: `${labelFor(field)} is required.`,
-      })
+  if (!STREET_ALLOWED_RE.test(text) || symbolRatio(text) > 0.28) {
+    return {
+      issue: issue(
+        "street",
+        "street_plausibility",
+        "Street address contains unsupported characters."
+      ),
     }
   }
-  if (issues.length > 0) {
-    return { status: "missing", issues }
-  }
-
-  const postalCode = (address.postalCode as string).trim()
-
-  // Postal-format check where we have a pattern for the country.
-  const postalPattern = POSTAL_FORMATS[country]
-  if (postalPattern && !postalPattern.test(postalCode)) {
-    issues.push({
-      field: "postalCode",
-      code: "postal_format",
-      message:
-        "Postal code doesn't match the expected format for this country.",
-    })
-    return { status: "inconsistent", issues }
-  }
-
-  if (country === "US") {
-    const prefix = usZip3(postalCode)
-    const stateCode = normalizeUsState(address.state)
-    if (prefix !== null && stateCode) {
-      const owners = ZIP3_TO_STATES.get(prefix)
-      // Only flag when the prefix maps to a definite set of states that
-      // excludes the entered state. Unmapped prefixes -> unknown (lenient).
-      if (owners && owners.size > 0 && !owners.has(stateCode)) {
-        issues.push({
-          field: "state",
-          code: "state_postal_mismatch",
-          message: `ZIP code ${postalCode} isn't in ${stateCode}. Check the state and ZIP code.`,
-        })
-        return { status: "inconsistent", issues }
-      }
-      if (owners && owners.has(stateCode)) {
-        return { status: "valid", issues: [] }
-      }
+  if (!/\d/.test(text)) {
+    return {
+      warning: warning(
+        "street",
+        "street_plausibility",
+        "Street address does not include a house or building number. Review it carefully before paying."
+      ),
     }
-    // Missing state or unmapped prefix: structurally fine, but we can't confirm.
-    return { status: "unknown", issues: [] }
   }
+  return {}
+}
 
-  // Non-US: structural checks passed (or no pattern available). We do not have
-  // offline locality data to cross-check, so we cannot positively confirm.
-  return postalPattern
-    ? { status: "valid", issues: [] }
-    : { status: "unknown", issues: [] }
+function validateCity(value: string): AddressValidationIssue | null {
+  const text = normalizeCity(value)
+  if (text.length < 2 || !CITY_ALLOWED_RE.test(text)) {
+    return issue("city", "locality_plausibility", "Enter a valid city.")
+  }
+  return null
+}
+
+function symbolRatio(value: string): number {
+  if (!value) return 0
+  const symbols = value.replace(/[\p{L}\p{M}\p{N}\s]/gu, "").length
+  return symbols / value.length
+}
+
+function statusFromIssues(
+  issues: AddressValidationIssue[]
+): AddressValidityStatus {
+  if (issues.some((item) => item.code === "required")) return "missing"
+  if (issues.length > 0) return "inconsistent"
+  return "valid"
 }
 
 function labelFor(field: AddressValidationField): string {
@@ -338,10 +762,215 @@ function labelFor(field: AddressValidationField): string {
     case "city":
       return "City"
     case "state":
-      return "State"
+      return "State / Province / Region"
     case "postalCode":
-      return "Postal code"
+      return "Postal/ZIP code"
     case "country":
       return "Country"
+    case "email":
+      return "Email"
+    case "phone":
+      return "Phone"
+  }
+}
+
+export function validateAddressConsistency(
+  address: AddressForValidation
+): AddressValidityResult {
+  const country = normalizeHumanText(address.country).toUpperCase()
+  const normalized: NormalizedAddressForValidation = {
+    name: normalizeHumanText(address.name),
+    street: normalizeHumanText(address.street),
+    city: normalizeCity(address.city),
+    state: normalizeHumanText(address.state) || undefined,
+    postalCode: normalizePostal(address.postalCode ?? ""),
+    country,
+    email: normalizeEmail(address.email),
+  }
+
+  const phone = normalizePhone(address.phone, country)
+  if (phone.normalized) normalized.phone = phone.normalized
+
+  const issues: AddressValidationIssue[] = []
+  const warnings: AddressValidationIssue[] = []
+  for (const [field, value] of [
+    ["name", normalized.name],
+    ["street", normalized.street],
+    ["city", normalized.city],
+    ["postalCode", normalized.postalCode],
+    ["country", normalized.country],
+  ] as Array<[AddressValidationField, string | undefined]>) {
+    if (!value) {
+      issues.push(issue(field, "required", `${labelFor(field)} is required.`))
+    }
+  }
+
+  if (normalized.email && !CONTACT_EMAIL_RE.test(normalized.email)) {
+    issues.push(issue("email", "email_format", "Enter a valid email address."))
+  }
+  if (phone.issue) issues.push(phone.issue)
+
+  if (normalized.street) {
+    const streetResult = validateStreet(normalized.street)
+    if (streetResult.issue) issues.push(streetResult.issue)
+    if (streetResult.warning) warnings.push(streetResult.warning)
+  }
+  if (normalized.city) {
+    const cityIssue = validateCity(normalized.city)
+    if (cityIssue) issues.push(cityIssue)
+  }
+
+  const profile = getProfile(country)
+  if (!profile) {
+    const regionRequirement = getAddressRegionRequirement(country)
+    if (regionRequirement.required && !normalized.state) {
+      warnings.push(
+        warning(
+          "state",
+          "region_required",
+          `We could not validate the ${regionLabelForMessage(regionRequirement.label)} locally. Review it carefully before paying.`
+        )
+      )
+    }
+
+    const status = statusFromIssues(issues)
+    if (status === "valid") {
+      warnings.push(
+        warning(
+          "country",
+          "unknown_country",
+          "We could not fully validate this address locally. Review it carefully before paying; the merchant may need to confirm details."
+        )
+      )
+    }
+    return {
+      status: status === "valid" ? "unknown" : status,
+      level: status === "valid" ? "unsupported_country" : "invalid",
+      issues,
+      warnings,
+      normalized,
+      canSubmitOrder: issues.length === 0,
+      canDirectPay: issues.length === 0,
+      profiledCountry: false,
+    }
+  }
+
+  const normalizedRegion = normalizeRegion(
+    normalized.state,
+    profile.regionAliases,
+    profile.regionCodes
+  )
+  if (normalizedRegion) normalized.state = normalizedRegion
+
+  if (profile.regionRequired && !normalizedRegion) {
+    warnings.push(
+      warning(
+        "state",
+        "region_required",
+        `We could not validate the ${profile.regionLabel} locally. Review it carefully before paying.`
+      )
+    )
+  } else if (
+    normalized.state &&
+    !normalizedRegion &&
+    profile.regionCodes.size > 0
+  ) {
+    warnings.push(
+      warning(
+        "state",
+        "region_unknown",
+        `We could not validate the ${profile.regionLabel} locally. Review it carefully before paying.`
+      )
+    )
+  }
+
+  if (
+    normalized.postalCode &&
+    !profile.postalPattern.test(normalized.postalCode)
+  ) {
+    issues.push(
+      issue("postalCode", "postal_format", profile.postalFormatMessage)
+    )
+  }
+
+  let regionConsistent = false
+  if (normalized.postalCode && normalizedRegion) {
+    const postalRegions = getPostalRegions(profile, normalized.postalCode)
+    if (postalRegions && postalRegions.length > 0) {
+      if (!postalRegions.includes(normalizedRegion)) {
+        warnings.push(
+          warning(
+            "state",
+            "state_postal_mismatch",
+            `${labelFor("postalCode")} may not match the selected ${profile.regionLabel}. Review it carefully before paying.`
+          )
+        )
+      } else {
+        regionConsistent = true
+      }
+    }
+  }
+
+  let localityConsistent = false
+  if (normalized.postalCode && normalized.city) {
+    const expectedLocalities = getPostalLocalities(
+      profile,
+      normalized.postalCode
+    )
+    if (expectedLocalities && expectedLocalities.length > 0) {
+      if (!localityMatches(normalized.city, expectedLocalities)) {
+        warnings.push(
+          warning(
+            "city",
+            "city_postal_mismatch",
+            "City may not match the postal code. Review it carefully before paying."
+          )
+        )
+      } else {
+        localityConsistent = true
+      }
+    }
+  }
+
+  const status = statusFromIssues(issues)
+  if (status !== "valid") {
+    return {
+      status,
+      level: status === "missing" ? "missing_required" : "invalid",
+      issues,
+      warnings,
+      normalized,
+      canSubmitOrder: false,
+      canDirectPay: false,
+      profiledCountry: true,
+    }
+  }
+
+  const level: AddressConfidenceLevel = localityConsistent
+    ? "locality_consistent"
+    : regionConsistent
+      ? "postal_region_consistent"
+      : "street_plausible"
+
+  const canDirectPay = localityConsistent || regionConsistent
+  if (!canDirectPay) {
+    warnings.push(
+      warning(
+        "country",
+        "validation_incomplete",
+        "We could not fully validate this address locally. Review it carefully before paying; the merchant may need to confirm details."
+      )
+    )
+  }
+
+  return {
+    status: "valid",
+    level,
+    issues: [],
+    warnings,
+    normalized,
+    canSubmitOrder: true,
+    canDirectPay: true,
+    profiledCountry: true,
   }
 }

@@ -17,6 +17,8 @@ import {
 } from "@conduit/core"
 import {
   getBuyerNwcSession,
+  type NwcSessionBalanceState,
+  type NwcSessionBudgetState,
   type NwcSessionSnapshot,
 } from "../lib/buyer-nwc-session"
 
@@ -43,6 +45,8 @@ export interface WalletState {
   status: WalletConnectionStatus
   connection: NwcConnection | null
   info: NwcGetInfoResult | null
+  balance: NwcSessionBalanceState
+  budget: NwcSessionBudgetState
   reachability: NwcReachability
   lastProbeAt: number | null
   /** Plain-language reason the wallet cannot be used to zap out, if any. */
@@ -51,6 +55,9 @@ export interface WalletState {
   diagnostics: NwcDiagnostic[]
   error: string | null
 }
+
+export type WalletBalanceState = NwcSessionBalanceState
+export type WalletBudgetState = NwcSessionBudgetState
 
 type StoredWalletCapability = {
   walletPubkey: string
@@ -62,7 +69,12 @@ type StoredWalletCapability = {
 export interface UseWalletReturn extends WalletState {
   connect: (uri: string) => Promise<void>
   retry: () => Promise<void>
+  refreshBalance: () => Promise<void>
   disconnect: () => void
+}
+
+export interface UseWalletOptions {
+  refreshBalance?: boolean
 }
 
 function readStoredConnection(): NwcConnection | null {
@@ -251,6 +263,8 @@ function getStateFromSessionSnapshot(
   return {
     connection: snapshot.connection,
     info,
+    balance: snapshot.balance,
+    budget: snapshot.budget,
     status,
     reachability: getReachabilityFromSessionSnapshot(snapshot),
     lastProbeAt: snapshot.lastWarmAt,
@@ -266,11 +280,13 @@ function getStateFromSessionSnapshot(
   }
 }
 
-export function useWallet(): UseWalletReturn {
+export function useWallet(options: UseWalletOptions = {}): UseWalletReturn {
   const [state, setState] = useState<Omit<WalletState, "unavailableReason">>({
     status: "disconnected",
     connection: null,
     info: null,
+    balance: emptyWalletBalance(),
+    budget: emptyWalletBudget(),
     reachability: "unchecked",
     lastProbeAt: null,
     diagnostics: [],
@@ -296,6 +312,8 @@ export function useWallet(): UseWalletReturn {
       ...s,
       connection,
       info: s.info ?? cached?.info ?? null,
+      balance: s.balance,
+      budget: s.budget,
       status: "connecting",
       reachability: "checking",
       error: null,
@@ -336,6 +354,8 @@ export function useWallet(): UseWalletReturn {
       ...s,
       connection: stored,
       info: cached?.info ?? null,
+      balance: s.balance,
+      budget: s.budget,
       status: "connecting",
       reachability: "checking",
       diagnostics: getNwcConnectionDiagnostics({
@@ -390,6 +410,8 @@ export function useWallet(): UseWalletReturn {
     setState((s) => ({
       ...s,
       status: "connecting",
+      balance: emptyWalletBalance(),
+      budget: emptyWalletBudget(),
       diagnostics: [],
       error: null,
     }))
@@ -451,6 +473,8 @@ export function useWallet(): UseWalletReturn {
       setState({
         connection: conn,
         info: snapshot.info,
+        balance: snapshot.balance,
+        budget: snapshot.budget,
         status: "unreachable",
         reachability: "unreachable",
         lastProbeAt: Date.now(),
@@ -472,12 +496,45 @@ export function useWallet(): UseWalletReturn {
       status: "disconnected",
       connection: null,
       info: null,
+      balance: emptyWalletBalance(),
+      budget: emptyWalletBudget(),
       reachability: "unchecked",
       lastProbeAt: null,
       diagnostics: [],
       error: null,
     })
   }, [])
+
+  const refreshBalance = useCallback(async () => {
+    const session = getBuyerNwcSession()
+    const snapshot = await session.refreshBalance()
+    setState(getStateFromSessionSnapshot(snapshot, state.info))
+  }, [state.info])
+
+  useEffect(() => {
+    if (
+      !options.refreshBalance ||
+      !connection ||
+      !info?.methods.some(
+        (method) => method === "get_balance" || method === "get_budget"
+      ) ||
+      (state.balance.status !== "unchecked" &&
+        state.budget.status !== "unchecked")
+    ) {
+      return
+    }
+
+    void refreshBalance().catch((error: unknown) => {
+      console.warn("Failed to refresh NWC wallet balance", error)
+    })
+  }, [
+    connection,
+    info,
+    options.refreshBalance,
+    refreshBalance,
+    state.balance.status,
+    state.budget.status,
+  ])
 
   const unavailableReason = deriveUnavailableReason(status)
   const diagnostics = connection
@@ -493,6 +550,8 @@ export function useWallet(): UseWalletReturn {
     status,
     connection,
     info,
+    balance: state.balance,
+    budget: state.budget,
     reachability: state.reachability,
     lastProbeAt: state.lastProbeAt,
     diagnostics,
@@ -500,6 +559,29 @@ export function useWallet(): UseWalletReturn {
     unavailableReason,
     connect,
     retry,
+    refreshBalance,
     disconnect,
+  }
+}
+
+function emptyWalletBalance(): NwcSessionBalanceState {
+  return {
+    status: "unchecked",
+    balanceMsats: null,
+    fetchedAt: null,
+    error: null,
+  }
+}
+
+function emptyWalletBudget(): NwcSessionBudgetState {
+  return {
+    status: "unchecked",
+    usedMsats: null,
+    totalMsats: null,
+    remainingMsats: null,
+    renewsAt: null,
+    renewalPeriod: null,
+    fetchedAt: null,
+    error: null,
   }
 }

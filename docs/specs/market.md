@@ -165,10 +165,29 @@ conversation/message-count replay.
 
 ### Address validity
 
-Before direct payment / zap-out, physical-shipping addresses are validated for
-internal consistency locally and offline (no third-party browser calls; no
-address/contact data to analytics). This is distinct from merchant shipping-zone
-coverage. See `docs/specs/order-lifecycle.md` for the full policy.
+Before order submission and direct payment / zap-out, physical-shipping
+addresses and optional contact fields are validated locally and offline (no
+third-party browser address calls; no address/contact data to analytics, logs, or
+observability). This is distinct from merchant shipping-zone coverage.
+
+Checkout uses v1 country profiles for `US`, `CA`, `GB`, `AU`, and `NZ`.
+Profiled countries add local confidence when required field, postal-format,
+contact, lightweight street-plausibility, and bundled postal-to-region or
+postal-to-locality checks pass. Shared region metadata also marks destinations
+where a state/province/region-style administrative area is expected and supplies
+the country-specific checkout label. Missing blocking fields (`name`, `street`,
+`city`, `postalCode`, or `country`), syntactically invalid contact details,
+invalid postal formats, and obvious street/locality junk remain blocking errors.
+Incomplete local confidence, unprofiled countries, missing expected region data,
+missing street/building numbers, and known postal-to-region or
+postal-to-locality contradictions are advisory warnings: checkout must tell the
+buyer that the address could not be fully validated locally, but direct payment
+remains available when merchant shipping-zone and payment gates pass.
+
+The checkout UI must show address/contact validity separately from merchant
+shipping-zone eligibility. Shipping-zone success must not be the only green/pass
+state while address/contact validity is missing, invalid, or unverified. See
+`docs/specs/order-lifecycle.md` for the full policy.
 
 ## Protocol Events
 
