@@ -1096,6 +1096,33 @@ function isDeletedByNip09(
   return deletedAtAddress >= createdAt
 }
 
+const MAX_PRODUCT_PARSE_CACHE = 5000
+const productParseCache = new Map<
+  string,
+  {
+    parsed: ReturnType<typeof parseProductEvent>
+    safety: ReturnType<typeof evaluateListingSafety>
+  }
+>()
+
+// Parsing + listing-safety evaluation is deterministic per event id, but
+// dedupeProductEvents re-runs over the full accumulated set on every streaming
+// callback. Cache by id so each unique event is parsed/evaluated once instead
+// of O(callbacks x events).
+function parseAndEvaluateProductEvent(event: NDKEvent) {
+  const cached = event.id ? productParseCache.get(event.id) : undefined
+  if (cached) return cached
+  const parsed = parseProductEvent(event)
+  const entry = { parsed, safety: evaluateListingSafety(parsed) }
+  if (event.id) {
+    if (productParseCache.size >= MAX_PRODUCT_PARSE_CACHE) {
+      productParseCache.clear()
+    }
+    productParseCache.set(event.id, entry)
+  }
+  return entry
+}
+
 function dedupeProductEvents(
   events: NDKEvent[],
   deletionTimestamps?: DeletionTimestamps
@@ -1104,8 +1131,7 @@ function dedupeProductEvents(
 
   for (const event of events) {
     try {
-      const parsed = parseProductEvent(event)
-      const safety = evaluateListingSafety(parsed)
+      const { parsed, safety } = parseAndEvaluateProductEvent(event)
 
       const dTag = getTagValue(event.tags ?? [], "d")
       const addressId = dTag ? `30402:${event.pubkey}:${dTag}` : parsed.id

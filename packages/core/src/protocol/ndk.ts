@@ -158,6 +158,14 @@ function computeEventId(event: RawNostrEvent): string {
   return bytesToHex(sha256(new TextEncoder().encode(serialized)))
 }
 
+// Schnorr verification (~1-2ms) dominates read cost, and the same event arrives
+// from many relays. Cache verified ids so the expensive check runs once per
+// unique event, not once per relay copy. The id is always recomputed from
+// content (cheap sha256), so a forged event reusing a known id can't skip it -
+// a matching id guarantees identical signed content.
+const MAX_VERIFIED_ID_CACHE = 20000
+const verifiedEventIds = new Set<string>()
+
 function hasValidSignature(event: RawNostrEvent): boolean {
   try {
     if (
@@ -168,7 +176,11 @@ function hasValidSignature(event: RawNostrEvent): boolean {
       return false
     }
     if (computeEventId(event) !== event.id) return false
-    return schnorr.verify(event.sig, event.id, event.pubkey)
+    if (verifiedEventIds.has(event.id)) return true
+    if (!schnorr.verify(event.sig, event.id, event.pubkey)) return false
+    if (verifiedEventIds.size >= MAX_VERIFIED_ID_CACHE) verifiedEventIds.clear()
+    verifiedEventIds.add(event.id)
+    return true
   } catch {
     return false
   }
@@ -380,11 +392,18 @@ async function fetchEventsFromRelay(
 
     recordRelaySuccess(relayUrl)
     const verified: NDKEvent[] = []
+    let processed = 0
     for (const raw of events) {
-      if (!hasValidSignature(raw)) continue
-      const event = new NDKEvent(undefined, raw)
-      attachEventSourceRelayUrl(event, relayUrl)
-      verified.push(event)
+      if (hasValidSignature(raw)) {
+        const event = new NDKEvent(undefined, raw)
+        attachEventSourceRelayUrl(event, relayUrl)
+        verified.push(event)
+      }
+      // Yield to the event loop periodically so a large batch of signature
+      // checks does not block rendering / hover animations.
+      if (++processed % 64 === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      }
     }
     return verified
   } catch {
