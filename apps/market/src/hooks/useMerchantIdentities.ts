@@ -46,7 +46,6 @@ export function useMerchantIdentities({
     {
       enabled: !deferBackgroundHydration,
       priority: "background",
-      readPolicy: { maxRelays: 4 },
       relayHintsByPubkey,
       refetchUnresolvedMs: 12_000,
       maxUnresolvedRefetches: 1,

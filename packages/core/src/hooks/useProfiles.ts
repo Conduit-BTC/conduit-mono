@@ -68,7 +68,7 @@ function defaultReadPolicy(
   readPolicy: CommerceReadPolicy | undefined
 ): CommerceReadPolicy {
   return {
-    maxRelays: readPolicy?.maxRelays ?? 32,
+    maxRelays: readPolicy?.maxRelays ?? (priority === "visible" ? 8 : 4),
     connectTimeoutMs:
       readPolicy?.connectTimeoutMs ?? (priority === "visible" ? 1_500 : 2_000),
     fetchTimeoutMs:
