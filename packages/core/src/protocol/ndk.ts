@@ -1,9 +1,12 @@
 import NDK, {
+  NDKEvent,
   NDKRelayStatus,
-  type NDKEvent,
   type NDKFilter,
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
+import { schnorr } from "@noble/curves/secp256k1"
+import { sha256 } from "@noble/hashes/sha256"
+import { bytesToHex } from "@noble/hashes/utils"
 import { config } from "../config"
 import {
   getGeneralReadRelayUrls,
@@ -110,11 +113,147 @@ export function getNdk(): NDK {
   return ndkInstance
 }
 
-function sleep<T>(ms: number, value: T): Promise<T> {
-  return new Promise((resolve) => setTimeout(() => resolve(value), ms))
+const MAX_CONCURRENT_RELAY_READS = 8
+let activeRelayReads = 0
+const relayReadWaiters: Array<() => void> = []
+
+function acquireRelayReadSlot(): Promise<void> {
+  if (activeRelayReads < MAX_CONCURRENT_RELAY_READS) {
+    activeRelayReads += 1
+    return Promise.resolve()
+  }
+  return new Promise<void>((resolve) => relayReadWaiters.push(resolve))
 }
 
-const FETCH_TIMEOUT = Symbol("fetch-timeout")
+function releaseRelayReadSlot(): void {
+  const next = relayReadWaiters.shift()
+  if (next) {
+    next()
+    return
+  }
+  activeRelayReads = Math.max(0, activeRelayReads - 1)
+}
+
+type RawNostrEvent = {
+  id: string
+  pubkey: string
+  created_at: number
+  kind: number
+  tags: string[][]
+  content: string
+  sig: string
+}
+
+const MAX_EVENTS_PER_RELAY_READ = 2000
+let relayReadSubCounter = 0
+
+function computeEventId(event: RawNostrEvent): string {
+  const serialized = JSON.stringify([
+    0,
+    event.pubkey,
+    event.created_at,
+    event.kind,
+    event.tags,
+    event.content,
+  ])
+  return bytesToHex(sha256(new TextEncoder().encode(serialized)))
+}
+
+function hasValidSignature(event: RawNostrEvent): boolean {
+  try {
+    if (
+      typeof event?.id !== "string" ||
+      typeof event.sig !== "string" ||
+      typeof event.pubkey !== "string"
+    ) {
+      return false
+    }
+    if (computeEventId(event) !== event.id) return false
+    return schnorr.verify(event.sig, event.id, event.pubkey)
+  } catch {
+    return false
+  }
+}
+
+// Owned Nostr read: open one WebSocket, REQ, collect EVENTs until EOSE or
+// timeout, then explicitly CLOSE and drop the socket. No auto-reconnect, so the
+// browser socket pool cannot accumulate the way NDK's fetchEvents did.
+function readRelayEvents(
+  relayUrl: string,
+  filter: NDKFilter,
+  connectTimeoutMs: number,
+  fetchTimeoutMs: number
+): Promise<{ events: RawNostrEvent[]; ok: boolean }> {
+  return new Promise((resolve) => {
+    const subId = `cnd-${(relayReadSubCounter += 1)}`
+    const events: RawNostrEvent[] = []
+    let settled = false
+    let ws: WebSocket
+    let connectTimer: ReturnType<typeof setTimeout> | undefined
+    let fetchTimer: ReturnType<typeof setTimeout> | undefined
+
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      if (connectTimer) clearTimeout(connectTimer)
+      if (fetchTimer) clearTimeout(fetchTimer)
+      try {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(["CLOSE", subId]))
+        }
+        ws.close()
+      } catch {
+        // ignore teardown errors
+      }
+      resolve({ events, ok })
+    }
+
+    try {
+      ws = new WebSocket(relayUrl)
+    } catch {
+      resolve({ events: [], ok: false })
+      return
+    }
+
+    connectTimer = setTimeout(() => finish(events.length > 0), connectTimeoutMs)
+
+    ws.onopen = () => {
+      if (connectTimer) {
+        clearTimeout(connectTimer)
+        connectTimer = undefined
+      }
+      fetchTimer = setTimeout(() => finish(events.length > 0), fetchTimeoutMs)
+      try {
+        ws.send(JSON.stringify(["REQ", subId, filter]))
+      } catch {
+        finish(false)
+      }
+    }
+
+    ws.onmessage = (message) => {
+      let parsed: unknown
+      try {
+        parsed =
+          typeof message.data === "string" ? JSON.parse(message.data) : null
+      } catch {
+        return
+      }
+      if (!Array.isArray(parsed)) return
+      const [type, sub] = parsed as [string, string, ...unknown[]]
+      if (type === "EVENT" && sub === subId && parsed[2]) {
+        events.push(parsed[2] as RawNostrEvent)
+        if (events.length >= MAX_EVENTS_PER_RELAY_READ) finish(true)
+      } else if (type === "EOSE" && sub === subId) {
+        finish(true)
+      } else if (type === "CLOSED" && sub === subId) {
+        finish(events.length > 0)
+      }
+    }
+
+    ws.onerror = () => finish(events.length > 0)
+    ws.onclose = () => finish(events.length > 0)
+  })
+}
 
 async function fetchEventsFromRelay(
   relayUrl: string,
@@ -122,47 +261,34 @@ async function fetchEventsFromRelay(
   connectTimeoutMs: number,
   fetchTimeoutMs: number
 ): Promise<NDKEvent[]> {
-  const ndk = new NDK({
-    explicitRelayUrls: [relayUrl],
-  })
-
+  await acquireRelayReadSlot()
   try {
-    const connected = await Promise.race([
-      ndk
-        .connect(connectTimeoutMs)
-        .then(() => true)
-        .catch(() => false),
-      sleep(connectTimeoutMs + 250, false),
-    ])
+    const { events, ok } = await readRelayEvents(
+      relayUrl,
+      filter,
+      connectTimeoutMs,
+      fetchTimeoutMs
+    )
 
-    if (!connected) {
-      recordRelayFailure(relayUrl)
-      return []
-    }
-
-    const events = await Promise.race([
-      ndk.fetchEvents(filter),
-      sleep(fetchTimeoutMs, FETCH_TIMEOUT),
-    ])
-
-    if (events === FETCH_TIMEOUT) {
+    if (!ok && events.length === 0) {
       recordRelayFailure(relayUrl)
       return []
     }
 
     recordRelaySuccess(relayUrl)
-    const fetched = Array.from(events) as NDKEvent[]
-    for (const event of fetched) {
+    const verified: NDKEvent[] = []
+    for (const raw of events) {
+      if (!hasValidSignature(raw)) continue
+      const event = new NDKEvent(undefined, raw)
       attachEventSourceRelayUrl(event, relayUrl)
+      verified.push(event)
     }
-    return fetched
+    return verified
   } catch {
     recordRelayFailure(relayUrl)
     return []
   } finally {
-    for (const [, relay] of ndk.pool?.relays?.entries() ?? []) {
-      relay.disconnect()
-    }
+    releaseRelayReadSlot()
   }
 }
 
