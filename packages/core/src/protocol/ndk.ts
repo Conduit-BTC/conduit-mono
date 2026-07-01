@@ -166,24 +166,89 @@ function computeEventId(event: RawNostrEvent): string {
 const MAX_VERIFIED_ID_CACHE = 20000
 const verifiedEventIds = new Set<string>()
 
-function hasValidSignature(event: RawNostrEvent): boolean {
+type SchnorrItem = { sig: string; id: string; pubkey: string }
+
+// Cheap main-thread check: valid shape + id binds to content. Returns the
+// verified-cache state so callers know whether schnorr still needs to run.
+function checkEventId(
+  event: RawNostrEvent
+): "cached" | "needs-schnorr" | "invalid" {
   try {
     if (
       typeof event?.id !== "string" ||
       typeof event.sig !== "string" ||
       typeof event.pubkey !== "string"
     ) {
+      return "invalid"
+    }
+    if (computeEventId(event) !== event.id) return "invalid"
+    return verifiedEventIds.has(event.id) ? "cached" : "needs-schnorr"
+  } catch {
+    return "invalid"
+  }
+}
+
+function verifySchnorrSync(items: SchnorrItem[]): boolean[] {
+  return items.map((item) => {
+    try {
+      return schnorr.verify(item.sig, item.id, item.pubkey)
+    } catch {
       return false
     }
-    if (computeEventId(event) !== event.id) return false
-    if (verifiedEventIds.has(event.id)) return true
-    if (!schnorr.verify(event.sig, event.id, event.pubkey)) return false
-    if (verifiedEventIds.size >= MAX_VERIFIED_ID_CACHE) verifiedEventIds.clear()
-    verifiedEventIds.add(event.id)
-    return true
+  })
+}
+
+// Offload schnorr verification to a worker so the crypto never blocks the main
+// thread. Falls back to sync verification when Workers are unavailable (SSR,
+// tests) or the worker fails.
+let verifyWorker: Worker | null | undefined
+let verifyReqId = 0
+const pendingVerify = new Map<number, (valid: boolean[]) => void>()
+
+function getVerifyWorker(): Worker | null {
+  if (verifyWorker !== undefined) return verifyWorker
+  try {
+    if (typeof Worker === "undefined") {
+      verifyWorker = null
+      return null
+    }
+    const worker = new Worker(new URL("./verify-worker.ts", import.meta.url), {
+      type: "module",
+    })
+    worker.onmessage = (
+      event: MessageEvent<{ reqId: number; valid: boolean[] }>
+    ) => {
+      const resolve = pendingVerify.get(event.data.reqId)
+      if (resolve) {
+        pendingVerify.delete(event.data.reqId)
+        resolve(event.data.valid)
+      }
+    }
+    worker.onerror = () => {
+      verifyWorker = null
+    }
+    verifyWorker = worker
   } catch {
-    return false
+    verifyWorker = null
   }
+  return verifyWorker
+}
+
+function verifySchnorrBatch(items: SchnorrItem[]): Promise<boolean[]> {
+  if (items.length === 0) return Promise.resolve([])
+  const worker = getVerifyWorker()
+  if (!worker) return Promise.resolve(verifySchnorrSync(items))
+  return new Promise((resolve) => {
+    const reqId = (verifyReqId += 1)
+    const timer = setTimeout(() => {
+      if (pendingVerify.delete(reqId)) resolve(verifySchnorrSync(items))
+    }, 8_000)
+    pendingVerify.set(reqId, (valid) => {
+      clearTimeout(timer)
+      resolve(valid)
+    })
+    worker.postMessage({ reqId, items })
+  })
 }
 
 // One shared WebSocket per relay, with REQs multiplexed by subId across
@@ -391,19 +456,40 @@ async function fetchEventsFromRelay(
     }
 
     recordRelaySuccess(relayUrl)
+
+    // Main thread: cheap sha256 id-check + verified-id cache. Anything not
+    // already cache-verified is batched to the worker for schnorr.
+    const accepted = new Array<boolean>(events.length).fill(false)
+    const schnorrItems: SchnorrItem[] = []
+    const schnorrIndex: number[] = []
+    for (let i = 0; i < events.length; i++) {
+      const raw = events[i]
+      const state = checkEventId(raw)
+      if (state === "invalid") continue
+      if (state === "cached") {
+        accepted[i] = true
+        continue
+      }
+      schnorrItems.push({ sig: raw.sig, id: raw.id, pubkey: raw.pubkey })
+      schnorrIndex.push(i)
+    }
+
+    const schnorrValid = await verifySchnorrBatch(schnorrItems)
+    for (let j = 0; j < schnorrIndex.length; j++) {
+      if (!schnorrValid[j]) continue
+      const i = schnorrIndex[j]
+      accepted[i] = true
+      if (verifiedEventIds.size >= MAX_VERIFIED_ID_CACHE)
+        verifiedEventIds.clear()
+      verifiedEventIds.add(events[i].id)
+    }
+
     const verified: NDKEvent[] = []
-    let processed = 0
-    for (const raw of events) {
-      if (hasValidSignature(raw)) {
-        const event = new NDKEvent(undefined, raw)
-        attachEventSourceRelayUrl(event, relayUrl)
-        verified.push(event)
-      }
-      // Yield to the event loop periodically so a large batch of signature
-      // checks does not block rendering / hover animations.
-      if (++processed % 64 === 0) {
-        await new Promise((resolve) => setTimeout(resolve, 0))
-      }
+    for (let i = 0; i < events.length; i++) {
+      if (!accepted[i]) continue
+      const event = new NDKEvent(undefined, events[i])
+      attachEventSourceRelayUrl(event, relayUrl)
+      verified.push(event)
     }
     return verified
   } catch {
