@@ -1,0 +1,216 @@
+name: Anon Zap Signer Worker
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - ".github/workflows/anon-zap-signer-worker.yml"
+      - "apps/anon-zap-signer/**"
+      - "apps/market/.env.production"
+      - "apps/market/src/lib/anon-zap-signer.ts"
+      - "apps/market/src/lib/checkout-payment.ts"
+      - "apps/market/src/lib/order-payment-service.ts"
+      - "packages/core/src/config.ts"
+      - "packages/core/src/protocol/anon-zap.ts"
+      - "packages/core/src/vite-env.d.ts"
+      - "tests/anon-zap-signer*.test.ts"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/anon-zap-signer-worker.yml"
+      - "apps/anon-zap-signer/**"
+      - "apps/market/.env.production"
+      - "apps/market/src/lib/anon-zap-signer.ts"
+      - "apps/market/src/lib/checkout-payment.ts"
+      - "apps/market/src/lib/order-payment-service.ts"
+      - "packages/core/src/config.ts"
+      - "packages/core/src/protocol/anon-zap.ts"
+      - "packages/core/src/vite-env.d.ts"
+      - "tests/anon-zap-signer*.test.ts"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || 'c12c052a5ed4653a3df4225b72d1b4b4' }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_API_KEY }}
+      ANON_CONDUIT_SHOPPER_PRIVATE_KEY_HEX: ${{ secrets.ANON_CONDUIT_SHOPPER_PRIVATE_KEY_HEX }}
+      ANON_CONDUIT_SHOPPER_PUBKEY: ${{ vars.ANON_CONDUIT_SHOPPER_PUBKEY || secrets.ANON_CONDUIT_SHOPPER_PUBKEY }}
+      ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: ${{ vars.ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS || '300' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - run: bun install --frozen-lockfile
+
+      - name: Typecheck signer worker
+        run: bun run --filter @conduit/anon-zap-signer typecheck
+
+      - name: Compute deployment target
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            branch="${{ github.event.pull_request.head.ref }}"
+            pr_number="${{ github.event.pull_request.number }}"
+            market_slug="$(printf '%s' "$branch" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-+/-/g' \
+              | cut -c1-28)"
+            worker_slug="$(printf '%s' "$branch" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-+/-/g' \
+              | cut -c1-32)"
+
+            echo "environment=preview" >> "$GITHUB_OUTPUT"
+            echo "worker_name=conduit-anon-zap-signer-pr-${pr_number}-${worker_slug}" >> "$GITHUB_OUTPUT"
+            echo "allowed_origins=https://${market_slug}.conduit-market-coo.pages.dev" >> "$GITHUB_OUTPUT"
+          else
+            echo "environment=production" >> "$GITHUB_OUTPUT"
+            echo "worker_name=conduit-anon-zap-signer" >> "$GITHUB_OUTPUT"
+            echo "allowed_origins=https://shop.conduit.market" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check Cloudflare and signer secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          missing=0
+          for name in \
+            CLOUDFLARE_ACCOUNT_ID \
+            CLOUDFLARE_API_TOKEN \
+            ANON_CONDUIT_SHOPPER_PRIVATE_KEY_HEX \
+            ANON_CONDUIT_SHOPPER_PUBKEY
+          do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::${name} is required for Anon Zap Signer Worker deploy."
+              missing=1
+            fi
+          done
+
+          if [[ "$missing" == "1" ]]; then
+            exit 1
+          fi
+
+      - name: Deploy Worker
+        id: deploy
+        shell: bash
+        env:
+          WORKER_NAME: ${{ steps.target.outputs.worker_name }}
+        run: |
+          set -euo pipefail
+
+          deploy_log="$(mktemp)"
+          bunx wrangler@4.106.0 deploy \
+            --config apps/anon-zap-signer/wrangler.jsonc \
+            --name "$WORKER_NAME" \
+            | tee "$deploy_log"
+
+          worker_url="$(grep -Eo 'https://[^ ]+workers.dev' "$deploy_log" | tail -n 1 || true)"
+          if [[ -z "$worker_url" ]]; then
+            worker_url="https://${WORKER_NAME}.workers.dev"
+          fi
+
+          echo "worker_url=$worker_url" >> "$GITHUB_OUTPUT"
+
+      - name: Set Worker runtime secrets
+        shell: bash
+        env:
+          WORKER_NAME: ${{ steps.target.outputs.worker_name }}
+          ANON_SIGNER_ALLOWED_ORIGINS: ${{ steps.target.outputs.allowed_origins }}
+        run: |
+          set -euo pipefail
+
+          printf '%s' "$ANON_CONDUIT_SHOPPER_PRIVATE_KEY_HEX" \
+            | bunx wrangler@4.106.0 secret put ANON_CONDUIT_SHOPPER_PRIVATE_KEY_HEX \
+              --config apps/anon-zap-signer/wrangler.jsonc \
+              --name "$WORKER_NAME"
+
+          printf '%s' "$ANON_CONDUIT_SHOPPER_PUBKEY" \
+            | bunx wrangler@4.106.0 secret put ANON_CONDUIT_SHOPPER_PUBKEY \
+              --config apps/anon-zap-signer/wrangler.jsonc \
+              --name "$WORKER_NAME"
+
+          printf '%s' "$ANON_SIGNER_ALLOWED_ORIGINS" \
+            | bunx wrangler@4.106.0 secret put ANON_SIGNER_ALLOWED_ORIGINS \
+              --config apps/anon-zap-signer/wrangler.jsonc \
+              --name "$WORKER_NAME"
+
+          printf '%s' "$ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS" \
+            | bunx wrangler@4.106.0 secret put ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS \
+              --config apps/anon-zap-signer/wrangler.jsonc \
+              --name "$WORKER_NAME"
+
+      - name: Post preview configuration note
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v9
+        env:
+          WORKER_URL: ${{ steps.deploy.outputs.worker_url }}
+          WORKER_NAME: ${{ steps.target.outputs.worker_name }}
+          ALLOWED_ORIGINS: ${{ steps.target.outputs.allowed_origins }}
+        with:
+          script: |
+            const marker = "<!-- conduit:anon_zap_signer_worker -->";
+            const body = [
+              marker,
+              "## Anon Zap Signer Worker",
+              "",
+              `- Worker: \`${process.env.WORKER_NAME}\``,
+              `- Worker URL: ${process.env.WORKER_URL}`,
+              `- Allowed origin: ${process.env.ALLOWED_ORIGINS}`,
+              "",
+              "Set these public values on the Market Pages preview environment, then rebuild the Market preview:",
+              "",
+              "| Variable | Value |",
+              "|---|---|",
+              `| \`VITE_ANON_ZAP_SIGNER_URL\` | \`${process.env.WORKER_URL}\` |`,
+              "| `VITE_ANON_ZAP_SIGNER_PUBKEY` | use the configured `ANON_CONDUIT_SHOPPER_PUBKEY` value |",
+              "",
+              "The signer private key is stored only as the Worker secret `ANON_CONDUIT_SHOPPER_PRIVATE_KEY_HEX`.",
+            ].join("\n");
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) =>
+              comment.user?.login === "github-actions[bot]" &&
+              comment.body?.includes(marker)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
