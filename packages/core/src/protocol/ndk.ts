@@ -203,7 +203,52 @@ function verifySchnorrSync(items: SchnorrItem[]): boolean[] {
 // tests) or the worker fails.
 let verifyWorker: Worker | null | undefined
 let verifyReqId = 0
-const pendingVerify = new Map<number, (valid: boolean[]) => void>()
+type PendingVerifyBatch = {
+  items: SchnorrItem[]
+  resolve: (valid: boolean[]) => void
+  timer: ReturnType<typeof setTimeout>
+}
+const pendingVerify = new Map<number, PendingVerifyBatch>()
+
+function resolvePendingVerifyBatch(
+  reqId: number,
+  valid: boolean[] | undefined
+): void {
+  const pending = pendingVerify.get(reqId)
+  if (!pending) return
+
+  pendingVerify.delete(reqId)
+  clearTimeout(pending.timer)
+  pending.resolve(valid ?? verifySchnorrSync(pending.items))
+}
+
+function failVerifyWorker(worker: Worker): void {
+  if (verifyWorker === worker) verifyWorker = null
+  try {
+    worker.terminate()
+  } catch {
+    // ignore teardown errors
+  }
+
+  for (const reqId of [...pendingVerify.keys()]) {
+    resolvePendingVerifyBatch(reqId, undefined)
+  }
+}
+
+export function __resetNdkTestState(): void {
+  if (verifyWorker) {
+    try {
+      verifyWorker.terminate()
+    } catch {
+      // ignore teardown errors
+    }
+  }
+  verifyWorker = undefined
+  for (const reqId of [...pendingVerify.keys()]) {
+    resolvePendingVerifyBatch(reqId, undefined)
+  }
+  verifiedEventIds.clear()
+}
 
 function getVerifyWorker(): Worker | null {
   if (verifyWorker !== undefined) return verifyWorker
@@ -218,14 +263,10 @@ function getVerifyWorker(): Worker | null {
     worker.onmessage = (
       event: MessageEvent<{ reqId: number; valid: boolean[] }>
     ) => {
-      const resolve = pendingVerify.get(event.data.reqId)
-      if (resolve) {
-        pendingVerify.delete(event.data.reqId)
-        resolve(event.data.valid)
-      }
+      resolvePendingVerifyBatch(event.data.reqId, event.data.valid)
     }
     worker.onerror = () => {
-      verifyWorker = null
+      failVerifyWorker(worker)
     }
     verifyWorker = worker
   } catch {
@@ -241,13 +282,14 @@ function verifySchnorrBatch(items: SchnorrItem[]): Promise<boolean[]> {
   return new Promise((resolve) => {
     const reqId = (verifyReqId += 1)
     const timer = setTimeout(() => {
-      if (pendingVerify.delete(reqId)) resolve(verifySchnorrSync(items))
+      resolvePendingVerifyBatch(reqId, undefined)
     }, 8_000)
-    pendingVerify.set(reqId, (valid) => {
-      clearTimeout(timer)
-      resolve(valid)
-    })
-    worker.postMessage({ reqId, items })
+    pendingVerify.set(reqId, { items, resolve, timer })
+    try {
+      worker.postMessage({ reqId, items })
+    } catch {
+      failVerifyWorker(worker)
+    }
   })
 }
 
