@@ -103,16 +103,17 @@ export async function payCheckoutInvoice(
         }
       }
 
-      if (!isNwcPrePublishFailure(result)) {
+      const diagnostic = classifyNwcPaymentError(
+        result.reason,
+        input.walletConnection
+      )
+
+      if (!isNwcPrePublishFailure(result) && !diagnostic.safeManualFallback) {
         throw new Error(
           `${result.reason} Check your wallet before trying another payment path.`
         )
       }
 
-      const diagnostic = classifyNwcPaymentError(
-        result.reason,
-        input.walletConnection
-      )
       diagnostics.push(diagnostic)
       failures.push(`${diagnostic.title}: ${diagnostic.action}`)
     }

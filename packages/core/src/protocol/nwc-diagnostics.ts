@@ -185,6 +185,11 @@ export function classifyNwcPaymentError(
   if (
     normalized.includes("permission") ||
     normalized.includes("budget") ||
+    normalized.includes("quota") ||
+    normalized.includes("restricted") ||
+    normalized.includes("allowance") ||
+    normalized.includes("spend limit") ||
+    normalized.includes("spend-limit") ||
     normalized.includes("unauthorized") ||
     normalized.includes("not authorized") ||
     normalized.includes("forbidden") ||

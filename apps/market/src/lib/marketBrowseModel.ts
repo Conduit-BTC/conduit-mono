@@ -24,6 +24,7 @@ export interface MarketBrowseSearch {
 export interface MerchantIdentityView {
   pubkey: string
   displayName: string
+  picture?: string
   status: "resolved" | "pending" | "fallback"
   relayHints: string[]
 }
@@ -49,10 +50,12 @@ export function getMerchantIdentityView(
 ): MerchantIdentityView {
   const profileName = getProfileName(profile)
   const fallbackName = getPendingMerchantName(pubkey)
+  const picture = profile?.picture?.trim()
 
   return {
     pubkey,
     displayName: profileName ?? fallbackName,
+    picture: picture || undefined,
     status: profileName
       ? "resolved"
       : options.lookupSettled

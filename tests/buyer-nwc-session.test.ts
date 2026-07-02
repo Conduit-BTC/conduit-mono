@@ -15,6 +15,18 @@ type FakeNwcClient = {
     network?: string
     block_height?: number
   }>
+  getBalance: () => Promise<{
+    balance: number
+  }>
+  getBudget?: () => Promise<
+    | {
+        used_budget: number
+        total_budget: number
+        renews_at?: number
+        renewal_period: string
+      }
+    | Record<string, never>
+  >
   payInvoice: (request: {
     invoice: string
     amount?: number
@@ -47,7 +59,16 @@ const NEXT_NWC_URI =
 const nextConnection = parseNwcUri(NEXT_NWC_URI)
 
 class Nip47PublishError extends Error {}
+class Nip47PublishTimeoutError extends Error {}
 class Nip47ReplyTimeoutError extends Error {}
+class Nip47WalletError extends Error {
+  code: string
+
+  constructor(message: string, code: string) {
+    super(message)
+    this.code = code
+  }
+}
 
 afterEach(() => {
   __buyerNwcSessionTestInternals.__setClientFactory(null)
@@ -117,6 +138,256 @@ describe("BuyerNwcSession", () => {
       "warming",
       "reachable",
     ])
+  })
+
+  it("keeps balance unavailable and never calls get_balance when capability is missing", async () => {
+    let balanceCalls = 0
+
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        getInfo: async () => ({ methods: ["pay_invoice"] }),
+        getBalance: async () => {
+          balanceCalls += 1
+          return { balance: 10_000 }
+        },
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await session.warm()
+    await flushPromises()
+
+    expect(balanceCalls).toBe(0)
+    expect(session.getSnapshot().balance).toEqual({
+      status: "unavailable",
+      balanceMsats: null,
+      fetchedAt: null,
+      error: null,
+    })
+
+    await session.refreshBalance()
+    expect(balanceCalls).toBe(0)
+  })
+
+  it("does not refresh advertised balances during warm or payment probes", async () => {
+    let balanceCalls = 0
+
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        getInfo: async () => ({ methods: ["pay_invoice", "get_balance"] }),
+        getBalance: async () => ({
+          balance: ++balanceCalls === 1 ? 25_000 : 19_000,
+        }),
+        payInvoice: async () => ({ preimage: "paid-preimage", fees_paid: 1 }),
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await session.warm()
+    await flushPromises()
+    expect(balanceCalls).toBe(0)
+    expect(session.getSnapshot().balance).toEqual({
+      status: "unchecked",
+      balanceMsats: null,
+      fetchedAt: null,
+      error: null,
+    })
+
+    await expect(
+      session.payInvoice({
+        invoice: "lnbc1test",
+        amountMsats: 1_000,
+        timeoutMs: 100,
+        appId: "market",
+      })
+    ).resolves.toMatchObject({
+      status: "paid",
+      preimage: "paid-preimage",
+    })
+    await flushPromises()
+
+    expect(balanceCalls).toBe(0)
+    expect(session.getSnapshot().balance).toEqual({
+      status: "unchecked",
+      balanceMsats: null,
+      fetchedAt: null,
+      error: null,
+    })
+
+    await session.refreshBalance()
+    expect(balanceCalls).toBe(1)
+    expect(session.getSnapshot().balance).toMatchObject({
+      status: "available",
+      balanceMsats: 25_000,
+      error: null,
+    })
+  })
+
+  it("keeps the newest balance refresh when same-wallet requests overlap", async () => {
+    const firstBalance = deferred<{ balance: number }>()
+    const secondBalance = deferred<{ balance: number }>()
+    let balanceCalls = 0
+
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        getInfo: async () => ({ methods: ["pay_invoice", "get_balance"] }),
+        getBalance: () => {
+          balanceCalls += 1
+          return balanceCalls === 1
+            ? firstBalance.promise
+            : secondBalance.promise
+        },
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await session.warm()
+    await flushPromises()
+    expect(balanceCalls).toBe(0)
+
+    const firstRefresh = session.refreshBalance()
+    await flushPromises()
+    expect(balanceCalls).toBe(1)
+
+    const secondRefresh = session.refreshBalance()
+    await flushPromises()
+    expect(balanceCalls).toBe(2)
+
+    secondBalance.resolve({ balance: 20_000 })
+    await secondRefresh
+    expect(session.getSnapshot().balance).toMatchObject({
+      status: "available",
+      balanceMsats: 20_000,
+    })
+
+    firstBalance.resolve({ balance: 30_000 })
+    await firstRefresh
+    await flushPromises()
+
+    expect(session.getSnapshot().balance).toMatchObject({
+      status: "available",
+      balanceMsats: 20_000,
+    })
+  })
+
+  it("clears balance state when the wallet disconnects", async () => {
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        getInfo: async () => ({ methods: ["pay_invoice", "get_balance"] }),
+        getBalance: async () => ({ balance: 25_000 }),
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await session.warm()
+    await session.refreshBalance()
+    await flushPromises()
+    expect(session.getSnapshot().balance.balanceMsats).toBe(25_000)
+
+    session.setConnection(null)
+
+    expect(session.getSnapshot().balance).toEqual({
+      status: "unchecked",
+      balanceMsats: null,
+      fetchedAt: null,
+      error: null,
+    })
+  })
+
+  it("refreshes advertised wallet budget with balance readiness", async () => {
+    let budgetCalls = 0
+
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        getInfo: async () => ({
+          methods: ["pay_invoice", "get_balance", "get_budget"],
+        }),
+        getBalance: async () => ({ balance: 50_000 }),
+        getBudget: async () => {
+          budgetCalls += 1
+          return {
+            used_budget: 10_000,
+            total_budget: 40_000,
+            renews_at: 1_700_000_000,
+            renewal_period: "daily",
+          }
+        },
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await session.warm()
+    await session.refreshBalance()
+    await flushPromises()
+
+    expect(budgetCalls).toBe(1)
+    expect(session.getSnapshot().budget).toMatchObject({
+      status: "available",
+      usedMsats: 10_000,
+      totalMsats: 40_000,
+      remainingMsats: 30_000,
+      renewsAt: 1_700_000_000,
+      renewalPeriod: "daily",
+      error: null,
+    })
+  })
+
+  it("treats missing SDK getBudget support as non-blocking budget unavailability", async () => {
+    let payCalls = 0
+
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        getInfo: async () => ({
+          methods: ["pay_invoice", "get_balance", "get_budget"],
+        }),
+        getBalance: async () => ({ balance: 50_000 }),
+        payInvoice: async () => {
+          payCalls += 1
+          return { preimage: "paid-preimage" }
+        },
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await session.warm()
+    await session.refreshBalance()
+    await flushPromises()
+
+    expect(session.getSnapshot().budget).toEqual({
+      status: "unavailable",
+      usedMsats: null,
+      totalMsats: null,
+      remainingMsats: null,
+      renewsAt: null,
+      renewalPeriod: null,
+      fetchedAt: null,
+      error: null,
+    })
+
+    await expect(
+      session.payInvoice({
+        invoice: "lnbc1test",
+        amountMsats: 1_000,
+        timeoutMs: 100,
+        appId: "market",
+      })
+    ).resolves.toMatchObject({
+      status: "paid",
+      preimage: "paid-preimage",
+    })
+    expect(payCalls).toBe(1)
   })
 
   it("stops notifying subscribers after unsubscribe", () => {
@@ -391,6 +662,32 @@ describe("BuyerNwcSession", () => {
     })
   })
 
+  it("treats SDK publish timeout as ambiguous after-publish failure", async () => {
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        payInvoice: async () => {
+          throw new Nip47PublishTimeoutError("publish timed out")
+        },
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await expect(
+      session.payInvoice({
+        invoice: "lnbc1test",
+        amountMsats: 1_000,
+        timeoutMs: 100,
+        appId: "market",
+      })
+    ).resolves.toEqual({
+      status: "published_timeout",
+      phase: "after_publish",
+      reason: "NWC request timed out.",
+    })
+  })
+
   it("treats SDK reply timeout as ambiguous after-publish failure", async () => {
     __buyerNwcSessionTestInternals.__setClientFactory(() =>
       fakeClient({
@@ -414,6 +711,32 @@ describe("BuyerNwcSession", () => {
       status: "published_timeout",
       phase: "after_publish",
       reason: "NWC request timed out.",
+    })
+  })
+
+  it("includes NIP-47 wallet error codes in safe payment failures", async () => {
+    __buyerNwcSessionTestInternals.__setClientFactory(() =>
+      fakeClient({
+        payInvoice: async () => {
+          throw new Nip47WalletError("budget exceeded", "QUOTA_EXCEEDED")
+        },
+      })
+    )
+
+    const session = new BuyerNwcSession()
+    session.setConnection(connection)
+
+    await expect(
+      session.payInvoice({
+        invoice: "lnbc1test",
+        amountMsats: 1_000,
+        timeoutMs: 100,
+        appId: "market",
+      })
+    ).resolves.toEqual({
+      status: "wallet_error",
+      phase: "after_publish",
+      reason: "QUOTA_EXCEEDED: budget exceeded",
     })
   })
 
@@ -445,6 +768,7 @@ describe("BuyerNwcSession", () => {
 function fakeClient(overrides: Partial<FakeNwcClient>): FakeNwcClient {
   return {
     getInfo: async () => ({ methods: ["pay_invoice"] }),
+    getBalance: async () => ({ balance: 0 }),
     payInvoice: async () => ({ preimage: "preimage", fees_paid: 0 }),
     close: () => {},
     pool: {
@@ -452,4 +776,23 @@ function fakeClient(overrides: Partial<FakeNwcClient>): FakeNwcClient {
     },
     ...overrides,
   }
+}
+
+async function flushPromises(times = 3): Promise<void> {
+  for (let index = 0; index < times; index += 1) {
+    await Promise.resolve()
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  await Promise.resolve()
+}
+
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+} {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
 }

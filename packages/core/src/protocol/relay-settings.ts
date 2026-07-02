@@ -455,7 +455,13 @@ function sortCommerceRelayUrls(
   ).map((entry) => entry.url)
 }
 
+const MAX_NORMALIZE_RELAY_URL_CACHE = 2000
+const normalizeRelayUrlCache = new Map<string, string>()
+
 export function normalizeRelayUrl(input: string): string {
+  const cached = normalizeRelayUrlCache.get(input)
+  if (cached !== undefined) return cached
+
   const trimmed = input.trim()
   if (!trimmed) {
     throw new Error("Relay URL is required")
@@ -480,7 +486,13 @@ export function normalizeRelayUrl(input: string): string {
 
   const pathname =
     parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "")
-  return `${parsed.protocol}//${parsed.host.toLowerCase()}${pathname}`
+  const result = `${parsed.protocol}//${parsed.host.toLowerCase()}${pathname}`
+
+  if (normalizeRelayUrlCache.size >= MAX_NORMALIZE_RELAY_URL_CACHE) {
+    normalizeRelayUrlCache.clear()
+  }
+  normalizeRelayUrlCache.set(input, result)
+  return result
 }
 
 export function tryNormalizeRelayUrl(
