@@ -38,7 +38,7 @@
         "qrcode.react": "^4.2.0",
         "react": "^19.2.7",
         "react-dom": "^19.2.7",
-        "react-hook-form": "^7.79.0",
+        "react-hook-form": "^7.80.0",
         "zod": "^4.4.3",
       },
       "devDependencies": {
@@ -69,7 +69,7 @@
         "lucide-react": "^1.18.0",
         "react": "^19.2.7",
         "react-dom": "^19.2.7",
-        "react-hook-form": "^7.79.0",
+        "react-hook-form": "^7.80.0",
         "zod": "^4.4.3",
       },
       "devDependencies": {
@@ -99,7 +99,7 @@
         "@tanstack/react-router": "^1.170.16",
         "react": "^19.2.7",
         "react-dom": "^19.2.7",
-        "react-hook-form": "^7.79.0",
+        "react-hook-form": "^7.80.0",
         "zod": "^4.4.3",
       },
       "devDependencies": {
@@ -1047,7 +1047,7 @@
 
     "react-dom": ["react-dom@19.2.7", "", { "dependencies": { "scheduler": "^0.27.0" }, "peerDependencies": { "react": "^19.2.7" } }, "sha512-t0BRVXvbiE/o20Hfw669rLbMCDWtYZLvmJigy2f0MxsXF+71pxhR3xOkspmsO8h3ZlNzyibAmtCa3l4lYKk6gQ=="],
 
-    "react-hook-form": ["react-hook-form@7.79.0", "", { "peerDependencies": { "react": "^16.8.0 || ^17 || ^18 || ^19" } }, "sha512-mhYp/MTmXvzYX6AJcJVko0rktoIhhmRnEouObj4wF5i/tCttgJvnp1+9wRkpITZjDTqpo4IOSJqu0dBlPlV/Lw=="],
+    "react-hook-form": ["react-hook-form@7.80.0", "", { "peerDependencies": { "react": "^16.8.0 || ^17 || ^18 || ^19" } }, "sha512-4P+fk6oXsxY+6xSj7Euhc2sumQD8zQqCuVHoJwoyp9EchP+IUW9OESB7uHFJOKsIBQ4MQqYE84INJFqUCYNoOg=="],
 
     "react-is": ["react-is@16.13.1", "", {}, "sha512-24e6ynE2H+OKt4kqsOvNd8kBpV65zoxbA4BVsEOB3ARVWQki/DHzaUoC5KuON/BiccDaCCTZBuOcfZs70kR8bQ=="],
 
