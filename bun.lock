@@ -19,9 +19,21 @@
         "eslint-plugin-react-hooks": "^7.1.1",
         "husky": "^9.1.7",
         "lint-staged": "^17.0.8",
+        "nostr-tools": "2.23.5",
         "prettier": "^3.9.1",
         "typescript": "^6.0.3",
         "typescript-eslint": "^8.62.0",
+      },
+    },
+    "apps/anon-zap-signer": {
+      "name": "@conduit/anon-zap-signer",
+      "version": "0.0.1",
+      "dependencies": {
+        "@conduit/core": "workspace:*",
+        "nostr-tools": "2.23.5",
+      },
+      "devDependencies": {
+        "typescript": "^6.0.3",
       },
     },
     "apps/market": {
@@ -210,6 +222,8 @@
     "@codesandbox/nodebox": ["@codesandbox/nodebox@0.1.8", "", { "dependencies": { "outvariant": "^1.4.0", "strict-event-emitter": "^0.4.3" } }, "sha512-2VRS6JDSk+M+pg56GA6CryyUSGPjBEe8Pnae0QL3jJF1mJZJVMDKr93gJRtBbLkfZN6LD/DwMtf+2L0bpWrjqg=="],
 
     "@codesandbox/sandpack-client": ["@codesandbox/sandpack-client@2.19.8", "", { "dependencies": { "@codesandbox/nodebox": "0.1.8", "buffer": "^6.0.3", "dequal": "^2.0.2", "mime-db": "^1.52.0", "outvariant": "1.4.0", "static-browser-server": "1.0.3" } }, "sha512-CMV4nr1zgKzVpx4I3FYvGRM5YT0VaQhALMW9vy4wZRhEyWAtJITQIqZzrTGWqB1JvV7V72dVEUCUPLfYz5hgJQ=="],
+
+    "@conduit/anon-zap-signer": ["@conduit/anon-zap-signer@workspace:apps/anon-zap-signer"],
 
     "@conduit/core": ["@conduit/core@workspace:packages/core"],
 
