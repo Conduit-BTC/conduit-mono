@@ -53,9 +53,25 @@ function parseCsv(raw: string | undefined): string[] {
     .filter(Boolean)
 }
 
-function getAllowedOrigins(env: AnonZapSignerEnv): Set<string> {
-  const configured = parseCsv(env.ANON_SIGNER_ALLOWED_ORIGINS)
-  return new Set(configured)
+function isOriginPatternMatch(origin: string, pattern: string): boolean {
+  if (!pattern.includes("*")) return origin === pattern
+
+  try {
+    const originUrl = new URL(origin)
+    const patternUrl = new URL(pattern)
+    if (originUrl.protocol !== patternUrl.protocol) return false
+    if (patternUrl.pathname !== "/" || patternUrl.search || patternUrl.hash) {
+      return false
+    }
+    const wildcardPrefix = "*."
+    if (!patternUrl.hostname.startsWith(wildcardPrefix)) return false
+    const suffix = patternUrl.hostname.slice(wildcardPrefix.length)
+    if (!originUrl.hostname.endsWith(`.${suffix}`)) return false
+    const prefix = originUrl.hostname.slice(0, -(suffix.length + 1))
+    return !!prefix && !prefix.includes(".")
+  } catch {
+    return false
+  }
 }
 
 function getCorsHeaders(origin: string | null, env: AnonZapSignerEnv): Headers {
@@ -69,7 +85,7 @@ function getCorsHeaders(origin: string | null, env: AnonZapSignerEnv): Headers {
     "access-control-max-age": "600",
     vary: "Origin",
   })
-  if (origin && getAllowedOrigins(env).has(origin)) {
+  if (origin && isOriginAllowed(origin, env)) {
     headers.set("access-control-allow-origin", origin)
   }
   return headers
@@ -80,7 +96,9 @@ function isOriginAllowed(
   env: AnonZapSignerEnv
 ): boolean {
   if (!origin) return false
-  return getAllowedOrigins(env).has(origin)
+  return parseCsv(env.ANON_SIGNER_ALLOWED_ORIGINS).some((pattern) =>
+    isOriginPatternMatch(origin, pattern)
+  )
 }
 
 function hexToBytes(hex: string): Uint8Array {

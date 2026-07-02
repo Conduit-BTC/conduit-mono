@@ -164,6 +164,45 @@ describe("Anon zap signer service", () => {
     expect(response.headers.get("access-control-allow-origin")).toBeNull()
   })
 
+  it("allows single-label preview origins with a wildcard pattern", async () => {
+    const origin = "https://ae855b59.conduit-market-coo.pages.dev"
+    const response = await handleAnonZapSignerRequest(
+      await postRequest({ zapRequest: draft() }, origin),
+      env({
+        ANON_SIGNER_ALLOWED_ORIGINS:
+          "https://shop.conduit.market,https://*.conduit-market-coo.pages.dev",
+        ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000",
+      })
+    )
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("access-control-allow-origin")).toBe(origin)
+  })
+
+  it("rejects nested or lookalike wildcard origins", async () => {
+    const envWithWildcard = env({
+      ANON_SIGNER_ALLOWED_ORIGINS: "https://*.conduit-market-coo.pages.dev",
+      ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000",
+    })
+    const nested = await handleAnonZapSignerRequest(
+      await postRequest(
+        { zapRequest: draft() },
+        "https://nested.preview.conduit-market-coo.pages.dev"
+      ),
+      envWithWildcard
+    )
+    const lookalike = await handleAnonZapSignerRequest(
+      await postRequest(
+        { zapRequest: draft() },
+        "https://preview.conduit-market-coo.pages.dev.evil.example"
+      ),
+      envWithWildcard
+    )
+
+    expect(nested.status).toBe(403)
+    expect(lookalike.status).toBe(403)
+  })
+
   it("allows authenticated server-to-server POST requests without an origin", async () => {
     const bodyText = JSON.stringify({ zapRequest: draft() })
     const auth = await signRequestBody(bodyText)
