@@ -9,6 +9,7 @@ import {
 import type { AnonZapRequestDraft } from "@conduit/core"
 
 const PRIVATE_KEY_HEX = "0".repeat(63) + "1"
+const REQUEST_AUTH_SECRET = "test request auth secret with enough entropy"
 const EXPECTED_PUBKEY = getPublicKey(
   Uint8Array.from([
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -21,6 +22,7 @@ function env(overrides: Partial<AnonZapSignerEnv> = {}): AnonZapSignerEnv {
   return {
     ANON_CONDUIT_SHOPPER_PRIVATE_KEY_HEX: PRIVATE_KEY_HEX,
     ANON_CONDUIT_SHOPPER_PUBKEY: EXPECTED_PUBKEY,
+    ANON_SIGNER_REQUEST_AUTH_SECRET: REQUEST_AUTH_SECRET,
     ANON_SIGNER_ALLOWED_ORIGINS: "http://localhost:7000",
     ...overrides,
   }
@@ -44,14 +46,48 @@ function draft(
   }
 }
 
-function postRequest(body: unknown, origin = "http://localhost:7000"): Request {
+function bytesToHex(bytes: ArrayBuffer): string {
+  return [...new Uint8Array(bytes)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+}
+
+async function signRequestBody(
+  bodyText: string,
+  timestamp = Math.floor(Date.now() / 1000)
+): Promise<{ signature: string; timestamp: string }> {
+  const encoder = new TextEncoder()
+  const timestampText = String(timestamp)
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(REQUEST_AUTH_SECRET),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  )
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(`${timestampText}.${bodyText}`)
+  )
+  return { signature: bytesToHex(signature), timestamp: timestampText }
+}
+
+async function postRequest(
+  body: unknown,
+  origin = "http://localhost:7000"
+): Promise<Request> {
+  const bodyText = JSON.stringify(body)
+  const auth = await signRequestBody(bodyText)
   return new Request("http://localhost:7010", {
     method: "POST",
     headers: {
       "content-type": "application/json",
       origin,
+      "x-conduit-anon-signer-timestamp": auth.timestamp,
+      "x-conduit-anon-signer-signature": auth.signature,
     },
-    body: JSON.stringify(body),
+    body: bodyText,
   })
 }
 
@@ -98,7 +134,7 @@ describe("Anon zap signer service", () => {
 
   it("serves signed events over the local POST endpoint", async () => {
     const response = await handleAnonZapSignerRequest(
-      postRequest({ zapRequest: draft() }),
+      await postRequest({ zapRequest: draft() }),
       env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
     )
     const body = await response.json()
@@ -120,25 +156,84 @@ describe("Anon zap signer service", () => {
 
   it("rejects disallowed browser origins", async () => {
     const response = await handleAnonZapSignerRequest(
-      postRequest({ zapRequest: draft() }, "https://evil.example"),
-      env()
+      await postRequest({ zapRequest: draft() }, "https://evil.example"),
+      env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
     )
 
     expect(response.status).toBe(403)
     expect(response.headers.get("access-control-allow-origin")).toBeNull()
   })
 
-  it("rejects POST requests without an origin", async () => {
+  it("allows authenticated server-to-server POST requests without an origin", async () => {
+    const bodyText = JSON.stringify({ zapRequest: draft() })
+    const auth = await signRequestBody(bodyText)
     const response = await handleAnonZapSignerRequest(
       new Request("http://localhost:7010", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-conduit-anon-signer-timestamp": auth.timestamp,
+          "x-conduit-anon-signer-signature": auth.signature,
+        },
+        body: bodyText,
+      }),
+      env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
+    )
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("access-control-allow-origin")).toBeNull()
+  })
+
+  it("rejects POST requests without request authentication", async () => {
+    const response = await handleAnonZapSignerRequest(
+      new Request("http://localhost:7010", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "http://localhost:7000",
+        },
         body: JSON.stringify({ zapRequest: draft() }),
       }),
       env()
     )
 
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Anon signer request authentication is missing.",
+    })
+  })
+
+  it("rejects POST requests with a forged Origin but invalid request authentication", async () => {
+    const response = await handleAnonZapSignerRequest(
+      new Request("http://localhost:7010", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "http://localhost:7000",
+          "x-conduit-anon-signer-timestamp": String(
+            Math.floor(Date.now() / 1000)
+          ),
+          "x-conduit-anon-signer-signature": "a".repeat(64),
+        },
+        body: JSON.stringify({ zapRequest: draft() }),
+      }),
+      env()
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Anon signer request authentication is invalid.",
+    })
+  })
+
+  it("fails closed when allowed origins are not configured", async () => {
+    const response = await handleAnonZapSignerRequest(
+      await postRequest({ zapRequest: draft() }),
+      env({ ANON_SIGNER_ALLOWED_ORIGINS: "" })
+    )
+
     expect(response.status).toBe(403)
+    expect(response.headers.get("access-control-allow-origin")).toBeNull()
   })
 
   it("handles allowed CORS preflight without signing", async () => {

@@ -12,21 +12,16 @@ import {
 export type AnonZapSignerEnv = {
   ANON_CONDUIT_SHOPPER_PRIVATE_KEY_HEX?: string
   ANON_CONDUIT_SHOPPER_PUBKEY?: string
+  ANON_SIGNER_REQUEST_AUTH_SECRET?: string
   ANON_SIGNER_ALLOWED_ORIGINS?: string
   ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS?: string
   ANON_SIGNER_PORT?: string
 }
 
-const DEFAULT_LOCAL_ALLOWED_ORIGINS = new Set([
-  "http://localhost:3000",
-  "http://127.0.0.1:3000",
-  "http://localhost:5173",
-  "http://127.0.0.1:5173",
-  "http://localhost:7000",
-  "http://127.0.0.1:7000",
-])
 const MAX_REQUEST_BYTES = 8_192
 const DEFAULT_MAX_CLOCK_SKEW_SECONDS = 5 * 60
+const AUTH_TIMESTAMP_HEADER = "x-conduit-anon-signer-timestamp"
+const AUTH_SIGNATURE_HEADER = "x-conduit-anon-signer-signature"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
@@ -60,15 +55,17 @@ function parseCsv(raw: string | undefined): string[] {
 
 function getAllowedOrigins(env: AnonZapSignerEnv): Set<string> {
   const configured = parseCsv(env.ANON_SIGNER_ALLOWED_ORIGINS)
-  return configured.length > 0
-    ? new Set(configured)
-    : DEFAULT_LOCAL_ALLOWED_ORIGINS
+  return new Set(configured)
 }
 
 function getCorsHeaders(origin: string | null, env: AnonZapSignerEnv): Headers {
   const headers = new Headers({
     "access-control-allow-methods": "POST, OPTIONS",
-    "access-control-allow-headers": "content-type",
+    "access-control-allow-headers": [
+      "content-type",
+      AUTH_TIMESTAMP_HEADER,
+      AUTH_SIGNATURE_HEADER,
+    ].join(", "),
     "access-control-max-age": "600",
     vary: "Origin",
   })
@@ -164,7 +161,7 @@ function parseDraft(value: unknown): AnonZapRequestDraft | null {
   }
 }
 
-async function parseJsonRequest(request: Request): Promise<unknown> {
+async function readRequestText(request: Request): Promise<string> {
   const length = Number(request.headers.get("content-length") ?? "0")
   if (Number.isFinite(length) && length > MAX_REQUEST_BYTES) {
     throw new Error("Request body is too large.")
@@ -173,7 +170,78 @@ async function parseJsonRequest(request: Request): Promise<unknown> {
   if (text.length > MAX_REQUEST_BYTES) {
     throw new Error("Request body is too large.")
   }
-  return JSON.parse(text)
+  return text
+}
+
+function bytesToHex(bytes: ArrayBuffer): string {
+  return [...new Uint8Array(bytes)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+}
+
+function constantTimeEquals(left: string, right: string): boolean {
+  if (left.length !== right.length) return false
+  let mismatch = 0
+  for (let i = 0; i < left.length; i += 1) {
+    mismatch |= left.charCodeAt(i) ^ right.charCodeAt(i)
+  }
+  return mismatch === 0
+}
+
+async function createRequestSignature(
+  secret: string,
+  timestamp: string,
+  bodyText: string
+): Promise<string> {
+  const encoder = new TextEncoder()
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  )
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(`${timestamp}.${bodyText}`)
+  )
+  return bytesToHex(signature)
+}
+
+async function assertAuthenticatedRequest(
+  request: Request,
+  bodyText: string,
+  env: AnonZapSignerEnv
+): Promise<void> {
+  const secret = env.ANON_SIGNER_REQUEST_AUTH_SECRET?.trim()
+  if (!secret) {
+    throw new Error("Anon signer request auth is not configured.")
+  }
+
+  const timestamp = request.headers.get(AUTH_TIMESTAMP_HEADER)?.trim()
+  const signature = request.headers.get(AUTH_SIGNATURE_HEADER)?.trim()
+  if (!timestamp || !signature || !/^[0-9a-f]{64}$/i.test(signature)) {
+    throw new Error("Anon signer request authentication is missing.")
+  }
+
+  const timestampSeconds = Number(timestamp)
+  if (
+    !Number.isSafeInteger(timestampSeconds) ||
+    Math.abs(Math.floor(Date.now() / 1000) - timestampSeconds) >
+      getMaxClockSkewSeconds(env)
+  ) {
+    throw new Error("Anon signer request authentication expired.")
+  }
+
+  const expectedSignature = await createRequestSignature(
+    secret,
+    timestamp,
+    bodyText
+  )
+  if (!constantTimeEquals(expectedSignature, signature.toLowerCase())) {
+    throw new Error("Anon signer request authentication is invalid.")
+  }
 }
 
 export function getAnonZapSignerDevPort(env: AnonZapSignerEnv): number {
@@ -234,12 +302,14 @@ export async function handleAnonZapSignerRequest(
   if (request.method !== "POST") {
     return errorResponse("Method not allowed.", 405, corsHeaders)
   }
-  if (!isOriginAllowed(origin, env)) {
+  if (origin && !isOriginAllowed(origin, env)) {
     return errorResponse("Origin is not allowed.", 403)
   }
 
   try {
-    const body = await parseJsonRequest(request)
+    const bodyText = await readRequestText(request)
+    await assertAuthenticatedRequest(request, bodyText, env)
+    const body = JSON.parse(bodyText)
     if (!isRecord(body)) {
       return errorResponse("Invalid request body.", 400, corsHeaders)
     }
