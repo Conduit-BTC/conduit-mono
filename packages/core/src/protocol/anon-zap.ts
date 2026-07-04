@@ -67,7 +67,10 @@ function isValidAllowedAnonZapTag(tag: string[]): boolean {
     return tag.length >= 2 && values.every(isAllowedRelayUrl)
   }
   if (name === "client") {
-    return tag.length === 2 && values[0].length > 0
+    return (
+      (tag.length === 2 || tag.length === 4) &&
+      values.every((value) => value.length > 0)
+    )
   }
   if (name === "omf") {
     return tag.length === 1

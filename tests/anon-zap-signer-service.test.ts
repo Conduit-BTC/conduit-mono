@@ -161,6 +161,29 @@ describe("Anon zap signer service", () => {
     ).rejects.toThrow("Zap request tag payload is invalid.")
   })
 
+  it("accepts the four-field NIP-89 client tag shape before signing", async () => {
+    const signed = await signAnonZapRequestDraft(
+      draft({
+        tags: [
+          ["p", "b".repeat(64)],
+          ["amount", "50000"],
+          ["lnurl", "lnurl1test"],
+          ["relays", "wss://relay.example"],
+          [
+            "client",
+            "Conduit Market",
+            `31990:${"c".repeat(64)}:conduit-market`,
+            "wss://relay.conduit.market",
+          ],
+        ],
+      }),
+      env(),
+      { nowSeconds: NOW_SECONDS }
+    )
+
+    expect(signed.pubkey).toBe(EXPECTED_PUBKEY)
+  })
+
   it("rejects a signer secret that does not match the expected pubkey", async () => {
     await expect(
       signAnonZapRequestDraft(
