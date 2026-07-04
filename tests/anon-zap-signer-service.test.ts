@@ -237,6 +237,44 @@ describe("Anon zap signer service", () => {
     expect(signed.tags).toEqual(tags)
   })
 
+  it("allows configured NIP-89 client tags with uppercase pubkey casing", async () => {
+    const uppercaseAddress = `31990:${MARKET_NIP89_PUBKEY.toUpperCase()}:conduit-market`
+    const tags = [
+      ["p", "b".repeat(64)],
+      ["amount", "50000"],
+      ["lnurl", "lnurl1test"],
+      ["relays", "wss://relay.example"],
+      ["client", "Conduit Market", uppercaseAddress, MARKET_NIP89_RELAY_HINT],
+    ]
+    const signed = await signAnonZapRequestDraft(
+      draft({ tags }),
+      envWithMarketNip89(),
+      { nowSeconds: NOW_SECONDS }
+    )
+
+    expect(signed.tags).toEqual(tags)
+  })
+
+  it("allows configured NIP-89 client tags with path-based relay hints", async () => {
+    const relayHint = "wss://relay.example/nostr"
+    const tags = [
+      ["p", "b".repeat(64)],
+      ["amount", "50000"],
+      ["lnurl", "lnurl1test"],
+      ["relays", "wss://relay.example"],
+      ["client", "Conduit Market", MARKET_NIP89_ADDRESS, relayHint],
+    ]
+    const signed = await signAnonZapRequestDraft(
+      draft({ tags }),
+      envWithMarketNip89({
+        ANON_CONDUIT_MARKET_NIP89_RELAY_HINT: relayHint,
+      }),
+      { nowSeconds: NOW_SECONDS }
+    )
+
+    expect(signed.tags).toEqual(tags)
+  })
+
   it("rejects a non-configured NIP-89 handler address before signing", async () => {
     await expect(
       signAnonZapRequestDraft(
