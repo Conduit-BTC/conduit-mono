@@ -168,10 +168,9 @@ function normalizeClientRelayHint(raw: string | undefined): string | null {
     if (url.username || url.password || url.search || url.hash) {
       return null
     }
-    if (url.pathname !== "/" && url.pathname !== "") {
-      return null
-    }
-    return `${url.protocol}//${url.host.toLowerCase()}`
+    const pathname =
+      url.pathname === "/" ? "" : url.pathname.replace(/\/+$/, "")
+    return `${url.protocol}//${url.host.toLowerCase()}${pathname}`
   } catch {
     return null
   }
