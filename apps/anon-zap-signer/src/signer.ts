@@ -1,4 +1,5 @@
 import {
+  getAnonZapDraftTag,
   type AnonZapRequestDraft,
   validateAnonZapRequestDraft,
 } from "@conduit/core/protocol/anon-zap"
@@ -18,10 +19,17 @@ export type AnonZapSignerEnv = {
   ANON_SIGNER_PORT?: string
 }
 
+type AnonZapSigningAuthorization = {
+  checkoutSessionId: string
+  merchantPubkey: string
+  publicZapPolicy: "anonymous_public_zap_allowed"
+}
+
 const MAX_REQUEST_BYTES = 8_192
 const DEFAULT_MAX_CLOCK_SKEW_SECONDS = 5 * 60
 const AUTH_TIMESTAMP_HEADER = "x-conduit-anon-signer-timestamp"
 const AUTH_SIGNATURE_HEADER = "x-conduit-anon-signer-signature"
+const ANON_PUBLIC_ZAP_POLICY = "anonymous_public_zap_allowed"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
@@ -176,6 +184,42 @@ function parseDraft(value: unknown): AnonZapRequestDraft | null {
     createdAt: value.createdAt,
     content: value.content,
     tags: tags as string[][],
+  }
+}
+
+function parseAuthorization(
+  value: unknown
+): AnonZapSigningAuthorization | null {
+  if (!isRecord(value)) return null
+  if (
+    typeof value.checkoutSessionId !== "string" ||
+    !/^[A-Za-z0-9:_-]{8,128}$/.test(value.checkoutSessionId)
+  ) {
+    return null
+  }
+  if (
+    typeof value.merchantPubkey !== "string" ||
+    !/^[0-9a-f]{64}$/i.test(value.merchantPubkey)
+  ) {
+    return null
+  }
+  if (value.publicZapPolicy !== ANON_PUBLIC_ZAP_POLICY) {
+    return null
+  }
+  return {
+    checkoutSessionId: value.checkoutSessionId,
+    merchantPubkey: value.merchantPubkey.toLowerCase(),
+    publicZapPolicy: ANON_PUBLIC_ZAP_POLICY,
+  }
+}
+
+function assertAuthorizedDraft(
+  draft: AnonZapRequestDraft,
+  authorization: AnonZapSigningAuthorization
+): void {
+  const merchantTag = getAnonZapDraftTag(draft, "p")
+  if (merchantTag?.[1]?.toLowerCase() !== authorization.merchantPubkey) {
+    throw new Error("Zap request authorization does not match merchant.")
   }
 }
 
@@ -335,6 +379,15 @@ export async function handleAnonZapSignerRequest(
     if (!draft) {
       return errorResponse("Invalid zap request.", 400, corsHeaders)
     }
+    const authorization = parseAuthorization(body.authorization)
+    if (!authorization) {
+      return errorResponse(
+        "Invalid zap request authorization.",
+        400,
+        corsHeaders
+      )
+    }
+    assertAuthorizedDraft(draft, authorization)
 
     const rawEvent = await signAnonZapRequestDraft(draft, env)
     return jsonResponse(

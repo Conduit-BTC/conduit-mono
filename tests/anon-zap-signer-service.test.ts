@@ -10,6 +10,7 @@ import type { AnonZapRequestDraft } from "@conduit/core"
 
 const PRIVATE_KEY_HEX = "0".repeat(63) + "1"
 const REQUEST_AUTH_SECRET = "test request auth secret with enough entropy"
+const MERCHANT_PUBKEY = "b".repeat(64)
 const EXPECTED_PUBKEY = getPublicKey(
   Uint8Array.from([
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -36,12 +37,31 @@ function draft(
     createdAt: NOW_SECONDS,
     content: "Anon shopper supported this merchant on Conduit",
     tags: [
-      ["p", "b".repeat(64)],
+      ["p", MERCHANT_PUBKEY],
       ["amount", "50000"],
       ["lnurl", "lnurl1test"],
       ["relays", "wss://relay.example"],
       ["client", "conduit-market"],
     ],
+    ...overrides,
+  }
+}
+
+function authorization(overrides: Record<string, unknown> = {}) {
+  return {
+    checkoutSessionId: "checkout-session-test",
+    merchantPubkey: MERCHANT_PUBKEY,
+    publicZapPolicy: "anonymous_public_zap_allowed",
+    ...overrides,
+  }
+}
+
+function signingRequestBody(
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    zapRequest: draft(),
+    authorization: authorization(),
     ...overrides,
   }
 }
@@ -134,7 +154,7 @@ describe("Anon zap signer service", () => {
 
   it("serves signed events over the local POST endpoint", async () => {
     const response = await handleAnonZapSignerRequest(
-      await postRequest({ zapRequest: draft() }),
+      await postRequest(signingRequestBody()),
       env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
     )
     const body = await response.json()
@@ -156,7 +176,7 @@ describe("Anon zap signer service", () => {
 
   it("rejects disallowed browser origins", async () => {
     const response = await handleAnonZapSignerRequest(
-      await postRequest({ zapRequest: draft() }, "https://evil.example"),
+      await postRequest(signingRequestBody(), "https://evil.example"),
       env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
     )
 
@@ -167,7 +187,7 @@ describe("Anon zap signer service", () => {
   it("allows single-label preview origins with a wildcard pattern", async () => {
     const origin = "https://ae855b59.conduit-market-coo.pages.dev"
     const response = await handleAnonZapSignerRequest(
-      await postRequest({ zapRequest: draft() }, origin),
+      await postRequest(signingRequestBody(), origin),
       env({
         ANON_SIGNER_ALLOWED_ORIGINS:
           "https://shop.conduit.market,https://*.conduit-market-coo.pages.dev",
@@ -186,14 +206,14 @@ describe("Anon zap signer service", () => {
     })
     const nested = await handleAnonZapSignerRequest(
       await postRequest(
-        { zapRequest: draft() },
+        signingRequestBody(),
         "https://nested.preview.conduit-market-coo.pages.dev"
       ),
       envWithWildcard
     )
     const lookalike = await handleAnonZapSignerRequest(
       await postRequest(
-        { zapRequest: draft() },
+        signingRequestBody(),
         "https://preview.conduit-market-coo.pages.dev.evil.example"
       ),
       envWithWildcard
@@ -204,7 +224,7 @@ describe("Anon zap signer service", () => {
   })
 
   it("allows authenticated server-to-server POST requests without an origin", async () => {
-    const bodyText = JSON.stringify({ zapRequest: draft() })
+    const bodyText = JSON.stringify(signingRequestBody())
     const auth = await signRequestBody(bodyText)
     const response = await handleAnonZapSignerRequest(
       new Request("http://localhost:7010", {
@@ -231,7 +251,7 @@ describe("Anon zap signer service", () => {
           "content-type": "application/json",
           origin: "http://localhost:7000",
         },
-        body: JSON.stringify({ zapRequest: draft() }),
+        body: JSON.stringify(signingRequestBody()),
       }),
       env()
     )
@@ -254,7 +274,7 @@ describe("Anon zap signer service", () => {
           ),
           "x-conduit-anon-signer-signature": "a".repeat(64),
         },
-        body: JSON.stringify({ zapRequest: draft() }),
+        body: JSON.stringify(signingRequestBody()),
       }),
       env()
     )
@@ -267,7 +287,7 @@ describe("Anon zap signer service", () => {
 
   it("fails closed when allowed origins are not configured", async () => {
     const response = await handleAnonZapSignerRequest(
-      await postRequest({ zapRequest: draft() }),
+      await postRequest(signingRequestBody()),
       env({ ANON_SIGNER_ALLOWED_ORIGINS: "" })
     )
 
@@ -288,5 +308,49 @@ describe("Anon zap signer service", () => {
     expect(response.headers.get("access-control-allow-origin")).toBe(
       "http://localhost:7000"
     )
+  })
+
+  it("rejects missing checkout authorization", async () => {
+    const response = await handleAnonZapSignerRequest(
+      await postRequest({ zapRequest: draft() }),
+      env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid zap request authorization.",
+    })
+  })
+
+  it("rejects checkout authorization for a different merchant", async () => {
+    const response = await handleAnonZapSignerRequest(
+      await postRequest(
+        signingRequestBody({
+          authorization: authorization({ merchantPubkey: "c".repeat(64) }),
+        })
+      ),
+      env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Zap request authorization does not match merchant.",
+    })
+  })
+
+  it("rejects checkout authorization without anonymous public zap policy", async () => {
+    const response = await handleAnonZapSignerRequest(
+      await postRequest(
+        signingRequestBody({
+          authorization: authorization({ publicZapPolicy: "private_invoice" }),
+        })
+      ),
+      env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid zap request authorization.",
+    })
   })
 })
