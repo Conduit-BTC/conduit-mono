@@ -167,7 +167,7 @@ jobs:
               fix.
 
             Mandatory constraints:
-            - external signer auth only; no key custody
+            - user auth remains external-signer-only; service-signer exceptions must be documented and scoped in docs/specs/protocol.md
             - no behavioral tracking or profiling
             - no message, order, payment, address, signer, or wallet secret inspection
             - payments remain non-custodial
@@ -222,7 +222,7 @@ jobs:
               fix.
 
             Mandatory constraints:
-            - external signer auth only; no key custody
+            - user auth remains external-signer-only; service-signer exceptions must be documented and scoped in docs/specs/protocol.md
             - no behavioral tracking or profiling
             - no message, order, payment, address, signer, or wallet secret inspection
             - payments remain non-custodial
@@ -277,7 +277,7 @@ jobs:
               fix.
 
             Mandatory constraints:
-            - external signer auth only; no key custody
+            - user auth remains external-signer-only; service-signer exceptions must be documented and scoped in docs/specs/protocol.md
             - no behavioral tracking or profiling
             - no message, order, payment, address, signer, or wallet secret inspection
             - payments remain non-custodial
