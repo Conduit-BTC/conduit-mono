@@ -9,6 +9,8 @@ import {
 import type { AnonZapRequestDraft } from "@conduit/core"
 
 const PRIVATE_KEY_HEX = "0".repeat(63) + "1"
+const REQUEST_AUTH_SECRET = "test request auth secret with enough entropy"
+const MERCHANT_PUBKEY = "b".repeat(64)
 const EXPECTED_PUBKEY = getPublicKey(
   Uint8Array.from([
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -21,6 +23,7 @@ function env(overrides: Partial<AnonZapSignerEnv> = {}): AnonZapSignerEnv {
   return {
     ANON_CONDUIT_SHOPPER_PRIVATE_KEY_HEX: PRIVATE_KEY_HEX,
     ANON_CONDUIT_SHOPPER_PUBKEY: EXPECTED_PUBKEY,
+    ANON_SIGNER_REQUEST_AUTH_SECRET: REQUEST_AUTH_SECRET,
     ANON_SIGNER_ALLOWED_ORIGINS: "http://localhost:7000",
     ...overrides,
   }
@@ -34,7 +37,7 @@ function draft(
     createdAt: NOW_SECONDS,
     content: "Anon shopper supported this merchant on Conduit",
     tags: [
-      ["p", "b".repeat(64)],
+      ["p", MERCHANT_PUBKEY],
       ["amount", "50000"],
       ["lnurl", "lnurl1test"],
       ["relays", "wss://relay.example"],
@@ -44,14 +47,69 @@ function draft(
   }
 }
 
-function postRequest(body: unknown, origin = "http://localhost:7000"): Request {
+function authorization(overrides: Record<string, unknown> = {}) {
+  return {
+    checkoutSessionId: "checkout-session-test",
+    merchantPubkey: MERCHANT_PUBKEY,
+    amountMsats: 50_000,
+    lnurl: "lnurl1test",
+    publicZapPolicy: "anonymous_public_zap_allowed",
+    ...overrides,
+  }
+}
+
+function signingRequestBody(
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    zapRequest: draft(),
+    authorization: authorization(),
+    ...overrides,
+  }
+}
+
+function bytesToHex(bytes: ArrayBuffer): string {
+  return [...new Uint8Array(bytes)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+}
+
+async function signRequestBody(
+  bodyText: string,
+  timestamp = Math.floor(Date.now() / 1000)
+): Promise<{ signature: string; timestamp: string }> {
+  const encoder = new TextEncoder()
+  const timestampText = String(timestamp)
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(REQUEST_AUTH_SECRET),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  )
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(`${timestampText}.${bodyText}`)
+  )
+  return { signature: bytesToHex(signature), timestamp: timestampText }
+}
+
+async function postRequest(
+  body: unknown,
+  origin = "http://localhost:7000"
+): Promise<Request> {
+  const bodyText = JSON.stringify(body)
+  const auth = await signRequestBody(bodyText)
   return new Request("http://localhost:7010", {
     method: "POST",
     headers: {
       "content-type": "application/json",
       origin,
+      "x-conduit-anon-signer-timestamp": auth.timestamp,
+      "x-conduit-anon-signer-signature": auth.signature,
     },
-    body: JSON.stringify(body),
+    body: bodyText,
   })
 }
 
@@ -86,6 +144,23 @@ describe("Anon zap signer service", () => {
     ).rejects.toThrow("Zap request contains private tags.")
   })
 
+  it("rejects extra payload fields on allowed public tags before signing", async () => {
+    await expect(
+      signAnonZapRequestDraft(
+        draft({
+          tags: [
+            ["p", "b".repeat(64)],
+            ["amount", "50000", "order-123"],
+            ["lnurl", "lnurl1test"],
+            ["relays", "wss://relay.example"],
+          ],
+        }),
+        env(),
+        { nowSeconds: NOW_SECONDS }
+      )
+    ).rejects.toThrow("Zap request tag payload is invalid.")
+  })
+
   it("rejects a signer secret that does not match the expected pubkey", async () => {
     await expect(
       signAnonZapRequestDraft(
@@ -98,7 +173,7 @@ describe("Anon zap signer service", () => {
 
   it("serves signed events over the local POST endpoint", async () => {
     const response = await handleAnonZapSignerRequest(
-      postRequest({ zapRequest: draft() }),
+      await postRequest(signingRequestBody()),
       env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
     )
     const body = await response.json()
@@ -120,25 +195,149 @@ describe("Anon zap signer service", () => {
 
   it("rejects disallowed browser origins", async () => {
     const response = await handleAnonZapSignerRequest(
-      postRequest({ zapRequest: draft() }, "https://evil.example"),
-      env()
+      await postRequest(signingRequestBody(), "https://evil.example"),
+      env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
     )
 
     expect(response.status).toBe(403)
     expect(response.headers.get("access-control-allow-origin")).toBeNull()
   })
 
-  it("rejects POST requests without an origin", async () => {
+  it("allows single-label preview origins with a wildcard pattern", async () => {
+    const origin = "https://ae855b59.conduit-market-coo.pages.dev"
+    const response = await handleAnonZapSignerRequest(
+      await postRequest(signingRequestBody(), origin),
+      env({
+        ANON_SIGNER_ALLOWED_ORIGINS:
+          "https://shop.conduit.market,https://*.conduit-market-coo.pages.dev",
+        ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000",
+      })
+    )
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("access-control-allow-origin")).toBe(origin)
+  })
+
+  it("rejects nested or lookalike wildcard origins", async () => {
+    const envWithWildcard = env({
+      ANON_SIGNER_ALLOWED_ORIGINS: "https://*.conduit-market-coo.pages.dev",
+      ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000",
+    })
+    const nested = await handleAnonZapSignerRequest(
+      await postRequest(
+        signingRequestBody(),
+        "https://nested.preview.conduit-market-coo.pages.dev"
+      ),
+      envWithWildcard
+    )
+    const lookalike = await handleAnonZapSignerRequest(
+      await postRequest(
+        signingRequestBody(),
+        "https://preview.conduit-market-coo.pages.dev.evil.example"
+      ),
+      envWithWildcard
+    )
+
+    expect(nested.status).toBe(403)
+    expect(lookalike.status).toBe(403)
+  })
+
+  it("allows authenticated server-to-server POST requests without an origin", async () => {
+    const bodyText = JSON.stringify(signingRequestBody())
+    const auth = await signRequestBody(bodyText)
     const response = await handleAnonZapSignerRequest(
       new Request("http://localhost:7010", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ zapRequest: draft() }),
+        headers: {
+          "content-type": "application/json",
+          "x-conduit-anon-signer-timestamp": auth.timestamp,
+          "x-conduit-anon-signer-signature": auth.signature,
+        },
+        body: bodyText,
+      }),
+      env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
+    )
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("access-control-allow-origin")).toBeNull()
+  })
+
+  it("rejects POST requests without request authentication", async () => {
+    const response = await handleAnonZapSignerRequest(
+      new Request("http://localhost:7010", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "http://localhost:7000",
+        },
+        body: JSON.stringify(signingRequestBody()),
       }),
       env()
     )
 
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Anon signer request authentication is missing.",
+    })
+  })
+
+  it("rejects oversized streamed bodies before request authentication", async () => {
+    const oversizedBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{"))
+        controller.enqueue(new Uint8Array(8_193))
+        controller.close()
+      },
+    })
+    const response = await handleAnonZapSignerRequest(
+      new Request("http://localhost:7010", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "http://localhost:7000",
+        },
+        body: oversizedBody,
+      }),
+      env()
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Request body is too large.",
+    })
+  })
+
+  it("rejects POST requests with a forged Origin but invalid request authentication", async () => {
+    const response = await handleAnonZapSignerRequest(
+      new Request("http://localhost:7010", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "http://localhost:7000",
+          "x-conduit-anon-signer-timestamp": String(
+            Math.floor(Date.now() / 1000)
+          ),
+          "x-conduit-anon-signer-signature": "a".repeat(64),
+        },
+        body: JSON.stringify(signingRequestBody()),
+      }),
+      env()
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Anon signer request authentication is invalid.",
+    })
+  })
+
+  it("fails closed when allowed origins are not configured", async () => {
+    const response = await handleAnonZapSignerRequest(
+      await postRequest(signingRequestBody()),
+      env({ ANON_SIGNER_ALLOWED_ORIGINS: "" })
+    )
+
     expect(response.status).toBe(403)
+    expect(response.headers.get("access-control-allow-origin")).toBeNull()
   })
 
   it("handles allowed CORS preflight without signing", async () => {
@@ -154,5 +353,81 @@ describe("Anon zap signer service", () => {
     expect(response.headers.get("access-control-allow-origin")).toBe(
       "http://localhost:7000"
     )
+  })
+
+  it("rejects missing checkout authorization", async () => {
+    const response = await handleAnonZapSignerRequest(
+      await postRequest({ zapRequest: draft() }),
+      env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid zap request authorization.",
+    })
+  })
+
+  it("rejects checkout authorization for a different merchant", async () => {
+    const response = await handleAnonZapSignerRequest(
+      await postRequest(
+        signingRequestBody({
+          authorization: authorization({ merchantPubkey: "c".repeat(64) }),
+        })
+      ),
+      env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Zap request authorization does not match merchant.",
+    })
+  })
+
+  it("rejects checkout authorization for a different amount", async () => {
+    const response = await handleAnonZapSignerRequest(
+      await postRequest(
+        signingRequestBody({
+          authorization: authorization({ amountMsats: 100_000 }),
+        })
+      ),
+      env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Zap request authorization does not match amount.",
+    })
+  })
+
+  it("rejects checkout authorization for a different LNURL", async () => {
+    const response = await handleAnonZapSignerRequest(
+      await postRequest(
+        signingRequestBody({
+          authorization: authorization({ lnurl: "lnurl1different" }),
+        })
+      ),
+      env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Zap request authorization does not match LNURL.",
+    })
+  })
+
+  it("rejects checkout authorization without anonymous public zap policy", async () => {
+    const response = await handleAnonZapSignerRequest(
+      await postRequest(
+        signingRequestBody({
+          authorization: authorization({ publicZapPolicy: "private_invoice" }),
+        })
+      ),
+      env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid zap request authorization.",
+    })
   })
 })

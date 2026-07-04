@@ -9,6 +9,9 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { ChevronDown, LoaderCircle, X } from "lucide-react"
 import { EVENT_KINDS, normalizePubkey, pubkeyToNpub } from "@conduit/core"
 import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
   Badge,
   Button,
   DropdownMenu,
@@ -17,6 +20,7 @@ import {
   DropdownMenuTrigger,
 } from "@conduit/ui"
 import { SignerSwitch } from "../../components/SignerSwitch"
+import { MerchantAvatarFallback } from "../../components/MerchantIdentity"
 import {
   ProductGridCard,
   ProductGridCardSkeleton,
@@ -163,6 +167,8 @@ function ProductsPage() {
   const [storeMenuOpen, setStoreMenuOpen] = useState(false)
   const hasAutoPromptedConnect = useRef(false)
   const tagCloudRef = useRef<HTMLDivElement | null>(null)
+  const hasMoreRef = useRef(false)
+  const loadMoreObserverRef = useRef<IntersectionObserver | null>(null)
   const btcUsdRateQuery = useBtcUsdRate()
   const btcUsdRate = btcUsdRateQuery.data ?? null
   const updateSearch = useCallback(
@@ -258,6 +264,30 @@ function ProductsPage() {
   useEffect(() => {
     setVisibleCount(PAGE_SIZE)
   }, [searchKey])
+
+  useEffect(() => {
+    hasMoreRef.current = hasMore
+  }, [hasMore])
+
+  const attachLoadMoreSentinel = useCallback((node: HTMLDivElement | null) => {
+    loadMoreObserverRef.current?.disconnect()
+    loadMoreObserverRef.current = null
+    if (!node || typeof IntersectionObserver === "undefined") return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // Reveal the next page ~one screen early so the N+1 batch is already
+        // laid out by the time the user scrolls to it. Each reveal pushes the
+        // sentinel back out of view, so it re-fires only on further scroll.
+        if (entries[0]?.isIntersecting && hasMoreRef.current) {
+          setVisibleCount((current) => current + PAGE_SIZE)
+        }
+      },
+      { rootMargin: "600px 0px" }
+    )
+    observer.observe(node)
+    loadMoreObserverRef.current = observer
+  }, [])
 
   useEffect(() => {
     if (
@@ -495,29 +525,40 @@ function ProductsPage() {
                   [{storeFacetTotal}]
                 </span>
               </DropdownMenuCheckboxItem>
-              {storeFacetOptions.map((option) => (
-                <DropdownMenuCheckboxItem
-                  key={option.value}
-                  checked={option.selected}
-                  onSelect={(event) => event.preventDefault()}
-                  onCheckedChange={() => toggleMerchant(option.value)}
-                  className="gap-3"
-                >
-                  <span
-                    className={[
-                      "min-w-0 flex-1 truncate",
-                      getMerchantIdentity(option.value).status === "pending"
-                        ? "animate-pulse"
-                        : "",
-                    ].join(" ")}
+              {storeFacetOptions.map((option) => {
+                const identity = getMerchantIdentity(option.value)
+                return (
+                  <DropdownMenuCheckboxItem
+                    key={option.value}
+                    checked={option.selected}
+                    onSelect={(event) => event.preventDefault()}
+                    onCheckedChange={() => toggleMerchant(option.value)}
+                    className="gap-2.5"
                   >
-                    {option.label}
-                  </span>
-                  <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
-                    [{option.count}]
-                  </span>
-                </DropdownMenuCheckboxItem>
-              ))}
+                    <Avatar className="h-5 w-5 shrink-0">
+                      <AvatarImage
+                        src={identity.picture}
+                        alt=""
+                        className="object-cover"
+                      />
+                      <AvatarFallback>
+                        <MerchantAvatarFallback iconClassName="h-2.5 w-2.5" />
+                      </AvatarFallback>
+                    </Avatar>
+                    <span
+                      className={[
+                        "min-w-0 flex-1 truncate",
+                        identity.status === "pending" ? "animate-pulse" : "",
+                      ].join(" ")}
+                    >
+                      {option.label}
+                    </span>
+                    <span className="ml-auto text-xs font-medium tabular-nums text-[var(--text-muted)]">
+                      [{option.count}]
+                    </span>
+                  </DropdownMenuCheckboxItem>
+                )
+              })}
             </DropdownMenuContent>
           </DropdownMenu>
           {hasActiveFilters && (
@@ -700,7 +741,18 @@ function ProductsPage() {
         <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
           {productCards.map(({ product, merchant }, index) => {
             return (
-              <li key={product.id} className="h-full">
+              <li
+                key={product.id}
+                className={[
+                  "h-full",
+                  // Keep the first page fully rendered (LCP / above the fold).
+                  // Let the browser skip layout + paint for the revealed tail
+                  // while reserving row height so the scrollbar stays stable.
+                  index >= PAGE_SIZE
+                    ? "[content-visibility:auto] [contain-intrinsic-size:auto_360px]"
+                    : "",
+                ].join(" ")}
+              >
                 <ProductGridCard
                   product={product}
                   merchantName={merchant.displayName}
@@ -781,16 +833,24 @@ function ProductsPage() {
         </ul>
       )}
 
-      {/* Show more */}
+      {/* Auto-reveal the next page as the sentinel nears the viewport; the
+          button stays as an accessible / no-IntersectionObserver fallback. */}
       {hasMore && (
-        <div className="flex justify-center pt-2">
-          <Button
-            variant="outline"
-            onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
-          >
-            Show more
-          </Button>
-        </div>
+        <>
+          <div
+            ref={attachLoadMoreSentinel}
+            aria-hidden="true"
+            className="h-px w-full"
+          />
+          <div className="flex justify-center pt-2">
+            <Button
+              variant="outline"
+              onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+            >
+              Show more
+            </Button>
+          </div>
+        </>
       )}
     </div>
   )

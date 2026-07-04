@@ -5,6 +5,7 @@ import {
   __setCommerceTestOverrides,
   cacheParsedOrderMessage,
   getBuyerConversationList,
+  getCachedMarketplaceProducts,
   getConversationDetail,
   getMarketplaceProducts,
   getMarketplaceProductsProgressive,
@@ -75,9 +76,11 @@ beforeEach(async () => {
   cachedOrderMessages = []
   __setCommerceTestOverrides({
     now: () => FIXED_NOW,
-    getCachedProducts: async (merchantPubkey) =>
+    getCachedProducts: async (merchantPubkey, authorPubkeys) =>
       cachedProducts.filter(
-        (row) => !merchantPubkey || row.pubkey === merchantPubkey
+        (row) =>
+          (!merchantPubkey || row.pubkey === merchantPubkey) &&
+          (!authorPubkeys || authorPubkeys.includes(row.pubkey))
       ),
     putCachedProducts: async (rows) => {
       for (const row of rows) {
@@ -223,6 +226,52 @@ describe("commerce gateway", () => {
     expect(result.meta.stale).toBe(true)
     expect(result.data).toHaveLength(1)
     expect(result.data[0]?.product.title).toBe("Cached Item")
+  })
+
+  it("scopes cached marketplace reads to the requested author set at the loader", async () => {
+    for (const pubkey of ["merchant-a", "merchant-b", "merchant-c"]) {
+      cachedProducts.push({
+        id: `30402:${pubkey}:item`,
+        pubkey,
+        title: `Item ${pubkey}`,
+        summary: "",
+        price: 10,
+        currency: "USD",
+        type: "simple",
+        visibility: "public",
+        images: [{ url: `https://example.com/${pubkey}.png` }],
+        tags: [],
+        createdAt: FIXED_NOW - 5_000,
+        updatedAt: FIXED_NOW - 5_000,
+        cachedAt: FIXED_NOW - 1_000,
+      })
+    }
+
+    // Assert at the loader seam: the cache read must forward the author set to
+    // the (Dexie-indexed) loader, not scope only via the post-read query filter.
+    // A regression to an unscoped `toArray()` would leave seenAuthorPubkeys
+    // undefined and fail here even though productMatchesQuery would still trim.
+    let seenAuthorPubkeys: readonly string[] | undefined
+    __setCommerceTestOverrides({
+      getCachedProducts: async (merchantPubkey, authorPubkeys) => {
+        seenAuthorPubkeys = authorPubkeys
+        return cachedProducts.filter(
+          (row) =>
+            (!merchantPubkey || row.pubkey === merchantPubkey) &&
+            (!authorPubkeys || authorPubkeys.includes(row.pubkey))
+        )
+      },
+    })
+
+    const result = await getCachedMarketplaceProducts({
+      authorPubkeys: ["merchant-a", "merchant-b"],
+    })
+
+    expect(seenAuthorPubkeys).toEqual(["merchant-a", "merchant-b"])
+    expect(result.data.map((record) => record.product.pubkey).sort()).toEqual([
+      "merchant-a",
+      "merchant-b",
+    ])
   })
 
   it("keeps merchant storefront reads deletion-aware", async () => {

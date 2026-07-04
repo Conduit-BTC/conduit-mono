@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from "bun:test"
 import { EVENT_KINDS } from "@conduit/core"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
 import {
+  type AnonZapSigningAuthorization,
   isAnonZapSignerConfigured,
   signCheckoutZapRequestWithAnonSigner,
   validateAnonZapSignerDraft,
@@ -46,6 +47,19 @@ function draft(
   }
 }
 
+function authorization(
+  overrides: Partial<AnonZapSigningAuthorization> = {}
+): AnonZapSigningAuthorization {
+  return {
+    checkoutSessionId: "checkout-session-test",
+    merchantPubkey: "b".repeat(64),
+    amountMsats: 50_000,
+    lnurl: "lnurl1test",
+    publicZapPolicy: "anonymous_public_zap_allowed",
+    ...overrides,
+  }
+}
+
 async function signedRawEventFor(request: CheckoutZapRequestDraft) {
   return cloneSignedEvent(
     finalizeEvent(
@@ -61,13 +75,13 @@ async function signedRawEventFor(request: CheckoutZapRequestDraft) {
 }
 
 describe("Anon zap signer client", () => {
-  it("requires both public endpoint and expected pubkey config", () => {
+  it("requires the expected anon signer pubkey config", () => {
     expect(
       isAnonZapSignerConfigured({
         anonZapSignerUrl: null,
         anonZapSignerPubkey: ANON_PUBKEY,
       })
-    ).toBe(false)
+    ).toBe(true)
     expect(
       isAnonZapSignerConfigured({
         anonZapSignerUrl: "https://signer.example/zap",
@@ -110,6 +124,7 @@ describe("Anon zap signer client", () => {
       signCheckoutZapRequestWithAnonSigner(draft(), {
         signerUrl: "https://signer.example/zap",
         fetchImpl,
+        authorization: authorization(),
       })
     ).rejects.toThrow("Anon zap signer pubkey is not configured.")
     expect(fetchImpl).toHaveBeenCalledTimes(0)
@@ -133,12 +148,16 @@ describe("Anon zap signer client", () => {
     ) as unknown as typeof fetch
 
     const signed = await signCheckoutZapRequestWithAnonSigner(request, {
-      signerUrl: "https://signer.example/zap",
+      signerUrl: "/api/anon-zap-sign",
       expectedPubkey: ANON_PUBKEY,
+      authorization: authorization(),
       fetchImpl,
     })
 
-    expect(postedBody).toEqual({ zapRequest: request })
+    expect(postedBody).toEqual({
+      zapRequest: request,
+      authorization: authorization(),
+    })
     expect(fetchImpl).toHaveBeenCalledTimes(1)
     expect(signed.id).toBe(rawEvent.id)
     expect(signed.rawEvent).toMatchObject({
@@ -169,6 +188,7 @@ describe("Anon zap signer client", () => {
       signCheckoutZapRequestWithAnonSigner(request, {
         signerUrl: "https://signer.example/zap",
         expectedPubkey: ANON_PUBKEY,
+        authorization: authorization(),
         fetchImpl,
       })
     ).rejects.toThrow("Anon zap signer returned the wrong pubkey.")
@@ -194,6 +214,7 @@ describe("Anon zap signer client", () => {
       signCheckoutZapRequestWithAnonSigner(request, {
         signerUrl: "https://signer.example/zap",
         expectedPubkey: ANON_PUBKEY,
+        authorization: authorization(),
         fetchImpl,
       })
     ).rejects.toThrow("Anon zap signer returned an invalid signature.")

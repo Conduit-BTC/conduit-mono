@@ -17,7 +17,16 @@ import type {
 type AnonZapSignerOptions = {
   signerUrl?: string | null
   expectedPubkey?: string | null
+  authorization?: AnonZapSigningAuthorization
   fetchImpl?: typeof fetch
+}
+
+export type AnonZapSigningAuthorization = {
+  checkoutSessionId: string
+  merchantPubkey: string
+  amountMsats: number
+  lnurl: string
+  publicZapPolicy: "anonymous_public_zap_allowed"
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -54,6 +63,7 @@ function isSignedNostrEvent(value: unknown): value is {
 }
 
 function normalizeSignerEndpoint(raw: string): string {
+  if (raw.startsWith("/")) return raw
   const url = new URL(raw)
   const localhost = url.hostname === "localhost" || url.hostname === "127.0.0.1"
   if (url.protocol !== "https:" && !(url.protocol === "http:" && localhost)) {
@@ -66,7 +76,7 @@ function normalizeSignerEndpoint(raw: string): string {
 export function isAnonZapSignerConfigured(
   cfg: Pick<typeof config, "anonZapSignerUrl" | "anonZapSignerPubkey"> = config
 ): boolean {
-  return !!cfg.anonZapSignerUrl && !!normalizePubkey(cfg.anonZapSignerPubkey)
+  return !!normalizePubkey(cfg.anonZapSignerPubkey)
 }
 
 export const validateAnonZapSignerDraft = validateAnonZapRequestDraft
@@ -79,6 +89,10 @@ export async function signCheckoutZapRequestWithAnonSigner(
   if (!validation.ok) throw new Error(validation.reason)
 
   const signerUrl = options.signerUrl ?? config.anonZapSignerUrl
+  const authorization = options.authorization
+  if (!authorization) {
+    throw new Error("Anon zap signer authorization is not configured.")
+  }
   if (!signerUrl) throw new Error("Anon zap signer is not configured.")
   const endpoint = normalizeSignerEndpoint(signerUrl)
   const expectedPubkey = normalizePubkey(
@@ -99,7 +113,7 @@ export async function signCheckoutZapRequestWithAnonSigner(
       accept: "application/json",
       "content-type": "application/json",
     },
-    body: JSON.stringify({ zapRequest: draft }),
+    body: JSON.stringify({ zapRequest: draft, authorization }),
     cache: "no-store",
     credentials: "omit",
     referrerPolicy: "no-referrer",

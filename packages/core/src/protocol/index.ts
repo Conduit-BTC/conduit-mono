@@ -38,6 +38,7 @@ export {
   refreshNdkRelaySettings,
   setSigner,
   removeSigner,
+  __resetNdkTestState,
   subscribeNdkState,
   getNdkState,
   type NdkConnectionState,

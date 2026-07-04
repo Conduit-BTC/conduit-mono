@@ -272,7 +272,15 @@ export async function runOrderPayment(
             draft: CheckoutZapRequestDraft
           ): Promise<SignedCheckoutZapRequest> => {
             if (publicZapSigner === "anon") {
-              return signCheckoutZapRequestWithAnonSigner(draft)
+              return signCheckoutZapRequestWithAnonSigner(draft, {
+                authorization: {
+                  checkoutSessionId: orderId,
+                  merchantPubkey: ctx.merchantPubkey,
+                  amountMsats: ctx.totalMsats,
+                  lnurl: lnurlMeta.lnurl,
+                  publicZapPolicy: "anonymous_public_zap_allowed",
+                },
+              })
             }
             if (publicZapSigner !== "shopper") {
               throw new Error("Public zap signer was not selected.")
