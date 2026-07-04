@@ -15,6 +15,10 @@ export type SignedAnonZapRequest = {
 export type AnonZapValidationResult =
   { ok: true } | { ok: false; reason: string }
 
+export type AnonZapValidationOptions = {
+  allowedClientTags?: readonly string[][]
+}
+
 export const ANON_ZAP_ALLOWED_TAGS = new Set([
   "p",
   "amount",
@@ -51,7 +55,32 @@ function isHexPubkey(value: string | undefined): boolean {
   return !!value && /^[0-9a-f]{64}$/i.test(value)
 }
 
-function isValidAllowedAnonZapTag(tag: string[]): boolean {
+function tagsEqual(left: readonly string[], right: readonly string[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  )
+}
+
+function isAllowedClientTag(
+  tag: string[],
+  options: AnonZapValidationOptions
+): boolean {
+  if (
+    options.allowedClientTags?.some((allowedTag) => tagsEqual(tag, allowedTag))
+  ) {
+    return true
+  }
+  return (
+    tag.length === 2 &&
+    (tag[1] === "conduit-market" || tag[1] === "Conduit Market")
+  )
+}
+
+function isValidAllowedAnonZapTag(
+  tag: string[],
+  options: AnonZapValidationOptions
+): boolean {
   const [name, ...values] = tag
   if (name === "p") {
     return tag.length === 2 && isHexPubkey(values[0])
@@ -67,10 +96,7 @@ function isValidAllowedAnonZapTag(tag: string[]): boolean {
     return tag.length >= 2 && values.every(isAllowedRelayUrl)
   }
   if (name === "client") {
-    return (
-      (tag.length === 2 || tag.length === 4) &&
-      values.every((value) => value.length > 0)
-    )
+    return isAllowedClientTag(tag, options)
   }
   if (name === "omf") {
     return tag.length === 1
@@ -86,7 +112,8 @@ export function getAnonZapDraftTag(
 }
 
 export function validateAnonZapRequestDraft(
-  draft: AnonZapRequestDraft
+  draft: AnonZapRequestDraft,
+  options: AnonZapValidationOptions = {}
 ): AnonZapValidationResult {
   if (draft.kind !== EVENT_KINDS.ZAP_REQUEST) {
     return { ok: false, reason: "Anon signer only accepts kind 9734." }
@@ -112,7 +139,7 @@ export function validateAnonZapRequestDraft(
     if (!ANON_ZAP_ALLOWED_TAGS.has(tag[0])) {
       return { ok: false, reason: "Zap request contains private tags." }
     }
-    if (!isValidAllowedAnonZapTag(tag)) {
+    if (!isValidAllowedAnonZapTag(tag, options)) {
       return { ok: false, reason: "Zap request tag payload is invalid." }
     }
   }
