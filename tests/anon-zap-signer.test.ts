@@ -167,6 +167,59 @@ describe("Anon zap signer client", () => {
     })
   })
 
+  it("normalizes NIP-89 client tags before posting to the signer", async () => {
+    const request = draft({
+      tags: [
+        ["p", "b".repeat(64)],
+        ["amount", "50000"],
+        ["lnurl", "lnurl1test"],
+        ["relays", "wss://relay.example"],
+        [
+          "client",
+          "Conduit Market",
+          `31990:${"c".repeat(64)}:conduit-market`,
+          "wss://relay.conduit.market",
+        ],
+      ],
+    })
+    const signerRequest = {
+      ...request,
+      tags: [
+        ["p", "b".repeat(64)],
+        ["amount", "50000"],
+        ["lnurl", "lnurl1test"],
+        ["relays", "wss://relay.example"],
+        ["client", "conduit-market"],
+      ],
+    }
+    const rawEvent = await signedRawEventFor(signerRequest)
+    let postedBody: unknown = null
+    const fetchImpl = mock(
+      async (_url: RequestInfo | URL, init?: RequestInit) => {
+        postedBody = init?.body ? JSON.parse(String(init.body)) : null
+        return new Response(
+          JSON.stringify({
+            id: rawEvent.id,
+            rawEvent,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+      }
+    ) as unknown as typeof fetch
+
+    const signed = await signCheckoutZapRequestWithAnonSigner(request, {
+      expectedPubkey: ANON_PUBKEY,
+      authorization: authorization(),
+      fetchImpl,
+    })
+
+    expect(postedBody).toEqual({
+      zapRequest: signerRequest,
+      authorization: authorization(),
+    })
+    expect(signed.rawEvent.tags).toEqual(signerRequest.tags)
+  })
+
   it("rejects signer responses from an unexpected pubkey", async () => {
     const request = draft()
     const rawEvent = await signedRawEventFor(request)

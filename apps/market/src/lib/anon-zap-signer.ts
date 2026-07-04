@@ -39,6 +39,18 @@ function tagsMatch(a: readonly string[][], b: unknown): boolean {
   return Array.isArray(b) && JSON.stringify(a) === JSON.stringify(b)
 }
 
+function normalizeAnonZapSignerDraft(
+  draft: CheckoutZapRequestDraft
+): CheckoutZapRequestDraft {
+  return {
+    ...draft,
+    tags: [
+      ...draft.tags.filter((tag) => tag[0] !== "client"),
+      ["client", "conduit-market"],
+    ],
+  }
+}
+
 function isSignedNostrEvent(value: unknown): value is {
   id: string
   pubkey: string
@@ -87,7 +99,8 @@ export async function signCheckoutZapRequestWithAnonSigner(
   draft: CheckoutZapRequestDraft,
   options: AnonZapSignerOptions = {}
 ): Promise<SignedCheckoutZapRequest> {
-  const validation = validateAnonZapSignerDraft(draft)
+  const signerDraft = normalizeAnonZapSignerDraft(draft)
+  const validation = validateAnonZapSignerDraft(signerDraft)
   if (!validation.ok) throw new Error(validation.reason)
 
   const signerUrl =
@@ -117,7 +130,7 @@ export async function signCheckoutZapRequestWithAnonSigner(
       accept: "application/json",
       "content-type": "application/json",
     },
-    body: JSON.stringify({ zapRequest: draft, authorization }),
+    body: JSON.stringify({ zapRequest: signerDraft, authorization }),
     cache: "no-store",
     credentials: "omit",
     referrerPolicy: "no-referrer",
@@ -142,13 +155,13 @@ export async function signCheckoutZapRequestWithAnonSigner(
     throw new Error("Anon zap signer returned a mismatched event id.")
   }
   if (
-    rawEvent.kind !== draft.kind ||
-    rawEvent.created_at !== draft.createdAt ||
-    rawEvent.content !== draft.content
+    rawEvent.kind !== signerDraft.kind ||
+    rawEvent.created_at !== signerDraft.createdAt ||
+    rawEvent.content !== signerDraft.content
   ) {
     throw new Error("Anon zap signer returned a mismatched event.")
   }
-  if (!tagsMatch(draft.tags, rawEvent.tags)) {
+  if (!tagsMatch(signerDraft.tags, rawEvent.tags)) {
     throw new Error("Anon zap signer returned mismatched tags.")
   }
 
