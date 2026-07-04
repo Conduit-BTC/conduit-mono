@@ -17,6 +17,8 @@ export type AnonZapSignerEnv = {
   ANON_SIGNER_ALLOWED_ORIGINS?: string
   ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS?: string
   ANON_SIGNER_PORT?: string
+  ANON_CONDUIT_MARKET_NIP89_ADDRESS?: string
+  ANON_CONDUIT_MARKET_NIP89_RELAY_HINT?: string
 }
 
 type AnonZapSigningAuthorization = {
@@ -150,6 +152,50 @@ function normalizeExpectedPubkey(raw: string | undefined): string | null {
   }
 
   return null
+}
+
+function normalizeClientRelayHint(raw: string | undefined): string | null {
+  const value = raw?.trim()
+  if (!value) return null
+
+  try {
+    const url = new URL(value)
+    const localhost =
+      url.hostname === "localhost" || url.hostname === "127.0.0.1"
+    if (url.protocol !== "wss:" && !(url.protocol === "ws:" && localhost)) {
+      return null
+    }
+    if (url.username || url.password || url.search || url.hash) {
+      return null
+    }
+    if (url.pathname !== "/" && url.pathname !== "") {
+      return null
+    }
+    return `${url.protocol}//${url.host.toLowerCase()}`
+  } catch {
+    return null
+  }
+}
+
+function normalizeMarketNip89Address(raw: string | undefined): string | null {
+  const value = raw?.trim()
+  if (!value) return null
+
+  const match = /^31990:([0-9a-f]{64}):([A-Za-z0-9._-]{1,128})$/i.exec(value)
+  if (!match) return null
+  return `31990:${match[1].toLowerCase()}:${match[2]}`
+}
+
+function getAllowedClientTags(env: AnonZapSignerEnv): string[][] {
+  const address = normalizeMarketNip89Address(
+    env.ANON_CONDUIT_MARKET_NIP89_ADDRESS
+  )
+  const relayHint = normalizeClientRelayHint(
+    env.ANON_CONDUIT_MARKET_NIP89_RELAY_HINT
+  )
+  if (!address || !relayHint) return []
+
+  return [["client", "Conduit Market", address, relayHint]]
 }
 
 function getMaxClockSkewSeconds(env: AnonZapSignerEnv): number {
@@ -362,7 +408,9 @@ export async function signAnonZapRequestDraft(
   env: AnonZapSignerEnv,
   options: { nowSeconds?: number } = {}
 ): Promise<NostrEvent> {
-  const validation = validateAnonZapRequestDraft(draft)
+  const validation = validateAnonZapRequestDraft(draft, {
+    allowedClientTags: getAllowedClientTags(env),
+  })
   if (!validation.ok) throw new Error(validation.reason)
   assertFreshDraft(draft, env, options.nowSeconds)
 
