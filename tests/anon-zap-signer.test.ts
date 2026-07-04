@@ -148,7 +148,6 @@ describe("Anon zap signer client", () => {
     ) as unknown as typeof fetch
 
     const signed = await signCheckoutZapRequestWithAnonSigner(request, {
-      signerUrl: "/api/anon-zap-sign",
       expectedPubkey: ANON_PUBKEY,
       authorization: authorization(),
       fetchImpl,

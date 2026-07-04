@@ -14,6 +14,8 @@ import type {
   SignedCheckoutZapRequest,
 } from "./checkout-payment"
 
+const DEFAULT_ANON_ZAP_SIGNER_ENDPOINT = "/api/anon-zap-sign"
+
 type AnonZapSignerOptions = {
   signerUrl?: string | null
   expectedPubkey?: string | null
@@ -88,12 +90,14 @@ export async function signCheckoutZapRequestWithAnonSigner(
   const validation = validateAnonZapSignerDraft(draft)
   if (!validation.ok) throw new Error(validation.reason)
 
-  const signerUrl = options.signerUrl ?? config.anonZapSignerUrl
+  const signerUrl =
+    options.signerUrl ??
+    config.anonZapSignerUrl ??
+    DEFAULT_ANON_ZAP_SIGNER_ENDPOINT
   const authorization = options.authorization
   if (!authorization) {
     throw new Error("Anon zap signer authorization is not configured.")
   }
-  if (!signerUrl) throw new Error("Anon zap signer is not configured.")
   const endpoint = normalizeSignerEndpoint(signerUrl)
   const expectedPubkey = normalizePubkey(
     options.expectedPubkey ?? config.anonZapSignerPubkey
