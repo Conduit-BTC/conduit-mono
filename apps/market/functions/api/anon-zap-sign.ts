@@ -1,4 +1,4 @@
-import { validateAnonZapRequestDraft } from "@conduit/core"
+import { validateAnonZapRequestDraft } from "@conduit/core/protocol/anon-zap"
 
 type PagesFunctionEnv = {
   ANON_ZAP_SIGNER_URL?: string
