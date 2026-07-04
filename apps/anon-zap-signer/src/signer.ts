@@ -22,6 +22,8 @@ export type AnonZapSignerEnv = {
 type AnonZapSigningAuthorization = {
   checkoutSessionId: string
   merchantPubkey: string
+  amountMsats: number
+  lnurl: string
   publicZapPolicy: "anonymous_public_zap_allowed"
 }
 
@@ -203,12 +205,24 @@ function parseAuthorization(
   ) {
     return null
   }
+  if (
+    typeof value.amountMsats !== "number" ||
+    !Number.isSafeInteger(value.amountMsats) ||
+    value.amountMsats <= 0
+  ) {
+    return null
+  }
+  if (typeof value.lnurl !== "string" || !/^lnurl/i.test(value.lnurl)) {
+    return null
+  }
   if (value.publicZapPolicy !== ANON_PUBLIC_ZAP_POLICY) {
     return null
   }
   return {
     checkoutSessionId: value.checkoutSessionId,
     merchantPubkey: value.merchantPubkey.toLowerCase(),
+    amountMsats: value.amountMsats,
+    lnurl: value.lnurl,
     publicZapPolicy: ANON_PUBLIC_ZAP_POLICY,
   }
 }
@@ -221,6 +235,14 @@ function assertAuthorizedDraft(
   if (merchantTag?.[1]?.toLowerCase() !== authorization.merchantPubkey) {
     throw new Error("Zap request authorization does not match merchant.")
   }
+  const amountTag = getAnonZapDraftTag(draft, "amount")
+  if (Number(amountTag?.[1]) !== authorization.amountMsats) {
+    throw new Error("Zap request authorization does not match amount.")
+  }
+  const lnurlTag = getAnonZapDraftTag(draft, "lnurl")
+  if (lnurlTag?.[1] !== authorization.lnurl) {
+    throw new Error("Zap request authorization does not match LNURL.")
+  }
 }
 
 async function readRequestText(request: Request): Promise<string> {
@@ -228,8 +250,32 @@ async function readRequestText(request: Request): Promise<string> {
   if (Number.isFinite(length) && length > MAX_REQUEST_BYTES) {
     throw new Error("Request body is too large.")
   }
-  const text = await request.text()
-  if (text.length > MAX_REQUEST_BYTES) {
+
+  if (!request.body) return ""
+
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let totalBytes = 0
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    totalBytes += value.byteLength
+    if (totalBytes > MAX_REQUEST_BYTES) {
+      await reader.cancel()
+      throw new Error("Request body is too large.")
+    }
+    chunks.push(value)
+  }
+
+  const bytes = new Uint8Array(totalBytes)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  const text = new TextDecoder().decode(bytes)
+  if (bytes.byteLength > MAX_REQUEST_BYTES) {
     throw new Error("Request body is too large.")
   }
   return text

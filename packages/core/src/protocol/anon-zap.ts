@@ -51,6 +51,33 @@ function isHexPubkey(value: string | undefined): boolean {
   return !!value && /^[0-9a-f]{64}$/i.test(value)
 }
 
+function isValidAllowedAnonZapTag(tag: string[]): boolean {
+  const [name, ...values] = tag
+  if (name === "p") {
+    return tag.length === 2 && isHexPubkey(values[0])
+  }
+  if (name === "amount") {
+    const amount = Number(values[0])
+    return tag.length === 2 && Number.isSafeInteger(amount) && amount > 0
+  }
+  if (name === "lnurl") {
+    return tag.length === 2 && /^lnurl/i.test(values[0] ?? "")
+  }
+  if (name === "relays") {
+    return tag.length >= 2 && values.every(isAllowedRelayUrl)
+  }
+  if (name === "client") {
+    return (
+      (tag.length === 2 || tag.length === 4) &&
+      values.every((value) => value.length > 0)
+    )
+  }
+  if (name === "omf") {
+    return tag.length === 1
+  }
+  return false
+}
+
 export function getAnonZapDraftTag(
   draft: AnonZapRequestDraft,
   name: string
@@ -84,6 +111,9 @@ export function validateAnonZapRequestDraft(
     }
     if (!ANON_ZAP_ALLOWED_TAGS.has(tag[0])) {
       return { ok: false, reason: "Zap request contains private tags." }
+    }
+    if (!isValidAllowedAnonZapTag(tag)) {
+      return { ok: false, reason: "Zap request tag payload is invalid." }
     }
   }
 

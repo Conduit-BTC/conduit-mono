@@ -51,6 +51,8 @@ function authorization(overrides: Record<string, unknown> = {}) {
   return {
     checkoutSessionId: "checkout-session-test",
     merchantPubkey: MERCHANT_PUBKEY,
+    amountMsats: 50_000,
+    lnurl: "lnurl1test",
     publicZapPolicy: "anonymous_public_zap_allowed",
     ...overrides,
   }
@@ -140,6 +142,46 @@ describe("Anon zap signer service", () => {
         { nowSeconds: NOW_SECONDS }
       )
     ).rejects.toThrow("Zap request contains private tags.")
+  })
+
+  it("rejects extra payload fields on allowed public tags before signing", async () => {
+    await expect(
+      signAnonZapRequestDraft(
+        draft({
+          tags: [
+            ["p", "b".repeat(64)],
+            ["amount", "50000", "order-123"],
+            ["lnurl", "lnurl1test"],
+            ["relays", "wss://relay.example"],
+          ],
+        }),
+        env(),
+        { nowSeconds: NOW_SECONDS }
+      )
+    ).rejects.toThrow("Zap request tag payload is invalid.")
+  })
+
+  it("accepts the four-field NIP-89 client tag shape before signing", async () => {
+    const signed = await signAnonZapRequestDraft(
+      draft({
+        tags: [
+          ["p", "b".repeat(64)],
+          ["amount", "50000"],
+          ["lnurl", "lnurl1test"],
+          ["relays", "wss://relay.example"],
+          [
+            "client",
+            "Conduit Market",
+            `31990:${"c".repeat(64)}:conduit-market`,
+            "wss://relay.conduit.market",
+          ],
+        ],
+      }),
+      env(),
+      { nowSeconds: NOW_SECONDS }
+    )
+
+    expect(signed.pubkey).toBe(EXPECTED_PUBKEY)
   })
 
   it("rejects a signer secret that does not match the expected pubkey", async () => {
@@ -262,6 +304,32 @@ describe("Anon zap signer service", () => {
     })
   })
 
+  it("rejects oversized streamed bodies before request authentication", async () => {
+    const oversizedBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{"))
+        controller.enqueue(new Uint8Array(8_193))
+        controller.close()
+      },
+    })
+    const response = await handleAnonZapSignerRequest(
+      new Request("http://localhost:7010", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "http://localhost:7000",
+        },
+        body: oversizedBody,
+      }),
+      env()
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Request body is too large.",
+    })
+  })
+
   it("rejects POST requests with a forged Origin but invalid request authentication", async () => {
     const response = await handleAnonZapSignerRequest(
       new Request("http://localhost:7010", {
@@ -335,6 +403,38 @@ describe("Anon zap signer service", () => {
     expect(response.status).toBe(400)
     await expect(response.json()).resolves.toMatchObject({
       error: "Zap request authorization does not match merchant.",
+    })
+  })
+
+  it("rejects checkout authorization for a different amount", async () => {
+    const response = await handleAnonZapSignerRequest(
+      await postRequest(
+        signingRequestBody({
+          authorization: authorization({ amountMsats: 100_000 }),
+        })
+      ),
+      env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Zap request authorization does not match amount.",
+    })
+  })
+
+  it("rejects checkout authorization for a different LNURL", async () => {
+    const response = await handleAnonZapSignerRequest(
+      await postRequest(
+        signingRequestBody({
+          authorization: authorization({ lnurl: "lnurl1different" }),
+        })
+      ),
+      env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" })
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Zap request authorization does not match LNURL.",
     })
   })
 
