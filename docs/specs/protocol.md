@@ -29,18 +29,20 @@ Conduit Market and Merchant Portal user authentication use external signers only
 ### Service Signer Exception: Anon Public Zaps
 
 The Anon Conduit Shopper public zap signer is the only approved server-side
-private-key exception in this repository. It exists to sign generic NIP-57 zap
-request events (`kind:9734`) for checkout flows where a merchant explicitly
-allows public anonymous zaps.
+private-key exception in this repository. It exists to sign NIP-57 zap request
+events (`kind:9734`) only for checkout flows where a merchant explicitly allows
+public anonymous zaps.
 
 This exception is constrained as follows:
 
 - The private key must live only in the Cloudflare Worker runtime secret for
   `apps/anon-zap-signer`; it must not be exposed through `VITE_*`, Pages client
   env vars, logs, telemetry, PR comments, or tracked files.
-- The Worker may sign only validated public zap request drafts. Request tags and
-  content must exclude order identifiers, cart contents, shipping/contact data,
-  invoices, NWC URIs, plaintext messages, or other private checkout data.
+- The Worker may sign only validated public zap request drafts that are bound to
+  an authorized checkout session and a merchant/product zap policy that
+  explicitly permits anonymous public zaps. Request tags and content must exclude
+  order identifiers, cart contents, shipping/contact data, invoices, NWC URIs,
+  plaintext messages, or other private checkout data.
 - Browser `Origin` checks are not authentication. Calls that request signing
   must include server-side request authentication shared only between the
   calling server runtime and the signer Worker.
