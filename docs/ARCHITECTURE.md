@@ -117,7 +117,11 @@ Do not document Store Builder behavior beyond implemented routes and shared app 
 | `31989` | Application recommendation   | NIP-89                            |
 | `31990` | Application handler metadata | NIP-89                            |
 
-Authentication is external-signer-only. The repo policy allows NIP-07 and NIP-46 style external signers.
+Market and Merchant user authentication is external-signer-only. The repo policy
+allows NIP-07 and NIP-46 style external signers. The only approved server-side
+private-key exception is the Anon Conduit Shopper public zap signer described in
+`docs/specs/protocol.md`; it is limited to authenticated, merchant-authorized
+public zap request signing and does not authorize user key custody.
 
 ### Product Discovery
 
