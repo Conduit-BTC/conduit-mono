@@ -55,6 +55,50 @@ function isHexPubkey(value: string | undefined): boolean {
   return !!value && /^[0-9a-f]{64}$/i.test(value)
 }
 
+function normalizeNip89Address(value: string | undefined): string | null {
+  const match = /^31990:([0-9a-f]{64}):([A-Za-z0-9._-]{1,128})$/i.exec(
+    value ?? ""
+  )
+  if (!match) return null
+  return `31990:${match[1].toLowerCase()}:${match[2]}`
+}
+
+function normalizeClientRelayHint(value: string | undefined): string | null {
+  if (!value) return null
+
+  try {
+    const url = new URL(value)
+    const localhost =
+      url.hostname === "localhost" || url.hostname === "127.0.0.1"
+    if (url.protocol !== "wss:" && !(url.protocol === "ws:" && localhost)) {
+      return null
+    }
+    if (url.username || url.password || url.search || url.hash) {
+      return null
+    }
+
+    const pathname =
+      url.pathname === "/" ? "" : url.pathname.replace(/\/+$/, "")
+    return `${url.protocol}//${url.host.toLowerCase()}${pathname}`
+  } catch {
+    return null
+  }
+}
+
+function clientTagsEqual(
+  left: readonly string[],
+  right: readonly string[]
+): boolean {
+  if (left.length !== right.length || left[0] !== right[0]) return false
+  if (left.length !== 4 || left[0] !== "client") return tagsEqual(left, right)
+
+  return (
+    left[1] === right[1] &&
+    normalizeNip89Address(left[2]) === normalizeNip89Address(right[2]) &&
+    normalizeClientRelayHint(left[3]) === normalizeClientRelayHint(right[3])
+  )
+}
+
 function tagsEqual(left: readonly string[], right: readonly string[]): boolean {
   return (
     left.length === right.length &&
@@ -67,7 +111,9 @@ function isAllowedClientTag(
   options: AnonZapValidationOptions
 ): boolean {
   if (
-    options.allowedClientTags?.some((allowedTag) => tagsEqual(tag, allowedTag))
+    options.allowedClientTags?.some((allowedTag) =>
+      clientTagsEqual(tag, allowedTag)
+    )
   ) {
     return true
   }
