@@ -23,7 +23,7 @@ Apply these instructions when generating pull request reviews.
 
 ## Mandatory Checks
 
-- Auth flow remains external-signer-only
+- User auth flow remains external-signer-only; any service-signer exception must be explicitly documented and scoped in `docs/specs/protocol.md`
 - Order/message actions are signer-gated
 - Payment flow remains non-custodial and does not introduce balance management
 - No new behavioral tracking/profiling
