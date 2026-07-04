@@ -11,6 +11,9 @@ import type { AnonZapRequestDraft } from "@conduit/core"
 const PRIVATE_KEY_HEX = "0".repeat(63) + "1"
 const REQUEST_AUTH_SECRET = "test request auth secret with enough entropy"
 const MERCHANT_PUBKEY = "b".repeat(64)
+const MARKET_NIP89_PUBKEY = "c".repeat(64)
+const MARKET_NIP89_ADDRESS = `31990:${MARKET_NIP89_PUBKEY}:conduit-market`
+const MARKET_NIP89_RELAY_HINT = "wss://relay.conduit.market"
 const EXPECTED_PUBKEY = getPublicKey(
   Uint8Array.from([
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -27,6 +30,16 @@ function env(overrides: Partial<AnonZapSignerEnv> = {}): AnonZapSignerEnv {
     ANON_SIGNER_ALLOWED_ORIGINS: "http://localhost:7000",
     ...overrides,
   }
+}
+
+function envWithMarketNip89(
+  overrides: Partial<AnonZapSignerEnv> = {}
+): AnonZapSignerEnv {
+  return env({
+    ANON_CONDUIT_MARKET_NIP89_ADDRESS: MARKET_NIP89_ADDRESS,
+    ANON_CONDUIT_MARKET_NIP89_RELAY_HINT: MARKET_NIP89_RELAY_HINT,
+    ...overrides,
+  })
 }
 
 function draft(
@@ -161,27 +174,113 @@ describe("Anon zap signer service", () => {
     ).rejects.toThrow("Zap request tag payload is invalid.")
   })
 
-  it("accepts the four-field NIP-89 client tag shape before signing", async () => {
-    const signed = await signAnonZapRequestDraft(
-      draft({
-        tags: [
-          ["p", "b".repeat(64)],
-          ["amount", "50000"],
-          ["lnurl", "lnurl1test"],
-          ["relays", "wss://relay.example"],
-          [
-            "client",
-            "Conduit Market",
-            `31990:${"c".repeat(64)}:conduit-market`,
-            "wss://relay.conduit.market",
+  it("rejects arbitrary client tag values before signing", async () => {
+    await expect(
+      signAnonZapRequestDraft(
+        draft({
+          tags: [
+            ["p", "b".repeat(64)],
+            ["amount", "50000"],
+            ["lnurl", "lnurl1test"],
+            ["relays", "wss://relay.example"],
+            ["client", "order-123"],
           ],
-        ],
-      }),
-      env(),
+        }),
+        env(),
+        { nowSeconds: NOW_SECONDS }
+      )
+    ).rejects.toThrow("Zap request tag payload is invalid.")
+  })
+
+  it("rejects malformed NIP-89 client tag values before signing", async () => {
+    await expect(
+      signAnonZapRequestDraft(
+        draft({
+          tags: [
+            ["p", "b".repeat(64)],
+            ["amount", "50000"],
+            ["lnurl", "lnurl1test"],
+            ["relays", "wss://relay.example"],
+            [
+              "client",
+              "Conduit Market",
+              `31990:${"c".repeat(64)}:private-order-id`,
+              "wss://relay.conduit.market",
+            ],
+          ],
+        }),
+        env(),
+        { nowSeconds: NOW_SECONDS }
+      )
+    ).rejects.toThrow("Zap request tag payload is invalid.")
+  })
+
+  it("allows the configured Conduit Market NIP-89 client tag before signing", async () => {
+    const tags = [
+      ["p", "b".repeat(64)],
+      ["amount", "50000"],
+      ["lnurl", "lnurl1test"],
+      ["relays", "wss://relay.example"],
+      [
+        "client",
+        "Conduit Market",
+        MARKET_NIP89_ADDRESS,
+        MARKET_NIP89_RELAY_HINT,
+      ],
+    ]
+    const signed = await signAnonZapRequestDraft(
+      draft({ tags }),
+      envWithMarketNip89(),
       { nowSeconds: NOW_SECONDS }
     )
 
-    expect(signed.pubkey).toBe(EXPECTED_PUBKEY)
+    expect(signed.tags).toEqual(tags)
+  })
+
+  it("rejects a non-configured NIP-89 handler address before signing", async () => {
+    await expect(
+      signAnonZapRequestDraft(
+        draft({
+          tags: [
+            ["p", "b".repeat(64)],
+            ["amount", "50000"],
+            ["lnurl", "lnurl1test"],
+            ["relays", "wss://relay.example"],
+            [
+              "client",
+              "Conduit Market",
+              `31990:${"d".repeat(64)}:conduit-market`,
+              MARKET_NIP89_RELAY_HINT,
+            ],
+          ],
+        }),
+        envWithMarketNip89(),
+        { nowSeconds: NOW_SECONDS }
+      )
+    ).rejects.toThrow("Zap request tag payload is invalid.")
+  })
+
+  it("rejects NIP-89 relay hints with path or query payloads before signing", async () => {
+    await expect(
+      signAnonZapRequestDraft(
+        draft({
+          tags: [
+            ["p", "b".repeat(64)],
+            ["amount", "50000"],
+            ["lnurl", "lnurl1test"],
+            ["relays", "wss://relay.example"],
+            [
+              "client",
+              "Conduit Market",
+              MARKET_NIP89_ADDRESS,
+              `${MARKET_NIP89_RELAY_HINT}/private-order-id?session=abc`,
+            ],
+          ],
+        }),
+        envWithMarketNip89(),
+        { nowSeconds: NOW_SECONDS }
+      )
+    ).rejects.toThrow("Zap request tag payload is invalid.")
   })
 
   it("rejects a signer secret that does not match the expected pubkey", async () => {
