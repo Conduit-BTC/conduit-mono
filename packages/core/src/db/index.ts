@@ -225,56 +225,29 @@ export type OrderPublicZapSigner = "anon" | "shopper"
  * fulfillment-coverage check.
  */
 export type OrderAddressValidity =
-  | "not_required"
-  | "valid"
-  | "missing"
-  | "inconsistent"
-  | "unknown"
+  "not_required" | "valid" | "missing" | "inconsistent" | "unknown"
 
 /** Merchant shipping-zone coverage for the destination. */
 export type OrderShippingZoneEligibility =
-  | "not_required"
-  | "eligible"
-  | "ineligible"
-  | "unknown"
+  "not_required" | "eligible" | "ineligible" | "unknown"
 
 export type OrderDeliveryStatus = "not_started" | "pending" | "sent" | "failed"
 
 export type OrderInvoiceStatus =
-  | "not_requested"
-  | "requesting"
-  | "received"
-  | "manual_required"
-  | "failed"
+  "not_requested" | "requesting" | "received" | "manual_required" | "failed"
 
 export type OrderPaymentStatus =
-  | "not_started"
-  | "paying"
-  | "paid"
-  | "manual_required"
-  | "failed"
-  | "ambiguous"
+  "not_started" | "paying" | "paid" | "manual_required" | "failed" | "ambiguous"
 
 export type OrderProofDeliveryStatus =
-  | "not_started"
-  | "pending"
-  | "sent"
-  | "retry_needed"
-  | "failed"
+  "not_started" | "pending" | "sent" | "retry_needed" | "failed"
 
 export type OrderZapReceiptStatus =
-  | "not_applicable"
-  | "waiting"
-  | "observed"
-  | "timed_out"
+  "not_applicable" | "waiting" | "observed" | "timed_out"
 
 /** Coarse bucket used for Orders list filtering (All/Pending/In progress/...). */
 export type OrderLifecyclePhase =
-  | "pending"
-  | "in_progress"
-  | "completed"
-  | "failed"
-  | "cancelled"
+  "pending" | "in_progress" | "completed" | "failed" | "cancelled"
 
 export interface OrderLifecycleItem {
   productId: string

@@ -120,13 +120,7 @@ import {
 } from "../lib/wallet-readiness"
 
 type CheckoutStep =
-  | "shipping"
-  | "payment"
-  | "signing"
-  | "sending"
-  | "sent"
-  | "paying"
-  | "paid"
+  "shipping" | "payment" | "signing" | "sending" | "sent" | "paying" | "paid"
 
 type CheckoutSearch = {
   merchant?: string
@@ -142,10 +136,7 @@ const CHECKOUT_PRICE_REFRESH_TIMEOUT_MS = 5_000
 const CHECKOUT_PRICE_REFRESH_RETRY_MS = 30_000
 
 type CheckoutPricingRefreshState =
-  | "ready"
-  | "refreshing"
-  | "stale_retryable"
-  | "unavailable"
+  "ready" | "refreshing" | "stale_retryable" | "unavailable"
 
 const DEFAULT_SHIPPING_FORM: ShippingFormState = {
   firstName: "",

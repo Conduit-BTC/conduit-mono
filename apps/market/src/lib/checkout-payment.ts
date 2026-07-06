@@ -25,9 +25,7 @@ export const CHECKOUT_QUOTE_MAX_AGE_MS = 5 * 60_000
 export type CheckoutZapVisibility = "public_zap" | "private_checkout"
 
 export type CheckoutZapMode =
-  | "anonymous_public_zap"
-  | "public_zap_as_shopper"
-  | "private_checkout"
+  "anonymous_public_zap" | "public_zap_as_shopper" | "private_checkout"
 
 export type CheckoutPublicZapSigner = "anon" | "shopper"
 
@@ -54,10 +52,7 @@ export type CheckoutPricingItem = {
 }
 
 export type CheckoutShippingCostStatus =
-  | "not_required"
-  | "included"
-  | "priced"
-  | "manual"
+  "not_required" | "included" | "priced" | "manual"
 
 export type CheckoutShippingCostSummary = {
   status: CheckoutShippingCostStatus
@@ -333,11 +328,7 @@ export type PaymentTrackerRowKey =
   | "receipt_sent"
 
 export type PaymentTrackerRowStatus =
-  | "waiting"
-  | "in_progress"
-  | "complete"
-  | "failed"
-  | "retry_needed"
+  "waiting" | "in_progress" | "complete" | "failed" | "retry_needed"
 
 export type PaymentTrackerOutcome =
   | "in_progress"
