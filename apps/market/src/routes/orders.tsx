@@ -56,6 +56,7 @@ import {
   buildOrderTimeline,
   buildOrderViewModel,
   deriveOrderHeaderStatus,
+  getOrderPaymentMethodLabel,
   type OrderHeaderStatus,
   type OrderViewModel,
 } from "../lib/order-view"
@@ -840,9 +841,7 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
                   </DetailRow>
                 )}
                 <DetailRow label="Paid with">
-                  <span className="capitalize">
-                    {vm.checkoutMode?.replace(/_/g, " ") ?? "—"}
-                  </span>
+                  <span>{getOrderPaymentMethodLabel(vm)}</span>
                 </DetailRow>
                 <DetailRow label="Ordered">
                   <span>{new Date(vm.createdAt).toLocaleString()}</span>

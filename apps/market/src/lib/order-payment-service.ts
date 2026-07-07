@@ -100,6 +100,37 @@ function buildProofContentJson(input: {
   })
 }
 
+export function buildLifecyclePaymentProofContentJson(
+  lifecycle: Pick<
+    OrderLifecycle,
+    | "orderId"
+    | "checkoutMode"
+    | "publicZapSigner"
+    | "totalSats"
+    | "totalMsats"
+    | "invoice"
+    | "preimage"
+    | "paymentHash"
+    | "feeMsats"
+    | "zapRequestId"
+  >,
+  input: { source: string; note: string }
+): string {
+  return buildProofContentJson({
+    orderId: lifecycle.orderId,
+    action: getLifecyclePaymentProofAction(lifecycle),
+    amountSats: lifecycle.totalSats,
+    amountMsats: lifecycle.totalMsats,
+    invoice: lifecycle.invoice ?? "",
+    preimage: lifecycle.preimage,
+    paymentHash: lifecycle.paymentHash,
+    feeMsats: lifecycle.feeMsats,
+    zapRequestId: lifecycle.zapRequestId,
+    source: input.source,
+    note: input.note,
+  })
+}
+
 export interface OrderPaymentContext {
   orderId: string
   buyerPubkey: string
@@ -496,16 +527,7 @@ export async function resendOrderProof(
   if (!lifecycle || lifecycle.paymentStatus !== "paid" || !lifecycle.invoice) {
     return runtimeStates.get(orderId)
   }
-  const content = buildProofContentJson({
-    orderId,
-    action: getLifecyclePaymentProofAction(lifecycle),
-    amountSats: lifecycle.totalSats,
-    amountMsats: lifecycle.totalMsats,
-    invoice: lifecycle.invoice,
-    preimage: lifecycle.preimage,
-    paymentHash: lifecycle.paymentHash,
-    feeMsats: lifecycle.feeMsats,
-    zapRequestId: lifecycle.zapRequestId,
+  const content = buildLifecyclePaymentProofContentJson(lifecycle, {
     source: "buyer",
     note: `Payment for order ${orderId}`,
   })
@@ -554,12 +576,7 @@ export async function submitExternalPaymentProof(
     proofDeliveryStatus: "pending",
   })
 
-  const content = buildProofContentJson({
-    orderId,
-    action: "external_invoice",
-    amountSats: lifecycle.totalSats,
-    amountMsats: lifecycle.totalMsats,
-    invoice: lifecycle.invoice,
+  const content = buildLifecyclePaymentProofContentJson(lifecycle, {
     source: "external",
     note: `External wallet payment for order ${orderId}`,
   })

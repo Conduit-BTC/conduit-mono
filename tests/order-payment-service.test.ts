@@ -2,11 +2,13 @@ import { describe, expect, it } from "bun:test"
 
 import { db } from "../packages/core/src/db"
 import {
+  buildLifecyclePaymentProofContentJson,
   getLifecyclePaymentProofAction,
   isOrderPaymentRunning,
   runOrderPayment,
   type OrderPaymentContext,
 } from "../apps/market/src/lib/order-payment-service"
+import type { OrderLifecycle } from "../packages/core/src/db"
 
 function basePaymentContext(
   overrides: Partial<OrderPaymentContext> = {}
@@ -22,6 +24,34 @@ function basePaymentContext(
     totalMsats: 1_000,
     walletConnection: null,
     tryNwc: false,
+    ...overrides,
+  }
+}
+
+function lifecycle(overrides: Partial<OrderLifecycle> = {}): OrderLifecycle {
+  return {
+    orderId: "external-wallet-proof-test",
+    buyerPubkey: "buyer",
+    merchantPubkey: "merchant",
+    checkoutMode: "external_wallet",
+    publicZapSigner: "anon",
+    items: [],
+    itemSubtotalSats: 1,
+    shippingCostSats: 0,
+    totalSats: 1,
+    totalMsats: 1_000,
+    currency: "SATS",
+    invoice: "lnbc1test",
+    addressValidity: "not_required",
+    shippingZoneEligibility: "not_required",
+    orderDeliveryStatus: "sent",
+    invoiceStatus: "manual_required",
+    paymentStatus: "manual_required",
+    proofDeliveryStatus: "not_started",
+    zapReceiptStatus: "not_applicable",
+    phase: "in_progress",
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
     ...overrides,
   }
 }
@@ -45,6 +75,39 @@ describe("runOrderPayment", () => {
         checkoutMode: "external_wallet",
       })
     ).toBe("private_checkout")
+  })
+
+  it("keeps first external-wallet public zap proof linked to the zap request", () => {
+    const content = JSON.parse(
+      buildLifecyclePaymentProofContentJson(
+        lifecycle({ publicZapSigner: "anon", zapRequestId: "zap-request-id" }),
+        {
+          source: "external",
+          note: "External wallet payment for order external-wallet-proof-test",
+        }
+      )
+    )
+
+    expect(content).toMatchObject({
+      action: "zap",
+      source: "external",
+      zapRequestId: "zap-request-id",
+    })
+  })
+
+  it("keeps first external-wallet private proof private when no public signer exists", () => {
+    const content = JSON.parse(
+      buildLifecyclePaymentProofContentJson(
+        lifecycle({ publicZapSigner: undefined, zapRequestId: undefined }),
+        {
+          source: "external",
+          note: "External wallet payment for order external-wallet-proof-test",
+        }
+      )
+    )
+
+    expect(content.action).toBe("private_checkout")
+    expect(content.zapRequestId).toBeUndefined()
   })
 
   it("releases the order in-flight lock when lifecycle patching fails", async () => {

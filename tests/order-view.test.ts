@@ -5,6 +5,7 @@ import {
   buildOrderViewModel,
   computeOrderTimelineStatuses,
   deriveOrderHeaderStatus,
+  getOrderPaymentMethodLabel,
   type OrderViewModel,
 } from "../apps/market/src/lib/order-view"
 
@@ -60,6 +61,21 @@ describe("buildOrderViewModel", () => {
     expect(vm.items[0].displayTitle).toBe("Nostr Hoodie")
     expect(vm.totalSats).toBe(111)
     expect(vm.paymentStatus).toBe("paid")
+  })
+
+  it("preserves public zap attribution for external-wallet fallback orders", () => {
+    const anon = vmFromLifecycle({
+      checkoutMode: "external_wallet",
+      publicZapSigner: "anon",
+    })
+    const shopper = vmFromLifecycle({
+      checkoutMode: "external_wallet",
+      publicZapSigner: "shopper",
+    })
+
+    expect(anon.publicZapSigner).toBe("anon")
+    expect(getOrderPaymentMethodLabel(anon)).toBe("Anonymous public zap")
+    expect(getOrderPaymentMethodLabel(shopper)).toBe("Public zap as shopper")
   })
 
   it("prefers the lifecycle product title snapshot over a d-tag fallback", () => {
