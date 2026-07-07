@@ -209,6 +209,37 @@ describe("payment proof model", () => {
     expect(summary.paymentProofCurrency).toBeNull()
   })
 
+  it("preserves order item title snapshots in summaries", () => {
+    const order = parseOrderMessageRumorEvent(
+      rumor({
+        id: "order-title-event",
+        type: "order",
+        content: JSON.stringify({
+          id: "order-1",
+          merchantPubkey,
+          buyerPubkey,
+          items: [
+            {
+              productId:
+                "30402:merchant:cnd26-publicnd26-public-product-ref-testc-product-ref-test-ec3t68",
+              title: "CND26 Public Product Ref Test",
+              quantity: 1,
+              priceAtPurchase: 21,
+              currency: "SATS",
+            },
+          ],
+          subtotal: 21,
+          currency: "SATS",
+          createdAt: 1,
+        }),
+      }) as never
+    )
+
+    const summary = extractOrderSummary([order])
+
+    expect(summary.items[0]?.title).toBe("CND26 Public Product Ref Test")
+  })
+
   it("requires concrete payment evidence before proof messages affect payment summaries", () => {
     const order = parsedOrder()
     const incompleteForeignProof = parseOrderMessageRumorEvent(

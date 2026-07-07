@@ -5,6 +5,7 @@ import {
   fetchLnurlInvoice,
   fetchLnurlPayMetadata,
   fetchZapInvoice,
+  getOrderPublicZapSigner,
   getNdk,
   getOrderLifecycle,
   patchOrderLifecycle,
@@ -15,10 +16,14 @@ import {
   type OrderLifecycle,
 } from "@conduit/core"
 import {
+  getCheckoutZapVisibility,
   requestCheckoutLnurlInvoice,
   type CheckoutPaymentStage,
-  type CheckoutZapVisibility,
+  type CheckoutZapMode,
+  type CheckoutZapRequestDraft,
+  type SignedCheckoutZapRequest,
 } from "./checkout-payment"
+import { signCheckoutZapRequestWithAnonSigner } from "./anon-zap-signer"
 import {
   buildPaymentProofRumor,
   getDeliveryNotice,
@@ -26,6 +31,14 @@ import {
 } from "./order-publish"
 import { payCheckoutInvoice } from "./payment-rails"
 import { savePaymentAttempt, updatePaymentAttempt } from "./payment-attempts"
+
+export function getLifecyclePaymentProofAction(
+  lifecycle: Pick<OrderLifecycle, "checkoutMode" | "publicZapSigner">
+): "zap" | "private_checkout" {
+  const publicZapSigner =
+    lifecycle.publicZapSigner ?? getOrderPublicZapSigner(lifecycle.checkoutMode)
+  return publicZapSigner ? "zap" : "private_checkout"
+}
 
 /**
  * Route-independent order payment lifecycle service (CND-122).
@@ -87,12 +100,43 @@ function buildProofContentJson(input: {
   })
 }
 
+export function buildLifecyclePaymentProofContentJson(
+  lifecycle: Pick<
+    OrderLifecycle,
+    | "orderId"
+    | "checkoutMode"
+    | "publicZapSigner"
+    | "totalSats"
+    | "totalMsats"
+    | "invoice"
+    | "preimage"
+    | "paymentHash"
+    | "feeMsats"
+    | "zapRequestId"
+  >,
+  input: { source: string; note: string }
+): string {
+  return buildProofContentJson({
+    orderId: lifecycle.orderId,
+    action: getLifecyclePaymentProofAction(lifecycle),
+    amountSats: lifecycle.totalSats,
+    amountMsats: lifecycle.totalMsats,
+    invoice: lifecycle.invoice ?? "",
+    preimage: lifecycle.preimage,
+    paymentHash: lifecycle.paymentHash,
+    feeMsats: lifecycle.feeMsats,
+    zapRequestId: lifecycle.zapRequestId,
+    source: input.source,
+    note: input.note,
+  })
+}
+
 export interface OrderPaymentContext {
   orderId: string
   buyerPubkey: string
   merchantPubkey: string
   merchantLud16: string | null
-  visibility: CheckoutZapVisibility
+  zapMode: CheckoutZapMode
   zapContent: string
   totalSats: number
   totalMsats: number
@@ -223,7 +267,9 @@ export async function runOrderPayment(
     try {
       const ndk = getNdk()
       const lnurlMeta = await fetchLnurlPayMetadata(ctx.merchantLud16)
-      const isPublicZap = ctx.visibility === "public_zap"
+      const visibility = getCheckoutZapVisibility(ctx.zapMode)
+      const publicZapSigner = getOrderPublicZapSigner(ctx.zapMode)
+      const isPublicZap = visibility === "public_zap"
       if (isPublicZap && !lnurlMeta.allowsNostr) {
         throw new Error(
           "Merchant Lightning Address does not advertise Nostr zap support."
@@ -241,7 +287,7 @@ export async function runOrderPayment(
 
       const invoiceRequest = await requestCheckoutLnurlInvoice(
         {
-          visibility: ctx.visibility,
+          visibility,
           lnurlCallback: lnurlMeta.callback,
           amountMsats: ctx.totalMsats,
           lnurl: lnurlMeta.lnurl,
@@ -253,7 +299,23 @@ export async function runOrderPayment(
         {
           fetchLnurlInvoice,
           fetchZapInvoice,
-          signZapRequest: async (draft) => {
+          signZapRequest: async (
+            draft: CheckoutZapRequestDraft
+          ): Promise<SignedCheckoutZapRequest> => {
+            if (publicZapSigner === "anon") {
+              return signCheckoutZapRequestWithAnonSigner(draft, {
+                authorization: {
+                  checkoutSessionId: orderId,
+                  merchantPubkey: ctx.merchantPubkey,
+                  amountMsats: ctx.totalMsats,
+                  lnurl: lnurlMeta.lnurl,
+                  publicZapPolicy: "anonymous_public_zap_allowed",
+                },
+              })
+            }
+            if (publicZapSigner !== "shopper") {
+              throw new Error("Public zap signer was not selected.")
+            }
             const zapRequest = new NDKEvent(ndk)
             zapRequest.kind = draft.kind
             zapRequest.created_at = draft.createdAt
@@ -465,17 +527,7 @@ export async function resendOrderProof(
   if (!lifecycle || lifecycle.paymentStatus !== "paid" || !lifecycle.invoice) {
     return runtimeStates.get(orderId)
   }
-  const isPublicZap = lifecycle.checkoutMode === "public_zap"
-  const content = buildProofContentJson({
-    orderId,
-    action: isPublicZap ? "zap" : "private_checkout",
-    amountSats: lifecycle.totalSats,
-    amountMsats: lifecycle.totalMsats,
-    invoice: lifecycle.invoice,
-    preimage: lifecycle.preimage,
-    paymentHash: lifecycle.paymentHash,
-    feeMsats: lifecycle.feeMsats,
-    zapRequestId: lifecycle.zapRequestId,
+  const content = buildLifecyclePaymentProofContentJson(lifecycle, {
     source: "buyer",
     note: `Payment for order ${orderId}`,
   })
@@ -524,12 +576,7 @@ export async function submitExternalPaymentProof(
     proofDeliveryStatus: "pending",
   })
 
-  const content = buildProofContentJson({
-    orderId,
-    action: "external_invoice",
-    amountSats: lifecycle.totalSats,
-    amountMsats: lifecycle.totalMsats,
-    invoice: lifecycle.invoice,
+  const content = buildLifecyclePaymentProofContentJson(lifecycle, {
     source: "external",
     note: `External wallet payment for order ${orderId}`,
   })

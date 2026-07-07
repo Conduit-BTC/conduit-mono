@@ -7,6 +7,7 @@ import {
 export type OrderSummary = {
   items: Array<{
     productId: string
+    title?: string
     quantity: number
     priceAtPurchase: number
     currency: string
@@ -68,6 +69,7 @@ export function extractOrderSummary(
     firstOrder?.type === "order"
       ? firstOrder.payload.items.map((item) => ({
           productId: item.productId,
+          title: item.title,
           quantity: item.quantity,
           priceAtPurchase: item.priceAtPurchase,
           currency: item.currency,

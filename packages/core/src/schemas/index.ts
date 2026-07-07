@@ -3,7 +3,11 @@ import { z } from "zod"
 /**
  * Product schema for validation
  */
-export const productZapMessagePolicySchema = z.enum(["generic_only", "custom"])
+export const productZapMessagePolicySchema = z.enum([
+  "generic_only",
+  "product_reference",
+  "custom",
+])
 
 export type ProductZapMessagePolicy = z.infer<
   typeof productZapMessagePolicySchema
@@ -124,6 +128,7 @@ export type ShippingAddressSchema = z.infer<typeof shippingAddressSchema>
  */
 export const orderItemSchema = z.object({
   productId: z.string(),
+  title: z.string().max(200).optional(),
   quantity: z.number().int().min(1),
   priceAtPurchase: z.number().min(0),
   currency: z.string(),

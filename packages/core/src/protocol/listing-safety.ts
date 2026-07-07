@@ -1,12 +1,7 @@
 import type { Product } from "../types"
 
 export type ListingSafetyState =
-  | "active"
-  | "hidden"
-  | "flagged"
-  | "blocked"
-  | "unsupported"
-  | "pending_review"
+  "active" | "hidden" | "flagged" | "blocked" | "unsupported" | "pending_review"
 
 export type ListingSafetyReasonCode =
   | "merchant_hidden"
@@ -19,10 +14,7 @@ export type ListingSafetyReasonCode =
   | "external_decision"
 
 export type ListingSafetyDecisionSource =
-  | "client_rules"
-  | "merchant_visibility"
-  | "human_review"
-  | "external_decision"
+  "client_rules" | "merchant_visibility" | "human_review" | "external_decision"
 
 export interface ListingSafetyReason {
   code: ListingSafetyReasonCode

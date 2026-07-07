@@ -271,6 +271,7 @@ function MessageCard({
             </div>
             {message.payload.items.map((item) => {
               const product = formatProductReference(item.productId)
+              const itemTitle = item.title?.trim() || product.title
               const itemPrice = getProductPriceDisplay(
                 {
                   price: item.priceAtPurchase,
@@ -287,8 +288,13 @@ function MessageCard({
                   className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2"
                 >
                   <div className="text-sm text-[var(--text-primary)]">
-                    {product.title}
+                    {itemTitle}
                   </div>
+                  {item.title?.trim() && (
+                    <div className="mt-1 truncate font-mono text-[11px] text-[var(--text-muted)]">
+                      {product.detail}
+                    </div>
+                  )}
                   <div className="mt-1 text-xs text-[var(--text-secondary)]">
                     Qty {item.quantity} · {itemPrice.primary}
                   </div>

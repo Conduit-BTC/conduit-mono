@@ -267,6 +267,8 @@ function getZapPolicyLabel(product: ProductSchema): string {
   switch (product.zapMessagePolicy) {
     case "custom":
       return "Public zap: shopper custom"
+    case "product_reference":
+      return "Public zap: product reference"
     case "generic_only":
       return "Public zap: generic"
   }
@@ -1209,6 +1211,9 @@ function ProductsPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="generic_only">Generic only</SelectItem>
+                    <SelectItem value="product_reference">
+                      Allow product reference
+                    </SelectItem>
                     <SelectItem value="custom">
                       Allow shopper custom message
                     </SelectItem>

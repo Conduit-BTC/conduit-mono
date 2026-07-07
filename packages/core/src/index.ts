@@ -137,6 +137,7 @@ export {
   type OrderLifecycleItem,
   type OrderLifecyclePhase,
   type OrderCheckoutMode,
+  type OrderPublicZapSigner,
   type OrderAddressValidity,
   type OrderShippingZoneEligibility,
   type OrderDeliveryStatus,

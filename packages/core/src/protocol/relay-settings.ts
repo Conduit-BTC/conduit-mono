@@ -12,26 +12,13 @@ export type RelayCapabilityKey =
   | "listings"
   | "cleanup"
 export type RelayWarningKey =
-  | "dmWithoutAuth"
-  | "staleRelayInfo"
-  | "unreachable"
-  | "commercePartialSupport"
+  "dmWithoutAuth" | "staleRelayInfo" | "unreachable" | "commercePartialSupport"
 export type RelayCapabilityObservationStatus =
-  | "unknown"
-  | "advertised"
-  | "known"
-  | "observed"
-  | "failed"
+  "unknown" | "advertised" | "known" | "observed" | "failed"
 export type RelayCapabilityConfidence =
-  | "none"
-  | "advertised"
-  | "known"
-  | "observed"
+  "none" | "advertised" | "known" | "observed"
 export type RelayCapabilityEvidence =
-  | "nip11"
-  | "relay-limitation"
-  | "conduit-commerce-profile"
-  | "active-probe"
+  "nip11" | "relay-limitation" | "conduit-commerce-profile" | "active-probe"
 
 export interface RelayCapabilities {
   nip11: boolean

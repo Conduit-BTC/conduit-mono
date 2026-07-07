@@ -95,10 +95,14 @@ import {
 import {
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
+  getCheckoutPublicZapSigner,
   getLnurlReadyForCheckoutPayment,
   getCheckoutShippingCost,
-  type CheckoutZapVisibility,
+  getCheckoutZapVisibility,
+  isCheckoutPublicZapMode,
+  type CheckoutZapMode,
 } from "../lib/checkout-payment"
+import { isAnonZapSignerConfigured } from "../lib/anon-zap-signer"
 import {
   getDeliveryNotice,
   publishWrappedToMerchantAndSelf,
@@ -122,7 +126,7 @@ type CheckoutSearch = {
   merchant?: string
 }
 
-type CheckoutTelemetryMode = "checkout" | "order_first" | CheckoutZapVisibility
+type CheckoutTelemetryMode = "checkout" | "order_first" | CheckoutZapMode
 
 /** Priced "ok" intent — the only shape we proceed to payment with. */
 // Shipping is session-scoped: pre-fills within a browser session, never
@@ -681,8 +685,12 @@ function CheckoutPage() {
   // first tick so a second click is rejected before it can publish a duplicate
   // order (CND-89).
   const paymentInFlightRef = useRef(false)
-  const [zapVisibility, setZapVisibility] =
-    useState<CheckoutZapVisibility>("public_zap")
+  const anonZapSignerAvailable = isAnonZapSignerConfigured()
+  const defaultPublicZapMode: CheckoutZapMode = anonZapSignerAvailable
+    ? "anonymous_public_zap"
+    : "public_zap_as_shopper"
+  const [zapMode, setZapMode] = useState<CheckoutZapMode>(defaultPublicZapMode)
+  const zapVisibility = getCheckoutZapVisibility(zapMode)
   const [zapContent, setZapContent] = useState("")
   const [zapContentEdited, setZapContentEdited] = useState(false)
   const [weblnAvailable, setWeblnAvailable] = useState(false)
@@ -732,7 +740,12 @@ function CheckoutPage() {
       ? "This merchant wallet does not advertise public zap receipts."
       : zapContentEditable
         ? "Include an editable public zap comment."
-        : "Use a generic public zap comment with only the item count."
+        : publicZapPolicy.effectiveZapMessagePolicy === "product_reference"
+          ? "Use a merchant-approved public zap comment; product references are allowed, but private details stay out."
+          : "Use the merchant's generic public zap comment."
+  const anonZapModeDescription = !anonZapSignerAvailable
+    ? "Anon Conduit Shopper signing is not configured yet."
+    : publicZapModeDescription
 
   // True when every item in the cart is a digital product (no shipping needed)
   const isAllDigital = useMemo(
@@ -794,17 +807,47 @@ function CheckoutPage() {
   const merchantProfile = merchantTrust.profile
   const merchantLud16 = merchantProfile?.lud16
   const merchantName = merchantTrust.merchantName
+  const selectZapMode = useCallback(
+    (nextMode: CheckoutZapMode) => {
+      setZapMode(nextMode)
+      setZapContent(
+        buildDefaultZapContent({
+          items: checkoutItems,
+          merchantName,
+          mode: nextMode,
+        })
+      )
+      setZapContentEdited(false)
+    },
+    [checkoutItems, merchantName]
+  )
 
   useEffect(() => {
     if (zapContentEdited || checkoutItems.length === 0) return
-    setZapContent(buildDefaultZapContent({ items: checkoutItems }))
-  }, [checkoutItems, zapContentEdited])
+    setZapContent(
+      buildDefaultZapContent({
+        items: checkoutItems,
+        merchantName,
+        mode: zapMode,
+      })
+    )
+  }, [checkoutItems, merchantName, zapContentEdited, zapMode])
 
   useEffect(() => {
-    if (!publicZapPolicy.publicZapsAllowed && zapVisibility === "public_zap") {
-      setZapVisibility("private_checkout")
+    if (
+      !publicZapPolicy.publicZapsAllowed &&
+      isCheckoutPublicZapMode(zapMode)
+    ) {
+      setZapMode("private_checkout")
     }
-  }, [publicZapPolicy.publicZapsAllowed, zapVisibility])
+  }, [publicZapPolicy.publicZapsAllowed, zapMode])
+
+  useEffect(() => {
+    if (zapMode === "anonymous_public_zap" && !anonZapSignerAvailable) {
+      setZapMode("public_zap_as_shopper")
+      setZapContentEdited(false)
+    }
+  }, [anonZapSignerAvailable, zapMode])
 
   useEffect(() => {
     if (!zapContentEditable && zapContentEdited) {
@@ -860,7 +903,7 @@ function CheckoutPage() {
 
   useEffect(() => {
     if (lnurlPayAvailable && !lnurlAllowsNostr) {
-      setZapVisibility("private_checkout")
+      setZapMode("private_checkout")
     }
   }, [lnurlAllowsNostr, lnurlPayAvailable])
 
@@ -983,7 +1026,7 @@ function CheckoutPage() {
     wallet.status !== "error" &&
     !walletPaymentConstraint
   const canAttemptLightningPayment = canTrySavedNwcWallet || weblnAvailable
-  const requiresPublicZap = zapVisibility === "public_zap"
+  const requiresPublicZap = isCheckoutPublicZapMode(zapMode)
   const lnurlReadyForSelectedPayment =
     getLnurlReadyForCheckoutPayment({
       visibility: zapVisibility,
@@ -1278,6 +1321,7 @@ function CheckoutPage() {
   function buildLifecycleItems(
     items: Array<{
       productId: string
+      title?: string
       quantity: number
       priceAtPurchase: number
       currency: string
@@ -1293,6 +1337,7 @@ function CheckoutPage() {
   ): OrderLifecycleItem[] {
     return items.map((item) => ({
       productId: item.productId,
+      title: item.title,
       quantity: item.quantity,
       priceAtPurchase: item.priceAtPurchase,
       currency: item.currency,
@@ -1543,14 +1588,14 @@ function CheckoutPage() {
       setWeblnAvailable(webLnAvailableNow)
     if (!merchantLud16) {
       recordCheckoutStepResult({
-        checkoutMode: zapVisibility,
+        checkoutMode: zapMode,
         rail: "lightning",
         status: "blocked",
         stepName: "direct_payment",
       })
       recordCheckoutResult({
         amountSats: total,
-        checkoutMode: zapVisibility,
+        checkoutMode: zapMode,
         rail: "lightning",
         status: "blocked",
       })
@@ -1567,7 +1612,7 @@ function CheckoutPage() {
     setStep("sending")
     recordCheckoutStepResult({
       amountSats: total,
-      checkoutMode: zapVisibility,
+      checkoutMode: zapMode,
       status: "started",
       stepName: "direct_payment",
     })
@@ -1678,7 +1723,8 @@ function CheckoutPage() {
         orderId,
         buyerPubkey: pubkey,
         merchantPubkey: selectedMerchant,
-        checkoutMode: canAutoPay ? zapVisibility : "external_wallet",
+        checkoutMode: canAutoPay ? zapMode : "external_wallet",
+        publicZapSigner: getCheckoutPublicZapSigner(zapMode) ?? undefined,
         merchantLightningAddress: merchantLud16,
         items: buildLifecycleItems(pricingIntent.items),
         itemSubtotalSats: pricingIntent.itemSubtotalSats,
@@ -1705,21 +1751,20 @@ function CheckoutPage() {
         invoiceStatus: "not_requested",
         paymentStatus: "not_started",
         proofDeliveryStatus: "not_started",
-        zapReceiptStatus:
-          zapVisibility === "public_zap" ? "waiting" : "not_applicable",
+        zapReceiptStatus: requiresPublicZap ? "waiting" : "not_applicable",
         deliveryNotice: orderDeliveryNotice ?? undefined,
       })
 
       cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
       recordCheckoutSuccess({
         amountSats: pricingIntent.totalSats,
-        checkoutMode: zapVisibility,
+        checkoutMode: zapMode,
         rail: "lightning",
         status: "order_sent",
       })
       recordCheckoutResult({
         amountSats: pricingIntent.totalSats,
-        checkoutMode: zapVisibility,
+        checkoutMode: zapMode,
         rail: "lightning",
         status: "success",
       })
@@ -1732,7 +1777,7 @@ function CheckoutPage() {
         buyerPubkey: pubkey,
         merchantPubkey: selectedMerchant,
         merchantLud16,
-        visibility: zapVisibility,
+        zapMode,
         zapContent,
         totalSats: pricingIntent.totalSats,
         totalMsats: pricingIntent.totalMsats,
@@ -1769,13 +1814,13 @@ function CheckoutPage() {
         paymentInFlightRef.current = false
         recordCheckoutSuccess({
           amountSats: deliveredAmountSats,
-          checkoutMode: zapVisibility,
+          checkoutMode: zapMode,
           rail: "lightning",
           status: "order_sent_local_tracking_failed",
         })
         recordCheckoutResult({
           amountSats: deliveredAmountSats,
-          checkoutMode: zapVisibility,
+          checkoutMode: zapMode,
           rail: "lightning",
           status: "success_local_tracking_failed",
         })
@@ -1791,13 +1836,13 @@ function CheckoutPage() {
       // so a full retry can't create a duplicate.
       recordCheckoutStepResult({
         amountSats: total,
-        checkoutMode: zapVisibility,
+        checkoutMode: zapMode,
         status: "failed",
         stepName: "direct_payment",
       })
       recordCheckoutResult({
         amountSats: total,
-        checkoutMode: zapVisibility,
+        checkoutMode: zapMode,
         rail: "lightning",
         status: "failed",
       })
@@ -2438,12 +2483,16 @@ function CheckoutPage() {
                       {pricingOnlyFastCheckoutBlocker
                         ? "The cart total is visible, but direct payment needs a fresh conversion before funds can move. Conduit is refreshing it now."
                         : walletPaymentConstraint
-                          ? requiresPublicZap
-                            ? "Conduit will deliver the order and request a public zap invoice. Your connected wallet will be skipped for this total."
-                            : "Conduit will deliver the order and request a private LNURL invoice. Your connected wallet will be skipped for this total."
-                          : requiresPublicZap
-                            ? "Conduit will deliver the order, request a public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."
-                            : "Conduit will deliver the order, request a private LNURL invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."}
+                          ? zapMode === "anonymous_public_zap"
+                            ? "Conduit will deliver the private order and request an Anon-signed public zap invoice. Your connected wallet will be skipped for this total."
+                            : zapMode === "public_zap_as_shopper"
+                              ? "Conduit will deliver the order and request a shopper-signed public zap invoice. Your connected wallet will be skipped for this total."
+                              : "Conduit will deliver the order and request a private LNURL invoice. Your connected wallet will be skipped for this total."
+                          : zapMode === "anonymous_public_zap"
+                            ? "Conduit will deliver the private order, request an Anon-signed public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."
+                            : zapMode === "public_zap_as_shopper"
+                              ? "Conduit will deliver the order, request a shopper-signed public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."
+                              : "Conduit will deliver the order, request a private LNURL invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."}
                     </p>
                     {wallet.connection && !pricingOnlyFastCheckoutBlocker && (
                       <CheckoutWalletReadiness
@@ -2460,18 +2509,45 @@ function CheckoutPage() {
                     <div className="text-sm font-medium text-[var(--text-primary)]">
                       Zap visibility
                     </div>
-                    <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                    <div className="mt-4 grid gap-2 lg:grid-cols-3">
                       <button
                         type="button"
-                        aria-pressed={zapVisibility === "public_zap"}
+                        aria-pressed={zapMode === "anonymous_public_zap"}
+                        disabled={
+                          !anonZapSignerAvailable ||
+                          !lnurlAllowsNostr ||
+                          !publicZapPolicy.publicZapsAllowed
+                        }
+                        onClick={() => selectZapMode("anonymous_public_zap")}
+                        className={[
+                          "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+                          zapMode === "anonymous_public_zap"
+                            ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
+                            : !anonZapSignerAvailable ||
+                                !lnurlAllowsNostr ||
+                                !publicZapPolicy.publicZapsAllowed
+                              ? "cursor-not-allowed border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] opacity-70"
+                              : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+                        ].join(" ")}
+                      >
+                        <span className="block font-medium">
+                          Anonymous public zap
+                        </span>
+                        <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
+                          {anonZapModeDescription}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={zapMode === "public_zap_as_shopper"}
                         disabled={
                           !lnurlAllowsNostr ||
                           !publicZapPolicy.publicZapsAllowed
                         }
-                        onClick={() => setZapVisibility("public_zap")}
+                        onClick={() => selectZapMode("public_zap_as_shopper")}
                         className={[
                           "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
-                          zapVisibility === "public_zap"
+                          zapMode === "public_zap_as_shopper"
                             ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
                             : !lnurlAllowsNostr ||
                                 !publicZapPolicy.publicZapsAllowed
@@ -2488,11 +2564,11 @@ function CheckoutPage() {
                       </button>
                       <button
                         type="button"
-                        aria-pressed={zapVisibility === "private_checkout"}
-                        onClick={() => setZapVisibility("private_checkout")}
+                        aria-pressed={zapMode === "private_checkout"}
+                        onClick={() => selectZapMode("private_checkout")}
                         className={[
                           "rounded-xl border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
-                          zapVisibility === "private_checkout"
+                          zapMode === "private_checkout"
                             ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
                             : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
                         ].join(" ")}
@@ -2506,7 +2582,7 @@ function CheckoutPage() {
                         </span>
                       </button>
                     </div>
-                    {zapVisibility === "public_zap" && (
+                    {requiresPublicZap && (
                       <div className="mt-4 grid gap-1.5">
                         <Label htmlFor="zap-content">Public zap comment</Label>
                         <Textarea
@@ -2526,7 +2602,10 @@ function CheckoutPage() {
                         <p className="text-xs leading-6 text-[var(--text-muted)]">
                           {zapContentEditable
                             ? "Public zap receipts can expose this comment. Shipping address, contact details, private notes, wallet data, payment evidence, and order IDs are never added here."
-                            : "The merchant only allows generic public zap comments for this cart."}
+                            : publicZapPolicy.effectiveZapMessagePolicy ===
+                                "product_reference"
+                              ? "This cart allows product references, but checkout defaults to a generic public comment unless shopper-custom messaging is allowed."
+                              : "The merchant only allows generic public zap comments for this cart."}
                         </p>
                       </div>
                     )}

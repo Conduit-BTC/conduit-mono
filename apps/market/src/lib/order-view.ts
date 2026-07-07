@@ -1,5 +1,6 @@
 import {
   extractOrderSummary,
+  getOrderPublicZapSigner,
   type BuyerConversationSummary,
   type OrderAddressValidity,
   type OrderCheckoutMode,
@@ -9,6 +10,7 @@ import {
   type OrderLifecyclePhase,
   type OrderPaymentStatus,
   type OrderProofDeliveryStatus,
+  type OrderPublicZapSigner,
   type OrderSummary,
   type OrderZapReceiptStatus,
   type ParsedOrderMessage,
@@ -38,6 +40,7 @@ export interface OrderViewModel {
   orderId: string
   merchantPubkey: string
   checkoutMode: OrderCheckoutMode | null
+  publicZapSigner: OrderPublicZapSigner | null
   createdAt: number
   updatedAt: number
 
@@ -95,6 +98,33 @@ export interface BuildOrderViewModelInput {
   conversation?: BuyerConversationSummary | null
   messages?: ParsedOrderMessage[] | null
   paymentAttempt?: StoredPaymentAttempt | null
+}
+
+export function getOrderPaymentMethodLabel(
+  vm: Pick<OrderViewModel, "checkoutMode" | "publicZapSigner">
+): string {
+  const signer =
+    vm.publicZapSigner ??
+    (vm.checkoutMode ? getOrderPublicZapSigner(vm.checkoutMode) : undefined)
+  if (signer === "anon") return "Anonymous public zap"
+  if (signer === "shopper") return "Public zap as shopper"
+
+  switch (vm.checkoutMode) {
+    case "private_checkout":
+      return "Private invoice"
+    case "external_wallet":
+      return "External wallet"
+    case "pay_later":
+      return "Pay later"
+    case "public_zap":
+      return "Public zap"
+    case "anonymous_public_zap":
+      return "Anonymous public zap"
+    case "public_zap_as_shopper":
+      return "Public zap as shopper"
+    case null:
+      return "—"
+  }
 }
 
 const MERCHANT_STATUSES = new Set([
@@ -160,14 +190,16 @@ export function buildOrderViewModel(
   const items: OrderViewItem[] = lifecycle
     ? lifecycle.items.map((item) => ({
         productId: item.productId,
-        displayTitle: deriveItemDisplayTitle(item.productId),
+        displayTitle:
+          item.title?.trim() || deriveItemDisplayTitle(item.productId),
         quantity: item.quantity,
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,
       }))
     : (summary?.items ?? []).map((item) => ({
         productId: item.productId,
-        displayTitle: deriveItemDisplayTitle(item.productId),
+        displayTitle:
+          item.title?.trim() || deriveItemDisplayTitle(item.productId),
         quantity: item.quantity,
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,
@@ -235,6 +267,7 @@ export function buildOrderViewModel(
     orderId: input.orderId,
     merchantPubkey,
     checkoutMode: lifecycle?.checkoutMode ?? null,
+    publicZapSigner: lifecycle?.publicZapSigner ?? null,
     createdAt: lifecycle?.createdAt ?? conversation?.latestAt ?? Date.now(),
     updatedAt: lifecycle?.updatedAt ?? conversation?.latestAt ?? Date.now(),
     items,

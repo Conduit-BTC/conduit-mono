@@ -9,7 +9,9 @@ import {
   isMsatsLikeCurrency,
   isSatsLikeCurrency,
   normalizeCommercePrice,
+  type AnonZapRequestDraft,
   type FetchZapInvoiceResult,
+  type SignedAnonZapRequest,
   type BtcUsdRateQuote,
   type NwcDiagnostic,
   type PricingRateInput,
@@ -22,6 +24,11 @@ export const CHECKOUT_QUOTE_MAX_AGE_MS = 5 * 60_000
 
 export type CheckoutZapVisibility = "public_zap" | "private_checkout"
 
+export type CheckoutZapMode =
+  "anonymous_public_zap" | "public_zap_as_shopper" | "private_checkout"
+
+export type CheckoutPublicZapSigner = "anon" | "shopper"
+
 export type CheckoutPaymentStage =
   | "checking_order_delivery"
   | "requesting_invoice"
@@ -31,6 +38,7 @@ export type CheckoutPaymentStage =
 
 export type CheckoutPricingItem = {
   productId: string
+  title?: string
   quantity: number
   priceAtPurchase: number
   currency: "SATS"
@@ -244,6 +252,7 @@ export function buildCheckoutPricingIntent(
     itemSubtotalSats += itemSats * item.quantity
     pricedItems.push({
       productId: item.productId,
+      title: item.title,
       quantity: item.quantity,
       priceAtPurchase: itemSats,
       currency: "SATS",
@@ -739,11 +748,20 @@ export function getPaymentTrackerRowCopy(
   return PAYMENT_TRACKER_ROW_COPY[key][state]
 }
 
-export function buildDefaultZapContent(params: { items: CartItem[] }): string {
-  const itemCount = params.items.reduce((sum, item) => sum + item.quantity, 0)
-  const countLabel =
-    itemCount === 1 ? "1 item" : `${Math.max(0, itemCount)} items`
-  return `Paid for ${countLabel} on Conduit Market`
+export const ANON_PUBLIC_ZAP_DEFAULT_CONTENT =
+  "Anon shopper supported this merchant on Conduit ⚡"
+export const SHOPPER_PUBLIC_ZAP_DEFAULT_CONTENT =
+  "Supported this merchant on Conduit ⚡"
+
+export function buildDefaultZapContent(params: {
+  items: CartItem[]
+  merchantName: string
+  mode?: CheckoutZapMode
+}): string {
+  void params
+  return params.mode === "anonymous_public_zap"
+    ? ANON_PUBLIC_ZAP_DEFAULT_CONTENT
+    : SHOPPER_PUBLIC_ZAP_DEFAULT_CONTENT
 }
 
 export function sanitizePublicZapContent(content: string): string {
@@ -752,6 +770,28 @@ export function sanitizePublicZapContent(content: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 280)
+}
+
+export function getCheckoutZapVisibility(
+  mode: CheckoutZapMode | CheckoutZapVisibility
+): CheckoutZapVisibility {
+  return mode === "private_checkout" ? "private_checkout" : "public_zap"
+}
+
+export function getCheckoutPublicZapSigner(
+  mode: CheckoutZapMode | CheckoutZapVisibility
+): CheckoutPublicZapSigner | null {
+  if (mode === "anonymous_public_zap") return "anon"
+  if (mode === "public_zap_as_shopper" || mode === "public_zap") {
+    return "shopper"
+  }
+  return null
+}
+
+export function isCheckoutPublicZapMode(
+  mode: CheckoutZapMode | CheckoutZapVisibility
+): boolean {
+  return getCheckoutZapVisibility(mode) === "public_zap"
 }
 
 export function buildZapRequestContent(
@@ -772,17 +812,9 @@ export function getLnurlReadyForCheckoutPayment(params: {
     : params.lnurlPayAvailable
 }
 
-export type CheckoutZapRequestDraft = {
-  kind: number
-  createdAt: number
-  content: string
-  tags: string[][]
-}
+export type CheckoutZapRequestDraft = AnonZapRequestDraft
 
-export type SignedCheckoutZapRequest = {
-  id: string
-  rawEvent: unknown
-}
+export type SignedCheckoutZapRequest = SignedAnonZapRequest
 
 export type CheckoutInvoiceRequestResult = {
   invoice: string
