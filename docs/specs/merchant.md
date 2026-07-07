@@ -104,6 +104,21 @@ Product identity should preserve:
 30402:<merchant_pubkey>:<product_d_tag>
 ```
 
+Conduit-generated product events also include checkout zap policy tags:
+
+```typescript
+tags: [
+  ["checkout_public_zaps", "true"], // or "false"
+  ["checkout_zap_message_policy", "generic_only"], // or "custom"
+]
+```
+
+New products default to public zaps enabled with `generic_only` comment policy.
+When editing an imported or legacy listing whose explicit policy tags are
+missing or malformed, Merchant Portal should show the policy as unknown and
+prefill the edit form with the private-safe choice. Saving the product writes
+an explicit policy and sets the local policy confidence to known.
+
 ## Publishing Flow
 
 1. Normalize form/workspace state

@@ -118,6 +118,28 @@ Market checkout should distinguish:
 
 Fast checkout must remain explicitly gated. The fallback merchant payment-request path is a required baseline, not a deprecated edge case.
 
+### Public Zap Payment Option
+
+Checkout may offer a public zap payment option only when all product policy,
+pricing, shipping, merchant payment readiness, and buyer wallet gates pass.
+The private invoice/payment-request path remains available as the conservative
+fallback.
+
+Product public-zap policy is cart-wide:
+
+- If any cart item has an unknown, missing, malformed, or disabled public-zap
+  policy, checkout must not offer public zap payment for that cart.
+- If every cart item explicitly allows public zaps, checkout applies the most
+  restrictive item message policy across the cart:
+  `generic_only` before `custom`.
+- `generic_only` locks the public comment to generic checkout copy.
+  `custom` allows shopper-edited public comment text, still subject to the
+  privacy boundary below.
+
+Public zap comments are public protocol content. They must not include order
+contents, cart contents, shipping/contact data, invoices, payment request
+strings, product names, product identifiers, or other private checkout details.
+
 ## Orders Surface
 
 Orders is the canonical status and order-history surface. It renders interpreted

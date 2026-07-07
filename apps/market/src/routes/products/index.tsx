@@ -782,6 +782,9 @@ function ProductsPage() {
                         shippingOptionDTag: product.shippingOptionDTag,
                         shippingCountries: product.shippingCountries,
                         shippingCountryRules: product.shippingCountryRules,
+                        publicZapEnabled: product.publicZapEnabled,
+                        zapMessagePolicy: product.zapMessagePolicy,
+                        publicZapPolicyKnown: product.publicZapPolicyKnown,
                       },
                       1
                     )
@@ -805,6 +808,9 @@ function ProductsPage() {
                         shippingOptionDTag: product.shippingOptionDTag,
                         shippingCountries: product.shippingCountries,
                         shippingCountryRules: product.shippingCountryRules,
+                        publicZapEnabled: product.publicZapEnabled,
+                        zapMessagePolicy: product.zapMessagePolicy,
+                        publicZapPolicyKnown: product.publicZapPolicyKnown,
                       },
                       1
                     )

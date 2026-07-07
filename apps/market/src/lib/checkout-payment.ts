@@ -44,10 +44,7 @@ export type CheckoutPricingItem = {
 }
 
 export type CheckoutShippingCostStatus =
-  | "not_required"
-  | "included"
-  | "priced"
-  | "manual"
+  "not_required" | "included" | "priced" | "manual"
 
 export type CheckoutShippingCostSummary = {
   status: CheckoutShippingCostStatus
@@ -322,11 +319,7 @@ export type PaymentTrackerRowKey =
   | "receipt_sent"
 
 export type PaymentTrackerRowStatus =
-  | "waiting"
-  | "in_progress"
-  | "complete"
-  | "failed"
-  | "retry_needed"
+  "waiting" | "in_progress" | "complete" | "failed" | "retry_needed"
 
 export type PaymentTrackerOutcome =
   | "in_progress"
@@ -746,13 +739,11 @@ export function getPaymentTrackerRowCopy(
   return PAYMENT_TRACKER_ROW_COPY[key][state]
 }
 
-export function buildDefaultZapContent(params: {
-  items: CartItem[]
-  merchantName: string
-}): string {
+export function buildDefaultZapContent(params: { items: CartItem[] }): string {
   const itemCount = params.items.reduce((sum, item) => sum + item.quantity, 0)
-  const itemLabel = itemCount === 1 ? "item" : "items"
-  return `Paid for ${itemCount} ${itemLabel} from ${params.merchantName} on Conduit.`
+  const countLabel =
+    itemCount === 1 ? "1 item" : `${Math.max(0, itemCount)} items`
+  return `Paid for ${countLabel} on Conduit Market`
 }
 
 export function sanitizePublicZapContent(content: string): string {

@@ -3,6 +3,7 @@ import {
   addCartItem,
   clearMerchantCart,
   getCartCostSummary,
+  getCartPublicZapPolicy,
   getCartTotals,
   groupCartItems,
   removeCartItem,
@@ -220,6 +221,103 @@ describe("cart model", () => {
       itemPricesAvailable: true,
       shippingReadyForZap: true,
       canZapOut: true,
+    })
+  })
+
+  it("allows public zaps only when every cart item carries an allow policy", () => {
+    expect(
+      getCartPublicZapPolicy([
+        item({
+          publicZapEnabled: true,
+          zapMessagePolicy: "custom",
+          publicZapPolicyKnown: true,
+        }),
+        item({
+          productId: "30402:merchant-a:product-b",
+          publicZapEnabled: true,
+          zapMessagePolicy: "custom",
+          publicZapPolicyKnown: true,
+        }),
+      ])
+    ).toEqual({
+      publicZapsAllowed: true,
+      effectiveZapMessagePolicy: "custom",
+      disabledProductIds: [],
+      missingPolicyProductIds: [],
+    })
+  })
+
+  it("forces private checkout when any product disables public zaps", () => {
+    expect(
+      getCartPublicZapPolicy([
+        item({
+          publicZapEnabled: true,
+          zapMessagePolicy: "custom",
+          publicZapPolicyKnown: true,
+        }),
+        item({
+          productId: "30402:merchant-a:private-product",
+          publicZapEnabled: false,
+          zapMessagePolicy: "custom",
+          publicZapPolicyKnown: true,
+        }),
+      ])
+    ).toEqual({
+      publicZapsAllowed: false,
+      effectiveZapMessagePolicy: "custom",
+      disabledProductIds: ["30402:merchant-a:private-product"],
+      missingPolicyProductIds: [],
+    })
+  })
+
+  it("forces private checkout when stored cart metadata is missing", () => {
+    expect(getCartPublicZapPolicy([item()])).toEqual({
+      publicZapsAllowed: false,
+      effectiveZapMessagePolicy: "generic_only",
+      disabledProductIds: [],
+      missingPolicyProductIds: ["30402:merchant-a:product-a"],
+    })
+  })
+
+  it("uses the most restrictive public zap message policy across products", () => {
+    expect(
+      getCartPublicZapPolicy([
+        item({
+          productId: "30402:merchant-a:custom",
+          publicZapEnabled: true,
+          zapMessagePolicy: "custom",
+          publicZapPolicyKnown: true,
+        }),
+        item({
+          productId: "30402:merchant-a:generic",
+          publicZapEnabled: true,
+          zapMessagePolicy: "generic_only",
+          publicZapPolicyKnown: true,
+        }),
+      ])
+    ).toEqual({
+      publicZapsAllowed: true,
+      effectiveZapMessagePolicy: "generic_only",
+      disabledProductIds: [],
+      missingPolicyProductIds: [],
+    })
+  })
+
+  it("treats stale product-reference cart policy as generic-only compatibility", () => {
+    expect(
+      getCartPublicZapPolicy([
+        item({
+          publicZapEnabled: true,
+          zapMessagePolicy:
+            "product_reference" as unknown as CartItem["zapMessagePolicy"],
+          publicZapPolicyKnown: true,
+        }),
+      ])
+    ).toEqual({
+      publicZapsAllowed: true,
+      effectiveZapMessagePolicy: "generic_only",
+      disabledProductIds: [],
+      missingPolicyProductIds: [],
     })
   })
 })

@@ -1,3 +1,5 @@
+import type { ProductZapMessagePolicy } from "../schemas"
+
 // Nostr primitives
 export type Pubkey = string
 export type EventId = string
@@ -42,6 +44,9 @@ export interface Product {
   stock?: number
   images: ProductImage[]
   tags: string[]
+  publicZapEnabled: boolean
+  zapMessagePolicy: ProductZapMessagePolicy
+  publicZapPolicyKnown: boolean
   location?: string
   createdAt: number
   updatedAt: number

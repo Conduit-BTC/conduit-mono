@@ -1,6 +1,7 @@
 import {
   getPriceSats,
   getShippingCostSats,
+  type ProductZapMessagePolicy,
   type PricingRateInput,
 } from "@conduit/core"
 
@@ -37,6 +38,9 @@ export type CartItem = {
     restrictTo: string[]
     exclude: string[]
   }>
+  publicZapEnabled?: boolean
+  zapMessagePolicy?: ProductZapMessagePolicy
+  publicZapPolicyKnown?: boolean
   quantity: number
 }
 
@@ -63,6 +67,87 @@ export type CartCostSummary = {
   itemPricesAvailable: boolean
   shippingReadyForZap: boolean
   canZapOut: boolean
+}
+
+export type CartPublicZapPolicy = {
+  publicZapsAllowed: boolean
+  effectiveZapMessagePolicy: ProductZapMessagePolicy
+  disabledProductIds: string[]
+  missingPolicyProductIds: string[]
+}
+
+const ZAP_MESSAGE_POLICY_RANK: Record<ProductZapMessagePolicy, number> = {
+  generic_only: 0,
+  custom: 1,
+}
+
+function normalizeCartZapMessagePolicy(
+  value: unknown
+): ProductZapMessagePolicy | null {
+  if (value === "custom") return "custom"
+  if (
+    value === "generic_only" ||
+    value === "generic" ||
+    value === "product_reference" ||
+    value === "product"
+  ) {
+    return "generic_only"
+  }
+  return null
+}
+
+function getMostRestrictiveZapMessagePolicy(
+  current: ProductZapMessagePolicy,
+  next: ProductZapMessagePolicy
+): ProductZapMessagePolicy {
+  return ZAP_MESSAGE_POLICY_RANK[next] < ZAP_MESSAGE_POLICY_RANK[current]
+    ? next
+    : current
+}
+
+export function getCartPublicZapPolicy(items: CartItem[]): CartPublicZapPolicy {
+  let effectiveZapMessagePolicy: ProductZapMessagePolicy = "custom"
+  const disabledProductIds: string[] = []
+  const missingPolicyProductIds: string[] = []
+
+  for (const item of items) {
+    if (item.publicZapPolicyKnown !== true) {
+      missingPolicyProductIds.push(item.productId)
+    }
+
+    if (item.publicZapEnabled === false) {
+      disabledProductIds.push(item.productId)
+    } else if (item.publicZapEnabled !== true) {
+      missingPolicyProductIds.push(item.productId)
+    }
+
+    const normalizedZapMessagePolicy = normalizeCartZapMessagePolicy(
+      item.zapMessagePolicy
+    )
+    if (normalizedZapMessagePolicy) {
+      effectiveZapMessagePolicy = getMostRestrictiveZapMessagePolicy(
+        effectiveZapMessagePolicy,
+        normalizedZapMessagePolicy
+      )
+    } else {
+      missingPolicyProductIds.push(item.productId)
+      effectiveZapMessagePolicy = getMostRestrictiveZapMessagePolicy(
+        effectiveZapMessagePolicy,
+        "generic_only"
+      )
+    }
+  }
+
+  return {
+    publicZapsAllowed:
+      items.length > 0 &&
+      disabledProductIds.length === 0 &&
+      missingPolicyProductIds.length === 0,
+    effectiveZapMessagePolicy:
+      items.length === 0 ? "generic_only" : effectiveZapMessagePolicy,
+    disabledProductIds: Array.from(new Set(disabledProductIds)),
+    missingPolicyProductIds: Array.from(new Set(missingPolicyProductIds)),
+  }
 }
 
 function getMerchantAddedAt(

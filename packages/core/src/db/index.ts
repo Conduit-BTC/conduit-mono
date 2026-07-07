@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable, type Table } from "dexie"
 import { config } from "../config"
+import type { ProductZapMessagePolicy } from "../schemas"
 
 export interface StoredOrder {
   id: string
@@ -91,6 +92,9 @@ export interface CachedProduct {
   stock?: number
   images: Array<{ url: string; alt?: string }>
   tags: string[]
+  publicZapEnabled?: boolean
+  zapMessagePolicy?: ProductZapMessagePolicy
+  publicZapPolicyKnown?: boolean
   location?: string
   createdAt?: number
   updatedAt?: number
@@ -206,10 +210,7 @@ export interface StoredPaymentAttempt {
 
 /** How the buyer initiated payment for this order. */
 export type OrderCheckoutMode =
-  | "public_zap"
-  | "private_checkout"
-  | "pay_later"
-  | "external_wallet"
+  "public_zap" | "private_checkout" | "pay_later" | "external_wallet"
 
 /**
  * Buyer-input address validity (CND-127). Distinct from
@@ -217,56 +218,29 @@ export type OrderCheckoutMode =
  * fulfillment-coverage check.
  */
 export type OrderAddressValidity =
-  | "not_required"
-  | "valid"
-  | "missing"
-  | "inconsistent"
-  | "unknown"
+  "not_required" | "valid" | "missing" | "inconsistent" | "unknown"
 
 /** Merchant shipping-zone coverage for the destination. */
 export type OrderShippingZoneEligibility =
-  | "not_required"
-  | "eligible"
-  | "ineligible"
-  | "unknown"
+  "not_required" | "eligible" | "ineligible" | "unknown"
 
 export type OrderDeliveryStatus = "not_started" | "pending" | "sent" | "failed"
 
 export type OrderInvoiceStatus =
-  | "not_requested"
-  | "requesting"
-  | "received"
-  | "manual_required"
-  | "failed"
+  "not_requested" | "requesting" | "received" | "manual_required" | "failed"
 
 export type OrderPaymentStatus =
-  | "not_started"
-  | "paying"
-  | "paid"
-  | "manual_required"
-  | "failed"
-  | "ambiguous"
+  "not_started" | "paying" | "paid" | "manual_required" | "failed" | "ambiguous"
 
 export type OrderProofDeliveryStatus =
-  | "not_started"
-  | "pending"
-  | "sent"
-  | "retry_needed"
-  | "failed"
+  "not_started" | "pending" | "sent" | "retry_needed" | "failed"
 
 export type OrderZapReceiptStatus =
-  | "not_applicable"
-  | "waiting"
-  | "observed"
-  | "timed_out"
+  "not_applicable" | "waiting" | "observed" | "timed_out"
 
 /** Coarse bucket used for Orders list filtering (All/Pending/In progress/...). */
 export type OrderLifecyclePhase =
-  | "pending"
-  | "in_progress"
-  | "completed"
-  | "failed"
-  | "cancelled"
+  "pending" | "in_progress" | "completed" | "failed" | "cancelled"
 
 export interface OrderLifecycleItem {
   productId: string
