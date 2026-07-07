@@ -1503,6 +1503,7 @@ function CheckoutPage() {
   async function payNow(): Promise<void> {
     if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
     let publishedOrderId: string | null = null
+    let publishedTotalSats: number | null = null
     let orderDelivered = false
 
     const webLnAvailableNow = hasWebLN()
@@ -1592,6 +1593,7 @@ function CheckoutPage() {
 
       const orderId = crypto.randomUUID()
       publishedOrderId = orderId
+      publishedTotalSats = pricingIntent.totalSats
       const currency = "SATS"
       const ndk = getNdk()
       const orderPayload = {
@@ -1724,6 +1726,7 @@ function CheckoutPage() {
       // Once the order is delivered, later failures (like local lifecycle
       // persistence) must not return the buyer to a retry path that republishes.
       if (orderDelivered && publishedOrderId) {
+        const deliveredAmountSats = publishedTotalSats ?? total
         cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
         setPaidNotice(
           "Your order was sent, but local order tracking could not be saved on this device. Check Orders or message the merchant before trying again."
@@ -1733,13 +1736,13 @@ function CheckoutPage() {
         setStep("sent")
         paymentInFlightRef.current = false
         recordCheckoutSuccess({
-          amountSats: total,
+          amountSats: deliveredAmountSats,
           checkoutMode: zapVisibility,
           rail: "lightning",
           status: "order_sent_local_tracking_failed",
         })
         recordCheckoutResult({
-          amountSats: total,
+          amountSats: deliveredAmountSats,
           checkoutMode: zapVisibility,
           rail: "lightning",
           status: "success_local_tracking_failed",
