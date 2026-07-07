@@ -116,13 +116,7 @@ import {
 } from "../lib/wallet-readiness"
 
 type CheckoutStep =
-  | "shipping"
-  | "payment"
-  | "signing"
-  | "sending"
-  | "sent"
-  | "paying"
-  | "paid"
+  "shipping" | "payment" | "signing" | "sending" | "sent" | "paying" | "paid"
 
 type CheckoutSearch = {
   merchant?: string
@@ -138,10 +132,7 @@ const CHECKOUT_PRICE_REFRESH_TIMEOUT_MS = 5_000
 const CHECKOUT_PRICE_REFRESH_RETRY_MS = 30_000
 
 type CheckoutPricingRefreshState =
-  | "ready"
-  | "refreshing"
-  | "stale_retryable"
-  | "unavailable"
+  "ready" | "refreshing" | "stale_retryable" | "unavailable"
 
 const DEFAULT_SHIPPING_FORM: ShippingFormState = {
   firstName: "",
@@ -741,9 +732,7 @@ function CheckoutPage() {
       ? "This merchant wallet does not advertise public zap receipts."
       : zapContentEditable
         ? "Include an editable public zap comment."
-        : publicZapPolicy.effectiveZapMessagePolicy === "product_reference"
-          ? "Use a merchant-approved public zap comment; product references are allowed, but private details stay out."
-          : "Use the merchant's generic public zap comment."
+        : "Use a generic public zap comment with only the item count."
 
   // True when every item in the cart is a digital product (no shipping needed)
   const isAllDigital = useMemo(
@@ -2461,10 +2450,7 @@ function CheckoutPage() {
                         <p className="text-xs leading-6 text-[var(--text-muted)]">
                           {zapContentEditable
                             ? "Public zap receipts can expose this comment. Shipping address, contact details, private notes, wallet data, payment evidence, and order IDs are never added here."
-                            : publicZapPolicy.effectiveZapMessagePolicy ===
-                                "product_reference"
-                              ? "This cart allows product references, but checkout defaults to a generic public comment unless shopper-custom messaging is allowed."
-                              : "The merchant only allows generic public zap comments for this cart."}
+                            : "The merchant only allows generic public zap comments for this cart."}
                         </p>
                       </div>
                     )}

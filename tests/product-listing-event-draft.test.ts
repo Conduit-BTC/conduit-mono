@@ -177,6 +177,20 @@ describe("product listing event drafts", () => {
     expectTag(draft.tags, ["checkout_zap_message_policy", "generic_only"])
   })
 
+  it("normalizes the removed product_reference policy to generic-only when emitting", () => {
+    const product = {
+      ...baseProduct(),
+      zapMessagePolicy: "product_reference",
+    } as unknown as ProductSchema
+
+    const draft = buildProductListingEventDraft({
+      product,
+      dTag: "removed-policy-candidate",
+    })
+
+    expectTag(draft.tags, ["checkout_zap_message_policy", "generic_only"])
+  })
+
   it("emits explicit public zap opt-out and shopper-custom message policy tags", () => {
     const draft = buildProductListingEventDraft({
       product: baseProduct({
@@ -273,7 +287,7 @@ describe("product listing event parsing", () => {
         ["price", "25000", "SATS"],
         ["type", "simple", "digital"],
         ["checkout_public_zaps", "false"],
-        ["checkout_zap_message_policy", "product_reference"],
+        ["checkout_zap_message_policy", "custom"],
         ["image", "https://example.com/spec.png"],
       ],
     })
@@ -286,7 +300,7 @@ describe("product listing event parsing", () => {
     expect(parsed.type).toBe("simple")
     expect(parsed.format).toBe("digital")
     expect(parsed.publicZapEnabled).toBe(false)
-    expect(parsed.zapMessagePolicy).toBe("product_reference")
+    expect(parsed.zapMessagePolicy).toBe("custom")
     expect(parsed.publicZapPolicyKnown).toBe(true)
   })
 
@@ -341,6 +355,26 @@ describe("product listing event parsing", () => {
 
     expect(parsed.publicZapEnabled).toBe(false)
     expect(parsed.zapMessagePolicy).toBe("custom")
+    expect(parsed.publicZapPolicyKnown).toBe(true)
+  })
+
+  it("maps the removed product_reference policy candidate to generic compatibility", () => {
+    const parsed = parseProductEvent({
+      id: "removed-candidate-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Removed policy candidate listing",
+      tags: [
+        ["d", "removed-candidate"],
+        ["title", "Removed Candidate Product"],
+        ["price", "25000", "SATS"],
+        ["checkout_public_zaps", "true"],
+        ["checkout_zap_message_policy", "product_reference"],
+      ],
+    })
+
+    expect(parsed.publicZapEnabled).toBe(true)
+    expect(parsed.zapMessagePolicy).toBe("generic_only")
     expect(parsed.publicZapPolicyKnown).toBe(true)
   })
 

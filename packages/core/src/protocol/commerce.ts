@@ -53,10 +53,7 @@ const PROFILE_CACHE_TTL_MS = 5 * 60_000
 
 export type CommerceReadSource = "commerce" | "public" | "local_cache"
 export type CommerceSortMode =
-  | "newest"
-  | "price_asc"
-  | "price_desc"
-  | "updated_at_desc"
+  "newest" | "price_asc" | "price_desc" | "updated_at_desc"
 export type CommerceReadPlanName =
   | "marketplace_products"
   | "merchant_storefront"
@@ -188,8 +185,7 @@ export interface MerchantConversationSummary extends ConversationSummaryBase {
 }
 
 export type ConversationSummary =
-  | BuyerConversationSummary
-  | MerchantConversationSummary
+  BuyerConversationSummary | MerchantConversationSummary
 
 export interface ConversationDetail {
   orderId: string
@@ -670,6 +666,8 @@ function toCachedProduct(record: CommerceProductRecord) {
 }
 
 function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
+  const zapMessagePolicy =
+    row.zapMessagePolicy === "custom" ? "custom" : "generic_only"
   const product: Product = {
     id: row.id,
     pubkey: row.pubkey,
@@ -692,7 +690,7 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     images: row.images ?? [],
     tags: row.tags ?? [],
     publicZapEnabled: row.publicZapEnabled ?? true,
-    zapMessagePolicy: row.zapMessagePolicy ?? "generic_only",
+    zapMessagePolicy,
     publicZapPolicyKnown: row.publicZapPolicyKnown ?? false,
     location: row.location,
     createdAt: row.createdAt ?? row.cachedAt,

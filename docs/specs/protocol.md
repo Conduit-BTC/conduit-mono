@@ -62,10 +62,10 @@ Implementations must not dedupe only by `d` tag because different merchants can 
 Conduit-generated kind `30402` product listings include explicit checkout zap
 policy metadata alongside the NIP-99/GammaMarkets product tags:
 
-| Tag                           | Values                                           | Meaning                                                        |
-| ----------------------------- | ------------------------------------------------ | -------------------------------------------------------------- |
-| `checkout_public_zaps`        | `true` or `false`                                | Whether checkout may offer a public zap payment for this item. |
-| `checkout_zap_message_policy` | `generic_only`, `product_reference`, or `custom` | The most permissive public zap comment the merchant allows.    |
+| Tag                           | Values                     | Meaning                                                        |
+| ----------------------------- | -------------------------- | -------------------------------------------------------------- |
+| `checkout_public_zaps`        | `true` or `false`          | Whether checkout may offer a public zap payment for this item. |
+| `checkout_zap_message_policy` | `generic_only` or `custom` | Whether the public zap comment is generic or shopper-editable. |
 
 Both tags are required for Conduit to treat a product's public-zap policy as
 known. Missing tags, malformed values, or legacy JSON-content fields without
@@ -75,6 +75,8 @@ display or compatibility do not authorize public-zap checkout by themselves.
 Current parsers may accept the legacy aliases `public_zaps` and
 `zap_message_policy` for already-published listings, but newly emitted Conduit
 events must use `checkout_public_zaps` and `checkout_zap_message_policy`.
+The removed candidate value `product_reference` is treated as `generic_only`
+when encountered for compatibility.
 
 Checkout privacy behavior:
 
@@ -82,11 +84,10 @@ Checkout privacy behavior:
   malformed policy tags, public zap payment is not offered for that cart.
 - For carts where every item explicitly permits public zaps, the effective zap
   message policy is the most restrictive item policy:
-  `generic_only` before `product_reference` before `custom`.
+  `generic_only` before `custom`.
 - Public zap request/comment text must not include order contents, cart
   contents, shipping details, contact data, invoices, payment request strings,
-  or other private checkout data. `product_reference` may reference public
-  listing context only.
+  product names, product identifiers, or other private checkout data.
 
 ## Client Hydration And Relay Hints
 

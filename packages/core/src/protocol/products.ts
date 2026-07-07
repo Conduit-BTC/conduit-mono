@@ -60,7 +60,7 @@ export function buildProductListingEventDraft({
     ],
     [
       PRODUCT_ZAP_MESSAGE_POLICY_TAG,
-      product.zapMessagePolicy ?? "generic_only",
+      product.zapMessagePolicy === "custom" ? "custom" : "generic_only",
     ],
   ]
 
@@ -271,7 +271,7 @@ function parseProductZapMessagePolicy(
   switch (normalized) {
     case "product_reference":
     case "product":
-      return { value: "product_reference", known: true }
+      return { value: "generic_only", known: true }
     case "custom":
     case "shopper_custom":
       return { value: "custom", known: true }

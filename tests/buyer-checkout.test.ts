@@ -955,7 +955,7 @@ describe("checkout payment helpers", () => {
     ).toBe(true)
   })
 
-  it("builds default public zap content without cart details", () => {
+  it("builds default public zap content with item count but no product details", () => {
     const content = buildDefaultZapContent({
       items: [
         cartItem({
@@ -965,15 +965,14 @@ describe("checkout payment helpers", () => {
       ],
       merchantName: "Merchant",
     })
-    expect(content).toBe("Supported this merchant on Conduit ⚡")
+    expect(content).toBe("Paid for 2 items on Conduit Market")
     expect(content).not.toContain("Notebook")
-    expect(content).not.toContain("2")
     expect(content).not.toContain("Merchant")
     expect(content).not.toContain("order")
     expect(content).not.toContain("Phone")
   })
 
-  it("uses the same generic public zap content for single-item carts", () => {
+  it("uses singular item-count copy for single-item carts", () => {
     const content = buildDefaultZapContent({
       items: [
         cartItem({
@@ -984,7 +983,7 @@ describe("checkout payment helpers", () => {
       merchantName: "Merchant",
     })
 
-    expect(content).toBe("Supported this merchant on Conduit ⚡")
+    expect(content).toBe("Paid for 1 item on Conduit Market")
     expect(content).not.toContain("Private Product Name")
   })
 

@@ -109,7 +109,7 @@ Conduit-generated product events also include checkout zap policy tags:
 ```typescript
 tags: [
   ["checkout_public_zaps", "true"], // or "false"
-  ["checkout_zap_message_policy", "generic_only"], // product_reference | custom
+  ["checkout_zap_message_policy", "generic_only"], // or "custom"
 ]
 ```
 

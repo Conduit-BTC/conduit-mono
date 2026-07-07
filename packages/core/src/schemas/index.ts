@@ -3,11 +3,7 @@ import { z } from "zod"
 /**
  * Product schema for validation
  */
-export const productZapMessagePolicySchema = z.enum([
-  "generic_only",
-  "product_reference",
-  "custom",
-])
+export const productZapMessagePolicySchema = z.enum(["generic_only", "custom"])
 
 export type ProductZapMessagePolicy = z.infer<
   typeof productZapMessagePolicySchema
