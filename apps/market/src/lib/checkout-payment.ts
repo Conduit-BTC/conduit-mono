@@ -748,20 +748,15 @@ export function getPaymentTrackerRowCopy(
   return PAYMENT_TRACKER_ROW_COPY[key][state]
 }
 
-export const ANON_PUBLIC_ZAP_DEFAULT_CONTENT =
-  "Anon shopper supported this merchant on Conduit ⚡"
-export const SHOPPER_PUBLIC_ZAP_DEFAULT_CONTENT =
-  "Supported this merchant on Conduit ⚡"
-
 export function buildDefaultZapContent(params: {
   items: CartItem[]
-  merchantName: string
+  merchantName?: string
   mode?: CheckoutZapMode
 }): string {
-  void params
-  return params.mode === "anonymous_public_zap"
-    ? ANON_PUBLIC_ZAP_DEFAULT_CONTENT
-    : SHOPPER_PUBLIC_ZAP_DEFAULT_CONTENT
+  const itemCount = params.items.reduce((sum, item) => sum + item.quantity, 0)
+  const countLabel =
+    itemCount === 1 ? "1 item" : `${Math.max(0, itemCount)} items`
+  return `Zapped out ${countLabel} on Conduit`
 }
 
 export function sanitizePublicZapContent(content: string): string {

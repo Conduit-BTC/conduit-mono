@@ -52,6 +52,11 @@ import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEd
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { requireAuth } from "../lib/auth"
 import {
+  canSubmitProductForm,
+  validateProductPublishForm,
+  type ProductPublishFormValues,
+} from "../lib/productForm"
+import {
   canonicalizeProductShippingCost,
   getProductPriceInputStep,
   getProductShippingCostHelpText,
@@ -80,19 +85,10 @@ type MerchantProduct = {
   safety: ListingSafetyEvaluation
 }
 
-type ProductFormState = {
-  title: string
+type ProductFormState = ProductPublishFormValues & {
   summary: string
-  price: string
-  currency: string
-  format: "physical" | "digital"
-  shippingCost: string
-  usePresetShippingZone: boolean
-  customShippingConfig: ShippingConfig
   publicZapEnabled: boolean
   zapMessagePolicy: ProductZapMessagePolicy
-  imageUrl: string
-  tags: string
 }
 
 type ProductSort = "updated_desc" | "title_asc" | "price_asc" | "price_desc"
@@ -224,13 +220,6 @@ function buildShippingMetadata(
   }
 }
 
-function parseTags(tagsCsv: string): string[] {
-  return tagsCsv
-    .split(",")
-    .map((t) => t.trim())
-    .filter(Boolean)
-}
-
 function getPublishErrorMessage(
   error: unknown,
   action: "publish" | "delete"
@@ -267,8 +256,6 @@ function getZapPolicyLabel(product: ProductSchema): string {
   switch (product.zapMessagePolicy) {
     case "custom":
       return "Public zap: shopper custom"
-    case "product_reference":
-      return "Public zap: product reference"
     case "generic_only":
       return "Public zap: generic"
   }
@@ -394,6 +381,17 @@ async function publishProduct(
   form: ProductFormState,
   existing?: MerchantProduct
 ): Promise<void> {
+  const formValidation = validateProductPublishForm(form, {
+    hasPresetShippingZone: isShippingComplete(
+      loadShippingConfig(merchantPubkey)
+    ),
+  })
+  if (!formValidation.canPublish) {
+    throw new Error(
+      formValidation.firstError ?? "Product form is not publishable"
+    )
+  }
+
   const ndk = await requireNdkConnected()
   if (!ndk.signer) throw new Error("Signer not connected")
   const signerPubkey = (await ndk.signer.user()).pubkey
@@ -442,14 +440,14 @@ async function publishProduct(
   if (!imageUrl) {
     throw new Error("Image URL is required for Market-visible products")
   }
-  if (!/^https:\/\//.test(imageUrl)) {
+  if (!/^https:\/\//i.test(imageUrl)) {
     throw new Error("Image URL must start with https://")
   }
 
   const dTag =
     existing?.dTag ?? `${slugify(title) || "product"}-${randomSuffix()}`
   const now = Date.now()
-  const tags = parseTags(form.tags)
+  const tags = formValidation.tags
 
   const product: ProductSchema = canonicalizeProductPrice({
     id: `30402:${signerPubkey}:${dTag}`,
@@ -606,6 +604,19 @@ function ProductsPage() {
     () => JSON.stringify(form) !== JSON.stringify(savedProductForm),
     [form, savedProductForm]
   )
+  const productFormValidation = useMemo(
+    () => validateProductPublishForm(form, { hasPresetShippingZone }),
+    [form, hasPresetShippingZone]
+  )
+  const productCanSubmit = canSubmitProductForm(productFormValidation, {
+    isEditing: !!editing,
+    hasProductChanges,
+  })
+  const productStatusMessage = !productFormValidation.canPublish
+    ? productFormValidation.firstError
+    : editing
+      ? "Save changes to publish this listing update."
+      : "Publish this product to create a signed kind 30402 listing."
   const productsInitialLoading =
     productsQuery.isLoading && cachedProductsQuery.isLoading
 
@@ -964,6 +975,7 @@ function ProductsPage() {
             className="grid gap-3"
             onSubmit={(event) => {
               event.preventDefault()
+              if (!productCanSubmit) return
               saveMutation.mutate({ form, existing: editing ?? undefined })
             }}
           >
@@ -1211,9 +1223,6 @@ function ProductsPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="generic_only">Generic only</SelectItem>
-                    <SelectItem value="product_reference">
-                      Allow product reference
-                    </SelectItem>
                     <SelectItem value="custom">
                       Allow shopper custom message
                     </SelectItem>
@@ -1221,7 +1230,7 @@ function ProductsPage() {
                 </Select>
                 <div className="text-xs leading-5 text-[var(--text-muted)]">
                   {form.publicZapEnabled
-                    ? "Generic public zaps never include product names, quantities, order metadata, contact details, private notes, or wallet data."
+                    ? "Generic public zaps may include item count, but never product names, product IDs, order metadata, contact details, private notes, wallet data, payment evidence, or buyer identity."
                     : "This listing will publish a private-invoice checkout policy; buyers cannot choose public zap checkout for this product."}
                 </div>
               </div>
@@ -1262,8 +1271,9 @@ function ProductsPage() {
                 id="product-tags-help"
                 className="text-xs leading-5 text-[var(--text-muted)]"
               >
-                Separate tags with commas. Tags are custom and help buyers
-                filter listings.
+                {
+                  "Separate tags with commas. Add at least 3 distinct tags to help buyers filter listings."
+                }
               </div>
             </div>
 
@@ -1273,15 +1283,11 @@ function ProductsPage() {
                   ? "awaiting_signature"
                   : saveMutation.error
                     ? "error"
-                    : hasProductChanges
+                    : !productFormValidation.canPublish || hasProductChanges
                       ? "dirty"
                       : "idle"
               }
-              dirtyMessage={
-                editing
-                  ? "Save changes to publish this listing update."
-                  : "Publish this product to create a signed kind 30402 listing."
-              }
+              dirtyMessage={productStatusMessage}
               awaitingSignatureMessage="Confirm the product listing in your signer. It will close after relay publish finishes."
               errorMessage={getPublishErrorMessage(
                 saveMutation.error,
@@ -1299,7 +1305,7 @@ function ProductsPage() {
               </Button>
               <Button
                 type="submit"
-                disabled={!pubkey || isSaving || !hasProductChanges}
+                disabled={!pubkey || isSaving || !productCanSubmit}
               >
                 {isSaving
                   ? "Waiting for signer..."

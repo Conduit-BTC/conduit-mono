@@ -20,7 +20,6 @@ import {
 import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
 import { getKnownWalletPaymentConstraint } from "../apps/market/src/lib/wallet-readiness"
 import {
-  ANON_PUBLIC_ZAP_DEFAULT_CONTENT,
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
   buildPendingCheckoutManualInvoice,
@@ -959,7 +958,7 @@ describe("checkout payment helpers", () => {
     ).toBe(true)
   })
 
-  it("builds default public zap content without cart details", () => {
+  it("builds default public zap content with item count but no product details", () => {
     const content = buildDefaultZapContent({
       items: [
         cartItem({
@@ -968,15 +967,19 @@ describe("checkout payment helpers", () => {
         }),
       ],
     })
-    expect(content).toBe("Supported this merchant on Conduit ⚡")
+    expect(content).toBe("Zapped out 2 items on Conduit")
     expect(content).not.toContain("Notebook")
-    expect(content).not.toContain("2")
+    expect(content).not.toContain("product-1")
     expect(content).not.toContain("Merchant")
     expect(content).not.toContain("order")
     expect(content).not.toContain("Phone")
+    expect(content).not.toContain("alice@example.com")
+    expect(content).not.toContain("lnbc")
+    expect(content).not.toContain("wallet")
+    expect(content).not.toContain("payment")
   })
 
-  it("uses the same generic public zap content for single-item carts", () => {
+  it("uses singular item-count copy for single-item carts", () => {
     const content = buildDefaultZapContent({
       items: [
         cartItem({
@@ -986,11 +989,11 @@ describe("checkout payment helpers", () => {
       ],
     })
 
-    expect(content).toBe("Supported this merchant on Conduit ⚡")
+    expect(content).toBe("Zapped out 1 item on Conduit")
     expect(content).not.toContain("Private Product Name")
   })
 
-  it("uses generic anonymous zap content without product or order details", () => {
+  it("uses generic anonymous zap content with item count only", () => {
     const content = buildDefaultZapContent({
       items: [
         cartItem({
@@ -1002,10 +1005,15 @@ describe("checkout payment helpers", () => {
       mode: "anonymous_public_zap",
     })
 
-    expect(content).toBe(ANON_PUBLIC_ZAP_DEFAULT_CONTENT)
+    expect(content).toBe("Zapped out 2 items on Conduit")
     expect(content).not.toContain("Private Product Name")
-    expect(content).not.toContain("2")
+    expect(content).not.toContain("product-1")
+    expect(content).not.toContain("Merchant")
     expect(content).not.toContain("order")
+    expect(content).not.toContain("alice@example.com")
+    expect(content).not.toContain("lnbc")
+    expect(content).not.toContain("wallet")
+    expect(content).not.toContain("payment")
   })
 
   it("maps checkout zap modes to visibility and signer attribution", () => {

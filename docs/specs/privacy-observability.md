@@ -83,8 +83,9 @@ policy allows a public zap payment, client-generated public comment text must
 stay within the merchant's selected policy and must not include order contents,
 cart contents, shipping/contact data, invoices, payment request strings,
 private message contents, signer details, wallet connection details, or active
-buyer identity. Public listing context may be referenced only when the product
-policy permits `product_reference`.
+buyer identity. Generic public comments may include item count only; public
+listing context is included only when the shopper writes a custom public
+comment.
 
 ## Cookieless Client Policy
 

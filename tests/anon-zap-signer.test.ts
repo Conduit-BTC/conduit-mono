@@ -13,7 +13,7 @@ function draft(
   return {
     kind: EVENT_KINDS.ZAP_REQUEST,
     createdAt: 1_700_000_000,
-    content: "Anon shopper supported this merchant on Conduit",
+    content: "Zapped out 1 item on Conduit",
     tags: [
       ["p", "b".repeat(64)],
       ["amount", "50000"],

@@ -131,17 +131,15 @@ Product public-zap policy is cart-wide:
   policy, checkout must not offer public zap payment for that cart.
 - If every cart item explicitly allows public zaps, checkout applies the most
   restrictive item message policy across the cart:
-  `generic_only` before `product_reference` before `custom`.
-- `generic_only` locks the public comment to generic checkout copy.
-  `product_reference` may mention public listing context only. `custom` allows
-  shopper-edited public comment text, still subject to the privacy boundary
-  below.
+  `generic_only` before `custom`.
+- `generic_only` locks the public comment to generic checkout copy with item
+  count only. `custom` allows shopper-edited public comment text, still subject
+  to the privacy boundary below.
 
 Public zap comments are public protocol content. They must not include order
-contents, cart contents, shipping/contact data, invoices, payment request
-strings, or other private checkout details. Product names and product
-identifiers are included only when policy allows public listing context or the
-shopper writes a custom public comment.
+contents, shipping/contact data, invoices, payment request strings, product
+names, product identifiers, or other private checkout details. Product details
+are included only when the shopper writes a custom public comment.
 
 ## Orders Surface
 
