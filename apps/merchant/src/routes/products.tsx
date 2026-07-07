@@ -48,11 +48,14 @@ import {
   Textarea,
   cn,
 } from "@conduit/ui"
+import { ProductTagEditor } from "../components/ProductTagEditor"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { requireAuth } from "../lib/auth"
 import {
   canSubmitProductForm,
+  MAX_PRODUCT_TAG_COUNT,
+  MAX_PRODUCT_TAG_LENGTH,
   validateProductPublishForm,
   type ProductPublishFormValues,
 } from "../lib/productForm"
@@ -608,6 +611,14 @@ function ProductsPage() {
     () => validateProductPublishForm(form, { hasPresetShippingZone }),
     [form, hasPresetShippingZone]
   )
+  const productTagFieldError =
+    productFormValidation.errors.tags &&
+    (productFormValidation.tags.length > MAX_PRODUCT_TAG_COUNT ||
+      productFormValidation.tags.some(
+        (tag) => tag.length > MAX_PRODUCT_TAG_LENGTH
+      ))
+      ? productFormValidation.errors.tags
+      : null
   const productCanSubmit = canSubmitProductForm(productFormValidation, {
     isEditing: !!editing,
     hasProductChanges,
@@ -802,11 +813,12 @@ function ProductsPage() {
                 type="button"
                 variant={selectedTag === tag ? "secondary" : "outline"}
                 size="sm"
-                className="h-8 px-3 text-xs"
+                className="h-8 max-w-full min-w-0 px-3 text-xs"
                 onClick={() => setSelectedTag(tag)}
+                title={tag}
               >
-                {tag}
-                <span className="font-mono text-[10px] opacity-80">
+                <span className="min-w-0 max-w-[12rem] truncate">{tag}</span>
+                <span className="shrink-0 font-mono text-[10px] opacity-80">
                   {count}
                 </span>
               </Button>
@@ -1258,23 +1270,13 @@ function ProductsPage() {
 
             <div className="grid gap-1.5">
               <Label htmlFor="product-tags">Tags</Label>
-              <Input
+              <ProductTagEditor
                 id="product-tags"
-                aria-describedby="product-tags-help"
                 value={form.tags}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, tags: event.target.value }))
-                }
+                onChange={(tags) => setForm((prev) => ({ ...prev, tags }))}
+                errorMessage={productTagFieldError}
                 placeholder="gear, hardware, demo"
               />
-              <div
-                id="product-tags-help"
-                className="text-xs leading-5 text-[var(--text-muted)]"
-              >
-                {
-                  "Separate tags with commas. Add at least 3 distinct tags to help buyers filter listings."
-                }
-              </div>
             </div>
 
             <SignedActionStatus
