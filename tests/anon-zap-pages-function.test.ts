@@ -7,6 +7,8 @@ import {
   onRequestOptions as signAnonZapOptions,
   onRequestPost as signAnonZap,
 } from "../apps/market/functions/api/anon-zap-sign"
+import { onRequestOptions as rootAuthorizeAnonZapOptions } from "../functions/api/anon-zap-authorize"
+import { onRequestOptions as rootSignAnonZapOptions } from "../functions/api/anon-zap-sign"
 import type { AnonZapPagesEnv } from "../apps/market/functions/_lib/anon-zap-checkout-auth"
 
 describe("Anon zap Pages proxy", () => {
@@ -106,6 +108,35 @@ describe("Anon zap Pages proxy", () => {
     )
     expect(sign.headers.get("access-control-allow-methods")).toBe(
       "POST, OPTIONS"
+    )
+  })
+
+  it("exposes allowed CORS preflights through the repo-root Pages shims", () => {
+    const authorize = rootAuthorizeAnonZapOptions({
+      request: new Request(
+        "https://shop.conduit.market/api/anon-zap-authorize",
+        {
+          method: "OPTIONS",
+          headers: { origin: "https://shop.conduit.market" },
+        }
+      ),
+      env: env(),
+    })
+    const sign = rootSignAnonZapOptions({
+      request: new Request("https://shop.conduit.market/api/anon-zap-sign", {
+        method: "OPTIONS",
+        headers: { origin: "https://shop.conduit.market" },
+      }),
+      env: env(),
+    })
+
+    expect(authorize.status).toBe(204)
+    expect(sign.status).toBe(204)
+    expect(authorize.headers.get("access-control-allow-origin")).toBe(
+      "https://shop.conduit.market"
+    )
+    expect(sign.headers.get("access-control-allow-origin")).toBe(
+      "https://shop.conduit.market"
     )
   })
 

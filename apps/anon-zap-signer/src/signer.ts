@@ -405,7 +405,13 @@ async function assertWorkerRateLimit(
   authorization: AnonZapSigningAuthorization,
   corsHeaders: HeadersInit
 ): Promise<Response | null> {
-  if (!env.ANON_SIGNER_RATE_LIMITER) return null
+  if (!env.ANON_SIGNER_RATE_LIMITER) {
+    return errorResponse(
+      "Anon signer rate limiter is not configured.",
+      503,
+      corsHeaders
+    )
+  }
   const result = await env.ANON_SIGNER_RATE_LIMITER.limit({
     key: `sign:${authorization.checkoutSessionId}`,
   })
