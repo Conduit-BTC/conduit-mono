@@ -26,4 +26,21 @@ describe("checkout completion navigation contracts", () => {
     expect(paymentTracker).toContain('<Link to="/orders">View orders</Link>')
     expect(paymentTracker).not.toContain('<Link to="/cart">Back to cart</Link>')
   })
+
+  it("uses the published fast-checkout total for degraded success telemetry", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+
+    expect(checkoutRoute).toContain(
+      "let publishedTotalSats: number | null = null"
+    )
+    expect(checkoutRoute).toContain(
+      "publishedTotalSats = pricingIntent.totalSats"
+    )
+    expect(checkoutRoute).toContain(
+      "const deliveredAmountSats = publishedTotalSats ?? total"
+    )
+    expect(checkoutRoute).toContain("amountSats: deliveredAmountSats")
+  })
 })

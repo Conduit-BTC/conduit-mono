@@ -12,6 +12,7 @@ export * from "./nip05"
 export * from "./order-summary"
 export * from "./order-lifecycle"
 export * from "./address-validation"
+export * from "./anon-zap"
 export * from "./lightning"
 export * from "./commerce"
 export * from "./follows"
@@ -37,6 +38,7 @@ export {
   refreshNdkRelaySettings,
   setSigner,
   removeSigner,
+  __resetNdkTestState,
   subscribeNdkState,
   getNdkState,
   type NdkConnectionState,

@@ -116,13 +116,7 @@ import {
 } from "../lib/wallet-readiness"
 
 type CheckoutStep =
-  | "shipping"
-  | "payment"
-  | "signing"
-  | "sending"
-  | "sent"
-  | "paying"
-  | "paid"
+  "shipping" | "payment" | "signing" | "sending" | "sent" | "paying" | "paid"
 
 type CheckoutSearch = {
   merchant?: string
@@ -138,10 +132,7 @@ const CHECKOUT_PRICE_REFRESH_TIMEOUT_MS = 5_000
 const CHECKOUT_PRICE_REFRESH_RETRY_MS = 30_000
 
 type CheckoutPricingRefreshState =
-  | "ready"
-  | "refreshing"
-  | "stale_retryable"
-  | "unavailable"
+  "ready" | "refreshing" | "stale_retryable" | "unavailable"
 
 const DEFAULT_SHIPPING_FORM: ShippingFormState = {
   firstName: "",
@@ -763,17 +754,18 @@ function CheckoutPage() {
     !physicalItemsMissingShippingSnapshot
 
   // Fetch merchant's published shipping zones (kind-30406)
-  const shippingOptionsQuery = useQuery({
-    queryKey: ["shippingOptions", selectedMerchant],
-    queryFn: () => getShippingOptions(selectedMerchant!),
-    enabled:
-      !!selectedMerchant &&
-      !isAllDigital &&
-      !physicalItemsMissingShippingZone &&
-      !hasCompleteCartShippingSnapshot,
-    staleTime: 5 * 60 * 1000,
-  })
-  const merchantShippingOptions = shippingOptionsQuery.data ?? []
+  const { data: shippingOptionsData, isLoading: shippingOptionsIsLoading } =
+    useQuery({
+      queryKey: ["shippingOptions", selectedMerchant],
+      queryFn: () => getShippingOptions(selectedMerchant!),
+      enabled:
+        !!selectedMerchant &&
+        !isAllDigital &&
+        !physicalItemsMissingShippingZone &&
+        !hasCompleteCartShippingSnapshot,
+      staleTime: 5 * 60 * 1000,
+    })
+  const merchantShippingOptions = shippingOptionsData ?? []
   const shippingOptionsAvailable = getCartShippingOptionsAvailable(
     checkoutItems,
     merchantShippingOptions
@@ -957,7 +949,7 @@ function CheckoutPage() {
   const shippingCheckoutState: ShippingCheckoutState = getShippingCheckoutState(
     {
       isAllDigital,
-      shippingLookupPending: shippingOptionsQuery.isLoading,
+      shippingLookupPending: shippingOptionsIsLoading,
       physicalItemsMissingShippingZone,
       shippingOptionsAvailable,
       destinationEligibility,
@@ -1119,6 +1111,28 @@ function CheckoutPage() {
           input.checkoutMode,
           input.amountSats
         ),
+        rail: input.rail ?? "none",
+        status: input.status,
+      },
+    })
+  }
+
+  function recordCheckoutResult(input: {
+    amountSats?: number
+    checkoutMode: CheckoutTelemetryMode
+    rail?: string
+    status: string
+  }): void {
+    recordBrowserTelemetryEvent({
+      app: "market",
+      eventName: "checkout_result",
+      properties: {
+        ...getCheckoutTelemetryBaseProperties(
+          checkoutItems,
+          input.checkoutMode,
+          input.amountSats
+        ),
+        network: "browser",
         rail: input.rail ?? "none",
         status: input.status,
       },
@@ -1432,6 +1446,11 @@ function CheckoutPage() {
         checkoutMode: "order_first",
         status: "order_sent",
       })
+      recordCheckoutResult({
+        amountSats: total,
+        checkoutMode: "order_first",
+        status: "success",
+      })
       void navigate({
         to: "/orders",
         search: { order: orderId },
@@ -1447,6 +1466,16 @@ function CheckoutPage() {
         setShowSentGlow(true)
         setStep("sent")
         paymentInFlightRef.current = false
+        recordCheckoutSuccess({
+          amountSats: total,
+          checkoutMode: "order_first",
+          status: "order_sent_local_tracking_failed",
+        })
+        recordCheckoutResult({
+          amountSats: total,
+          checkoutMode: "order_first",
+          status: "success_local_tracking_failed",
+        })
         void navigate({
           to: "/orders",
           search: { order: publishedOrderId },
@@ -1460,6 +1489,11 @@ function CheckoutPage() {
         checkoutMode: "order_first",
         status: "failed",
         stepName: "order_submit",
+      })
+      recordCheckoutResult({
+        amountSats: total,
+        checkoutMode: "order_first",
+        status: "failed",
       })
       setError(e instanceof Error ? e.message : "Failed to send order")
       setStep("payment")
@@ -1505,6 +1539,7 @@ function CheckoutPage() {
   async function payNow(): Promise<void> {
     if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
     let publishedOrderId: string | null = null
+    let publishedTotalSats: number | null = null
     let orderDelivered = false
 
     const webLnAvailableNow = hasWebLN()
@@ -1513,8 +1548,15 @@ function CheckoutPage() {
     if (!merchantLud16) {
       recordCheckoutStepResult({
         checkoutMode: zapVisibility,
+        rail: "lightning",
         status: "blocked",
         stepName: "direct_payment",
+      })
+      recordCheckoutResult({
+        amountSats: total,
+        checkoutMode: zapVisibility,
+        rail: "lightning",
+        status: "blocked",
       })
       setError("Merchant does not have a Lightning address.")
       return
@@ -1587,6 +1629,7 @@ function CheckoutPage() {
 
       const orderId = crypto.randomUUID()
       publishedOrderId = orderId
+      publishedTotalSats = pricingIntent.totalSats
       const currency = "SATS"
       const ndk = getNdk()
       const orderPayload = {
@@ -1675,7 +1718,14 @@ function CheckoutPage() {
       recordCheckoutSuccess({
         amountSats: pricingIntent.totalSats,
         checkoutMode: zapVisibility,
+        rail: "lightning",
         status: "order_sent",
+      })
+      recordCheckoutResult({
+        amountSats: pricingIntent.totalSats,
+        checkoutMode: zapVisibility,
+        rail: "lightning",
+        status: "success",
       })
 
       // Fire-and-forget: the service continues after we navigate away. With no
@@ -1712,6 +1762,7 @@ function CheckoutPage() {
       // Once the order is delivered, later failures (like local lifecycle
       // persistence) must not return the buyer to a retry path that republishes.
       if (orderDelivered && publishedOrderId) {
+        const deliveredAmountSats = publishedTotalSats ?? total
         cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
         setPaidNotice(
           "Your order was sent, but local order tracking could not be saved on this device. Check Orders or message the merchant before trying again."
@@ -1720,6 +1771,18 @@ function CheckoutPage() {
         setShowSentGlow(true)
         setStep("sent")
         paymentInFlightRef.current = false
+        recordCheckoutSuccess({
+          amountSats: deliveredAmountSats,
+          checkoutMode: zapVisibility,
+          rail: "lightning",
+          status: "order_sent_local_tracking_failed",
+        })
+        recordCheckoutResult({
+          amountSats: deliveredAmountSats,
+          checkoutMode: zapVisibility,
+          rail: "lightning",
+          status: "success_local_tracking_failed",
+        })
         void navigate({
           to: "/orders",
           search: { order: publishedOrderId },
@@ -1735,6 +1798,12 @@ function CheckoutPage() {
         checkoutMode: zapVisibility,
         status: "failed",
         stepName: "direct_payment",
+      })
+      recordCheckoutResult({
+        amountSats: total,
+        checkoutMode: zapVisibility,
+        rail: "lightning",
+        status: "failed",
       })
       setError(message)
       setStep("payment")

@@ -139,6 +139,7 @@ describe("browser telemetry", () => {
       disable_external_dependency_loading: true,
       disable_persistence: true,
       persistence: "memory",
+      cookieless_mode: "always",
       person_profiles: "never",
       advanced_disable_flags: true,
       advanced_disable_feature_flags: true,
@@ -266,6 +267,45 @@ describe("browser telemetry", () => {
         page_path: "/products/:productId",
         page_url: "https://shop.conduit.market/products/:productId",
         status: "success",
+      },
+    })
+  })
+
+  it("preserves only PostHog cookieless ingestion fields", () => {
+    expect(
+      sanitizePostHogCaptureEvent({
+        event: "checkout_result",
+        properties: {
+          $browser: "Chrome",
+          $cookieless_mode: true,
+          $current_url: "https://shop.conduit.market/checkout?order=secret",
+          $device_id: null,
+          $pathname: "/checkout",
+          $process_person_profile: false,
+          $session_id: "session-id",
+          app: "market",
+          distinct_id: "$posthog_cookieless",
+          mode: "checkout",
+          page_path: "/checkout",
+          page_url: "https://shop.conduit.market/checkout",
+          status: "failed",
+          token: "phc_public_project_token",
+        },
+      })
+    ).toEqual({
+      event: "checkout_result",
+      properties: {
+        $cookieless_mode: true,
+        $current_url: "https://shop.conduit.market/checkout",
+        $pathname: "/checkout",
+        $process_person_profile: false,
+        app: "market",
+        distinct_id: "$posthog_cookieless",
+        mode: "checkout",
+        page_path: "/checkout",
+        page_url: "https://shop.conduit.market/checkout",
+        status: "failed",
+        token: "phc_public_project_token",
       },
     })
   })

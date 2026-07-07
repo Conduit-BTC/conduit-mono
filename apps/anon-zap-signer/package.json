@@ -1,0 +1,19 @@
+{
+  "name": "@conduit/anon-zap-signer",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:local": "bun --env-file=../../.env.local src/dev.ts",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint \"src/**/*.ts\""
+  },
+  "dependencies": {
+    "@conduit/core": "workspace:*",
+    "nostr-tools": "2.23.5"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}

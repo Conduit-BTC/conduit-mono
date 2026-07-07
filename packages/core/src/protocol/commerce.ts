@@ -216,7 +216,10 @@ type CommerceTestOverrides = {
     signer: NDKSigner
   ) => Promise<Awaited<ReturnType<typeof giftUnwrap>> | null>
   now?: () => number
-  getCachedProducts?: (merchantPubkey?: string) => Promise<CachedProduct[]>
+  getCachedProducts?: (
+    merchantPubkey?: string,
+    authorPubkeys?: readonly string[]
+  ) => Promise<CachedProduct[]>
   putCachedProducts?: (rows: CachedProduct[]) => Promise<void>
   getCachedProfiles?: (
     pubkeys: string[]
@@ -733,15 +736,27 @@ function getProfileQueryRelayHints(query: ProfileBatchQuery): string[] {
 }
 
 async function loadCachedProducts(
-  merchantPubkey?: string
+  merchantPubkey?: string,
+  authorPubkeys?: readonly string[]
 ): Promise<CachedProduct[]> {
   if (testOverrides.getCachedProducts) {
-    return await testOverrides.getCachedProducts(merchantPubkey)
+    return await testOverrides.getCachedProducts(merchantPubkey, authorPubkeys)
   }
 
-  return merchantPubkey
-    ? await db.products.where("pubkey").equals(merchantPubkey).toArray()
-    : await db.products.toArray()
+  if (merchantPubkey) {
+    return await db.products.where("pubkey").equals(merchantPubkey).toArray()
+  }
+
+  // Perspective catalog reads scope to a known author set; hit the `pubkey`
+  // index instead of scanning + filtering the whole products table in JS.
+  if (authorPubkeys && authorPubkeys.length > 0) {
+    return await db.products
+      .where("pubkey")
+      .anyOf(authorPubkeys as string[])
+      .toArray()
+  }
+
+  return await db.products.toArray()
 }
 
 async function storeCachedProducts(rows: CachedProduct[]): Promise<void> {
@@ -757,9 +772,10 @@ async function storeCachedProducts(rows: CachedProduct[]): Promise<void> {
 
 async function getCachedProductRecords(
   merchantPubkey?: string,
-  options: CachedProductReadOptions = {}
+  options: CachedProductReadOptions = {},
+  authorPubkeys?: readonly string[]
 ): Promise<CommerceProductRecord[]> {
-  const rows = await loadCachedProducts(merchantPubkey)
+  const rows = await loadCachedProducts(merchantPubkey, authorPubkeys)
   return rows
     .filter(
       (row) =>
@@ -1086,6 +1102,33 @@ function isDeletedByNip09(
   return deletedAtAddress >= createdAt
 }
 
+const MAX_PRODUCT_PARSE_CACHE = 5000
+const productParseCache = new Map<
+  string,
+  {
+    parsed: ReturnType<typeof parseProductEvent>
+    safety: ReturnType<typeof evaluateListingSafety>
+  }
+>()
+
+// Parsing + listing-safety evaluation is deterministic per event id, but
+// dedupeProductEvents re-runs over the full accumulated set on every streaming
+// callback. Cache by id so each unique event is parsed/evaluated once instead
+// of O(callbacks x events).
+function parseAndEvaluateProductEvent(event: NDKEvent) {
+  const cached = event.id ? productParseCache.get(event.id) : undefined
+  if (cached) return cached
+  const parsed = parseProductEvent(event)
+  const entry = { parsed, safety: evaluateListingSafety(parsed) }
+  if (event.id) {
+    if (productParseCache.size >= MAX_PRODUCT_PARSE_CACHE) {
+      productParseCache.clear()
+    }
+    productParseCache.set(event.id, entry)
+  }
+  return entry
+}
+
 function dedupeProductEvents(
   events: NDKEvent[],
   deletionTimestamps?: DeletionTimestamps
@@ -1094,8 +1137,7 @@ function dedupeProductEvents(
 
   for (const event of events) {
     try {
-      const parsed = parseProductEvent(event)
-      const safety = evaluateListingSafety(parsed)
+      const { parsed, safety } = parseAndEvaluateProductEvent(event)
 
       const dTag = getTagValue(event.tags ?? [], "d")
       const addressId = dTag ? `30402:${event.pubkey}:${dTag}` : parsed.id
@@ -1381,9 +1423,13 @@ export async function getMarketplaceProducts(
   } catch (error) {
     const cached = applyProductLimit(
       sortProducts(
-        (await getCachedProductRecords(query.merchantPubkey)).filter((record) =>
-          productMatchesQuery(record, query)
-        ),
+        (
+          await getCachedProductRecords(
+            query.merchantPubkey,
+            undefined,
+            query.authorPubkeys
+          )
+        ).filter((record) => productMatchesQuery(record, query)),
         query.sort
       ),
       query.limit
@@ -1486,9 +1532,13 @@ export async function getCachedMarketplaceProducts(
 
   const cached = applyProductLimit(
     sortProducts(
-      (await getCachedProductRecords(query.merchantPubkey, options)).filter(
-        (record) => productMatchesQuery(record, query)
-      ),
+      (
+        await getCachedProductRecords(
+          query.merchantPubkey,
+          options,
+          query.authorPubkeys
+        )
+      ).filter((record) => productMatchesQuery(record, query)),
       query.sort
     ),
     query.limit

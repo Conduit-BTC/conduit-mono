@@ -35,6 +35,9 @@ PostHog dashboards should split Market and Merchant traffic with the shared
 `app` property. Use `app = market` for Market client panels and
 `app = merchant` for Merchant Portal panels. Do not use PostHog identity,
 grouping, person profile, or session replay features to create this split.
+PostHog project settings must enable cookieless mode and discard IP data; the
+browser SDK is configured for cookieless capture and events will not ingest
+unless the project allows cookieless traffic.
 
 Do not include active user, signer, buyer, wallet, or session pubkeys/npubs,
 invoices, order contents, product titles, addresses, message contents, IPs,
@@ -131,13 +134,15 @@ Emitted as an aggregate operational counter for relay connection outcomes.
 
 Emitted as an aggregate operational counter for relay publish outcomes.
 
-<!-- telemetry-event: checkout_result properties=event_name,app,page_url,page_path,network,status,latency_bucket,count,time_bucket -->
+<!-- telemetry-event: checkout_result properties=event_name,app,page_url,page_path,surface,mode,rail,network,status,count_bucket,amount_bucket,product_type,time_bucket -->
 
 ### `checkout_result`
 
-Emitted as an aggregate operational counter for checkout success/failure. It
-must not contain invoice strings, order contents, item titles, buyer identity,
-merchant identity, or shipping/contact data.
+Emitted as an aggregate operational counter for terminal checkout success,
+failure, blocked direct-payment, or degraded local tracking outcomes. It must
+use enum and bucket properties only and must not contain invoice strings, order
+contents, item titles, buyer identity, merchant identity, or shipping/contact
+data.
 
 <!-- telemetry-event: wallet_connect_result properties=event_name,app,page_url,page_path,rail,method,status,latency_bucket,count,time_bucket -->
 

@@ -535,11 +535,21 @@ export function hasMarketVisibleListingImage(
   return product.images.some((image) => isValidMarketImageUrl(image.url))
 }
 
+const normalizeRuleTextCache = new Map<string, string>()
+const MAX_NORMALIZE_CACHE = 5000
+
 function normalizeRuleText(value: string): string {
-  return value
+  const cached = normalizeRuleTextCache.get(value)
+  if (cached !== undefined) return cached
+  const normalized = value
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim()
+  if (normalizeRuleTextCache.size >= MAX_NORMALIZE_CACHE) {
+    normalizeRuleTextCache.clear()
+  }
+  normalizeRuleTextCache.set(value, normalized)
+  return normalized
 }
 
 function textIncludesTerm(text: string, term: string): boolean {
