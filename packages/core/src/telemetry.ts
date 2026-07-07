@@ -12,6 +12,7 @@ export const browserTelemetryEventNames = [
   "checkout_initiated",
   "checkout_step_result",
   "checkout_success",
+  "checkout_result",
   "relay_connect_result",
   "relay_publish_result",
   "wallet_connect_result",
@@ -145,6 +146,7 @@ export interface ConduitPostHogConfig {
   disable_external_dependency_loading: true
   disable_persistence: true
   persistence: "memory"
+  cookieless_mode: "always"
   person_profiles: "never"
   advanced_disable_flags: true
   advanced_disable_feature_flags: true
@@ -170,6 +172,7 @@ declare global {
 
 const DEFAULT_PLAUSIBLE_SCRIPT_SRC = "https://plausible.io/js/script.js"
 const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com"
+const POSTHOG_COOKIELESS_DISTINCT_ID = "$posthog_cookieless"
 const staticTelemetryRouteSegments = new Set([
   "about",
   "cart",
@@ -394,6 +397,7 @@ export function getConduitPostHogConfig(
     disable_external_dependency_loading: true,
     disable_persistence: true,
     persistence: "memory",
+    cookieless_mode: "always",
     person_profiles: "never",
     advanced_disable_flags: true,
     advanced_disable_feature_flags: true,
@@ -418,7 +422,8 @@ export function sanitizePostHogCaptureEvent(
   }
 
   const sourceProperties = event.properties ?? {}
-  const sanitizedProperties: Record<string, string | boolean> = {}
+  const sanitizedProperties: Record<string, string | boolean> =
+    getPostHogIngestionProperties(sourceProperties)
 
   for (const [key, value] of Object.entries(sourceProperties)) {
     if (!browserTelemetryPropertyNameSet.has(key)) continue
@@ -463,6 +468,28 @@ export function sanitizePostHogCaptureEvent(
     ...event,
     properties: sanitizedProperties,
   }
+}
+
+function getPostHogIngestionProperties(
+  properties: Record<string, unknown>
+): Record<string, string | boolean> {
+  const sanitized: Record<string, string | boolean> = {}
+  const token = properties.token
+  if (typeof token === "string" && token.trim()) {
+    sanitized.token = token
+  }
+
+  if (properties.distinct_id === POSTHOG_COOKIELESS_DISTINCT_ID) {
+    sanitized.distinct_id = POSTHOG_COOKIELESS_DISTINCT_ID
+  }
+  if (properties.$cookieless_mode === true) {
+    sanitized.$cookieless_mode = true
+  }
+  if (properties.$process_person_profile === false) {
+    sanitized.$process_person_profile = false
+  }
+
+  return sanitized
 }
 
 export function recordBrowserTelemetryEvent(input: TelemetryEventInput): void {
@@ -643,8 +670,7 @@ async function ensurePostHog(
     .then((mod) => {
       const postHogModule = mod as unknown as PostHogModule
       const client = (postHogModule.default ?? postHogModule) as
-        | PostHogClient
-        | undefined
+        PostHogClient | undefined
       if (!client?.init || !client.capture) return null
       client.init(config.key, getConduitPostHogConfig(config))
       return client
