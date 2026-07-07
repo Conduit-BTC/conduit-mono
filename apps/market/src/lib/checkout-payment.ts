@@ -739,10 +739,7 @@ export function getPaymentTrackerRowCopy(
   return PAYMENT_TRACKER_ROW_COPY[key][state]
 }
 
-export function buildDefaultZapContent(params: {
-  items: CartItem[]
-  merchantName: string
-}): string {
+export function buildDefaultZapContent(params: { items: CartItem[] }): string {
   const itemCount = params.items.reduce((sum, item) => sum + item.quantity, 0)
   const countLabel =
     itemCount === 1 ? "1 item" : `${Math.max(0, itemCount)} items`

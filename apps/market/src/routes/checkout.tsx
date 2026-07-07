@@ -797,10 +797,8 @@ function CheckoutPage() {
 
   useEffect(() => {
     if (zapContentEdited || checkoutItems.length === 0) return
-    setZapContent(
-      buildDefaultZapContent({ items: checkoutItems, merchantName })
-    )
-  }, [checkoutItems, merchantName, zapContentEdited])
+    setZapContent(buildDefaultZapContent({ items: checkoutItems }))
+  }, [checkoutItems, zapContentEdited])
 
   useEffect(() => {
     if (!publicZapPolicy.publicZapsAllowed && zapVisibility === "public_zap") {
