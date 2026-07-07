@@ -302,4 +302,22 @@ describe("cart model", () => {
       missingPolicyProductIds: [],
     })
   })
+
+  it("treats legacy product cart policy as product-reference compatibility", () => {
+    expect(
+      getCartPublicZapPolicy([
+        item({
+          publicZapEnabled: true,
+          zapMessagePolicy:
+            "product" as unknown as CartItem["zapMessagePolicy"],
+          publicZapPolicyKnown: true,
+        }),
+      ])
+    ).toEqual({
+      publicZapsAllowed: true,
+      effectiveZapMessagePolicy: "product_reference",
+      disabledProductIds: [],
+      missingPolicyProductIds: [],
+    })
+  })
 })

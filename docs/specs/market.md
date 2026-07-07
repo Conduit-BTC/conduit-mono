@@ -139,7 +139,9 @@ Product public-zap policy is cart-wide:
 
 Public zap comments are public protocol content. They must not include order
 contents, cart contents, shipping/contact data, invoices, payment request
-strings, or other private checkout details.
+strings, or other private checkout details. Product names and product
+identifiers are included only when policy allows public listing context or the
+shopper writes a custom public comment.
 
 ## Orders Surface
 

@@ -82,14 +82,17 @@ const ZAP_MESSAGE_POLICY_RANK: Record<ProductZapMessagePolicy, number> = {
   custom: 2,
 }
 
-function isProductZapMessagePolicy(
+function normalizeCartZapMessagePolicy(
   value: unknown
-): value is ProductZapMessagePolicy {
-  return (
-    value === "generic_only" ||
-    value === "product_reference" ||
-    value === "custom"
-  )
+): ProductZapMessagePolicy | null {
+  if (value === "custom") return "custom"
+  if (value === "product_reference" || value === "product") {
+    return "product_reference"
+  }
+  if (value === "generic_only" || value === "generic") {
+    return "generic_only"
+  }
+  return null
 }
 
 function getMostRestrictiveZapMessagePolicy(
@@ -117,10 +120,13 @@ export function getCartPublicZapPolicy(items: CartItem[]): CartPublicZapPolicy {
       missingPolicyProductIds.push(item.productId)
     }
 
-    if (isProductZapMessagePolicy(item.zapMessagePolicy)) {
+    const normalizedZapMessagePolicy = normalizeCartZapMessagePolicy(
+      item.zapMessagePolicy
+    )
+    if (normalizedZapMessagePolicy) {
       effectiveZapMessagePolicy = getMostRestrictiveZapMessagePolicy(
         effectiveZapMessagePolicy,
-        item.zapMessagePolicy
+        normalizedZapMessagePolicy
       )
     } else {
       missingPolicyProductIds.push(item.productId)

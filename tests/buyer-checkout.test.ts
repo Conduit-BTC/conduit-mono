@@ -967,7 +967,6 @@ describe("checkout payment helpers", () => {
           quantity: 2,
         }),
       ],
-      merchantName: "Merchant",
     })
     expect(content).toBe("Supported this merchant on Conduit ⚡")
     expect(content).not.toContain("Notebook")
@@ -985,7 +984,6 @@ describe("checkout payment helpers", () => {
           quantity: 1,
         }),
       ],
-      merchantName: "Merchant",
     })
 
     expect(content).toBe("Supported this merchant on Conduit ⚡")
