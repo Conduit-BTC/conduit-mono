@@ -26,7 +26,7 @@ function draft(
 }
 
 describe("Anon zap signer client", () => {
-  it("does not enable browser anon signing until trusted checkout authorization exists", () => {
+  it("does not enable browser anon signing until trusted checkout state exists", () => {
     expect(
       isAnonZapSignerConfigured({
         anonZapSignerUrl: "/api/anon-zap-sign",
@@ -61,9 +61,7 @@ describe("Anon zap signer client", () => {
 
     await expect(
       signCheckoutZapRequestWithAnonSigner(draft(), { fetchImpl })
-    ).rejects.toThrow(
-      "Anon zap signer requires trusted checkout authorization."
-    )
+    ).rejects.toThrow("Anon zap signer requires server-trusted checkout state.")
     expect(fetchImpl).toHaveBeenCalledTimes(0)
   })
 })
