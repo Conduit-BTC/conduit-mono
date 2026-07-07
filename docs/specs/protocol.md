@@ -13,19 +13,43 @@ Non-goals for the current client repository:
 
 - key custody, key generation, escrow, refunds, or balance management
 - broad NIP-46 product UX beyond the external-signer policy already allowed by architecture
-- service-operated checkout automation
+- service-operated checkout automation, except the scoped Anon Conduit Shopper public zap signer described below
 - making NIP-44 v3 the default send path before public draft/client references, signer support, and recipient capability detection exist
 - replacing the current shared protocol helpers with route-local relay substrates
 
 ## Authentication
 
-Conduit apps use external signers only.
+Conduit Market and Merchant Portal user authentication use external signers only.
 
 | Signer path           | Status                  | Notes                                         |
 | --------------------- | ----------------------- | --------------------------------------------- |
 | NIP-07 browser signer | Current client support  | Required path for current interactive signing |
 | NIP-46 remote signer  | Architecture-compatible | Product UX depends on explicit implementation |
 | App-generated keys    | Prohibited              | No key custody or private-key storage         |
+
+### Service Signer Exception: Anon Public Zaps
+
+The Anon Conduit Shopper public zap signer is the only approved server-side
+private-key exception in this repository. It exists to sign NIP-57 zap request
+events (`kind:9734`) only for checkout flows where a merchant explicitly allows
+public anonymous zaps.
+
+This exception is constrained as follows:
+
+- The private key must live only in the Cloudflare Worker runtime secret for
+  `apps/anon-zap-signer`; it must not be exposed through `VITE_*`, Pages client
+  env vars, logs, telemetry, PR comments, or tracked files.
+- The Worker may sign only validated public zap request drafts that are bound to
+  an authorized checkout session and a merchant/product zap policy that
+  explicitly permits anonymous public zaps. Request tags and content must exclude
+  order identifiers, cart contents, shipping/contact data, invoices, NWC URIs,
+  plaintext messages, or other private checkout data.
+- Browser `Origin` checks are not authentication. Calls that request signing
+  must include server-side request authentication shared only between the
+  calling server runtime and the signer Worker.
+- This exception does not authorize user key custody, merchant signing,
+  buyer-auth signing, order messaging, NIP-17/NIP-44 payload signing, product
+  listing publishing, or wallet/NWC custody.
 
 ## Event Kinds
 

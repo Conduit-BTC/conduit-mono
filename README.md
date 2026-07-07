@@ -139,6 +139,11 @@ wss://relay.nostr.net
 
 Browser builds print a relay map in DevTools showing the code defaults, raw/normalized relay env vars, and the final resolved relay lists. Conduit-hosted deploys should leave relay env vars empty so reviewers can compare the open-source code defaults with the deployed behavior.
 
+PostHog telemetry is configured for cookieless capture. The PostHog project
+must also have cookieless mode enabled and IP data discarded, otherwise
+PostHog will ignore cookieless browser events even when the deploy env vars are
+correct.
+
 **Modes:**
 
 - **mock** — Fake `lnbcrt` invoices, yellow badge in header. Use for local dev.
