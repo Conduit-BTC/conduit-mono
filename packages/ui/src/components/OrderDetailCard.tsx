@@ -4,6 +4,7 @@ import { Badge } from "./Badge"
 type OrderItem = {
   productId: string
   title?: string
+  imageUrl?: string
   quantity: number
   priceAtPurchase: number
   currency: string
@@ -108,32 +109,33 @@ export function OrderDetailCard({
               Items
             </div>
             <div className="space-y-1">
-              {items.map((item, i) => {
-                const itemTitle = item.title?.trim()
-                return (
-                  <div
-                    key={`${item.productId}-${i}`}
-                    className="flex items-start justify-between gap-3 text-sm"
-                  >
-                    <span className="min-w-0 text-[var(--text-primary)]">
-                      <span className={itemTitle ? "" : "font-mono text-xs"}>
-                        {itemTitle || item.productId}
-                      </span>
-                      <span className="ml-1 text-[var(--text-secondary)]">
-                        x{item.quantity}
-                      </span>
-                      {itemTitle && (
-                        <span className="mt-1 block truncate font-mono text-[11px] text-[var(--text-muted)]">
-                          {item.productId}
-                        </span>
-                      )}
-                    </span>
-                    <span className="shrink-0 text-[var(--text-secondary)]">
-                      {formatOrderAmount(item.priceAtPurchase, item.currency)}
-                    </span>
+              {items.map((item, i) => (
+                <div
+                  key={`${item.productId}-${i}`}
+                  className="flex items-center gap-3 text-sm"
+                >
+                  {item.imageUrl ? (
+                    <img
+                      src={item.imageUrl}
+                      alt=""
+                      className="h-10 w-10 shrink-0 rounded-md border border-[var(--border)] object-cover"
+                    />
+                  ) : (
+                    <div className="h-10 w-10 shrink-0 rounded-md border border-[var(--border)] bg-[var(--surface)]" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[var(--text-primary)]">
+                      {item.title?.trim() || "Product"}
+                    </div>
+                    <div className="text-xs text-[var(--text-secondary)]">
+                      Qty {item.quantity}
+                    </div>
                   </div>
-                )
-              })}
+                  <span className="shrink-0 text-[var(--text-secondary)]">
+                    {formatOrderAmount(item.priceAtPurchase, item.currency)}
+                  </span>
+                </div>
+              ))}
             </div>
             <div className="flex items-center justify-between border-t border-[var(--border)] pt-2 text-sm font-medium">
               <span className="text-[var(--text-primary)]">Subtotal</span>

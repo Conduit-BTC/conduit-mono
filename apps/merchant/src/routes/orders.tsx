@@ -20,6 +20,8 @@ import {
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
   getMerchantOrderActions,
+  getMerchantStorefront,
+  getProductImageCandidates,
   hasWebLN,
   isInvoiceCompatibleWithCurrentNetwork,
   mockMakeInvoice,
@@ -561,6 +563,27 @@ function OrdersPage() {
   })
   const isOrdersFetching = ordersQuery.isFetching
   const refetchOrders = ordersQuery.refetch
+
+  // The merchant's own listings, used to resolve order-item name + image
+  // (the order message carries neither an image nor a reliable title).
+  const merchantProductsQuery = useQuery({
+    queryKey: ["merchant-own-products", pubkey ?? "none"],
+    enabled: signerConnected,
+    queryFn: () => getMerchantStorefront({ merchantPubkey: pubkey! }),
+    staleTime: 60_000,
+  })
+  const productLookup = useMemo(() => {
+    const map = new Map<string, { title: string; imageUrl?: string }>()
+    for (const record of merchantProductsQuery.data?.data ?? []) {
+      const entry = {
+        title: record.product.title,
+        imageUrl: getProductImageCandidates(record.product)[0]?.url,
+      }
+      map.set(record.addressId, entry)
+      if (record.product.id) map.set(record.product.id, entry)
+    }
+    return map
+  }, [merchantProductsQuery.data])
 
   useEffect(() => {
     if (isOrdersFetching) {
@@ -1173,7 +1196,14 @@ function OrdersPage() {
                       selected.buyerPubkey,
                       8
                     )}
-                    items={orderSummary.items}
+                    items={orderSummary.items.map((item) => {
+                      const match = productLookup.get(item.productId)
+                      return {
+                        ...item,
+                        title: item.title || match?.title,
+                        imageUrl: match?.imageUrl,
+                      }
+                    })}
                     subtotal={orderSummary.subtotal}
                     currency={orderSummary.currency}
                     shippingAddress={orderSummary.shippingAddress}
