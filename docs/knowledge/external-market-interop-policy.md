@@ -168,3 +168,10 @@ Add short entries here as they arise:
 - Conduit behavior: ...
 - Risk: Level 1 / Level 2 / Level 3
 - Action: adapter / escalate / ignore (with reason)
+
+- **[2026-07-08]** Partial JSON listing content display fallback
+- Spec expectation: NIP-99/Gamma product listing `content` is human-readable Markdown description; structured metadata belongs in tags.
+- Observed behavior: Some relayed listings use JSON object content with fields such as `title` and `description`, but do not match Conduit's legacy product schema.
+- Conduit behavior: Continue parsing full legacy Conduit JSON listings, but for partial JSON content only project safe display fields (`title`, `summary`/`description`) and never render the raw JSON object as product copy.
+- Risk: Level 1 rendering mismatch.
+- Action: adapter.

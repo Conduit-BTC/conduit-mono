@@ -412,7 +412,7 @@ describe("product listing event parsing", () => {
     expect(variation.format).toBe("physical")
   })
 
-  it("falls back to tags when Markdown content is JSON-shaped but not a legacy product", () => {
+  it("does not render raw JSON-shaped content as product summary", () => {
     const parsed = parseProductEvent({
       id: "json-shaped-summary-event",
       pubkey: "merchant",
@@ -428,9 +428,41 @@ describe("product listing event parsing", () => {
 
     expect(parsed.id).toBe("30402:merchant:json-shaped-summary")
     expect(parsed.title).toBe("JSON-Shaped Summary Product")
-    expect(parsed.summary).toBe('{"material":"linen","care":"cold wash"}')
+    expect(parsed.summary).toBeUndefined()
     expect(parsed.price).toBe(42_000)
     expect(parsed.currency).toBe("SATS")
     expect(parsed.type).toBe("simple")
+  })
+
+  it("uses partial JSON listing metadata for display compatibility", () => {
+    const parsed = parseProductEvent({
+      id: "partial-json-listing-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: JSON.stringify({
+        title: "Sats gift",
+        description: "I got some sats for you!",
+        category: "Ecash",
+        pricing: "free",
+        images: [""],
+        created_at: "2025-07-25T13:43:52.327Z",
+      }),
+      tags: [
+        ["d", "sats-gift"],
+        ["price", "0", "SATS"],
+        ["type", "simple", "digital"],
+        ["t", "Ecard"],
+        ["t", "Ecash"],
+      ],
+    })
+
+    expect(parsed.id).toBe("30402:merchant:sats-gift")
+    expect(parsed.title).toBe("Sats gift")
+    expect(parsed.summary).toBe("I got some sats for you!")
+    expect(parsed.price).toBe(0)
+    expect(parsed.currency).toBe("SATS")
+    expect(parsed.format).toBe("digital")
+    expect(parsed.tags).toEqual(["Ecard", "Ecash"])
+    expect(parsed.images).toEqual([])
   })
 })

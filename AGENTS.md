@@ -267,5 +267,6 @@ Pull request required for all changes.
 - Use Conventional Commits by default for commits: `type(scope): description`
 - Use the same convention for PR titles unless the PR is a release or sync promotion with an explicit repo-level naming rule
 - Branch names for new work should use conventional prefixes such as `feat/*`, `fix/*`, `chore/*`, or `docs/*`
+- When a user asks to branch from a named base branch, verify that branch exists locally or on the remote before creating work. If the requested base is missing, stop and ask for the intended base instead of silently substituting another branch.
 - Use `.github/pull_request_template.md` for all PRs
 - For spec-driven work, merge the relevant docs/spec PR to `main` before starting the implementation `feat/*` branch

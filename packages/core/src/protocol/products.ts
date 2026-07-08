@@ -301,6 +301,53 @@ function parseProductZapPolicy(
   }
 }
 
+type ProductJsonContentProjection = {
+  isJson: boolean
+  title?: string
+  summary?: string
+}
+
+function getStringField(
+  record: Record<string, unknown>,
+  names: string[]
+): string | undefined {
+  for (const name of names) {
+    const value = record[name]
+    if (typeof value !== "string") continue
+
+    const trimmed = value.trim()
+    if (trimmed) return trimmed
+  }
+
+  return undefined
+}
+
+function parseProductJsonContentProjection(
+  content: string
+): ProductJsonContentProjection | null {
+  const trimmed = content.trim()
+  if (!trimmed) return null
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { isJson: true }
+  }
+
+  const record = parsed as Record<string, unknown>
+  return {
+    isJson: true,
+    title: getStringField(record, ["title", "name"]),
+    summary: getStringField(record, ["summary", "description"]),
+  }
+}
+
 /**
  * Best-effort parser for kind-30402 product events.
  *
@@ -344,9 +391,13 @@ export function parseProductEvent(
 
   // Fallback: market-spec/NIP-99 style tags + markdown content.
   const fromContent = (event.content || "").trim()
+  const jsonContentProjection = parseProductJsonContentProjection(fromContent)
+  const markdownContent = jsonContentProjection?.isJson ? "" : fromContent
+  const markdownTitle = markdownContent.split("\n")[0]?.trim().slice(0, 200)
   const title =
     getTagValue(event.tags, "title") ??
-    fromContent.split("\n")[0]?.slice(0, 200) ??
+    jsonContentProjection?.title ??
+    (markdownTitle || undefined) ??
     "Untitled"
 
   const priceInfo = parsePriceTag(event.tags)
@@ -377,7 +428,9 @@ export function parseProductEvent(
       pubkey: event.pubkey,
       title,
       summary:
-        summaryTag ?? (fromContent ? fromContent.slice(0, 5000) : undefined),
+        summaryTag ??
+        jsonContentProjection?.summary ??
+        (markdownContent ? markdownContent.slice(0, 5000) : undefined),
       price: priceInfo?.price ?? 0,
       currency: priceInfo?.currency ?? "USD",
       type,
