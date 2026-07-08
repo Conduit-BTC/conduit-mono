@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  buildOrderStatusTimeline,
   canMockInvoice,
   cacheParsedOrderMessage,
   convertCommerceAmountToSats,
@@ -10,6 +11,7 @@ import {
   appendConduitClientTag,
   extractOrderSummary,
   formatNpub,
+  getOrderStatusDisplay,
   getCachedMerchantConversationList,
   getCurrencyAmountStep,
   getNdk,
@@ -43,6 +45,8 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  StatusPill,
+  StatusStepper,
   Tabs,
   TabsContent,
   TabsList,
@@ -1038,7 +1042,7 @@ function OrdersPage() {
         <div className="grid gap-4 xl:min-h-0 xl:flex-1 xl:grid-cols-[320px_minmax(0,1fr)]">
           <aside className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-2 xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:overflow-hidden">
             <div className="mb-2 px-2 text-xs uppercase tracking-wide text-[var(--text-secondary)] xl:shrink-0">
-              Conversations
+              Orders
             </div>
             <div className="space-y-1 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
               {conversations.map((conversation) => {
@@ -1049,12 +1053,13 @@ function OrdersPage() {
                   buyerProfile,
                   conversation.buyerPubkey
                 )
+                const statusDisplay = getOrderStatusDisplay(conversation.status)
                 return (
                   <button
                     key={conversation.id}
                     className={`w-full rounded-md border px-3 py-2 text-left transition ${
                       active
-                        ? "border-[var(--text-secondary)] bg-[var(--surface)]"
+                        ? "border-secondary-500/40 bg-secondary-500/10"
                         : "border-transparent hover:border-[var(--border)] hover:bg-[var(--surface-elevated)]"
                     }`}
                     onClick={() => setSelectedConversationId(conversation.id)}
@@ -1063,23 +1068,15 @@ function OrdersPage() {
                       <span className="font-mono text-xs text-[var(--text-primary)]">
                         {conversation.orderId}
                       </span>
-                      <Badge
-                        variant="secondary"
-                        className="border-[var(--border)]"
-                      >
-                        {friendlyTypeLabel(conversation.latestType)}
-                      </Badge>
+                      <StatusPill variant={statusDisplay.tone}>
+                        {statusDisplay.label}
+                      </StatusPill>
                     </div>
                     <div className="mt-1 text-xs text-[var(--text-secondary)]">
                       Buyer: {buyerName}
                     </div>
                     <div className="mt-1 font-mono text-[11px] text-[var(--text-muted)]">
                       {formatNpub(conversation.buyerPubkey, 8)}
-                    </div>
-                    <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                      {conversation.status
-                        ? `Status: ${conversation.status}`
-                        : "Status: pending"}
                     </div>
                     {conversation.totalSummary && (
                       <div className="mt-1 text-xs text-[var(--text-secondary)]">
@@ -1109,6 +1106,12 @@ function OrdersPage() {
                   value="details"
                   className="xl:min-h-0 xl:overflow-auto xl:pr-1"
                 >
+                  <div className="mb-4 rounded-md border border-[var(--border)] bg-[var(--surface)] p-3">
+                    <StatusStepper
+                      rows={buildOrderStatusTimeline(selected.status)}
+                      ariaLabel="Order progress"
+                    />
+                  </div>
                   <OrderDetailCard
                     orderId={selected.orderId}
                     status={selected.status}
