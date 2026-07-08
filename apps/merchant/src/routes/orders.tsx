@@ -54,7 +54,7 @@ import {
 } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import { giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
-import { CheckCircle2, RotateCw } from "lucide-react"
+import { CheckCircle2, MessageCircle, RotateCw } from "lucide-react"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useNwcConnection } from "../hooks/useNwcConnection"
 
@@ -1065,10 +1065,13 @@ function OrdersPage() {
                     onClick={() => setSelectedConversationId(conversation.id)}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-mono text-xs text-[var(--text-primary)]">
+                      <span className="min-w-0 break-all font-mono text-xs text-[var(--text-primary)]">
                         {conversation.orderId}
                       </span>
-                      <StatusPill variant={statusDisplay.tone}>
+                      <StatusPill
+                        variant={statusDisplay.tone}
+                        className="shrink-0"
+                      >
                         {statusDisplay.label}
                       </StatusPill>
                     </div>
@@ -1096,22 +1099,31 @@ function OrdersPage() {
                 onValueChange={setActiveTab}
                 className="xl:flex xl:h-full xl:min-h-0 xl:flex-col"
               >
-                <TabsList className="xl:shrink-0">
-                  <TabsTrigger value="details">Details</TabsTrigger>
-                  <TabsTrigger value="actions">Actions</TabsTrigger>
-                  <TabsTrigger value="messages">Messages</TabsTrigger>
+                <div className="mb-4 rounded-md border border-[var(--border)] bg-[var(--surface)] p-3 xl:shrink-0">
+                  <StatusStepper
+                    rows={buildOrderStatusTimeline(selected.status)}
+                    ariaLabel="Order progress"
+                  />
+                </div>
+                <TabsList className="rounded-full self-start xl:shrink-0">
+                  <TabsTrigger
+                    value="details"
+                    className="h-7 rounded-full text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  >
+                    Details
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="actions"
+                    className="h-7 rounded-full text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  >
+                    Actions
+                  </TabsTrigger>
                 </TabsList>
 
                 <TabsContent
                   value="details"
                   className="xl:min-h-0 xl:overflow-auto xl:pr-1"
                 >
-                  <div className="mb-4 rounded-md border border-[var(--border)] bg-[var(--surface)] p-3">
-                    <StatusStepper
-                      rows={buildOrderStatusTimeline(selected.status)}
-                      ariaLabel="Order progress"
-                    />
-                  </div>
                   <OrderDetailCard
                     orderId={selected.orderId}
                     status={selected.status}
@@ -1481,6 +1493,21 @@ function OrdersPage() {
                     </form>
                   </div>
                 </TabsContent>
+
+                <div className="mt-auto flex justify-end pt-3 xl:shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("messages")}
+                    className={`inline-flex items-center gap-1.5 rounded-sm border px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 ${
+                      activeTab === "messages"
+                        ? "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-sm"
+                        : "border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                    }`}
+                  >
+                    <MessageCircle className="h-3.5 w-3.5" />
+                    Messages
+                  </button>
+                </div>
               </Tabs>
             ) : (
               <div className="text-sm text-[var(--text-secondary)]">
