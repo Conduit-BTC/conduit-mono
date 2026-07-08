@@ -19,6 +19,7 @@ import {
   getProfileName,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
+  getMerchantOrderActions,
   hasWebLN,
   isInvoiceCompatibleWithCurrentNetwork,
   mockMakeInvoice,
@@ -638,6 +639,7 @@ function OrdersPage() {
     conversations.find(
       (conversation) => conversation.id === selectedConversationId
     ) ?? null
+  const orderActions = selected ? getMerchantOrderActions(selected.status) : []
   const selectedOrderMessage = selected?.messages?.find(
     (message) => message.type === "order"
   )
@@ -853,6 +855,24 @@ function OrdersPage() {
     },
   })
 
+  const advanceStatusMutation = useMutation({
+    mutationFn: async (nextStatus: string) => {
+      if (!pubkey || !selected) throw new Error("No conversation selected")
+      await publishOrderConversationMessage({
+        merchantPubkey: pubkey,
+        buyerPubkey: selected.buyerPubkey,
+        orderId: selected.orderId,
+        type: "status_update",
+        tags: [["status", nextStatus]],
+        payload: { status: nextStatus },
+      })
+    },
+    onSuccess: async () => {
+      flash("Status update sent to buyer")
+      await invalidateOrderQueries()
+    },
+  })
+
   const shippingMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
@@ -1014,12 +1034,6 @@ function OrdersPage() {
         </div>
       )}
 
-      {signerConnected && isOrdersFetching && (
-        <div className="text-sm text-[var(--text-secondary)]">
-          Checking latest order messages…
-        </div>
-      )}
-
       {signerConnected && ordersQuery.error && (
         <div className="rounded-md border border-error/30 bg-error/10 p-4 text-sm text-error">
           Failed to load orders:{" "}
@@ -1105,20 +1119,46 @@ function OrdersPage() {
                     ariaLabel="Order progress"
                   />
                 </div>
-                <TabsList className="rounded-full self-start xl:shrink-0">
-                  <TabsTrigger
-                    value="details"
-                    className="h-7 rounded-full text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                  >
-                    Details
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="actions"
-                    className="h-7 rounded-full text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                  >
-                    Actions
-                  </TabsTrigger>
-                </TabsList>
+                <div className="mb-2 flex items-center justify-between gap-2 xl:shrink-0">
+                  <TabsList className="rounded-full">
+                    <TabsTrigger
+                      value="details"
+                      className="h-7 rounded-full text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                    >
+                      Details
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="actions"
+                      className="h-7 rounded-full text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                    >
+                      Actions
+                    </TabsTrigger>
+                  </TabsList>
+                  {orderActions.length > 0 && (
+                    <div className="flex shrink-0 items-center gap-2">
+                      {orderActions.map((action) => (
+                        <Button
+                          key={action.label}
+                          size="sm"
+                          variant={
+                            action.kind === "destructive"
+                              ? "outline"
+                              : "primary"
+                          }
+                          disabled={advanceStatusMutation.isPending}
+                          onClick={() =>
+                            advanceStatusMutation.mutate(action.status)
+                          }
+                        >
+                          {advanceStatusMutation.isPending &&
+                          advanceStatusMutation.variables === action.status
+                            ? "Sending…"
+                            : action.label}
+                        </Button>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
                 <TabsContent
                   value="details"

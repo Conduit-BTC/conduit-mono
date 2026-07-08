@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test"
-import { buildOrderStatusTimeline, getOrderStatusDisplay } from "@conduit/core"
+import {
+  buildOrderStatusTimeline,
+  getMerchantOrderActions,
+  getOrderStatusDisplay,
+} from "@conduit/core"
 
 describe("getOrderStatusDisplay", () => {
   it("maps known statuses to a tone + label", () => {
@@ -67,5 +71,30 @@ describe("buildOrderStatusTimeline", () => {
       "waiting",
     ])
     expect(rows[1]?.label).toBe("Cancelled")
+  })
+})
+
+describe("getMerchantOrderActions", () => {
+  it("offers decline + accept before acceptance", () => {
+    for (const status of ["pending", "paid"]) {
+      expect(getMerchantOrderActions(status)).toEqual([
+        { status: "cancelled", label: "Decline order", kind: "destructive" },
+        { status: "accepted", label: "Accept order", kind: "primary" },
+      ])
+    }
+  })
+
+  it("offers cancel + ship once accepted", () => {
+    expect(getMerchantOrderActions("accepted")).toEqual([
+      { status: "cancelled", label: "Cancel order", kind: "destructive" },
+      { status: "shipped", label: "Mark as shipped", kind: "primary" },
+    ])
+  })
+
+  it("offers nothing once shipped (buyer confirms delivery) or terminal", () => {
+    expect(getMerchantOrderActions("shipped")).toEqual([])
+    expect(getMerchantOrderActions("delivered")).toEqual([])
+    expect(getMerchantOrderActions("cancelled")).toEqual([])
+    expect(getMerchantOrderActions("refund_requested")).toEqual([])
   })
 })

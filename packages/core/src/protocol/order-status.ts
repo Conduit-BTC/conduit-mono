@@ -118,3 +118,36 @@ export function buildOrderStatusTimeline(
     }
   })
 }
+
+export type MerchantOrderActionKind = "primary" | "destructive"
+
+export interface MerchantOrderAction {
+  /** Status to publish when the action is taken. */
+  status: string
+  /** Button label for the action. */
+  label: string
+  kind: MerchantOrderActionKind
+}
+
+// The merchant's available actions for an order, ordered left-to-right: any
+// destructive action (decline / cancel) precedes the primary one (accept /
+// ship). Delivery is buyer-confirmed, so once shipped the merchant has none.
+export function getMerchantOrderActions(
+  status: string | null | undefined
+): MerchantOrderAction[] {
+  switch ((status ?? "pending").toLowerCase()) {
+    case "pending":
+    case "paid":
+      return [
+        { status: "cancelled", label: "Decline order", kind: "destructive" },
+        { status: "accepted", label: "Accept order", kind: "primary" },
+      ]
+    case "accepted":
+      return [
+        { status: "cancelled", label: "Cancel order", kind: "destructive" },
+        { status: "shipped", label: "Mark as shipped", kind: "primary" },
+      ]
+    default:
+      return []
+  }
+}
