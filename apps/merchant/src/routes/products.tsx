@@ -10,16 +10,19 @@ import {
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   appendConduitClientTag,
   buildProductListingEventDraft,
+  buildTagCorpusIndex,
   canonicalizeProductPrice,
   evaluateListingSafety,
   getCachedMerchantStorefront,
   getListingSafetyDisplay,
+  getMarketplaceProducts,
   getShippingOptionAddress,
   getMerchantStorefront,
   getProductImageCandidates,
   getProductPriceDisplay,
   publishWithPlanner,
   requireNdkConnected,
+  suggestProductTags,
   type CommerceResult,
   type ListingSafetyEvaluation,
   type ProductSchema,
@@ -556,6 +559,47 @@ function ProductsPage() {
     () => productsQuery.data?.data ?? cachedProductsQuery.data?.data ?? [],
     [cachedProductsQuery.data?.data, productsQuery.data?.data]
   )
+
+  // Local corpus of recent network products for lexical tag suggestions. Fetched
+  // only while the product dialog is open; the merchant app does not otherwise
+  // load the broad catalog the Market storefront does.
+  const tagCorpusQuery = useQuery({
+    queryKey: ["tag-suggest-corpus"],
+    enabled: productDialogOpen,
+    queryFn: () => getMarketplaceProducts({ limit: 300, sort: "newest" }),
+    staleTime: 10 * 60_000,
+  })
+  const tagCorpusIndex = useMemo(
+    () =>
+      buildTagCorpusIndex(
+        (tagCorpusQuery.data?.data ?? []).map((record) => ({
+          title: record.product.title,
+          summary: record.product.summary,
+          tags: record.product.tags,
+        }))
+      ),
+    [tagCorpusQuery.data]
+  )
+  const tagSuggestions = useMemo(
+    () =>
+      suggestProductTags(tagCorpusIndex, {
+        title: form.title,
+        summary: form.summary,
+        existingTags: parseTags(form.tags),
+        limit: 8,
+      }),
+    [tagCorpusIndex, form.title, form.summary, form.tags]
+  )
+  const addSuggestedTag = (tag: string) => {
+    setForm((prev) => {
+      const current = parseTags(prev.tags)
+      if (
+        current.some((existing) => existing.toLowerCase() === tag.toLowerCase())
+      )
+        return prev
+      return { ...prev, tags: [...current, tag].join(", ") }
+    })
+  }
   const shippingConfig = loadShippingConfig(pubkey)
   const hasPresetShippingZone = isShippingComplete(shippingConfig)
 
@@ -1265,6 +1309,28 @@ function ProductsPage() {
                 Separate tags with commas. Tags are custom and help buyers
                 filter listings.
               </div>
+              {tagSuggestions.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                  <span className="text-xs text-[var(--text-muted)]">
+                    Suggested:
+                  </span>
+                  {tagSuggestions.map((suggestion) => (
+                    <button
+                      key={suggestion.tag}
+                      type="button"
+                      onClick={() => addSuggestedTag(suggestion.tag)}
+                      className="rounded-full transition-transform duration-150 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                    >
+                      <Badge
+                        variant="outline"
+                        className="cursor-pointer gap-1 capitalize hover:border-secondary-400 hover:text-[var(--text-primary)]"
+                      >
+                        + {suggestion.tag}
+                      </Badge>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             <SignedActionStatus
