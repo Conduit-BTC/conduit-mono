@@ -7,8 +7,9 @@ import {
   normalizeCommercePrice,
   type PricingRateInput,
 } from "../pricing"
+import { normalizePubkey } from "../utils"
 import { EVENT_KINDS } from "./kinds"
-import { fetchEventsFanout } from "./ndk"
+import { fetchEventsFanout, getEventSourceRelayUrls } from "./ndk"
 
 // ─── LNURL / Zap helpers ──────────────────────────────────────────────────────
 
@@ -75,7 +76,8 @@ export async function fetchLnurlPayMetadata(
     data = (await res.json()) as Record<string, unknown>
   } catch (e) {
     throw new Error(
-      `Failed to reach LNURL endpoint for ${lud16}: ${e instanceof Error ? e.message : "network error"}`
+      `Failed to reach LNURL endpoint for ${lud16}: ${e instanceof Error ? e.message : "network error"}`,
+      { cause: e }
     )
   }
 
@@ -124,6 +126,35 @@ export interface FetchZapInvoiceResult {
   invoice: string
 }
 
+export const OMF_ZAPOUT_MARKER_TAG = ["omf", "zapout"] as const
+
+export interface OmfZapoutReceipt {
+  id: string
+  createdAt: number | null
+  receiptPubkey: string
+  zapRequestId: string | null
+  zapRequestCreatedAt: number | null
+  senderPubkey: string | null
+  recipientPubkey: string | null
+  amountMsats: number | null
+  comment: string | null
+  sourceRelayUrls: string[]
+}
+
+export function hasOmfZapoutMarker(tags: readonly string[][]): boolean {
+  return tags.some(
+    (tag) =>
+      tag.length === OMF_ZAPOUT_MARKER_TAG.length &&
+      tag[0] === OMF_ZAPOUT_MARKER_TAG[0] &&
+      tag[1] === OMF_ZAPOUT_MARKER_TAG[1]
+  )
+}
+
+export function appendOmfZapoutMarker(tags: string[][]): string[][] {
+  if (hasOmfZapoutMarker(tags)) return tags
+  return [...tags, [...OMF_ZAPOUT_MARKER_TAG]]
+}
+
 export type FetchLnurlInvoiceOptions = {
   /** Optional zap request event JSON. When omitted, this is a plain LNURL-pay invoice request. */
   zapRequestJson?: string
@@ -161,7 +192,8 @@ export async function fetchLnurlInvoice(
     data = (await res.json()) as Record<string, unknown>
   } catch (e) {
     throw new Error(
-      `Failed to fetch LNURL invoice: ${e instanceof Error ? e.message : "network error"}`
+      `Failed to fetch LNURL invoice: ${e instanceof Error ? e.message : "network error"}`,
+      { cause: e }
     )
   }
 
@@ -203,17 +235,14 @@ export async function fetchZapInvoice(
     })
   } catch (e) {
     throw new Error(
-      `Failed to fetch zap invoice: ${e instanceof Error ? e.message : "network error"}`
+      `Failed to fetch zap invoice: ${e instanceof Error ? e.message : "network error"}`,
+      { cause: e }
     )
   }
 }
 
 export type LightningInvoiceNetwork =
-  | "mainnet"
-  | "testnet"
-  | "signet"
-  | "regtest"
-  | "unknown"
+  "mainnet" | "testnet" | "signet" | "regtest" | "unknown"
 
 export type DecodedLightningInvoiceAmount = {
   msats: number | null
@@ -566,11 +595,11 @@ export function validateLightningInvoiceForPayment({
   return { ok: true, metadata }
 }
 
-function getTagValue(tags: string[][], name: string): string | null {
+function getTagValue(tags: readonly string[][], name: string): string | null {
   return tags.find((tag) => tag[0] === name)?.[1] ?? null
 }
 
-function parseZapDescription(
+export function parseZapReceiptDescription(
   description: string
 ): Record<string, unknown> | null {
   try {
@@ -580,6 +609,110 @@ function parseZapDescription(
       : null
   } catch {
     return null
+  }
+}
+
+function getZapRequestTags(zapRequest: Record<string, unknown>): string[][] {
+  return Array.isArray(zapRequest.tags)
+    ? (zapRequest.tags as unknown[]).filter(
+        (tag): tag is string[] =>
+          Array.isArray(tag) && tag.every((value) => typeof value === "string")
+      )
+    : []
+}
+
+function getStringField(
+  record: Record<string, unknown>,
+  name: string
+): string | null {
+  const value = record[name]
+  return typeof value === "string" && value.trim() ? value : null
+}
+
+function getHexPubkeyField(
+  record: Record<string, unknown>,
+  name: string
+): string | null {
+  return normalizePubkey(getStringField(record, name))
+}
+
+function getHexPubkeyTag(
+  tags: readonly string[][],
+  name: string
+): string | null {
+  return normalizePubkey(getTagValue(tags, name))
+}
+
+function getEventIdField(
+  record: Record<string, unknown>,
+  name: string
+): string | null {
+  const value = getStringField(record, name)
+  return value && /^[0-9a-f]{64}$/i.test(value) ? value.toLowerCase() : null
+}
+
+function getNumberField(
+  record: Record<string, unknown>,
+  name: string
+): number | null {
+  const value = record[name]
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : null
+}
+
+function parseMsatsTag(value: string | null): number | null {
+  if (!value) return null
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null
+}
+
+function getPublicZapComment(
+  zapRequest: Record<string, unknown>
+): string | null {
+  const content = getStringField(zapRequest, "content")
+  if (!content) return null
+  const normalized = content.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ")
+  const trimmed = normalized.trim()
+  return trimmed ? trimmed.slice(0, 280) : null
+}
+
+export function parseOmfZapoutReceipt(
+  event: Pick<NDKEvent, "id" | "kind" | "pubkey" | "created_at" | "tags">
+): OmfZapoutReceipt | null {
+  if (event.kind !== EVENT_KINDS.ZAP_RECEIPT) return null
+
+  const receiptTags = event.tags ?? []
+  const description = getTagValue(receiptTags, "description")
+  if (!description) return null
+
+  const zapRequest = parseZapReceiptDescription(description)
+  if (!zapRequest) return null
+  if (getNumberField(zapRequest, "kind") !== EVENT_KINDS.ZAP_REQUEST) {
+    return null
+  }
+
+  const requestTags = getZapRequestTags(zapRequest)
+  if (!hasOmfZapoutMarker(requestTags)) return null
+
+  return {
+    id: event.id,
+    createdAt:
+      typeof event.created_at === "number" &&
+      Number.isSafeInteger(event.created_at)
+        ? event.created_at
+        : null,
+    receiptPubkey: event.pubkey,
+    zapRequestId: getEventIdField(zapRequest, "id"),
+    zapRequestCreatedAt: getNumberField(zapRequest, "created_at"),
+    senderPubkey:
+      getHexPubkeyField(zapRequest, "pubkey") ??
+      getHexPubkeyTag(receiptTags, "P"),
+    recipientPubkey:
+      getHexPubkeyTag(requestTags, "p") ?? getHexPubkeyTag(receiptTags, "p"),
+    amountMsats:
+      parseMsatsTag(getTagValue(requestTags, "amount")) ??
+      parseMsatsTag(getTagValue(receiptTags, "amount")),
+    comment: getPublicZapComment(zapRequest),
+    sourceRelayUrls: getEventSourceRelayUrls(event as NDKEvent),
   }
 }
 
@@ -602,15 +735,10 @@ export function validateZapReceiptEvent({
   const description = getTagValue(event.tags ?? [], "description")
   if (!description) return false
 
-  const zapRequest = parseZapDescription(description)
+  const zapRequest = parseZapReceiptDescription(description)
   if (zapRequest?.id !== zapRequestId) return false
 
-  const requestTags = Array.isArray(zapRequest.tags)
-    ? (zapRequest.tags as unknown[]).filter(
-        (tag): tag is string[] =>
-          Array.isArray(tag) && tag.every((value) => typeof value === "string")
-      )
-    : []
+  const requestTags = getZapRequestTags(zapRequest)
   const amountTag = getTagValue(requestTags, "amount")
   if (amountTag && Number(amountTag) !== expectedAmountMsats) return false
 

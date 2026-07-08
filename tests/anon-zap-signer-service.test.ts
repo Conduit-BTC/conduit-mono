@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { EVENT_KINDS } from "@conduit/core"
+import { EVENT_KINDS, OMF_ZAPOUT_MARKER_TAG } from "@conduit/core"
 import { getPublicKey } from "nostr-tools"
 import {
   handleAnonZapSignerRequest,
@@ -144,6 +144,15 @@ describe("Anon zap signer service", () => {
     expect(signed.tags).toEqual(draft().tags)
   })
 
+  it("allows the canonical OMF zapout marker before signing", async () => {
+    const tags = [...draft().tags, [...OMF_ZAPOUT_MARKER_TAG]]
+    const signed = await signAnonZapRequestDraft(draft({ tags }), env(), {
+      nowSeconds: NOW_SECONDS,
+    })
+
+    expect(signed.tags).toEqual(tags)
+  })
+
   it("rejects private tags before signing", async () => {
     await expect(
       signAnonZapRequestDraft(
@@ -160,6 +169,18 @@ describe("Anon zap signer service", () => {
         { nowSeconds: NOW_SECONDS }
       )
     ).rejects.toThrow("Zap request contains private tags.")
+  })
+
+  it("rejects expanded OMF marker payloads before signing", async () => {
+    await expect(
+      signAnonZapRequestDraft(
+        draft({
+          tags: [...draft().tags, ["omf", "zapout", "order-123"]],
+        }),
+        env(),
+        { nowSeconds: NOW_SECONDS }
+      )
+    ).rejects.toThrow("Zap request tag payload is invalid.")
   })
 
   it("rejects extra payload fields on allowed public tags before signing", async () => {
