@@ -19,6 +19,9 @@ export type AnonZapSignerEnv = {
   ANON_SIGNER_PORT?: string
   ANON_CONDUIT_MARKET_NIP89_ADDRESS?: string
   ANON_CONDUIT_MARKET_NIP89_RELAY_HINT?: string
+  ANON_SIGNER_RATE_LIMITER?: {
+    limit(input: { key: string }): Promise<{ success: boolean }>
+  }
 }
 
 type AnonZapSigningAuthorization = {
@@ -397,6 +400,27 @@ async function assertAuthenticatedRequest(
   }
 }
 
+async function assertWorkerRateLimit(
+  env: AnonZapSignerEnv,
+  authorization: AnonZapSigningAuthorization,
+  corsHeaders: HeadersInit
+): Promise<Response | null> {
+  if (!env.ANON_SIGNER_RATE_LIMITER) {
+    return errorResponse(
+      "Anon signer rate limiter is not configured.",
+      503,
+      corsHeaders
+    )
+  }
+  const result = await env.ANON_SIGNER_RATE_LIMITER.limit({
+    key: `sign:${authorization.checkoutSessionId}`,
+  })
+  if (result.success) return null
+  const headers = new Headers(corsHeaders)
+  headers.set("retry-after", "60")
+  return errorResponse("Anon zap signing is rate limited.", 429, headers)
+}
+
 export function getAnonZapSignerDevPort(env: AnonZapSignerEnv): number {
   const port = Number(env.ANON_SIGNER_PORT ?? "7010")
   return Number.isSafeInteger(port) && port > 0 ? port : 7010
@@ -481,6 +505,12 @@ export async function handleAnonZapSignerRequest(
       )
     }
     assertAuthorizedDraft(draft, authorization)
+    const rateLimitError = await assertWorkerRateLimit(
+      env,
+      authorization,
+      corsHeaders
+    )
+    if (rateLimitError) return rateLimitError
 
     const rawEvent = await signAnonZapRequestDraft(draft, env)
     return jsonResponse(

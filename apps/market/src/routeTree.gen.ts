@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as ZapoutsRouteImport } from './routes/zapouts'
 import { Route as WalletRouteImport } from './routes/wallet'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as OrdersRouteImport } from './routes/orders'
@@ -23,6 +24,11 @@ import { Route as UProfileRefRouteImport } from './routes/u/$profileRef'
 import { Route as StorePubkeyRouteImport } from './routes/store/$pubkey'
 import { Route as ProductsProductIdRouteImport } from './routes/products/$productId'
 
+const ZapoutsRoute = ZapoutsRouteImport.update({
+  id: '/zapouts',
+  path: '/zapouts',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const WalletRoute = WalletRouteImport.update({
   id: '/wallet',
   path: '/wallet',
@@ -99,6 +105,7 @@ export interface FileRoutesByFullPath {
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
   '/wallet': typeof WalletRoute
+  '/zapouts': typeof ZapoutsRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
@@ -114,6 +121,7 @@ export interface FileRoutesByTo {
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
   '/wallet': typeof WalletRoute
+  '/zapouts': typeof ZapoutsRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
@@ -130,6 +138,7 @@ export interface FileRoutesById {
   '/orders': typeof OrdersRoute
   '/profile': typeof ProfileRoute
   '/wallet': typeof WalletRoute
+  '/zapouts': typeof ZapoutsRoute
   '/products/$productId': typeof ProductsProductIdRoute
   '/store/$pubkey': typeof StorePubkeyRoute
   '/u/$profileRef': typeof UProfileRefRoute
@@ -147,6 +156,7 @@ export interface FileRouteTypes {
     | '/orders'
     | '/profile'
     | '/wallet'
+    | '/zapouts'
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
@@ -162,6 +172,7 @@ export interface FileRouteTypes {
     | '/orders'
     | '/profile'
     | '/wallet'
+    | '/zapouts'
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
@@ -177,6 +188,7 @@ export interface FileRouteTypes {
     | '/orders'
     | '/profile'
     | '/wallet'
+    | '/zapouts'
     | '/products/$productId'
     | '/store/$pubkey'
     | '/u/$profileRef'
@@ -193,6 +205,7 @@ export interface RootRouteChildren {
   OrdersRoute: typeof OrdersRoute
   ProfileRoute: typeof ProfileRoute
   WalletRoute: typeof WalletRoute
+  ZapoutsRoute: typeof ZapoutsRoute
   ProductsProductIdRoute: typeof ProductsProductIdRoute
   StorePubkeyRoute: typeof StorePubkeyRoute
   UProfileRefRoute: typeof UProfileRefRoute
@@ -201,6 +214,13 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/zapouts': {
+      id: '/zapouts'
+      path: '/zapouts'
+      fullPath: '/zapouts'
+      preLoaderRoute: typeof ZapoutsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/wallet': {
       id: '/wallet'
       path: '/wallet'
@@ -305,6 +325,7 @@ const rootRouteChildren: RootRouteChildren = {
   OrdersRoute: OrdersRoute,
   ProfileRoute: ProfileRoute,
   WalletRoute: WalletRoute,
+  ZapoutsRoute: ZapoutsRoute,
   ProductsProductIdRoute: ProductsProductIdRoute,
   StorePubkeyRoute: StorePubkeyRoute,
   UProfileRefRoute: UProfileRefRoute,

@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@conduit/core": "workspace:*",
-    "nostr-tools": "2.23.5"
+    "nostr-tools": "2.23.9"
   },
   "devDependencies": {
     "typescript": "^6.0.3"
