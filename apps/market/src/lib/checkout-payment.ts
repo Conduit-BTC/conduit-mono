@@ -1,6 +1,7 @@
 import {
   EVENT_KINDS,
   appendConduitClientTag,
+  appendOmfZapoutMarker,
   fetchLnurlInvoice,
   fetchZapInvoice,
   getPriceSats,
@@ -887,12 +888,12 @@ export async function requestCheckoutLnurlInvoice(
     createdAt: params.nowSeconds ?? Math.floor(Date.now() / 1000),
     content: buildZapRequestContent(params.visibility, params.zapContent),
     tags: appendConduitClientTag(
-      [
+      appendOmfZapoutMarker([
         ["p", params.recipientPubkey],
         ["amount", String(params.amountMsats)],
         ["lnurl", params.lnurl],
         ["relays", ...zapRelayUrls],
-      ],
+      ]),
       "market"
     ),
   }

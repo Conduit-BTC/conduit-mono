@@ -48,6 +48,7 @@ import {
   fetchLnurlPayMetadata,
   fetchLnurlInvoice,
   fetchZapInvoice,
+  OMF_ZAPOUT_MARKER_TAG,
 } from "../packages/core/src/protocol/lightning"
 import { parseNwcUri } from "../packages/core/src/protocol/nwc"
 import {
@@ -1131,6 +1132,7 @@ describe("checkout payment helpers", () => {
           "wss://dup.example",
           "wss://public.example",
         ],
+        [...OMF_ZAPOUT_MARKER_TAG],
       ],
     })
     expect(fetchZap).toHaveBeenCalledWith(

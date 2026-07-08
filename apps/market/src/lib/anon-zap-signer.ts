@@ -2,9 +2,6 @@ import { config, validateAnonZapRequestDraft } from "@conduit/core"
 import type { CheckoutZapRequestDraft } from "./checkout-payment"
 
 type AnonZapSignerOptions = {
-  signerUrl?: string | null
-  expectedPubkey?: string | null
-  authorization?: AnonZapSigningAuthorization
   fetchImpl?: typeof fetch
 }
 
@@ -45,5 +42,5 @@ export async function signCheckoutZapRequestWithAnonSigner(
   const signerDraft = normalizeAnonZapSignerDraft(draft)
   const validation = validateAnonZapSignerDraft(signerDraft)
   if (!validation.ok) throw new Error(validation.reason)
-  throw new Error("Anon zap signer requires trusted checkout authorization.")
+  throw new Error("Anon zap signer requires server-trusted checkout state.")
 }
