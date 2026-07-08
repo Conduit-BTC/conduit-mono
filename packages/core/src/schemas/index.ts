@@ -123,6 +123,22 @@ export const shippingAddressSchema = z.object({
 
 export type ShippingAddressSchema = z.infer<typeof shippingAddressSchema>
 
+export const orderBuyerIdentityKindSchema = z.enum([
+  "signed_in",
+  "guest_ephemeral",
+])
+
+export type OrderBuyerIdentityKindSchema = z.infer<
+  typeof orderBuyerIdentityKindSchema
+>
+
+export const orderGuestContactSchema = z.object({
+  email: z.string().min(1).max(320),
+  phone: z.string().min(1).max(80),
+})
+
+export type OrderGuestContactSchema = z.infer<typeof orderGuestContactSchema>
+
 /**
  * Order item schema
  */
@@ -173,6 +189,7 @@ export const orderSchema = z.object({
   id: z.string(),
   merchantPubkey: z.string(),
   buyerPubkey: z.string(),
+  buyerIdentityKind: orderBuyerIdentityKindSchema.optional(),
   items: z.array(orderItemSchema).min(1),
   subtotal: z.number().min(0),
   currency: z.string(),
@@ -181,6 +198,7 @@ export const orderSchema = z.object({
     .enum(["not_required", "included", "priced", "manual"])
     .optional(),
   shippingAddress: shippingAddressSchema.optional(),
+  guestContact: orderGuestContactSchema.optional(),
   note: z.string().max(2000).optional(),
   createdAt: z.number(),
 })

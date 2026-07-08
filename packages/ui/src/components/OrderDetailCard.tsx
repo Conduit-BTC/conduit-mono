@@ -42,6 +42,10 @@ export type OrderDetailCardProps = {
   paymentProofCount?: number
   paymentProofAmount?: number | null
   paymentProofCurrency?: string | null
+  paymentReportReceived?: boolean
+  paymentReportCount?: number
+  paymentReportAmount?: number | null
+  paymentReportCurrency?: string | null
   trackingCarrier: string | null
   trackingNumber: string | null
   trackingUrl: string | null
@@ -75,6 +79,10 @@ export function OrderDetailCard({
   paymentProofCount = 0,
   paymentProofAmount = null,
   paymentProofCurrency = null,
+  paymentReportReceived = paymentProofReceived,
+  paymentReportCount = paymentProofCount,
+  paymentReportAmount = paymentProofAmount,
+  paymentReportCurrency = paymentProofCurrency,
   trackingCarrier,
   trackingNumber,
   trackingUrl,
@@ -190,6 +198,23 @@ export function OrderDetailCard({
                 Buyer payment proof is attached.
                 {paymentProofCount > 1
                   ? ` ${paymentProofCount} payment proofs are attached to this order.`
+                  : ""}
+              </div>
+            </div>
+          ) : paymentReportReceived ? (
+            <div className="space-y-1">
+              <div className="text-sm text-[var(--text-primary)]">
+                External payment reported
+                {paymentReportAmount != null
+                  ? ` - ${paymentReportAmount.toLocaleString()}`
+                  : ""}
+                {paymentReportCurrency ? ` ${paymentReportCurrency}` : ""}
+              </div>
+              <div className="text-xs text-[var(--text-secondary)]">
+                Buyer reported paying this invoice. Confirm payment before
+                fulfillment.
+                {paymentReportCount > 1
+                  ? ` ${paymentReportCount} payment reports are attached to this order.`
                   : ""}
               </div>
             </div>

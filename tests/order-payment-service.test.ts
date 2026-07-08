@@ -110,6 +110,30 @@ describe("runOrderPayment", () => {
     expect(content.zapRequestId).toBeUndefined()
   })
 
+  it("marks manual external-wallet payment reports for merchant verification", () => {
+    const content = JSON.parse(
+      buildLifecyclePaymentProofContentJson(
+        lifecycle({ publicZapSigner: undefined, zapRequestId: undefined }),
+        {
+          action: "external_invoice",
+          source: "external",
+          verificationState: "needs_merchant_verification",
+          note: "External wallet payment for order external-wallet-proof-test",
+        }
+      )
+    )
+
+    expect(content).toMatchObject({
+      action: "external_invoice",
+      source: "external",
+      verification: {
+        state: "needs_merchant_verification",
+        checks: [],
+      },
+    })
+    expect(content.preimage).toBeUndefined()
+  })
+
   it("releases the order in-flight lock when lifecycle patching fails", async () => {
     const ctx = basePaymentContext({
       orderId: "order-payment-lock-test-patch-failure",

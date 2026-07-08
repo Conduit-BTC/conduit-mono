@@ -1,3 +1,4 @@
+import type { NDKSigner } from "@nostr-dev-kit/ndk"
 import {
   type CommerceResult,
   getCachedBuyerConversationList,
@@ -8,11 +9,13 @@ import {
 export type BuyerConversation = BuyerConversationSummary
 
 export async function fetchBuyerConversations(
-  buyerPubkey: string
+  buyerPubkey: string,
+  options: { signer?: NDKSigner } = {}
 ): Promise<CommerceResult<BuyerConversation[]>> {
   return await getBuyerConversationList({
     principalPubkey: buyerPubkey,
     limit: 200,
+    signer: options.signer,
   })
 }
 

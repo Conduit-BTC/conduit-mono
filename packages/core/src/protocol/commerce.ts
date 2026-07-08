@@ -145,6 +145,7 @@ export interface ConversationListQuery {
   principalPubkey: string
   limit?: number
   textQuery?: string
+  signer?: NDKSigner
 }
 
 export interface ConversationDetailQuery {
@@ -2095,7 +2096,8 @@ async function unwrapBatch(
 
 async function fetchParsedOrderMessages(
   principalPubkey: string,
-  limit: number
+  limit: number,
+  signerOverride?: NDKSigner
 ): Promise<RawMessageFetchResult> {
   const cached = await loadCachedOrderMessages(principalPubkey)
 
@@ -2110,7 +2112,7 @@ async function fetchParsedOrderMessages(
 
   try {
     const ndk = await runRequireNdkConnected()
-    const signer = ndk.signer
+    const signer = signerOverride ?? ndk.signer
     if (!signer) {
       if (cachedById.size > 0) {
         const messages = Array.from(cachedById.values()).sort(
@@ -2327,7 +2329,8 @@ export async function getBuyerConversationList(
 ): Promise<CommerceResult<BuyerConversationSummary[]>> {
   const result = await fetchParsedOrderMessages(
     query.principalPubkey,
-    query.limit ?? 200
+    query.limit ?? 200,
+    query.signer
   )
   return {
     data: buildBuyerConversationSummaries(
@@ -2375,7 +2378,8 @@ export async function getMerchantConversationList(
 ): Promise<CommerceResult<MerchantConversationSummary[]>> {
   const result = await fetchParsedOrderMessages(
     query.principalPubkey,
-    query.limit ?? 200
+    query.limit ?? 200,
+    query.signer
   )
   return {
     data: buildMerchantConversationSummaries(

@@ -138,6 +138,8 @@ export {
   type OrderLifecyclePhase,
   type OrderCheckoutMode,
   type OrderPublicZapSigner,
+  type OrderBuyerIdentityKind,
+  type OrderGuestContact,
   type OrderAddressValidity,
   type OrderShippingZoneEligibility,
   type OrderDeliveryStatus,

@@ -38,7 +38,6 @@ import {
   ShoppingBag,
 } from "lucide-react"
 import { QRCodeSVG } from "qrcode.react"
-import { requireAuth } from "../lib/auth"
 import { CopyButton } from "../components/CopyButton"
 import {
   MerchantAvatarFallback,
@@ -67,6 +66,10 @@ import {
   subscribeOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
+import {
+  getSessionGuestOrderSigningIdentity,
+  type GuestOrderSigningIdentity,
+} from "../lib/guest-order-identity"
 import type { CheckoutZapMode } from "../lib/checkout-payment"
 
 const ORDERS_SEARCH_DEFAULT: { order?: string } = {}
@@ -92,9 +95,6 @@ export const Route = createFileRoute("/orders")({
     return typeof order === "string" && order.length > 0
       ? { order }
       : ORDERS_SEARCH_DEFAULT
-  },
-  beforeLoad: () => {
-    requireAuth()
   },
   component: OrdersPage,
 })
@@ -571,7 +571,15 @@ function ExternalWalletPanel({
   )
 }
 
-function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
+function OrderDetail({
+  row,
+  buyerPubkey,
+  guestIdentity,
+}: {
+  row: OrderRow
+  buyerPubkey: string
+  guestIdentity?: GuestOrderSigningIdentity | null
+}) {
   const { vm, headerStatus } = row
   const wallet = useWallet()
   const btcUsdRateQuery = useBtcUsdRate()
@@ -598,6 +606,7 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
   }, [productsQuery.data])
 
   const canTryNwc =
+    !guestIdentity &&
     !!wallet.connection &&
     wallet.status !== "unsupported" &&
     wallet.status !== "error"
@@ -608,7 +617,8 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
     if (!lc.merchantLightningAddress) return null
     return {
       orderId: vm.orderId,
-      buyerPubkey: pubkey,
+      buyerPubkey,
+      buyerIdentity: guestIdentity ?? undefined,
       merchantPubkey: row.merchantPubkey,
       merchantLud16: lc.merchantLightningAddress ?? null,
       zapMode: getRetryZapMode(lc),
@@ -617,6 +627,7 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
       totalMsats: lc.totalMsats,
       walletConnection: wallet.connection,
       tryNwc: canTryNwc,
+      tryWebln: !guestIdentity,
     }
   }
 
@@ -637,7 +648,7 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
     (vm.proofDeliveryStatus === "retry_needed" ||
       vm.proofDeliveryStatus === "failed")
 
-  const messageMerchant = (
+  const messageMerchant = guestIdentity ? null : (
     <Button asChild variant="outline" className="h-10 px-4 text-sm">
       <Link to="/messages" search={{ tab: "merchants", thread: vm.orderId }}>
         <MessageCircle className="h-4 w-4" />
@@ -710,7 +721,12 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
             vm={vm}
             busy={busy}
             onMarkPaid={() =>
-              void withBusy(() => submitExternalPaymentProof(vm.orderId))
+              void withBusy(() =>
+                submitExternalPaymentProof(
+                  vm.orderId,
+                  guestIdentity ?? undefined
+                )
+              )
             }
           />
         </div>
@@ -742,7 +758,9 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
                 className="h-10 px-4 text-sm"
                 disabled={busy}
                 onClick={() =>
-                  void withBusy(() => resendOrderProof(vm.orderId))
+                  void withBusy(() =>
+                    resendOrderProof(vm.orderId, guestIdentity ?? undefined)
+                  )
                 }
               >
                 <RotateCw className="h-4 w-4" />
@@ -781,14 +799,16 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
                 <h3 className="text-sm font-semibold text-[var(--text-primary)]">
                   Shipping address
                 </h3>
-                <Button asChild variant="ghost" className="h-8 px-3 text-xs">
-                  <Link
-                    to="/messages"
-                    search={{ tab: "merchants", thread: vm.orderId }}
-                  >
-                    Edit
-                  </Link>
-                </Button>
+                {!guestIdentity && (
+                  <Button asChild variant="ghost" className="h-8 px-3 text-xs">
+                    <Link
+                      to="/messages"
+                      search={{ tab: "merchants", thread: vm.orderId }}
+                    >
+                      Edit
+                    </Link>
+                  </Button>
+                )}
               </div>
               <div className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
                 <div className="text-[var(--text-primary)]">
@@ -911,6 +931,16 @@ function OrdersPage() {
   const [searchValue, setSearchValue] = useState("")
   const [tab, setTab] = useState<PhaseTab>("all")
   const [changeOrderOpen, setChangeOrderOpen] = useState(false)
+  const guestIdentity = useMemo(
+    () =>
+      !signerConnected && selectedFromUrl
+        ? getSessionGuestOrderSigningIdentity(selectedFromUrl)
+        : null,
+    [selectedFromUrl, signerConnected]
+  )
+  const activeBuyerPubkey = signerConnected
+    ? pubkey
+    : (guestIdentity?.pubkey ?? null)
   // The phase tabs only exist on the mobile layout. Track the desktop breakpoint
   // (xl = 1280px) so a tab chosen on a narrow viewport doesn't silently filter
   // the tab-less desktop rail after a resize.
@@ -935,22 +965,36 @@ function OrdersPage() {
   )
 
   const lifecyclesQuery = useQuery({
-    queryKey: ["order-lifecycles", pubkey ?? "none"],
-    enabled: signerConnected,
-    queryFn: () => listOrderLifecycles(pubkey!),
+    queryKey: [
+      "order-lifecycles",
+      activeBuyerPubkey ?? "none",
+      selectedFromUrl ?? "all",
+    ],
+    enabled: !!activeBuyerPubkey,
+    queryFn: async () => {
+      if (signerConnected) return listOrderLifecycles(activeBuyerPubkey!)
+      if (!selectedFromUrl || !guestIdentity) return []
+      const lifecycle = await db.orderLifecycles.get(selectedFromUrl)
+      if (!lifecycle || lifecycle.buyerPubkey !== guestIdentity.pubkey)
+        return []
+      return [lifecycle]
+    },
     refetchInterval: 30_000,
   })
   const messagesQuery = useQuery({
-    queryKey: ["buyer-messages-live", pubkey ?? "none"],
-    enabled: signerConnected,
-    queryFn: () => fetchBuyerConversations(pubkey!),
+    queryKey: ["buyer-messages-live", activeBuyerPubkey ?? "none"],
+    enabled: !!activeBuyerPubkey && (signerConnected || !!guestIdentity),
+    queryFn: () =>
+      fetchBuyerConversations(activeBuyerPubkey!, {
+        signer: guestIdentity?.signer,
+      }),
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   })
   const cachedMessagesQuery = useQuery({
-    queryKey: ["buyer-messages", pubkey ?? "none"],
-    enabled: signerConnected,
-    queryFn: () => fetchCachedBuyerConversations(pubkey!),
+    queryKey: ["buyer-messages", activeBuyerPubkey ?? "none"],
+    enabled: !!activeBuyerPubkey,
+    queryFn: () => fetchCachedBuyerConversations(activeBuyerPubkey!),
     staleTime: 5_000,
   })
 
@@ -987,10 +1031,10 @@ function OrdersPage() {
   )
 
   const handleRefresh = useCallback(() => {
-    if (!signerConnected) return
+    if (!activeBuyerPubkey) return
     setRefreshButtonState("refreshing")
     refetchAll()
-  }, [refetchAll, signerConnected])
+  }, [activeBuyerPubkey, refetchAll])
 
   const conversations = useMemo(
     () => messagesQuery.data?.data ?? cachedMessagesQuery.data?.data ?? [],
@@ -1047,7 +1091,7 @@ function OrdersPage() {
     [orders]
   )
   const merchantProfilesQuery = useProfiles(merchantPubkeys, {
-    enabled: signerConnected && merchantPubkeys.length > 0,
+    enabled: merchantPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
     maxUnresolvedRefetches: 1,
@@ -1178,26 +1222,40 @@ function OrdersPage() {
         </Button>
       </div>
 
-      {!signerConnected && (
+      {!activeBuyerPubkey && (
         <EmptyState
-          title="Connect to view your orders"
-          body="Order updates, invoices, and merchant replies are tied to your signer identity."
-        />
-      )}
-
-      {signerConnected && !lifecyclesQuery.isLoading && !hasOrders && (
-        <EmptyState
-          title="No orders yet"
-          body="Place your first order and it will appear here with live status."
-          action={
-            <Button asChild className="h-11 px-4 text-sm">
-              <Link to="/products">Browse products</Link>
-            </Button>
+          title={
+            selectedFromUrl
+              ? "Guest order session not found"
+              : "Connect to view your orders"
+          }
+          body={
+            selectedFromUrl
+              ? "Guest checkout orders are tied to the browser session that created them. Return from checkout in the same tab, or connect a signer for durable order history."
+              : "Order updates, invoices, and merchant replies are tied to your signer identity."
           }
         />
       )}
 
-      {signerConnected && hasOrders && (
+      {activeBuyerPubkey && !lifecyclesQuery.isLoading && !hasOrders && (
+        <EmptyState
+          title={signerConnected ? "No orders yet" : "Guest order not found"}
+          body={
+            signerConnected
+              ? "Place your first order and it will appear here with live status."
+              : "This guest order is not available in local order history on this device."
+          }
+          action={
+            signerConnected ? (
+              <Button asChild className="h-11 px-4 text-sm">
+                <Link to="/products">Browse products</Link>
+              </Button>
+            ) : undefined
+          }
+        />
+      )}
+
+      {activeBuyerPubkey && hasOrders && (
         <div className="grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
           {/* Desktop left rail */}
           <aside className="hidden xl:block">
@@ -1265,7 +1323,11 @@ function OrdersPage() {
           {/* Detail */}
           <section className="min-w-0">
             {selectedRow ? (
-              <OrderDetail row={selectedRow} pubkey={pubkey!} />
+              <OrderDetail
+                row={selectedRow}
+                buyerPubkey={activeBuyerPubkey}
+                guestIdentity={guestIdentity}
+              />
             ) : (
               <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6 text-center text-sm text-[var(--text-secondary)]">
                 Select an order to view its status.

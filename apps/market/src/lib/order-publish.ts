@@ -1,4 +1,4 @@
-import { NDKEvent, NDKUser, giftWrap } from "@nostr-dev-kit/ndk"
+import { NDKEvent, NDKUser, giftWrap, type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
   EVENT_KINDS,
   appendConduitClientTag,
@@ -24,8 +24,27 @@ export type BuyerMessageDeliveryResult = {
   localCacheError: string | null
 }
 
+export interface BuyerOrderSigningIdentity {
+  pubkey: string
+  signer?: NDKSigner
+}
+
+type BuyerOrderIdentityInput = string | BuyerOrderSigningIdentity
+
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
+}
+
+function resolveBuyerOrderSigningIdentity(
+  ndk: ReturnType<typeof getNdk>,
+  buyer: BuyerOrderIdentityInput
+): Required<BuyerOrderSigningIdentity> {
+  const identity =
+    typeof buyer === "string" ? { pubkey: buyer, signer: ndk.signer } : buyer
+  const signer = identity.signer ?? ndk.signer
+  if (!signer) throw new Error("Buyer order signer is not connected.")
+
+  return { pubkey: identity.pubkey, signer }
 }
 
 /** Stamp the buyer pubkey + derive the rumor id (so it can be cached/wrapped). */
@@ -57,7 +76,7 @@ export async function createBuyerGiftWrapsForMerchantAndSelf(
   rumor: NDKEvent,
   ndk: ReturnType<typeof getNdk>,
   merchantPubkey: string,
-  buyerPubkey: string,
+  buyer: BuyerOrderIdentityInput,
   options: TransientNip07RetryOptions & {
     giftWrapFn?: GiftWrapDependency
   } = {}
@@ -66,16 +85,17 @@ export async function createBuyerGiftWrapsForMerchantAndSelf(
   wrappedToSelf: NDKEvent
 }> {
   const giftWrapFn = options.giftWrapFn ?? giftWrap
+  const buyerIdentity = resolveBuyerOrderSigningIdentity(ndk, buyer)
   const merchantUser = new NDKUser({ pubkey: merchantPubkey })
-  const buyerUser = new NDKUser({ pubkey: buyerPubkey })
+  const buyerUser = new NDKUser({ pubkey: buyerIdentity.pubkey })
   const wrapParams = { rumorKind: EVENT_KINDS.ORDER }
 
   const wrappedToMerchant = await withTransientNip07Retry(
-    () => giftWrapFn(rumor, merchantUser, ndk.signer, wrapParams),
+    () => giftWrapFn(rumor, merchantUser, buyerIdentity.signer, wrapParams),
     options
   )
   const wrappedToSelf = await withTransientNip07Retry(
-    () => giftWrapFn(rumor, buyerUser, ndk.signer, wrapParams),
+    () => giftWrapFn(rumor, buyerUser, buyerIdentity.signer, wrapParams),
     options
   )
 
@@ -107,22 +127,23 @@ export async function publishWrappedToMerchantAndSelf(
   rumor: NDKEvent,
   ndk: ReturnType<typeof getNdk>,
   merchantPubkey: string,
-  buyerPubkey: string
+  buyer: BuyerOrderIdentityInput
 ): Promise<BuyerMessageDeliveryResult> {
-  prepareBuyerRumor(rumor, buyerPubkey)
+  const buyerIdentity = resolveBuyerOrderSigningIdentity(ndk, buyer)
+  prepareBuyerRumor(rumor, buyerIdentity.pubkey)
 
   const { wrappedToMerchant, wrappedToSelf } =
     await createBuyerGiftWrapsForMerchantAndSelf(
       rumor,
       ndk,
       merchantPubkey,
-      buyerPubkey
+      buyerIdentity
     )
 
   await publishWithPlanner(wrappedToMerchant, {
     intent: "recipient_event",
-    authorPubkey: buyerPubkey,
-    authenticatedPubkey: buyerPubkey,
+    authorPubkey: buyerIdentity.pubkey,
+    authenticatedPubkey: buyerIdentity.pubkey,
     recipientPubkeys: [merchantPubkey],
     refreshRelayLists: true,
     deliveryMode: "critical",
@@ -132,9 +153,9 @@ export async function publishWrappedToMerchantAndSelf(
   try {
     await publishWithPlanner(wrappedToSelf, {
       intent: "recipient_event",
-      authorPubkey: buyerPubkey,
-      authenticatedPubkey: buyerPubkey,
-      recipientPubkeys: [buyerPubkey],
+      authorPubkey: buyerIdentity.pubkey,
+      authenticatedPubkey: buyerIdentity.pubkey,
+      recipientPubkeys: [buyerIdentity.pubkey],
       refreshRelayLists: true,
       deliveryMode: "critical",
     })

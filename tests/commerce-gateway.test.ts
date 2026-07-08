@@ -781,6 +781,57 @@ describe("commerce gateway", () => {
     expect(result.data[0]?.merchantPubkey).toBe("merchant")
   })
 
+  it("uses an explicit conversation signer when the global NDK signer is absent", async () => {
+    const guestSigner = { id: "guest-order-signer" } as never
+    const wrappedEvent = {
+      id: "wrap-guest-status",
+      kind: EVENT_KINDS.GIFT_WRAP,
+      pubkey: "merchant",
+      created_at: 100,
+      content: "wrapped",
+      tags: [["p", "guest-buyer"]],
+    }
+    const statusRumor = {
+      id: "guest-status-rumor",
+      kind: EVENT_KINDS.ORDER,
+      pubkey: "merchant",
+      created_at: 101,
+      content: JSON.stringify({
+        status: "complete",
+      }),
+      tags: [
+        ["p", "guest-buyer"],
+        ["type", "status_update"],
+        ["order", "guest-order-1"],
+      ],
+    }
+    let signerSeen: unknown = null
+
+    __setCommerceTestOverrides({
+      requireNdkConnected: async () => ({ signer: undefined }) as never,
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
+          ? ([wrappedEvent] as never)
+          : [],
+      giftUnwrap: async (_event, signer) => {
+        signerSeen = signer
+        return statusRumor as never
+      },
+    })
+
+    const result = await getBuyerConversationList({
+      principalPubkey: "guest-buyer",
+      limit: 50,
+      signer: guestSigner,
+    })
+
+    expect(signerSeen).toBe(guestSigner)
+    expect(result.meta.source).toBe("commerce")
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.orderId).toBe("guest-order-1")
+    expect(result.data[0]?.status).toBe("complete")
+  })
+
   it("retries wrapped order messages that failed to unwrap before marking them seen", async () => {
     let unwrapCalls = 0
     const wrappedEvent = {

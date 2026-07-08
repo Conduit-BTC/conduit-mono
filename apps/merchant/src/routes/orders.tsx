@@ -1131,6 +1131,10 @@ function OrdersPage() {
                     paymentProofCount={orderSummary.paymentProofCount}
                     paymentProofAmount={orderSummary.paymentProofAmount}
                     paymentProofCurrency={orderSummary.paymentProofCurrency}
+                    paymentReportReceived={orderSummary.paymentReportReceived}
+                    paymentReportCount={orderSummary.paymentReportCount}
+                    paymentReportAmount={orderSummary.paymentReportAmount}
+                    paymentReportCurrency={orderSummary.paymentReportCurrency}
                     trackingCarrier={orderSummary.trackingCarrier}
                     trackingNumber={orderSummary.trackingNumber}
                     trackingUrl={orderSummary.trackingUrl}
