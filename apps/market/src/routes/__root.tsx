@@ -176,6 +176,9 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/about") {
     return "About"
   }
+  if (pathname === "/zapouts") {
+    return "Zapouts"
+  }
   if (pathname.startsWith("/u/")) {
     return "User Profile"
   }

@@ -145,7 +145,7 @@ function isValidAllowedAnonZapTag(
     return isAllowedClientTag(tag, options)
   }
   if (name === "omf") {
-    return tag.length === 1
+    return tag.length === 2 && values[0] === "zapout"
   }
   return false
 }

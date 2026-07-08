@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { EVENT_KINDS } from "@conduit/core"
+import { EVENT_KINDS, OMF_ZAPOUT_MARKER_TAG } from "@conduit/core"
 import { getPublicKey } from "nostr-tools"
 import {
   handleAnonZapSignerRequest,
@@ -28,6 +28,11 @@ function env(overrides: Partial<AnonZapSignerEnv> = {}): AnonZapSignerEnv {
     ANON_CONDUIT_SHOPPER_PUBKEY: EXPECTED_PUBKEY,
     ANON_SIGNER_REQUEST_AUTH_SECRET: REQUEST_AUTH_SECRET,
     ANON_SIGNER_ALLOWED_ORIGINS: "http://localhost:7000",
+    ANON_SIGNER_RATE_LIMITER: {
+      async limit() {
+        return { success: true }
+      },
+    },
     ...overrides,
   }
 }
@@ -139,6 +144,15 @@ describe("Anon zap signer service", () => {
     expect(signed.tags).toEqual(draft().tags)
   })
 
+  it("allows the canonical OMF zapout marker before signing", async () => {
+    const tags = [...draft().tags, [...OMF_ZAPOUT_MARKER_TAG]]
+    const signed = await signAnonZapRequestDraft(draft({ tags }), env(), {
+      nowSeconds: NOW_SECONDS,
+    })
+
+    expect(signed.tags).toEqual(tags)
+  })
+
   it("rejects private tags before signing", async () => {
     await expect(
       signAnonZapRequestDraft(
@@ -155,6 +169,18 @@ describe("Anon zap signer service", () => {
         { nowSeconds: NOW_SECONDS }
       )
     ).rejects.toThrow("Zap request contains private tags.")
+  })
+
+  it("rejects expanded OMF marker payloads before signing", async () => {
+    await expect(
+      signAnonZapRequestDraft(
+        draft({
+          tags: [...draft().tags, ["omf", "zapout", "order-123"]],
+        }),
+        env(),
+        { nowSeconds: NOW_SECONDS }
+      )
+    ).rejects.toThrow("Zap request tag payload is invalid.")
   })
 
   it("rejects extra payload fields on allowed public tags before signing", async () => {
@@ -438,6 +464,47 @@ describe("Anon zap signer service", () => {
     expect(response.status).toBe(400)
     await expect(response.json()).resolves.toMatchObject({
       error: "Anon signer request authentication is missing.",
+    })
+  })
+
+  it("returns 429 when the signer runtime rate limiter rejects a request", async () => {
+    const response = await handleAnonZapSignerRequest(
+      await postRequest(signingRequestBody()),
+      env({
+        ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000",
+        ANON_SIGNER_RATE_LIMITER: {
+          async limit() {
+            return { success: false }
+          },
+        },
+      })
+    )
+
+    expect(response.status).toBe(429)
+    expect(response.headers.get("retry-after")).toBe("60")
+    expect(response.headers.get("access-control-allow-origin")).toBe(
+      "http://localhost:7000"
+    )
+    await expect(response.json()).resolves.toEqual({
+      error: "Anon zap signing is rate limited.",
+    })
+  })
+
+  it("fails closed when the signer runtime rate limiter is not configured", async () => {
+    const response = await handleAnonZapSignerRequest(
+      await postRequest(signingRequestBody()),
+      env({
+        ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000",
+        ANON_SIGNER_RATE_LIMITER: undefined,
+      })
+    )
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get("access-control-allow-origin")).toBe(
+      "http://localhost:7000"
+    )
+    await expect(response.json()).resolves.toEqual({
+      error: "Anon signer rate limiter is not configured.",
     })
   })
 

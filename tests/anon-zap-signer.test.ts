@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from "bun:test"
-import { EVENT_KINDS } from "@conduit/core"
+import { EVENT_KINDS, OMF_ZAPOUT_MARKER_TAG } from "@conduit/core"
 import {
   isAnonZapSignerConfigured,
   signCheckoutZapRequestWithAnonSigner,
@@ -26,7 +26,7 @@ function draft(
 }
 
 describe("Anon zap signer client", () => {
-  it("does not enable browser anon signing until trusted checkout authorization exists", () => {
+  it("does not enable browser anon signing until trusted checkout state exists", () => {
     expect(
       isAnonZapSignerConfigured({
         anonZapSignerUrl: "/api/anon-zap-sign",
@@ -54,6 +54,29 @@ describe("Anon zap signer client", () => {
     })
   })
 
+  it("allows the canonical OMF zapout marker before signer authorization", () => {
+    const result = validateAnonZapSignerDraft(
+      draft({
+        tags: [...draft().tags, [...OMF_ZAPOUT_MARKER_TAG]],
+      })
+    )
+
+    expect(result).toEqual({ ok: true })
+  })
+
+  it("rejects expanded OMF marker payloads before signer authorization", () => {
+    const result = validateAnonZapSignerDraft(
+      draft({
+        tags: [...draft().tags, ["omf", "zapout", "order-123"]],
+      })
+    )
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "Zap request tag payload is invalid.",
+    })
+  })
+
   it("fails closed without calling the public signer proxy", async () => {
     const fetchImpl = mock(
       async () => new Response("{}")
@@ -61,9 +84,7 @@ describe("Anon zap signer client", () => {
 
     await expect(
       signCheckoutZapRequestWithAnonSigner(draft(), { fetchImpl })
-    ).rejects.toThrow(
-      "Anon zap signer requires trusted checkout authorization."
-    )
+    ).rejects.toThrow("Anon zap signer requires server-trusted checkout state.")
     expect(fetchImpl).toHaveBeenCalledTimes(0)
   })
 })
