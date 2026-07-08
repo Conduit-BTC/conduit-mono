@@ -23,6 +23,11 @@ type ShippingAddress = {
   country: string
 }
 
+type GuestContact = {
+  email: string
+  phone: string
+}
+
 export type OrderDetailCardProps = {
   orderId: string
   status: string | null
@@ -33,6 +38,7 @@ export type OrderDetailCardProps = {
   subtotal: number
   currency: string
   shippingAddress: ShippingAddress | null
+  guestContact?: GuestContact | null
   orderNote: string | null
   invoiceSent: boolean
   invoiceCount: number
@@ -70,6 +76,7 @@ export function OrderDetailCard({
   subtotal,
   currency,
   shippingAddress,
+  guestContact,
   orderNote,
   invoiceSent,
   invoiceCount,
@@ -166,6 +173,28 @@ export function OrderDetailCard({
                 {shippingAddress.postalCode}
               </div>
               <div>{shippingAddress.country}</div>
+            </div>
+          </div>
+        )}
+
+        {guestContact && (
+          <div className="space-y-1">
+            <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+              Guest contact
+            </div>
+            <div className="space-y-1 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-2 text-xs text-[var(--text-secondary)]">
+              <div>
+                Phone:{" "}
+                <span className="text-[var(--text-primary)]">
+                  {guestContact.phone}
+                </span>
+              </div>
+              <div>
+                Email:{" "}
+                <span className="text-[var(--text-primary)]">
+                  {guestContact.email}
+                </span>
+              </div>
             </div>
           </div>
         )}

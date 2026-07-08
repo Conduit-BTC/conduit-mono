@@ -21,11 +21,33 @@ Non-goals for the current client repository:
 
 Conduit Market and Merchant Portal user authentication use external signers only.
 
-| Signer path           | Status                  | Notes                                         |
-| --------------------- | ----------------------- | --------------------------------------------- |
-| NIP-07 browser signer | Current client support  | Required path for current interactive signing |
-| NIP-46 remote signer  | Architecture-compatible | Product UX depends on explicit implementation |
-| App-generated keys    | Prohibited              | No key custody or private-key storage         |
+| Signer path           | Status                  | Notes                                                   |
+| --------------------- | ----------------------- | ------------------------------------------------------- |
+| NIP-07 browser signer | Current client support  | Required path for current interactive signing           |
+| NIP-46 remote signer  | Architecture-compatible | Product UX depends on explicit implementation           |
+| App-generated keys    | Prohibited by default   | Only the bounded guest-order exception below is allowed |
+
+### Client Ephemeral Guest Order Key Exception
+
+Guest external-wallet checkout may create a per-order browser-generated key to
+sign and decrypt only that guest order's private NIP-17 order conversation. This
+key is an order-scoped sender identity, not account authentication, user key
+custody, merchant signing, product publishing, wallet custody, or public zap
+signing.
+
+The exception is constrained as follows:
+
+- The key must be generated in the browser for one guest order and stored only
+  in same-browser session storage for checkout completion and same-session order
+  status recovery.
+- The key must not be sent to Conduit services, exposed through `VITE_*`, logs,
+  telemetry, PR comments, tracked files, or analytics.
+- The key may sign only private order messages, payment reports, and same-order
+  conversation recovery for that guest checkout.
+- Guest checkout must still collect structured phone/email contact fields so
+  merchant follow-up does not depend on a durable Nostr inbox.
+- This exception does not replace NIP-07/NIP-46 for signed-in buyers and does
+  not broaden the Anon Conduit Shopper public zap signer exception.
 
 ### Service Signer Exception: Anon Public Zaps
 

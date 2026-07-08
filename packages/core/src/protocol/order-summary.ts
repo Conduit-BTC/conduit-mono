@@ -27,6 +27,10 @@ export type OrderSummary = {
     postalCode: string
     country: string
   } | null
+  guestContact: {
+    email: string
+    phone: string
+  } | null
   orderNote: string | null
   invoiceSent: boolean
   invoiceCount: number
@@ -124,6 +128,14 @@ export function extractOrderSummary(
         }
       : null
 
+  const guestContact =
+    firstOrder?.type === "order" && firstOrder.payload.guestContact
+      ? {
+          email: firstOrder.payload.guestContact.email,
+          phone: firstOrder.payload.guestContact.phone,
+        }
+      : null
+
   const orderNote =
     firstOrder?.type === "order" && firstOrder.payload.note
       ? firstOrder.payload.note
@@ -170,6 +182,7 @@ export function extractOrderSummary(
     subtotal,
     currency,
     shippingAddress,
+    guestContact,
     orderNote,
     invoiceSent,
     invoiceCount,

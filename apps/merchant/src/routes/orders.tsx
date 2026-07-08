@@ -318,6 +318,15 @@ function MessageCard({
                 <div>{message.payload.shippingAddress.country}</div>
               </div>
             )}
+            {message.payload.guestContact && (
+              <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
+                <div className="font-medium text-[var(--text-primary)]">
+                  Guest contact:
+                </div>
+                <div>Phone: {message.payload.guestContact.phone}</div>
+                <div>Email: {message.payload.guestContact.email}</div>
+              </div>
+            )}
             {message.payload.note && (
               <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
                 {message.payload.note}
@@ -1122,6 +1131,7 @@ function OrdersPage() {
                     subtotal={orderSummary.subtotal}
                     currency={orderSummary.currency}
                     shippingAddress={orderSummary.shippingAddress}
+                    guestContact={orderSummary.guestContact}
                     orderNote={orderSummary.orderNote}
                     invoiceSent={orderSummary.invoiceSent}
                     invoiceCount={orderSummary.invoiceCount}

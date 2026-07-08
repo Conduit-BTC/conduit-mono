@@ -59,6 +59,36 @@ function parsedOrder() {
   )
 }
 
+function parsedGuestOrder() {
+  return parseOrderMessageRumorEvent(
+    rumor({
+      id: "guest-order-event",
+      type: "order",
+      content: JSON.stringify({
+        id: "order-1",
+        merchantPubkey,
+        buyerPubkey,
+        buyerIdentityKind: "guest_ephemeral",
+        items: [
+          {
+            productId: "product-1",
+            quantity: 1,
+            priceAtPurchase: 21,
+            currency: "SATS",
+          },
+        ],
+        subtotal: 21,
+        currency: "SATS",
+        guestContact: {
+          email: "buyer@example.com",
+          phone: "+15551234567",
+        },
+        createdAt: 1,
+      }),
+    }) as never
+  )
+}
+
 describe("payment proof model", () => {
   it("builds strict v1 public zap proofs with a zap request id", () => {
     const proof = buildLightningPaymentProofMessage({
@@ -238,6 +268,15 @@ describe("payment proof model", () => {
     const summary = extractOrderSummary([order])
 
     expect(summary.items[0]?.title).toBe("CND26 Public Product Ref Test")
+  })
+
+  it("projects structured guest contact into order summaries", () => {
+    const summary = extractOrderSummary([parsedGuestOrder()])
+
+    expect(summary.guestContact).toEqual({
+      email: "buyer@example.com",
+      phone: "+15551234567",
+    })
   })
 
   it("requires concrete payment evidence before proof messages affect payment summaries", () => {
