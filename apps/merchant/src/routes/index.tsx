@@ -94,10 +94,18 @@ async function fetchDashboardStatsFromCacheOnly(
     byOrder.set(message.orderId, bucket)
   }
 
+  let openOrders = 0
   let awaitingPayment = 0
   let awaitingFulfillment = 0
 
   for (const messages of byOrder.values()) {
+    // Only orders received as the merchant; skip orders placed as a buyer
+    // (the buyer sends the `order`, so a self-sent order is a buyer order).
+    const orderMessage = messages.find((message) => message.type === "order")
+    if (orderMessage && orderMessage.senderPubkey === pubkey) continue
+
+    openOrders += 1
+
     const hasPaymentRequest = messages.some(
       (message) => message.type === "payment_request"
     )
@@ -120,13 +128,16 @@ async function fetchDashboardStatsFromCacheOnly(
   }
 
   const latestOrders = [...parsedMessages]
-    .filter((message) => message.type === "order")
+    .filter(
+      (message) =>
+        message.type === "order" && message.recipientPubkey === pubkey
+    )
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, 5)
 
   return {
     listings: 0,
-    openOrders: byOrder.size,
+    openOrders,
     awaitingPayment,
     awaitingFulfillment,
     latestOrders,
