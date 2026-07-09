@@ -98,6 +98,10 @@ export {
 } from "./SignerSwitch"
 export { OrderDetailCard, type OrderDetailCardProps } from "./OrderDetailCard"
 export {
+  DoubleSideStatusPill,
+  type DoubleSideStatusPillProps,
+} from "./DoubleSideStatusPill"
+export {
   OrderConversationMessage,
   formatProductReference,
   getConversationPreview,
