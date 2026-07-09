@@ -156,7 +156,9 @@ export function OrderDetailCard({
                   <div>{shippingAddress.street}</div>
                   <div>
                     {shippingAddress.city}
-                    {shippingAddress.state ? `, ${shippingAddress.state}` : ""}{" "}
+                    {shippingAddress.state
+                      ? `, ${shippingAddress.state}`
+                      : ""}{" "}
                     {shippingAddress.postalCode}
                   </div>
                   <div>{shippingAddress.country}</div>
