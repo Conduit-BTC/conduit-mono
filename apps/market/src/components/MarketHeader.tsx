@@ -186,6 +186,7 @@ function AccountMenuLink({
 function AccountControl({
   connected,
   displayName,
+  npub,
   avatarUrl,
   walletStatusLabel,
   authPending,
@@ -194,6 +195,7 @@ function AccountControl({
 }: {
   connected: boolean
   displayName: string
+  npub?: string
   avatarUrl?: string | null
   walletStatusLabel?: string
   authPending: boolean
@@ -220,21 +222,28 @@ function AccountControl({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className={cn(accountControlClassName, "sm:min-w-[10.5rem]")}
+          className="inline-flex h-12 items-center gap-3 rounded-[16px] bg-primary-500 px-3 text-left text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 sm:min-w-[12.75rem]"
           aria-label="Open account menu"
         >
-          <Avatar className="size-7 shrink-0 border border-[color-mix(in_srgb,var(--on-primary)_24%,transparent)]">
+          <Avatar className="size-8 shrink-0 border border-[color-mix(in_srgb,var(--on-primary)_24%,transparent)]">
             <AvatarImage src={avatarUrl ?? undefined} alt={displayName} />
             <AvatarFallback className="bg-primary-600 text-xs text-white">
               {displayName.slice(0, 1).toUpperCase()}
             </AvatarFallback>
           </Avatar>
-          <span className="hidden min-w-0 max-w-[8rem] truncate sm:block">
-            {displayName}
+          <span className="hidden min-w-0 flex-1 sm:block">
+            <span className="block truncate text-sm font-semibold">
+              {displayName}
+            </span>
+            {npub ? (
+              <span className="block truncate text-[11px] text-white/70">
+                {npub}
+              </span>
+            ) : null}
           </span>
           <ChevronDown
             className={cn(
-              "size-4 shrink-0 transition-transform duration-150",
+              "size-4 shrink-0 text-white/70 transition-transform duration-150",
               open && "rotate-180"
             )}
             aria-hidden="true"
@@ -543,6 +552,7 @@ export function MarketHeader() {
           <AccountControl
             connected={connected}
             displayName={displayName}
+            npub={pubkey ? formatNpub(pubkey, 8) : undefined}
             avatarUrl={profile?.picture}
             walletStatusLabel={walletStatusLabel}
             authPending={authPending}
