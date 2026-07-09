@@ -203,6 +203,63 @@ function SearchBox({
   )
 }
 
+type OrderPhaseTab = "all" | "pending" | "in_progress" | "completed"
+
+const ORDER_PHASE_OPTIONS: Array<{ value: OrderPhaseTab; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "pending", label: "Pending" },
+  { value: "in_progress", label: "In Progress" },
+  { value: "completed", label: "Completed" },
+]
+
+// Cancelled orders belong to no active tab, so they only surface under "All".
+function getMerchantOrderPhase(
+  status: string | null | undefined
+): "pending" | "in_progress" | "completed" | "cancelled" {
+  switch ((status ?? "pending").toLowerCase()) {
+    case "complete":
+    case "delivered":
+      return "completed"
+    case "cancelled":
+      return "cancelled"
+    case "pending":
+      return "pending"
+    default:
+      return "in_progress"
+  }
+}
+
+function OrderPhaseFilter({
+  value,
+  onChange,
+}: {
+  value: OrderPhaseTab
+  onChange: (value: OrderPhaseTab) => void
+}) {
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      {ORDER_PHASE_OPTIONS.map((option) => {
+        const active = value === option.value
+        return (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(option.value)}
+            className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+              active
+                ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] text-[var(--text-primary)]"
+                : "border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            }`}
+          >
+            {option.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function OrderListItem({
   conversation,
   buyerName,
@@ -533,6 +590,7 @@ function OrdersPage() {
     string | null
   >(null)
   const [orderSearch, setOrderSearch] = useState("")
+  const [phaseTab, setPhaseTab] = useState<OrderPhaseTab>("all")
   const [ordersSheetOpen, setOrdersSheetOpen] = useState(false)
   const [orderDetailsOpen, setOrderDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
@@ -676,8 +734,14 @@ function OrdersPage() {
   const buyerProfiles = buyerProfilesQuery.data
   const filteredConversations = useMemo(() => {
     const query = orderSearch.trim().toLowerCase()
-    if (!query) return conversations
     return conversations.filter((conversation) => {
+      if (
+        phaseTab !== "all" &&
+        getMerchantOrderPhase(conversation.status) !== phaseTab
+      ) {
+        return false
+      }
+      if (!query) return true
       const buyerName = getDisplayName(
         buyerProfiles?.[conversation.buyerPubkey],
         conversation.buyerPubkey
@@ -694,7 +758,7 @@ function OrdersPage() {
         .toLowerCase()
         .includes(query)
     })
-  }, [conversations, orderSearch, buyerProfiles])
+  }, [conversations, orderSearch, phaseTab, buyerProfiles])
 
   const buyerNameFor = useCallback(
     (pubkey: string) => getDisplayName(buyerProfiles?.[pubkey], pubkey),
@@ -1189,6 +1253,7 @@ function OrdersPage() {
             </div>
             <div className="xl:shrink-0">
               <SearchBox value={orderSearch} onChange={setOrderSearch} />
+              <OrderPhaseFilter value={phaseTab} onChange={setPhaseTab} />
             </div>
             <div className="mt-4 space-y-2 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
               {filteredConversations.length === 0 && (
@@ -1240,6 +1305,7 @@ function OrdersPage() {
                   <SheetTitle>Your orders</SheetTitle>
                 </SheetHeader>
                 <SearchBox value={orderSearch} onChange={setOrderSearch} />
+                <OrderPhaseFilter value={phaseTab} onChange={setPhaseTab} />
                 <div className="mt-4 space-y-2">
                   {filteredConversations.length === 0 && (
                     <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">

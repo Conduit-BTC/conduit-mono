@@ -1,7 +1,10 @@
 import {
+  deriveOrderFlow,
   extractOrderSummary,
   getOrderPublicZapSigner,
+  orderFlowFromCheckoutMode,
   type BuyerConversationSummary,
+  type OrderFlow,
   type OrderAddressValidity,
   type OrderCheckoutMode,
   type OrderDeliveryStatus,
@@ -40,6 +43,8 @@ export interface OrderViewModel {
   orderId: string
   merchantPubkey: string
   checkoutMode: OrderCheckoutMode | null
+  /** prepaid (zap-out) vs invoice (order-first); shared with the merchant. */
+  flow: OrderFlow
   publicZapSigner: OrderPublicZapSigner | null
   createdAt: number
   updatedAt: number
@@ -263,10 +268,22 @@ export function buildOrderViewModel(
     proofDeliveryStatus === "retry_needed" ||
     proofDeliveryStatus === "failed"
 
+  // Buyer knows the flow authoritatively from checkoutMode; fall back to the
+  // merchant-side heuristic when there's no lifecycle record (relay-only view).
+  const flow: OrderFlow = lifecycle?.checkoutMode
+    ? orderFlowFromCheckoutMode(lifecycle.checkoutMode)
+    : deriveOrderFlow({
+        status: merchantStatus,
+        paid: paymentStatus === "paid",
+        invoiceSent:
+          invoiceStatus === "received" || invoiceStatus === "manual_required",
+      })
+
   return {
     orderId: input.orderId,
     merchantPubkey,
     checkoutMode: lifecycle?.checkoutMode ?? null,
+    flow,
     publicZapSigner: lifecycle?.publicZapSigner ?? null,
     createdAt: lifecycle?.createdAt ?? conversation?.latestAt ?? Date.now(),
     updatedAt: lifecycle?.updatedAt ?? conversation?.latestAt ?? Date.now(),
@@ -529,7 +546,12 @@ export function buildOrderTimeline(vm: OrderViewModel): StatusStepperRow[] {
     const copy = copyFor(key, status)
     let title = copy.title
     let subtitle = copy.subtitle
-    if (key === "payment" && vm.paymentStatus === "ambiguous") {
+    // Prepaid (zap-out) orders have no merchant invoice; reflect direct payment.
+    if (key === "invoice" && vm.flow === "prepaid") {
+      title = status === "complete" ? "Paid directly" : "Direct payment"
+      subtitle =
+        "Paid the merchant directly over Lightning — no invoice needed."
+    } else if (key === "payment" && vm.paymentStatus === "ambiguous") {
       title = "Payment needs review"
       subtitle =
         "We couldn't confirm this payment moved. Check your wallet, then message the merchant before retrying."

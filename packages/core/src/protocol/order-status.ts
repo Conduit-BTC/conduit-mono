@@ -118,11 +118,26 @@ export function getOrderStatusDisplay(
 }
 
 // Infer the flow: the buyer paid without ever being invoiced by the merchant.
+// Used merchant-side, where the checkout mode isn't known.
 export function deriveOrderFlow(
   input: MerchantOrderState | string | null | undefined
 ): OrderFlow {
   const state = toState(input)
   return isPaid(state) && !state.invoiceSent ? "prepaid" : "invoice"
+}
+
+const PREPAID_CHECKOUT_MODES = new Set([
+  "anonymous_public_zap",
+  "public_zap_as_shopper",
+  "public_zap",
+])
+
+// Map a known checkout mode to the flow. Buyers know their flow authoritatively
+// from `checkoutMode`; merchants fall back to `deriveOrderFlow`.
+export function orderFlowFromCheckoutMode(
+  mode: string | null | undefined
+): OrderFlow {
+  return mode && PREPAID_CHECKOUT_MODES.has(mode) ? "prepaid" : "invoice"
 }
 
 interface StageSpec {
