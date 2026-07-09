@@ -465,4 +465,37 @@ describe("product listing event parsing", () => {
     expect(parsed.tags).toEqual(["Ecard", "Ecash"])
     expect(parsed.images).toEqual([])
   })
+
+  it("strips generated card metadata from summary tags", () => {
+    const parsed = parseProductEvent({
+      id: "generated-card-summary-event",
+      pubkey:
+        "43baaf0c28e6cfb195b17ee083e19eb3a4afdfac54d9b6baf170270ed193e34c",
+      created_at: 1_783_424_610,
+      content:
+        "## Sun Smile Joy \n\nSun Smile Joy Fluffy Pluche\n\n 14.95 EUR\n pluche\n Physical Product\n\n*Listed by [BitPopArt](https://bitpopart.com) -- Nostr pubkey: 43baaf0c28e6cfb1...*\n\n**Price:** 14.95 EUR (-21%)\n**Category:** Keychains\n**Type:** Physical Product\n\n*Listed by BitPopArt*",
+      tags: [
+        ["d", "bitpopart-product-1753683992900-jsvyv2"],
+        ["title", "Sun Smile Joy "],
+        [
+          "summary",
+          "Sun Smile Joy Fluffy Pluche\n\n 14.95 EUR\n pluche\n Physical Product\n\n*Listed by [BitPopArt](https://bitpopart.com) -- Nostr pubkey: 43baaf0c28e6cfb1...*",
+        ],
+        ["price", "14.95", "EUR"],
+        ["type", "simple", "physical"],
+        ["t", "keychains"],
+        ["client", "www.bitpopart.com"],
+      ],
+    })
+
+    expect(parsed.title).toBe("Sun Smile Joy ")
+    expect(parsed.summary).toBe("Sun Smile Joy Fluffy Pluche")
+    expect(parsed.price).toBe(14.95)
+    expect(parsed.currency).toBe("EUR")
+    expect(parsed.sourcePrice).toEqual({
+      amount: 14.95,
+      currency: "EUR",
+      normalizedCurrency: "EUR",
+    })
+  })
 })

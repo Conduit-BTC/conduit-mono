@@ -307,6 +307,11 @@ type ProductJsonContentProjection = {
   summary?: string
 }
 
+type ProductSummaryCleanupContext = {
+  title: string
+  priceInfo: { price: number; currency: string } | null
+}
+
 function getStringField(
   record: Record<string, unknown>,
   names: string[]
@@ -346,6 +351,125 @@ function parseProductJsonContentProjection(
     title: getStringField(record, ["title", "name"]),
     summary: getStringField(record, ["summary", "description"]),
   }
+}
+
+function normalizeSummaryMetadataLine(line: string): string {
+  return line
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[*_`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+}
+
+function isListedByMetadataLine(normalizedLine: string): boolean {
+  return normalizedLine.startsWith("listed by ")
+}
+
+function isFormatMetadataLine(normalizedLine: string): boolean {
+  return (
+    normalizedLine === "physical product" ||
+    normalizedLine === "digital product" ||
+    normalizedLine === "type: physical product" ||
+    normalizedLine === "type: digital product"
+  )
+}
+
+function isLabeledSummaryMetadataLine(normalizedLine: string): boolean {
+  return (
+    normalizedLine.startsWith("price: ") ||
+    normalizedLine.startsWith("category: ") ||
+    normalizedLine.startsWith("type: ")
+  )
+}
+
+function isPriceMetadataLine(
+  normalizedLine: string,
+  priceInfo: ProductSummaryCleanupContext["priceInfo"]
+): boolean {
+  if (!priceInfo) return false
+
+  const price = `${priceInfo.price} ${priceInfo.currency}`.toLowerCase()
+  return (
+    normalizedLine === price || normalizedLine.startsWith(`price: ${price}`)
+  )
+}
+
+function isTitleMetadataLine(normalizedLine: string, title: string): boolean {
+  return normalizedLine === normalizeSummaryMetadataLine(title)
+}
+
+function findNextNonBlankLineIndex(
+  normalizedLines: string[],
+  startIndex: number
+): number | null {
+  for (let index = startIndex; index < normalizedLines.length; index += 1) {
+    if (normalizedLines[index]) return index
+  }
+
+  return null
+}
+
+function compactSummaryLines(lines: string[]): string {
+  return lines
+    .join("\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+}
+
+function cleanProductSummary(
+  summary: string | undefined,
+  context: ProductSummaryCleanupContext
+): string | undefined {
+  if (!summary) return undefined
+
+  const lines = summary.replace(/\r\n?/g, "\n").split("\n")
+  const normalizedLines = lines.map(normalizeSummaryMetadataLine)
+  const indexesToRemove = new Set<number>()
+
+  for (const [index, normalizedLine] of normalizedLines.entries()) {
+    if (!normalizedLine) continue
+
+    const isMarkdownTitle =
+      lines[index].trim().startsWith("#") &&
+      isTitleMetadataLine(normalizedLine, context.title)
+
+    if (
+      isMarkdownTitle ||
+      isListedByMetadataLine(normalizedLine) ||
+      isLabeledSummaryMetadataLine(normalizedLine) ||
+      isFormatMetadataLine(normalizedLine) ||
+      isPriceMetadataLine(normalizedLine, context.priceInfo)
+    ) {
+      indexesToRemove.add(index)
+    }
+  }
+
+  for (const [index, normalizedLine] of normalizedLines.entries()) {
+    if (!isPriceMetadataLine(normalizedLine, context.priceInfo)) continue
+
+    const categoryIndex = findNextNonBlankLineIndex(normalizedLines, index + 1)
+    if (categoryIndex === null) continue
+
+    const formatIndex = findNextNonBlankLineIndex(
+      normalizedLines,
+      categoryIndex + 1
+    )
+    if (
+      formatIndex !== null &&
+      isFormatMetadataLine(normalizedLines[formatIndex])
+    ) {
+      indexesToRemove.add(categoryIndex)
+    }
+  }
+
+  const cleaned = compactSummaryLines(
+    lines.filter((_, index) => !indexesToRemove.has(index))
+  )
+
+  return cleaned || undefined
 }
 
 /**
@@ -427,10 +551,12 @@ export function parseProductEvent(
       id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
       pubkey: event.pubkey,
       title,
-      summary:
+      summary: cleanProductSummary(
         summaryTag ??
-        jsonContentProjection?.summary ??
-        (markdownContent ? markdownContent.slice(0, 5000) : undefined),
+          jsonContentProjection?.summary ??
+          (markdownContent ? markdownContent.slice(0, 5000) : undefined),
+        { title, priceInfo }
+      ),
       price: priceInfo?.price ?? 0,
       currency: priceInfo?.currency ?? "USD",
       type,
