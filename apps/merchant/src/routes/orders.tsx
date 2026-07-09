@@ -724,7 +724,6 @@ function OrdersPage() {
     conversations.find(
       (conversation) => conversation.id === selectedConversationId
     ) ?? null
-  const orderActions = selected ? getMerchantOrderActions(selected.status) : []
   const selectedOrderMessage = selected?.messages?.find(
     (message) => message.type === "order"
   )
@@ -761,6 +760,17 @@ function OrdersPage() {
     () => (selected ? extractOrderSummary(selected.messages ?? []) : null),
     [selected]
   )
+
+  // Payment and acceptance are independent gates; both order flows (prepaid
+  // zap-out and invoice-first) derive from this state.
+  const merchantOrderState = {
+    status: selected?.status ?? null,
+    paid: orderSummary?.paymentProofReceived ?? false,
+    invoiceSent: orderSummary?.invoiceSent ?? false,
+  }
+  const orderActions = selected
+    ? getMerchantOrderActions(merchantOrderState)
+    : []
 
   // Order messages carry no image and no reliable title, so resolve each item
   // straight from its product listing (addressId) — independent of whether the
@@ -1277,7 +1287,7 @@ function OrdersPage() {
                       </p>
                       <div className="mt-5">
                         <StatusStepper
-                          rows={buildOrderStatusTimeline(selected.status)}
+                          rows={buildOrderStatusTimeline(merchantOrderState)}
                           ariaLabel="Order progress"
                         />
                       </div>
@@ -1322,6 +1332,16 @@ function OrdersPage() {
                                 </Button>
                               ))}
                             </div>
+                            {merchantOrderState.paid &&
+                              orderActions.some(
+                                (action) => action.status === "cancelled"
+                              ) && (
+                                <p className="text-xs text-[var(--text-secondary)]">
+                                  This order is already paid. Cancelling won't
+                                  return funds — send a manual Lightning refund
+                                  to the buyer separately.
+                                </p>
+                              )}
                           </div>
                         )}
 

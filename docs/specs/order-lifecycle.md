@@ -63,6 +63,49 @@ sent`, `Pending - Awaiting invoice`, `Action needed - Pay with external
 wallet`, `Completed - Delivered`, plus an `actionNeeded` flag for the list
   marker.
 
+## Order flows and gates
+
+Two checkout flows are first-class and produce the same NIP-17 order messages
+(`order`, `payment_request`, `payment_proof`, `receipt`, `status_update`,
+`shipping_update`) in a different order:
+
+- **Prepaid (zap-out)** — `checkoutMode: public_zap`: the buyer pays at
+  checkout (payment proof published up front), then the merchant accepts.
+  Payment precedes acceptance.
+- **Invoice (order-first)** — `checkoutMode: private_checkout` / `pay_later`:
+  the buyer places the order, the merchant accepts and sends a
+  `payment_request` (invoice), then the buyer pays. Acceptance precedes payment.
+
+Because the sequence differs, order state is modeled as two **independent
+gates** rather than a linear status: `paid` (a `payment_proof`/`paid` status was
+observed) and `accepted` (a merchant `status_update` of accepted-or-beyond).
+State is derived from which events exist, not their order.
+
+- The buyer knows its flow from `checkoutMode`.
+- The merchant infers it: a payment proof received **without** a preceding
+  merchant invoice ⇒ prepaid; otherwise invoice-first. Shared helper
+  `deriveOrderFlow({ status, paid, invoiceSent })` in
+  `@conduit/core/order-status` encodes this, and drives the merchant timeline
+  ordering (payment↔acceptance) and next actions. Shipping is gated on `paid`,
+  so an unpaid order cannot be marked shipped.
+
+Status vocabulary is unified across schema and presentation: `pending`,
+`invoiced`, `paid`, `accepted`/`processing`, `shipped`, `complete`/`delivered`,
+`cancelled`, `refund_requested`; unknown strings remain forward-compatible.
+
+### Cancellation and refunds
+
+Lightning payments are non-custodial and final, and escrow/refunds are explicit
+protocol non-goals (`docs/specs/protocol.md`). Therefore:
+
+- Cancelling a **paid** order does not reverse funds. The app sets `cancelled`
+  and must tell the merchant a refund is a separate, manual step.
+- A refund is an **out-of-band, non-custodial payout** the merchant sends over
+  the same NWC/WebLN rails used for invoicing (to a fresh buyer invoice or a zap
+  to the buyer pubkey), optionally **recorded** as a merchant→buyer proof
+  (mirroring `payment_proof`). `refund_requested` is the buyer-initiated signal;
+  the app never custodies, escrows, or guarantees the payout.
+
 ## Idempotency and recovery invariants
 
 - Payment/order retries reuse the original `orderId`; the payment service never

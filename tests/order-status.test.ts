@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import {
   buildOrderStatusTimeline,
+  deriveOrderFlow,
   getMerchantOrderActions,
   getOrderStatusDisplay,
 } from "@conduit/core"
@@ -34,8 +35,11 @@ describe("getOrderStatusDisplay", () => {
 })
 
 describe("buildOrderStatusTimeline", () => {
-  const stepStatuses = (status: string) =>
-    buildOrderStatusTimeline(status).map((row) => row.status)
+  const stepStatuses = (
+    input: Parameters<typeof buildOrderStatusTimeline>[0]
+  ) => buildOrderStatusTimeline(input).map((row) => row.status)
+  const stepKeys = (input: Parameters<typeof buildOrderStatusTimeline>[0]) =>
+    buildOrderStatusTimeline(input).map((row) => row.key)
 
   it("completes stages up to the current status and marks the next in progress", () => {
     expect(stepStatuses("pending")).toEqual([
@@ -61,7 +65,43 @@ describe("buildOrderStatusTimeline", () => {
     ])
   })
 
-  it("marks the payment stage failed when cancelled", () => {
+  it("orders payment before acceptance for prepaid (zap-out) orders", () => {
+    expect(stepKeys({ status: "pending", paid: true })).toEqual([
+      "placed",
+      "payment",
+      "accepted",
+      "shipped",
+      "delivered",
+    ])
+    // Paid at checkout, awaiting merchant acceptance.
+    expect(stepStatuses({ status: "pending", paid: true })).toEqual([
+      "complete",
+      "complete",
+      "in_progress",
+      "waiting",
+      "waiting",
+    ])
+  })
+
+  it("orders acceptance before payment for invoice (order-first) orders", () => {
+    expect(stepKeys({ status: "accepted", invoiceSent: true })).toEqual([
+      "placed",
+      "accepted",
+      "payment",
+      "shipped",
+      "delivered",
+    ])
+    // Accepted + invoice sent, awaiting the buyer's payment.
+    expect(stepStatuses({ status: "accepted", invoiceSent: true })).toEqual([
+      "complete",
+      "complete",
+      "in_progress",
+      "waiting",
+      "waiting",
+    ])
+  })
+
+  it("marks the stopped stage failed when cancelled", () => {
     const rows = buildOrderStatusTimeline("cancelled")
     expect(rows.map((row) => row.status)).toEqual([
       "complete",
@@ -71,6 +111,16 @@ describe("buildOrderStatusTimeline", () => {
       "waiting",
     ])
     expect(rows[1]?.label).toBe("Cancelled")
+  })
+})
+
+describe("deriveOrderFlow", () => {
+  it("is prepaid when paid without an invoice, invoice otherwise", () => {
+    expect(deriveOrderFlow({ status: "pending", paid: true })).toBe("prepaid")
+    expect(
+      deriveOrderFlow({ status: "paid", paid: true, invoiceSent: true })
+    ).toBe("invoice")
+    expect(deriveOrderFlow({ status: "pending" })).toBe("invoice")
   })
 })
 
@@ -84,10 +134,18 @@ describe("getMerchantOrderActions", () => {
     }
   })
 
-  it("offers cancel + ship once accepted", () => {
-    expect(getMerchantOrderActions("accepted")).toEqual([
+  it("offers cancel + ship once accepted and paid", () => {
+    expect(getMerchantOrderActions({ status: "accepted", paid: true })).toEqual(
+      [
+        { status: "cancelled", label: "Cancel order", kind: "destructive" },
+        { status: "shipped", label: "Mark as shipped", kind: "primary" },
+      ]
+    )
+  })
+
+  it("gates shipping on payment (accepted but unpaid → cancel only)", () => {
+    expect(getMerchantOrderActions({ status: "accepted" })).toEqual([
       { status: "cancelled", label: "Cancel order", kind: "destructive" },
-      { status: "shipped", label: "Mark as shipped", kind: "primary" },
     ])
   })
 
