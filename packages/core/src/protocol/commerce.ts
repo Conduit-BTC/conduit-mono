@@ -2245,6 +2245,42 @@ async function fetchParsedOrderMessages(
   }
 }
 
+// Message types with a fixed author: the buyer sends order/payment_proof to the
+// merchant; the merchant sends invoice/status/shipping/receipt to the buyer.
+// `message` (chat) can come from either side, so it can't decide role.
+const BUYER_AUTHORED_TYPES = new Set(["order", "payment_proof"])
+const MERCHANT_AUTHORED_TYPES = new Set([
+  "payment_request",
+  "status_update",
+  "shipping_update",
+  "receipt",
+])
+
+// Resolve the principal's role in an order conversation from message direction,
+// preferring the `order` message. Returns null when the bucket only holds
+// ambiguous (chat) messages — such a bucket is excluded from both role lists so
+// a dual-role pubkey never sees the same conversation twice.
+function resolvePrincipalRole(
+  bucket: ParsedOrderMessage[],
+  principalPubkey: string
+): "buyer" | "merchant" | null {
+  const order = bucket.find((message) => message.type === "order")
+  if (order) {
+    if (order.senderPubkey === principalPubkey) return "buyer"
+    if (order.recipientPubkey === principalPubkey) return "merchant"
+  }
+  for (const message of bucket) {
+    if (BUYER_AUTHORED_TYPES.has(message.type)) {
+      if (message.senderPubkey === principalPubkey) return "buyer"
+      if (message.recipientPubkey === principalPubkey) return "merchant"
+    } else if (MERCHANT_AUTHORED_TYPES.has(message.type)) {
+      if (message.senderPubkey === principalPubkey) return "merchant"
+      if (message.recipientPubkey === principalPubkey) return "buyer"
+    }
+  }
+  return null
+}
+
 function buildBuyerConversationSummaries(
   messages: ParsedOrderMessage[],
   buyerPubkey: string
@@ -2263,11 +2299,10 @@ function buildBuyerConversationSummaries(
     const latest = bucket[bucket.length - 1]
     if (!latest) continue
 
-    // Role gate: the buyer sends the `order`, so the principal is the buyer
-    // only when it sent that order. Skip orders the principal received as the
-    // merchant (self-copied into the same inbox).
-    const orderMessage = bucket.find((message) => message.type === "order")
-    if (orderMessage && orderMessage.senderPubkey !== buyerPubkey) continue
+    // Role gate: only include orders the principal placed as the buyer. Role is
+    // inferred from message direction (works for proof-only/partial buckets);
+    // chat-only buckets are ambiguous and excluded from both lists.
+    if (resolvePrincipalRole(bucket, buyerPubkey) !== "buyer") continue
 
     const latestStatus = [...bucket]
       .reverse()
@@ -2286,10 +2321,7 @@ function buildBuyerConversationSummaries(
           .filter(Boolean)
       )
     )
-    const merchantPubkey =
-      orderMessage && orderMessage.senderPubkey === buyerPubkey
-        ? orderMessage.recipientPubkey
-        : (otherParticipants[0] ?? "")
+    const merchantPubkey = otherParticipants[0] ?? ""
     const summary = extractOrderSummary(bucket)
 
     conversations.push({
@@ -2336,11 +2368,10 @@ function buildMerchantConversationSummaries(
     const latest = bucket[bucket.length - 1]
     if (!latest) continue
 
-    // Role gate: the buyer sends the `order` to the merchant, so the principal
-    // is the merchant only when it received (didn't send) that order. Skip
-    // orders the principal placed as a buyer (self-copied into the same inbox).
-    const orderMessage = bucket.find((message) => message.type === "order")
-    if (orderMessage && orderMessage.senderPubkey === merchantPubkey) continue
+    // Role gate: only include orders the principal received as the merchant.
+    // Role is inferred from message direction (works for proof-only/partial
+    // buckets); chat-only buckets are ambiguous and excluded from both lists.
+    if (resolvePrincipalRole(bucket, merchantPubkey) !== "merchant") continue
 
     const latestStatus = [...bucket]
       .reverse()
@@ -2359,10 +2390,7 @@ function buildMerchantConversationSummaries(
           .filter(Boolean)
       )
     )
-    const buyerPubkey =
-      orderMessage && orderMessage.senderPubkey !== merchantPubkey
-        ? orderMessage.senderPubkey
-        : (otherParticipants[0] ?? "")
+    const buyerPubkey = otherParticipants[0] ?? ""
     const summary = extractOrderSummary(bucket)
 
     conversations.push({

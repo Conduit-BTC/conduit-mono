@@ -68,6 +68,7 @@ export interface OrderViewModel {
     | "pending"
     | "invoiced"
     | "paid"
+    | "accepted"
     | "processing"
     | "shipped"
     | "complete"
@@ -136,6 +137,7 @@ const MERCHANT_STATUSES = new Set([
   "pending",
   "invoiced",
   "paid",
+  "accepted",
   "processing",
   "shipped",
   "complete",
@@ -462,6 +464,7 @@ export function computeOrderTimelineStatuses(
 ): Record<OrderTimelineRowKey, StatusStepperRowStatus> {
   const paid = vm.paymentStatus === "paid"
   const merchantConfirmed =
+    vm.merchantStatus === "accepted" ||
     vm.merchantStatus === "processing" ||
     vm.merchantStatus === "shipped" ||
     vm.merchantStatus === "complete"
@@ -556,6 +559,7 @@ export function getOrderFilterPhase(
   }
   if (
     vm.paymentStatus === "paid" ||
+    vm.merchantStatus === "accepted" ||
     vm.merchantStatus === "processing" ||
     vm.merchantStatus === "shipped"
   ) {
@@ -673,7 +677,10 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
         showSpinner: false,
       }
     }
-    if (vm.merchantStatus === "processing") {
+    if (
+      vm.merchantStatus === "processing" ||
+      vm.merchantStatus === "accepted"
+    ) {
       return {
         tone: "info",
         primaryLabel: "In progress",
@@ -709,6 +716,15 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       detailLabel: "Waiting for merchant",
       actionNeeded: false,
       showSpinner: true,
+    }
+  }
+  if (vm.merchantStatus === "accepted") {
+    return {
+      tone: "info",
+      primaryLabel: "In progress",
+      detailLabel: "Merchant accepted",
+      actionNeeded: false,
+      showSpinner: false,
     }
   }
   if (vm.paymentStatus === "paying") {

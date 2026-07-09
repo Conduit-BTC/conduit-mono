@@ -241,9 +241,14 @@ apps/market     ─┬─> @conduit/core
                  └─> @conduit/ui
 apps/merchant   ─┬─> @conduit/core
                  └─> @conduit/ui
-packages/ui     ───> (external + React only)
-packages/core   ───> (external only)
+packages/ui     ───> @conduit/core (types + pure helpers), external + React
+packages/core   ───> (external only; never @conduit/ui)
 ```
+
+`@conduit/ui` may import `@conduit/core` types and pure helpers so shared,
+protocol-aware presentational components live in one place; the edge is
+one-directional (`core → ui → apps`, no cycle). `@conduit/core` must never
+import `@conduit/ui`.
 
 ## Environment Variables
 

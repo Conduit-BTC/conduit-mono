@@ -790,6 +790,44 @@ describe("commerce gateway", () => {
     expect(asMerchant.data[0]?.buyerPubkey).toBe("other-buyer")
   })
 
+  it("excludes chat-only (ambiguous-role) buckets from both roles", async () => {
+    // A `message` can come from either side, so a bucket holding only chat has
+    // no determinable role and must not surface in either view.
+    cachedOrderMessages.push({
+      id: "orphan-chat",
+      orderId: "orphan",
+      type: "message",
+      senderPubkey: "someone",
+      recipientPubkey: "dual",
+      createdAt: FIXED_NOW - 5_000,
+      rawContent: JSON.stringify({
+        id: "orphan-chat",
+        orderId: "orphan",
+        type: "message",
+        createdAt: FIXED_NOW - 5_000,
+        senderPubkey: "someone",
+        recipientPubkey: "dual",
+        rawContent: "",
+        payload: { note: "hi" },
+      }),
+      cachedAt: FIXED_NOW - 5_000,
+    })
+
+    __setCommerceTestOverrides({
+      requireNdkConnected: async () => ({ signer: undefined }) as never,
+    })
+
+    const asBuyer = await getCachedBuyerConversationList({
+      principalPubkey: "dual",
+    })
+    const asMerchant = await getCachedMerchantConversationList({
+      principalPubkey: "dual",
+    })
+
+    expect(asBuyer.data.map((row) => row.orderId)).not.toContain("orphan")
+    expect(asMerchant.data.map((row) => row.orderId)).not.toContain("orphan")
+  })
+
   it("persists buyer-originated order messages into the conversation cache", async () => {
     await cacheParsedOrderMessage({
       id: "local-order-msg",

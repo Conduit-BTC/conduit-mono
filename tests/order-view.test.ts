@@ -235,6 +235,26 @@ describe("getOrderFilterPhase", () => {
   })
 })
 
+describe("accepted status flows through the buyer view-model", () => {
+  it("treats accepted as merchant-confirmed in the timeline", () => {
+    const statuses = computeOrderTimelineStatuses({
+      ...vmFromLifecycle(),
+      merchantStatus: "accepted",
+    })
+    expect(statuses.merchant_confirmation).toBe("complete")
+  })
+
+  it("buckets an accepted (unpaid) order as in progress", () => {
+    expect(
+      getOrderFilterPhase({
+        ...vmFromLifecycle(),
+        merchantStatus: "accepted",
+        paymentStatus: "not_started",
+      })
+    ).toBe("in_progress")
+  })
+})
+
 describe("deriveOrderHeaderStatus", () => {
   it("Paid · Receipt sent when proof delivered and merchant has not confirmed", () => {
     const status = deriveOrderHeaderStatus(vmFromLifecycle())
