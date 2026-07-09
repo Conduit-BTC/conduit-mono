@@ -55,6 +55,11 @@ import {
 } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import { BuyerAvatar, OrderListItem } from "../components/OrderListItem"
+import {
+  getMerchantOrderPhase,
+  ORDER_PHASE_OPTIONS,
+  type OrderPhaseTab,
+} from "../lib/order-phase"
 import { getStorefrontUrl } from "../lib/market-links"
 import { giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import {
@@ -183,32 +188,6 @@ function SearchBox({
 // Cap how many recent orders' product listings we resolve for search, so the
 // batched relay read stays bounded on large inboxes.
 const ORDER_SEARCH_PRODUCT_CAP = 100
-
-type OrderPhaseTab = "all" | "pending" | "in_progress" | "completed"
-
-const ORDER_PHASE_OPTIONS: Array<{ value: OrderPhaseTab; label: string }> = [
-  { value: "all", label: "All" },
-  { value: "pending", label: "Pending" },
-  { value: "in_progress", label: "In Progress" },
-  { value: "completed", label: "Completed" },
-]
-
-// Cancelled orders belong to no active tab, so they only surface under "All".
-function getMerchantOrderPhase(
-  status: string | null | undefined
-): "pending" | "in_progress" | "completed" | "cancelled" {
-  switch ((status ?? "pending").toLowerCase()) {
-    case "complete":
-    case "delivered":
-      return "completed"
-    case "cancelled":
-      return "cancelled"
-    case "pending":
-      return "pending"
-    default:
-      return "in_progress"
-  }
-}
 
 function emptyOrdersLabel(query: string, phase: OrderPhaseTab): string {
   if (query) return `No orders match "${query}".`

@@ -24,9 +24,12 @@ import {
   Wallet,
   Wifi,
 } from "lucide-react"
-import { useEffect, useRef, useState, type ComponentType } from "react"
+import { useEffect, useMemo, useRef, useState, type ComponentType } from "react"
 import { Badge, Button, StatusPill, cn } from "@conduit/ui"
+import { DashboardCharts } from "../components/DashboardCharts"
 import { OrderListItem } from "../components/OrderListItem"
+import { buildDashboardChartData } from "../lib/dashboard-charts"
+import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
 import type { MerchantSetupReadiness } from "../lib/readiness"
 
@@ -354,12 +357,22 @@ function DashboardPage() {
       getCachedMerchantConversationList({ principalPubkey: pubkey! }),
     staleTime: 5_000,
   })
+  const btcRateQuery = useBtcUsdRate()
   const stats = statsQuery.data ?? cachedStatsQuery.data
-  const latestConversations = (
-    conversationsQuery.data?.data ??
-    cachedConversationsQuery.data?.data ??
-    []
-  ).slice(0, 5)
+  const allConversations =
+    conversationsQuery.data?.data ?? cachedConversationsQuery.data?.data ?? []
+  const latestConversations = allConversations.slice(0, 5)
+  const chartData = useMemo(
+    () =>
+      buildDashboardChartData(
+        conversationsQuery.data?.data ??
+          cachedConversationsQuery.data?.data ??
+          [],
+        btcRateQuery.data ?? null,
+        Date.now()
+      ),
+    [conversationsQuery.data, cachedConversationsQuery.data, btcRateQuery.data]
+  )
   const buyerProfilesQuery = useProfiles(
     latestConversations.map((conversation) => conversation.buyerPubkey),
     { enabled: !!pubkey && latestConversations.length > 0 }
@@ -435,6 +448,10 @@ function DashboardPage() {
       </div>
 
       {pubkey && <MerchantReadinessPanel readiness={readiness} />}
+
+      {pubkey && chartData.totalOrders > 0 && (
+        <DashboardCharts data={chartData} />
+      )}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">
         <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
