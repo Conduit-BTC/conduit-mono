@@ -334,15 +334,17 @@ function MobileOrdersScroller({
   merchantName: (pk: string) => string
   onSelect: (orderId: string) => void
 }) {
-  const orderedRows = useMemo(() => {
-    if (!selectedOrderId) return rows
-    const selectedRow = rows.find((row) => row.orderId === selectedOrderId)
-    if (!selectedRow) return rows
-    return [
-      selectedRow,
-      ...rows.filter((row) => row.orderId !== selectedOrderId),
-    ]
-  }, [rows, selectedOrderId])
+  const cardRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
+
+  // Keep the natural order; scroll the selected order into view instead.
+  useEffect(() => {
+    if (!selectedOrderId) return
+    cardRefs.current.get(selectedOrderId)?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "center",
+    })
+  }, [selectedOrderId])
 
   return (
     <section className="min-w-0 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
@@ -361,12 +363,16 @@ function MobileOrdersScroller({
           }}
         >
           <div className="flex min-w-max gap-3 pb-1 pr-14 snap-x snap-mandatory">
-            {orderedRows.map((row) => {
+            {rows.map((row) => {
               const active = row.orderId === selectedOrderId
               return (
                 <button
                   key={row.orderId}
                   type="button"
+                  ref={(el) => {
+                    if (el) cardRefs.current.set(row.orderId, el)
+                    else cardRefs.current.delete(row.orderId)
+                  }}
                   onClick={() => onSelect(row.orderId)}
                   className={[
                     "w-[16.5rem] shrink-0 snap-start rounded-[1.25rem] border p-4 text-left transition-[border-color,background-color,transform]",
@@ -1375,6 +1381,7 @@ function OrdersPage() {
                   <SheetTitle>Your orders</SheetTitle>
                 </SheetHeader>
                 <SearchBox value={searchValue} onChange={setSearchValue} />
+                <MobileOrderFilterPills tab={tab} onChange={setTab} />
                 <OrderList
                   rows={filteredOrders}
                   selectedOrderId={selectedOrderId}
