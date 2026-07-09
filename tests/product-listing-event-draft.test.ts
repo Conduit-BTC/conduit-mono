@@ -165,6 +165,8 @@ describe("product listing event drafts", () => {
     expect(
       coordinatedDraft.tags.some((tag) => tag[0] === "shipping_country")
     ).toBe(false)
+  })
+
   it("emits Gamma shipping option extra cost when it matches the product currency", () => {
     const draft = buildProductListingEventDraft({
       product: baseProduct({

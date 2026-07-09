@@ -1,5 +1,6 @@
 import {
   getPriceSats,
+  getShippingCostSats,
   resolveCartShippingCost,
   type ProductZapMessagePolicy,
   type PricingRateInput,
@@ -249,7 +250,7 @@ export function getCartCostSummary(
     shippingResolvableItems,
     rateInput
   )
-  const shippingReadyForZap = shippingCost.status !== "manual"
+  let shippingReadyForZap = shippingCost.status !== "manual"
 
   for (const item of items) {
     count += item.quantity

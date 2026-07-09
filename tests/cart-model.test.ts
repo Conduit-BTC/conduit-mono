@@ -229,7 +229,8 @@ describe("cart model", () => {
     ).toMatchObject({
       count: 2,
       itemSubtotalSats: 200,
-      totalSats: 200,
+      shippingTotalSats: 50,
+      totalSats: 250,
       itemPricesAvailable: true,
       shippingReadyForZap: true,
       canZapOut: true,
