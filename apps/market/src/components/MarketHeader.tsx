@@ -337,6 +337,11 @@ export function MarketHeader() {
   }, [ndkStatus, pubkey, refetch])
 
   useEffect(() => {
+    // Mirror the URL query into the input only when the user isn't actively
+    // typing. Otherwise the debounced navigate that WE trigger echoes the
+    // (stale, trimmed) query back and clobbers in-flight keystrokes, which
+    // shows up as dropped/reordered characters.
+    if (searchInputRef.current === document.activeElement) return
     setSearchValue(currentQuery)
     setSearchDirty(false)
   }, [currentQuery, pathname])
