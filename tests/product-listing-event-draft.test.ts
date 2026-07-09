@@ -521,4 +521,36 @@ describe("product listing event parsing", () => {
       normalizedCurrency: "EUR",
     })
   })
+
+  it("keeps merchant-authored labeled summary lines that do not match listing metadata", () => {
+    const parsed = parseProductEvent({
+      id: "merchant-authored-labeled-summary-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Fallback content",
+      tags: [
+        ["d", "labeled-summary"],
+        ["title", "Woodcut Edition"],
+        [
+          "summary",
+          [
+            "Category: woodcut prints",
+            "Type: handmade paper",
+            "Price: varies by edition",
+          ].join("\n"),
+        ],
+        ["price", "1000", "SATS"],
+        ["type", "simple", "physical"],
+        ["t", "prints"],
+      ],
+    })
+
+    expect(parsed.summary).toBe(
+      [
+        "Category: woodcut prints",
+        "Type: handmade paper",
+        "Price: varies by edition",
+      ].join("\n")
+    )
+  })
 })

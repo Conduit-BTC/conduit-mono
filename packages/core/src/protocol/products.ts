@@ -312,6 +312,7 @@ type ProductJsonContentProjection = {
 type ProductSummaryCleanupContext = {
   title: string
   priceInfo: { price: number; currency: string } | null
+  tags: string[]
 }
 
 function getStringField(
@@ -383,14 +384,6 @@ function isFormatMetadataLine(normalizedLine: string): boolean {
   )
 }
 
-function isLabeledSummaryMetadataLine(normalizedLine: string): boolean {
-  return (
-    normalizedLine.startsWith("price: ") ||
-    normalizedLine.startsWith("category: ") ||
-    normalizedLine.startsWith("type: ")
-  )
-}
-
 function isPriceMetadataLine(
   normalizedLine: string,
   priceInfo: ProductSummaryCleanupContext["priceInfo"]
@@ -400,6 +393,35 @@ function isPriceMetadataLine(
   const price = `${priceInfo.price} ${priceInfo.currency}`.toLowerCase()
   return (
     normalizedLine === price || normalizedLine.startsWith(`price: ${price}`)
+  )
+}
+
+function isLabeledPriceMetadataLine(
+  normalizedLine: string,
+  priceInfo: ProductSummaryCleanupContext["priceInfo"]
+): boolean {
+  if (!priceInfo) return false
+
+  const price = `${priceInfo.price} ${priceInfo.currency}`.toLowerCase()
+  return normalizedLine.startsWith(`price: ${price}`)
+}
+
+function isLabeledCategoryMetadataLine(
+  normalizedLine: string,
+  tags: string[]
+): boolean {
+  if (!normalizedLine.startsWith("category: ")) return false
+
+  const category = normalizedLine.slice("category: ".length).trim()
+  return tags
+    .map((tag) => normalizeSummaryMetadataLine(tag))
+    .some((tag) => tag === category)
+}
+
+function isLabeledTypeMetadataLine(normalizedLine: string): boolean {
+  return (
+    normalizedLine === "type: physical product" ||
+    normalizedLine === "type: digital product"
   )
 }
 
@@ -446,9 +468,11 @@ function cleanProductSummary(
     if (
       isMarkdownTitle ||
       isListedByMetadataLine(normalizedLine) ||
-      isLabeledSummaryMetadataLine(normalizedLine) ||
       isFormatMetadataLine(normalizedLine) ||
-      isPriceMetadataLine(normalizedLine, context.priceInfo)
+      isPriceMetadataLine(normalizedLine, context.priceInfo) ||
+      isLabeledPriceMetadataLine(normalizedLine, context.priceInfo) ||
+      isLabeledCategoryMetadataLine(normalizedLine, context.tags) ||
+      isLabeledTypeMetadataLine(normalizedLine)
     ) {
       indexesToRemove.add(index)
     }
@@ -565,7 +589,7 @@ export function parseProductEvent(
         summaryTag ??
           jsonContentProjection?.summary ??
           (markdownContent ? markdownContent.slice(0, 5000) : undefined),
-        { title, priceInfo }
+        { title, priceInfo, tags }
       ),
       price: priceInfo?.price ?? 0,
       currency: priceInfo?.currency ?? "USD",
