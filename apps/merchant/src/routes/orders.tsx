@@ -229,6 +229,16 @@ function getMerchantOrderPhase(
   }
 }
 
+function emptyOrdersLabel(query: string, phase: OrderPhaseTab): string {
+  if (query) return `No orders match "${query}".`
+  if (phase !== "all") {
+    const label =
+      ORDER_PHASE_OPTIONS.find((option) => option.value === phase)?.label ?? ""
+    return `No ${label.toLowerCase()} orders.`
+  }
+  return "No orders yet."
+}
+
 function OrderPhaseFilter({
   value,
   onChange,
@@ -237,7 +247,15 @@ function OrderPhaseFilter({
   onChange: (value: OrderPhaseTab) => void
 }) {
   return (
-    <div className="mt-3 flex flex-wrap gap-2">
+    <div
+      className="mt-3 flex gap-2 overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      style={{
+        maskImage:
+          "linear-gradient(to right, black 0, black calc(100% - 16px), transparent 100%)",
+        WebkitMaskImage:
+          "linear-gradient(to right, black 0, black calc(100% - 16px), transparent 100%)",
+      }}
+    >
       {ORDER_PHASE_OPTIONS.map((option) => {
         const active = value === option.value
         return (
@@ -1258,7 +1276,7 @@ function OrdersPage() {
             <div className="mt-4 space-y-2 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
               {filteredConversations.length === 0 && (
                 <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
-                  No orders match "{orderSearch.trim()}".
+                  {emptyOrdersLabel(orderSearch.trim(), phaseTab)}
                 </div>
               )}
               {filteredConversations.map((conversation) => (
@@ -1309,7 +1327,7 @@ function OrdersPage() {
                 <div className="mt-4 space-y-2">
                   {filteredConversations.length === 0 && (
                     <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
-                      No orders match "{orderSearch.trim()}".
+                      {emptyOrdersLabel(orderSearch.trim(), phaseTab)}
                     </div>
                   )}
                   {filteredConversations.map((conversation) => (
