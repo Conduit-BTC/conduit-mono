@@ -23,6 +23,7 @@ import {
   getMerchantDisplayName,
   getProfileNip05,
 } from "../../components/MerchantIdentity"
+import { ProductDescriptionMarkdown } from "../../components/ProductDescriptionMarkdown"
 import {
   ProductGridCard,
   ProductGridCardSkeleton,
@@ -77,7 +78,7 @@ function ProductPage() {
       collapsedHeight: 0,
       expandedHeight: 0,
     })
-  const descriptionRef = useRef<HTMLParagraphElement>(null)
+  const descriptionRef = useRef<HTMLDivElement>(null)
   const btcUsdRateQuery = useBtcUsdRate()
 
   const productQuery = useProgressiveProductDetail(productId)
@@ -622,12 +623,10 @@ function ProductPage() {
                           : { maxHeight: `${descriptionMaxHeight}px` }
                       }
                     >
-                      <p
+                      <ProductDescriptionMarkdown
                         ref={descriptionRef}
-                        className="break-words whitespace-pre-line text-sm leading-7 text-[var(--text-secondary)] [overflow-wrap:anywhere]"
-                      >
-                        {displaySummary}
-                      </p>
+                        text={displaySummary ?? ""}
+                      />
                     </div>
                     <div
                       aria-hidden="true"

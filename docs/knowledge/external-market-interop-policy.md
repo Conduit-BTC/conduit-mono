@@ -182,3 +182,10 @@ Add short entries here as they arise:
 - Conduit behavior: Treat these repeated card metadata lines as display-only noise and strip them from parsed product summaries while preserving remaining merchant-authored description text.
 - Risk: Level 1 rendering mismatch.
 - Action: adapter.
+
+- **[2026-07-09]** Product description Markdown rendering
+- Spec expectation: NIP-99/Gamma product listing `content` is human-readable Markdown description text; authoritative commerce fields such as price remain in structured tags or related commerce events.
+- Observed behavior: External listings may include price, category, attribution, links, or other generated display copy in Markdown even when structured tags are present.
+- Conduit behavior: Render product descriptions through a constrained Markdown renderer for display only. Do not infer checkout price, shipping, stock, payment, merchant identity, or order state from Markdown text.
+- Risk: Level 1 rendering mismatch.
+- Action: adapter.
