@@ -1,22 +1,30 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  appendConduitClientTag,
+  cacheParsedOrderMessage,
   db,
+  EVENT_KINDS,
   formatNpub,
   formatPubkey,
+  getNdk,
   getProductPriceDisplay,
   getOrderPublicZapSigner,
   listOrderLifecycles,
   normalizeLightningInvoice,
+  parseOrderMessageRumorEvent,
+  publishWithPlanner,
   pubkeyToNpub,
   useAuth,
   useProfile,
   useProfiles,
   type OrderLifecycle,
 } from "@conduit/core"
+import { giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import {
   Button,
+  OrderMessagesWidget,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -571,6 +579,28 @@ function ExternalWalletPanel({
   )
 }
 
+function prepareBuyerConversationRumor(
+  rumor: NDKEvent,
+  buyerPubkey: string
+): void {
+  rumor.pubkey = buyerPubkey
+  if (rumor.id) return
+  try {
+    rumor.id = rumor.getEventHash()
+  } catch (error) {
+    console.warn("Failed to derive buyer message rumor id", error)
+  }
+}
+
+async function cacheBuyerConversationRumor(rumor: NDKEvent): Promise<void> {
+  try {
+    if (!rumor.id) throw new Error("Missing buyer message rumor id")
+    await cacheParsedOrderMessage(parseOrderMessageRumorEvent(rumor))
+  } catch (error) {
+    console.warn("Failed to cache buyer message", error)
+  }
+}
+
 function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
   const { vm, headerStatus } = row
   const wallet = useWallet()
@@ -581,6 +611,9 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
   const merchantName = getMerchantDisplayName(profile, row.merchantPubkey)
   const [busy, setBusy] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const [messagesOpen, setMessagesOpen] = useState(false)
+  const [replyText, setReplyText] = useState("")
+  const queryClient = useQueryClient()
 
   const productsQuery = useQuery({
     queryKey: ["selected-order-products", row.merchantPubkey],
@@ -637,12 +670,87 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
     (vm.proofDeliveryStatus === "retry_needed" ||
       vm.proofDeliveryStatus === "failed")
 
+  const replyMutation = useMutation({
+    mutationFn: async () => {
+      if (!replyText.trim()) throw new Error("Message is required")
+      const ndk = getNdk()
+      if (!ndk.signer) throw new Error("Signer not connected")
+
+      const rumor = new NDKEvent(ndk)
+      rumor.kind = EVENT_KINDS.ORDER
+      rumor.created_at = Math.floor(Date.now() / 1000)
+      rumor.tags = appendConduitClientTag(
+        [
+          ["p", row.merchantPubkey],
+          ["type", "message"],
+          ["order", vm.orderId],
+        ],
+        "market"
+      )
+      rumor.content = JSON.stringify({
+        note: replyText.trim(),
+        orderId: vm.orderId,
+        merchantPubkey: row.merchantPubkey,
+        buyerPubkey: pubkey,
+        createdAt: Date.now(),
+      })
+      prepareBuyerConversationRumor(rumor, pubkey)
+
+      const merchantUser = new NDKUser({ pubkey: row.merchantPubkey })
+      const buyerUser = new NDKUser({ pubkey })
+      const [wrappedToMerchant, wrappedToBuyer] = await Promise.all([
+        giftWrap(rumor, merchantUser, ndk.signer, {
+          rumorKind: EVENT_KINDS.ORDER,
+        }),
+        giftWrap(rumor, buyerUser, ndk.signer, {
+          rumorKind: EVENT_KINDS.ORDER,
+        }),
+      ])
+
+      await publishWithPlanner(wrappedToMerchant, {
+        intent: "recipient_event",
+        authorPubkey: pubkey,
+        authenticatedPubkey: pubkey,
+        recipientPubkeys: [row.merchantPubkey],
+        refreshRelayLists: true,
+        deliveryMode: "critical",
+      })
+      try {
+        await publishWithPlanner(wrappedToBuyer, {
+          intent: "recipient_event",
+          authorPubkey: pubkey,
+          authenticatedPubkey: pubkey,
+          recipientPubkeys: [pubkey],
+          refreshRelayLists: true,
+          deliveryMode: "critical",
+        })
+      } catch (error) {
+        console.warn("Buyer message self-copy publish failed", error)
+      }
+
+      await cacheBuyerConversationRumor(rumor)
+    },
+    onSuccess: async () => {
+      setReplyText("")
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["buyer-messages", pubkey],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["buyer-messages-live", pubkey],
+        }),
+      ])
+    },
+  })
+
   const messageMerchant = (
-    <Button asChild variant="outline" className="h-10 px-4 text-sm">
-      <Link to="/messages" search={{ tab: "merchants", thread: vm.orderId }}>
-        <MessageCircle className="h-4 w-4" />
-        Message merchant
-      </Link>
+    <Button
+      variant="outline"
+      className="h-10 px-4 text-sm"
+      onClick={() => setMessagesOpen(true)}
+    >
+      <MessageCircle className="h-4 w-4" />
+      Message merchant
     </Button>
   )
 
@@ -781,13 +889,12 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
                 <h3 className="text-sm font-semibold text-[var(--text-primary)]">
                   Shipping address
                 </h3>
-                <Button asChild variant="ghost" className="h-8 px-3 text-xs">
-                  <Link
-                    to="/messages"
-                    search={{ tab: "merchants", thread: vm.orderId }}
-                  >
-                    Edit
-                  </Link>
+                <Button
+                  variant="ghost"
+                  className="h-8 px-3 text-xs"
+                  onClick={() => setMessagesOpen(true)}
+                >
+                  Edit
                 </Button>
               </div>
               <div className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
@@ -879,6 +986,25 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
           </section>
         </div>
       </div>
+
+      <OrderMessagesWidget
+        open={messagesOpen}
+        onOpenChange={setMessagesOpen}
+        subtitle={merchantName}
+        messages={row.conversation?.messages ?? []}
+        selfPubkey={pubkey}
+        replyValue={replyText}
+        onReplyChange={setReplyText}
+        onSend={() => replyMutation.mutate()}
+        sending={replyMutation.isPending}
+        placeholder="Message the merchant, then press Enter"
+        resolveItem={(id) => {
+          const product = productsById.get(id)
+          return product
+            ? { title: product.title, imageUrl: product.images[0]?.url }
+            : undefined
+        }}
+      />
     </div>
   )
 }
