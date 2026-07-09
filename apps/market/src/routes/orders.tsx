@@ -64,6 +64,7 @@ import {
   buildOrderTimeline,
   buildOrderViewModel,
   deriveOrderHeaderStatus,
+  getOrderFilterPhase,
   getOrderPaymentMethodLabel,
   type OrderHeaderStatus,
   type OrderViewModel,
@@ -1043,22 +1044,6 @@ function OrdersPage() {
   const [searchValue, setSearchValue] = useState("")
   const [tab, setTab] = useState<PhaseTab>("all")
   const [changeOrderOpen, setChangeOrderOpen] = useState(false)
-  // The phase tabs only exist on the mobile layout. Track the desktop breakpoint
-  // (xl = 1280px) so a tab chosen on a narrow viewport doesn't silently filter
-  // the tab-less desktop rail after a resize.
-  const [isDesktop, setIsDesktop] = useState(
-    () =>
-      typeof window !== "undefined" &&
-      window.matchMedia("(min-width: 1280px)").matches
-  )
-  useEffect(() => {
-    const mql = window.matchMedia("(min-width: 1280px)")
-    const onChange = () => setIsDesktop(mql.matches)
-    onChange()
-    mql.addEventListener("change", onChange)
-    return () => mql.removeEventListener("change", onChange)
-  }, [])
-  const effectiveTab: PhaseTab = isDesktop ? "all" : tab
   const [refreshButtonState, setRefreshButtonState] = useState<
     "idle" | "refreshing" | "done"
   >("idle")
@@ -1193,11 +1178,7 @@ function OrdersPage() {
   const filteredOrders = useMemo(() => {
     const query = searchValue.trim().toLowerCase()
     return orders.filter((row) => {
-      if (effectiveTab !== "all" && row.vm.phase !== effectiveTab) {
-        // "in_progress" tab also surfaces failed/action-needed active orders.
-        if (!(effectiveTab === "in_progress" && row.headerStatus.actionNeeded))
-          return false
-      }
+      if (tab !== "all" && getOrderFilterPhase(row.vm) !== tab) return false
       if (!query) return true
       return (
         merchantName(row.merchantPubkey).toLowerCase().includes(query) ||
@@ -1209,7 +1190,7 @@ function OrdersPage() {
         )
       )
     })
-  }, [effectiveTab, merchantName, orders, searchValue])
+  }, [tab, merchantName, orders, searchValue])
 
   const selectedOrderId = useMemo(() => {
     if (
@@ -1338,6 +1319,7 @@ function OrdersPage() {
                 Your orders
               </div>
               <SearchBox value={searchValue} onChange={setSearchValue} />
+              <MobileOrderFilterPills tab={tab} onChange={setTab} />
               <OrderList
                 rows={filteredOrders}
                 selectedOrderId={selectedOrderId}

@@ -5,6 +5,7 @@ import {
   buildOrderViewModel,
   computeOrderTimelineStatuses,
   deriveOrderHeaderStatus,
+  getOrderFilterPhase,
   getOrderPaymentMethodLabel,
   type OrderViewModel,
 } from "../apps/market/src/lib/order-view"
@@ -205,6 +206,32 @@ describe("buildOrderTimeline", () => {
     expect(paymentRow?.status).toBe("retry_needed")
     expect(paymentRow?.title).toBe("Payment needs review")
     expect(paymentRow?.subtitle).toContain("couldn't confirm")
+  })
+})
+
+describe("getOrderFilterPhase", () => {
+  it("buckets an unpaid, awaiting-invoice order as pending", () => {
+    expect(
+      getOrderFilterPhase(
+        vmFromLifecycle({
+          invoiceStatus: "not_requested",
+          paymentStatus: "not_started",
+        })
+      )
+    ).toBe("pending")
+  })
+
+  it("buckets a paid order as in progress", () => {
+    expect(getOrderFilterPhase(vmFromLifecycle())).toBe("in_progress")
+  })
+
+  it("buckets completed and cancelled orders", () => {
+    expect(getOrderFilterPhase(vmFromLifecycle({ phase: "completed" }))).toBe(
+      "completed"
+    )
+    expect(getOrderFilterPhase(vmFromLifecycle({ phase: "cancelled" }))).toBe(
+      "cancelled"
+    )
   })
 })
 

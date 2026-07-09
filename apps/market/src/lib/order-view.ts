@@ -539,6 +539,31 @@ export function computeOrderTimelineStatuses(
 }
 
 /** Build the seven `StatusStepperRow`s for the order detail timeline. */
+/**
+ * Coarse bucket for the orders-list phase filter, from the buyer's view: an
+ * order awaiting invoice/payment is "pending"; once paid (or the merchant is
+ * fulfilling) it is "in_progress". Distinct from `vm.phase`, which treats any
+ * sent order as in progress.
+ */
+export function getOrderFilterPhase(
+  vm: OrderViewModel
+): "pending" | "in_progress" | "completed" | "cancelled" {
+  if (vm.merchantStatus === "cancelled" || vm.phase === "cancelled") {
+    return "cancelled"
+  }
+  if (vm.merchantStatus === "complete" || vm.phase === "completed") {
+    return "completed"
+  }
+  if (
+    vm.paymentStatus === "paid" ||
+    vm.merchantStatus === "processing" ||
+    vm.merchantStatus === "shipped"
+  ) {
+    return "in_progress"
+  }
+  return "pending"
+}
+
 export function buildOrderTimeline(vm: OrderViewModel): StatusStepperRow[] {
   const statuses = computeOrderTimelineStatuses(vm)
   return TIMELINE_ROW_ORDER.map((key) => {
