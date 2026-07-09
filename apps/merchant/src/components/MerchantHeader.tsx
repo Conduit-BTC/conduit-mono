@@ -448,7 +448,7 @@ export function MerchantMobileNav() {
         <Button
           variant="ghost"
           size="sm"
-          className="h-11 w-11 rounded-xl lg:hidden"
+          className="h-11 w-11 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-md lg:hidden"
           aria-label="Open menu"
         >
           <Menu className="h-5 w-5" />
