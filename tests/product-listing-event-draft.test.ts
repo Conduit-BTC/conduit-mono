@@ -466,6 +466,29 @@ describe("product listing event parsing", () => {
     expect(parsed.images).toEqual([])
   })
 
+  it("clamps partial JSON listing metadata before schema validation", () => {
+    const parsed = parseProductEvent({
+      id: "oversized-partial-json-listing-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: JSON.stringify({
+        title: "T".repeat(240),
+        description: "D".repeat(5_040),
+      }),
+      tags: [
+        ["d", "oversized-json-listing"],
+        ["price", "1000", "SATS"],
+        ["type", "simple", "digital"],
+      ],
+    })
+
+    expect(parsed.id).toBe("30402:merchant:oversized-json-listing")
+    expect(parsed.title).toHaveLength(200)
+    expect(parsed.summary).toHaveLength(5000)
+    expect(parsed.title).toBe("T".repeat(200))
+    expect(parsed.summary).toBe("D".repeat(5000))
+  })
+
   it("strips generated card metadata from summary tags", () => {
     const parsed = parseProductEvent({
       id: "generated-card-summary-event",

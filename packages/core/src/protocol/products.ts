@@ -13,6 +13,8 @@ import { EVENT_KINDS } from "./kinds"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 
 const PRODUCT_IMAGE_URL_PATTERN = /^https?:\/\//i
+const PRODUCT_TITLE_MAX_LENGTH = 200
+const PRODUCT_SUMMARY_MAX_LENGTH = 5000
 export const PRODUCT_PUBLIC_ZAPS_TAG = "checkout_public_zaps"
 export const PRODUCT_ZAP_MESSAGE_POLICY_TAG = "checkout_zap_message_policy"
 const PRODUCT_PUBLIC_ZAPS_LEGACY_TAG = "public_zaps"
@@ -314,14 +316,15 @@ type ProductSummaryCleanupContext = {
 
 function getStringField(
   record: Record<string, unknown>,
-  names: string[]
+  names: string[],
+  maxLength?: number
 ): string | undefined {
   for (const name of names) {
     const value = record[name]
     if (typeof value !== "string") continue
 
     const trimmed = value.trim()
-    if (trimmed) return trimmed
+    if (trimmed) return trimmed.slice(0, maxLength)
   }
 
   return undefined
@@ -348,8 +351,12 @@ function parseProductJsonContentProjection(
   const record = parsed as Record<string, unknown>
   return {
     isJson: true,
-    title: getStringField(record, ["title", "name"]),
-    summary: getStringField(record, ["summary", "description"]),
+    title: getStringField(record, ["title", "name"], PRODUCT_TITLE_MAX_LENGTH),
+    summary: getStringField(
+      record,
+      ["summary", "description"],
+      PRODUCT_SUMMARY_MAX_LENGTH
+    ),
   }
 }
 
@@ -517,7 +524,10 @@ export function parseProductEvent(
   const fromContent = (event.content || "").trim()
   const jsonContentProjection = parseProductJsonContentProjection(fromContent)
   const markdownContent = jsonContentProjection?.isJson ? "" : fromContent
-  const markdownTitle = markdownContent.split("\n")[0]?.trim().slice(0, 200)
+  const markdownTitle = markdownContent
+    .split("\n")[0]
+    ?.trim()
+    .slice(0, PRODUCT_TITLE_MAX_LENGTH)
   const title =
     getTagValue(event.tags, "title") ??
     jsonContentProjection?.title ??
