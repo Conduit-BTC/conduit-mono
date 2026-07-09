@@ -2,7 +2,9 @@ import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   canonicalizeProductPrice,
   canonicalizeShippingCost,
+  isSatsLikeCurrency,
   type CommerceShippingCostLike,
+  normalizeCurrencyCode,
 } from "../pricing"
 import {
   productSchema,
@@ -78,9 +80,8 @@ export function buildProductListingEventDraft({
     tags.push(["shipping_cost", String(product.shippingCostSats)])
   }
 
-  if (product.shippingOptionId) {
-    tags.push(["shipping_option", product.shippingOptionId])
-  }
+  const shippingOptionTag = buildShippingOptionTag(product, priceCurrency)
+  if (shippingOptionTag) tags.push(shippingOptionTag)
   if (product.shippingCountries && product.shippingCountries.length > 0) {
     tags.push(["shipping_country", ...product.shippingCountries])
   }
@@ -171,17 +172,74 @@ function parseShippingCostTag(
   return canonicalizeShippingCost(amount, currency)
 }
 
-function parseShippingOptionTag(tags: string[][] | undefined): {
+function getProductShippingOptionExtraCostTag(
+  product: ProductSchema,
+  productCurrency: string
+): string | null {
+  const normalizedProductCurrency = normalizeCurrencyCode(productCurrency)
+  const sourceShippingCurrency = product.sourceShippingCost?.normalizedCurrency
+
+  if (
+    product.sourceShippingCost &&
+    sourceShippingCurrency === normalizedProductCurrency
+  ) {
+    return String(product.sourceShippingCost.amount)
+  }
+
+  if (
+    typeof product.shippingCostSats === "number" &&
+    (product.shippingCostSats === 0 ||
+      isSatsLikeCurrency(normalizedProductCurrency))
+  ) {
+    return String(product.shippingCostSats)
+  }
+
+  return null
+}
+
+function buildShippingOptionTag(
+  product: ProductSchema,
+  productCurrency: string
+): string[] | null {
+  if (!product.shippingOptionId) return null
+
+  const tag = ["shipping_option", product.shippingOptionId]
+  const extraCost = getProductShippingOptionExtraCostTag(
+    product,
+    productCurrency
+  )
+  if (extraCost !== null) tag.push(extraCost)
+  return tag
+}
+
+function parseShippingOptionTag(
+  tags: string[][] | undefined,
+  productCurrency: string | undefined
+): {
   shippingOptionId?: string
   shippingOptionDTag?: string
+  extraCost?: CommerceShippingCostLike
 } {
-  const ref = getTagValue(tags, "shipping_option")
+  const tag = tags?.find((t) => t[0] === "shipping_option")
+  const ref = tag?.[1]
   if (!ref) return {}
   const parts = ref.split(":")
+
+  const rawExtraCost = tag?.[2]
+  const amount =
+    typeof rawExtraCost === "string" && rawExtraCost.trim()
+      ? Number(rawExtraCost)
+      : NaN
+  const extraCost =
+    productCurrency && Number.isFinite(amount) && amount >= 0
+      ? canonicalizeShippingCost(amount, productCurrency)
+      : undefined
+
   return {
     shippingOptionId: ref,
     shippingOptionDTag:
       parts.length >= 3 ? parts.slice(2).join(":") : undefined,
+    extraCost,
   }
 }
 
@@ -611,7 +669,9 @@ export function parseProductEvent(
 
   const priceInfo = parsePriceTag(event.tags)
   const shippingCost = parseShippingCostTag(event.tags)
-  const shippingOption = parseShippingOptionTag(event.tags)
+  const shippingOption = parseShippingOptionTag(event.tags, priceInfo?.currency)
+  const { extraCost: shippingOptionExtraCost, ...shippingOptionFields } =
+    shippingOption
   const shippingRules = parseShippingCountryRules(event.tags)
   const summaryTag = getTagValue(event.tags, "summary")
   const locationTag = getTagValue(event.tags, "location")
@@ -659,8 +719,10 @@ export function parseProductEvent(
       currency: priceInfo?.currency ?? "USD",
       type,
       format,
-      ...shippingCost,
-      ...shippingOption,
+      ...(Object.keys(shippingCost).length > 0
+        ? shippingCost
+        : (shippingOptionExtraCost ?? {})),
+      ...shippingOptionFields,
       ...shippingRules,
       ...zapPolicy,
       images,

@@ -7,6 +7,11 @@
  * "conduit-default" to represent the merchant's current shipping config.
  */
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
+import {
+  getShippingCostSats,
+  type CommerceShippingCostLike,
+  type PricingRateInput,
+} from "../pricing"
 import { EVENT_KINDS } from "./kinds"
 import { fetchEventsFanout, requireNdkConnected } from "./ndk"
 import { publishWithPlanner } from "./relay-publish"
@@ -61,6 +66,65 @@ export interface ParsedShippingOption {
   /** Service label (e.g. "standard", "express") */
   service: string
   createdAt: number
+}
+
+export type ResolvedCartShippingCostStatus =
+  "not_required" | "included" | "priced" | "manual"
+
+export interface CartShippingCostLine extends CommerceShippingCostLike {
+  productId: string
+  quantity: number
+  format?: "physical" | "digital"
+}
+
+export interface ResolvedCartShippingCostSummary {
+  status: ResolvedCartShippingCostStatus
+  totalSats: number
+  missingProductIds: string[]
+}
+
+export function resolveCartShippingCost(
+  items: CartShippingCostLine[],
+  rateInput: PricingRateInput = null
+): ResolvedCartShippingCostSummary {
+  const physicalItems = items.filter((item) => item.format !== "digital")
+  if (physicalItems.length === 0) {
+    return {
+      status: "not_required",
+      totalSats: 0,
+      missingProductIds: [],
+    }
+  }
+
+  const missingProductIds: string[] = []
+  let totalSats = 0
+
+  for (const item of physicalItems) {
+    const shippingCost = getShippingCostSats(item, rateInput)
+    if (!shippingCost) {
+      missingProductIds.push(item.productId)
+      continue
+    }
+
+    const quantity = Number.isFinite(item.quantity)
+      ? Math.max(1, Math.floor(item.quantity))
+      : 1
+    totalSats += shippingCost.sats * quantity
+  }
+
+  if (missingProductIds.length > 0) {
+    return {
+      status: "manual",
+      totalSats: 0,
+      missingProductIds,
+    }
+  }
+
+  return {
+    status: totalSats === 0 ? "included" : "priced",
+    totalSats,
+    missingProductIds: [],
+  }
 }
 
 // ---------------------------------------------------------------------------

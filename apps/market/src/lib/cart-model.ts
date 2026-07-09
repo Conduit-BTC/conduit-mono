@@ -1,6 +1,6 @@
 import {
   getPriceSats,
-  getShippingCostSats,
+  resolveCartShippingCost,
   type ProductZapMessagePolicy,
   type PricingRateInput,
 } from "@conduit/core"
@@ -63,6 +63,7 @@ export type CartTotals = {
 export type CartCostSummary = {
   count: number
   itemSubtotalSats: number
+  shippingTotalSats: number
   totalSats: number
   itemPricesAvailable: boolean
   shippingReadyForZap: boolean
@@ -230,7 +231,25 @@ export function getCartCostSummary(
   let count = 0
   let itemSubtotalSats = 0
   let itemPricesAvailable = true
-  let shippingReadyForZap = true
+  const shippingResolvableItems = items.map((item) => {
+    const hasShippingZone =
+      item.format === "digital" ||
+      !!item.shippingOptionId ||
+      (item.shippingCountryRules?.length ?? 0) > 0
+
+    return hasShippingZone
+      ? item
+      : {
+          ...item,
+          shippingCostSats: undefined,
+          sourceShippingCost: undefined,
+        }
+  })
+  const shippingCost = resolveCartShippingCost(
+    shippingResolvableItems,
+    rateInput
+  )
+  const shippingReadyForZap = shippingCost.status !== "manual"
 
   for (const item of items) {
     count += item.quantity
@@ -241,7 +260,6 @@ export function getCartCostSummary(
     } else {
       itemPricesAvailable = false
     }
-
     if (item.format === "digital") continue
 
     const hasShippingSnapshot = (item.shippingCountryRules?.length ?? 0) > 0
@@ -253,7 +271,8 @@ export function getCartCostSummary(
   return {
     count,
     itemSubtotalSats,
-    totalSats: itemSubtotalSats,
+    shippingTotalSats: shippingCost.totalSats,
+    totalSats: itemSubtotalSats + shippingCost.totalSats,
     itemPricesAvailable,
     shippingReadyForZap,
     canZapOut: itemPricesAvailable && shippingReadyForZap,

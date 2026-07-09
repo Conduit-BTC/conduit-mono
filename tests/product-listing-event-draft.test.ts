@@ -165,6 +165,41 @@ describe("product listing event drafts", () => {
     expect(
       coordinatedDraft.tags.some((tag) => tag[0] === "shipping_country")
     ).toBe(false)
+  it("emits Gamma shipping option extra cost when it matches the product currency", () => {
+    const draft = buildProductListingEventDraft({
+      product: baseProduct({
+        price: 25_000,
+        currency: "SATS",
+        shippingCostSats: 500,
+        shippingOptionId: "30406:merchant:standard",
+        shippingOptionDTag: "standard",
+      }),
+      dTag: "sats-shipping-product",
+    })
+
+    expectTag(draft.tags, ["shipping_cost", "500"])
+    expectTag(draft.tags, ["shipping_option", "30406:merchant:standard", "500"])
+  })
+
+  it("keeps fiat shipping option extra cost in the source product currency", () => {
+    const product = canonicalizeProductPrice({
+      ...baseProduct({
+        price: 15,
+        currency: "USD",
+        shippingCostSats: undefined,
+        shippingOptionId: "30406:merchant:standard",
+        shippingOptionDTag: "standard",
+      }),
+      ...canonicalizeShippingCost(5, "USD"),
+    })
+
+    const draft = buildProductListingEventDraft({
+      product,
+      dTag: "usd-shipping-option-product",
+    })
+
+    expectTag(draft.tags, ["shipping_cost", "5", "USD"])
+    expectTag(draft.tags, ["shipping_option", "30406:merchant:standard", "5"])
   })
 
   it("emits custom product shipping rules without a preset option reference", () => {
@@ -393,6 +428,75 @@ describe("product listing event parsing", () => {
     expect(parsed.publicZapEnabled).toBe(false)
     expect(parsed.zapMessagePolicy).toBe("custom")
     expect(parsed.publicZapPolicyKnown).toBe(true)
+  })
+
+  it("parses Gamma shipping option extra cost from product listings", () => {
+    const parsed = parseProductEvent({
+      id: "spec-event-with-shipping-extra-cost",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "A shippable product.",
+      tags: [
+        ["d", "extra-cost-product"],
+        ["title", "Extra Cost Product"],
+        ["price", "25000", "SATS"],
+        ["type", "simple", "physical"],
+        ["shipping_option", "30406:merchant:standard", "500"],
+      ],
+    })
+
+    expect(parsed.shippingOptionId).toBe("30406:merchant:standard")
+    expect(parsed.shippingOptionDTag).toBe("standard")
+    expect(parsed.shippingCostSats).toBe(500)
+    expect(parsed.sourceShippingCost).toEqual({
+      amount: 500,
+      currency: "SATS",
+      normalizedCurrency: "SATS",
+    })
+  })
+
+  it("keeps Gamma fiat shipping option extra cost in the product currency", () => {
+    const parsed = parseProductEvent({
+      id: "spec-event-with-fiat-shipping-extra-cost",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "A fiat-priced shippable product.",
+      tags: [
+        ["d", "fiat-extra-cost-product"],
+        ["title", "Fiat Extra Cost Product"],
+        ["price", "25", "USD"],
+        ["type", "simple", "physical"],
+        ["shipping_option", "30406:merchant:standard", "5"],
+      ],
+    })
+
+    expect(parsed.shippingOptionId).toBe("30406:merchant:standard")
+    expect(parsed.shippingCostSats).toBeUndefined()
+    expect(parsed.sourceShippingCost).toEqual({
+      amount: 5,
+      currency: "USD",
+      normalizedCurrency: "USD",
+    })
+  })
+
+  it("keeps explicit shipping_cost tags ahead of shipping option extra cost", () => {
+    const parsed = parseProductEvent({
+      id: "spec-event-with-legacy-shipping-cost",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "A shippable product.",
+      tags: [
+        ["d", "legacy-shipping-cost-product"],
+        ["title", "Legacy Shipping Cost Product"],
+        ["price", "25000", "SATS"],
+        ["type", "simple", "physical"],
+        ["shipping_cost", "250"],
+        ["shipping_option", "30406:merchant:standard", "500"],
+      ],
+    })
+
+    expect(parsed.shippingOptionId).toBe("30406:merchant:standard")
+    expect(parsed.shippingCostSats).toBe(250)
   })
 
   it("defaults missing or unknown public zap tags to generic public-zap-safe policy", () => {
