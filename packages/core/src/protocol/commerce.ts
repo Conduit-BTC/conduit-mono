@@ -2263,6 +2263,12 @@ function buildBuyerConversationSummaries(
     const latest = bucket[bucket.length - 1]
     if (!latest) continue
 
+    // Role gate: the buyer sends the `order`, so the principal is the buyer
+    // only when it sent that order. Skip orders the principal received as the
+    // merchant (self-copied into the same inbox).
+    const orderMessage = bucket.find((message) => message.type === "order")
+    if (orderMessage && orderMessage.senderPubkey !== buyerPubkey) continue
+
     const latestStatus = [...bucket]
       .reverse()
       .find((message) => message.type === "status_update")
@@ -2280,7 +2286,10 @@ function buildBuyerConversationSummaries(
           .filter(Boolean)
       )
     )
-    const merchantPubkey = otherParticipants[0] ?? ""
+    const merchantPubkey =
+      orderMessage && orderMessage.senderPubkey === buyerPubkey
+        ? orderMessage.recipientPubkey
+        : (otherParticipants[0] ?? "")
     const summary = extractOrderSummary(bucket)
 
     conversations.push({
@@ -2327,6 +2336,12 @@ function buildMerchantConversationSummaries(
     const latest = bucket[bucket.length - 1]
     if (!latest) continue
 
+    // Role gate: the buyer sends the `order` to the merchant, so the principal
+    // is the merchant only when it received (didn't send) that order. Skip
+    // orders the principal placed as a buyer (self-copied into the same inbox).
+    const orderMessage = bucket.find((message) => message.type === "order")
+    if (orderMessage && orderMessage.senderPubkey === merchantPubkey) continue
+
     const latestStatus = [...bucket]
       .reverse()
       .find((message) => message.type === "status_update")
@@ -2344,7 +2359,10 @@ function buildMerchantConversationSummaries(
           .filter(Boolean)
       )
     )
-    const buyerPubkey = otherParticipants[0] ?? ""
+    const buyerPubkey =
+      orderMessage && orderMessage.senderPubkey !== merchantPubkey
+        ? orderMessage.senderPubkey
+        : (otherParticipants[0] ?? "")
     const summary = extractOrderSummary(bucket)
 
     conversations.push({

@@ -203,6 +203,10 @@ function SearchBox({
   )
 }
 
+// Cap how many recent orders' product listings we resolve for search, so the
+// batched relay read stays bounded on large inboxes.
+const ORDER_SEARCH_PRODUCT_CAP = 100
+
 type OrderPhaseTab = "all" | "pending" | "in_progress" | "completed"
 
 const ORDER_PHASE_OPTIONS: Array<{ value: OrderPhaseTab; label: string }> = [
@@ -750,6 +754,64 @@ function OrdersPage() {
   })
 
   const buyerProfiles = buyerProfilesQuery.data
+
+  // Order messages carry no image and no reliable title, so resolve each item
+  // from its product listing (addressId). One batched relay read covers every
+  // loaded order (bounded to the most recent), and feeds both the selected
+  // order's name/image and item search (title, description, tags).
+  const allOrderProductIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const conversation of conversations) {
+      for (const message of conversation.messages ?? []) {
+        if (message.type !== "order") continue
+        for (const item of message.payload.items) {
+          if (item.productId) ids.add(item.productId)
+        }
+      }
+      if (ids.size >= ORDER_SEARCH_PRODUCT_CAP) break
+    }
+    return [...ids].sort().slice(0, ORDER_SEARCH_PRODUCT_CAP)
+  }, [conversations])
+
+  const orderProductsQuery = useQuery({
+    queryKey: ["order-products", allOrderProductIds],
+    enabled: signerConnected && allOrderProductIds.length > 0,
+    queryFn: () => getProductsByIds(allOrderProductIds),
+    staleTime: 5 * 60_000,
+  })
+
+  const productLookup = useMemo(() => {
+    const map = new Map<string, { title: string; imageUrl?: string }>()
+    for (const record of orderProductsQuery.data?.data ?? []) {
+      map.set(record.addressId, {
+        title: record.product.title,
+        imageUrl: getProductImageCandidates(record.product)[0]?.url,
+      })
+    }
+    return map
+  }, [orderProductsQuery.data])
+
+  // Searchable text (name + description + tags) per resolved product listing,
+  // populated once the listings load; search falls back to order-message item
+  // titles until then.
+  const productSearchIndex = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const record of orderProductsQuery.data?.data ?? []) {
+      map.set(
+        record.addressId,
+        [
+          record.product.title,
+          record.product.summary ?? "",
+          record.product.tags.join(" "),
+          record.product.location ?? "",
+        ]
+          .join(" ")
+          .toLowerCase()
+      )
+    }
+    return map
+  }, [orderProductsQuery.data])
+
   const filteredConversations = useMemo(() => {
     const query = orderSearch.trim().toLowerCase()
     return conversations.filter((conversation) => {
@@ -764,6 +826,17 @@ function OrdersPage() {
         buyerProfiles?.[conversation.buyerPubkey],
         conversation.buyerPubkey
       )
+      const orderMessage = (conversation.messages ?? []).find(
+        (message) => message.type === "order"
+      )
+      const items =
+        orderMessage?.type === "order" ? orderMessage.payload.items : []
+      const itemText = items
+        .map(
+          (item) =>
+            `${item.title ?? ""} ${productSearchIndex.get(item.productId) ?? ""}`
+        )
+        .join(" ")
       return [
         buyerName,
         conversation.orderId,
@@ -771,12 +844,13 @@ function OrdersPage() {
         conversation.preview,
         conversation.totalSummary ?? "",
         getOrderStatusDisplay(conversation.status).label,
+        itemText,
       ]
         .join(" ")
         .toLowerCase()
         .includes(query)
     })
-  }, [conversations, orderSearch, phaseTab, buyerProfiles])
+  }, [conversations, orderSearch, phaseTab, buyerProfiles, productSearchIndex])
 
   const buyerNameFor = useCallback(
     (pubkey: string) => getDisplayName(buyerProfiles?.[pubkey], pubkey),
@@ -853,37 +927,6 @@ function OrdersPage() {
   const orderActions = selected
     ? getMerchantOrderActions(merchantOrderState)
     : []
-
-  // Order messages carry no image and no reliable title, so resolve each item
-  // straight from its product listing (addressId) — independent of whether the
-  // listing is still in this merchant's storefront read.
-  const orderItemProductIds = useMemo(() => {
-    const ids = new Set<string>()
-    for (const item of orderSummary?.items ?? []) {
-      if (item.productId) ids.add(item.productId)
-    }
-    return [...ids].sort()
-  }, [orderSummary])
-
-  // One relay fanout resolves every item on the order (name + image), instead
-  // of one read per item — keeps the owned-socket reader from re-dialing relays.
-  const orderItemProductsQuery = useQuery({
-    queryKey: ["order-item-products", orderItemProductIds],
-    enabled: signerConnected && orderItemProductIds.length > 0,
-    queryFn: () => getProductsByIds(orderItemProductIds),
-    staleTime: 5 * 60_000,
-  })
-
-  const productLookup = useMemo(() => {
-    const map = new Map<string, { title: string; imageUrl?: string }>()
-    for (const record of orderItemProductsQuery.data?.data ?? []) {
-      map.set(record.addressId, {
-        title: record.product.title,
-        imageUrl: getProductImageCandidates(record.product)[0]?.url,
-      })
-    }
-    return map
-  }, [orderItemProductsQuery.data])
 
   const selectedBuyerProfile = selected
     ? buyerProfilesQuery.data?.[selected.buyerPubkey]
