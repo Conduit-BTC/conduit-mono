@@ -454,7 +454,7 @@ function DashboardPage() {
               to="/products"
               className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-elevated)]"
             >
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-sm font-medium text-[var(--text-primary)]">
                     Manage listings
@@ -463,7 +463,7 @@ function DashboardPage() {
                     Create, edit, and publish products.
                   </div>
                 </div>
-                <ArrowRight className="h-4 w-4 text-[var(--text-muted)]" />
+                <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
               </div>
             </Link>
 
@@ -471,7 +471,7 @@ function DashboardPage() {
               to="/orders"
               className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-elevated)]"
             >
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-sm font-medium text-[var(--text-primary)]">
                     Open order inbox
@@ -480,7 +480,7 @@ function DashboardPage() {
                     Review buyer messages, invoices, and status updates.
                   </div>
                 </div>
-                <ArrowRight className="h-4 w-4 text-[var(--text-muted)]" />
+                <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
               </div>
             </Link>
           </div>
