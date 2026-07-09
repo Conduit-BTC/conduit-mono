@@ -26,10 +26,10 @@ export function DoubleSideStatusPill({
         className
       )}
     >
-      <span className="rounded-l-full bg-primary-500 px-2 py-1 text-white">
+      <span className="rounded-l-full bg-primary-500 px-2.5 py-1 text-white">
         {left}
       </span>
-      <span className="rounded-r-full border border-l-0 border-primary-500/30 bg-primary-500/10 px-2 py-1 text-[var(--text-primary)]">
+      <span className="rounded-r-full border border-l-0 border-primary-500/30 bg-primary-500/10 px-2.5 py-1 text-[var(--text-primary)]">
         {right}
       </span>
     </span>
