@@ -102,6 +102,10 @@ export {
   formatProductReference,
   getConversationPreview,
 } from "./OrderConversationMessage"
+export {
+  OrderMessagesWidget,
+  type OrderMessagesWidgetProps,
+} from "./OrderMessagesWidget"
 export { ErrorPage } from "./ErrorPage"
 export { NotFoundPage } from "./NotFoundPage"
 export {

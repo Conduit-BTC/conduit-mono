@@ -39,7 +39,7 @@ import {
   Button,
   Input,
   Label,
-  OrderConversationMessage,
+  OrderMessagesWidget,
   Select,
   SelectContent,
   SelectItem,
@@ -64,7 +64,6 @@ import {
   MessageCircle,
   RotateCw,
   Search,
-  Send,
   ShoppingBag,
   UserRound,
 } from "lucide-react"
@@ -77,6 +76,8 @@ export const Route = createFileRoute("/orders")({
   },
   component: OrdersPage,
 })
+
+type ActionKind = "invoice" | "status" | "shipping"
 
 const INVOICE_CURRENCY_OPTIONS = ["USD", "SATS"] as const
 
@@ -534,10 +535,8 @@ function OrdersPage() {
   const [orderSearch, setOrderSearch] = useState("")
   const [ordersSheetOpen, setOrdersSheetOpen] = useState(false)
   const [orderDetailsOpen, setOrderDetailsOpen] = useState(false)
-  const [detailPanel, setDetailPanel] = useState<"actions" | "messages">(
-    "actions"
-  )
-  const detailPanelRef = useRef<HTMLDivElement | null>(null)
+  const [messagesOpen, setMessagesOpen] = useState(false)
+  const [actionKind, setActionKind] = useState<ActionKind>("invoice")
   const [invoice, setInvoice] = useState("")
   const [invoiceAmount, setInvoiceAmount] = useState("")
   const [invoiceCurrency, setInvoiceCurrency] = useState("USD")
@@ -744,7 +743,8 @@ function OrdersPage() {
 
     setSuccessFlash(null)
     setOrderDetailsOpen(false)
-    setDetailPanel("actions")
+    setMessagesOpen(false)
+    setActionKind("invoice")
     setOrderStatus("")
     setReplyNote("")
     const firstOrder = selected?.messages?.find(
@@ -1047,7 +1047,7 @@ function OrdersPage() {
   })
 
   return (
-    <div className="space-y-6 xl:flex xl:h-[calc(100vh-8.5rem)] xl:flex-col xl:overflow-hidden">
+    <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4 xl:shrink-0">
         <div>
           <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">
@@ -1172,8 +1172,8 @@ function OrdersPage() {
         )}
 
       {signerConnected && conversations.length > 0 && (
-        <div className="grid gap-4 xl:min-h-0 xl:flex-1 xl:grid-cols-[320px_minmax(0,1fr)]">
-          <aside className="hidden rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:overflow-hidden">
+        <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)] xl:items-start">
+          <aside className="hidden rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:sticky xl:top-4 xl:flex xl:max-h-[calc(100vh-2rem)] xl:flex-col xl:overflow-hidden">
             <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)] xl:shrink-0">
               Orders
             </div>
@@ -1254,9 +1254,9 @@ function OrdersPage() {
             </Sheet>
           </div>
 
-          <section className="min-w-0 xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:overflow-hidden">
+          <section className="min-w-0">
             {selected && orderSummary ? (
-              <div className="space-y-4 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
+              <div className="space-y-4">
                 <div className="xl:hidden">
                   <OrderItemsCard
                     items={orderSummary.items}
@@ -1265,76 +1265,6 @@ function OrdersPage() {
                     currency={orderSummary.currency}
                   />
                 </div>
-
-                <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5">
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="flex min-w-0 items-center gap-3">
-                      <BuyerAvatar
-                        name={selectedBuyerName ?? ""}
-                        picture={selectedBuyerProfile?.picture}
-                      />
-                      <div className="min-w-0">
-                        <a
-                          href={getStorefrontUrl(selected.buyerPubkey)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="block truncate text-lg font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
-                        >
-                          {selectedBuyerName}
-                        </a>
-                        <div className="mt-0.5 font-mono text-xs text-[var(--text-muted)]">
-                          {formatNpub(selected.buyerPubkey, 8)}
-                        </div>
-                        <div className="mt-2">
-                          <StatusPill
-                            variant={
-                              getOrderStatusDisplay(selected.status).tone
-                            }
-                            className="capitalize"
-                          >
-                            {getOrderStatusDisplay(selected.status).label}
-                          </StatusPill>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap gap-2 lg:justify-end">
-                      {orderActions.map((action) => (
-                        <Button
-                          key={action.label}
-                          size="sm"
-                          variant={
-                            action.kind === "destructive"
-                              ? "outline"
-                              : "primary"
-                          }
-                          disabled={advanceStatusMutation.isPending}
-                          onClick={() =>
-                            advanceStatusMutation.mutate(action.status)
-                          }
-                        >
-                          {advanceStatusMutation.isPending &&
-                          advanceStatusMutation.variables === action.status
-                            ? "Sending…"
-                            : action.label}
-                        </Button>
-                      ))}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          setDetailPanel("messages")
-                          detailPanelRef.current?.scrollIntoView({
-                            behavior: "smooth",
-                            block: "start",
-                          })
-                        }}
-                      >
-                        <MessageCircle className="h-4 w-4" />
-                        Message buyer
-                      </Button>
-                    </div>
-                  </div>
-                </section>
 
                 <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
                   <div className="min-w-0 space-y-4">
@@ -1353,398 +1283,385 @@ function OrdersPage() {
                       </div>
                     </section>
 
-                    <div ref={detailPanelRef} className="space-y-3">
-                      <div className="flex justify-center">
-                        <div className="inline-flex rounded-full border border-[var(--border)] bg-[var(--surface)] p-1 text-sm">
-                          {(["actions", "messages"] as const).map((panel) => {
-                            const selectedPanel = detailPanel === panel
-                            return (
-                              <button
-                                key={panel}
-                                type="button"
-                                onClick={() => setDetailPanel(panel)}
-                                className={[
-                                  "h-7 rounded-full px-4 font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
-                                  selectedPanel
-                                    ? "bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-sm)]"
-                                    : "text-[var(--text-muted)] hover:text-[var(--text-primary)]",
-                                ].join(" ")}
-                              >
-                                {panel === "actions" ? "Actions" : "Messages"}
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </div>
-                      {detailPanel === "actions" ? (
-                        <section className={panelCard}>
-                          <div className="space-y-4">
-                            {successFlash && (
-                              <div className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-400">
-                                {successFlash}
-                              </div>
-                            )}
-
-                            <div className="grid gap-3 md:grid-cols-3">
-                              <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
-                                <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
-                                  Send invoice
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-2">
-                                  <div className="grid gap-1">
-                                    <Label htmlFor="invoice-amount">
-                                      Amount
-                                    </Label>
-                                    <Input
-                                      id="invoice-amount"
-                                      type="number"
-                                      min="0"
-                                      step={getCurrencyAmountStep(
-                                        invoiceCurrency
-                                      )}
-                                      value={invoiceAmount}
-                                      onChange={(event) =>
-                                        setInvoiceAmount(event.target.value)
-                                      }
-                                    />
-                                  </div>
-                                  <div className="grid gap-1">
-                                    <Label htmlFor="invoice-currency">
-                                      Currency
-                                    </Label>
-                                    <Select
-                                      value={invoiceCurrency}
-                                      onValueChange={(value) =>
-                                        setInvoiceCurrency(value)
-                                      }
-                                    >
-                                      <SelectTrigger id="invoice-currency">
-                                        <SelectValue placeholder="Choose currency" />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        {INVOICE_CURRENCY_OPTIONS.map(
-                                          (currency) => (
-                                            <SelectItem
-                                              key={currency}
-                                              value={currency}
-                                            >
-                                              {currency}
-                                            </SelectItem>
-                                          )
-                                        )}
-                                      </SelectContent>
-                                    </Select>
-                                  </div>
-                                </div>
-                                <Input
-                                  value={invoiceNote}
-                                  onChange={(event) =>
-                                    setInvoiceNote(event.target.value)
-                                  }
-                                  placeholder="Optional note"
-                                />
-                                <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
-                                  {invoiceCurrencyUnsupported ? (
-                                    <>
-                                      This order was placed in{" "}
-                                      {selectedOrderCurrency}. Choose USD or
-                                      SATS before generating a Lightning
-                                      invoice.
-                                    </>
-                                  ) : invoiceAmountNumber > 0 ? (
-                                    invoiceAmountSats ? (
-                                      <>
-                                        This will generate an invoice for{" "}
-                                        {invoiceAmountSats.toLocaleString()}{" "}
-                                        sats.
-                                      </>
-                                    ) : (
-                                      <>
-                                        BTC/USD conversion is unavailable right
-                                        now, so this amount cannot be converted
-                                        yet.
-                                      </>
-                                    )
-                                  ) : (
-                                    <>
-                                      Enter the order amount to generate a
-                                      Lightning invoice.
-                                    </>
-                                  )}
-                                </div>
-
-                                {weblnAvailable || nwc.connection ? (
-                                  <div className="space-y-2">
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      className="w-full"
-                                      disabled={
-                                        generateInvoiceMutation.isPending ||
-                                        !(invoiceAmountNumber > 0) ||
-                                        !invoiceAmountSats
-                                      }
-                                      onClick={() =>
-                                        generateInvoiceMutation.mutate()
-                                      }
-                                    >
-                                      {generateInvoiceMutation.isPending
-                                        ? "Generating…"
-                                        : "Generate & send invoice"}
-                                    </Button>
-                                    {generateInvoiceMutation.error && (
-                                      <div className="text-xs text-error">
-                                        {generateInvoiceMutation.error instanceof
-                                        Error
-                                          ? generateInvoiceMutation.error
-                                              .message
-                                          : "Failed"}
-                                      </div>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <form
-                                    onSubmit={(event) => {
-                                      event.preventDefault()
-                                      invoiceMutation.mutate()
-                                    }}
-                                  >
-                                    <div className="mb-2 grid gap-1">
-                                      <Label htmlFor="invoice-bolt11">
-                                        BOLT11 (paste manually)
-                                      </Label>
-                                      <Input
-                                        id="invoice-bolt11"
-                                        value={invoice}
-                                        onChange={(event) =>
-                                          setInvoice(event.target.value)
-                                        }
-                                        placeholder="lnbc..."
-                                      />
-                                      {invoice.trim() &&
-                                        !isInvoiceCompatibleWithCurrentNetwork(
-                                          invoice.trim()
-                                        ) && (
-                                          <div className="text-xs text-error">
-                                            {getLightningNetworkMismatchMessage(
-                                              invoice.trim()
-                                            )}
-                                          </div>
-                                        )}
-                                      {invoice.trim() &&
-                                        isInvoiceCompatibleWithCurrentNetwork(
-                                          invoice.trim()
-                                        ) &&
-                                        manualInvoiceDecoded?.currency && (
-                                          <div className="text-xs text-[var(--text-secondary)]">
-                                            Parsed invoice amount:{" "}
-                                            {manualInvoiceDecoded.sats ??
-                                              manualInvoiceDecoded.msats}{" "}
-                                            {manualInvoiceDecoded.currency}
-                                          </div>
-                                        )}
-                                    </div>
-                                    <Button
-                                      type="submit"
-                                      size="sm"
-                                      className="w-full"
-                                      disabled={invoiceMutation.isPending}
-                                    >
-                                      {invoiceMutation.isPending
-                                        ? "Sending…"
-                                        : "Send invoice DM"}
-                                    </Button>
-                                  </form>
-                                )}
-
-                                <p className="text-xs text-[var(--text-secondary)]">
-                                  {weblnAvailable
-                                    ? "Invoice via Alby extension."
-                                    : nwc.connection
-                                      ? "Invoice via NWC wallet."
-                                      : "Install Alby or configure NWC on Payments for one-click invoicing."}{" "}
-                                  Conduit shows the parsed amount when the
-                                  invoice format can be verified.
-                                </p>
-                              </div>
-
-                              <form
-                                className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
-                                onSubmit={(event) => {
-                                  event.preventDefault()
-                                  statusMutation.mutate()
-                                }}
-                              >
-                                <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
-                                  Status update
-                                </div>
-                                <Select
-                                  value={orderStatus}
-                                  onValueChange={(value) =>
-                                    setOrderStatus(
-                                      value as StatusUpdateMessageSchema["status"]
-                                    )
-                                  }
-                                >
-                                  <SelectTrigger aria-label="Choose status">
-                                    <SelectValue placeholder="Choose status" />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="paid">paid</SelectItem>
-                                    <SelectItem value="processing">
-                                      processing
-                                    </SelectItem>
-                                    <SelectItem value="shipped">
-                                      shipped
-                                    </SelectItem>
-                                    <SelectItem value="complete">
-                                      complete
-                                    </SelectItem>
-                                    <SelectItem value="cancelled">
-                                      cancelled
-                                    </SelectItem>
-                                  </SelectContent>
-                                </Select>
-                                <Input
-                                  value={statusNote}
-                                  onChange={(event) =>
-                                    setStatusNote(event.target.value)
-                                  }
-                                  placeholder="Optional note"
-                                />
-                                <Button
-                                  type="submit"
-                                  size="sm"
-                                  className="w-full"
-                                  disabled={
-                                    statusMutation.isPending || !orderStatus
-                                  }
-                                >
-                                  {statusMutation.isPending
-                                    ? "Sending…"
-                                    : "Send status DM"}
-                                </Button>
-                              </form>
-
-                              <form
-                                className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
-                                onSubmit={(event) => {
-                                  event.preventDefault()
-                                  shippingMutation.mutate()
-                                }}
-                              >
-                                <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
-                                  Shipping update
-                                </div>
-                                <Input
-                                  value={carrier}
-                                  onChange={(event) =>
-                                    setCarrier(event.target.value)
-                                  }
-                                  placeholder="Carrier (optional)"
-                                />
-                                <Input
-                                  value={trackingNumber}
-                                  onChange={(event) =>
-                                    setTrackingNumber(event.target.value)
-                                  }
-                                  placeholder="Tracking number"
-                                />
-                                <Input
-                                  value={trackingUrl}
-                                  onChange={(event) =>
-                                    setTrackingUrl(event.target.value)
-                                  }
-                                  placeholder="Tracking URL (optional)"
-                                />
-                                <Input
-                                  value={shippingNote}
-                                  onChange={(event) =>
-                                    setShippingNote(event.target.value)
-                                  }
-                                  placeholder="Optional note"
-                                />
-                                <Button
-                                  type="submit"
-                                  size="sm"
-                                  className="w-full"
-                                  disabled={shippingMutation.isPending}
-                                >
-                                  {shippingMutation.isPending
-                                    ? "Sending…"
-                                    : "Send shipping DM"}
-                                </Button>
-                              </form>
-                            </div>
-
-                            {(invoiceMutation.error ||
-                              statusMutation.error ||
-                              shippingMutation.error ||
-                              noteMutation.error) && (
-                              <div className="rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
-                                {[
-                                  invoiceMutation.error,
-                                  statusMutation.error,
-                                  shippingMutation.error,
-                                  noteMutation.error,
-                                ]
-                                  .filter(Boolean)
-                                  .map((error) =>
-                                    error instanceof Error
-                                      ? error.message
-                                      : "Failed to send message"
-                                  )
-                                  .join(" • ")}
-                              </div>
-                            )}
+                    <section className={panelCard}>
+                      <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                        Actions
+                      </h3>
+                      <div className="mt-4 space-y-5">
+                        {successFlash && (
+                          <div className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-400">
+                            {successFlash}
                           </div>
-                        </section>
-                      ) : (
-                        <div className={panelCard}>
-                          <div className="space-y-4">
-                            <div className="max-h-[44vh] space-y-3 overflow-auto pr-1">
-                              {(selected.messages ?? []).map((message) => (
-                                <OrderConversationMessage
-                                  key={message.id}
-                                  message={message}
-                                  mine={message.senderPubkey === pubkey}
-                                />
+                        )}
+
+                        {orderActions.length > 0 && (
+                          <div className="space-y-2">
+                            <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+                              Respond
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              {orderActions.map((action) => (
+                                <Button
+                                  key={action.label}
+                                  size="sm"
+                                  variant={
+                                    action.kind === "destructive"
+                                      ? "outline"
+                                      : "primary"
+                                  }
+                                  disabled={advanceStatusMutation.isPending}
+                                  onClick={() =>
+                                    advanceStatusMutation.mutate(action.status)
+                                  }
+                                >
+                                  {advanceStatusMutation.isPending &&
+                                  advanceStatusMutation.variables ===
+                                    action.status
+                                    ? "Sending…"
+                                    : action.label}
+                                </Button>
                               ))}
                             </div>
+                          </div>
+                        )}
+
+                        <div
+                          className={
+                            orderActions.length > 0
+                              ? "space-y-3 border-t border-[var(--border)] pt-4"
+                              : "space-y-3"
+                          }
+                        >
+                          <div className="grid gap-1">
+                            <Label htmlFor="action-kind">Manual action</Label>
+                            <Select
+                              value={actionKind}
+                              onValueChange={(value) =>
+                                setActionKind(value as ActionKind)
+                              }
+                            >
+                              <SelectTrigger id="action-kind">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="invoice">
+                                  Send invoice
+                                </SelectItem>
+                                <SelectItem value="status">
+                                  Status update
+                                </SelectItem>
+                                <SelectItem value="shipping">
+                                  Shipping update
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+
+                          {actionKind === "invoice" && (
+                            <div className="space-y-2">
+                              <div className="grid grid-cols-2 gap-2">
+                                <div className="grid gap-1">
+                                  <Label htmlFor="invoice-amount">Amount</Label>
+                                  <Input
+                                    id="invoice-amount"
+                                    type="number"
+                                    min="0"
+                                    step={getCurrencyAmountStep(
+                                      invoiceCurrency
+                                    )}
+                                    value={invoiceAmount}
+                                    onChange={(event) =>
+                                      setInvoiceAmount(event.target.value)
+                                    }
+                                  />
+                                </div>
+                                <div className="grid gap-1">
+                                  <Label htmlFor="invoice-currency">
+                                    Currency
+                                  </Label>
+                                  <Select
+                                    value={invoiceCurrency}
+                                    onValueChange={(value) =>
+                                      setInvoiceCurrency(value)
+                                    }
+                                  >
+                                    <SelectTrigger id="invoice-currency">
+                                      <SelectValue placeholder="Choose currency" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {INVOICE_CURRENCY_OPTIONS.map(
+                                        (currency) => (
+                                          <SelectItem
+                                            key={currency}
+                                            value={currency}
+                                          >
+                                            {currency}
+                                          </SelectItem>
+                                        )
+                                      )}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              </div>
+                              <Input
+                                value={invoiceNote}
+                                onChange={(event) =>
+                                  setInvoiceNote(event.target.value)
+                                }
+                                placeholder="Optional note"
+                              />
+                              <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+                                {invoiceCurrencyUnsupported ? (
+                                  <>
+                                    This order was placed in{" "}
+                                    {selectedOrderCurrency}. Choose USD or SATS
+                                    before generating a Lightning invoice.
+                                  </>
+                                ) : invoiceAmountNumber > 0 ? (
+                                  invoiceAmountSats ? (
+                                    <>
+                                      This will generate an invoice for{" "}
+                                      {invoiceAmountSats.toLocaleString()} sats.
+                                    </>
+                                  ) : (
+                                    <>
+                                      BTC/USD conversion is unavailable right
+                                      now, so this amount cannot be converted
+                                      yet.
+                                    </>
+                                  )
+                                ) : (
+                                  <>
+                                    Enter the order amount to generate a
+                                    Lightning invoice.
+                                  </>
+                                )}
+                              </div>
+
+                              {weblnAvailable || nwc.connection ? (
+                                <div className="space-y-2">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    className="w-full"
+                                    disabled={
+                                      generateInvoiceMutation.isPending ||
+                                      !(invoiceAmountNumber > 0) ||
+                                      !invoiceAmountSats
+                                    }
+                                    onClick={() =>
+                                      generateInvoiceMutation.mutate()
+                                    }
+                                  >
+                                    {generateInvoiceMutation.isPending
+                                      ? "Generating…"
+                                      : "Generate & send invoice"}
+                                  </Button>
+                                  {generateInvoiceMutation.error && (
+                                    <div className="text-xs text-error">
+                                      {generateInvoiceMutation.error instanceof
+                                      Error
+                                        ? generateInvoiceMutation.error.message
+                                        : "Failed"}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <form
+                                  onSubmit={(event) => {
+                                    event.preventDefault()
+                                    invoiceMutation.mutate()
+                                  }}
+                                >
+                                  <div className="mb-2 grid gap-1">
+                                    <Label htmlFor="invoice-bolt11">
+                                      BOLT11 (paste manually)
+                                    </Label>
+                                    <Input
+                                      id="invoice-bolt11"
+                                      value={invoice}
+                                      onChange={(event) =>
+                                        setInvoice(event.target.value)
+                                      }
+                                      placeholder="lnbc..."
+                                    />
+                                    {invoice.trim() &&
+                                      !isInvoiceCompatibleWithCurrentNetwork(
+                                        invoice.trim()
+                                      ) && (
+                                        <div className="text-xs text-error">
+                                          {getLightningNetworkMismatchMessage(
+                                            invoice.trim()
+                                          )}
+                                        </div>
+                                      )}
+                                    {invoice.trim() &&
+                                      isInvoiceCompatibleWithCurrentNetwork(
+                                        invoice.trim()
+                                      ) &&
+                                      manualInvoiceDecoded?.currency && (
+                                        <div className="text-xs text-[var(--text-secondary)]">
+                                          Parsed invoice amount:{" "}
+                                          {manualInvoiceDecoded.sats ??
+                                            manualInvoiceDecoded.msats}{" "}
+                                          {manualInvoiceDecoded.currency}
+                                        </div>
+                                      )}
+                                  </div>
+                                  <Button
+                                    type="submit"
+                                    size="sm"
+                                    className="w-full"
+                                    disabled={invoiceMutation.isPending}
+                                  >
+                                    {invoiceMutation.isPending
+                                      ? "Sending…"
+                                      : "Send invoice DM"}
+                                  </Button>
+                                </form>
+                              )}
+
+                              <p className="text-xs text-[var(--text-secondary)]">
+                                {weblnAvailable
+                                  ? "Invoice via Alby extension."
+                                  : nwc.connection
+                                    ? "Invoice via NWC wallet."
+                                    : "Install Alby or configure NWC on Payments for one-click invoicing."}{" "}
+                                Conduit shows the parsed amount when the invoice
+                                format can be verified.
+                              </p>
+                            </div>
+                          )}
+
+                          {actionKind === "status" && (
                             <form
-                              className="flex justify-center"
+                              className="space-y-2"
                               onSubmit={(event) => {
                                 event.preventDefault()
-                                noteMutation.mutate()
+                                statusMutation.mutate()
                               }}
                             >
-                              <div className="flex w-full max-w-xl items-center gap-2">
-                                <Input
-                                  value={replyNote}
-                                  onChange={(event) =>
-                                    setReplyNote(event.target.value)
-                                  }
-                                  placeholder="Message the buyer, then press Enter"
-                                  className="flex-1"
-                                />
-                                <Button
-                                  type="submit"
-                                  size="icon"
-                                  className="shrink-0"
-                                  disabled={
-                                    noteMutation.isPending || !replyNote.trim()
-                                  }
-                                  aria-label="Send message"
-                                >
-                                  <Send className="h-4 w-4" />
-                                </Button>
-                              </div>
+                              <Select
+                                value={orderStatus}
+                                onValueChange={(value) =>
+                                  setOrderStatus(
+                                    value as StatusUpdateMessageSchema["status"]
+                                  )
+                                }
+                              >
+                                <SelectTrigger aria-label="Choose status">
+                                  <SelectValue placeholder="Choose status" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="paid">paid</SelectItem>
+                                  <SelectItem value="processing">
+                                    processing
+                                  </SelectItem>
+                                  <SelectItem value="shipped">
+                                    shipped
+                                  </SelectItem>
+                                  <SelectItem value="complete">
+                                    complete
+                                  </SelectItem>
+                                  <SelectItem value="cancelled">
+                                    cancelled
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <Input
+                                value={statusNote}
+                                onChange={(event) =>
+                                  setStatusNote(event.target.value)
+                                }
+                                placeholder="Optional note"
+                              />
+                              <Button
+                                type="submit"
+                                size="sm"
+                                className="w-full"
+                                disabled={
+                                  statusMutation.isPending || !orderStatus
+                                }
+                              >
+                                {statusMutation.isPending
+                                  ? "Sending…"
+                                  : "Send status DM"}
+                              </Button>
                             </form>
-                          </div>
+                          )}
+
+                          {actionKind === "shipping" && (
+                            <form
+                              className="space-y-2"
+                              onSubmit={(event) => {
+                                event.preventDefault()
+                                shippingMutation.mutate()
+                              }}
+                            >
+                              <Input
+                                value={carrier}
+                                onChange={(event) =>
+                                  setCarrier(event.target.value)
+                                }
+                                placeholder="Carrier (optional)"
+                              />
+                              <Input
+                                value={trackingNumber}
+                                onChange={(event) =>
+                                  setTrackingNumber(event.target.value)
+                                }
+                                placeholder="Tracking number"
+                              />
+                              <Input
+                                value={trackingUrl}
+                                onChange={(event) =>
+                                  setTrackingUrl(event.target.value)
+                                }
+                                placeholder="Tracking URL (optional)"
+                              />
+                              <Input
+                                value={shippingNote}
+                                onChange={(event) =>
+                                  setShippingNote(event.target.value)
+                                }
+                                placeholder="Optional note"
+                              />
+                              <Button
+                                type="submit"
+                                size="sm"
+                                className="w-full"
+                                disabled={shippingMutation.isPending}
+                              >
+                                {shippingMutation.isPending
+                                  ? "Sending…"
+                                  : "Send shipping DM"}
+                              </Button>
+                            </form>
+                          )}
+
+                          {(invoiceMutation.error ||
+                            statusMutation.error ||
+                            shippingMutation.error ||
+                            noteMutation.error) && (
+                            <div className="rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
+                              {[
+                                invoiceMutation.error,
+                                statusMutation.error,
+                                shippingMutation.error,
+                                noteMutation.error,
+                              ]
+                                .filter(Boolean)
+                                .map((error) =>
+                                  error instanceof Error
+                                    ? error.message
+                                    : "Failed to send message"
+                                )
+                                .join(" • ")}
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
+                      </div>
+                    </section>
                   </div>
 
                   <div className="space-y-4">
@@ -1878,8 +1795,69 @@ function OrdersPage() {
                         </div>
                       )}
                     </section>
+
+                    <section className={panelCard}>
+                      <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                        Buyer
+                      </h3>
+                      <div className="mt-3 flex items-center gap-3">
+                        <BuyerAvatar
+                          name={selectedBuyerName ?? ""}
+                          picture={selectedBuyerProfile?.picture}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <a
+                            href={getStorefrontUrl(selected.buyerPubkey)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block truncate font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
+                          >
+                            {selectedBuyerName}
+                          </a>
+                          <div className="truncate font-mono text-xs text-[var(--text-muted)]">
+                            {formatNpub(selected.buyerPubkey, 8)}
+                          </div>
+                        </div>
+                        <StatusPill
+                          variant={getOrderStatusDisplay(selected.status).tone}
+                          className="shrink-0 capitalize"
+                        >
+                          {getOrderStatusDisplay(selected.status).label}
+                        </StatusPill>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="mt-3 w-full"
+                        onClick={() => setMessagesOpen(true)}
+                      >
+                        <MessageCircle className="h-4 w-4" />
+                        Message
+                        {(selected.messages?.length ?? 0) > 0 && (
+                          <span className="ml-1 rounded-full bg-[var(--surface)] px-1.5 text-xs text-[var(--text-secondary)]">
+                            {selected.messages?.length}
+                          </span>
+                        )}
+                      </Button>
+                    </section>
                   </div>
                 </div>
+
+                <OrderMessagesWidget
+                  open={messagesOpen}
+                  onOpenChange={setMessagesOpen}
+                  subtitle={
+                    selectedBuyerName ?? formatNpub(selected.buyerPubkey, 8)
+                  }
+                  messages={selected.messages ?? []}
+                  selfPubkey={pubkey}
+                  replyValue={replyNote}
+                  onReplyChange={setReplyNote}
+                  onSend={() => noteMutation.mutate()}
+                  sending={noteMutation.isPending}
+                  placeholder="Message the buyer, then press Enter"
+                  resolveItem={(id) => productLookup.get(id)}
+                />
               </div>
             ) : (
               <div className="text-sm text-[var(--text-secondary)]">
