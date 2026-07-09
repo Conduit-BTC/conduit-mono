@@ -97,6 +97,11 @@ export {
   type SignerSwitchStatus,
 } from "./SignerSwitch"
 export { OrderDetailCard, type OrderDetailCardProps } from "./OrderDetailCard"
+export {
+  OrderConversationMessage,
+  formatProductReference,
+  getConversationPreview,
+} from "./OrderConversationMessage"
 export { ErrorPage } from "./ErrorPage"
 export { NotFoundPage } from "./NotFoundPage"
 export {

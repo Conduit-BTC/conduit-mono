@@ -1,7 +1,13 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useEffect, useMemo, useState } from "react"
-import { Badge, Button } from "@conduit/ui"
+import {
+  Badge,
+  Button,
+  OrderConversationMessage,
+  formatProductReference,
+  getConversationPreview,
+} from "@conduit/ui"
 import { MessageCircleMore, Search, Store } from "lucide-react"
 import {
   EVENT_KINDS,
@@ -24,11 +30,6 @@ import {
   MerchantAvatarFallback,
   getMerchantDisplayName,
 } from "../components/MerchantIdentity"
-import {
-  OrderConversationMessage,
-  formatProductReference,
-  getConversationPreview,
-} from "../components/OrderConversationMessage"
 import {
   fetchCachedBuyerConversations,
   fetchBuyerConversations,

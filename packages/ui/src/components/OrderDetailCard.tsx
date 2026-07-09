@@ -1,5 +1,5 @@
-import { Card, CardContent, CardHeader, CardTitle } from "./Card"
-import { Badge } from "./Badge"
+import { MessageCircle } from "lucide-react"
+import { Card } from "./Card"
 
 type OrderItem = {
   productId: string
@@ -26,26 +26,19 @@ type ShippingAddress = {
 
 export type OrderDetailCardProps = {
   orderId: string
-  status: string | null
   counterpartyLabel: string
   counterpartyName?: string
   counterpartyPubkeyLabel: string
+  counterpartyHref?: string
   items: OrderItem[]
   subtotal: number
   currency: string
   shippingAddress: ShippingAddress | null
   orderNote: string | null
-  invoiceSent: boolean
-  invoiceCount: number
-  invoiceAmount: number | null
-  invoiceCurrency: string | null
-  paymentProofReceived?: boolean
-  paymentProofCount?: number
-  paymentProofAmount?: number | null
-  paymentProofCurrency?: string | null
   trackingCarrier: string | null
   trackingNumber: string | null
   trackingUrl: string | null
+  onOpenMessages?: () => void
   btcUsdRate?: unknown
 }
 
@@ -57,204 +50,188 @@ function formatOrderAmount(amount: number, currency: string): string {
   return `${amount.toLocaleString()} ${currency.trim().toUpperCase()}`
 }
 
+const sectionLabel =
+  "text-xs uppercase tracking-wide text-[var(--text-secondary)]"
+const subCard =
+  "rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
+
 export function OrderDetailCard({
   orderId,
-  status,
   counterpartyLabel,
   counterpartyName,
   counterpartyPubkeyLabel,
+  counterpartyHref,
   items,
   subtotal,
   currency,
   shippingAddress,
   orderNote,
-  invoiceSent,
-  invoiceCount,
-  invoiceAmount,
-  invoiceCurrency,
-  paymentProofReceived = false,
-  paymentProofCount = 0,
-  paymentProofAmount = null,
-  paymentProofCurrency = null,
   trackingCarrier,
   trackingNumber,
   trackingUrl,
+  onOpenMessages,
 }: OrderDetailCardProps) {
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <CardTitle className="font-mono text-sm">{orderId}</CardTitle>
-          <Badge variant="secondary" className="border-[var(--border)]">
-            {status ?? "pending"}
-          </Badge>
-        </div>
-        <p className="mt-1 text-xs text-[var(--text-secondary)]">
-          {counterpartyLabel}:{" "}
-          <span className="text-[var(--text-primary)]">
-            {counterpartyName ?? counterpartyPubkeyLabel}
-          </span>
-          {counterpartyName && (
-            <span className="ml-2 font-mono text-[var(--text-muted)]">
-              {counterpartyPubkeyLabel}
-            </span>
-          )}
-        </p>
-      </CardHeader>
-
-      <CardContent className="space-y-4">
-        {items.length > 0 && (
-          <div className="space-y-2">
-            <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
-              Items
-            </div>
-            <div className="space-y-1">
-              {items.map((item, i) => (
-                <div
-                  key={`${item.productId}-${i}`}
-                  className="flex items-center gap-3 text-sm"
-                >
-                  {item.imageUrl ? (
-                    <img
-                      src={item.imageUrl}
-                      alt=""
-                      className="h-10 w-10 shrink-0 rounded-md border border-[var(--border)] object-cover"
-                    />
-                  ) : (
-                    <div className="h-10 w-10 shrink-0 rounded-md border border-[var(--border)] bg-[var(--surface)]" />
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[var(--text-primary)]">
-                      {item.title?.trim() || "Product"}
+    <Card className="flex h-full flex-col">
+      <div className="flex flex-1 flex-col gap-4 p-4">
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className={`${subCard} space-y-2`}>
+            <div className={sectionLabel}>Items</div>
+            {items.length > 0 ? (
+              <>
+                <div className="space-y-1">
+                  {items.map((item, i) => (
+                    <div
+                      key={`${item.productId}-${i}`}
+                      className="flex items-center gap-3 text-sm"
+                    >
+                      {item.imageUrl ? (
+                        <img
+                          src={item.imageUrl}
+                          alt=""
+                          className="h-10 w-10 shrink-0 rounded-md border border-[var(--border)] object-cover"
+                        />
+                      ) : (
+                        <div className="h-10 w-10 shrink-0 rounded-md border border-[var(--border)] bg-[var(--surface)]" />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[var(--text-primary)]">
+                          {item.title?.trim() || "Product"}
+                        </div>
+                        <div className="text-xs text-[var(--text-secondary)]">
+                          Qty {item.quantity}
+                        </div>
+                      </div>
+                      <span className="shrink-0 text-[var(--text-secondary)]">
+                        {formatOrderAmount(item.priceAtPurchase, item.currency)}
+                      </span>
                     </div>
-                    <div className="text-xs text-[var(--text-secondary)]">
-                      Qty {item.quantity}
-                    </div>
-                  </div>
-                  <span className="shrink-0 text-[var(--text-secondary)]">
-                    {formatOrderAmount(item.priceAtPurchase, item.currency)}
+                  ))}
+                </div>
+                <div className="flex items-center justify-between border-t border-[var(--border)] pt-2 text-sm font-medium">
+                  <span className="text-[var(--text-primary)]">Subtotal</span>
+                  <span className="text-[var(--text-primary)]">
+                    {formatOrderAmount(subtotal, currency)}
                   </span>
                 </div>
-              ))}
-            </div>
-            <div className="flex items-center justify-between border-t border-[var(--border)] pt-2 text-sm font-medium">
-              <span className="text-[var(--text-primary)]">Subtotal</span>
-              <span className="text-[var(--text-primary)]">
-                {formatOrderAmount(subtotal, currency)}
-              </span>
-            </div>
-          </div>
-        )}
-
-        {shippingAddress && (
-          <div className="space-y-1">
-            <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
-              Shipping address
-            </div>
-            <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-2 text-xs text-[var(--text-secondary)]">
-              <div>{shippingAddress.name}</div>
-              <div>{shippingAddress.street}</div>
-              <div>
-                {shippingAddress.city}
-                {shippingAddress.state ? `, ${shippingAddress.state}` : ""}{" "}
-                {shippingAddress.postalCode}
-              </div>
-              <div>{shippingAddress.country}</div>
-            </div>
-          </div>
-        )}
-
-        {orderNote && (
-          <div className="space-y-1">
-            <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
-              Order note
-            </div>
-            <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-2 text-xs text-[var(--text-secondary)]">
-              {orderNote}
-            </div>
-          </div>
-        )}
-
-        <div className="space-y-1">
-          <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
-            Payment
-          </div>
-          {paymentProofReceived ? (
-            <div className="space-y-1">
-              <div className="text-sm text-[var(--text-primary)]">
-                Lightning payment proof received
-                {paymentProofAmount != null
-                  ? ` - ${paymentProofAmount.toLocaleString()}`
-                  : ""}
-                {paymentProofCurrency ? ` ${paymentProofCurrency}` : ""}
-              </div>
-              <div className="text-xs text-[var(--text-secondary)]">
-                Buyer payment proof is attached.
-                {paymentProofCount > 1
-                  ? ` ${paymentProofCount} payment proofs are attached to this order.`
-                  : ""}
-              </div>
-            </div>
-          ) : invoiceSent ? (
-            <div className="space-y-1">
-              <div className="text-sm text-[var(--text-primary)]">
-                Sent{invoiceAmount != null ? ` — ${invoiceAmount}` : ""}
-                {invoiceCurrency ? ` ${invoiceCurrency}` : ""}
-              </div>
-              <div className="text-xs text-[var(--text-secondary)]">
-                {status === "paid"
-                  ? "Marked paid."
-                  : "Awaiting payment confirmation."}
-                {invoiceCount > 1
-                  ? ` ${invoiceCount} invoices have been sent on this order.`
-                  : ""}
-              </div>
-            </div>
-          ) : (
-            <div className="text-sm text-[var(--text-secondary)]">
-              Not yet sent
-            </div>
-          )}
-        </div>
-
-        {(trackingCarrier || trackingNumber || trackingUrl) && (
-          <div className="space-y-1">
-            <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
-              Tracking
-            </div>
-            {trackingCarrier && (
-              <div className="text-sm text-[var(--text-primary)]">
-                {trackingCarrier}
+              </>
+            ) : (
+              <div className="text-sm text-[var(--text-secondary)]">
+                No items on this order.
               </div>
             )}
-            {trackingNumber && (
-              <div className="font-mono text-xs text-[var(--text-secondary)]">
-                {trackingNumber}
-              </div>
-            )}
-            {(() => {
-              if (!trackingUrl) return null
-              try {
-                const u = new URL(trackingUrl)
-                if (u.protocol !== "http:" && u.protocol !== "https:")
-                  return null
-                return (
+          </div>
+
+          <div className={`${subCard} space-y-4`}>
+            <div className="space-y-1">
+              <div className={sectionLabel}>{counterpartyLabel}</div>
+              <p className="text-sm text-[var(--text-secondary)]">
+                {counterpartyHref ? (
                   <a
-                    className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
-                    href={u.toString()}
+                    href={counterpartyHref}
                     target="_blank"
                     rel="noopener noreferrer"
+                    className="text-[var(--text-primary)] underline-offset-2 hover:underline"
                   >
-                    Open tracking link
+                    {counterpartyName ?? counterpartyPubkeyLabel}
                   </a>
-                )
-              } catch {
-                return null
-              }
-            })()}
+                ) : (
+                  <span className="text-[var(--text-primary)]">
+                    {counterpartyName ?? counterpartyPubkeyLabel}
+                  </span>
+                )}
+                {counterpartyName && (
+                  <span className="ml-2 font-mono text-[var(--text-muted)]">
+                    {counterpartyPubkeyLabel}
+                  </span>
+                )}
+              </p>
+            </div>
+
+            {shippingAddress && (
+              <div className="space-y-1">
+                <div className={sectionLabel}>Shipping address</div>
+                <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
+                  <div>{shippingAddress.name}</div>
+                  <div>{shippingAddress.street}</div>
+                  <div>
+                    {shippingAddress.city}
+                    {shippingAddress.state ? `, ${shippingAddress.state}` : ""}{" "}
+                    {shippingAddress.postalCode}
+                  </div>
+                  <div>{shippingAddress.country}</div>
+                </div>
+              </div>
+            )}
+
+            {orderNote && (
+              <div className="space-y-1">
+                <div className={sectionLabel}>Order note</div>
+                <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
+                  {orderNote}
+                </div>
+              </div>
+            )}
+
+            {(trackingCarrier || trackingNumber || trackingUrl) && (
+              <div className="space-y-1">
+                <div className={sectionLabel}>Tracking</div>
+                {trackingCarrier && (
+                  <div className="text-sm text-[var(--text-primary)]">
+                    {trackingCarrier}
+                  </div>
+                )}
+                {trackingNumber && (
+                  <div className="font-mono text-xs text-[var(--text-secondary)]">
+                    {trackingNumber}
+                  </div>
+                )}
+                {(() => {
+                  if (!trackingUrl) return null
+                  try {
+                    const u = new URL(trackingUrl)
+                    if (u.protocol !== "http:" && u.protocol !== "https:")
+                      return null
+                    return (
+                      <a
+                        className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
+                        href={u.toString()}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        Open tracking link
+                      </a>
+                    )
+                  } catch {
+                    return null
+                  }
+                })()}
+              </div>
+            )}
           </div>
-        )}
-      </CardContent>
+        </div>
+
+        <div className="mt-auto flex items-end justify-between gap-3 border-t border-[var(--border)] pt-3">
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)]">
+              Order ID
+            </div>
+            <div className="break-all font-mono text-xs text-[var(--text-secondary)]">
+              {orderId}
+            </div>
+          </div>
+          {onOpenMessages && (
+            <button
+              type="button"
+              onClick={onOpenMessages}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-sm border border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+            >
+              <MessageCircle className="h-3.5 w-3.5" />
+              Messages
+            </button>
+          )}
+        </div>
+      </div>
     </Card>
   )
 }

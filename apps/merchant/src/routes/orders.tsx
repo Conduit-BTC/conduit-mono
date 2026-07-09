@@ -15,13 +15,12 @@ import {
   getCachedMerchantConversationList,
   getCurrencyAmountStep,
   getNdk,
-  getProductPriceDisplay,
   getProfileName,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
   getMerchantOrderActions,
-  getMerchantStorefront,
   getProductImageCandidates,
+  getProductsByIds,
   hasWebLN,
   isInvoiceCompatibleWithCurrentNetwork,
   mockMakeInvoice,
@@ -30,34 +29,45 @@ import {
   parseOrderMessageRumorEvent,
   publishWithPlanner,
   weblnMakeInvoice,
-  type ParsedOrderMessage,
-  type PricingRateInput,
+  type MerchantConversationSummary,
   type Profile,
   type StatusUpdateMessageSchema,
   useAuth,
   useProfiles,
 } from "@conduit/core"
 import {
-  Badge,
   Button,
   Input,
   Label,
-  OrderDetailCard,
+  OrderConversationMessage,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
   StatusPill,
   StatusStepper,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
 } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
+import { getStorefrontUrl } from "../lib/market-links"
 import { giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
-import { CheckCircle2, MessageCircle, RotateCw } from "lucide-react"
+import {
+  Check,
+  CheckCircle2,
+  ChevronRight,
+  Copy,
+  MessageCircle,
+  RotateCw,
+  Search,
+  Send,
+  ShoppingBag,
+  UserRound,
+} from "lucide-react"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useNwcConnection } from "../hooks/useNwcConnection"
 
@@ -101,36 +111,250 @@ function getDisplayName(profile: Profile | undefined, pubkey: string): string {
   return getProfileName(profile) || formatNpub(pubkey, 8)
 }
 
-const MESSAGE_TYPE_LABELS: Record<string, string> = {
-  order: "Order",
-  payment_request: "Invoice",
-  status_update: "Status",
-  shipping_update: "Shipping",
-  receipt: "Receipt",
-  message: "Message",
-  payment_proof: "Payment",
+const panelCard =
+  "rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5"
+
+function formatSummaryAmount(amount: number, currency: string): string {
+  if (currency.trim().toUpperCase() === "SATS")
+    return `${amount.toLocaleString()} sats`
+  return `${amount.toLocaleString()} ${currency.trim().toUpperCase()}`
 }
 
-function friendlyTypeLabel(type: string): string {
-  return MESSAGE_TYPE_LABELS[type] ?? type.replace(/_/g, " ")
+function BuyerAvatar({
+  name,
+  picture,
+  size = "md",
+}: {
+  name: string
+  picture?: string
+  size?: "sm" | "md"
+}) {
+  const dim = size === "sm" ? "h-9 w-9" : "h-11 w-11"
+  return (
+    <div
+      className={`${dim} flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-[var(--border)] bg-[var(--surface-elevated)]`}
+    >
+      {picture ? (
+        <img src={picture} alt={name} className="h-full w-full object-cover" />
+      ) : (
+        <UserRound className="h-1/2 w-1/2 text-[var(--text-muted)]" />
+      )}
+    </div>
+  )
 }
 
-function formatProductReference(productId: string): {
-  title: string
-  detail: string
-} {
-  const normalized = productId.trim()
-  const segments = normalized.split(":").filter(Boolean)
-  const rawLabel =
-    segments.length > 0 ? segments[segments.length - 1] : normalized
-  const displaySource = rawLabel || normalized
-  const title =
-    displaySource
-      .replace(/[-_]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .replace(/\b\w/g, (char) => char.toUpperCase()) || "Product"
-  return { title, detail: normalized }
+function CopyInline({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={() => {
+        void navigator.clipboard?.writeText(value)
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1200)
+      }}
+      className="text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+    >
+      {copied ? (
+        <Check className="h-3.5 w-3.5" />
+      ) : (
+        <Copy className="h-3.5 w-3.5" />
+      )}
+    </button>
+  )
+}
+
+function DetailRow({
+  label,
+  children,
+}: {
+  label: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-[var(--text-secondary)]">{label}</span>
+      <span className="flex items-center gap-2 text-[var(--text-primary)]">
+        {children}
+      </span>
+    </div>
+  )
+}
+
+function SearchBox({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <div className="relative mt-3">
+      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="Search orders"
+        className="h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
+      />
+    </div>
+  )
+}
+
+function OrderListItem({
+  conversation,
+  buyerName,
+  buyerPicture,
+  active,
+  onClick,
+}: {
+  conversation: MerchantConversationSummary
+  buyerName: string
+  buyerPicture?: string
+  active: boolean
+  onClick: () => void
+}) {
+  const statusDisplay = getOrderStatusDisplay(conversation.status)
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`w-full rounded-[1.1rem] border p-3 text-left transition-[border-color,background-color] ${
+        active
+          ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)]"
+          : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--text-secondary)]"
+      }`}
+    >
+      <div className="flex items-start gap-3">
+        <BuyerAvatar name={buyerName} picture={buyerPicture} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2">
+            <div className="truncate text-sm font-medium text-[var(--text-primary)]">
+              {buyerName}
+            </div>
+            <div className="shrink-0 text-[11px] text-[var(--text-muted)]">
+              {new Date(conversation.latestAt).toLocaleDateString()}
+            </div>
+          </div>
+          <div className="mt-0.5 truncate text-sm text-[var(--text-secondary)]">
+            {conversation.preview || "Order"}
+          </div>
+          {conversation.totalSummary && (
+            <div className="mt-0.5 text-sm font-medium text-secondary-300">
+              {conversation.totalSummary}
+            </div>
+          )}
+          <div className="mt-2">
+            <StatusPill variant={statusDisplay.tone} className="capitalize">
+              {statusDisplay.label}
+            </StatusPill>
+          </div>
+        </div>
+      </div>
+    </button>
+  )
+}
+
+function MobileOrdersScroller({
+  conversations,
+  selectedId,
+  buyerName,
+  buyerPicture,
+  onSelect,
+}: {
+  conversations: MerchantConversationSummary[]
+  selectedId: string | null
+  buyerName: (pubkey: string) => string
+  buyerPicture: (pubkey: string) => string | undefined
+  onSelect: (id: string) => void
+}) {
+  const cardRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
+
+  // Keep the natural order; just scroll the selected order into view.
+  useEffect(() => {
+    if (!selectedId) return
+    cardRefs.current.get(selectedId)?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "center",
+    })
+  }, [selectedId])
+
+  return (
+    <section className="min-w-0 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+      {conversations.length === 0 ? (
+        <div className="rounded-[1.25rem] border border-dashed border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+          No orders match this filter.
+        </div>
+      ) : (
+        <div
+          className="min-w-0 touch-pan-x overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          style={{
+            maskImage:
+              "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
+            WebkitMaskImage:
+              "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
+          }}
+        >
+          <div className="flex min-w-max snap-x snap-mandatory gap-3 pb-1 pr-14">
+            {conversations.map((conversation) => {
+              const active = conversation.id === selectedId
+              const statusDisplay = getOrderStatusDisplay(conversation.status)
+              return (
+                <button
+                  key={conversation.id}
+                  type="button"
+                  ref={(el) => {
+                    if (el) cardRefs.current.set(conversation.id, el)
+                    else cardRefs.current.delete(conversation.id)
+                  }}
+                  onClick={() => onSelect(conversation.id)}
+                  className={`w-[16.5rem] shrink-0 snap-start rounded-[1.25rem] border p-4 text-left transition-[border-color,background-color,transform] ${
+                    active
+                      ? "border-[color-mix(in_srgb,var(--primary-500)_45%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_7%,transparent)]"
+                      : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--text-secondary)]"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex min-w-0 items-start gap-3">
+                      <BuyerAvatar
+                        name={buyerName(conversation.buyerPubkey)}
+                        picture={buyerPicture(conversation.buyerPubkey)}
+                        size="sm"
+                      />
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-[var(--text-primary)]">
+                          {buyerName(conversation.buyerPubkey)}
+                        </div>
+                        <div className="mt-1 truncate text-sm text-[var(--text-secondary)]">
+                          {conversation.preview || "Order"}
+                        </div>
+                      </div>
+                    </div>
+                    <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
+                  </div>
+                  <div className="mt-3 flex items-center gap-2">
+                    <StatusPill
+                      variant={statusDisplay.tone}
+                      className="capitalize"
+                    >
+                      {statusDisplay.label}
+                    </StatusPill>
+                    {conversation.totalSummary && (
+                      <span className="text-xs font-medium text-secondary-300">
+                        {conversation.totalSummary}
+                      </span>
+                    )}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </section>
+  )
 }
 
 function prepareMerchantConversationRumor(
@@ -231,249 +455,71 @@ async function publishOrderConversationMessage(params: {
   await cacheMerchantConversationRumor(rumor)
 }
 
-function MessageCard({
-  message,
-  mine,
-  btcUsdRate,
+function OrderItemsCard({
+  items,
+  productLookup,
+  subtotal,
+  currency,
 }: {
-  message: ParsedOrderMessage
-  mine: boolean
-  btcUsdRate: PricingRateInput
+  items: Array<{
+    productId: string
+    title?: string
+    quantity: number
+    priceAtPurchase: number
+    currency: string
+  }>
+  productLookup: Map<string, { title: string; imageUrl?: string }>
+  subtotal: number
+  currency: string
 }) {
   return (
-    <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`max-w-[92%] rounded-md border p-3 text-sm ${
-          mine
-            ? "border-[var(--border)] bg-[var(--surface)]"
-            : "border-[var(--border)] bg-[var(--surface-elevated)]"
-        }`}
-      >
-        <div className="mb-2 flex items-center gap-2">
-          <Badge variant="outline" className="border-[var(--border)]">
-            {friendlyTypeLabel(message.type)}
-          </Badge>
-          <span className="text-xs text-[var(--text-secondary)]">
-            {new Date(message.createdAt).toLocaleString()}
-          </span>
-        </div>
-
-        {message.type === "order" && (
-          <div className="space-y-1.5">
-            <div className="text-[var(--text-primary)]">
-              Total:{" "}
-              {
-                getProductPriceDisplay(
-                  {
-                    price: message.payload.subtotal,
-                    currency: message.payload.currency,
-                    priceSats:
-                      message.payload.currency === "SATS"
-                        ? message.payload.subtotal
-                        : undefined,
-                  },
-                  btcUsdRate
-                ).primary
-              }
-            </div>
-            {message.payload.items.map((item) => {
-              const product = formatProductReference(item.productId)
-              const itemTitle = item.title?.trim() || product.title
-              const itemPrice = getProductPriceDisplay(
-                {
-                  price: item.priceAtPurchase,
-                  currency: item.currency,
-                  priceSats:
-                    item.currency === "SATS" ? item.priceAtPurchase : undefined,
-                  sourcePrice: item.sourcePrice,
-                },
-                btcUsdRate
-              )
-              return (
-                <div
-                  key={`${message.id}-${item.productId}`}
-                  className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2"
-                >
-                  <div className="text-sm text-[var(--text-primary)]">
-                    {itemTitle}
-                  </div>
-                  {item.title?.trim() && (
-                    <div className="mt-1 truncate font-mono text-[11px] text-[var(--text-muted)]">
-                      {product.detail}
-                    </div>
-                  )}
-                  <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                    Qty {item.quantity} · {itemPrice.primary}
+    <section className={panelCard}>
+      <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+        <ShoppingBag className="h-4 w-4" />
+        Items
+      </h3>
+      <div className="mt-3 space-y-3">
+        {items.map((item, index) => {
+          const match = productLookup.get(item.productId)
+          const image = match?.imageUrl
+          const title = item.title || match?.title || "Product"
+          return (
+            <div
+              key={`${item.productId}-${index}`}
+              className="flex items-start justify-between gap-3 text-sm"
+            >
+              <div className="flex min-w-0 items-start gap-3">
+                <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]">
+                  {image ? (
+                    <img
+                      src={image}
+                      alt={title}
+                      loading="lazy"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : null}
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[var(--text-primary)]">{title}</div>
+                  <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
+                    Qty {item.quantity}
                   </div>
                 </div>
-              )
-            })}
-            {message.payload.shippingAddress && (
-              <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
-                <div className="font-medium text-[var(--text-primary)]">
-                  Ship to:
-                </div>
-                <div>{message.payload.shippingAddress.name}</div>
-                <div>{message.payload.shippingAddress.street}</div>
-                <div>
-                  {message.payload.shippingAddress.city}
-                  {message.payload.shippingAddress.state
-                    ? `, ${message.payload.shippingAddress.state}`
-                    : ""}{" "}
-                  {message.payload.shippingAddress.postalCode}
-                </div>
-                <div>{message.payload.shippingAddress.country}</div>
               </div>
-            )}
-            {message.payload.note && (
-              <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
-                {message.payload.note}
+              <div className="shrink-0 text-right text-[var(--text-secondary)]">
+                {formatSummaryAmount(item.priceAtPurchase, item.currency)}
               </div>
-            )}
-          </div>
-        )}
-
-        {message.type === "payment_request" && (
-          <div className="space-y-2">
-            {(() => {
-              const decoded = decodeLightningInvoiceAmount(
-                message.payload.invoice
-              )
-              const displayAmount =
-                decoded.sats ?? decoded.msats ?? message.payload.amount ?? null
-              const displayCurrency =
-                decoded.currency ?? message.payload.currency ?? null
-
-              return (
-                <>
-                  <div className="text-[var(--text-primary)]">
-                    Invoice sent
-                    {displayAmount != null ? ` · ${displayAmount}` : ""}
-                    {displayCurrency ? ` ${displayCurrency}` : ""}
-                  </div>
-                  <div className="text-xs text-[var(--text-secondary)]">
-                    Awaiting payment confirmation.
-                  </div>
-                </>
-              )
-            })()}
-            <div className="break-all rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-xs text-[var(--text-secondary)]">
-              {message.payload.invoice}
             </div>
-            {message.payload.note && (
-              <div className="text-xs text-[var(--text-secondary)]">
-                {message.payload.note}
-              </div>
-            )}
-          </div>
-        )}
-
-        {message.type === "status_update" && (
-          <div className="space-y-1">
-            <div className="text-[var(--text-primary)]">
-              Status: {message.payload.status}
-            </div>
-            {message.payload.note && (
-              <div className="text-xs text-[var(--text-secondary)]">
-                {message.payload.note}
-              </div>
-            )}
-          </div>
-        )}
-
-        {message.type === "shipping_update" && (
-          <div className="space-y-1">
-            {message.payload.carrier && (
-              <div className="text-[var(--text-primary)]">
-                Carrier: {message.payload.carrier}
-              </div>
-            )}
-            {message.payload.trackingNumber && (
-              <div className="font-mono text-xs text-[var(--text-secondary)]">
-                Tracking: {message.payload.trackingNumber}
-              </div>
-            )}
-            {(() => {
-              const raw = message.payload.trackingUrl
-              if (!raw) return null
-              try {
-                const u = new URL(raw)
-                if (u.protocol !== "http:" && u.protocol !== "https:")
-                  return null
-                return (
-                  <a
-                    className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
-                    href={u.toString()}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Open tracking link
-                  </a>
-                )
-              } catch {
-                return null
-              }
-            })()}
-            {message.payload.note && (
-              <div className="text-xs text-[var(--text-secondary)]">
-                {message.payload.note}
-              </div>
-            )}
-          </div>
-        )}
-
-        {message.type === "receipt" && message.payload.note && (
-          <div className="text-[var(--text-secondary)]">
-            {message.payload.note}
-          </div>
-        )}
-
-        {message.type === "message" && (
-          <div className="text-[var(--text-primary)]">
-            {message.payload.note}
-          </div>
-        )}
-
-        {message.type === "payment_proof" && (
-          <div className="space-y-2">
-            <div className="text-[var(--text-primary)]">
-              Lightning payment proof received
-              {message.payload.amount != null
-                ? ` - ${message.payload.amount.toLocaleString()}`
-                : ""}
-              {message.payload.currency ? ` ${message.payload.currency}` : ""}
-            </div>
-            <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs">
-              <div className="min-w-0">
-                <div className="text-[var(--text-muted)]">Invoice</div>
-                <div className="max-h-16 overflow-hidden break-all font-mono leading-5 text-[var(--text-secondary)]">
-                  {message.payload.invoice}
-                </div>
-              </div>
-              <div className="min-w-0 border-t border-[var(--border)] pt-2">
-                <div className="text-[var(--text-muted)]">Payment preimage</div>
-                <div className="break-all font-mono leading-5 text-[var(--text-secondary)]">
-                  {message.payload.preimage}
-                </div>
-              </div>
-              {message.payload.paymentHash && (
-                <div className="min-w-0 border-t border-[var(--border)] pt-2">
-                  <div className="text-[var(--text-muted)]">Payment hash</div>
-                  <div className="break-all font-mono leading-5 text-[var(--text-secondary)]">
-                    {message.payload.paymentHash}
-                  </div>
-                </div>
-              )}
-              {message.payload.feeMsats != null && (
-                <div className="border-t border-[var(--border)] pt-2 text-[var(--text-secondary)]">
-                  Fee: {message.payload.feeMsats} msats
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+          )
+        })}
       </div>
-    </div>
+      <div className="mt-4 flex items-center justify-between border-t border-[var(--border)] pt-4 text-sm">
+        <span className="font-medium text-[var(--text-secondary)]">Total</span>
+        <span className="text-base font-semibold text-[var(--text-primary)]">
+          {formatSummaryAmount(subtotal, currency)}
+        </span>
+      </div>
+    </section>
   )
 }
 
@@ -485,7 +531,13 @@ function OrdersPage() {
   const [selectedConversationId, setSelectedConversationId] = useState<
     string | null
   >(null)
-  const [activeTab, setActiveTab] = useState("details")
+  const [orderSearch, setOrderSearch] = useState("")
+  const [ordersSheetOpen, setOrdersSheetOpen] = useState(false)
+  const [orderDetailsOpen, setOrderDetailsOpen] = useState(false)
+  const [detailPanel, setDetailPanel] = useState<"actions" | "messages">(
+    "actions"
+  )
+  const detailPanelRef = useRef<HTMLDivElement | null>(null)
   const [invoice, setInvoice] = useState("")
   const [invoiceAmount, setInvoiceAmount] = useState("")
   const [invoiceCurrency, setInvoiceCurrency] = useState("USD")
@@ -564,27 +616,6 @@ function OrdersPage() {
   const isOrdersFetching = ordersQuery.isFetching
   const refetchOrders = ordersQuery.refetch
 
-  // The merchant's own listings, used to resolve order-item name + image
-  // (the order message carries neither an image nor a reliable title).
-  const merchantProductsQuery = useQuery({
-    queryKey: ["merchant-own-products", pubkey ?? "none"],
-    enabled: signerConnected,
-    queryFn: () => getMerchantStorefront({ merchantPubkey: pubkey! }),
-    staleTime: 60_000,
-  })
-  const productLookup = useMemo(() => {
-    const map = new Map<string, { title: string; imageUrl?: string }>()
-    for (const record of merchantProductsQuery.data?.data ?? []) {
-      const entry = {
-        title: record.product.title,
-        imageUrl: getProductImageCandidates(record.product)[0]?.url,
-      }
-      map.set(record.addressId, entry)
-      if (record.product.id) map.set(record.product.id, entry)
-    }
-    return map
-  }, [merchantProductsQuery.data])
-
   useEffect(() => {
     if (isOrdersFetching) {
       if (refreshResetTimerRef.current) {
@@ -643,6 +674,38 @@ function OrdersPage() {
     maxUnresolvedRefetches: 1,
   })
 
+  const buyerProfiles = buyerProfilesQuery.data
+  const filteredConversations = useMemo(() => {
+    const query = orderSearch.trim().toLowerCase()
+    if (!query) return conversations
+    return conversations.filter((conversation) => {
+      const buyerName = getDisplayName(
+        buyerProfiles?.[conversation.buyerPubkey],
+        conversation.buyerPubkey
+      )
+      return [
+        buyerName,
+        conversation.orderId,
+        conversation.buyerPubkey,
+        conversation.preview,
+        conversation.totalSummary ?? "",
+        getOrderStatusDisplay(conversation.status).label,
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(query)
+    })
+  }, [conversations, orderSearch, buyerProfiles])
+
+  const buyerNameFor = useCallback(
+    (pubkey: string) => getDisplayName(buyerProfiles?.[pubkey], pubkey),
+    [buyerProfiles]
+  )
+  const buyerPictureFor = useCallback(
+    (pubkey: string) => buyerProfiles?.[pubkey]?.picture,
+    [buyerProfiles]
+  )
+
   useEffect(() => {
     if (conversations.length === 0) {
       setSelectedConversationId(null)
@@ -680,7 +743,8 @@ function OrdersPage() {
     selectedOrderResetRef.current = selectedId
 
     setSuccessFlash(null)
-    setActiveTab("details")
+    setOrderDetailsOpen(false)
+    setDetailPanel("actions")
     setOrderStatus("")
     setReplyNote("")
     const firstOrder = selected?.messages?.find(
@@ -697,6 +761,38 @@ function OrdersPage() {
     () => (selected ? extractOrderSummary(selected.messages ?? []) : null),
     [selected]
   )
+
+  // Order messages carry no image and no reliable title, so resolve each item
+  // straight from its product listing (addressId) — independent of whether the
+  // listing is still in this merchant's storefront read.
+  const orderItemProductIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const item of orderSummary?.items ?? []) {
+      if (item.productId) ids.add(item.productId)
+    }
+    return [...ids].sort()
+  }, [orderSummary])
+
+  // One relay fanout resolves every item on the order (name + image), instead
+  // of one read per item — keeps the owned-socket reader from re-dialing relays.
+  const orderItemProductsQuery = useQuery({
+    queryKey: ["order-item-products", orderItemProductIds],
+    enabled: signerConnected && orderItemProductIds.length > 0,
+    queryFn: () => getProductsByIds(orderItemProductIds),
+    staleTime: 5 * 60_000,
+  })
+
+  const productLookup = useMemo(() => {
+    const map = new Map<string, { title: string; imageUrl?: string }>()
+    for (const record of orderItemProductsQuery.data?.data ?? []) {
+      map.set(record.addressId, {
+        title: record.product.title,
+        imageUrl: getProductImageCandidates(record.product)[0]?.url,
+      })
+    }
+    return map
+  }, [orderItemProductsQuery.data])
+
   const selectedBuyerProfile = selected
     ? buyerProfilesQuery.data?.[selected.buyerPubkey]
     : undefined
@@ -1024,28 +1120,28 @@ function OrdersPage() {
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3 xl:shrink-0">
-        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+      <div className="grid grid-cols-3 gap-2 md:gap-4 xl:shrink-0">
+        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
+          <div className="text-[10px] uppercase tracking-[0.1em] text-[var(--text-muted)] md:text-xs md:tracking-[0.18em]">
             Open threads
           </div>
-          <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">
+          <div className="mt-2 text-2xl font-semibold text-[var(--text-primary)] md:mt-3 md:text-3xl">
             {conversations.length}
           </div>
         </div>
-        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
+          <div className="text-[10px] uppercase tracking-[0.1em] text-[var(--text-muted)] md:text-xs md:tracking-[0.18em]">
             Awaiting invoice
           </div>
-          <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">
+          <div className="mt-2 text-2xl font-semibold text-[var(--text-primary)] md:mt-3 md:text-3xl">
             {awaitingInvoiceCount}
           </div>
         </div>
-        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
-          <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+        <div className="rounded-[1.35rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-3 md:p-4">
+          <div className="text-[10px] uppercase tracking-[0.1em] text-[var(--text-muted)] md:text-xs md:tracking-[0.18em]">
             Active fulfillment
           </div>
-          <div className="mt-3 text-3xl font-semibold text-[var(--text-primary)]">
+          <div className="mt-2 text-2xl font-semibold text-[var(--text-primary)] md:mt-3 md:text-3xl">
             {activeFulfillmentCount}
           </div>
         </div>
@@ -1077,88 +1173,131 @@ function OrdersPage() {
 
       {signerConnected && conversations.length > 0 && (
         <div className="grid gap-4 xl:min-h-0 xl:flex-1 xl:grid-cols-[320px_minmax(0,1fr)]">
-          <aside className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-2 xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:overflow-hidden">
-            <div className="mb-2 px-2 text-xs uppercase tracking-wide text-[var(--text-secondary)] xl:shrink-0">
+          <aside className="hidden rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:overflow-hidden">
+            <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)] xl:shrink-0">
               Orders
             </div>
-            <div className="space-y-1 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
-              {conversations.map((conversation) => {
-                const active = conversation.id === selectedConversationId
-                const buyerProfile =
-                  buyerProfilesQuery.data?.[conversation.buyerPubkey]
-                const buyerName = getDisplayName(
-                  buyerProfile,
-                  conversation.buyerPubkey
-                )
-                const statusDisplay = getOrderStatusDisplay(conversation.status)
-                return (
-                  <button
-                    key={conversation.id}
-                    className={`w-full rounded-md border px-3 py-2 text-left transition ${
-                      active
-                        ? "border-secondary-500/40 bg-secondary-500/10"
-                        : "border-transparent hover:border-[var(--border)] hover:bg-[var(--surface-elevated)]"
-                    }`}
-                    onClick={() => setSelectedConversationId(conversation.id)}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="min-w-0 break-all font-mono text-xs text-[var(--text-primary)]">
-                        {conversation.orderId}
-                      </span>
-                      <StatusPill
-                        variant={statusDisplay.tone}
-                        className="shrink-0"
-                      >
-                        {statusDisplay.label}
-                      </StatusPill>
-                    </div>
-                    <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                      Buyer: {buyerName}
-                    </div>
-                    <div className="mt-1 font-mono text-[11px] text-[var(--text-muted)]">
-                      {formatNpub(conversation.buyerPubkey, 8)}
-                    </div>
-                    {conversation.totalSummary && (
-                      <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                        {conversation.totalSummary}
-                      </div>
-                    )}
-                  </button>
-                )
-              })}
+            <div className="xl:shrink-0">
+              <SearchBox value={orderSearch} onChange={setOrderSearch} />
+            </div>
+            <div className="mt-4 space-y-2 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
+              {filteredConversations.length === 0 && (
+                <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                  No orders match "{orderSearch.trim()}".
+                </div>
+              )}
+              {filteredConversations.map((conversation) => (
+                <OrderListItem
+                  key={conversation.id}
+                  conversation={conversation}
+                  buyerName={buyerNameFor(conversation.buyerPubkey)}
+                  buyerPicture={buyerPictureFor(conversation.buyerPubkey)}
+                  active={conversation.id === selectedConversationId}
+                  onClick={() => setSelectedConversationId(conversation.id)}
+                />
+              ))}
             </div>
           </aside>
 
-          <section className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:overflow-hidden">
-            {selected && orderSummary ? (
-              <Tabs
-                value={activeTab}
-                onValueChange={setActiveTab}
-                className="xl:flex xl:h-full xl:min-h-0 xl:flex-col"
+          <div className="min-w-0 space-y-4 xl:hidden">
+            <Sheet open={ordersSheetOpen} onOpenChange={setOrdersSheetOpen}>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+                  Orders
+                </div>
+                <SheetTrigger asChild>
+                  <button
+                    type="button"
+                    className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
+                  >
+                    <Search className="h-4 w-4" />
+                    Search
+                  </button>
+                </SheetTrigger>
+              </div>
+              <MobileOrdersScroller
+                conversations={filteredConversations}
+                selectedId={selectedConversationId}
+                buyerName={buyerNameFor}
+                buyerPicture={buyerPictureFor}
+                onSelect={setSelectedConversationId}
+              />
+              <SheetContent
+                side="bottom"
+                className="h-[100dvh] overflow-y-auto"
               >
-                <div className="mb-4 rounded-md border border-[var(--border)] bg-[var(--surface)] p-3 xl:shrink-0">
-                  <StatusStepper
-                    rows={buildOrderStatusTimeline(selected.status)}
-                    ariaLabel="Order progress"
+                <SheetHeader>
+                  <SheetTitle>Your orders</SheetTitle>
+                </SheetHeader>
+                <SearchBox value={orderSearch} onChange={setOrderSearch} />
+                <div className="mt-4 space-y-2">
+                  {filteredConversations.length === 0 && (
+                    <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                      No orders match "{orderSearch.trim()}".
+                    </div>
+                  )}
+                  {filteredConversations.map((conversation) => (
+                    <OrderListItem
+                      key={conversation.id}
+                      conversation={conversation}
+                      buyerName={buyerNameFor(conversation.buyerPubkey)}
+                      buyerPicture={buyerPictureFor(conversation.buyerPubkey)}
+                      active={conversation.id === selectedConversationId}
+                      onClick={() => {
+                        setSelectedConversationId(conversation.id)
+                        setOrdersSheetOpen(false)
+                      }}
+                    />
+                  ))}
+                </div>
+              </SheetContent>
+            </Sheet>
+          </div>
+
+          <section className="min-w-0 xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:overflow-hidden">
+            {selected && orderSummary ? (
+              <div className="space-y-4 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
+                <div className="xl:hidden">
+                  <OrderItemsCard
+                    items={orderSummary.items}
+                    productLookup={productLookup}
+                    subtotal={orderSummary.subtotal}
+                    currency={orderSummary.currency}
                   />
                 </div>
-                <div className="mb-2 flex items-center justify-between gap-2 xl:shrink-0">
-                  <TabsList className="rounded-full">
-                    <TabsTrigger
-                      value="details"
-                      className="h-7 rounded-full text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                    >
-                      Details
-                    </TabsTrigger>
-                    <TabsTrigger
-                      value="actions"
-                      className="h-7 rounded-full text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                    >
-                      Actions
-                    </TabsTrigger>
-                  </TabsList>
-                  {orderActions.length > 0 && (
-                    <div className="flex shrink-0 items-center gap-2">
+
+                <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <BuyerAvatar
+                        name={selectedBuyerName ?? ""}
+                        picture={selectedBuyerProfile?.picture}
+                      />
+                      <div className="min-w-0">
+                        <a
+                          href={getStorefrontUrl(selected.buyerPubkey)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block truncate text-lg font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
+                        >
+                          {selectedBuyerName}
+                        </a>
+                        <div className="mt-0.5 font-mono text-xs text-[var(--text-muted)]">
+                          {formatNpub(selected.buyerPubkey, 8)}
+                        </div>
+                        <div className="mt-2">
+                          <StatusPill
+                            variant={
+                              getOrderStatusDisplay(selected.status).tone
+                            }
+                            className="capitalize"
+                          >
+                            {getOrderStatusDisplay(selected.status).label}
+                          </StatusPill>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2 lg:justify-end">
                       {orderActions.map((action) => (
                         <Button
                           key={action.label}
@@ -1179,406 +1318,569 @@ function OrdersPage() {
                             : action.label}
                         </Button>
                       ))}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setDetailPanel("messages")
+                          detailPanelRef.current?.scrollIntoView({
+                            behavior: "smooth",
+                            block: "start",
+                          })
+                        }}
+                      >
+                        <MessageCircle className="h-4 w-4" />
+                        Message buyer
+                      </Button>
                     </div>
-                  )}
-                </div>
+                  </div>
+                </section>
 
-                <TabsContent
-                  value="details"
-                  className="xl:min-h-0 xl:overflow-auto xl:pr-1"
-                >
-                  <OrderDetailCard
-                    orderId={selected.orderId}
-                    status={selected.status}
-                    counterpartyLabel="Buyer"
-                    counterpartyName={selectedBuyerName ?? undefined}
-                    counterpartyPubkeyLabel={formatNpub(
-                      selected.buyerPubkey,
-                      8
-                    )}
-                    items={orderSummary.items.map((item) => {
-                      const match = productLookup.get(item.productId)
-                      return {
-                        ...item,
-                        title: item.title || match?.title,
-                        imageUrl: match?.imageUrl,
-                      }
-                    })}
-                    subtotal={orderSummary.subtotal}
-                    currency={orderSummary.currency}
-                    shippingAddress={orderSummary.shippingAddress}
-                    orderNote={orderSummary.orderNote}
-                    invoiceSent={orderSummary.invoiceSent}
-                    invoiceCount={orderSummary.invoiceCount}
-                    invoiceAmount={orderSummary.invoiceAmount}
-                    invoiceCurrency={orderSummary.invoiceCurrency}
-                    paymentProofReceived={orderSummary.paymentProofReceived}
-                    paymentProofCount={orderSummary.paymentProofCount}
-                    paymentProofAmount={orderSummary.paymentProofAmount}
-                    paymentProofCurrency={orderSummary.paymentProofCurrency}
-                    trackingCarrier={orderSummary.trackingCarrier}
-                    trackingNumber={orderSummary.trackingNumber}
-                    trackingUrl={orderSummary.trackingUrl}
-                    btcUsdRate={btcUsdRateQuery.data ?? null}
-                  />
-                </TabsContent>
-
-                <TabsContent
-                  value="actions"
-                  className="xl:min-h-0 xl:overflow-auto xl:pr-1"
-                >
-                  <div className="space-y-4">
-                    {successFlash && (
-                      <div className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-400">
-                        {successFlash}
-                      </div>
-                    )}
-
-                    <div className="grid gap-3 md:grid-cols-3">
-                      <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
-                        <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
-                          Send invoice
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div className="grid gap-1">
-                            <Label htmlFor="invoice-amount">Amount</Label>
-                            <Input
-                              id="invoice-amount"
-                              type="number"
-                              min="0"
-                              step={getCurrencyAmountStep(invoiceCurrency)}
-                              value={invoiceAmount}
-                              onChange={(event) =>
-                                setInvoiceAmount(event.target.value)
-                              }
-                            />
-                          </div>
-                          <div className="grid gap-1">
-                            <Label htmlFor="invoice-currency">Currency</Label>
-                            <Select
-                              value={invoiceCurrency}
-                              onValueChange={(value) =>
-                                setInvoiceCurrency(value)
-                              }
-                            >
-                              <SelectTrigger id="invoice-currency">
-                                <SelectValue placeholder="Choose currency" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {INVOICE_CURRENCY_OPTIONS.map((currency) => (
-                                  <SelectItem key={currency} value={currency}>
-                                    {currency}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                        </div>
-                        <Input
-                          value={invoiceNote}
-                          onChange={(event) =>
-                            setInvoiceNote(event.target.value)
-                          }
-                          placeholder="Optional note"
+                <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+                  <div className="min-w-0 space-y-4">
+                    <section className={panelCard}>
+                      <h2 className="text-lg font-semibold text-[var(--text-primary)]">
+                        Order progress
+                      </h2>
+                      <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                        Track this order through fulfillment.
+                      </p>
+                      <div className="mt-5">
+                        <StatusStepper
+                          rows={buildOrderStatusTimeline(selected.status)}
+                          ariaLabel="Order progress"
                         />
-                        <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
-                          {invoiceCurrencyUnsupported ? (
-                            <>
-                              This order was placed in {selectedOrderCurrency}.
-                              Choose USD or SATS before generating a Lightning
-                              invoice.
-                            </>
-                          ) : invoiceAmountNumber > 0 ? (
-                            invoiceAmountSats ? (
-                              <>
-                                This will generate an invoice for{" "}
-                                {invoiceAmountSats.toLocaleString()} sats.
-                              </>
-                            ) : (
-                              <>
-                                BTC/USD conversion is unavailable right now, so
-                                this amount cannot be converted yet.
-                              </>
-                            )
-                          ) : (
-                            <>
-                              Enter the order amount to generate a Lightning
-                              invoice.
-                            </>
-                          )}
-                        </div>
+                      </div>
+                    </section>
 
-                        {weblnAvailable || nwc.connection ? (
-                          <div className="space-y-2">
-                            <Button
-                              type="button"
-                              size="sm"
-                              className="w-full"
-                              disabled={
-                                generateInvoiceMutation.isPending ||
-                                !(invoiceAmountNumber > 0) ||
-                                !invoiceAmountSats
-                              }
-                              onClick={() => generateInvoiceMutation.mutate()}
-                            >
-                              {generateInvoiceMutation.isPending
-                                ? "Generating…"
-                                : "Generate & send invoice"}
-                            </Button>
-                            {generateInvoiceMutation.error && (
-                              <div className="text-xs text-error">
-                                {generateInvoiceMutation.error instanceof Error
-                                  ? generateInvoiceMutation.error.message
-                                  : "Failed"}
+                    <div ref={detailPanelRef} className="space-y-3">
+                      <div className="flex justify-center">
+                        <div className="inline-flex rounded-full border border-[var(--border)] bg-[var(--surface)] p-1 text-sm">
+                          {(["actions", "messages"] as const).map((panel) => {
+                            const selectedPanel = detailPanel === panel
+                            return (
+                              <button
+                                key={panel}
+                                type="button"
+                                onClick={() => setDetailPanel(panel)}
+                                className={[
+                                  "h-7 rounded-full px-4 font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
+                                  selectedPanel
+                                    ? "bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-[var(--shadow-sm)]"
+                                    : "text-[var(--text-muted)] hover:text-[var(--text-primary)]",
+                                ].join(" ")}
+                              >
+                                {panel === "actions" ? "Actions" : "Messages"}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                      {detailPanel === "actions" ? (
+                        <section className={panelCard}>
+                          <div className="space-y-4">
+                            {successFlash && (
+                              <div className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-400">
+                                {successFlash}
+                              </div>
+                            )}
+
+                            <div className="grid gap-3 md:grid-cols-3">
+                              <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+                                <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+                                  Send invoice
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div className="grid gap-1">
+                                    <Label htmlFor="invoice-amount">
+                                      Amount
+                                    </Label>
+                                    <Input
+                                      id="invoice-amount"
+                                      type="number"
+                                      min="0"
+                                      step={getCurrencyAmountStep(
+                                        invoiceCurrency
+                                      )}
+                                      value={invoiceAmount}
+                                      onChange={(event) =>
+                                        setInvoiceAmount(event.target.value)
+                                      }
+                                    />
+                                  </div>
+                                  <div className="grid gap-1">
+                                    <Label htmlFor="invoice-currency">
+                                      Currency
+                                    </Label>
+                                    <Select
+                                      value={invoiceCurrency}
+                                      onValueChange={(value) =>
+                                        setInvoiceCurrency(value)
+                                      }
+                                    >
+                                      <SelectTrigger id="invoice-currency">
+                                        <SelectValue placeholder="Choose currency" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {INVOICE_CURRENCY_OPTIONS.map(
+                                          (currency) => (
+                                            <SelectItem
+                                              key={currency}
+                                              value={currency}
+                                            >
+                                              {currency}
+                                            </SelectItem>
+                                          )
+                                        )}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                </div>
+                                <Input
+                                  value={invoiceNote}
+                                  onChange={(event) =>
+                                    setInvoiceNote(event.target.value)
+                                  }
+                                  placeholder="Optional note"
+                                />
+                                <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+                                  {invoiceCurrencyUnsupported ? (
+                                    <>
+                                      This order was placed in{" "}
+                                      {selectedOrderCurrency}. Choose USD or
+                                      SATS before generating a Lightning
+                                      invoice.
+                                    </>
+                                  ) : invoiceAmountNumber > 0 ? (
+                                    invoiceAmountSats ? (
+                                      <>
+                                        This will generate an invoice for{" "}
+                                        {invoiceAmountSats.toLocaleString()}{" "}
+                                        sats.
+                                      </>
+                                    ) : (
+                                      <>
+                                        BTC/USD conversion is unavailable right
+                                        now, so this amount cannot be converted
+                                        yet.
+                                      </>
+                                    )
+                                  ) : (
+                                    <>
+                                      Enter the order amount to generate a
+                                      Lightning invoice.
+                                    </>
+                                  )}
+                                </div>
+
+                                {weblnAvailable || nwc.connection ? (
+                                  <div className="space-y-2">
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      className="w-full"
+                                      disabled={
+                                        generateInvoiceMutation.isPending ||
+                                        !(invoiceAmountNumber > 0) ||
+                                        !invoiceAmountSats
+                                      }
+                                      onClick={() =>
+                                        generateInvoiceMutation.mutate()
+                                      }
+                                    >
+                                      {generateInvoiceMutation.isPending
+                                        ? "Generating…"
+                                        : "Generate & send invoice"}
+                                    </Button>
+                                    {generateInvoiceMutation.error && (
+                                      <div className="text-xs text-error">
+                                        {generateInvoiceMutation.error instanceof
+                                        Error
+                                          ? generateInvoiceMutation.error
+                                              .message
+                                          : "Failed"}
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <form
+                                    onSubmit={(event) => {
+                                      event.preventDefault()
+                                      invoiceMutation.mutate()
+                                    }}
+                                  >
+                                    <div className="mb-2 grid gap-1">
+                                      <Label htmlFor="invoice-bolt11">
+                                        BOLT11 (paste manually)
+                                      </Label>
+                                      <Input
+                                        id="invoice-bolt11"
+                                        value={invoice}
+                                        onChange={(event) =>
+                                          setInvoice(event.target.value)
+                                        }
+                                        placeholder="lnbc..."
+                                      />
+                                      {invoice.trim() &&
+                                        !isInvoiceCompatibleWithCurrentNetwork(
+                                          invoice.trim()
+                                        ) && (
+                                          <div className="text-xs text-error">
+                                            {getLightningNetworkMismatchMessage(
+                                              invoice.trim()
+                                            )}
+                                          </div>
+                                        )}
+                                      {invoice.trim() &&
+                                        isInvoiceCompatibleWithCurrentNetwork(
+                                          invoice.trim()
+                                        ) &&
+                                        manualInvoiceDecoded?.currency && (
+                                          <div className="text-xs text-[var(--text-secondary)]">
+                                            Parsed invoice amount:{" "}
+                                            {manualInvoiceDecoded.sats ??
+                                              manualInvoiceDecoded.msats}{" "}
+                                            {manualInvoiceDecoded.currency}
+                                          </div>
+                                        )}
+                                    </div>
+                                    <Button
+                                      type="submit"
+                                      size="sm"
+                                      className="w-full"
+                                      disabled={invoiceMutation.isPending}
+                                    >
+                                      {invoiceMutation.isPending
+                                        ? "Sending…"
+                                        : "Send invoice DM"}
+                                    </Button>
+                                  </form>
+                                )}
+
+                                <p className="text-xs text-[var(--text-secondary)]">
+                                  {weblnAvailable
+                                    ? "Invoice via Alby extension."
+                                    : nwc.connection
+                                      ? "Invoice via NWC wallet."
+                                      : "Install Alby or configure NWC on Payments for one-click invoicing."}{" "}
+                                  Conduit shows the parsed amount when the
+                                  invoice format can be verified.
+                                </p>
+                              </div>
+
+                              <form
+                                className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
+                                onSubmit={(event) => {
+                                  event.preventDefault()
+                                  statusMutation.mutate()
+                                }}
+                              >
+                                <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+                                  Status update
+                                </div>
+                                <Select
+                                  value={orderStatus}
+                                  onValueChange={(value) =>
+                                    setOrderStatus(
+                                      value as StatusUpdateMessageSchema["status"]
+                                    )
+                                  }
+                                >
+                                  <SelectTrigger aria-label="Choose status">
+                                    <SelectValue placeholder="Choose status" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="paid">paid</SelectItem>
+                                    <SelectItem value="processing">
+                                      processing
+                                    </SelectItem>
+                                    <SelectItem value="shipped">
+                                      shipped
+                                    </SelectItem>
+                                    <SelectItem value="complete">
+                                      complete
+                                    </SelectItem>
+                                    <SelectItem value="cancelled">
+                                      cancelled
+                                    </SelectItem>
+                                  </SelectContent>
+                                </Select>
+                                <Input
+                                  value={statusNote}
+                                  onChange={(event) =>
+                                    setStatusNote(event.target.value)
+                                  }
+                                  placeholder="Optional note"
+                                />
+                                <Button
+                                  type="submit"
+                                  size="sm"
+                                  className="w-full"
+                                  disabled={
+                                    statusMutation.isPending || !orderStatus
+                                  }
+                                >
+                                  {statusMutation.isPending
+                                    ? "Sending…"
+                                    : "Send status DM"}
+                                </Button>
+                              </form>
+
+                              <form
+                                className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
+                                onSubmit={(event) => {
+                                  event.preventDefault()
+                                  shippingMutation.mutate()
+                                }}
+                              >
+                                <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+                                  Shipping update
+                                </div>
+                                <Input
+                                  value={carrier}
+                                  onChange={(event) =>
+                                    setCarrier(event.target.value)
+                                  }
+                                  placeholder="Carrier (optional)"
+                                />
+                                <Input
+                                  value={trackingNumber}
+                                  onChange={(event) =>
+                                    setTrackingNumber(event.target.value)
+                                  }
+                                  placeholder="Tracking number"
+                                />
+                                <Input
+                                  value={trackingUrl}
+                                  onChange={(event) =>
+                                    setTrackingUrl(event.target.value)
+                                  }
+                                  placeholder="Tracking URL (optional)"
+                                />
+                                <Input
+                                  value={shippingNote}
+                                  onChange={(event) =>
+                                    setShippingNote(event.target.value)
+                                  }
+                                  placeholder="Optional note"
+                                />
+                                <Button
+                                  type="submit"
+                                  size="sm"
+                                  className="w-full"
+                                  disabled={shippingMutation.isPending}
+                                >
+                                  {shippingMutation.isPending
+                                    ? "Sending…"
+                                    : "Send shipping DM"}
+                                </Button>
+                              </form>
+                            </div>
+
+                            {(invoiceMutation.error ||
+                              statusMutation.error ||
+                              shippingMutation.error ||
+                              noteMutation.error) && (
+                              <div className="rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
+                                {[
+                                  invoiceMutation.error,
+                                  statusMutation.error,
+                                  shippingMutation.error,
+                                  noteMutation.error,
+                                ]
+                                  .filter(Boolean)
+                                  .map((error) =>
+                                    error instanceof Error
+                                      ? error.message
+                                      : "Failed to send message"
+                                  )
+                                  .join(" • ")}
                               </div>
                             )}
                           </div>
-                        ) : (
-                          <form
-                            onSubmit={(event) => {
-                              event.preventDefault()
-                              invoiceMutation.mutate()
-                            }}
-                          >
-                            <div className="mb-2 grid gap-1">
-                              <Label htmlFor="invoice-bolt11">
-                                BOLT11 (paste manually)
-                              </Label>
-                              <Input
-                                id="invoice-bolt11"
-                                value={invoice}
-                                onChange={(event) =>
-                                  setInvoice(event.target.value)
-                                }
-                                placeholder="lnbc..."
-                              />
-                              {invoice.trim() &&
-                                !isInvoiceCompatibleWithCurrentNetwork(
-                                  invoice.trim()
-                                ) && (
-                                  <div className="text-xs text-error">
-                                    {getLightningNetworkMismatchMessage(
-                                      invoice.trim()
-                                    )}
-                                  </div>
-                                )}
-                              {invoice.trim() &&
-                                isInvoiceCompatibleWithCurrentNetwork(
-                                  invoice.trim()
-                                ) &&
-                                manualInvoiceDecoded?.currency && (
-                                  <div className="text-xs text-[var(--text-secondary)]">
-                                    Parsed invoice amount:{" "}
-                                    {manualInvoiceDecoded.sats ??
-                                      manualInvoiceDecoded.msats}{" "}
-                                    {manualInvoiceDecoded.currency}
-                                  </div>
-                                )}
+                        </section>
+                      ) : (
+                        <div className={panelCard}>
+                          <div className="space-y-4">
+                            <div className="max-h-[44vh] space-y-3 overflow-auto pr-1">
+                              {(selected.messages ?? []).map((message) => (
+                                <OrderConversationMessage
+                                  key={message.id}
+                                  message={message}
+                                  mine={message.senderPubkey === pubkey}
+                                />
+                              ))}
                             </div>
-                            <Button
-                              type="submit"
-                              size="sm"
-                              className="w-full"
-                              disabled={invoiceMutation.isPending}
+                            <form
+                              className="flex justify-center"
+                              onSubmit={(event) => {
+                                event.preventDefault()
+                                noteMutation.mutate()
+                              }}
                             >
-                              {invoiceMutation.isPending
-                                ? "Sending…"
-                                : "Send invoice DM"}
-                            </Button>
-                          </form>
-                        )}
-
-                        <p className="text-xs text-[var(--text-secondary)]">
-                          {weblnAvailable
-                            ? "Invoice via Alby extension."
-                            : nwc.connection
-                              ? "Invoice via NWC wallet."
-                              : "Install Alby or configure NWC on Payments for one-click invoicing."}{" "}
-                          Conduit shows the parsed amount when the invoice
-                          format can be verified.
-                        </p>
-                      </div>
-
-                      <form
-                        className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
-                        onSubmit={(event) => {
-                          event.preventDefault()
-                          statusMutation.mutate()
-                        }}
-                      >
-                        <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
-                          Status update
+                              <div className="flex w-full max-w-xl items-center gap-2">
+                                <Input
+                                  value={replyNote}
+                                  onChange={(event) =>
+                                    setReplyNote(event.target.value)
+                                  }
+                                  placeholder="Message the buyer, then press Enter"
+                                  className="flex-1"
+                                />
+                                <Button
+                                  type="submit"
+                                  size="icon"
+                                  className="shrink-0"
+                                  disabled={
+                                    noteMutation.isPending || !replyNote.trim()
+                                  }
+                                  aria-label="Send message"
+                                >
+                                  <Send className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </form>
+                          </div>
                         </div>
-                        <Select
-                          value={orderStatus}
-                          onValueChange={(value) =>
-                            setOrderStatus(
-                              value as StatusUpdateMessageSchema["status"]
-                            )
-                          }
-                        >
-                          <SelectTrigger aria-label="Choose status">
-                            <SelectValue placeholder="Choose status" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="paid">paid</SelectItem>
-                            <SelectItem value="processing">
-                              processing
-                            </SelectItem>
-                            <SelectItem value="shipped">shipped</SelectItem>
-                            <SelectItem value="complete">complete</SelectItem>
-                            <SelectItem value="cancelled">cancelled</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <Input
-                          value={statusNote}
-                          onChange={(event) =>
-                            setStatusNote(event.target.value)
-                          }
-                          placeholder="Optional note"
-                        />
-                        <Button
-                          type="submit"
-                          size="sm"
-                          className="w-full"
-                          disabled={statusMutation.isPending || !orderStatus}
-                        >
-                          {statusMutation.isPending
-                            ? "Sending…"
-                            : "Send status DM"}
-                        </Button>
-                      </form>
-
-                      <form
-                        className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
-                        onSubmit={(event) => {
-                          event.preventDefault()
-                          shippingMutation.mutate()
-                        }}
-                      >
-                        <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
-                          Shipping update
-                        </div>
-                        <Input
-                          value={carrier}
-                          onChange={(event) => setCarrier(event.target.value)}
-                          placeholder="Carrier (optional)"
-                        />
-                        <Input
-                          value={trackingNumber}
-                          onChange={(event) =>
-                            setTrackingNumber(event.target.value)
-                          }
-                          placeholder="Tracking number"
-                        />
-                        <Input
-                          value={trackingUrl}
-                          onChange={(event) =>
-                            setTrackingUrl(event.target.value)
-                          }
-                          placeholder="Tracking URL (optional)"
-                        />
-                        <Input
-                          value={shippingNote}
-                          onChange={(event) =>
-                            setShippingNote(event.target.value)
-                          }
-                          placeholder="Optional note"
-                        />
-                        <Button
-                          type="submit"
-                          size="sm"
-                          className="w-full"
-                          disabled={shippingMutation.isPending}
-                        >
-                          {shippingMutation.isPending
-                            ? "Sending…"
-                            : "Send shipping DM"}
-                        </Button>
-                      </form>
+                      )}
                     </div>
-
-                    {(invoiceMutation.error ||
-                      statusMutation.error ||
-                      shippingMutation.error ||
-                      noteMutation.error) && (
-                      <div className="rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
-                        {[
-                          invoiceMutation.error,
-                          statusMutation.error,
-                          shippingMutation.error,
-                          noteMutation.error,
-                        ]
-                          .filter(Boolean)
-                          .map((error) =>
-                            error instanceof Error
-                              ? error.message
-                              : "Failed to send message"
-                          )
-                          .join(" • ")}
-                      </div>
-                    )}
                   </div>
-                </TabsContent>
 
-                <TabsContent
-                  value="messages"
-                  className="xl:flex xl:min-h-0 xl:flex-1 xl:flex-col"
-                >
-                  <div className="space-y-4 xl:flex xl:min-h-0 xl:flex-1 xl:flex-col xl:space-y-0 xl:gap-4">
-                    <div className="max-h-[44vh] space-y-3 overflow-auto pr-1 xl:max-h-none xl:min-h-0 xl:flex-1">
-                      {(selected.messages ?? []).map((message) => (
-                        <MessageCard
-                          key={message.id}
-                          message={message}
-                          mine={message.senderPubkey === pubkey}
-                          btcUsdRate={btcUsdRateQuery.data ?? null}
-                        />
-                      ))}
-                    </div>
-                    <form
-                      className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3 xl:shrink-0"
-                      onSubmit={(event) => {
-                        event.preventDefault()
-                        noteMutation.mutate()
-                      }}
-                    >
-                      <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
-                        Reply to buyer
-                      </div>
-                      <Input
-                        value={replyNote}
-                        onChange={(event) => setReplyNote(event.target.value)}
-                        placeholder="Send a note to the buyer"
+                  <div className="space-y-4">
+                    <div className="hidden xl:block">
+                      <OrderItemsCard
+                        items={orderSummary.items}
+                        productLookup={productLookup}
+                        subtotal={orderSummary.subtotal}
+                        currency={orderSummary.currency}
                       />
-                      <Button
-                        type="submit"
-                        size="sm"
-                        className="w-full"
-                        disabled={noteMutation.isPending || !replyNote.trim()}
-                      >
-                        {noteMutation.isPending ? "Sending…" : "Send message"}
-                      </Button>
-                    </form>
-                  </div>
-                </TabsContent>
+                    </div>
 
-                <div className="mt-auto flex justify-end pt-3 xl:shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("messages")}
-                    className={`inline-flex items-center gap-1.5 rounded-sm border px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 ${
-                      activeTab === "messages"
-                        ? "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)] shadow-sm"
-                        : "border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                    }`}
-                  >
-                    <MessageCircle className="h-3.5 w-3.5" />
-                    Messages
-                  </button>
+                    {orderSummary.shippingAddress && (
+                      <section className={panelCard}>
+                        <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                          Shipping address
+                        </h3>
+                        <div className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
+                          <div className="text-[var(--text-primary)]">
+                            {orderSummary.shippingAddress.name}
+                          </div>
+                          <div>{orderSummary.shippingAddress.street}</div>
+                          <div>
+                            {orderSummary.shippingAddress.city}
+                            {orderSummary.shippingAddress.state
+                              ? `, ${orderSummary.shippingAddress.state}`
+                              : ""}{" "}
+                            {orderSummary.shippingAddress.postalCode}
+                          </div>
+                          <div>{orderSummary.shippingAddress.country}</div>
+                        </div>
+                      </section>
+                    )}
+
+                    {orderSummary.orderNote && (
+                      <section className={panelCard}>
+                        <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                          Order note
+                        </h3>
+                        <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
+                          {orderSummary.orderNote}
+                        </p>
+                      </section>
+                    )}
+
+                    {(orderSummary.trackingCarrier ||
+                      orderSummary.trackingNumber ||
+                      orderSummary.trackingUrl) && (
+                      <section className={panelCard}>
+                        <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                          Tracking
+                        </h3>
+                        <div className="mt-3 space-y-1 text-sm text-[var(--text-secondary)]">
+                          {orderSummary.trackingCarrier && (
+                            <div className="text-[var(--text-primary)]">
+                              {orderSummary.trackingCarrier}
+                            </div>
+                          )}
+                          {orderSummary.trackingNumber && (
+                            <div className="font-mono text-xs">
+                              {orderSummary.trackingNumber}
+                            </div>
+                          )}
+                          {orderSummary.trackingUrl && (
+                            <a
+                              href={orderSummary.trackingUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
+                            >
+                              Open tracking link
+                            </a>
+                          )}
+                        </div>
+                      </section>
+                    )}
+
+                    <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)]">
+                      <button
+                        type="button"
+                        onClick={() => setOrderDetailsOpen((open) => !open)}
+                        className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left"
+                      >
+                        <span className="text-sm font-semibold text-[var(--text-primary)]">
+                          Order details
+                        </span>
+                        <ChevronRight
+                          className={`h-4 w-4 text-[var(--text-muted)] transition-transform ${orderDetailsOpen ? "rotate-90" : ""}`}
+                        />
+                      </button>
+                      {orderDetailsOpen && (
+                        <div className="space-y-2 border-t border-[var(--border)] px-5 py-4 text-sm">
+                          <DetailRow label="Order ID">
+                            <span
+                              className="max-w-[9rem] truncate font-mono text-xs"
+                              title={selected.orderId}
+                            >
+                              {selected.orderId}
+                            </span>
+                            <CopyInline
+                              value={selected.orderId}
+                              label="Copy order id"
+                            />
+                          </DetailRow>
+                          <DetailRow label="Buyer">
+                            <span className="font-mono text-xs">
+                              {formatNpub(selected.buyerPubkey, 8)}
+                            </span>
+                            <CopyInline
+                              value={selected.buyerPubkey}
+                              label="Copy buyer pubkey"
+                            />
+                          </DetailRow>
+                          <DetailRow label="Total">
+                            <span>
+                              {formatSummaryAmount(
+                                orderSummary.subtotal,
+                                orderSummary.currency
+                              )}
+                            </span>
+                          </DetailRow>
+                          {selectedOrderMessage && (
+                            <DetailRow label="Ordered">
+                              <span>
+                                {new Date(
+                                  selectedOrderMessage.createdAt
+                                ).toLocaleString()}
+                              </span>
+                            </DetailRow>
+                          )}
+                        </div>
+                      )}
+                    </section>
+                  </div>
                 </div>
-              </Tabs>
+              </div>
             ) : (
               <div className="text-sm text-[var(--text-secondary)]">
                 Select a conversation.

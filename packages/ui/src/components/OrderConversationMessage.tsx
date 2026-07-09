@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react"
-import { Badge, Button } from "@conduit/ui"
+import { Badge } from "./Badge"
+import { Button } from "./Button"
 import {
   decodeLightningInvoiceAmount,
   getLightningInvoiceNetwork,

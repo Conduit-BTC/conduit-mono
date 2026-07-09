@@ -1849,6 +1849,57 @@ export async function getProductDetail(
   }
 }
 
+// Resolve many product listings by addressId in a single relay fanout (instead
+// of one read per id). Used to hydrate order-item name/image without hammering
+// relays with N separate reads.
+export async function getProductsByIds(
+  productIds: string[]
+): Promise<CommerceResult<CommerceProductRecord[]>> {
+  const addresses = productIds
+    .map((id) => getProductLookupIds(id).address)
+    .filter(
+      (address): address is { kind: number; pubkey: string; d: string } =>
+        !!address && address.kind === EVENT_KINDS.PRODUCT
+    )
+
+  if (addresses.length === 0) {
+    return {
+      data: [],
+      meta: createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES),
+    }
+  }
+
+  const authors = uniqueStrings(addresses.map((address) => address.pubkey))
+  const dTags = uniqueStrings(addresses.map((address) => address.d))
+  const wanted = new Set(
+    addresses.map((address) => `${address.kind}:${address.pubkey}:${address.d}`)
+  )
+
+  try {
+    const records = await fetchPublicProductRecords({
+      authors,
+      dTags,
+      limit: Math.max(addresses.length * 2, 20),
+    })
+    await cacheProductRecords(records)
+    return {
+      data: records.filter((record) => wanted.has(record.addressId)),
+      meta: createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES),
+    }
+  } catch {
+    const cached = await getCachedProductRecords(undefined, {
+      includeStale: true,
+    })
+    return {
+      data: cached.filter((record) => wanted.has(record.addressId)),
+      meta: createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
+        stale: true,
+        degraded: true,
+      }),
+    }
+  }
+}
+
 export async function getCachedProductDetail(
   query: ProductDetailQuery,
   options: CachedProductReadOptions = { includeStale: true }
