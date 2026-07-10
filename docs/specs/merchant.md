@@ -104,12 +104,21 @@ Product identity should preserve:
 30402:<merchant_pubkey>:<product_d_tag>
 ```
 
+Merchant Portal publish validation requires a title, positive price, HTTPS image
+URL, and at least 3 distinct tags. Tags serve both as the merchant's store
+categories and as buyer search terms, so merchants should reuse a consistent
+organization strategy across listings and aim for 5 to 12 relevant tags. The
+hard limit is 24 tags, with 40 characters allowed per tag. Tags are trimmed and
+deduplicated case-insensitively. Summary remains optional. These are Merchant
+input constraints, not NIP-99 or GammaMarkets protocol limits; publishing
+preserves one `t` tag per accepted product tag.
+
 Conduit-generated product events also include checkout zap policy tags:
 
 ```typescript
 tags: [
   ["checkout_public_zaps", "true"], // or "false"
-  ["checkout_zap_message_policy", "generic_only"], // product_reference | custom
+  ["checkout_zap_message_policy", "generic_only"], // or "custom"
 ]
 ```
 
