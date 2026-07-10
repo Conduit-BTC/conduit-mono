@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
@@ -51,10 +51,12 @@ import {
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { requireAuth } from "../lib/auth"
+import { ProductDraftStore, type ProductDraftTarget } from "../lib/productDraft"
 import {
   canSubmitProductForm,
+  reconcileProductFormShippingPreset,
   validateProductPublishForm,
-  type ProductPublishFormValues,
+  type MerchantProductFormValues,
 } from "../lib/productForm"
 import {
   canonicalizeProductShippingCost,
@@ -85,11 +87,7 @@ type MerchantProduct = {
   safety: ListingSafetyEvaluation
 }
 
-type ProductFormState = ProductPublishFormValues & {
-  summary: string
-  publicZapEnabled: boolean
-  zapMessagePolicy: ProductZapMessagePolicy
-}
+type ProductFormState = MerchantProductFormValues
 
 type ProductSort = "updated_desc" | "title_asc" | "price_asc" | "price_desc"
 
@@ -113,6 +111,17 @@ function createEmptyProductForm(
 }
 
 const EMPTY_FORM: ProductFormState = createEmptyProductForm()
+
+function getProductDraftTarget(
+  merchantPubkey: string,
+  product?: MerchantProduct | null
+): ProductDraftTarget {
+  return {
+    merchantPubkey,
+    productAddressId: product?.addressId ?? null,
+    baseEventId: product?.eventId ?? null,
+  }
+}
 
 function slugify(input: string): string {
   return input
@@ -531,9 +540,14 @@ function ProductsPage() {
   const { pubkey } = useAuth()
   const queryClient = useQueryClient()
   const btcUsdRateQuery = useBtcUsdRate()
+  const productDialogReturnFocusRef = useRef<HTMLElement | null>(null)
+  const productDraftStoreRef = useRef(new ProductDraftStore())
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM)
   const [editing, setEditing] = useState<MerchantProduct | null>(null)
   const [productDialogOpen, setProductDialogOpen] = useState(false)
+  const [activeProductDraftTarget, setActiveProductDraftTarget] =
+    useState<ProductDraftTarget | null>(null)
+  const [draftStorageAvailable, setDraftStorageAvailable] = useState(true)
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedTag, setSelectedTag] = useState("all")
   const [sortOrder, setSortOrder] = useState<ProductSort>("updated_desc")
@@ -559,15 +573,28 @@ function ProductsPage() {
 
   const saveMutation = useMutation({
     mutationFn: async (payload: {
+      merchantPubkey: string
       form: ProductFormState
       existing?: MerchantProduct
     }) => {
-      await publishProduct(pubkey!, payload.form, payload.existing)
+      await publishProduct(
+        payload.merchantPubkey,
+        payload.form,
+        payload.existing
+      )
     },
-    onSuccess: async () => {
+    onSuccess: async (_data, variables) => {
+      const draftCleared = productDraftStoreRef.current.clear(
+        getProductDraftTarget(
+          variables.merchantPubkey,
+          variables.existing ?? null
+        )
+      )
       setEditing(null)
+      setActiveProductDraftTarget(null)
       setForm(createEmptyProductForm(hasPresetShippingZone))
       setProductDialogOpen(false)
+      setDraftStorageAvailable(draftCleared)
       await queryClient.invalidateQueries({
         queryKey: ["merchant-products", pubkey ?? "none"],
       })
@@ -581,7 +608,16 @@ function ProductsPage() {
     mutationFn: async (product: MerchantProduct) => {
       await deleteProduct(pubkey!, product)
     },
-    onSuccess: async () => {
+    onSuccess: async (_data, product) => {
+      const draftCleared = productDraftStoreRef.current.clear(
+        getProductDraftTarget(product.product.pubkey, product)
+      )
+      if (activeProductDraftTarget?.productAddressId === product.addressId) {
+        setEditing(null)
+        setActiveProductDraftTarget(null)
+        setForm(createEmptyProductForm(hasPresetShippingZone))
+        setDraftStorageAvailable(draftCleared)
+      }
       await queryClient.invalidateQueries({
         queryKey: ["merchant-products", pubkey ?? "none"],
       })
@@ -604,6 +640,20 @@ function ProductsPage() {
     () => JSON.stringify(form) !== JSON.stringify(savedProductForm),
     [form, savedProductForm]
   )
+  useEffect(() => {
+    if (!productDialogOpen || !activeProductDraftTarget) return
+
+    if (!hasProductChanges) {
+      setDraftStorageAvailable(
+        productDraftStoreRef.current.clear(activeProductDraftTarget)
+      )
+      return
+    }
+
+    setDraftStorageAvailable(
+      productDraftStoreRef.current.save(activeProductDraftTarget, form)
+    )
+  }, [activeProductDraftTarget, form, hasProductChanges, productDialogOpen])
   const productFormValidation = useMemo(
     () => validateProductPublishForm(form, { hasPresetShippingZone }),
     [form, hasPresetShippingZone]
@@ -687,24 +737,127 @@ function ProductsPage() {
   const presetShippingZoneUnavailable =
     productIsDigital || !hasPresetShippingZone
 
-  function closeProductDialog(): void {
+  function persistCurrentProductDraft(): boolean {
+    if (!activeProductDraftTarget || !hasProductChanges) return true
+    const saved = productDraftStoreRef.current.save(
+      activeProductDraftTarget,
+      form
+    )
+    setDraftStorageAvailable(saved)
+    return saved
+  }
+
+  function rememberProductDialogTrigger(): void {
+    const activeElement = document.activeElement
+    productDialogReturnFocusRef.current =
+      activeElement instanceof HTMLElement ? activeElement : null
+  }
+
+  function requestCloseProductDialog(): void {
+    if (isSaving) return
+    persistCurrentProductDraft()
+    setProductDialogOpen(false)
+    saveMutation.reset()
+  }
+
+  function discardProductChanges(): void {
+    if (
+      hasProductChanges &&
+      !window.confirm(
+        editing
+          ? `Discard unpublished changes to "${form.title || editing.product.title}"?`
+          : "Discard this unpublished product draft?"
+      )
+    ) {
+      return
+    }
+
+    if (activeProductDraftTarget) {
+      const cleared = productDraftStoreRef.current.clear(
+        activeProductDraftTarget
+      )
+      if (!cleared) {
+        setDraftStorageAvailable(false)
+        return
+      }
+    }
     setProductDialogOpen(false)
     setEditing(null)
+    setActiveProductDraftTarget(null)
     setForm(createEmptyProductForm(hasPresetShippingZone))
+    setDraftStorageAvailable(true)
     saveMutation.reset()
   }
 
   function openCreateDialog(): void {
+    rememberProductDialogTrigger()
     saveMutation.reset()
+    if (
+      activeProductDraftTarget &&
+      activeProductDraftTarget.merchantPubkey === pubkey &&
+      !activeProductDraftTarget.productAddressId &&
+      !editing &&
+      hasProductChanges
+    ) {
+      setProductDialogOpen(true)
+      return
+    }
+
+    if (!persistCurrentProductDraft()) {
+      setProductDialogOpen(true)
+      return
+    }
+    const emptyForm = createEmptyProductForm(hasPresetShippingZone)
+    const draftTarget = pubkey ? getProductDraftTarget(pubkey) : null
+    const loaded = draftTarget
+      ? productDraftStoreRef.current.load(draftTarget)
+      : { draft: null, storageAvailable: false }
     setEditing(null)
-    setForm(createEmptyProductForm(hasPresetShippingZone))
+    setActiveProductDraftTarget(draftTarget)
+    setForm(
+      loaded.draft
+        ? reconcileProductFormShippingPreset(
+            loaded.draft,
+            hasPresetShippingZone
+          )
+        : emptyForm
+    )
+    setDraftStorageAvailable(loaded.storageAvailable)
     setProductDialogOpen(true)
   }
 
   function openEditDialog(item: MerchantProduct): void {
+    rememberProductDialogTrigger()
     saveMutation.reset()
+    if (
+      activeProductDraftTarget?.productAddressId === item.addressId &&
+      activeProductDraftTarget.baseEventId === item.eventId &&
+      editing?.addressId === item.addressId &&
+      hasProductChanges
+    ) {
+      setProductDialogOpen(true)
+      return
+    }
+
+    if (!persistCurrentProductDraft()) {
+      setProductDialogOpen(true)
+      return
+    }
+    const draftTarget = pubkey ? getProductDraftTarget(pubkey, item) : null
+    const loaded = draftTarget
+      ? productDraftStoreRef.current.load(draftTarget)
+      : { draft: null, storageAvailable: false }
     setEditing(item)
-    setForm(productToForm(item.product, hasPresetShippingZone))
+    setActiveProductDraftTarget(draftTarget)
+    setForm(
+      loaded.draft
+        ? reconcileProductFormShippingPreset(
+            loaded.draft,
+            hasPresetShippingZone
+          )
+        : productToForm(item.product, hasPresetShippingZone)
+    )
+    setDraftStorageAvailable(loaded.storageAvailable)
     setProductDialogOpen(true)
   }
 
@@ -956,10 +1109,22 @@ function ProductsPage() {
             setProductDialogOpen(true)
             return
           }
-          closeProductDialog()
+          requestCloseProductDialog()
         }}
       >
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+        <DialogContent
+          className="max-h-[90vh] overflow-y-auto sm:max-w-2xl"
+          onPointerDownOutside={(event) => event.preventDefault()}
+          onEscapeKeyDown={(event) => {
+            if (isSaving) event.preventDefault()
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault()
+            const returnTarget = productDialogReturnFocusRef.current
+            if (returnTarget?.isConnected) returnTarget.focus()
+            productDialogReturnFocusRef.current = null
+          }}
+        >
           <DialogHeader>
             <DialogTitle>
               {editing ? "Edit listing" : "Add product"}
@@ -975,8 +1140,12 @@ function ProductsPage() {
             className="grid gap-3"
             onSubmit={(event) => {
               event.preventDefault()
-              if (!productCanSubmit) return
-              saveMutation.mutate({ form, existing: editing ?? undefined })
+              if (!pubkey || !productCanSubmit) return
+              saveMutation.mutate({
+                merchantPubkey: pubkey,
+                form,
+                existing: editing ?? undefined,
+              })
             }}
           >
             <div className="grid gap-1.5">
@@ -1295,13 +1464,41 @@ function ProductsPage() {
               )}
             />
 
+            {hasProductChanges && (
+              <p
+                role="status"
+                aria-live="polite"
+                className={cn(
+                  "text-pretty text-xs leading-5",
+                  draftStorageAvailable
+                    ? "text-[var(--text-muted)]"
+                    : "text-error"
+                )}
+              >
+                {draftStorageAvailable
+                  ? "Draft saved on this device. Close this window and reopen it to continue."
+                  : "Local draft storage is unavailable. Keep this page open; switching product forms is blocked to protect these changes."}
+              </p>
+            )}
+
             <DialogFooter>
+              {hasProductChanges && (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={discardProductChanges}
+                  disabled={isSaving}
+                >
+                  Discard changes
+                </Button>
+              )}
               <Button
                 type="button"
                 variant="outline"
-                onClick={closeProductDialog}
+                onClick={requestCloseProductDialog}
+                disabled={isSaving}
               >
-                Cancel
+                Close
               </Button>
               <Button
                 type="submit"

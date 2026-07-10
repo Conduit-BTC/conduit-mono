@@ -3,7 +3,9 @@ import {
   canSubmitProductForm,
   MIN_PRODUCT_TAG_COUNT,
   parseProductTags,
+  reconcileProductFormShippingPreset,
   validateProductPublishForm,
+  type MerchantProductFormValues,
   type ProductPublishFormValues,
 } from "../apps/merchant/src/lib/productForm"
 
@@ -32,6 +34,25 @@ function validate(
 }
 
 describe("merchant product form validation", () => {
+  it("reconciles restored drafts with current shipping readiness", () => {
+    const values: MerchantProductFormValues = {
+      ...form({ usePresetShippingZone: true }),
+      summary: "",
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+    }
+
+    expect(reconcileProductFormShippingPreset(values, false)).toEqual({
+      ...values,
+      usePresetShippingZone: false,
+    })
+    expect(
+      reconcileProductFormShippingPreset({ ...values, format: "digital" }, true)
+        .usePresetShippingZone
+    ).toBe(false)
+    expect(reconcileProductFormShippingPreset(values, true)).toBe(values)
+  })
+
   it("keeps a blank create form invalid", () => {
     const validation = validate(
       form({

@@ -1,3 +1,4 @@
+import type { ProductZapMessagePolicy } from "@conduit/core"
 import type { ShippingConfig } from "./readiness"
 import { isShippingComplete } from "./readiness"
 import {
@@ -18,6 +19,26 @@ export interface ProductPublishFormValues {
   customShippingConfig: ShippingConfig
   imageUrl: string
   tags: string
+}
+
+export interface MerchantProductFormValues extends ProductPublishFormValues {
+  summary: string
+  publicZapEnabled: boolean
+  zapMessagePolicy: ProductZapMessagePolicy
+}
+
+export function reconcileProductFormShippingPreset(
+  form: MerchantProductFormValues,
+  hasPresetShippingZone: boolean
+): MerchantProductFormValues {
+  if (
+    form.usePresetShippingZone &&
+    (!hasPresetShippingZone || form.format === "digital")
+  ) {
+    return { ...form, usePresetShippingZone: false }
+  }
+
+  return form
 }
 
 export type ProductPublishFormField =

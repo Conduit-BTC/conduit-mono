@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test"
+import { expect, test, type Page } from "@playwright/test"
 import {
   TEST_BUYER_PUBKEY,
   TEST_MERCHANT_PUBKEY,
@@ -8,6 +8,48 @@ import {
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
+
+async function seedCachedMerchantProduct(page: Page): Promise<void> {
+  await page.evaluate((merchantPubkey) => {
+    return new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open("conduit")
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => {
+        const database = request.result
+        const transaction = database.transaction("products", "readwrite")
+        const timestamp = Date.now()
+        transaction.objectStore("products").put({
+          id: `30402:${merchantPubkey}:published-pocket-relay`,
+          pubkey: merchantPubkey,
+          title: "Published Pocket Relay",
+          summary: "Published summary",
+          price: 25,
+          currency: "USD",
+          sourcePrice: {
+            amount: 25,
+            currency: "USD",
+            normalizedCurrency: "USD",
+          },
+          type: "simple",
+          format: "physical",
+          visibility: "public",
+          stock: 1,
+          images: [{ url: "https://example.com/pocket-relay.png" }],
+          tags: ["relay", "hardware", "nostr"],
+          publicZapEnabled: true,
+          zapMessagePolicy: "generic_only",
+          publicZapPolicyKnown: true,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          cachedAt: timestamp,
+        })
+        transaction.oncomplete = () => resolve()
+        transaction.onerror = () => reject(transaction.error)
+        transaction.onabort = () => reject(transaction.error)
+      }
+    })
+  }, TEST_MERCHANT_PUBKEY)
+}
 
 test("merchant shipping country combobox supports search and selection", async ({
   page,
@@ -53,6 +95,96 @@ test("merchant shipping country combobox supports search and selection", async (
     page.locator("span").filter({ hasText: /^Canada$/ })
   ).toBeVisible()
   await expect(countryPicker).toHaveValue("")
+})
+
+test("merchant product drafts survive safe dialog dismissal", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_MERCHANT_PUBKEY)
+  await page.goto(`${merchantUrl}/products`)
+
+  await expect(
+    page.getByRole("heading", { name: "Manage your listings" })
+  ).toBeVisible()
+
+  const addProduct = page.getByRole("button", { name: "Add product" }).first()
+  const productDialog = page.getByRole("dialog", { name: "Add product" })
+  const title = page.locator("#product-title")
+
+  await addProduct.click()
+  await title.fill("Pocket relay draft")
+
+  await page.locator("#product-currency").click()
+  await expect(page.getByRole("listbox")).toBeVisible()
+  const titleBox = await title.boundingBox()
+  if (!titleBox) throw new Error("Product title was not visible")
+  await page.mouse.click(titleBox.x + 12, titleBox.y + titleBox.height / 2)
+
+  await expect(productDialog).toBeVisible()
+  await expect(title).toHaveValue("Pocket relay draft")
+  await expect(page.getByRole("listbox")).not.toBeVisible()
+
+  const currency = page.locator("#product-currency")
+  await currency.click()
+  await page.getByRole("option", { name: "SATS" }).click()
+  await expect(currency).toContainText("SATS")
+
+  const dialogBox = await productDialog.boundingBox()
+  if (!dialogBox) throw new Error("Product dialog was not visible")
+  await page.mouse.click(
+    Math.max(4, dialogBox.x - 12),
+    Math.max(4, dialogBox.y + 24)
+  )
+
+  await expect(productDialog).toBeVisible()
+  await expect(title).toHaveValue("Pocket relay draft")
+
+  await page.keyboard.press("Escape")
+  await expect(productDialog).not.toBeVisible()
+  await expect(addProduct).toBeFocused()
+
+  await addProduct.click()
+  await expect(title).toHaveValue("Pocket relay draft")
+  await expect(currency).toContainText("SATS")
+
+  await page.keyboard.press("Escape")
+  await page.reload()
+  await addProduct.click()
+  await expect(title).toHaveValue("Pocket relay draft")
+  await expect(currency).toContainText("SATS")
+
+  page.once("dialog", (dialog) => dialog.accept())
+  await page.getByRole("button", { name: "Discard changes" }).click()
+  await expect(productDialog).not.toBeVisible()
+
+  await addProduct.click()
+  await expect(title).toHaveValue("")
+
+  await page.keyboard.press("Escape")
+  await seedCachedMerchantProduct(page)
+  await page.reload()
+
+  const editProduct = page.getByRole("button", { name: "Edit" })
+  const editDialog = page.getByRole("dialog", { name: "Edit listing" })
+
+  await expect(editProduct).toBeVisible()
+  await editProduct.click()
+  await title.fill("Unpublished edited title")
+  await page.keyboard.press("Escape")
+  await expect(editDialog).not.toBeVisible()
+
+  await editProduct.click()
+  await expect(title).toHaveValue("Unpublished edited title")
+
+  await page.keyboard.press("Escape")
+  await page.reload()
+  await editProduct.click()
+  await expect(title).toHaveValue("Unpublished edited title")
+
+  page.once("dialog", (dialog) => dialog.accept())
+  await page.getByRole("button", { name: "Discard changes" }).click()
+  await editProduct.click()
+  await expect(title).toHaveValue("Published Pocket Relay")
 })
 
 test("market checkout country combobox supports search and selection", async ({
