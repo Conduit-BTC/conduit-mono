@@ -3,11 +3,15 @@ import {
   assertPublishableProductPrice,
   assertPublishableProductShippingCost,
   canonicalizeProductShippingCost,
+  formatProductAmountInput,
+  getProductAmountInputMode,
   getProductPriceInputStep,
   getProductShippingCostHelpText,
   getProductShippingCurrencyLabel,
+  isPlainDecimalInput,
   normalizePublishableProductPrice,
   normalizePublishableProductShippingCost,
+  parsePlainDecimalAmount,
 } from "../apps/merchant/src/lib/productPriceForm"
 
 describe("merchant product price form", () => {
@@ -18,6 +22,31 @@ describe("merchant product price form", () => {
     expect(getProductPriceInputStep("BTC")).toBe("0.00000001")
     expect(getProductPriceInputStep("JPY")).toBe("1")
     expect(getProductPriceInputStep("KWD")).toBe("0.001")
+    expect(getProductAmountInputMode("SATS")).toBe("numeric")
+    expect(getProductAmountInputMode("USD")).toBe("decimal")
+  })
+
+  it("accepts plain decimal input without exponent or sign syntax", () => {
+    expect(isPlainDecimalInput("")).toBe(true)
+    expect(isPlainDecimalInput("12.")).toBe(true)
+    expect(isPlainDecimalInput("12.50")).toBe(true)
+    expect(isPlainDecimalInput("e")).toBe(false)
+    expect(isPlainDecimalInput("1e3")).toBe(false)
+    expect(isPlainDecimalInput("-1")).toBe(false)
+    expect(isPlainDecimalInput("+1")).toBe(false)
+    expect(isPlainDecimalInput("1,000")).toBe(false)
+
+    expect(parsePlainDecimalAmount("12.50", "Price")).toBe(12.5)
+    expect(() => parsePlainDecimalAmount("1e3", "Price")).toThrow(
+      "digits and a decimal point only"
+    )
+  })
+
+  it("formats small currency values without exponent syntax", () => {
+    expect(formatProductAmountInput(0.00000001)).toBe("0.00000001")
+    expect(formatProductAmountInput(25.5)).toBe("25.5")
+    expect(formatProductAmountInput(5)).toBe("5")
+    expect(formatProductAmountInput(1e21)).toBe("1000000000000000000000")
   })
 
   it("uses explicit shipping currency labels", () => {
@@ -26,19 +55,27 @@ describe("merchant product price form", () => {
     expect(getProductShippingCurrencyLabel("SATS")).toBe("sats")
   })
 
-  it("explains blank, zero, and fixed shipping as distinct states", () => {
-    expect(getProductShippingCostHelpText("", "physical", "USD")).toContain(
-      "Blank means shipping will be coordinated"
-    )
-    expect(getProductShippingCostHelpText("0", "physical", "USD")).toContain(
-      "0 means shipping is included"
-    )
-    expect(getProductShippingCostHelpText("5", "physical", "USD")).toContain(
-      "added to the buyer total"
-    )
-    expect(getProductShippingCostHelpText("", "digital", "USD")).toContain(
-      "Digital products do not need shipping"
-    )
+  it("explains fixed, included, coordinated, and digital shipping states", () => {
+    expect(
+      getProductShippingCostHelpText("", "physical", "USD", "fixed")
+    ).toContain("Enter 0 when shipping is included")
+    expect(
+      getProductShippingCostHelpText("0", "physical", "USD", "fixed")
+    ).toContain("fast checkout")
+    expect(
+      getProductShippingCostHelpText("5", "physical", "USD", "fixed")
+    ).toContain("added to the buyer total")
+    expect(
+      getProductShippingCostHelpText(
+        "",
+        "physical",
+        "USD",
+        "coordinate_after_order"
+      )
+    ).toContain("No shipping amount will be published")
+    expect(
+      getProductShippingCostHelpText("", "digital", "USD", "fixed")
+    ).toContain("Digital products do not need shipping")
   })
 
   it("allows publishable positive source prices", () => {
@@ -47,12 +84,31 @@ describe("merchant product price form", () => {
     expect(() => assertPublishableProductPrice(0.0025, "BTC")).not.toThrow()
   })
 
-  it("normalizes publishable prices to the selected currency precision", () => {
-    expect(normalizePublishableProductPrice(6.666, "USD")).toBe(6.67)
-    expect(normalizePublishableProductPrice(6.6, "JPY")).toBe(7)
-    expect(normalizePublishableProductPrice(1.5, "SAT")).toBe(2)
-    expect(normalizePublishableProductPrice(0.000000014, "BTC")).toBe(
-      0.00000001
+  it("preserves valid publishable prices at the selected precision", () => {
+    expect(normalizePublishableProductPrice(6.66, "USD")).toBe(6.66)
+    expect(normalizePublishableProductPrice(6, "JPY")).toBe(6)
+    expect(normalizePublishableProductPrice(1, "SAT")).toBe(1)
+    expect(normalizePublishableProductPrice(0.00000001, "BTC")).toBe(0.00000001)
+  })
+
+  it("rejects amounts that would be silently rounded", () => {
+    expect(() => normalizePublishableProductPrice(6.666, "USD")).toThrow(
+      "USD supports up to 2 decimal places"
+    )
+    expect(() => normalizePublishableProductPrice(6.6, "JPY")).toThrow(
+      "JPY amounts must be whole numbers"
+    )
+    expect(() => normalizePublishableProductPrice(1.5, "SAT")).toThrow(
+      "SAT amounts must be whole numbers"
+    )
+    expect(() => normalizePublishableProductPrice(1.000000001, "USD")).toThrow(
+      "USD supports up to 2 decimal places"
+    )
+    expect(() => normalizePublishableProductPrice(1.0000001, "SAT")).toThrow(
+      "SAT amounts must be whole numbers"
+    )
+    expect(() => normalizePublishableProductPrice(0.000000014, "BTC")).toThrow(
+      "BTC supports up to 8 decimal places"
     )
   })
 
@@ -61,10 +117,10 @@ describe("merchant product price form", () => {
       "greater than zero"
     )
     expect(() => assertPublishableProductPrice(0.4, "SAT")).toThrow(
-      "greater than zero"
+      "whole numbers"
     )
     expect(() => assertPublishableProductPrice(0.000000001, "BTC")).toThrow(
-      "greater than zero"
+      "up to 8 decimal places"
     )
   })
 
@@ -86,13 +142,9 @@ describe("merchant product price form", () => {
       },
     })
 
-    expect(canonicalizeProductShippingCost(6.666, "USD")).toEqual({
-      sourceShippingCost: {
-        amount: 6.67,
-        currency: "USD",
-        normalizedCurrency: "USD",
-      },
-    })
+    expect(() => canonicalizeProductShippingCost(6.666, "USD")).toThrow(
+      "USD supports up to 2 decimal places"
+    )
   })
 
   it("allows zero shipping and rejects invalid shipping amounts", () => {
@@ -100,8 +152,17 @@ describe("merchant product price form", () => {
     expect(() =>
       assertPublishableProductShippingCost(5.99, "USD")
     ).not.toThrow()
-    expect(normalizePublishableProductShippingCost(6.666, "USD")).toBe(6.67)
-    expect(normalizePublishableProductShippingCost(1.5, "SAT")).toBe(2)
+    expect(normalizePublishableProductShippingCost(6.66, "USD")).toBe(6.66)
+    expect(normalizePublishableProductShippingCost(1, "SAT")).toBe(1)
+    expect(() => normalizePublishableProductShippingCost(6.666, "USD")).toThrow(
+      "USD supports up to 2 decimal places"
+    )
+    expect(() => normalizePublishableProductShippingCost(1.5, "SAT")).toThrow(
+      "SAT amounts must be whole numbers"
+    )
+    expect(() =>
+      normalizePublishableProductShippingCost(1.000000001, "USD")
+    ).toThrow("USD supports up to 2 decimal places")
     expect(() => assertPublishableProductShippingCost(-1, "USD")).toThrow(
       "non-negative"
     )

@@ -1,9 +1,12 @@
+import type { ProductZapMessagePolicy } from "@conduit/core"
 import type { ShippingConfig } from "./readiness"
 import { isShippingComplete } from "./readiness"
 import {
   normalizePublishableProductPrice,
   normalizePublishableProductShippingCost,
+  parsePlainDecimalAmount,
   type ProductFulfillmentFormat,
+  type ProductShippingPricingMode,
 } from "./productPriceForm"
 
 export const MIN_PRODUCT_TAG_COUNT = 3
@@ -15,11 +18,32 @@ export interface ProductPublishFormValues {
   price: string
   currency: string
   format: ProductFulfillmentFormat
+  shippingPricingMode: ProductShippingPricingMode
   shippingCost: string
   usePresetShippingZone: boolean
   customShippingConfig: ShippingConfig
   imageUrl: string
   tags: string
+}
+
+export interface MerchantProductFormValues extends ProductPublishFormValues {
+  summary: string
+  publicZapEnabled: boolean
+  zapMessagePolicy: ProductZapMessagePolicy
+}
+
+export function reconcileProductFormShippingPreset(
+  form: MerchantProductFormValues,
+  hasPresetShippingZone: boolean
+): MerchantProductFormValues {
+  if (
+    form.usePresetShippingZone &&
+    (!hasPresetShippingZone || form.format === "digital")
+  ) {
+    return { ...form, usePresetShippingZone: false }
+  }
+
+  return form
 }
 
 export type ProductPublishFormField =
@@ -160,14 +184,18 @@ export function validateProductPublishForm(
   const imageUrl = form.imageUrl.trim()
   const tags = parseProductTags(form.tags)
   const isDigital = form.format === "digital"
-  const shippingCostInput = isDigital ? "" : form.shippingCost.trim()
+  const hasFixedShipping = !isDigital && form.shippingPricingMode === "fixed"
+  const shippingCostInput = hasFixedShipping ? form.shippingCost.trim() : ""
 
   if (!title) {
     addError(errors, "title", "Add a product title.")
   }
 
   try {
-    normalizePublishableProductPrice(Number(form.price), currency)
+    normalizePublishableProductPrice(
+      parsePlainDecimalAmount(form.price, "Price"),
+      currency
+    )
   } catch (error) {
     addError(
       errors,
@@ -202,10 +230,18 @@ export function validateProductPublishForm(
     )
   }
 
+  if (hasFixedShipping && !shippingCostInput) {
+    addError(
+      errors,
+      "shippingCost",
+      "Enter 0 for included shipping or a fixed amount, or choose coordinate shipping after the order."
+    )
+  }
+
   if (shippingCostInput) {
     try {
       normalizePublishableProductShippingCost(
-        Number(shippingCostInput),
+        parsePlainDecimalAmount(shippingCostInput, "Shipping"),
         currency
       )
     } catch (error) {
@@ -214,7 +250,7 @@ export function validateProductPublishForm(
         "shippingCost",
         error instanceof Error
           ? error.message
-          : "Shipping must be a non-negative amount or blank."
+          : "Shipping must be a non-negative amount."
       )
     }
 

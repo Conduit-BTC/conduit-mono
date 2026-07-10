@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
@@ -7,14 +7,12 @@ import {
   EVENT_KINDS,
   SHIPPING_COUNTRIES,
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
-  CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   appendConduitClientTag,
   buildProductListingEventDraft,
   canonicalizeProductPrice,
   evaluateListingSafety,
   getCachedMerchantStorefront,
   getListingSafetyDisplay,
-  getShippingOptionAddress,
   getMerchantStorefront,
   getProductImageCandidates,
   getProductPriceDisplay,
@@ -52,19 +50,24 @@ import { ProductTagEditor } from "../components/ProductTagEditor"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { requireAuth } from "../lib/auth"
+import { ProductDraftStore, type ProductDraftTarget } from "../lib/productDraft"
 import {
   canSubmitProductForm,
   MAX_PRODUCT_TAG_COUNT,
   MAX_PRODUCT_TAG_LENGTH,
+  reconcileProductFormShippingPreset,
   validateProductPublishForm,
-  type ProductPublishFormValues,
+  type MerchantProductFormValues,
 } from "../lib/productForm"
 import {
   canonicalizeProductShippingCost,
-  getProductPriceInputStep,
+  formatProductAmountInput,
+  getProductAmountInputMode,
   getProductShippingCostHelpText,
   getProductShippingCurrencyLabel,
+  isPlainDecimalInput,
   normalizePublishableProductPrice,
+  parsePlainDecimalAmount,
 } from "../lib/productPriceForm"
 import {
   isShippingComplete,
@@ -88,11 +91,7 @@ type MerchantProduct = {
   safety: ListingSafetyEvaluation
 }
 
-type ProductFormState = ProductPublishFormValues & {
-  summary: string
-  publicZapEnabled: boolean
-  zapMessagePolicy: ProductZapMessagePolicy
-}
+type ProductFormState = MerchantProductFormValues
 
 type ProductSort = "updated_desc" | "title_asc" | "price_asc" | "price_desc"
 
@@ -105,6 +104,7 @@ function createEmptyProductForm(
     price: "0",
     currency: "USD",
     format: "physical",
+    shippingPricingMode: "fixed",
     shippingCost: "",
     usePresetShippingZone,
     customShippingConfig: { countries: [] },
@@ -116,6 +116,17 @@ function createEmptyProductForm(
 }
 
 const EMPTY_FORM: ProductFormState = createEmptyProductForm()
+
+function getProductDraftTarget(
+  merchantPubkey: string,
+  product?: MerchantProduct | null
+): ProductDraftTarget {
+  return {
+    merchantPubkey,
+    productAddressId: product?.addressId ?? null,
+    baseEventId: product?.eventId ?? null,
+  }
+}
 
 function slugify(input: string): string {
   return input
@@ -165,17 +176,25 @@ function productToForm(
 ): ProductFormState {
   const source = product.sourcePrice
   const sourceShippingCost = product.sourceShippingCost
+  const currency = source?.normalizedCurrency ?? product.currency
+  const hasFixedShippingCost =
+    typeof sourceShippingCost?.amount === "number" ||
+    typeof product.shippingCostSats === "number"
   return {
     title: product.title,
     summary: product.summary ?? "",
-    price: String(source?.amount ?? product.price),
-    currency: source?.normalizedCurrency ?? product.currency,
+    price: formatProductAmountInput(source?.amount ?? product.price),
+    currency,
     format: product.format,
+    shippingPricingMode:
+      product.format === "physical" && !hasFixedShippingCost
+        ? "coordinate_after_order"
+        : "fixed",
     shippingCost:
       typeof sourceShippingCost?.amount === "number"
-        ? String(sourceShippingCost.amount)
+        ? formatProductAmountInput(sourceShippingCost.amount)
         : typeof product.shippingCostSats === "number"
-          ? String(product.shippingCostSats)
+          ? formatProductAmountInput(product.shippingCostSats)
           : "",
     usePresetShippingZone: presetAvailable && !!product.shippingOptionId,
     customShippingConfig: productShippingConfigFromProduct(product),
@@ -194,25 +213,15 @@ function buildShippingMetadata(
   merchantPubkey: string,
   usePresetShippingZone: boolean,
   customShippingConfig: ShippingConfig
-): Pick<
-  ProductSchema,
-  | "shippingOptionId"
-  | "shippingOptionDTag"
-  | "shippingCountries"
-  | "shippingCountryRules"
-> {
+): Pick<ProductSchema, "shippingCountries" | "shippingCountryRules"> {
   const shippingConfig = usePresetShippingZone
     ? loadShippingConfig(merchantPubkey)
     : customShippingConfig
   if (!isShippingComplete(shippingConfig)) return {}
 
+  // Snapshot destinations on the listing. The shared preset event has a zero
+  // discovery price, so referencing it would contradict this fixed amount.
   return {
-    ...(usePresetShippingZone
-      ? {
-          shippingOptionId: getShippingOptionAddress(merchantPubkey),
-          shippingOptionDTag: CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
-        }
-      : {}),
     shippingCountries: shippingConfig.countries.map((country) => country.code),
     shippingCountryRules: shippingConfig.countries.map((country) => ({
       code: country.code,
@@ -405,11 +414,14 @@ async function publishProduct(
   const title = form.title.trim()
   if (!title) throw new Error("Title is required")
 
-  const price = Number(form.price)
+  const price = parsePlainDecimalAmount(form.price, "Price")
   const isDigital = form.format === "digital"
-  const shippingCostInput = isDigital ? "" : form.shippingCost.trim()
+  const hasFixedShipping = !isDigital && form.shippingPricingMode === "fixed"
+  const shippingCostInput = hasFixedShipping ? form.shippingCost.trim() : ""
   const shippingCostAmount =
-    shippingCostInput.length > 0 ? Number(shippingCostInput) : undefined
+    shippingCostInput.length > 0
+      ? parsePlainDecimalAmount(shippingCostInput, "Shipping")
+      : undefined
 
   const currency = form.currency.trim().toUpperCase() || "USD"
   const normalizedPrice = normalizePublishableProductPrice(price, currency)
@@ -417,13 +429,14 @@ async function publishProduct(
     shippingCostAmount,
     currency
   )
-  const shippingMetadata = isDigital
-    ? {}
-    : buildShippingMetadata(
-        signerPubkey,
-        form.usePresetShippingZone,
-        form.customShippingConfig
-      )
+  const shippingMetadata =
+    isDigital || !hasFixedShipping
+      ? {}
+      : buildShippingMetadata(
+          signerPubkey,
+          form.usePresetShippingZone,
+          form.customShippingConfig
+        )
   const hasShippingZone =
     (shippingMetadata.shippingCountries?.length ?? 0) > 0 ||
     (shippingMetadata.shippingCountryRules?.length ?? 0) > 0
@@ -534,9 +547,14 @@ function ProductsPage() {
   const { pubkey } = useAuth()
   const queryClient = useQueryClient()
   const btcUsdRateQuery = useBtcUsdRate()
+  const productDialogReturnFocusRef = useRef<HTMLElement | null>(null)
+  const productDraftStoreRef = useRef(new ProductDraftStore())
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM)
   const [editing, setEditing] = useState<MerchantProduct | null>(null)
   const [productDialogOpen, setProductDialogOpen] = useState(false)
+  const [activeProductDraftTarget, setActiveProductDraftTarget] =
+    useState<ProductDraftTarget | null>(null)
+  const [draftStorageAvailable, setDraftStorageAvailable] = useState(true)
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedTag, setSelectedTag] = useState("all")
   const [sortOrder, setSortOrder] = useState<ProductSort>("updated_desc")
@@ -562,15 +580,28 @@ function ProductsPage() {
 
   const saveMutation = useMutation({
     mutationFn: async (payload: {
+      merchantPubkey: string
       form: ProductFormState
       existing?: MerchantProduct
     }) => {
-      await publishProduct(pubkey!, payload.form, payload.existing)
+      await publishProduct(
+        payload.merchantPubkey,
+        payload.form,
+        payload.existing
+      )
     },
-    onSuccess: async () => {
+    onSuccess: async (_data, variables) => {
+      const draftCleared = productDraftStoreRef.current.clear(
+        getProductDraftTarget(
+          variables.merchantPubkey,
+          variables.existing ?? null
+        )
+      )
       setEditing(null)
+      setActiveProductDraftTarget(null)
       setForm(createEmptyProductForm(hasPresetShippingZone))
       setProductDialogOpen(false)
+      setDraftStorageAvailable(draftCleared)
       await queryClient.invalidateQueries({
         queryKey: ["merchant-products", pubkey ?? "none"],
       })
@@ -584,7 +615,16 @@ function ProductsPage() {
     mutationFn: async (product: MerchantProduct) => {
       await deleteProduct(pubkey!, product)
     },
-    onSuccess: async () => {
+    onSuccess: async (_data, product) => {
+      const draftCleared = productDraftStoreRef.current.clear(
+        getProductDraftTarget(product.product.pubkey, product)
+      )
+      if (activeProductDraftTarget?.productAddressId === product.addressId) {
+        setEditing(null)
+        setActiveProductDraftTarget(null)
+        setForm(createEmptyProductForm(hasPresetShippingZone))
+        setDraftStorageAvailable(draftCleared)
+      }
       await queryClient.invalidateQueries({
         queryKey: ["merchant-products", pubkey ?? "none"],
       })
@@ -607,6 +647,20 @@ function ProductsPage() {
     () => JSON.stringify(form) !== JSON.stringify(savedProductForm),
     [form, savedProductForm]
   )
+  useEffect(() => {
+    if (!productDialogOpen || !activeProductDraftTarget) return
+
+    if (!hasProductChanges) {
+      setDraftStorageAvailable(
+        productDraftStoreRef.current.clear(activeProductDraftTarget)
+      )
+      return
+    }
+
+    setDraftStorageAvailable(
+      productDraftStoreRef.current.save(activeProductDraftTarget, form)
+    )
+  }, [activeProductDraftTarget, form, hasProductChanges, productDialogOpen])
   const productFormValidation = useMemo(
     () => validateProductPublishForm(form, { hasPresetShippingZone }),
     [form, hasPresetShippingZone]
@@ -693,29 +747,136 @@ function ProductsPage() {
     ? "Updating listings"
     : `${visibleProducts.length} of ${merchantProducts.length} listings`
   const productIsDigital = form.format === "digital"
+  const productCoordinatesShipping =
+    !productIsDigital && form.shippingPricingMode === "coordinate_after_order"
   const customShippingZoneActive =
-    !productIsDigital && (!hasPresetShippingZone || !form.usePresetShippingZone)
+    !productIsDigital &&
+    !productCoordinatesShipping &&
+    (!hasPresetShippingZone || !form.usePresetShippingZone)
   const presetShippingZoneUnavailable =
-    productIsDigital || !hasPresetShippingZone
+    productIsDigital || productCoordinatesShipping || !hasPresetShippingZone
 
-  function closeProductDialog(): void {
+  function persistCurrentProductDraft(): boolean {
+    if (!activeProductDraftTarget || !hasProductChanges) return true
+    const saved = productDraftStoreRef.current.save(
+      activeProductDraftTarget,
+      form
+    )
+    setDraftStorageAvailable(saved)
+    return saved
+  }
+
+  function rememberProductDialogTrigger(): void {
+    const activeElement = document.activeElement
+    productDialogReturnFocusRef.current =
+      activeElement instanceof HTMLElement ? activeElement : null
+  }
+
+  function requestCloseProductDialog(): void {
+    if (isSaving) return
+    persistCurrentProductDraft()
+    setProductDialogOpen(false)
+    saveMutation.reset()
+  }
+
+  function discardProductChanges(): void {
+    if (
+      hasProductChanges &&
+      !window.confirm(
+        editing
+          ? `Discard unpublished changes to "${form.title || editing.product.title}"?`
+          : "Discard this unpublished product draft?"
+      )
+    ) {
+      return
+    }
+
+    if (activeProductDraftTarget) {
+      const cleared = productDraftStoreRef.current.clear(
+        activeProductDraftTarget
+      )
+      if (!cleared) {
+        setDraftStorageAvailable(false)
+        return
+      }
+    }
     setProductDialogOpen(false)
     setEditing(null)
+    setActiveProductDraftTarget(null)
     setForm(createEmptyProductForm(hasPresetShippingZone))
+    setDraftStorageAvailable(true)
     saveMutation.reset()
   }
 
   function openCreateDialog(): void {
+    rememberProductDialogTrigger()
     saveMutation.reset()
+    if (
+      activeProductDraftTarget &&
+      activeProductDraftTarget.merchantPubkey === pubkey &&
+      !activeProductDraftTarget.productAddressId &&
+      !editing &&
+      hasProductChanges
+    ) {
+      setProductDialogOpen(true)
+      return
+    }
+
+    if (!persistCurrentProductDraft()) {
+      setProductDialogOpen(true)
+      return
+    }
+    const emptyForm = createEmptyProductForm(hasPresetShippingZone)
+    const draftTarget = pubkey ? getProductDraftTarget(pubkey) : null
+    const loaded = draftTarget
+      ? productDraftStoreRef.current.load(draftTarget)
+      : { draft: null, storageAvailable: false }
     setEditing(null)
-    setForm(createEmptyProductForm(hasPresetShippingZone))
+    setActiveProductDraftTarget(draftTarget)
+    setForm(
+      loaded.draft
+        ? reconcileProductFormShippingPreset(
+            loaded.draft,
+            hasPresetShippingZone
+          )
+        : emptyForm
+    )
+    setDraftStorageAvailable(loaded.storageAvailable)
     setProductDialogOpen(true)
   }
 
   function openEditDialog(item: MerchantProduct): void {
+    rememberProductDialogTrigger()
     saveMutation.reset()
+    if (
+      activeProductDraftTarget?.productAddressId === item.addressId &&
+      activeProductDraftTarget.baseEventId === item.eventId &&
+      editing?.addressId === item.addressId &&
+      hasProductChanges
+    ) {
+      setProductDialogOpen(true)
+      return
+    }
+
+    if (!persistCurrentProductDraft()) {
+      setProductDialogOpen(true)
+      return
+    }
+    const draftTarget = pubkey ? getProductDraftTarget(pubkey, item) : null
+    const loaded = draftTarget
+      ? productDraftStoreRef.current.load(draftTarget)
+      : { draft: null, storageAvailable: false }
     setEditing(item)
-    setForm(productToForm(item.product, hasPresetShippingZone))
+    setActiveProductDraftTarget(draftTarget)
+    setForm(
+      loaded.draft
+        ? reconcileProductFormShippingPreset(
+            loaded.draft,
+            hasPresetShippingZone
+          )
+        : productToForm(item.product, hasPresetShippingZone)
+    )
+    setDraftStorageAvailable(loaded.storageAvailable)
     setProductDialogOpen(true)
   }
 
@@ -968,10 +1129,22 @@ function ProductsPage() {
             setProductDialogOpen(true)
             return
           }
-          closeProductDialog()
+          requestCloseProductDialog()
         }}
       >
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+        <DialogContent
+          className="max-h-[90vh] overflow-y-auto sm:max-w-2xl"
+          onPointerDownOutside={(event) => event.preventDefault()}
+          onEscapeKeyDown={(event) => {
+            if (isSaving) event.preventDefault()
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault()
+            const returnTarget = productDialogReturnFocusRef.current
+            if (returnTarget?.isConnected) returnTarget.focus()
+            productDialogReturnFocusRef.current = null
+          }}
+        >
           <DialogHeader>
             <DialogTitle>
               {editing ? "Edit listing" : "Add product"}
@@ -987,8 +1160,12 @@ function ProductsPage() {
             className="grid gap-3"
             onSubmit={(event) => {
               event.preventDefault()
-              if (!productCanSubmit) return
-              saveMutation.mutate({ form, existing: editing ?? undefined })
+              if (!pubkey || !productCanSubmit) return
+              saveMutation.mutate({
+                merchantPubkey: pubkey,
+                form,
+                existing: editing ?? undefined,
+              })
             }}
           >
             <div className="grid gap-1.5">
@@ -1022,13 +1199,24 @@ function ProductsPage() {
                 <Label htmlFor="product-price">Price</Label>
                 <Input
                   id="product-price"
-                  type="number"
-                  min="0"
-                  step={getProductPriceInputStep(form.currency)}
+                  type="text"
+                  inputMode={getProductAmountInputMode(form.currency)}
+                  autoComplete="off"
+                  className="tabular-nums"
                   value={form.price}
-                  onChange={(event) =>
-                    setForm((prev) => ({ ...prev, price: event.target.value }))
+                  aria-invalid={!!productFormValidation.errors.price}
+                  aria-describedby={
+                    productFormValidation.errors.price
+                      ? "product-price-error"
+                      : undefined
                   }
+                  onChange={(event) => {
+                    if (!isPlainDecimalInput(event.target.value)) return
+                    setForm((prev) => ({
+                      ...prev,
+                      price: event.target.value,
+                    }))
+                  }}
                   required
                 />
               </div>
@@ -1064,6 +1252,7 @@ function ProductsPage() {
                       return {
                         ...prev,
                         format,
+                        shippingPricingMode: "fixed",
                         shippingCost:
                           format === "digital" ? "" : prev.shippingCost,
                         usePresetShippingZone:
@@ -1092,33 +1281,105 @@ function ProductsPage() {
                 </Label>
                 <Input
                   id="product-shipping"
-                  type="number"
-                  min="0"
-                  step={getProductPriceInputStep(form.currency)}
-                  value={form.shippingCost}
-                  disabled={productIsDigital}
+                  type="text"
+                  inputMode={getProductAmountInputMode(form.currency)}
+                  autoComplete="off"
+                  className="tabular-nums"
+                  value={productCoordinatesShipping ? "" : form.shippingCost}
+                  disabled={productIsDigital || productCoordinatesShipping}
+                  aria-invalid={!!productFormValidation.errors.shippingCost}
                   aria-describedby="product-shipping-help"
-                  onChange={(event) =>
+                  onChange={(event) => {
+                    if (!isPlainDecimalInput(event.target.value)) return
                     setForm((prev) => ({
                       ...prev,
                       shippingCost: event.target.value,
                     }))
-                  }
+                  }}
                   placeholder={
-                    productIsDigital ? "Not required" : "Leave blank"
+                    productIsDigital
+                      ? "Not required"
+                      : productCoordinatesShipping
+                        ? "Set after order"
+                        : "0 or fixed amount"
                   }
                 />
               </div>
+              {productFormValidation.errors.price && (
+                <p
+                  id="product-price-error"
+                  className="text-pretty text-xs leading-5 text-error sm:col-span-4"
+                >
+                  {productFormValidation.errors.price}
+                </p>
+              )}
               <div
                 id="product-shipping-help"
-                className="text-xs leading-5 text-[var(--text-muted)] sm:col-span-4"
-              >
-                {getProductShippingCostHelpText(
-                  form.shippingCost,
-                  form.format,
-                  form.currency
+                className={cn(
+                  "text-pretty text-xs leading-5 sm:col-span-4",
+                  productFormValidation.errors.shippingCost
+                    ? "text-error"
+                    : "text-[var(--text-muted)]"
                 )}
+              >
+                {productFormValidation.errors.shippingCost ??
+                  getProductShippingCostHelpText(
+                    form.shippingCost,
+                    form.format,
+                    form.currency,
+                    form.shippingPricingMode
+                  )}
               </div>
+              <label
+                className={cn(
+                  "flex items-start gap-3 rounded-xl border p-3 text-sm sm:col-span-4",
+                  productIsDigital
+                    ? "cursor-not-allowed border-dashed border-[var(--border)] bg-[var(--surface-elevated)] opacity-60"
+                    : "cursor-pointer",
+                  productCoordinatesShipping
+                    ? "border-warning/40 bg-warning/10"
+                    : "border-[var(--border)] bg-[var(--surface-elevated)]"
+                )}
+                aria-disabled={productIsDigital}
+              >
+                <input
+                  type="checkbox"
+                  checked={productCoordinatesShipping}
+                  disabled={productIsDigital}
+                  aria-labelledby="product-coordinate-shipping-label"
+                  aria-describedby="product-coordinate-shipping-help"
+                  onChange={(event) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      shippingPricingMode: event.target.checked
+                        ? "coordinate_after_order"
+                        : "fixed",
+                    }))
+                  }
+                  className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500 disabled:cursor-not-allowed disabled:opacity-50"
+                />
+                <span className="grid gap-1">
+                  <span
+                    id="product-coordinate-shipping-label"
+                    className="font-medium text-[var(--text-primary)]"
+                  >
+                    Coordinate shipping with the buyer after the order
+                  </span>
+                  <span
+                    id="product-coordinate-shipping-help"
+                    className={cn(
+                      "text-pretty text-xs leading-5",
+                      productCoordinatesShipping
+                        ? "text-warning"
+                        : "text-[var(--text-muted)]"
+                    )}
+                  >
+                    {productIsDigital
+                      ? "Digital products do not need shipping coordination."
+                      : "Only choose this if you cannot set a checkout amount. Fast checkout will be unavailable, and you’ll need to follow up on every order message before the buyer can pay."}
+                  </span>
+                </span>
+              </label>
               <label
                 className={cn(
                   "flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-sm sm:col-span-4",
@@ -1132,6 +1393,7 @@ function ProductsPage() {
                   type="checkbox"
                   checked={
                     !productIsDigital &&
+                    !productCoordinatesShipping &&
                     hasPresetShippingZone &&
                     form.usePresetShippingZone
                   }
@@ -1155,11 +1417,13 @@ function ProductsPage() {
                   >
                     {productIsDigital
                       ? "Digital products do not need shipping zones."
-                      : hasPresetShippingZone
-                        ? form.usePresetShippingZone
-                          ? "Direct checkout will use your published shipping countries and postal rules."
-                          : "Use custom destinations for this product instead of the published preset."
-                        : "No preset shipping zone is available. Add custom destinations for this product below."}
+                      : productCoordinatesShipping
+                        ? "Shipping destinations will be agreed with the buyer after the order."
+                        : hasPresetShippingZone
+                          ? form.usePresetShippingZone
+                            ? "Direct checkout will use your published shipping countries and postal rules."
+                            : "Use custom destinations for this product instead of the published preset."
+                          : "No preset shipping zone is available. Add custom destinations for this product below."}
                   </span>
                 </span>
               </label>
@@ -1297,13 +1561,41 @@ function ProductsPage() {
               )}
             />
 
+            {hasProductChanges && (
+              <p
+                role="status"
+                aria-live="polite"
+                className={cn(
+                  "text-pretty text-xs leading-5",
+                  draftStorageAvailable
+                    ? "text-[var(--text-muted)]"
+                    : "text-error"
+                )}
+              >
+                {draftStorageAvailable
+                  ? "Draft saved on this device. Close this window and reopen it to continue."
+                  : "Local draft storage is unavailable. Keep this page open; switching product forms is blocked to protect these changes."}
+              </p>
+            )}
+
             <DialogFooter>
+              {hasProductChanges && (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={discardProductChanges}
+                  disabled={isSaving}
+                >
+                  Discard changes
+                </Button>
+              )}
               <Button
                 type="button"
                 variant="outline"
-                onClick={closeProductDialog}
+                onClick={requestCloseProductDialog}
+                disabled={isSaving}
               >
-                Cancel
+                Close
               </Button>
               <Button
                 type="submit"

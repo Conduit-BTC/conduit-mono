@@ -130,6 +130,43 @@ describe("product listing event drafts", () => {
     expect(draft.tags).not.toContainEqual(["shipping_cost", "5"])
   })
 
+  it("distinguishes included shipping from post-order coordination", () => {
+    const includedDraft = buildProductListingEventDraft({
+      product: baseProduct({
+        shippingCostSats: 0,
+        sourceShippingCost: undefined,
+        shippingOptionId: undefined,
+        shippingOptionDTag: undefined,
+      }),
+      dTag: "included-shipping-product",
+    })
+    const coordinatedDraft = buildProductListingEventDraft({
+      product: baseProduct({
+        shippingCostSats: undefined,
+        sourceShippingCost: undefined,
+        shippingOptionId: undefined,
+        shippingOptionDTag: undefined,
+        shippingCountries: undefined,
+        shippingCountryRules: undefined,
+      }),
+      dTag: "coordinated-shipping-product",
+    })
+
+    expectTag(includedDraft.tags, ["shipping_cost", "0"])
+    expect(includedDraft.tags.some((tag) => tag[0] === "shipping_option")).toBe(
+      false
+    )
+    expect(
+      coordinatedDraft.tags.some((tag) => tag[0] === "shipping_cost")
+    ).toBe(false)
+    expect(
+      coordinatedDraft.tags.some((tag) => tag[0] === "shipping_option")
+    ).toBe(false)
+    expect(
+      coordinatedDraft.tags.some((tag) => tag[0] === "shipping_country")
+    ).toBe(false)
+  })
+
   it("emits custom product shipping rules without a preset option reference", () => {
     const product = baseProduct({
       shippingOptionId: undefined,
