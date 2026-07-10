@@ -126,7 +126,7 @@ describeIfRelay("merchant products CRUD (relay smoke)", () => {
       type: "simple",
       format: "physical",
       visibility: "public",
-      stock: undefined,
+      stock: 12,
       images: [],
       tags: ["test", "merchant-crud"],
       publicZapEnabled: true,
@@ -167,6 +167,7 @@ describeIfRelay("merchant products CRUD (relay smoke)", () => {
     const parsedAfterCreate = parseProductEvent(eventsAfterCreate[0]!)
     expect(parsedAfterCreate.title).toBe(baseTitle)
     expect(parsedAfterCreate.price).toBe(12.34)
+    expect(parsedAfterCreate.stock).toBe(12)
 
     // Ensure created_at differs so replaceable selection is deterministic.
     await new Promise((r) => setTimeout(r, 1100))
@@ -176,6 +177,7 @@ describeIfRelay("merchant products CRUD (relay smoke)", () => {
       ...productV1,
       title: `${baseTitle} (updated)`,
       price: 99.99,
+      stock: 8,
       publicZapEnabled: false,
       zapMessagePolicy: "custom",
       publicZapPolicyKnown: true,
@@ -216,6 +218,7 @@ describeIfRelay("merchant products CRUD (relay smoke)", () => {
     const parsedAfterUpdate = parseProductEvent(latestAfterUpdate)
     expect(parsedAfterUpdate.title).toBe(`${baseTitle} (updated)`)
     expect(parsedAfterUpdate.price).toBe(99.99)
+    expect(parsedAfterUpdate.stock).toBe(8)
     expect(parsedAfterUpdate.publicZapEnabled).toBe(false)
     expect(parsedAfterUpdate.zapMessagePolicy).toBe("custom")
     expect(parsedAfterUpdate.publicZapPolicyKnown).toBe(true)
