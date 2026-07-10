@@ -105,7 +105,10 @@ Product identity should preserve:
 ```
 
 Merchant Portal publish validation requires a title, positive price, HTTPS image
-URL, and at least 3 distinct tags. Summary remains optional.
+URL, and 3 to 12 distinct tags. Tags are trimmed, deduplicated
+case-insensitively, and limited to 40 characters each. Summary remains optional.
+These are Merchant input constraints, not NIP-99 or GammaMarkets protocol
+limits; publishing preserves one `t` tag per accepted product tag.
 
 Conduit-generated product events also include checkout zap policy tags:
 
