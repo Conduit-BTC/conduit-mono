@@ -32,7 +32,10 @@ import {
   isListingMarketVisible,
   type ListingSafetyEvaluation,
 } from "./listing-safety"
-import { parseProductEvent } from "./products"
+import {
+  normalizeProductSummaryForDisplay,
+  parseProductEvent,
+} from "./products"
 import { parseProfileEvent } from "./profiles"
 import {
   getCommerceReadRelayUrls,
@@ -672,11 +675,19 @@ function toCachedProduct(record: CommerceProductRecord) {
 function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
   const zapMessagePolicy =
     row.zapMessagePolicy === "custom" ? row.zapMessagePolicy : "generic_only"
+  const summary = normalizeProductSummaryForDisplay(row.summary, {
+    title: row.title,
+    priceInfo: {
+      price: row.sourcePrice?.amount ?? row.price,
+      currency: row.sourcePrice?.currency ?? row.currency,
+    },
+    tags: row.tags ?? [],
+  })
   const product: Product = {
     id: row.id,
     pubkey: row.pubkey,
     title: row.title,
-    summary: row.summary,
+    summary,
     price: row.price,
     currency: row.currency,
     priceSats: row.priceSats,

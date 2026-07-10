@@ -13,6 +13,9 @@ import { EVENT_KINDS } from "./kinds"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 
 const PRODUCT_IMAGE_URL_PATTERN = /^https?:\/\//i
+const PRODUCT_JSON_DISPLAY_PROJECTION_MAX_DEPTH = 3
+const PRODUCT_TITLE_MAX_LENGTH = 200
+const PRODUCT_SUMMARY_MAX_LENGTH = 5000
 export const PRODUCT_PUBLIC_ZAPS_TAG = "checkout_public_zaps"
 export const PRODUCT_ZAP_MESSAGE_POLICY_TAG = "checkout_zap_message_policy"
 const PRODUCT_PUBLIC_ZAPS_LEGACY_TAG = "public_zaps"
@@ -300,6 +303,239 @@ function parseProductZapPolicy(
   }
 }
 
+export type ProductJsonDisplayProjection = {
+  isJson: boolean
+  title?: string
+  summary?: string
+}
+
+type ProductSummaryCleanupContext = {
+  title: string
+  priceInfo: { price: number; currency: string } | null
+  tags: string[]
+}
+
+function getStringField(
+  record: Record<string, unknown>,
+  names: string[],
+  maxLength?: number
+): string | undefined {
+  for (const name of names) {
+    const value = record[name]
+    if (typeof value !== "string") continue
+
+    const trimmed = value.trim()
+    if (trimmed) return trimmed.slice(0, maxLength)
+  }
+
+  return undefined
+}
+
+export function projectProductJsonDisplayFields(
+  content: string
+): ProductJsonDisplayProjection | null {
+  const trimmed = content.trim()
+  if (!trimmed) return null
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { isJson: true }
+  }
+
+  const record = parsed as Record<string, unknown>
+  return {
+    isJson: true,
+    title: getStringField(record, ["title", "name"], PRODUCT_TITLE_MAX_LENGTH),
+    summary: getStringField(
+      record,
+      ["summary", "description"],
+      PRODUCT_SUMMARY_MAX_LENGTH
+    ),
+  }
+}
+
+export function normalizeProductJsonDisplaySummary(
+  summary: string | undefined
+): string | undefined {
+  if (!summary) return undefined
+
+  let normalized = summary
+  for (
+    let depth = 0;
+    depth < PRODUCT_JSON_DISPLAY_PROJECTION_MAX_DEPTH;
+    depth += 1
+  ) {
+    const projection = projectProductJsonDisplayFields(normalized)
+    if (!projection?.isJson) return normalized
+    if (!projection.summary) return undefined
+    normalized = projection.summary
+  }
+
+  return projectProductJsonDisplayFields(normalized)?.isJson
+    ? undefined
+    : normalized
+}
+
+function normalizeSummaryMetadataLine(line: string): string {
+  return line
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[*_`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+}
+
+function isGeneratedListedByMetadataLine(line: string): boolean {
+  const trimmed = line.trim()
+  const marker = trimmed[0]
+  if ((marker !== "*" && marker !== "_") || !trimmed.endsWith(marker)) {
+    return false
+  }
+
+  return normalizeSummaryMetadataLine(trimmed).startsWith("listed by ")
+}
+
+function isBareFormatMetadataLine(normalizedLine: string): boolean {
+  return (
+    normalizedLine === "physical product" ||
+    normalizedLine === "digital product"
+  )
+}
+
+function isBarePriceMetadataLine(
+  normalizedLine: string,
+  priceInfo: ProductSummaryCleanupContext["priceInfo"]
+): boolean {
+  if (!priceInfo) return false
+
+  const price = `${priceInfo.price} ${priceInfo.currency}`.toLowerCase()
+  return normalizedLine === price
+}
+
+function isLabeledPriceMetadataLine(
+  normalizedLine: string,
+  priceInfo: ProductSummaryCleanupContext["priceInfo"]
+): boolean {
+  if (!priceInfo) return false
+
+  const price = `${priceInfo.price} ${priceInfo.currency}`.toLowerCase()
+  return normalizedLine.startsWith(`price: ${price}`)
+}
+
+function isLabeledCategoryMetadataLine(
+  normalizedLine: string,
+  tags: string[]
+): boolean {
+  if (!normalizedLine.startsWith("category: ")) return false
+
+  const category = normalizedLine.slice("category: ".length).trim()
+  return tags
+    .map((tag) => normalizeSummaryMetadataLine(tag))
+    .some((tag) => tag === category)
+}
+
+function isLabeledTypeMetadataLine(normalizedLine: string): boolean {
+  return (
+    normalizedLine === "type: physical product" ||
+    normalizedLine === "type: digital product"
+  )
+}
+
+function isTitleMetadataLine(normalizedLine: string, title: string): boolean {
+  return normalizedLine === normalizeSummaryMetadataLine(title)
+}
+
+function findNextNonBlankLineIndex(
+  normalizedLines: string[],
+  startIndex: number
+): number | null {
+  for (let index = startIndex; index < normalizedLines.length; index += 1) {
+    if (normalizedLines[index]) return index
+  }
+
+  return null
+}
+
+function compactSummaryLines(lines: string[]): string {
+  return lines
+    .join("\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+}
+
+export function normalizeProductSummaryForDisplay(
+  summary: string | undefined,
+  context: ProductSummaryCleanupContext
+): string | undefined {
+  if (!summary) return undefined
+
+  summary = normalizeProductJsonDisplaySummary(summary)
+  if (!summary) return undefined
+
+  const lines = summary.replace(/\r\n?/g, "\n").split("\n")
+  const normalizedLines = lines.map(normalizeSummaryMetadataLine)
+  const indexesToRemove = new Set<number>()
+
+  for (const [index, normalizedLine] of normalizedLines.entries()) {
+    if (!normalizedLine) continue
+
+    const isMarkdownTitle =
+      lines[index].trim().startsWith("#") &&
+      isTitleMetadataLine(normalizedLine, context.title)
+
+    if (
+      isMarkdownTitle ||
+      isGeneratedListedByMetadataLine(lines[index]) ||
+      isLabeledPriceMetadataLine(normalizedLine, context.priceInfo) ||
+      isLabeledCategoryMetadataLine(normalizedLine, context.tags) ||
+      isLabeledTypeMetadataLine(normalizedLine)
+    ) {
+      indexesToRemove.add(index)
+    }
+  }
+
+  for (const [index, normalizedLine] of normalizedLines.entries()) {
+    if (!isBarePriceMetadataLine(normalizedLine, context.priceInfo)) continue
+
+    const categoryIndex = findNextNonBlankLineIndex(normalizedLines, index + 1)
+    if (categoryIndex === null) continue
+
+    const formatIndex = findNextNonBlankLineIndex(
+      normalizedLines,
+      categoryIndex + 1
+    )
+    const attributionIndex =
+      formatIndex === null
+        ? null
+        : findNextNonBlankLineIndex(normalizedLines, formatIndex + 1)
+    if (
+      formatIndex !== null &&
+      isBareFormatMetadataLine(normalizedLines[formatIndex]) &&
+      attributionIndex !== null &&
+      isGeneratedListedByMetadataLine(lines[attributionIndex])
+    ) {
+      indexesToRemove.add(index)
+      indexesToRemove.add(categoryIndex)
+      indexesToRemove.add(formatIndex)
+    }
+  }
+
+  const cleaned = compactSummaryLines(
+    lines.filter((_, index) => !indexesToRemove.has(index))
+  )
+
+  return cleaned || undefined
+}
+
 /**
  * Best-effort parser for kind-30402 product events.
  *
@@ -336,16 +572,39 @@ export function parseProductEvent(
           } as ProductSchema)
         : candidate
     const res = productSchema.safeParse(pricedCandidate)
-    if (res.success) return res.data
+    if (res.success) {
+      const normalizedSummary = normalizeProductSummaryForDisplay(
+        res.data.summary,
+        {
+          title: res.data.title,
+          priceInfo: {
+            price: res.data.sourcePrice?.amount ?? res.data.price,
+            currency: res.data.sourcePrice?.currency ?? res.data.currency,
+          },
+          tags: res.data.tags,
+        }
+      )
+
+      return normalizedSummary === res.data.summary
+        ? res.data
+        : { ...res.data, summary: normalizedSummary }
+    }
   } catch {
     // fall through
   }
 
   // Fallback: market-spec/NIP-99 style tags + markdown content.
   const fromContent = (event.content || "").trim()
+  const jsonContentProjection = projectProductJsonDisplayFields(fromContent)
+  const markdownContent = jsonContentProjection?.isJson ? "" : fromContent
+  const markdownTitle = markdownContent
+    .split("\n")[0]
+    ?.trim()
+    .slice(0, PRODUCT_TITLE_MAX_LENGTH)
   const title =
     getTagValue(event.tags, "title") ??
-    fromContent.split("\n")[0]?.slice(0, 200) ??
+    jsonContentProjection?.title ??
+    (markdownTitle || undefined) ??
     "Untitled"
 
   const priceInfo = parsePriceTag(event.tags)
@@ -369,14 +628,31 @@ export function parseProductEvent(
     .map((url) => ({ url }))
 
   const tags = getTagValues(event.tags, "t")
+  const summaryContext: ProductSummaryCleanupContext = {
+    title,
+    priceInfo,
+    tags,
+  }
+  const summary =
+    normalizeProductSummaryForDisplay(
+      summaryTag ?? undefined,
+      summaryContext
+    ) ??
+    normalizeProductSummaryForDisplay(
+      jsonContentProjection?.summary,
+      summaryContext
+    ) ??
+    normalizeProductSummaryForDisplay(
+      markdownContent ? markdownContent.slice(0, 5000) : undefined,
+      summaryContext
+    )
 
   const fallback: ProductSchema = productSchema.parse(
     canonicalizeProductPrice({
       id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
       pubkey: event.pubkey,
       title,
-      summary:
-        summaryTag ?? (fromContent ? fromContent.slice(0, 5000) : undefined),
+      summary,
       price: priceInfo?.price ?? 0,
       currency: priceInfo?.currency ?? "USD",
       type,
