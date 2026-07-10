@@ -50,6 +50,8 @@ export function buildProductListingEventDraft({
   const sourcePrice = product.sourcePrice
   const priceAmount = sourcePrice?.amount ?? product.price
   const priceCurrency = sourcePrice?.currency ?? product.currency
+  const emittedZapMessagePolicy: ProductZapMessagePolicy =
+    product.zapMessagePolicy === "custom" ? "custom" : "generic_only"
 
   let tags: string[][] = [
     ["d", normalizedDTag],
@@ -60,10 +62,7 @@ export function buildProductListingEventDraft({
       PRODUCT_PUBLIC_ZAPS_TAG,
       product.publicZapEnabled === false ? "false" : "true",
     ],
-    [
-      PRODUCT_ZAP_MESSAGE_POLICY_TAG,
-      product.zapMessagePolicy ?? "generic_only",
-    ],
+    [PRODUCT_ZAP_MESSAGE_POLICY_TAG, emittedZapMessagePolicy],
   ]
 
   if (content) tags.push(["summary", content])
@@ -273,7 +272,7 @@ function parseProductZapMessagePolicy(
   switch (normalized) {
     case "product_reference":
     case "product":
-      return { value: "product_reference", known: true }
+      return { value: "generic_only", known: true }
     case "custom":
     case "shopper_custom":
       return { value: "custom", known: true }
