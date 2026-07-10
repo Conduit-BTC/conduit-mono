@@ -167,7 +167,11 @@ function ProductPage() {
         lineHeight * PRODUCT_DESCRIPTION_COLLAPSED_ROWS
       )
       const expandedHeight = Math.ceil(descriptionElement.scrollHeight)
-      const canExpand = expandedHeight > collapsedHeight + 1
+      const hasFocusableContent = descriptionElement.querySelector(
+        "a[href], button, input, select, textarea, [tabindex]:not([tabindex='-1'])"
+      )
+      const canExpand =
+        !hasFocusableContent && expandedHeight > collapsedHeight + 1
 
       setDescriptionMetrics((current) => {
         if (
@@ -596,9 +600,7 @@ function ProductPage() {
                   <div className="relative">
                     <div
                       className={[
-                        descriptionMetrics.canExpand
-                          ? "overflow-hidden transition-[max-height] duration-300 ease-out motion-reduce:transition-none"
-                          : "",
+                        descriptionMetrics.canExpand ? "overflow-hidden" : "",
                       ].join(" ")}
                       style={
                         descriptionMaxHeight === undefined
@@ -633,7 +635,7 @@ function ProductPage() {
                       {showFullDescription ? "Show less" : "Show more"}
                       <ChevronDown
                         className={[
-                          "h-3.5 w-3.5 transition-transform",
+                          "size-3.5 transition-transform",
                           showFullDescription ? "rotate-180" : "",
                         ].join(" ")}
                       />

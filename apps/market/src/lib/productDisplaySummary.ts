@@ -1,11 +1,15 @@
-import type { Product, ProductImage } from "@conduit/core"
+import {
+  normalizeProductJsonDisplaySummary,
+  type Product,
+  type ProductImage,
+} from "@conduit/core"
 
 export const PRODUCT_SUMMARY_FALLBACK =
   "This listing does not include a merchant-written summary yet. Product pricing, identity, and the order flow are still available."
 
 type ProductSummarySource = Pick<Product, "summary" | "images">
 
-const MARKDOWN_IMAGE_TITLE_PATTERN = String.raw`(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?`
+const MARKDOWN_IMAGE_TITLE_PATTERN = /^(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\))$/
 
 function getProductImageUrls(images: readonly ProductImage[]): Set<string> {
   return new Set(
@@ -13,20 +17,39 @@ function getProductImageUrls(images: readonly ProductImage[]): Set<string> {
   )
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
+function getStandaloneMarkdownImageUrl(line: string): string | null {
+  const prefix = line.match(/^!\[[^\]\n]*\]\(\s*/)?.[0]
+  if (!prefix || !line.endsWith(")")) return null
 
-function isStandaloneMarkdownImageLineForUrl(
-  line: string,
-  imageUrl: string
-): boolean {
-  const escapedImageUrl = escapeRegExp(imageUrl)
-  const pattern = new RegExp(
-    String.raw`^!\[[^\]\n]*\]\(\s*(?:<${escapedImageUrl}>|${escapedImageUrl})${MARKDOWN_IMAGE_TITLE_PATTERN}\s*\)$`
-  )
+  const body = line.slice(prefix.length, -1).trim()
+  if (!body) return null
 
-  return pattern.test(line)
+  if (body.startsWith("<")) {
+    const closingBracketIndex = body.indexOf(">")
+    if (closingBracketIndex < 1) return null
+
+    const url = body.slice(1, closingBracketIndex)
+    const title = body.slice(closingBracketIndex + 1).trim()
+    return !title || MARKDOWN_IMAGE_TITLE_PATTERN.test(title) ? url : null
+  }
+
+  let parenthesisDepth = 0
+  let destinationEnd = body.length
+  for (let index = 0; index < body.length; index += 1) {
+    const character = body[index]
+    if (character === "(") parenthesisDepth += 1
+    if (character === ")" && parenthesisDepth > 0) parenthesisDepth -= 1
+    if (/\s/.test(character) && parenthesisDepth === 0) {
+      destinationEnd = index
+      break
+    }
+  }
+
+  const url = body.slice(0, destinationEnd)
+  const title = body.slice(destinationEnd).trim()
+  return url && (!title || MARKDOWN_IMAGE_TITLE_PATTERN.test(title))
+    ? url
+    : null
 }
 
 function isStandaloneProductImageReference(
@@ -38,11 +61,8 @@ function isStandaloneProductImageReference(
 
   if (imageUrls.has(trimmed)) return true
 
-  for (const imageUrl of imageUrls) {
-    if (isStandaloneMarkdownImageLineForUrl(trimmed, imageUrl)) return true
-  }
-
-  return false
+  const markdownImageUrl = getStandaloneMarkdownImageUrl(trimmed)
+  return markdownImageUrl !== null && imageUrls.has(markdownImageUrl)
 }
 
 function removeStandaloneProductImageReferences(
@@ -61,8 +81,10 @@ export function getProductDisplaySummary(
   product: ProductSummarySource
 ): string {
   const imageUrls = getProductImageUrls(product.images)
+  const rawSummary = product.summary?.trim() ?? ""
+  const normalizedSummary = normalizeProductJsonDisplaySummary(rawSummary) ?? ""
   const summary = removeStandaloneProductImageReferences(
-    product.summary?.trim() ?? "",
+    normalizedSummary,
     imageUrls
   )
 

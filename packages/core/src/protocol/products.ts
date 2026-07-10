@@ -13,6 +13,7 @@ import { EVENT_KINDS } from "./kinds"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 
 const PRODUCT_IMAGE_URL_PATTERN = /^https?:\/\//i
+const PRODUCT_JSON_DISPLAY_PROJECTION_MAX_DEPTH = 3
 const PRODUCT_TITLE_MAX_LENGTH = 200
 const PRODUCT_SUMMARY_MAX_LENGTH = 5000
 export const PRODUCT_PUBLIC_ZAPS_TAG = "checkout_public_zaps"
@@ -302,7 +303,7 @@ function parseProductZapPolicy(
   }
 }
 
-type ProductJsonContentProjection = {
+export type ProductJsonDisplayProjection = {
   isJson: boolean
   title?: string
   summary?: string
@@ -330,9 +331,9 @@ function getStringField(
   return undefined
 }
 
-function parseProductJsonContentProjection(
+export function projectProductJsonDisplayFields(
   content: string
-): ProductJsonContentProjection | null {
+): ProductJsonDisplayProjection | null {
   const trimmed = content.trim()
   if (!trimmed) return null
   if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null
@@ -360,6 +361,28 @@ function parseProductJsonContentProjection(
   }
 }
 
+export function normalizeProductJsonDisplaySummary(
+  summary: string | undefined
+): string | undefined {
+  if (!summary) return undefined
+
+  let normalized = summary
+  for (
+    let depth = 0;
+    depth < PRODUCT_JSON_DISPLAY_PROJECTION_MAX_DEPTH;
+    depth += 1
+  ) {
+    const projection = projectProductJsonDisplayFields(normalized)
+    if (!projection?.isJson) return normalized
+    if (!projection.summary) return undefined
+    normalized = projection.summary
+  }
+
+  return projectProductJsonDisplayFields(normalized)?.isJson
+    ? undefined
+    : normalized
+}
+
 function normalizeSummaryMetadataLine(line: string): string {
   return line
     .replace(/^#{1,6}\s+/, "")
@@ -370,29 +393,31 @@ function normalizeSummaryMetadataLine(line: string): string {
     .toLowerCase()
 }
 
-function isListedByMetadataLine(normalizedLine: string): boolean {
-  return normalizedLine.startsWith("listed by ")
+function isGeneratedListedByMetadataLine(line: string): boolean {
+  const trimmed = line.trim()
+  const marker = trimmed[0]
+  if ((marker !== "*" && marker !== "_") || !trimmed.endsWith(marker)) {
+    return false
+  }
+
+  return normalizeSummaryMetadataLine(trimmed).startsWith("listed by ")
 }
 
-function isFormatMetadataLine(normalizedLine: string): boolean {
+function isBareFormatMetadataLine(normalizedLine: string): boolean {
   return (
     normalizedLine === "physical product" ||
-    normalizedLine === "digital product" ||
-    normalizedLine === "type: physical product" ||
-    normalizedLine === "type: digital product"
+    normalizedLine === "digital product"
   )
 }
 
-function isPriceMetadataLine(
+function isBarePriceMetadataLine(
   normalizedLine: string,
   priceInfo: ProductSummaryCleanupContext["priceInfo"]
 ): boolean {
   if (!priceInfo) return false
 
   const price = `${priceInfo.price} ${priceInfo.currency}`.toLowerCase()
-  return (
-    normalizedLine === price || normalizedLine.startsWith(`price: ${price}`)
-  )
+  return normalizedLine === price
 }
 
 function isLabeledPriceMetadataLine(
@@ -447,10 +472,13 @@ function compactSummaryLines(lines: string[]): string {
     .trim()
 }
 
-function cleanProductSummary(
+export function normalizeProductSummaryForDisplay(
   summary: string | undefined,
   context: ProductSummaryCleanupContext
 ): string | undefined {
+  if (!summary) return undefined
+
+  summary = normalizeProductJsonDisplaySummary(summary)
   if (!summary) return undefined
 
   const lines = summary.replace(/\r\n?/g, "\n").split("\n")
@@ -466,9 +494,7 @@ function cleanProductSummary(
 
     if (
       isMarkdownTitle ||
-      isListedByMetadataLine(normalizedLine) ||
-      isFormatMetadataLine(normalizedLine) ||
-      isPriceMetadataLine(normalizedLine, context.priceInfo) ||
+      isGeneratedListedByMetadataLine(lines[index]) ||
       isLabeledPriceMetadataLine(normalizedLine, context.priceInfo) ||
       isLabeledCategoryMetadataLine(normalizedLine, context.tags) ||
       isLabeledTypeMetadataLine(normalizedLine)
@@ -478,7 +504,7 @@ function cleanProductSummary(
   }
 
   for (const [index, normalizedLine] of normalizedLines.entries()) {
-    if (!isPriceMetadataLine(normalizedLine, context.priceInfo)) continue
+    if (!isBarePriceMetadataLine(normalizedLine, context.priceInfo)) continue
 
     const categoryIndex = findNextNonBlankLineIndex(normalizedLines, index + 1)
     if (categoryIndex === null) continue
@@ -487,11 +513,19 @@ function cleanProductSummary(
       normalizedLines,
       categoryIndex + 1
     )
+    const attributionIndex =
+      formatIndex === null
+        ? null
+        : findNextNonBlankLineIndex(normalizedLines, formatIndex + 1)
     if (
       formatIndex !== null &&
-      isFormatMetadataLine(normalizedLines[formatIndex])
+      isBareFormatMetadataLine(normalizedLines[formatIndex]) &&
+      attributionIndex !== null &&
+      isGeneratedListedByMetadataLine(lines[attributionIndex])
     ) {
+      indexesToRemove.add(index)
       indexesToRemove.add(categoryIndex)
+      indexesToRemove.add(formatIndex)
     }
   }
 
@@ -538,14 +572,30 @@ export function parseProductEvent(
           } as ProductSchema)
         : candidate
     const res = productSchema.safeParse(pricedCandidate)
-    if (res.success) return res.data
+    if (res.success) {
+      const normalizedSummary = normalizeProductSummaryForDisplay(
+        res.data.summary,
+        {
+          title: res.data.title,
+          priceInfo: {
+            price: res.data.sourcePrice?.amount ?? res.data.price,
+            currency: res.data.sourcePrice?.currency ?? res.data.currency,
+          },
+          tags: res.data.tags,
+        }
+      )
+
+      return normalizedSummary === res.data.summary
+        ? res.data
+        : { ...res.data, summary: normalizedSummary }
+    }
   } catch {
     // fall through
   }
 
   // Fallback: market-spec/NIP-99 style tags + markdown content.
   const fromContent = (event.content || "").trim()
-  const jsonContentProjection = parseProductJsonContentProjection(fromContent)
+  const jsonContentProjection = projectProductJsonDisplayFields(fromContent)
   const markdownContent = jsonContentProjection?.isJson ? "" : fromContent
   const markdownTitle = markdownContent
     .split("\n")[0]
@@ -578,18 +628,31 @@ export function parseProductEvent(
     .map((url) => ({ url }))
 
   const tags = getTagValues(event.tags, "t")
+  const summaryContext: ProductSummaryCleanupContext = {
+    title,
+    priceInfo,
+    tags,
+  }
+  const summary =
+    normalizeProductSummaryForDisplay(
+      summaryTag ?? undefined,
+      summaryContext
+    ) ??
+    normalizeProductSummaryForDisplay(
+      jsonContentProjection?.summary,
+      summaryContext
+    ) ??
+    normalizeProductSummaryForDisplay(
+      markdownContent ? markdownContent.slice(0, 5000) : undefined,
+      summaryContext
+    )
 
   const fallback: ProductSchema = productSchema.parse(
     canonicalizeProductPrice({
       id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
       pubkey: event.pubkey,
       title,
-      summary: cleanProductSummary(
-        summaryTag ??
-          jsonContentProjection?.summary ??
-          (markdownContent ? markdownContent.slice(0, 5000) : undefined),
-        { title, priceInfo, tags }
-      ),
+      summary,
       price: priceInfo?.price ?? 0,
       currency: priceInfo?.currency ?? "USD",
       type,

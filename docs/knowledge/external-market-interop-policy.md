@@ -3,7 +3,7 @@
 **Status:** Active
 **Owner:** Protocol / Market Lead
 **Applies to:** Conduit Market, Merchant Portal, Store Builder, shared protocol utilities
-**Last updated:** 2026-02-10
+**Last updated:** 2026-07-10
 **Decision rule:** Spec-first. External implementations inform compatibility, not correctness.
 
 ## External Codebase References (Expandable)

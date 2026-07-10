@@ -32,7 +32,7 @@ const ALLOWED_MARKDOWN_ELEMENTS = [
 ]
 
 const LINK_CLASS_NAME =
-  "break-words [overflow-wrap:anywhere] underline decoration-white/20 underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:decoration-white/40"
+  "break-words [overflow-wrap:anywhere] underline decoration-[var(--border)] underline-offset-4 transition-colors hover:text-[var(--text-primary)] hover:decoration-[var(--text-primary)]"
 
 const REMARK_PLUGINS = [remarkGfm]
 
@@ -129,28 +129,28 @@ const markdownComponents: Components = {
   },
   h1({ children }) {
     return (
-      <h3 className="text-pretty text-base font-semibold leading-7 text-[var(--text-primary)]">
+      <h3 className="text-balance text-base font-semibold leading-7 text-[var(--text-primary)]">
         {children}
       </h3>
     )
   },
   h2({ children }) {
     return (
-      <h3 className="text-pretty text-base font-semibold leading-7 text-[var(--text-primary)]">
+      <h3 className="text-balance text-base font-semibold leading-7 text-[var(--text-primary)]">
         {children}
       </h3>
     )
   },
   h3({ children }) {
     return (
-      <h3 className="text-pretty text-sm font-semibold leading-7 text-[var(--text-primary)]">
+      <h3 className="text-balance text-sm font-semibold leading-7 text-[var(--text-primary)]">
         {children}
       </h3>
     )
   },
   h4({ children }) {
     return (
-      <h4 className="text-pretty text-sm font-semibold leading-7 text-[var(--text-primary)]">
+      <h4 className="text-balance text-sm font-semibold leading-7 text-[var(--text-primary)]">
         {children}
       </h4>
     )

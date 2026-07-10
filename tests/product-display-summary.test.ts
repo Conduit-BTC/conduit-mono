@@ -53,4 +53,32 @@ describe("getProductDisplaySummary", () => {
       PRODUCT_SUMMARY_FALLBACK
     )
   })
+
+  it("projects display copy from a cached JSON-shaped summary", () => {
+    expect(
+      displaySummary(
+        JSON.stringify({
+          title: "Love, Love, Love",
+          description: "Nutti loves Ecash",
+          pricing: "free",
+        })
+      )
+    ).toBe("Nutti loves Ecash")
+  })
+
+  it("falls back for a cached JSON summary without display copy", () => {
+    expect(displaySummary('{"material":"linen","care":"cold wash"}')).toBe(
+      PRODUCT_SUMMARY_FALLBACK
+    )
+  })
+
+  it("does not expose nested JSON from cached display copy", () => {
+    expect(
+      displaySummary(
+        JSON.stringify({
+          description: JSON.stringify({ material: "linen" }),
+        })
+      )
+    ).toBe(PRODUCT_SUMMARY_FALLBACK)
+  })
 })

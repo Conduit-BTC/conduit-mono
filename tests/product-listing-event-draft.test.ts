@@ -266,6 +266,38 @@ describe("product listing event parsing", () => {
     expect(parsed.publicZapPolicyKnown).toBe(false)
   })
 
+  it("normalizes JSON-shaped summaries in legacy Conduit listings", () => {
+    const product = baseProduct({
+      summary: JSON.stringify({ description: "Legacy display copy" }),
+    })
+    const parsed = parseProductEvent({
+      id: "legacy-json-summary-event",
+      pubkey: product.pubkey,
+      created_at: 1_779_762_725,
+      content: JSON.stringify(product),
+      tags: [["d", "legacy-json-summary"]],
+    })
+
+    expect(parsed.summary).toBe("Legacy display copy")
+  })
+
+  it("suppresses nested JSON-shaped summaries in legacy listings", () => {
+    const product = baseProduct({
+      summary: JSON.stringify({
+        description: JSON.stringify({ material: "linen" }),
+      }),
+    })
+    const parsed = parseProductEvent({
+      id: "legacy-nested-json-summary-event",
+      pubkey: product.pubkey,
+      created_at: 1_779_762_725,
+      content: JSON.stringify(product),
+      tags: [["d", "legacy-nested-json-summary"]],
+    })
+
+    expect(parsed.summary).toBeUndefined()
+  })
+
   it("lets explicit zap policy tags override legacy JSON-content defaults", () => {
     const product = baseProduct({
       publicZapEnabled: true,
@@ -503,6 +535,72 @@ describe("product listing event parsing", () => {
     expect(parsed.images).toEqual([])
   })
 
+  it("projects screenshot-shaped JSON from a non-standard summary tag", () => {
+    const rawSummary = JSON.stringify({
+      title: "Love, Love, Love",
+      description: "Nutti loves Ecash",
+      category: "Ecash",
+      pricing: "free",
+      images: [
+        "https://blossom.primal.net/d1d66d4b20e2b094fcaba33d6b6d9442a4ec34d7719c66865dc0710da2bec7cc.png",
+      ],
+      created_at: "2025-07-25T13:44:41.029Z",
+    })
+    const parsed = parseProductEvent({
+      id: "love-love-love-event",
+      pubkey: "merchant",
+      created_at: 1_753_451_081,
+      content: rawSummary,
+      tags: [
+        ["d", "love-love-love"],
+        ["summary", rawSummary],
+        ["price", "0", "SATS"],
+        ["t", "Ecard"],
+        ["t", "Ecash"],
+        ["t", "Bitpopart"],
+        ["t", "Bitcoin-Art"],
+      ],
+    })
+
+    expect(parsed.title).toBe("Love, Love, Love")
+    expect(parsed.summary).toBe("Nutti loves Ecash")
+    expect(parsed.summary).not.toContain('{"title"')
+  })
+
+  it("suppresses JSON summary tags without display copy", () => {
+    const parsed = parseProductEvent({
+      id: "json-summary-metadata-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "",
+      tags: [
+        ["d", "json-summary-metadata"],
+        ["title", "Metadata-only JSON"],
+        ["summary", '{"material":"linen","care":"cold wash"}'],
+        ["price", "42000", "SATS"],
+      ],
+    })
+
+    expect(parsed.summary).toBeUndefined()
+  })
+
+  it("falls back to Markdown content when a JSON summary tag has no display copy", () => {
+    const parsed = parseProductEvent({
+      id: "json-summary-with-markdown-content-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Merchant-authored **Markdown** description.",
+      tags: [
+        ["d", "json-summary-with-markdown-content"],
+        ["title", "Markdown fallback"],
+        ["summary", '{"material":"linen","care":"cold wash"}'],
+        ["price", "42000", "SATS"],
+      ],
+    })
+
+    expect(parsed.summary).toBe("Merchant-authored **Markdown** description.")
+  })
+
   it("clamps partial JSON listing metadata before schema validation", () => {
     const parsed = parseProductEvent({
       id: "oversized-partial-json-listing-event",
@@ -589,5 +687,45 @@ describe("product listing event parsing", () => {
         "Price: varies by edition",
       ].join("\n")
     )
+  })
+
+  it("keeps prose between generated-looking price and format lines", () => {
+    const parsed = parseProductEvent({
+      id: "merchant-prose-between-metadata-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Fallback content",
+      tags: [
+        ["d", "merchant-prose-between-metadata"],
+        ["title", "Carved Cedar"],
+        [
+          "summary",
+          "1000 SATS\nHand-carved cedar with a natural finish.\nPhysical Product",
+        ],
+        ["price", "1000", "SATS"],
+        ["type", "simple", "physical"],
+      ],
+    })
+
+    expect(parsed.summary).toBe(
+      "1000 SATS\nHand-carved cedar with a natural finish.\nPhysical Product"
+    )
+  })
+
+  it("keeps merchant-authored prose that starts with listed by", () => {
+    const parsed = parseProductEvent({
+      id: "merchant-listed-by-prose-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Fallback content",
+      tags: [
+        ["d", "merchant-listed-by-prose"],
+        ["title", "Handmade Print"],
+        ["summary", "Listed by hand and signed by the artist."],
+        ["price", "1000", "SATS"],
+      ],
+    })
+
+    expect(parsed.summary).toBe("Listed by hand and signed by the artist.")
   })
 })
