@@ -235,13 +235,13 @@ describe("cart model", () => {
         item({
           productId: "30402:merchant-a:product-b",
           publicZapEnabled: true,
-          zapMessagePolicy: "product_reference",
+          zapMessagePolicy: "custom",
           publicZapPolicyKnown: true,
         }),
       ])
     ).toEqual({
       publicZapsAllowed: true,
-      effectiveZapMessagePolicy: "product_reference",
+      effectiveZapMessagePolicy: "custom",
       disabledProductIds: [],
       missingPolicyProductIds: [],
     })
@@ -303,7 +303,7 @@ describe("cart model", () => {
     })
   })
 
-  it("treats legacy product cart policy as product-reference compatibility", () => {
+  it("treats legacy product cart policy as generic-only compatibility", () => {
     expect(
       getCartPublicZapPolicy([
         item({
@@ -315,7 +315,7 @@ describe("cart model", () => {
       ])
     ).toEqual({
       publicZapsAllowed: true,
-      effectiveZapMessagePolicy: "product_reference",
+      effectiveZapMessagePolicy: "generic_only",
       disabledProductIds: [],
       missingPolicyProductIds: [],
     })

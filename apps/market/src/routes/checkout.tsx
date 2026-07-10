@@ -740,9 +740,7 @@ function CheckoutPage() {
       ? "This merchant wallet does not advertise public zap receipts."
       : zapContentEditable
         ? "Include an editable public zap comment."
-        : publicZapPolicy.effectiveZapMessagePolicy === "product_reference"
-          ? "Use a merchant-approved public zap comment; product references are allowed, but private details stay out."
-          : "Use the merchant's generic public zap comment."
+        : "Use the merchant's generic public zap comment."
   const anonZapModeDescription = !anonZapSignerAvailable
     ? "Anon Conduit Shopper signing is not configured yet."
     : publicZapModeDescription
@@ -2602,10 +2600,7 @@ function CheckoutPage() {
                         <p className="text-xs leading-6 text-[var(--text-muted)]">
                           {zapContentEditable
                             ? "Public zap receipts can expose this comment. Shipping address, contact details, private notes, wallet data, payment evidence, and order IDs are never added here."
-                            : publicZapPolicy.effectiveZapMessagePolicy ===
-                                "product_reference"
-                              ? "This cart allows product references, but checkout defaults to a generic public comment unless shopper-custom messaging is allowed."
-                              : "The merchant only allows generic public zap comments for this cart."}
+                            : "The merchant only allows a generic item-count public zap comment for this cart."}
                         </p>
                       </div>
                     )}

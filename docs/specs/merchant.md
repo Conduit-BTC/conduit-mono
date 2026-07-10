@@ -104,12 +104,15 @@ Product identity should preserve:
 30402:<merchant_pubkey>:<product_d_tag>
 ```
 
+Merchant Portal publish validation requires a title, positive price, HTTPS image
+URL, and at least 3 distinct tags. Summary remains optional.
+
 Conduit-generated product events also include checkout zap policy tags:
 
 ```typescript
 tags: [
   ["checkout_public_zaps", "true"], // or "false"
-  ["checkout_zap_message_policy", "generic_only"], // product_reference | custom
+  ["checkout_zap_message_policy", "generic_only"], // or "custom"
 ]
 ```
 
