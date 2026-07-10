@@ -1,9 +1,17 @@
 import { describe, expect, it } from "bun:test"
 import {
+  addProductTags,
   canSubmitProductForm,
+  formatProductTags,
+  getProductTagEditFeedback,
+  MAX_PRODUCT_TAG_COUNT,
+  MAX_PRODUCT_TAG_LENGTH,
   MIN_PRODUCT_TAG_COUNT,
   parseProductTags,
+  RECOMMENDED_MAX_PRODUCT_TAG_COUNT,
+  RECOMMENDED_MIN_PRODUCT_TAG_COUNT,
   reconcileProductFormShippingPreset,
+  removeProductTagAtIndex,
   validateProductPublishForm,
   type MerchantProductFormValues,
   type ProductPublishFormValues,
@@ -35,6 +43,15 @@ function validate(
 }
 
 describe("merchant product form validation", () => {
+  it("keeps tag recommendations advisory within the publishable range", () => {
+    expect(MIN_PRODUCT_TAG_COUNT).toBe(3)
+    expect(RECOMMENDED_MIN_PRODUCT_TAG_COUNT).toBe(5)
+    expect(RECOMMENDED_MAX_PRODUCT_TAG_COUNT).toBe(12)
+    expect(MAX_PRODUCT_TAG_COUNT).toBe(24)
+
+    expect(validate(form({ tags: "one, two, three" })).canPublish).toBe(true)
+  })
+
   it("reconciles restored drafts with current shipping readiness", () => {
     const values: MerchantProductFormValues = {
       ...form({ usePresetShippingZone: true }),
@@ -110,6 +127,62 @@ describe("merchant product form validation", () => {
     )
   })
 
+  it("adds comma-separated tag chips while rejecting duplicates predictably", () => {
+    const result = addProductTags("Gear, hardware", "Demo, gear, Field Kit")
+
+    expect(result.tags).toEqual(["Gear", "hardware", "Demo", "Field Kit"])
+    expect(result.rejected.duplicates).toEqual(["gear"])
+    expect(getProductTagEditFeedback(result)).toBe("Tag already added.")
+    expect(formatProductTags(result.tags)).toBe(
+      "Gear, hardware, Demo, Field Kit"
+    )
+    expect(removeProductTagAtIndex(formatProductTags(result.tags), 1)).toEqual([
+      "Gear",
+      "Demo",
+      "Field Kit",
+    ])
+  })
+
+  it("enforces explicit tag count and visible length limits", () => {
+    const currentTags = Array.from(
+      { length: MAX_PRODUCT_TAG_COUNT },
+      (_, index) => `tag-${index + 1}`
+    ).join(", ")
+    const tooMany = addProductTags(currentTags, "overflow")
+    const tooLongTag = "x".repeat(MAX_PRODUCT_TAG_LENGTH + 1)
+    const tooLong = addProductTags("", tooLongTag)
+
+    expect(tooMany.tags).toHaveLength(MAX_PRODUCT_TAG_COUNT)
+    expect(tooMany.rejected.tooMany).toEqual(["overflow"])
+    expect(getProductTagEditFeedback(tooMany)).toBe(
+      `Use ${MAX_PRODUCT_TAG_COUNT} tags or fewer.`
+    )
+    expect(tooLong.tags).toEqual([])
+    expect(tooLong.rejected.tooLong).toEqual([tooLongTag])
+    expect(getProductTagEditFeedback(tooLong)).toBe(
+      `Keep each tag to ${MAX_PRODUCT_TAG_LENGTH} characters or fewer.`
+    )
+  })
+
+  it("blocks publish when hydrated tags exceed count or length limits", () => {
+    const tooManyTags = Array.from(
+      { length: MAX_PRODUCT_TAG_COUNT + 1 },
+      (_, index) => `tag-${index + 1}`
+    ).join(", ")
+    const tooLongTag = "x".repeat(MAX_PRODUCT_TAG_LENGTH + 1)
+
+    const tooMany = validate(form({ tags: tooManyTags }))
+    const tooLong = validate(form({ tags: `gear, hardware, ${tooLongTag}` }))
+
+    expect(tooMany.canPublish).toBe(false)
+    expect(tooMany.errors.tags).toBe(
+      `Use ${MAX_PRODUCT_TAG_COUNT} tags or fewer.`
+    )
+    expect(tooLong.canPublish).toBe(false)
+    expect(tooLong.errors.tags).toBe(
+      `Keep each tag to ${MAX_PRODUCT_TAG_LENGTH} characters or fewer.`
+    )
+  })
   it("blocks invalid prices and non-https image URLs", () => {
     const zeroPrice = validate(form({ price: "0" }))
     const httpImage = validate(

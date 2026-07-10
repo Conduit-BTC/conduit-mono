@@ -111,6 +111,7 @@ test("merchant product drafts survive safe dialog dismissal", async ({
   const addProduct = page.getByRole("button", { name: "Add product" }).first()
   const productDialog = page.getByRole("dialog", { name: "Add product" })
   const title = page.locator("#product-title")
+  const tags = page.locator("#product-tags")
   const price = page.locator("#product-price")
   const shipping = page.locator("#product-shipping")
   const coordinateShipping = page.getByRole("checkbox", {
@@ -119,6 +120,24 @@ test("merchant product drafts survive safe dialog dismissal", async ({
 
   await addProduct.click()
   await title.fill("Pocket relay draft")
+
+  await expect(page.locator("#product-tags-hint")).toContainText(
+    "Minimum 3; aim for 5–12. 0/24 tags used"
+  )
+
+  await tags.fill("配送")
+  await tags.dispatchEvent("compositionstart")
+  await tags.dispatchEvent("keydown", { key: "Enter", code: "Enter" })
+  await expect(tags).toHaveValue("配送")
+  await expect(
+    page.getByRole("button", { name: "Remove 配送 tag" })
+  ).toHaveCount(0)
+  await tags.dispatchEvent("compositionend")
+  await tags.press("Enter")
+  await expect(
+    page.getByRole("button", { name: "Remove 配送 tag" })
+  ).toBeVisible()
+  await expect(tags).toHaveValue("")
 
   const priceError = page.locator("#product-price-error")
   await expect(priceError).toBeVisible()

@@ -10,6 +10,10 @@ import {
 } from "./productPriceForm"
 
 export const MIN_PRODUCT_TAG_COUNT = 3
+export const RECOMMENDED_MIN_PRODUCT_TAG_COUNT = 5
+export const RECOMMENDED_MAX_PRODUCT_TAG_COUNT = 12
+export const MAX_PRODUCT_TAG_COUNT = 24
+export const MAX_PRODUCT_TAG_LENGTH = 40
 
 export interface ProductPublishFormValues {
   title: string
@@ -54,6 +58,19 @@ export interface ProductPublishFormValidation {
   tags: string[]
 }
 
+export interface ProductTagEditResult {
+  tags: string[]
+  rejected: {
+    duplicates: string[]
+    tooLong: string[]
+    tooMany: string[]
+  }
+}
+
+function normalizeProductTag(tag: string): string {
+  return tag.trim().toLowerCase()
+}
+
 export function parseProductTags(tagsCsv: string): string[] {
   const seen = new Set<string>()
 
@@ -62,11 +79,79 @@ export function parseProductTags(tagsCsv: string): string[] {
     .map((tag) => tag.trim())
     .filter(Boolean)
     .filter((tag) => {
-      const normalized = tag.toLowerCase()
+      const normalized = normalizeProductTag(tag)
       if (seen.has(normalized)) return false
       seen.add(normalized)
       return true
     })
+}
+
+export function formatProductTags(tags: string[]): string {
+  return parseProductTags(tags.join(",")).join(", ")
+}
+
+export function addProductTags(
+  currentTagsCsv: string,
+  input: string
+): ProductTagEditResult {
+  const tags = parseProductTags(currentTagsCsv)
+  const seen = new Set(tags.map(normalizeProductTag))
+  const rejected: ProductTagEditResult["rejected"] = {
+    duplicates: [],
+    tooLong: [],
+    tooMany: [],
+  }
+
+  const candidates = input
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+
+  for (const candidate of candidates) {
+    const normalized = normalizeProductTag(candidate)
+    if (seen.has(normalized)) {
+      rejected.duplicates.push(candidate)
+      continue
+    }
+    if (candidate.length > MAX_PRODUCT_TAG_LENGTH) {
+      rejected.tooLong.push(candidate)
+      continue
+    }
+    if (tags.length >= MAX_PRODUCT_TAG_COUNT) {
+      rejected.tooMany.push(candidate)
+      continue
+    }
+
+    tags.push(candidate)
+    seen.add(normalized)
+  }
+
+  return { tags, rejected }
+}
+
+export function removeProductTagAtIndex(
+  currentTagsCsv: string,
+  index: number
+): string[] {
+  const tags = parseProductTags(currentTagsCsv)
+  if (index < 0 || index >= tags.length) return tags
+
+  return tags.filter((_, tagIndex) => tagIndex !== index)
+}
+
+export function getProductTagEditFeedback(
+  result: ProductTagEditResult
+): string | null {
+  if (result.rejected.tooLong.length > 0) {
+    return `Keep each tag to ${MAX_PRODUCT_TAG_LENGTH} characters or fewer.`
+  }
+  if (result.rejected.tooMany.length > 0) {
+    return `Use ${MAX_PRODUCT_TAG_COUNT} tags or fewer.`
+  }
+  if (result.rejected.duplicates.length > 0) {
+    return "Tag already added."
+  }
+  return null
 }
 
 function addError(
@@ -136,6 +221,14 @@ export function validateProductPublishForm(
       errors,
       "tags",
       `Add at least ${MIN_PRODUCT_TAG_COUNT} distinct tags.`
+    )
+  } else if (tags.length > MAX_PRODUCT_TAG_COUNT) {
+    addError(errors, "tags", `Use ${MAX_PRODUCT_TAG_COUNT} tags or fewer.`)
+  } else if (tags.some((tag) => tag.length > MAX_PRODUCT_TAG_LENGTH)) {
+    addError(
+      errors,
+      "tags",
+      `Keep each tag to ${MAX_PRODUCT_TAG_LENGTH} characters or fewer.`
     )
   }
 
