@@ -14,6 +14,8 @@ import {
   MAX_PRODUCT_TAG_COUNT,
   MAX_PRODUCT_TAG_LENGTH,
   parseProductTags,
+  RECOMMENDED_MAX_PRODUCT_TAG_COUNT,
+  RECOMMENDED_MIN_PRODUCT_TAG_COUNT,
   removeProductTagAtIndex,
 } from "../lib/productForm"
 
@@ -192,8 +194,12 @@ export function ProductTagEditor({
         </div>
       )}
       <div id={hintId} className="text-xs leading-5 text-[var(--text-muted)]">
-        Press comma, Enter, or Add. {tags.length}/{MAX_PRODUCT_TAG_COUNT} tags,{" "}
-        {MAX_PRODUCT_TAG_LENGTH} characters max each.
+        Tags organize your store categories and help buyers search. Reuse a
+        consistent strategy across listings. Minimum 3; aim for{" "}
+        {RECOMMENDED_MIN_PRODUCT_TAG_COUNT}–{RECOMMENDED_MAX_PRODUCT_TAG_COUNT}.{" "}
+        {tags.length}/{MAX_PRODUCT_TAG_COUNT} tags used,{" "}
+        {MAX_PRODUCT_TAG_LENGTH} characters max each. Press comma, Enter, or
+        Add.
       </div>
     </div>
   )

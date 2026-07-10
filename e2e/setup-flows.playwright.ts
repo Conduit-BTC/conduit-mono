@@ -121,6 +121,10 @@ test("merchant product drafts survive safe dialog dismissal", async ({
   await addProduct.click()
   await title.fill("Pocket relay draft")
 
+  await expect(page.locator("#product-tags-hint")).toContainText(
+    "Minimum 3; aim for 5–12. 0/24 tags used"
+  )
+
   await tags.fill("配送")
   await tags.dispatchEvent("compositionstart")
   await tags.dispatchEvent("keydown", { key: "Enter", code: "Enter" })

@@ -29,9 +29,16 @@ describe("merchant product tag helper", () => {
     expect(content).toContain("event.keyCode === 229")
     expect(content).toContain("onCompositionStart")
     expect(content).toContain("onCompositionEnd")
+    expect(content).toContain("RECOMMENDED_MIN_PRODUCT_TAG_COUNT")
+    expect(content).toContain("RECOMMENDED_MAX_PRODUCT_TAG_COUNT")
+    expect(content).toContain("Tags organize your store categories")
+    expect(content).toContain("consistent strategy across listings")
+    expect(content).toContain("Minimum 3; aim for")
     expect(content).toContain("commitTags(draft)")
     expect(content).toContain("Add")
-    expect(content).toContain("Press comma, Enter, or Add.")
+    expect(content.replace(/\s+/g, " ")).toContain(
+      "Press comma, Enter, or Add."
+    )
     expect(content).toContain("handlePaste")
     expect(content).toContain("clipboardData")
     expect(content).toContain("Remove ${tag} tag")

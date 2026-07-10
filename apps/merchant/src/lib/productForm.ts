@@ -10,7 +10,9 @@ import {
 } from "./productPriceForm"
 
 export const MIN_PRODUCT_TAG_COUNT = 3
-export const MAX_PRODUCT_TAG_COUNT = 12
+export const RECOMMENDED_MIN_PRODUCT_TAG_COUNT = 5
+export const RECOMMENDED_MAX_PRODUCT_TAG_COUNT = 12
+export const MAX_PRODUCT_TAG_COUNT = 24
 export const MAX_PRODUCT_TAG_LENGTH = 40
 
 export interface ProductPublishFormValues {

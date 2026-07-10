@@ -8,6 +8,8 @@ import {
   MAX_PRODUCT_TAG_LENGTH,
   MIN_PRODUCT_TAG_COUNT,
   parseProductTags,
+  RECOMMENDED_MAX_PRODUCT_TAG_COUNT,
+  RECOMMENDED_MIN_PRODUCT_TAG_COUNT,
   reconcileProductFormShippingPreset,
   removeProductTagAtIndex,
   validateProductPublishForm,
@@ -41,6 +43,15 @@ function validate(
 }
 
 describe("merchant product form validation", () => {
+  it("keeps tag recommendations advisory within the publishable range", () => {
+    expect(MIN_PRODUCT_TAG_COUNT).toBe(3)
+    expect(RECOMMENDED_MIN_PRODUCT_TAG_COUNT).toBe(5)
+    expect(RECOMMENDED_MAX_PRODUCT_TAG_COUNT).toBe(12)
+    expect(MAX_PRODUCT_TAG_COUNT).toBe(24)
+
+    expect(validate(form({ tags: "one, two, three" })).canPublish).toBe(true)
+  })
+
   it("reconciles restored drafts with current shipping readiness", () => {
     const values: MerchantProductFormValues = {
       ...form({ usePresetShippingZone: true }),
