@@ -120,6 +120,10 @@ test("merchant product drafts survive safe dialog dismissal", async ({
   await addProduct.click()
   await title.fill("Pocket relay draft")
 
+  const priceError = page.locator("#product-price-error")
+  await expect(priceError).toBeVisible()
+  await expect(priceError).toHaveClass(/sm:col-span-4/)
+
   await price.fill("")
   await price.press("e")
   await expect(price).toHaveValue("")

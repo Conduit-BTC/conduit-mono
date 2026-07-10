@@ -1207,14 +1207,6 @@ function ProductsPage() {
                   }}
                   required
                 />
-                {productFormValidation.errors.price && (
-                  <p
-                    id="product-price-error"
-                    className="text-pretty text-xs leading-5 text-error"
-                  >
-                    {productFormValidation.errors.price}
-                  </p>
-                )}
               </div>
 
               <div className="grid gap-1.5">
@@ -1301,6 +1293,14 @@ function ProductsPage() {
                   }
                 />
               </div>
+              {productFormValidation.errors.price && (
+                <p
+                  id="product-price-error"
+                  className="text-pretty text-xs leading-5 text-error sm:col-span-4"
+                >
+                  {productFormValidation.errors.price}
+                </p>
+              )}
               <div
                 id="product-shipping-help"
                 className={cn(
