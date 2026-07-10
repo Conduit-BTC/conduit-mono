@@ -671,10 +671,7 @@ function toCachedProduct(record: CommerceProductRecord) {
 
 function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
   const zapMessagePolicy =
-    row.zapMessagePolicy === "custom" ||
-    row.zapMessagePolicy === "product_reference"
-      ? row.zapMessagePolicy
-      : "generic_only"
+    row.zapMessagePolicy === "custom" ? row.zapMessagePolicy : "generic_only"
   const product: Product = {
     id: row.id,
     pubkey: row.pubkey,

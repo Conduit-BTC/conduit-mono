@@ -78,18 +78,19 @@ export type CartPublicZapPolicy = {
 
 const ZAP_MESSAGE_POLICY_RANK: Record<ProductZapMessagePolicy, number> = {
   generic_only: 0,
-  product_reference: 1,
-  custom: 2,
+  custom: 1,
 }
 
 function normalizeCartZapMessagePolicy(
   value: unknown
 ): ProductZapMessagePolicy | null {
   if (value === "custom") return "custom"
-  if (value === "product_reference" || value === "product") {
-    return "product_reference"
-  }
-  if (value === "generic_only" || value === "generic") {
+  if (
+    value === "generic_only" ||
+    value === "generic" ||
+    value === "product_reference" ||
+    value === "product"
+  ) {
     return "generic_only"
   }
   return null
