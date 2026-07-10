@@ -23,12 +23,13 @@ async function seedCachedMerchantProduct(page: Page): Promise<void> {
           pubkey: merchantPubkey,
           title: "Published Pocket Relay",
           summary: "Published summary",
-          price: 25,
-          currency: "USD",
+          price: 1,
+          currency: "SATS",
+          priceSats: 1,
           sourcePrice: {
-            amount: 25,
-            currency: "USD",
-            normalizedCurrency: "USD",
+            amount: 0.00000001,
+            currency: "BTC",
+            normalizedCurrency: "BTC",
           },
           type: "simple",
           format: "physical",
@@ -110,9 +111,39 @@ test("merchant product drafts survive safe dialog dismissal", async ({
   const addProduct = page.getByRole("button", { name: "Add product" }).first()
   const productDialog = page.getByRole("dialog", { name: "Add product" })
   const title = page.locator("#product-title")
+  const price = page.locator("#product-price")
+  const shipping = page.locator("#product-shipping")
+  const coordinateShipping = page.getByRole("checkbox", {
+    name: "Coordinate shipping with the buyer after the order",
+  })
 
   await addProduct.click()
   await title.fill("Pocket relay draft")
+
+  await price.fill("")
+  await price.press("e")
+  await expect(price).toHaveValue("")
+  await price.fill("1e3")
+  await expect(price).toHaveValue("")
+  await price.fill("25")
+
+  await shipping.fill("e")
+  await expect(shipping).toHaveValue("")
+  await shipping.fill("0")
+  await expect(page.locator("#product-shipping-help")).toContainText(
+    "fast checkout"
+  )
+
+  await coordinateShipping.check()
+  await expect(shipping).toBeDisabled()
+  await expect(shipping).toHaveValue("")
+  await expect(page.locator("#product-coordinate-shipping-help")).toContainText(
+    "Fast checkout will be unavailable"
+  )
+  await coordinateShipping.uncheck()
+  await expect(shipping).toBeEnabled()
+  await expect(shipping).toHaveValue("0")
+  await expect(shipping).toHaveAttribute("placeholder", "0 or fixed amount")
 
   await page.locator("#product-currency").click()
   await expect(page.getByRole("listbox")).toBeVisible()
@@ -169,17 +200,22 @@ test("merchant product drafts survive safe dialog dismissal", async ({
 
   await expect(editProduct).toBeVisible()
   await editProduct.click()
+  await expect(coordinateShipping).toBeChecked()
+  await expect(shipping).toBeDisabled()
+  await expect(price).toHaveValue("0.00000001")
   await title.fill("Unpublished edited title")
   await page.keyboard.press("Escape")
   await expect(editDialog).not.toBeVisible()
 
   await editProduct.click()
   await expect(title).toHaveValue("Unpublished edited title")
+  await expect(price).toHaveValue("0.00000001")
 
   await page.keyboard.press("Escape")
   await page.reload()
   await editProduct.click()
   await expect(title).toHaveValue("Unpublished edited title")
+  await expect(price).toHaveValue("0.00000001")
 
   page.once("dialog", (dialog) => dialog.accept())
   await page.getByRole("button", { name: "Discard changes" }).click()

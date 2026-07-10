@@ -1,9 +1,15 @@
 import type { MerchantProductFormValues } from "./productForm"
+import {
+  formatProductAmountInput,
+  isPlainDecimalInput,
+} from "./productPriceForm"
 import { parseShippingConfig } from "./readiness"
 
+// Keep the storage key stable so version 1 drafts can be migrated in place.
 const PRODUCT_DRAFT_STORAGE_PREFIX = "conduit:merchant:product_draft:v1"
-const PRODUCT_DRAFT_VERSION = 1
+const PRODUCT_DRAFT_VERSION = 2
 const CLEARED_PRODUCT_DRAFT_MARKER = "conduit:product-draft-cleared:v1"
+const LEGACY_SCIENTIFIC_AMOUNT_PATTERN = /^\d+(?:\.\d+)?e[+-]?\d+$/i
 
 export interface ProductDraftTarget {
   merchantPubkey: string
@@ -35,6 +41,18 @@ function normalizeTargetPart(value: string): string {
   return encodeURIComponent(value.trim())
 }
 
+function migrateLegacyAmountInput(value: string): string {
+  if (isPlainDecimalInput(value)) return value
+
+  const trimmed = value.trim()
+  if (!LEGACY_SCIENTIFIC_AMOUNT_PATTERN.test(trimmed)) return ""
+
+  const amount = Number(trimmed)
+  return Number.isFinite(amount) && amount >= 0
+    ? formatProductAmountInput(amount)
+    : ""
+}
+
 export function getProductDraftStorageKey(
   target: ProductDraftTarget
 ): string | null {
@@ -59,7 +77,8 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
       form?: unknown
     }
     if (
-      candidate.version !== PRODUCT_DRAFT_VERSION ||
+      (candidate.version !== 1 &&
+        candidate.version !== PRODUCT_DRAFT_VERSION) ||
       typeof candidate.savedAt !== "number" ||
       !Number.isFinite(candidate.savedAt) ||
       (candidate.baseEventId !== null &&
@@ -93,6 +112,30 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
       return null
     }
 
+    const shippingPricingMode =
+      candidate.version === 1
+        ? form.format === "physical" &&
+          (form.shippingCost as string).trim().length === 0
+          ? "coordinate_after_order"
+          : "fixed"
+        : form.shippingPricingMode === "fixed" ||
+            form.shippingPricingMode === "coordinate_after_order"
+          ? form.shippingPricingMode
+          : null
+    if (!shippingPricingMode) return null
+
+    const price =
+      candidate.version === 1
+        ? migrateLegacyAmountInput(form.price as string)
+        : (form.price as string)
+    const shippingCost =
+      candidate.version === 1
+        ? migrateLegacyAmountInput(form.shippingCost as string)
+        : (form.shippingCost as string)
+    if (!isPlainDecimalInput(price) || !isPlainDecimalInput(shippingCost)) {
+      return null
+    }
+
     return {
       version: PRODUCT_DRAFT_VERSION,
       baseEventId: candidate.baseEventId,
@@ -100,10 +143,11 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
       form: {
         title: form.title as string,
         summary: form.summary as string,
-        price: form.price as string,
+        price,
         currency: form.currency as string,
         format: form.format,
-        shippingCost: form.shippingCost as string,
+        shippingPricingMode,
+        shippingCost,
         usePresetShippingZone: form.usePresetShippingZone,
         customShippingConfig: parseShippingConfig(
           JSON.stringify(form.customShippingConfig ?? null)

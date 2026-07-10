@@ -70,6 +70,7 @@ function form(
     price: "25",
     currency: "USD",
     format: "physical",
+    shippingPricingMode: "fixed",
     shippingCost: "5",
     usePresetShippingZone: false,
     customShippingConfig: {
@@ -122,6 +123,57 @@ describe("merchant product drafts", () => {
 
     expect(clearProductDraft(draftTarget, storage)).toBe(true)
     expect(loadProductDraft(draftTarget, storage).draft).toBeNull()
+  })
+
+  it("migrates legacy blank shipping drafts to explicit coordination", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const storageKey = getProductDraftStorageKey(draftTarget)
+    if (!storageKey) throw new Error("Expected a product draft storage key")
+    const legacyForm = form({ shippingCost: "" })
+    const storedForm: Record<string, unknown> = { ...legacyForm }
+    delete storedForm.shippingPricingMode
+
+    storage.setItem(
+      storageKey,
+      JSON.stringify({
+        version: 1,
+        baseEventId: null,
+        savedAt: Date.now(),
+        form: storedForm,
+      })
+    )
+
+    expect(loadProductDraft(draftTarget, storage).draft).toMatchObject({
+      shippingPricingMode: "coordinate_after_order",
+      shippingCost: "",
+    })
+  })
+
+  it("migrates legacy exponent amounts to plain decimal input", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const storageKey = getProductDraftStorageKey(draftTarget)
+    if (!storageKey) throw new Error("Expected a product draft storage key")
+    const legacyForm = form({ price: "1e3", shippingCost: "5e-1" })
+    const storedForm: Record<string, unknown> = { ...legacyForm }
+    delete storedForm.shippingPricingMode
+
+    storage.setItem(
+      storageKey,
+      JSON.stringify({
+        version: 1,
+        baseEventId: null,
+        savedAt: Date.now(),
+        form: storedForm,
+      })
+    )
+
+    expect(loadProductDraft(draftTarget, storage).draft).toMatchObject({
+      price: "1000",
+      shippingPricingMode: "fixed",
+      shippingCost: "0.5",
+    })
   })
 
   it("does not restore an edit draft after the source event changes", () => {
