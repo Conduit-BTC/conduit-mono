@@ -35,6 +35,7 @@ export function ProductTagEditor({
   placeholder = "Add tag",
 }: ProductTagEditorProps) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const isComposingRef = useRef(false)
   const [draft, setDraft] = useState("")
   const [feedback, setFeedback] = useState<string | null>(null)
   const tags = useMemo(() => parseProductTags(value), [value])
@@ -69,6 +70,15 @@ export function ProductTagEditor({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+    // Some WebKit IMEs report keyCode 229 after compositionend.
+    if (
+      isComposingRef.current ||
+      event.nativeEvent.isComposing ||
+      event.keyCode === 229
+    ) {
+      return
+    }
+
     if (event.key === "Enter" || event.key === ",") {
       event.preventDefault()
       commitTags(draft)
@@ -137,6 +147,12 @@ export function ProductTagEditor({
           onChange={(event) => {
             setDraft(event.target.value)
             setFeedback(null)
+          }}
+          onCompositionStart={() => {
+            isComposingRef.current = true
+          }}
+          onCompositionEnd={() => {
+            isComposingRef.current = false
           }}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
