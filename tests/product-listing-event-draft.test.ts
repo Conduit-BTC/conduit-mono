@@ -266,6 +266,38 @@ describe("product listing event parsing", () => {
     expect(parsed.publicZapPolicyKnown).toBe(false)
   })
 
+  it("normalizes JSON-shaped summaries in legacy Conduit listings", () => {
+    const product = baseProduct({
+      summary: JSON.stringify({ description: "Legacy display copy" }),
+    })
+    const parsed = parseProductEvent({
+      id: "legacy-json-summary-event",
+      pubkey: product.pubkey,
+      created_at: 1_779_762_725,
+      content: JSON.stringify(product),
+      tags: [["d", "legacy-json-summary"]],
+    })
+
+    expect(parsed.summary).toBe("Legacy display copy")
+  })
+
+  it("suppresses nested JSON-shaped summaries in legacy listings", () => {
+    const product = baseProduct({
+      summary: JSON.stringify({
+        description: JSON.stringify({ material: "linen" }),
+      }),
+    })
+    const parsed = parseProductEvent({
+      id: "legacy-nested-json-summary-event",
+      pubkey: product.pubkey,
+      created_at: 1_779_762_725,
+      content: JSON.stringify(product),
+      tags: [["d", "legacy-nested-json-summary"]],
+    })
+
+    expect(parsed.summary).toBeUndefined()
+  })
+
   it("lets explicit zap policy tags override legacy JSON-content defaults", () => {
     const product = baseProduct({
       publicZapEnabled: true,
@@ -449,7 +481,7 @@ describe("product listing event parsing", () => {
     expect(variation.format).toBe("physical")
   })
 
-  it("falls back to tags when Markdown content is JSON-shaped but not a legacy product", () => {
+  it("does not render raw JSON-shaped content as product summary", () => {
     const parsed = parseProductEvent({
       id: "json-shaped-summary-event",
       pubkey: "merchant",
@@ -465,9 +497,235 @@ describe("product listing event parsing", () => {
 
     expect(parsed.id).toBe("30402:merchant:json-shaped-summary")
     expect(parsed.title).toBe("JSON-Shaped Summary Product")
-    expect(parsed.summary).toBe('{"material":"linen","care":"cold wash"}')
+    expect(parsed.summary).toBeUndefined()
     expect(parsed.price).toBe(42_000)
     expect(parsed.currency).toBe("SATS")
     expect(parsed.type).toBe("simple")
+  })
+
+  it("uses partial JSON listing metadata for display compatibility", () => {
+    const parsed = parseProductEvent({
+      id: "partial-json-listing-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: JSON.stringify({
+        title: "Sats gift",
+        description: "I got some sats for you!",
+        category: "Ecash",
+        pricing: "free",
+        images: [""],
+        created_at: "2025-07-25T13:43:52.327Z",
+      }),
+      tags: [
+        ["d", "sats-gift"],
+        ["price", "0", "SATS"],
+        ["type", "simple", "digital"],
+        ["t", "Ecard"],
+        ["t", "Ecash"],
+      ],
+    })
+
+    expect(parsed.id).toBe("30402:merchant:sats-gift")
+    expect(parsed.title).toBe("Sats gift")
+    expect(parsed.summary).toBe("I got some sats for you!")
+    expect(parsed.price).toBe(0)
+    expect(parsed.currency).toBe("SATS")
+    expect(parsed.format).toBe("digital")
+    expect(parsed.tags).toEqual(["Ecard", "Ecash"])
+    expect(parsed.images).toEqual([])
+  })
+
+  it("projects screenshot-shaped JSON from a non-standard summary tag", () => {
+    const rawSummary = JSON.stringify({
+      title: "Love, Love, Love",
+      description: "Nutti loves Ecash",
+      category: "Ecash",
+      pricing: "free",
+      images: [
+        "https://blossom.primal.net/d1d66d4b20e2b094fcaba33d6b6d9442a4ec34d7719c66865dc0710da2bec7cc.png",
+      ],
+      created_at: "2025-07-25T13:44:41.029Z",
+    })
+    const parsed = parseProductEvent({
+      id: "love-love-love-event",
+      pubkey: "merchant",
+      created_at: 1_753_451_081,
+      content: rawSummary,
+      tags: [
+        ["d", "love-love-love"],
+        ["summary", rawSummary],
+        ["price", "0", "SATS"],
+        ["t", "Ecard"],
+        ["t", "Ecash"],
+        ["t", "Bitpopart"],
+        ["t", "Bitcoin-Art"],
+      ],
+    })
+
+    expect(parsed.title).toBe("Love, Love, Love")
+    expect(parsed.summary).toBe("Nutti loves Ecash")
+    expect(parsed.summary).not.toContain('{"title"')
+  })
+
+  it("suppresses JSON summary tags without display copy", () => {
+    const parsed = parseProductEvent({
+      id: "json-summary-metadata-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "",
+      tags: [
+        ["d", "json-summary-metadata"],
+        ["title", "Metadata-only JSON"],
+        ["summary", '{"material":"linen","care":"cold wash"}'],
+        ["price", "42000", "SATS"],
+      ],
+    })
+
+    expect(parsed.summary).toBeUndefined()
+  })
+
+  it("falls back to Markdown content when a JSON summary tag has no display copy", () => {
+    const parsed = parseProductEvent({
+      id: "json-summary-with-markdown-content-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Merchant-authored **Markdown** description.",
+      tags: [
+        ["d", "json-summary-with-markdown-content"],
+        ["title", "Markdown fallback"],
+        ["summary", '{"material":"linen","care":"cold wash"}'],
+        ["price", "42000", "SATS"],
+      ],
+    })
+
+    expect(parsed.summary).toBe("Merchant-authored **Markdown** description.")
+  })
+
+  it("clamps partial JSON listing metadata before schema validation", () => {
+    const parsed = parseProductEvent({
+      id: "oversized-partial-json-listing-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: JSON.stringify({
+        title: "T".repeat(240),
+        description: "D".repeat(5_040),
+      }),
+      tags: [
+        ["d", "oversized-json-listing"],
+        ["price", "1000", "SATS"],
+        ["type", "simple", "digital"],
+      ],
+    })
+
+    expect(parsed.id).toBe("30402:merchant:oversized-json-listing")
+    expect(parsed.title).toHaveLength(200)
+    expect(parsed.summary).toHaveLength(5000)
+    expect(parsed.title).toBe("T".repeat(200))
+    expect(parsed.summary).toBe("D".repeat(5000))
+  })
+
+  it("strips generated card metadata from summary tags", () => {
+    const parsed = parseProductEvent({
+      id: "generated-card-summary-event",
+      pubkey:
+        "43baaf0c28e6cfb195b17ee083e19eb3a4afdfac54d9b6baf170270ed193e34c",
+      created_at: 1_783_424_610,
+      content:
+        "## Sun Smile Joy \n\nSun Smile Joy Fluffy Pluche\n\n 14.95 EUR\n pluche\n Physical Product\n\n*Listed by [BitPopArt](https://bitpopart.com) -- Nostr pubkey: 43baaf0c28e6cfb1...*\n\n**Price:** 14.95 EUR (-21%)\n**Category:** Keychains\n**Type:** Physical Product\n\n*Listed by BitPopArt*",
+      tags: [
+        ["d", "bitpopart-product-1753683992900-jsvyv2"],
+        ["title", "Sun Smile Joy "],
+        [
+          "summary",
+          "Sun Smile Joy Fluffy Pluche\n\n 14.95 EUR\n pluche\n Physical Product\n\n*Listed by [BitPopArt](https://bitpopart.com) -- Nostr pubkey: 43baaf0c28e6cfb1...*",
+        ],
+        ["price", "14.95", "EUR"],
+        ["type", "simple", "physical"],
+        ["t", "keychains"],
+        ["client", "www.bitpopart.com"],
+      ],
+    })
+
+    expect(parsed.title).toBe("Sun Smile Joy ")
+    expect(parsed.summary).toBe("Sun Smile Joy Fluffy Pluche")
+    expect(parsed.price).toBe(14.95)
+    expect(parsed.currency).toBe("EUR")
+    expect(parsed.sourcePrice).toEqual({
+      amount: 14.95,
+      currency: "EUR",
+      normalizedCurrency: "EUR",
+    })
+  })
+
+  it("keeps merchant-authored labeled summary lines that do not match listing metadata", () => {
+    const parsed = parseProductEvent({
+      id: "merchant-authored-labeled-summary-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Fallback content",
+      tags: [
+        ["d", "labeled-summary"],
+        ["title", "Woodcut Edition"],
+        [
+          "summary",
+          [
+            "Category: woodcut prints",
+            "Type: handmade paper",
+            "Price: varies by edition",
+          ].join("\n"),
+        ],
+        ["price", "1000", "SATS"],
+        ["type", "simple", "physical"],
+        ["t", "prints"],
+      ],
+    })
+
+    expect(parsed.summary).toBe(
+      [
+        "Category: woodcut prints",
+        "Type: handmade paper",
+        "Price: varies by edition",
+      ].join("\n")
+    )
+  })
+
+  it("keeps prose between generated-looking price and format lines", () => {
+    const parsed = parseProductEvent({
+      id: "merchant-prose-between-metadata-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Fallback content",
+      tags: [
+        ["d", "merchant-prose-between-metadata"],
+        ["title", "Carved Cedar"],
+        [
+          "summary",
+          "1000 SATS\nHand-carved cedar with a natural finish.\nPhysical Product",
+        ],
+        ["price", "1000", "SATS"],
+        ["type", "simple", "physical"],
+      ],
+    })
+
+    expect(parsed.summary).toBe(
+      "1000 SATS\nHand-carved cedar with a natural finish.\nPhysical Product"
+    )
+  })
+
+  it("keeps merchant-authored prose that starts with listed by", () => {
+    const parsed = parseProductEvent({
+      id: "merchant-listed-by-prose-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Fallback content",
+      tags: [
+        ["d", "merchant-listed-by-prose"],
+        ["title", "Handmade Print"],
+        ["summary", "Listed by hand and signed by the artist."],
+        ["price", "1000", "SATS"],
+      ],
+    })
+
+    expect(parsed.summary).toBe("Listed by hand and signed by the artist.")
   })
 })
