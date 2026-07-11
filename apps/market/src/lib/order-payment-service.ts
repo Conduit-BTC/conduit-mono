@@ -200,6 +200,17 @@ const listeners = new Map<string, Set<Listener>>()
 /** Guards against concurrent payment attempts for the same order. */
 const inFlight = new Set<string>()
 
+export function canSubmitExternalPaymentReport(
+  lifecycle: OrderLifecycle | null | undefined
+): lifecycle is OrderLifecycle {
+  return (
+    lifecycle?.checkoutMode === "external_wallet" &&
+    !!lifecycle.invoice &&
+    lifecycle.paymentStatus === "manual_required" &&
+    lifecycle.proofDeliveryStatus === "not_started"
+  )
+}
+
 function emit(orderId: string, partial: Partial<OrderPaymentRuntimeState>) {
   const prev =
     runtimeStates.get(orderId) ??
@@ -594,41 +605,49 @@ export async function submitExternalPaymentProof(
   orderId: string,
   buyerIdentity?: BuyerOrderSigningIdentity
 ): Promise<OrderPaymentRuntimeState | undefined> {
-  const lifecycle = await getOrderLifecycle(orderId)
-  if (!lifecycle || !lifecycle.invoice) return runtimeStates.get(orderId)
-
-  await patchAndEmit(orderId, {
-    paymentStatus: "paid",
-    proofDeliveryStatus: "pending",
-  })
-
-  const content = buildLifecyclePaymentProofContentJson(lifecycle, {
-    action: "external_invoice",
-    source: "external",
-    verificationState: "needs_merchant_verification",
-    note: `External wallet payment for order ${orderId}`,
-  })
-  const ndk = getNdk()
-  const proofRumor = buildPaymentProofRumor({
-    merchantPubkey: lifecycle.merchantPubkey,
-    orderId,
-    amountSats: lifecycle.totalSats,
-    currency: "SATS",
-    content,
-  })
+  if (inFlight.has(orderId)) return runtimeStates.get(orderId)
+  inFlight.add(orderId)
   try {
-    await publishBuyerOrderMessage(
-      proofRumor,
-      ndk,
-      lifecycle.merchantPubkey,
-      buyerIdentity ?? lifecycle.buyerPubkey
-    )
-    await patchAndEmit(orderId, { proofDeliveryStatus: "sent" })
-  } catch (e) {
+    const lifecycle = await getOrderLifecycle(orderId)
+    if (!canSubmitExternalPaymentReport(lifecycle)) {
+      return runtimeStates.get(orderId)
+    }
+
     await patchAndEmit(orderId, {
-      proofDeliveryStatus: "retry_needed",
-      lastError: e instanceof Error ? e.message : "Proof delivery failed",
+      paymentStatus: "paid",
+      proofDeliveryStatus: "pending",
     })
+
+    const content = buildLifecyclePaymentProofContentJson(lifecycle, {
+      action: "external_invoice",
+      source: "external",
+      verificationState: "needs_merchant_verification",
+      note: `External wallet payment for order ${orderId}`,
+    })
+    const ndk = getNdk()
+    const proofRumor = buildPaymentProofRumor({
+      merchantPubkey: lifecycle.merchantPubkey,
+      orderId,
+      amountSats: lifecycle.totalSats,
+      currency: "SATS",
+      content,
+    })
+    try {
+      await publishBuyerOrderMessage(
+        proofRumor,
+        ndk,
+        lifecycle.merchantPubkey,
+        buyerIdentity ?? lifecycle.buyerPubkey
+      )
+      await patchAndEmit(orderId, { proofDeliveryStatus: "sent" })
+    } catch (e) {
+      await patchAndEmit(orderId, {
+        proofDeliveryStatus: "retry_needed",
+        lastError: e instanceof Error ? e.message : "Proof delivery failed",
+      })
+    }
+    return runtimeStates.get(orderId)
+  } finally {
+    inFlight.delete(orderId)
   }
-  return runtimeStates.get(orderId)
 }

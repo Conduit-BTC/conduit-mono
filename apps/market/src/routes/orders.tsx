@@ -534,14 +534,15 @@ function ExternalWalletPanel({
         Pay with an external wallet
       </h2>
       <p className="mt-1 text-sm text-[var(--text-secondary)]">
-        No automatic wallet was available. Scan or copy this invoice, pay it in
-        your wallet, then send the receipt to the merchant.
+        No automatic wallet was available. Scan or copy this invoice and pay it
+        in your wallet. After the wallet confirms payment, report it to the
+        merchant for verification.
       </p>
       {guestSession && (
         <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
-          Keep this tab open until the receipt is sent. Closing it ends local
-          access to this guest order. The merchant will follow up using the
-          phone and email contact details submitted at checkout.
+          Keep this tab open until the payment is reported. Closing it ends
+          local access to this guest order. The merchant will follow up using
+          the phone and email contact details submitted at checkout.
         </p>
       )}
       <div className="mt-4 flex flex-col items-start gap-4 sm:flex-row">
@@ -574,8 +575,12 @@ function ExternalWalletPanel({
             disabled={busy}
             onClick={onMarkPaid}
           >
-            I've paid — send receipt
+            Report payment to merchant
           </Button>
+          <p className="text-xs text-[var(--text-secondary)]">
+            Only report after your wallet confirms payment. This does not verify
+            settlement; the merchant will confirm it.
+          </p>
         </div>
       </div>
     </section>
@@ -725,7 +730,7 @@ function OrderDetail({
           >
             <p className="text-sm text-[var(--text-secondary)]">
               No automatic wallet was available. Pay the invoice below, then
-              send the receipt to the merchant.
+              report the payment to the merchant for verification.
             </p>
           </StatusNotice>
           <ExternalWalletPanel

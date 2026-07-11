@@ -2513,7 +2513,7 @@ function CheckoutPage() {
                     role={isGuestCheckout ? "note" : undefined}
                   >
                     {isGuestCheckout
-                      ? "Your order details will be sent privately with a temporary key that this client uses only for this order and its payment receipt. Keep this tab open until the receipt is sent; merchant follow-up uses the required phone and email contact details."
+                      ? "Your order details will be sent privately with a temporary key that this client uses only for this order and its payment report. Keep this tab open until the payment is reported; merchant follow-up uses the required phone and email contact details."
                       : "Your order details will be sent to the merchant through your signed Nostr account so they can follow up with payment and fulfillment."}
                   </p>
                 </div>

@@ -4,6 +4,7 @@ import { db } from "../packages/core/src/db"
 import {
   buildLifecyclePaymentProofContentJson,
   buildLifecycleResendProofContentJson,
+  canSubmitExternalPaymentReport,
   getLifecyclePaymentProofAction,
   isOrderPaymentRunning,
   runOrderPayment,
@@ -58,6 +59,23 @@ function lifecycle(overrides: Partial<OrderLifecycle> = {}): OrderLifecycle {
 }
 
 describe("runOrderPayment", () => {
+  it("only accepts the first manual external-wallet payment report", () => {
+    expect(canSubmitExternalPaymentReport(lifecycle())).toBe(true)
+    expect(
+      canSubmitExternalPaymentReport(
+        lifecycle({ proofDeliveryStatus: "pending" })
+      )
+    ).toBe(false)
+    expect(
+      canSubmitExternalPaymentReport(lifecycle({ paymentStatus: "paid" }))
+    ).toBe(false)
+    expect(
+      canSubmitExternalPaymentReport(
+        lifecycle({ checkoutMode: "private_checkout" })
+      )
+    ).toBe(false)
+  })
+
   it("keeps public zap proof retries public for external-wallet fallback orders", () => {
     expect(
       getLifecyclePaymentProofAction({
