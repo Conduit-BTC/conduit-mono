@@ -3,6 +3,7 @@ import { GUEST_ORDER_LOCAL_RETENTION_MS } from "@conduit/core"
 import {
   DEFAULT_CHECKOUT_SHIPPING,
   clearCheckoutShippingSession,
+  pruneExpiredCheckoutShippingSession,
   readCheckoutShippingSession,
   writeCheckoutShippingSession,
 } from "../apps/market/src/lib/checkout-session"
@@ -85,6 +86,29 @@ describe("checkout shipping session", () => {
 
     clearCheckoutShippingSession(storage)
 
+    expect(storage.length).toBe(0)
+  })
+
+  it("proactively expires abandoned checkout contact data", () => {
+    const storage = fakeStorage()
+    const updatedAt = 1_700_000_000_000
+    writeCheckoutShippingSession(
+      {
+        ...DEFAULT_CHECKOUT_SHIPPING,
+        street: "123 Private Street",
+        email: "alice@example.com",
+        phone: "+12025550123",
+      },
+      storage,
+      updatedAt
+    )
+
+    expect(
+      pruneExpiredCheckoutShippingSession(
+        storage,
+        updatedAt + GUEST_ORDER_LOCAL_RETENTION_MS
+      )
+    ).toBe(true)
     expect(storage.length).toBe(0)
   })
 })

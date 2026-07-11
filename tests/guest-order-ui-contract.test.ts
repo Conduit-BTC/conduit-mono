@@ -33,4 +33,13 @@ describe("guest order UI contracts", () => {
     expect(source).toContain("createdAt: orderCreatedAt")
     expect(source).toContain("clearCheckoutShippingSession()")
   })
+
+  it("maintains guest key and checkout PII expiry outside checkout", async () => {
+    const source = await Bun.file("apps/market/src/main.tsx").text()
+
+    expect(source).toContain("pruneExpiredSessionGuestOrderSigningIdentities()")
+    expect(source).toContain("pruneExpiredCheckoutShippingSession()")
+    expect(source).toContain('window.addEventListener("focus"')
+    expect(source).toContain('window.addEventListener("visibilitychange"')
+  })
 })

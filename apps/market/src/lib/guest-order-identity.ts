@@ -27,6 +27,23 @@ type SessionStorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">
 
 let inMemoryGuestOrderSignerRegistry: GuestOrderSignerRegistry = {}
 
+function isStoredGuestOrderSigner(
+  value: unknown
+): value is StoredGuestOrderSigner {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const stored = value as Partial<StoredGuestOrderSigner>
+  return (
+    typeof stored.pubkey === "string" &&
+    stored.pubkey.length > 0 &&
+    typeof stored.privateKey === "string" &&
+    stored.privateKey.length > 0 &&
+    typeof stored.merchantPubkey === "string" &&
+    stored.merchantPubkey.length > 0 &&
+    Number.isFinite(stored.createdAt) &&
+    (stored.createdAt ?? 0) > 0
+  )
+}
+
 function getSessionStorage(): SessionStorageLike | null {
   if (typeof window === "undefined") return null
   try {
@@ -43,8 +60,25 @@ function readGuestOrderSignerRegistry(
   try {
     const raw = storage.getItem(GUEST_ORDER_SIGNER_STORAGE_KEY)
     if (!raw) return { ...inMemoryGuestOrderSignerRegistry }
-    const parsed = JSON.parse(raw) as GuestOrderSignerRegistry
-    const persisted = parsed && typeof parsed === "object" ? parsed : {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      storage.removeItem(GUEST_ORDER_SIGNER_STORAGE_KEY)
+      return { ...inMemoryGuestOrderSignerRegistry }
+    }
+    const entries = Object.entries(parsed)
+    const persisted = Object.fromEntries(
+      entries.filter(([, value]) => isStoredGuestOrderSigner(value))
+    ) as GuestOrderSignerRegistry
+    if (Object.keys(persisted).length !== entries.length) {
+      if (Object.keys(persisted).length === 0) {
+        storage.removeItem(GUEST_ORDER_SIGNER_STORAGE_KEY)
+      } else {
+        storage.setItem(
+          GUEST_ORDER_SIGNER_STORAGE_KEY,
+          JSON.stringify(persisted)
+        )
+      }
+    }
     return { ...inMemoryGuestOrderSignerRegistry, ...persisted }
   } catch {
     return { ...inMemoryGuestOrderSignerRegistry }

@@ -238,6 +238,19 @@ describe("guest order signing identity", () => {
     ).toBeNull()
   })
 
+  it("removes malformed guest signer registry entries without throwing", () => {
+    const storage = fakeStorage()
+    storage.setItem(
+      "conduit:guest-order-signers:v1",
+      JSON.stringify({ broken: null })
+    )
+
+    expect(() =>
+      pruneExpiredSessionGuestOrderSigningIdentities(storage)
+    ).not.toThrow()
+    expect(storage.getItem("conduit:guest-order-signers:v1")).toBeNull()
+  })
+
   it("keeps a same-page fallback when session storage rejects writes", () => {
     const storage = fakeStorage()
     storage.setItem = () => {
