@@ -244,10 +244,8 @@ export function getCartCostSummary(
 
     if (item.format === "digital") continue
 
-    if (
-      !item.shippingOptionId ||
-      getShippingCostSats(item, rateInput) === null
-    ) {
+    const hasShippingSnapshot = (item.shippingCountryRules?.length ?? 0) > 0
+    if (!hasShippingSnapshot || getShippingCostSats(item, rateInput) === null) {
       shippingReadyForZap = false
     }
   }
