@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import {
   addProductTags,
+  buildProductShippingMetadata,
   canSubmitProductForm,
   formatProductTags,
   getProductTagEditFeedback,
@@ -12,6 +13,7 @@ import {
   RECOMMENDED_MIN_PRODUCT_TAG_COUNT,
   reconcileProductFormShippingPreset,
   removeProductTagAtIndex,
+  isProductUsingPresetShippingZone,
   validateProductPublishForm,
   type MerchantProductFormValues,
   type ProductPublishFormValues,
@@ -43,6 +45,53 @@ function validate(
 }
 
 describe("merchant product form validation", () => {
+  it("round-trips preset-backed fixed shipping without losing its association", () => {
+    const metadata = buildProductShippingMetadata("merchant", true, {
+      countries: [
+        {
+          code: "US",
+          name: "United States",
+          restrictTo: ["787**"],
+          exclude: ["78799"],
+        },
+      ],
+    })
+
+    expect(metadata).toEqual({
+      shippingOptionId: "30406:merchant:conduit-default",
+      shippingOptionDTag: "conduit-default",
+      shippingCountries: ["US"],
+      shippingCountryRules: [
+        {
+          code: "US",
+          name: "United States",
+          restrictTo: ["787**"],
+          exclude: ["78799"],
+        },
+      ],
+    })
+    expect(isProductUsingPresetShippingZone(metadata, true)).toBe(true)
+    expect(isProductUsingPresetShippingZone(metadata, false)).toBe(false)
+  })
+
+  it("keeps custom fixed shipping detached from the shared preset", () => {
+    const metadata = buildProductShippingMetadata("merchant", false, {
+      countries: [
+        {
+          code: "CA",
+          name: "Canada",
+          restrictTo: [],
+          exclude: [],
+        },
+      ],
+    })
+
+    expect(metadata.shippingOptionId).toBeUndefined()
+    expect(metadata.shippingOptionDTag).toBeUndefined()
+    expect(metadata.shippingCountries).toEqual(["CA"])
+    expect(isProductUsingPresetShippingZone(metadata, true)).toBe(false)
+  })
+
   it("keeps tag recommendations advisory within the publishable range", () => {
     expect(MIN_PRODUCT_TAG_COUNT).toBe(3)
     expect(RECOMMENDED_MIN_PRODUCT_TAG_COUNT).toBe(5)
