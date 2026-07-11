@@ -49,7 +49,10 @@ export function getMerchantOrderPhase(
 export function getMerchantConversationState(
   conversation: MerchantConversationSummary
 ): MerchantOrderState {
-  const summary = extractOrderSummary(conversation.messages ?? [])
+  const summary = extractOrderSummary(conversation.messages ?? [], {
+    buyerPubkey: conversation.buyerPubkey,
+    merchantPubkey: conversation.merchantPubkey,
+  })
   return {
     status: conversation.status,
     paid: summary.paymentConfirmed,

@@ -64,6 +64,7 @@ function conversation(
     id: orderId,
     orderId,
     buyerPubkey: "buyer",
+    merchantPubkey: "merchant",
     latestAt: statusMessage?.createdAt ?? createdAt,
     latestType: statusMessage?.type ?? "order",
     status,

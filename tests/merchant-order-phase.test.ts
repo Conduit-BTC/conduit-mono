@@ -53,6 +53,7 @@ const conversation: MerchantConversationSummary = {
   id: orderId,
   orderId,
   buyerPubkey: "buyer",
+  merchantPubkey: "merchant",
   latestAt: 2,
   latestType: "payment_proof",
   status: null,
@@ -70,5 +71,24 @@ describe("merchant order phase", () => {
       label: "Payment proof received",
     })
     expect(isMerchantConversationActiveFulfillment(conversation)).toBe(true)
+  })
+
+  it("preserves the evidence gates when the partial read has no order rumor", () => {
+    const partialConversation: MerchantConversationSummary = {
+      ...conversation,
+      messageCount: 1,
+      messages: [proof],
+    }
+
+    expect(getMerchantConversationPhase(partialConversation)).toBe(
+      "in_progress"
+    )
+    expect(getMerchantConversationStatusDisplay(partialConversation)).toEqual({
+      tone: "info",
+      label: "Payment proof received",
+    })
+    expect(isMerchantConversationActiveFulfillment(partialConversation)).toBe(
+      true
+    )
   })
 })

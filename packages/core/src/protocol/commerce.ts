@@ -181,6 +181,7 @@ export interface BuyerConversationSummary extends ConversationSummaryBase {
 
 export interface MerchantConversationSummary extends ConversationSummaryBase {
   buyerPubkey: string
+  merchantPubkey: string
 }
 
 export type ConversationSummary =
@@ -2341,7 +2342,10 @@ function buildBuyerConversationSummaries(
           message.senderPubkey === merchantPubkey &&
           message.recipientPubkey === buyerPubkey
       )
-    const summary = extractOrderSummary(bucket)
+    const summary = extractOrderSummary(bucket, {
+      buyerPubkey,
+      merchantPubkey,
+    })
 
     conversations.push({
       id: orderId,
@@ -2397,12 +2401,16 @@ function buildMerchantConversationSummaries(
           message.senderPubkey === merchantPubkey &&
           message.recipientPubkey === buyerPubkey
       )
-    const summary = extractOrderSummary(bucket)
+    const summary = extractOrderSummary(bucket, {
+      buyerPubkey,
+      merchantPubkey,
+    })
 
     conversations.push({
       id: orderId,
       orderId,
       buyerPubkey,
+      merchantPubkey,
       latestAt: latest.createdAt,
       latestType: latest.type,
       status:

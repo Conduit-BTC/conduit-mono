@@ -52,6 +52,11 @@ export type OrderSummary = {
   trackingUrl: string | null
 }
 
+export interface OrderSummaryParticipants {
+  buyerPubkey: string
+  merchantPubkey: string
+}
+
 function isExternalPaymentReport(
   message: ParsedOrderMessage
 ): message is Extract<ParsedOrderMessage, { type: "payment_proof" }> {
@@ -85,11 +90,14 @@ export function isExternalPaymentReportMessage(
  * for buyer-paid confirmation, and the latest `shipping_update` for tracking.
  */
 export function extractOrderSummary(
-  messages: ParsedOrderMessage[]
+  messages: ParsedOrderMessage[],
+  participants?: OrderSummaryParticipants
 ): OrderSummary {
   const firstOrder = messages.find((m) => m.type === "order")
-  const buyerPubkey = firstOrder?.senderPubkey ?? ""
-  const merchantPubkey = firstOrder?.recipientPubkey ?? ""
+  const buyerPubkey =
+    firstOrder?.senderPubkey ?? participants?.buyerPubkey ?? ""
+  const merchantPubkey =
+    firstOrder?.recipientPubkey ?? participants?.merchantPubkey ?? ""
   const isBuyerToMerchant = (message: ParsedOrderMessage) =>
     !!buyerPubkey &&
     !!merchantPubkey &&

@@ -1100,6 +1100,7 @@ describe("commerce gateway", () => {
     expect(result.data).toHaveLength(1)
     expect(result.data[0]?.orderId).toBe("order-proof-1")
     expect(result.data[0]?.buyerPubkey).toBe(buyerPubkey)
+    expect(result.data[0]?.merchantPubkey).toBe(merchantPubkey)
     expect(result.data[0]?.latestType).toBe("payment_proof")
     expect(result.data[0]?.status).toBeNull()
   })
