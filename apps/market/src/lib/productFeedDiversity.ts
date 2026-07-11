@@ -24,6 +24,26 @@ export function diversifyMerchantProductOrder(
       options.maxConsecutivePerMerchant ?? DEFAULT_MAX_CONSECUTIVE_PER_MERCHANT
     )
   )
+  let runMerchant: string | null = null
+  let runLength = 0
+  let needsDiversification = false
+
+  for (const product of products) {
+    if (product.pubkey === runMerchant) {
+      runLength += 1
+    } else {
+      runMerchant = product.pubkey
+      runLength = 1
+    }
+
+    if (runLength > maxConsecutive) {
+      needsDiversification = true
+      break
+    }
+  }
+
+  if (!needsDiversification) return [...products]
+
   const buckets = new Map<string, MerchantBucket>()
 
   for (const [index, product] of products.entries()) {
