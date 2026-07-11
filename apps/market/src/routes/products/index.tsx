@@ -51,7 +51,8 @@ const SORT_OPTIONS: Array<{
   value: MarketBrowseSortOption
   label: string
 }> = [
-  { value: "newest", label: "Newest" },
+  // Keep the existing URL value while naming the discovery policy honestly.
+  { value: "newest", label: "Fresh & diverse" },
   { value: "price_asc", label: "Price: Low to High" },
   { value: "price_desc", label: "Price: High to Low" },
 ]
