@@ -27,7 +27,7 @@ import { signCheckoutZapRequestWithAnonSigner } from "./anon-zap-signer"
 import {
   buildPaymentProofRumor,
   getDeliveryNotice,
-  publishWrappedToMerchantAndSelf,
+  publishBuyerOrderMessage,
   type BuyerOrderSigningIdentity,
 } from "./order-publish"
 import { payCheckoutInvoice } from "./payment-rails"
@@ -462,7 +462,7 @@ export async function runOrderPayment(
 
       let deliveryNotice: string | null = null
       try {
-        const proofDelivery = await publishWrappedToMerchantAndSelf(
+        const proofDelivery = await publishBuyerOrderMessage(
           proofRumor,
           ndk,
           ctx.merchantPubkey,
@@ -566,7 +566,7 @@ export async function resendOrderProof(
   })
   await patchAndEmit(orderId, { proofDeliveryStatus: "pending" })
   try {
-    await publishWrappedToMerchantAndSelf(
+    await publishBuyerOrderMessage(
       proofRumor,
       ndk,
       lifecycle.merchantPubkey,
@@ -617,7 +617,7 @@ export async function submitExternalPaymentProof(
     content,
   })
   try {
-    await publishWrappedToMerchantAndSelf(
+    await publishBuyerOrderMessage(
       proofRumor,
       ndk,
       lifecycle.merchantPubkey,

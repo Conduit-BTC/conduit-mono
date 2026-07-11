@@ -2,10 +2,12 @@ import { describe, expect, it } from "bun:test"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 
 import {
+  GUEST_ORDER_SESSION_TTL_MS,
   clearSessionGuestOrderSigningIdentity,
   createGuestOrderSigningIdentity,
   createSessionGuestOrderSigningIdentity,
   getSessionGuestOrderSigningIdentity,
+  pruneExpiredSessionGuestOrderSigningIdentities,
 } from "../apps/market/src/lib/guest-order-identity"
 
 function fakeStorage(): Storage {
@@ -92,23 +94,46 @@ describe("guest order signing identity", () => {
     await expect(otherOrder.sign(identity.signer)).rejects.toThrow(
       "Guest signer cannot sign outside its order scope."
     )
+
+    const unsupportedMessage = new NDKEvent()
+    unsupportedMessage.kind = 16
+    unsupportedMessage.tags = [
+      ["p", merchantPubkey],
+      ["type", "message"],
+      ["order", "scoped-order"],
+    ]
+    await expect(unsupportedMessage.sign(identity.signer)).rejects.toThrow(
+      "Guest signer cannot sign outside its order scope."
+    )
+
+    await expect(
+      identity.signer.decrypt("merchant", "ciphertext", "nip44")
+    ).rejects.toThrow("Guest order signer cannot decrypt inbound messages.")
   })
 
   it("restores an order-scoped signer from session storage", async () => {
     const storage = fakeStorage()
     const merchantPubkey = "a".repeat(64)
+    const createdAt = Date.now()
     const created = createSessionGuestOrderSigningIdentity(
       "order-1",
       merchantPubkey,
       {
         storage,
-        nowMs: 1_700_000_000_000,
+        nowMs: createdAt,
       }
     )
-    const restored = getSessionGuestOrderSigningIdentity("order-1", storage)
+    const restored = getSessionGuestOrderSigningIdentity(
+      "order-1",
+      storage,
+      createdAt + 1
+    )
 
     expect(restored?.kind).toBe("guest_ephemeral")
     expect(restored?.pubkey).toBe(created.pubkey)
+    expect(created.createdAt).toBe(createdAt)
+    expect(restored?.createdAt).toBe(createdAt)
+    expect(restored?.expiresAt).toBe(createdAt + GUEST_ORDER_SESSION_TTL_MS)
 
     const event = new NDKEvent()
     event.kind = 16
@@ -142,6 +167,77 @@ describe("guest order signing identity", () => {
     ).toBeNull()
   })
 
+  it("expires session guest signers after the bounded recovery window", () => {
+    const storage = fakeStorage()
+    const createdAt = 1_700_000_000_000
+    createSessionGuestOrderSigningIdentity("order-expired", "a".repeat(64), {
+      storage,
+      nowMs: createdAt,
+    })
+
+    expect(
+      getSessionGuestOrderSigningIdentity(
+        "order-expired",
+        storage,
+        createdAt + GUEST_ORDER_SESSION_TTL_MS - 1
+      )
+    ).not.toBeNull()
+    expect(
+      getSessionGuestOrderSigningIdentity(
+        "order-expired",
+        storage,
+        createdAt + GUEST_ORDER_SESSION_TTL_MS
+      )
+    ).toBeNull()
+  })
+
+  it("rejects guest signers timestamped in the future", () => {
+    const storage = fakeStorage()
+    const now = 1_700_000_000_000
+    createSessionGuestOrderSigningIdentity("order-future", "a".repeat(64), {
+      storage,
+      nowMs: now + 1,
+    })
+
+    expect(
+      getSessionGuestOrderSigningIdentity("order-future", storage, now)
+    ).toBeNull()
+  })
+
+  it("prunes every expired raw guest key during session maintenance", () => {
+    const storage = fakeStorage()
+    const createdAt = 1_700_000_000_000
+    createSessionGuestOrderSigningIdentity("order-expired-a", "a".repeat(64), {
+      storage,
+      nowMs: createdAt,
+    })
+    createSessionGuestOrderSigningIdentity("order-expired-b", "b".repeat(64), {
+      storage,
+      nowMs: createdAt,
+    })
+
+    expect(
+      pruneExpiredSessionGuestOrderSigningIdentities(
+        storage,
+        createdAt + GUEST_ORDER_SESSION_TTL_MS
+      )
+    ).toBe(2)
+    expect(
+      getSessionGuestOrderSigningIdentity(
+        "order-expired-a",
+        storage,
+        createdAt + GUEST_ORDER_SESSION_TTL_MS
+      )
+    ).toBeNull()
+    expect(
+      getSessionGuestOrderSigningIdentity(
+        "order-expired-b",
+        storage,
+        createdAt + GUEST_ORDER_SESSION_TTL_MS
+      )
+    ).toBeNull()
+  })
+
   it("keeps a same-page fallback when session storage rejects writes", () => {
     const storage = fakeStorage()
     storage.setItem = () => {
@@ -160,5 +256,19 @@ describe("guest order signing identity", () => {
     expect(restored?.pubkey).toBe(created.pubkey)
 
     clearSessionGuestOrderSigningIdentity("order-memory", storage)
+  })
+
+  it("keeps a same-page fallback when session storage is unavailable", () => {
+    const created = createSessionGuestOrderSigningIdentity(
+      "order-no-storage",
+      "a".repeat(64),
+      { storage: null }
+    )
+
+    expect(
+      getSessionGuestOrderSigningIdentity("order-no-storage", null)?.pubkey
+    ).toBe(created.pubkey)
+
+    clearSessionGuestOrderSigningIdentity("order-no-storage", null)
   })
 })

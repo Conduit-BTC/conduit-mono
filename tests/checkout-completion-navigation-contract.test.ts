@@ -62,8 +62,11 @@ describe("checkout completion navigation contracts", () => {
       "apps/market/src/routes/orders.tsx"
     ).text()
 
-    expect(checkoutRoute).toContain("closing it ends guest order access")
-    expect(ordersRoute).toContain("Closing it ends access")
+    expect(checkoutRoute).toContain(
+      "Keep this tab open until the receipt is sent"
+    )
+    expect(ordersRoute).toContain("Closing it ends local")
+    expect(ordersRoute).toContain("merchant will follow up")
     expect(ordersRoute).toContain("disabled={!activeBuyerPubkey || isFetching}")
   })
 })

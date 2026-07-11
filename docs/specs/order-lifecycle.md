@@ -18,6 +18,12 @@ Stored locally (Dexie `orderLifecycles`, keyed by `orderId`). Created by
 checkout before long async work; enriched by relay-observed messages but never
 dependent on them to display. Defined in `@conduit/core` (`OrderLifecycle`).
 
+The durable model above applies to signed-in buyers. A `guest_ephemeral`
+external-wallet order keeps only the redacted local fields needed to finish the
+invoice/payment-report flow, receives no relay conversation enrichment, and is
+eligible for pruning with related buyer-side cache/payment rows after 24 hours;
+Market performs that pruning on startup.
+
 Fields:
 
 - Identity: `orderId`, `buyerPubkey`, `merchantPubkey`, `checkoutMode`
@@ -46,9 +52,11 @@ Repository helpers: `createOrderLifecycle`, `getOrderLifecycle`,
    NWC/WebLN, publishes the proof, and writes each transition to the lifecycle
    record. With no automatic rail it stops at `paymentStatus: "manual_required"`
    and surfaces the invoice for an external wallet (CND-120).
-3. Merchant-driven state (confirmation, shipping, completion) is read from the
-   order conversation (`status_update` / `shipping_update`) and merged into the
-   interpreted view-model.
+3. For signed-in buyers, merchant-driven state (confirmation, shipping,
+   completion) is read from the order conversation (`status_update` /
+   `shipping_update`) and merged into the interpreted view-model. Guest orders
+   stop at local receipt delivery; later merchant coordination occurs through
+   the required phone/email contact fields.
 
 ## Interpreted view-model and timeline
 
@@ -75,6 +83,9 @@ wallet`, `Completed - Delivered`, plus an `actionNeeded` flag for the list
   not a separate checkout branch.
 - Paid carts clear at the durable checkpoint (order sent), so they are not live
   after refresh/close/navigation.
+- Guest recovery is same-tab and payment-only: it does not fetch merchant
+  replies, expose a guest DM inbox, or retain the decrypted order/contact payload
+  as durable buyer history.
 
 ## Address validity policy (CND-127)
 
@@ -118,3 +129,9 @@ eligibility remains a separate fulfillment gate.
 Sensitive fields (invoice, preimage, NWC URI, order contents, shipping address,
 contact note, message content) stay on the user's device or relays and are
 excluded from telemetry, per `docs/specs/privacy-observability.md`.
+
+Guest checkout is narrower: phone/email and fulfillment details are delivered
+inside the merchant's encrypted order copy, removed from the checkout form after
+successful delivery, and omitted from the buyer's durable lifecycle/message
+cache. The remaining redacted guest lifecycle and invoice are bounded to the
+24-hour guest recovery window.

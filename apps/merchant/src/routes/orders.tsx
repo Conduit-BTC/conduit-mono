@@ -695,6 +695,14 @@ function OrdersPage() {
     () => (selected ? extractOrderSummary(selected.messages ?? []) : null),
     [selected]
   )
+  const isGuestOrder = orderSummary?.buyerIdentityKind === "guest_ephemeral"
+  const assertBuyerHasNostrInbox = useCallback(() => {
+    if (isGuestOrder) {
+      throw new Error(
+        "Guest shoppers do not have a Nostr inbox. Follow up using the required phone and email contact details on the order."
+      )
+    }
+  }, [isGuestOrder])
   const selectedBuyerProfile = selected
     ? buyerProfilesQuery.data?.[selected.buyerPubkey]
     : undefined
@@ -703,15 +711,18 @@ function OrdersPage() {
     : null
   const awaitingInvoiceCount = useMemo(
     () =>
-      conversations.filter(
-        (conversation) =>
-          !(conversation.messages ?? []).some(
-            (message) => message.type === "payment_request"
-          ) &&
-          !(conversation.messages ?? []).some(
-            (message) => message.type === "payment_proof"
-          )
-      ).length,
+      conversations.filter((conversation) => {
+        const messages = conversation.messages ?? []
+        if (
+          extractOrderSummary(messages).buyerIdentityKind === "guest_ephemeral"
+        ) {
+          return false
+        }
+        return (
+          !messages.some((message) => message.type === "payment_request") &&
+          !messages.some((message) => message.type === "payment_proof")
+        )
+      }).length,
     [conversations]
   )
   const activeFulfillmentCount = useMemo(
@@ -740,6 +751,7 @@ function OrdersPage() {
   const generateInvoiceMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
+      assertBuyerHasNostrInbox()
 
       const amountSats = invoiceAmountSats ?? 0
       if (amountSats <= 0) throw new Error("Amount must be greater than 0")
@@ -817,6 +829,7 @@ function OrdersPage() {
   const invoiceMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
+      assertBuyerHasNostrInbox()
       if (!invoice.trim()) throw new Error("Invoice is required")
       const manualInvoice = invoice.trim()
       const mismatch = getLightningNetworkMismatchMessage(manualInvoice)
@@ -857,6 +870,7 @@ function OrdersPage() {
   const statusMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
+      assertBuyerHasNostrInbox()
       await publishOrderConversationMessage({
         merchantPubkey: pubkey,
         buyerPubkey: selected.buyerPubkey,
@@ -879,6 +893,7 @@ function OrdersPage() {
   const shippingMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
+      assertBuyerHasNostrInbox()
       const normalizedTrackingUrl = normalizeTrackingUrl(trackingUrl)
       await publishOrderConversationMessage({
         merchantPubkey: pubkey,
@@ -912,6 +927,7 @@ function OrdersPage() {
   const noteMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
+      assertBuyerHasNostrInbox()
       if (!replyNote.trim()) throw new Error("Message is required")
       await publishOrderConversationMessage({
         merchantPubkey: pubkey,
@@ -1135,14 +1151,25 @@ function OrdersPage() {
               >
                 <TabsList className="xl:shrink-0">
                   <TabsTrigger value="details">Details</TabsTrigger>
-                  <TabsTrigger value="actions">Actions</TabsTrigger>
-                  <TabsTrigger value="messages">Messages</TabsTrigger>
+                  {!isGuestOrder && (
+                    <TabsTrigger value="actions">Actions</TabsTrigger>
+                  )}
+                  <TabsTrigger value="messages">
+                    {isGuestOrder ? "Activity" : "Messages"}
+                  </TabsTrigger>
                 </TabsList>
 
                 <TabsContent
                   value="details"
                   className="xl:min-h-0 xl:overflow-auto xl:pr-1"
                 >
+                  {isGuestOrder && (
+                    <div className="mb-4 rounded-md border border-warning/30 bg-warning/10 p-4 text-sm leading-6 text-warning">
+                      {orderSummary.guestContact
+                        ? "This guest order has no Nostr reply inbox. Use the required phone and email contact details below for invoices, status updates, shipping information, and other follow-up."
+                        : "This guest order has no Nostr reply inbox and is missing the required phone/email contact. Treat it as incomplete because no buyer follow-up channel is available."}
+                    </div>
+                  )}
                   <OrderDetailCard
                     orderId={selected.orderId}
                     status={selected.status}
@@ -1495,30 +1522,38 @@ function OrdersPage() {
                         />
                       ))}
                     </div>
-                    <form
-                      className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3 xl:shrink-0"
-                      onSubmit={(event) => {
-                        event.preventDefault()
-                        noteMutation.mutate()
-                      }}
-                    >
-                      <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
-                        Reply to buyer
+                    {isGuestOrder ? (
+                      <div className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning xl:shrink-0">
+                        {orderSummary.guestContact
+                          ? "Guest activity is inbound-only. Continue the conversation using the order's phone and email contact details."
+                          : "Guest activity is inbound-only, and this order did not include the required phone/email contact."}
                       </div>
-                      <Input
-                        value={replyNote}
-                        onChange={(event) => setReplyNote(event.target.value)}
-                        placeholder="Send a note to the buyer"
-                      />
-                      <Button
-                        type="submit"
-                        size="sm"
-                        className="w-full"
-                        disabled={noteMutation.isPending || !replyNote.trim()}
+                    ) : (
+                      <form
+                        className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3 xl:shrink-0"
+                        onSubmit={(event) => {
+                          event.preventDefault()
+                          noteMutation.mutate()
+                        }}
                       >
-                        {noteMutation.isPending ? "Sending…" : "Send message"}
-                      </Button>
-                    </form>
+                        <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+                          Reply to buyer
+                        </div>
+                        <Input
+                          value={replyNote}
+                          onChange={(event) => setReplyNote(event.target.value)}
+                          placeholder="Send a note to the buyer"
+                        />
+                        <Button
+                          type="submit"
+                          size="sm"
+                          className="w-full"
+                          disabled={noteMutation.isPending || !replyNote.trim()}
+                        >
+                          {noteMutation.isPending ? "Sending…" : "Send message"}
+                        </Button>
+                      </form>
+                    )}
                   </div>
                 </TabsContent>
               </Tabs>

@@ -1241,6 +1241,83 @@ describe("order payload schema", () => {
     expect(parsed.buyerIdentityKind).toBe("guest_ephemeral")
     expect(parsed.guestContact?.email).toBe("alice@example.com")
   })
+
+  it("rejects guest orders without the required phone and email", () => {
+    expect(() =>
+      orderSchema.parse({
+        id: "order-guest-missing-contact",
+        merchantPubkey: "merchant",
+        buyerPubkey: "b".repeat(64),
+        buyerIdentityKind: "guest_ephemeral",
+        items: [
+          {
+            productId: "product-1",
+            quantity: 1,
+            priceAtPurchase: 1000,
+            currency: "SATS",
+          },
+        ],
+        subtotal: 1000,
+        currency: "SATS",
+        createdAt: 1_700_000_000_000,
+      })
+    ).toThrow("Guest orders require phone and email contact.")
+  })
+
+  it("keeps guest contact metadata out of signed-in orders", () => {
+    expect(() =>
+      orderSchema.parse({
+        id: "order-signed-in",
+        merchantPubkey: "merchant",
+        buyerPubkey: "b".repeat(64),
+        buyerIdentityKind: "signed_in",
+        items: [
+          {
+            productId: "product-1",
+            quantity: 1,
+            priceAtPurchase: 1000,
+            currency: "SATS",
+          },
+        ],
+        subtotal: 1000,
+        currency: "SATS",
+        guestContact: {
+          phone: "+18005551234",
+          email: "alice@example.com",
+        },
+        createdAt: 1_700_000_000_000,
+      })
+    ).toThrow(
+      "Guest contact metadata requires an explicit ephemeral guest identity."
+    )
+  })
+
+  it("rejects guest contact when the identity marker is omitted", () => {
+    expect(() =>
+      orderSchema.parse({
+        id: "order-unmarked-contact",
+        merchantPubkey: "merchant",
+        buyerPubkey: "b".repeat(64),
+        items: [
+          {
+            productId: "product-1",
+            quantity: 1,
+            priceAtPurchase: 1000,
+            currency: "SATS",
+          },
+        ],
+        subtotal: 1000,
+        currency: "SATS",
+        guestContact: {
+          phone: "+18005551234",
+          email: "alice@example.com",
+        },
+        createdAt: 1_700_000_000_000,
+      })
+    ).toThrow(
+      "Guest contact metadata requires an explicit ephemeral guest identity."
+    )
+  })
 })
 
 describe("payment proof payload", () => {

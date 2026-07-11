@@ -15,8 +15,8 @@ import {
  * route and the route-independent payment service publish identically).
  *
  * These helpers have no React dependencies: they gift-wrap a kind-16 order
- * rumor to the merchant and a buyer self-copy, publish both via the relay
- * planner, and cache the rumor locally for instant order-history readback.
+ * rumor to the merchant and, for authenticated buyers, a buyer self-copy. Guest
+ * orders are merchant-only and keep only the redacted local lifecycle record.
  */
 
 export type BuyerMessageDeliveryResult = {
@@ -24,12 +24,21 @@ export type BuyerMessageDeliveryResult = {
   localCacheError: string | null
 }
 
-export interface BuyerOrderSigningIdentity {
-  pubkey: string
-  signer?: NDKSigner
-  orderId?: string
-  merchantPubkey?: string
-}
+export type BuyerOrderSigningIdentity =
+  | {
+      kind: "guest_ephemeral"
+      pubkey: string
+      signer: NDKSigner
+      orderId: string
+      merchantPubkey: string
+    }
+  | {
+      kind?: "signed_in"
+      pubkey: string
+      signer?: NDKSigner
+      orderId?: never
+      merchantPubkey?: never
+    }
 
 type BuyerOrderIdentityInput = string | BuyerOrderSigningIdentity
 
@@ -57,10 +66,11 @@ function assertBuyerOrderScope(
   merchantPubkey: string,
   identity: BuyerOrderSigningIdentity
 ): void {
-  if (!identity.orderId && !identity.merchantPubkey) return
-  const rumorOrderId = rumor.tags.find((tag) => tag[0] === "order")?.[1]
-  const rumorRecipient = rumor.tags.find((tag) => tag[0] === "p")?.[1]
-  const rumorType = rumor.tags.find((tag) => tag[0] === "type")?.[1]
+  if (identity.kind !== "guest_ephemeral") return
+  const tags = rumor.tags ?? []
+  const rumorOrderId = tags.find((tag) => tag[0] === "order")?.[1]
+  const rumorRecipient = tags.find((tag) => tag[0] === "p")?.[1]
+  const rumorType = tags.find((tag) => tag[0] === "type")?.[1]
   if (
     rumor.kind !== EVENT_KINDS.ORDER ||
     (rumorType !== "order" && rumorType !== "payment_proof") ||
@@ -97,7 +107,7 @@ async function cacheBuyerOrderRumor(rumor: NDKEvent): Promise<string | null> {
 
 type GiftWrapDependency = typeof giftWrap
 
-export async function createBuyerGiftWrapsForMerchantAndSelf(
+export async function createBuyerGiftWrapsForDelivery(
   rumor: NDKEvent,
   ndk: ReturnType<typeof getNdk>,
   merchantPubkey: string,
@@ -107,23 +117,31 @@ export async function createBuyerGiftWrapsForMerchantAndSelf(
   } = {}
 ): Promise<{
   wrappedToMerchant: NDKEvent
-  wrappedToSelf: NDKEvent
+  wrappedToSelf: NDKEvent | null
 }> {
   const giftWrapFn = options.giftWrapFn ?? giftWrap
   const buyerIdentity = resolveBuyerOrderSigningIdentity(ndk, buyer)
   assertBuyerOrderScope(rumor, merchantPubkey, buyerIdentity)
   const merchantUser = new NDKUser({ pubkey: merchantPubkey })
-  const buyerUser = new NDKUser({ pubkey: buyerIdentity.pubkey })
   const wrapParams = { rumorKind: EVENT_KINDS.ORDER }
 
   const wrappedToMerchant = await withTransientNip07Retry(
     () => giftWrapFn(rumor, merchantUser, buyerIdentity.signer, wrapParams),
     options
   )
-  const wrappedToSelf = await withTransientNip07Retry(
-    () => giftWrapFn(rumor, buyerUser, buyerIdentity.signer, wrapParams),
-    options
-  )
+  const wrappedToSelf =
+    buyerIdentity.kind === "guest_ephemeral"
+      ? null
+      : await withTransientNip07Retry(
+          () =>
+            giftWrapFn(
+              rumor,
+              new NDKUser({ pubkey: buyerIdentity.pubkey }),
+              buyerIdentity.signer,
+              wrapParams
+            ),
+          options
+        )
 
   return { wrappedToMerchant, wrappedToSelf }
 }
@@ -149,7 +167,7 @@ export function getDeliveryNotice(
   return null
 }
 
-export async function publishWrappedToMerchantAndSelf(
+export async function publishBuyerOrderMessage(
   rumor: NDKEvent,
   ndk: ReturnType<typeof getNdk>,
   merchantPubkey: string,
@@ -160,7 +178,7 @@ export async function publishWrappedToMerchantAndSelf(
   prepareBuyerRumor(rumor, buyerIdentity.pubkey)
 
   const { wrappedToMerchant, wrappedToSelf } =
-    await createBuyerGiftWrapsForMerchantAndSelf(
+    await createBuyerGiftWrapsForDelivery(
       rumor,
       ndk,
       merchantPubkey,
@@ -177,24 +195,29 @@ export async function publishWrappedToMerchantAndSelf(
   })
 
   let buyerSelfCopyError: string | null = null
-  try {
-    await publishWithPlanner(wrappedToSelf, {
-      intent: "recipient_event",
-      authorPubkey: buyerIdentity.pubkey,
-      authenticatedPubkey: buyerIdentity.pubkey,
-      recipientPubkeys: [buyerIdentity.pubkey],
-      refreshRelayLists: true,
-      deliveryMode: "critical",
-    })
-  } catch (selfCopyError) {
-    console.warn("Buyer self-copy publish failed", selfCopyError)
-    buyerSelfCopyError = getErrorMessage(
-      selfCopyError,
-      "Buyer self-copy publish failed"
-    )
+  if (wrappedToSelf) {
+    try {
+      await publishWithPlanner(wrappedToSelf, {
+        intent: "recipient_event",
+        authorPubkey: buyerIdentity.pubkey,
+        authenticatedPubkey: buyerIdentity.pubkey,
+        recipientPubkeys: [buyerIdentity.pubkey],
+        refreshRelayLists: true,
+        deliveryMode: "critical",
+      })
+    } catch (selfCopyError) {
+      console.warn("Buyer self-copy publish failed", selfCopyError)
+      buyerSelfCopyError = getErrorMessage(
+        selfCopyError,
+        "Buyer self-copy publish failed"
+      )
+    }
   }
 
-  const localCacheError = await cacheBuyerOrderRumor(rumor)
+  const localCacheError =
+    buyerIdentity.kind === "guest_ephemeral"
+      ? null
+      : await cacheBuyerOrderRumor(rumor)
   return { buyerSelfCopyError, localCacheError }
 }
 

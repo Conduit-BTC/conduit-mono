@@ -97,6 +97,11 @@ import {
   type ShippingValidationError,
 } from "../lib/checkout-validation"
 import {
+  clearCheckoutShippingSession,
+  readCheckoutShippingSession,
+  writeCheckoutShippingSession,
+} from "../lib/checkout-session"
+import {
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
   getCheckoutPublicZapSigner,
@@ -109,7 +114,7 @@ import {
 import { isAnonZapSignerConfigured } from "../lib/anon-zap-signer"
 import {
   getDeliveryNotice,
-  publishWrappedToMerchantAndSelf,
+  publishBuyerOrderMessage,
 } from "../lib/order-publish"
 import {
   clearSessionGuestOrderSigningIdentity,
@@ -137,28 +142,11 @@ type CheckoutSearch = {
 type CheckoutTelemetryMode = "checkout" | "order_first" | CheckoutZapMode
 
 /** Priced "ok" intent — the only shape we proceed to payment with. */
-// Shipping is session-scoped: pre-fills within a browser session, never
-// persisted permanently to localStorage.
-const CHECKOUT_STORAGE_KEY = "conduit:checkout-shipping"
 const CHECKOUT_PRICE_REFRESH_TIMEOUT_MS = 5_000
 const CHECKOUT_PRICE_REFRESH_RETRY_MS = 30_000
 
 type CheckoutPricingRefreshState =
   "ready" | "refreshing" | "stale_retryable" | "unavailable"
-
-const DEFAULT_SHIPPING_FORM: ShippingFormState = {
-  firstName: "",
-  lastName: "",
-  street: "",
-  line2: "",
-  city: "",
-  state: "",
-  postalCode: "",
-  country: "US",
-  name: "",
-  phone: "",
-  email: "",
-}
 
 const SHIPPING_VALIDATION_FIELDS: ShippingFieldKey[] = [
   "country",
@@ -186,29 +174,6 @@ const COUNTRY_COMBOBOX_OPTIONS = SHIPPING_COUNTRIES.map((country) => ({
 }))
 
 // ─── Session storage ──────────────────────────────────────────────────────────
-
-function readSessionShipping(): ShippingFormState {
-  if (typeof window === "undefined") return DEFAULT_SHIPPING_FORM
-  try {
-    const raw = sessionStorage.getItem(CHECKOUT_STORAGE_KEY)
-    if (!raw) return DEFAULT_SHIPPING_FORM
-    return {
-      ...DEFAULT_SHIPPING_FORM,
-      ...(JSON.parse(raw) as Partial<ShippingFormState>),
-    }
-  } catch {
-    return DEFAULT_SHIPPING_FORM
-  }
-}
-
-function writeSessionShipping(value: ShippingFormState): void {
-  if (typeof window === "undefined") return
-  try {
-    sessionStorage.setItem(CHECKOUT_STORAGE_KEY, JSON.stringify(value))
-  } catch {
-    // ignore
-  }
-}
 
 // ─── Route ────────────────────────────────────────────────────────────────────
 
@@ -667,7 +632,7 @@ function CheckoutPage() {
 
   const [step, setStep] = useState<CheckoutStep>("shipping")
   const [shipping, setShipping] = useState<ShippingFormState>(() =>
-    readSessionShipping()
+    readCheckoutShippingSession()
   )
   const [note, setNote] = useState("")
   const [error, setError] = useState<string | null>(null)
@@ -1219,7 +1184,7 @@ function CheckoutPage() {
         : value
     const next = { ...shipping, [field]: normalizedValue }
     setShipping(next)
-    writeSessionShipping(next)
+    writeCheckoutShippingSession(next)
     setShippingErrors(validateCheckoutDetails(next))
     if (isValidationField(field)) {
       markShippingFieldTouched(field)
@@ -1483,7 +1448,7 @@ function CheckoutPage() {
       setStep("sending")
 
       const [delivery] = await Promise.all([
-        publishWrappedToMerchantAndSelf(
+        publishBuyerOrderMessage(
           rumor,
           ndk,
           selectedMerchant,
@@ -1492,6 +1457,7 @@ function CheckoutPage() {
         new Promise((resolve) => window.setTimeout(resolve, 900)),
       ])
       orderDelivered = true
+      clearCheckoutShippingSession()
       const deliveryNotice = getDeliveryNotice(delivery, "Order")
       if (deliveryNotice) setPaidNotice(deliveryNotice)
 
@@ -1739,6 +1705,7 @@ function CheckoutPage() {
       if (guestIdentity && !guestContact) {
         throw new Error("Phone and email are required for guest checkout.")
       }
+      const orderCreatedAt = guestIdentity?.createdAt ?? Date.now()
       const currency = "SATS"
       const ndk = getNdk()
       const orderPayload = {
@@ -1754,7 +1721,7 @@ function CheckoutPage() {
         shippingAddress,
         guestContact,
         note: guestIdentity ? buildBuyerNote() : buildContactNote(),
-        createdAt: Date.now(),
+        createdAt: orderCreatedAt,
         pricingQuote: pricingIntent.quote,
       }
 
@@ -1777,13 +1744,14 @@ function CheckoutPage() {
       orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
       orderRumor.content = JSON.stringify(orderPayload)
 
-      const orderDelivery = await publishWrappedToMerchantAndSelf(
+      const orderDelivery = await publishBuyerOrderMessage(
         orderRumor,
         ndk,
         selectedMerchant,
         guestIdentity ?? buyerPubkey
       )
       orderDelivered = true
+      clearCheckoutShippingSession()
       const orderDeliveryNotice = getDeliveryNotice(orderDelivery, "Order")
 
       const canAutoPay =
@@ -1792,6 +1760,7 @@ function CheckoutPage() {
       // Orders can render it immediately, then hand payment to the service.
       await createOrderLifecycle({
         orderId,
+        createdAt: orderCreatedAt,
         buyerPubkey,
         buyerIdentityKind,
         merchantPubkey: selectedMerchant,
@@ -1815,9 +1784,13 @@ function CheckoutPage() {
             }
           : undefined,
         zapContent,
-        shippingAddress: shippingAddress ?? undefined,
-        contactNote: buildContactNote(),
-        guestContact,
+        // The merchant receives guest fulfillment/contact data inside the
+        // encrypted order. Do not retain another plaintext copy in IndexedDB.
+        shippingAddress: guestIdentity
+          ? undefined
+          : (shippingAddress ?? undefined),
+        contactNote: guestIdentity ? undefined : buildContactNote(),
+        guestContact: undefined,
         addressValidity: addressValidity.status as OrderAddressValidity,
         shippingZoneEligibility,
         orderDeliveryStatus: "sent",
@@ -2540,7 +2513,7 @@ function CheckoutPage() {
                     role={isGuestCheckout ? "note" : undefined}
                   >
                     {isGuestCheckout
-                      ? "Your order details will be sent privately with a temporary guest key for this order. Keep this tab open through payment and receipt delivery; closing it ends guest order access."
+                      ? "Your order details will be sent privately with a temporary key that this client uses only for this order and its payment receipt. Keep this tab open until the receipt is sent; merchant follow-up uses the required phone and email contact details."
                       : "Your order details will be sent to the merchant through your signed Nostr account so they can follow up with payment and fulfillment."}
                   </p>
                 </div>
@@ -2580,9 +2553,10 @@ function CheckoutPage() {
                       </div>
                       <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
                         This merchant cart contains only digital products, so no
-                        shipping address is needed. Merchant follow-up still
-                        happens through the order thread after the order is
-                        sent.
+                        shipping address is needed.{" "}
+                        {isGuestCheckout
+                          ? "The merchant will use your required phone and email contact details for follow-up."
+                          : "Merchant follow-up happens through the order thread after the order is sent."}
                       </p>
                     </div>
                   </div>
@@ -2768,12 +2742,14 @@ function CheckoutPage() {
                         1. Your order is sent to the merchant through Nostr.
                       </li>
                       <li>
-                        2. The merchant reviews the order and replies with
-                        payment details.
+                        {isGuestCheckout
+                          ? "2. Pay the invoice shown here and send the receipt before closing this tab."
+                          : "2. The merchant reviews the order and replies with payment details."}
                       </li>
                       <li>
-                        3. You track order updates from the merchant in your
-                        order history.
+                        {isGuestCheckout
+                          ? "3. The merchant follows up using the phone and email contact details submitted at checkout."
+                          : "3. You track order updates from the merchant in your order history."}
                       </li>
                     </ul>
                     {fastUnavailableReasons.length > 0 && (

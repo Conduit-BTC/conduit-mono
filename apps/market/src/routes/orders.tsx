@@ -9,6 +9,7 @@ import {
   getOrderPublicZapSigner,
   listOrderLifecycles,
   normalizeLightningInvoice,
+  pruneExpiredGuestOrderData,
   pubkeyToNpub,
   useAuth,
   useProfile,
@@ -67,6 +68,7 @@ import {
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
 import {
+  clearSessionGuestOrderSigningIdentity,
   getSessionGuestOrderSigningIdentity,
   type GuestOrderSigningIdentity,
 } from "../lib/guest-order-identity"
@@ -537,8 +539,9 @@ function ExternalWalletPanel({
       </p>
       {guestSession && (
         <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
-          Keep this tab open until the receipt is sent. Closing it ends access
-          to this guest order and its updates.
+          Keep this tab open until the receipt is sent. Closing it ends local
+          access to this guest order. The merchant will follow up using the
+          phone and email contact details submitted at checkout.
         </p>
       )}
       <div className="mt-4 flex flex-col items-start gap-4 sm:flex-row">
@@ -902,9 +905,11 @@ function OrderDetail({
               Need help?
             </h3>
             <p className="mt-1 text-sm text-[var(--text-secondary)]">
-              Message the merchant for any questions or issues.
+              {guestIdentity
+                ? "The merchant will use the phone and email contact details submitted at checkout for questions and fulfillment updates."
+                : "Message the merchant for any questions or issues."}
             </p>
-            <div className="mt-3">{messageMerchant}</div>
+            {messageMerchant && <div className="mt-3">{messageMerchant}</div>}
           </section>
         </div>
       </div>
@@ -940,16 +945,27 @@ function OrdersPage() {
   const [searchValue, setSearchValue] = useState("")
   const [tab, setTab] = useState<PhaseTab>("all")
   const [changeOrderOpen, setChangeOrderOpen] = useState(false)
-  const guestIdentity = useMemo(
-    () =>
-      !signerConnected && selectedFromUrl
-        ? getSessionGuestOrderSigningIdentity(selectedFromUrl)
-        : null,
-    [selectedFromUrl, signerConnected]
-  )
+  const [, setGuestSessionEpoch] = useState(0)
+  const guestIdentity =
+    !signerConnected && selectedFromUrl
+      ? getSessionGuestOrderSigningIdentity(selectedFromUrl)
+      : null
   const activeBuyerPubkey = signerConnected
     ? pubkey
     : (guestIdentity?.pubkey ?? null)
+  useEffect(() => {
+    if (!guestIdentity) return
+    const delayMs = Math.max(0, guestIdentity.expiresAt - Date.now())
+    const timer = window.setTimeout(() => {
+      clearSessionGuestOrderSigningIdentity(guestIdentity.orderId)
+      void pruneExpiredGuestOrderData()
+        .catch(() => {})
+        .finally(() => {
+          setGuestSessionEpoch((epoch) => epoch + 1)
+        })
+    }, delayMs)
+    return () => window.clearTimeout(timer)
+  }, [guestIdentity])
   // The phase tabs only exist on the mobile layout. Track the desktop breakpoint
   // (xl = 1280px) so a tab chosen on a narrow viewport doesn't silently filter
   // the tab-less desktop rail after a resize.
@@ -990,48 +1006,25 @@ function OrdersPage() {
     },
     refetchInterval: 30_000,
   })
-  const guestOrderScope = guestIdentity
-    ? {
-        orderId: guestIdentity.orderId,
-        merchantPubkey: guestIdentity.merchantPubkey,
-      }
-    : null
   const messagesQuery = useQuery({
-    queryKey: [
-      "buyer-messages-live",
-      activeBuyerPubkey ?? "none",
-      guestOrderScope?.orderId ?? "all",
-    ],
-    enabled: !!activeBuyerPubkey && (signerConnected || !!guestOrderScope),
-    queryFn: () =>
-      fetchBuyerConversations(activeBuyerPubkey!, {
-        signer: guestIdentity?.signer,
-        expectedOrderId: guestOrderScope?.orderId,
-        expectedCounterpartyPubkey: guestOrderScope?.merchantPubkey,
-      }),
+    queryKey: ["buyer-messages-live", activeBuyerPubkey ?? "none"],
+    enabled: signerConnected,
+    queryFn: () => fetchBuyerConversations(activeBuyerPubkey!),
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   })
   const cachedMessagesQuery = useQuery({
-    queryKey: [
-      "buyer-messages",
-      activeBuyerPubkey ?? "none",
-      guestOrderScope?.orderId ?? "all",
-    ],
-    enabled: !!activeBuyerPubkey && (signerConnected || !!guestOrderScope),
-    queryFn: () =>
-      fetchCachedBuyerConversations(activeBuyerPubkey!, {
-        expectedOrderId: guestOrderScope?.orderId,
-        expectedCounterpartyPubkey: guestOrderScope?.merchantPubkey,
-      }),
+    queryKey: ["buyer-messages", activeBuyerPubkey ?? "none"],
+    enabled: signerConnected,
+    queryFn: () => fetchCachedBuyerConversations(activeBuyerPubkey!),
     staleTime: 5_000,
   })
 
   const isFetching = messagesQuery.isFetching || lifecyclesQuery.isFetching
   const refetchAll = useCallback(() => {
-    void messagesQuery.refetch()
+    if (signerConnected) void messagesQuery.refetch()
     void lifecyclesQuery.refetch()
-  }, [messagesQuery, lifecyclesQuery])
+  }, [lifecyclesQuery, messagesQuery, signerConnected])
 
   useEffect(() => {
     if (isFetching) {
@@ -1225,7 +1218,9 @@ function OrdersPage() {
             Orders
           </h1>
           <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
-            Track your purchases, payment status, and shipping progress.
+            {signerConnected
+              ? "Track your purchases, payment status, and shipping progress."
+              : "Finish this guest payment and review locally saved checkout status. Merchant follow-up uses your submitted phone and email contact details."}
           </p>
         </div>
         <Button
@@ -1260,7 +1255,7 @@ function OrdersPage() {
           }
           body={
             selectedFromUrl
-              ? "Guest checkout orders are tied to the browser session that created them. Return from checkout in the same tab, or connect a signer for durable order history."
+              ? "Guest checkout orders are tied to the browser session that created them. Return from checkout in the same tab before the session expires; merchant follow-up uses the phone and email contact details submitted at checkout."
               : "Order updates, invoices, and merchant replies are tied to your signer identity."
           }
         />

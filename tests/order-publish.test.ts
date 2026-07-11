@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-import { createBuyerGiftWrapsForMerchantAndSelf } from "../apps/market/src/lib/order-publish"
+import { createBuyerGiftWrapsForDelivery } from "../apps/market/src/lib/order-publish"
 
 describe("buyer order gift wrapping", () => {
   it("serializes recipient wraps and retries transient signer bridge failures", async () => {
@@ -18,8 +18,15 @@ describe("buyer order gift wrapping", () => {
       return { id: `wrapped-${recipient.pubkey}` }
     }
 
-    const result = await createBuyerGiftWrapsForMerchantAndSelf(
-      {} as never,
+    const result = await createBuyerGiftWrapsForDelivery(
+      {
+        kind: 16,
+        tags: [
+          ["p", "merchant-pubkey"],
+          ["type", "order"],
+          ["order", "guest-order"],
+        ],
+      } as never,
       { signer: { id: "connected-signer" } } as never,
       "merchant-pubkey",
       "buyer-pubkey",
@@ -32,7 +39,7 @@ describe("buyer order gift wrapping", () => {
       "buyer-pubkey",
     ])
     expect(result.wrappedToMerchant.id).toBe("wrapped-merchant-pubkey")
-    expect(result.wrappedToSelf.id).toBe("wrapped-buyer-pubkey")
+    expect(result.wrappedToSelf?.id).toBe("wrapped-buyer-pubkey")
   })
 
   it("does not retry non-transient signer failures", async () => {
@@ -46,7 +53,7 @@ describe("buyer order gift wrapping", () => {
     }
 
     await expect(
-      createBuyerGiftWrapsForMerchantAndSelf(
+      createBuyerGiftWrapsForDelivery(
         {} as never,
         { signer: { id: "connected-signer" } } as never,
         "merchant-pubkey",
@@ -58,7 +65,7 @@ describe("buyer order gift wrapping", () => {
     expect(recipients).toEqual(["merchant-pubkey"])
   })
 
-  it("uses an explicit buyer signer for guest order wraps", async () => {
+  it("uses an explicit guest signer without creating a buyer self-copy", async () => {
     const explicitSigner = { id: "guest-ephemeral-signer" }
     const connectedSigner = { id: "connected-signer" }
     const signers: unknown[] = []
@@ -73,18 +80,31 @@ describe("buyer order gift wrapping", () => {
       return { id: `wrapped-${recipient.pubkey}` }
     }
 
-    const result = await createBuyerGiftWrapsForMerchantAndSelf(
-      {} as never,
+    const result = await createBuyerGiftWrapsForDelivery(
+      {
+        kind: 16,
+        tags: [
+          ["p", "merchant-pubkey"],
+          ["type", "order"],
+          ["order", "guest-order"],
+        ],
+      } as never,
       { signer: connectedSigner } as never,
       "merchant-pubkey",
-      { pubkey: "guest-pubkey", signer: explicitSigner as never },
+      {
+        kind: "guest_ephemeral",
+        pubkey: "guest-pubkey",
+        signer: explicitSigner as never,
+        orderId: "guest-order",
+        merchantPubkey: "merchant-pubkey",
+      },
       { giftWrapFn: giftWrapFn as never, retryDelaysMs: [0] }
     )
 
-    expect(recipients).toEqual(["merchant-pubkey", "guest-pubkey"])
-    expect(signers).toEqual([explicitSigner, explicitSigner])
+    expect(recipients).toEqual(["merchant-pubkey"])
+    expect(signers).toEqual([explicitSigner])
     expect(result.wrappedToMerchant.id).toBe("wrapped-merchant-pubkey")
-    expect(result.wrappedToSelf.id).toBe("wrapped-guest-pubkey")
+    expect(result.wrappedToSelf).toBeNull()
   })
 
   it("rejects guest messages outside the bound order and merchant", async () => {
@@ -99,11 +119,12 @@ describe("buyer order gift wrapping", () => {
     }
 
     await expect(
-      createBuyerGiftWrapsForMerchantAndSelf(
+      createBuyerGiftWrapsForDelivery(
         rumor as never,
         {} as never,
         "merchant-pubkey",
         {
+          kind: "guest_ephemeral",
           pubkey: "guest-pubkey",
           signer: { id: "guest-signer" } as never,
           orderId: "expected-order",
@@ -122,7 +143,7 @@ describe("buyer order gift wrapping", () => {
     }
 
     await expect(
-      createBuyerGiftWrapsForMerchantAndSelf(
+      createBuyerGiftWrapsForDelivery(
         {} as never,
         {} as never,
         "merchant-pubkey",

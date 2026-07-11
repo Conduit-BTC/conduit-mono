@@ -181,23 +181,41 @@ export type OrderItemSchema = z.infer<typeof orderItemSchema>
  *
  * Note: This is an internal schema for our MVP flow; interop parsing should be best-effort.
  */
-export const orderSchema = z.object({
-  id: z.string(),
-  merchantPubkey: z.string(),
-  buyerPubkey: z.string(),
-  buyerIdentityKind: orderBuyerIdentityKindSchema.optional(),
-  items: z.array(orderItemSchema).min(1),
-  subtotal: z.number().min(0),
-  currency: z.string(),
-  shippingCostSats: z.number().int().min(0).optional(),
-  shippingCostStatus: z
-    .enum(["not_required", "included", "priced", "manual"])
-    .optional(),
-  shippingAddress: shippingAddressSchema.optional(),
-  guestContact: orderGuestContactSchema.optional(),
-  note: z.string().max(2000).optional(),
-  createdAt: z.number(),
-})
+export const orderSchema = z
+  .object({
+    id: z.string(),
+    merchantPubkey: z.string(),
+    buyerPubkey: z.string(),
+    buyerIdentityKind: orderBuyerIdentityKindSchema.optional(),
+    items: z.array(orderItemSchema).min(1),
+    subtotal: z.number().min(0),
+    currency: z.string(),
+    shippingCostSats: z.number().int().min(0).optional(),
+    shippingCostStatus: z
+      .enum(["not_required", "included", "priced", "manual"])
+      .optional(),
+    shippingAddress: shippingAddressSchema.optional(),
+    guestContact: orderGuestContactSchema.optional(),
+    note: z.string().max(2000).optional(),
+    createdAt: z.number(),
+  })
+  .superRefine((order, context) => {
+    if (order.buyerIdentityKind === "guest_ephemeral" && !order.guestContact) {
+      context.addIssue({
+        code: "custom",
+        path: ["guestContact"],
+        message: "Guest orders require phone and email contact.",
+      })
+    }
+    if (order.guestContact && order.buyerIdentityKind !== "guest_ephemeral") {
+      context.addIssue({
+        code: "custom",
+        path: ["guestContact"],
+        message:
+          "Guest contact metadata requires an explicit ephemeral guest identity.",
+      })
+    }
+  })
 
 export type OrderSchema = z.infer<typeof orderSchema>
 
