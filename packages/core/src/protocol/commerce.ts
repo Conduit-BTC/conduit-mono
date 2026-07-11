@@ -149,6 +149,8 @@ export interface ConversationListQuery {
   limit?: number
   textQuery?: string
   signer?: NDKSigner
+  expectedOrderId?: string
+  expectedCounterpartyPubkey?: string
 }
 
 export interface ConversationDetailQuery {
@@ -2105,14 +2107,21 @@ async function unwrapBatch(
 async function fetchParsedOrderMessages(
   principalPubkey: string,
   limit: number,
-  signerOverride?: NDKSigner
+  signerOverride?: NDKSigner,
+  scope?: {
+    orderId: string
+    counterpartyPubkey: string
+  }
 ): Promise<RawMessageFetchResult> {
   const cached = await loadCachedOrderMessages(principalPubkey)
 
   const cachedById = new Map<string, ParsedOrderMessage>()
   for (const row of cached) {
     try {
-      cachedById.set(row.id, JSON.parse(row.rawContent) as ParsedOrderMessage)
+      const parsed = JSON.parse(row.rawContent) as ParsedOrderMessage
+      if (messageMatchesConversationScope(parsed, principalPubkey, scope)) {
+        cachedById.set(row.id, parsed)
+      }
     } catch {
       // skip corrupt cache rows
     }
@@ -2173,6 +2182,10 @@ async function fetchParsedOrderMessages(
 
       try {
         const parsed = parseOrderMessageRumorEvent(rumor)
+        if (!messageMatchesConversationScope(parsed, principalPubkey, scope)) {
+          parsedWrapIds.add(wrapper.id)
+          continue
+        }
         if (!cachedById.has(parsed.id)) {
           newRows.push(cachedOrderMessageRow(parsed))
         }
@@ -2201,6 +2214,33 @@ async function fetchParsedOrderMessages(
       return { messages, source: "local_cache", stale: true }
     }
     throw error
+  }
+}
+
+function messageMatchesConversationScope(
+  message: ParsedOrderMessage,
+  principalPubkey: string,
+  scope?: { orderId: string; counterpartyPubkey: string }
+): boolean {
+  if (!scope) return true
+  if (message.orderId !== scope.orderId) return false
+  return (
+    (message.senderPubkey === principalPubkey &&
+      message.recipientPubkey === scope.counterpartyPubkey) ||
+    (message.senderPubkey === scope.counterpartyPubkey &&
+      message.recipientPubkey === principalPubkey)
+  )
+}
+
+function getConversationReadScope(
+  query: ConversationListQuery
+): { orderId: string; counterpartyPubkey: string } | undefined {
+  if (!query.expectedOrderId || !query.expectedCounterpartyPubkey) {
+    return undefined
+  }
+  return {
+    orderId: query.expectedOrderId,
+    counterpartyPubkey: query.expectedCounterpartyPubkey,
   }
 }
 
@@ -2338,7 +2378,8 @@ export async function getBuyerConversationList(
   const result = await fetchParsedOrderMessages(
     query.principalPubkey,
     query.limit ?? 200,
-    query.signer
+    query.signer,
+    getConversationReadScope(query)
   )
   return {
     data: buildBuyerConversationSummaries(
@@ -2366,6 +2407,13 @@ export async function getCachedBuyerConversationList(
         return []
       }
     })
+    .filter((message) =>
+      messageMatchesConversationScope(
+        message,
+        query.principalPubkey,
+        getConversationReadScope(query)
+      )
+    )
     .sort((a, b) => a.createdAt - b.createdAt)
   const limited =
     query.limit && query.limit > 0 ? messages.slice(-query.limit) : messages

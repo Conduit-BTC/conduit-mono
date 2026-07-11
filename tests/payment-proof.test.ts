@@ -277,6 +277,7 @@ describe("payment proof model", () => {
       email: "buyer@example.com",
       phone: "+15551234567",
     })
+    expect(summary.buyerIdentityKind).toBe("guest_ephemeral")
   })
 
   it("requires concrete payment evidence before proof messages affect payment summaries", () => {

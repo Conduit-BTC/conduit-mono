@@ -87,6 +87,33 @@ describe("buyer order gift wrapping", () => {
     expect(result.wrappedToSelf.id).toBe("wrapped-guest-pubkey")
   })
 
+  it("rejects guest messages outside the bound order and merchant", async () => {
+    const giftWrapFn = async () => ({ id: "wrapped" })
+    const rumor = {
+      kind: 16,
+      tags: [
+        ["p", "merchant-pubkey"],
+        ["type", "payment_proof"],
+        ["order", "other-order"],
+      ],
+    }
+
+    await expect(
+      createBuyerGiftWrapsForMerchantAndSelf(
+        rumor as never,
+        {} as never,
+        "merchant-pubkey",
+        {
+          pubkey: "guest-pubkey",
+          signer: { id: "guest-signer" } as never,
+          orderId: "expected-order",
+          merchantPubkey: "merchant-pubkey",
+        },
+        { giftWrapFn: giftWrapFn as never }
+      )
+    ).rejects.toThrow("Guest order message is outside its signer scope.")
+  })
+
   it("fails before wrapping when no buyer signer is available", async () => {
     let wrapAttempts = 0
     const giftWrapFn = async () => {

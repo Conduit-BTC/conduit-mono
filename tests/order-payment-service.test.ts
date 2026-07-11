@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test"
 import { db } from "../packages/core/src/db"
 import {
   buildLifecyclePaymentProofContentJson,
+  buildLifecycleResendProofContentJson,
   getLifecyclePaymentProofAction,
   isOrderPaymentRunning,
   runOrderPayment,
@@ -120,6 +121,24 @@ describe("runOrderPayment", () => {
           verificationState: "needs_merchant_verification",
           note: "External wallet payment for order external-wallet-proof-test",
         }
+      )
+    )
+
+    expect(content).toMatchObject({
+      action: "external_invoice",
+      source: "external",
+      verification: {
+        state: "needs_merchant_verification",
+        checks: [],
+      },
+    })
+    expect(content.preimage).toBeUndefined()
+  })
+
+  it("preserves external payment-report semantics when resending", () => {
+    const content = JSON.parse(
+      buildLifecycleResendProofContentJson(
+        lifecycle({ publicZapSigner: undefined, zapRequestId: undefined })
       )
     )
 

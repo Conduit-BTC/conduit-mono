@@ -506,10 +506,12 @@ function ExternalWalletPanel({
   vm,
   onMarkPaid,
   busy,
+  guestSession,
 }: {
   vm: OrderViewModel
   onMarkPaid: () => void
   busy: boolean
+  guestSession: boolean
 }) {
   const [copied, setCopied] = useState(false)
   const invoice = vm.invoice
@@ -533,6 +535,12 @@ function ExternalWalletPanel({
         No automatic wallet was available. Scan or copy this invoice, pay it in
         your wallet, then send the receipt to the merchant.
       </p>
+      {guestSession && (
+        <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
+          Keep this tab open until the receipt is sent. Closing it ends access
+          to this guest order and its updates.
+        </p>
+      )}
       <div className="mt-4 flex flex-col items-start gap-4 sm:flex-row">
         <div className="rounded-xl bg-white p-3">
           <QRCodeSVG value={bolt11} size={156} level="M" />
@@ -720,6 +728,7 @@ function OrderDetail({
           <ExternalWalletPanel
             vm={vm}
             busy={busy}
+            guestSession={!!guestIdentity}
             onMarkPaid={() =>
               void withBusy(() =>
                 submitExternalPaymentProof(
@@ -981,20 +990,40 @@ function OrdersPage() {
     },
     refetchInterval: 30_000,
   })
+  const guestOrderScope = guestIdentity
+    ? {
+        orderId: guestIdentity.orderId,
+        merchantPubkey: guestIdentity.merchantPubkey,
+      }
+    : null
   const messagesQuery = useQuery({
-    queryKey: ["buyer-messages-live", activeBuyerPubkey ?? "none"],
-    enabled: !!activeBuyerPubkey && (signerConnected || !!guestIdentity),
+    queryKey: [
+      "buyer-messages-live",
+      activeBuyerPubkey ?? "none",
+      guestOrderScope?.orderId ?? "all",
+    ],
+    enabled: !!activeBuyerPubkey && (signerConnected || !!guestOrderScope),
     queryFn: () =>
       fetchBuyerConversations(activeBuyerPubkey!, {
         signer: guestIdentity?.signer,
+        expectedOrderId: guestOrderScope?.orderId,
+        expectedCounterpartyPubkey: guestOrderScope?.merchantPubkey,
       }),
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   })
   const cachedMessagesQuery = useQuery({
-    queryKey: ["buyer-messages", activeBuyerPubkey ?? "none"],
-    enabled: !!activeBuyerPubkey,
-    queryFn: () => fetchCachedBuyerConversations(activeBuyerPubkey!),
+    queryKey: [
+      "buyer-messages",
+      activeBuyerPubkey ?? "none",
+      guestOrderScope?.orderId ?? "all",
+    ],
+    enabled: !!activeBuyerPubkey && (signerConnected || !!guestOrderScope),
+    queryFn: () =>
+      fetchCachedBuyerConversations(activeBuyerPubkey!, {
+        expectedOrderId: guestOrderScope?.orderId,
+        expectedCounterpartyPubkey: guestOrderScope?.merchantPubkey,
+      }),
     staleTime: 5_000,
   })
 
@@ -1202,7 +1231,7 @@ function OrdersPage() {
         <Button
           variant="outline"
           className="h-11 px-4 text-sm"
-          disabled={!signerConnected || isFetching}
+          disabled={!activeBuyerPubkey || isFetching}
           onClick={handleRefresh}
         >
           <span className="inline-flex items-center gap-2">

@@ -47,6 +47,7 @@ export const sanitizeShippingPhoneInput = sanitizePhoneInput
 
 export const SHIPPING_PHONE_HELP_ID = "ship-phone-help"
 export const SHIPPING_PHONE_ERROR_ID = "ship-phone-error"
+export const SHIPPING_EMAIL_ERROR_ID = "ship-email-error"
 export const SHIPPING_PHONE_HELP_COPY =
   "Use + country code if this number is outside the delivery country."
 

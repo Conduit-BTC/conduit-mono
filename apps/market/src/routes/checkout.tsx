@@ -57,6 +57,7 @@ import {
   getMerchantDisplayName,
   getProfileNip05,
 } from "../components/MerchantIdentity"
+import { SignerSwitch } from "../components/SignerSwitch"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
@@ -82,6 +83,7 @@ import {
   getShippingRegionRequirement,
   getValidationErrorFields,
   sanitizeShippingPhoneInput,
+  SHIPPING_EMAIL_ERROR_ID,
   SHIPPING_PHONE_ERROR_ID,
   SHIPPING_PHONE_HELP_COPY,
   SHIPPING_PHONE_HELP_ID,
@@ -682,6 +684,7 @@ function CheckoutPage() {
   const [paidNotice, setPaidNotice] = useState<string | null>(null)
   // Lightning-strike click feedback while the order publishes before navigation.
   const [overlayPlaying, setOverlayPlaying] = useState(false)
+  const [connectOpen, setConnectOpen] = useState(false)
   // Synchronous re-entrancy guard for the payment flow. A `step`/`disabled`
   // check can't prevent a double-click because the state change doesn't commit
   // until React re-renders; this ref flips synchronously inside the click's
@@ -814,10 +817,6 @@ function CheckoutPage() {
     () => checkoutItems.some((item) => !getPriceSats(item, btcUsdRate)),
     [btcUsdRate, checkoutItems]
   )
-  const shippingSubmitDisabled =
-    requiresCheckoutDetailsStep &&
-    (hasUnpricedCheckoutItems || liveShippingErrors.length > 0)
-
   const merchantTrust = useMerchantTrustContext({
     merchantPubkey: selectedMerchant ?? null,
     viewerPubkey: signedBuyerPubkey,
@@ -1729,7 +1728,7 @@ function CheckoutPage() {
       publishedTotalSats = pricingIntent.totalSats
       const guestIdentity = signedBuyerPubkey
         ? null
-        : createSessionGuestOrderSigningIdentity(orderId)
+        : createSessionGuestOrderSigningIdentity(orderId, selectedMerchant)
       guestOrderIdToClear = guestIdentity ? orderId : null
       const buyerPubkey = signedBuyerPubkey ?? guestIdentity?.pubkey
       if (!buyerPubkey) throw new Error("Buyer order identity is unavailable.")
@@ -2419,6 +2418,8 @@ function CheckoutPage() {
                           autoComplete="tel"
                           placeholder="+1 555 123 4567"
                           aria-invalid={fieldInvalid("phone")}
+                          aria-required={isGuestCheckout}
+                          required={isGuestCheckout}
                           aria-describedby={getShippingPhoneDescribedBy(
                             fieldInvalid("phone")
                           )}
@@ -2460,10 +2461,20 @@ function CheckoutPage() {
                           autoComplete="email"
                           placeholder="jane@example.com"
                           aria-invalid={fieldInvalid("email")}
+                          aria-required={isGuestCheckout}
+                          aria-describedby={
+                            fieldInvalid("email")
+                              ? SHIPPING_EMAIL_ERROR_ID
+                              : undefined
+                          }
+                          required={isGuestCheckout}
                           className={fieldClassName("email")}
                         />
                         {fieldInvalid("email") && (
-                          <p className="text-xs text-error">
+                          <p
+                            id={SHIPPING_EMAIL_ERROR_ID}
+                            className="text-xs text-error"
+                          >
                             {fieldError("email")}
                           </p>
                         )}
@@ -2519,15 +2530,17 @@ function CheckoutPage() {
 
                   <Button
                     className="mt-2 h-11 w-full text-sm"
-                    disabled={shippingSubmitDisabled}
                     onClick={continueToPayment}
                   >
                     Continue to Send Order
                   </Button>
 
-                  <p className="text-xs leading-6 text-[var(--text-muted)]">
+                  <p
+                    className="text-xs leading-6 text-[var(--text-muted)]"
+                    role={isGuestCheckout ? "note" : undefined}
+                  >
                     {isGuestCheckout
-                      ? "Your order details will be sent privately with a temporary guest key for this order."
+                      ? "Your order details will be sent privately with a temporary guest key for this order. Keep this tab open through payment and receipt delivery; closing it ends guest order access."
                       : "Your order details will be sent to the merchant through your signed Nostr account so they can follow up with payment and fulfillment."}
                   </p>
                 </div>
@@ -2848,6 +2861,19 @@ function CheckoutPage() {
                     </Button>
                   )}
 
+                  {isGuestCheckout && !fastEligible && (
+                    <Button
+                      variant={
+                        pricingOnlyFastCheckoutBlocker ? "outline" : "primary"
+                      }
+                      className="h-11 px-5 text-sm"
+                      onClick={() => setConnectOpen(true)}
+                    >
+                      <KeyRound className="h-4 w-4" />
+                      Connect signer to send order
+                    </Button>
+                  )}
+
                   {!isGuestCheckout && (
                     <Button
                       variant={
@@ -2876,6 +2902,11 @@ function CheckoutPage() {
       </div>
 
       {lightningOverlay}
+      <SignerSwitch
+        open={connectOpen}
+        onOpenChange={setConnectOpen}
+        hideTrigger
+      />
     </div>
   )
 }

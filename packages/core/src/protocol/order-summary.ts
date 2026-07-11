@@ -5,6 +5,7 @@ import {
 } from "./orders"
 
 export type OrderSummary = {
+  buyerIdentityKind: "signed_in" | "guest_ephemeral" | null
   items: Array<{
     productId: string
     title?: string
@@ -49,7 +50,7 @@ export type OrderSummary = {
   trackingUrl: string | null
 }
 
-function isExternalPaymentReportMessage(
+export function isExternalPaymentReportMessage(
   message: ParsedOrderMessage
 ): message is Extract<ParsedOrderMessage, { type: "payment_proof" }> {
   if (message.type !== "payment_proof") return false
@@ -178,6 +179,10 @@ export function extractOrderSummary(
       : null
 
   return {
+    buyerIdentityKind:
+      firstOrder?.type === "order"
+        ? (firstOrder.payload.buyerIdentityKind ?? null)
+        : null,
     items,
     subtotal,
     currency,

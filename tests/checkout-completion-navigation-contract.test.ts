@@ -43,4 +43,27 @@ describe("checkout completion navigation contracts", () => {
     )
     expect(checkoutRoute).toContain("amountSats: deliveredAmountSats")
   })
+
+  it("offers guest shoppers a signer path when invoice checkout is unavailable", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+
+    expect(checkoutRoute).toContain("{isGuestCheckout && !fastEligible && (")
+    expect(checkoutRoute).toContain("Connect signer to send order")
+    expect(checkoutRoute).toContain("<SignerSwitch")
+  })
+
+  it("warns guests about tab-scoped recovery before and during payment", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const ordersRoute = await Bun.file(
+      "apps/market/src/routes/orders.tsx"
+    ).text()
+
+    expect(checkoutRoute).toContain("closing it ends guest order access")
+    expect(ordersRoute).toContain("Closing it ends access")
+    expect(ordersRoute).toContain("disabled={!activeBuyerPubkey || isFetching}")
+  })
 })

@@ -27,6 +27,8 @@ export type BuyerMessageDeliveryResult = {
 export interface BuyerOrderSigningIdentity {
   pubkey: string
   signer?: NDKSigner
+  orderId?: string
+  merchantPubkey?: string
 }
 
 type BuyerOrderIdentityInput = string | BuyerOrderSigningIdentity
@@ -38,13 +40,36 @@ function getErrorMessage(error: unknown, fallback: string): string {
 function resolveBuyerOrderSigningIdentity(
   ndk: ReturnType<typeof getNdk>,
   buyer: BuyerOrderIdentityInput
-): Required<BuyerOrderSigningIdentity> {
+): BuyerOrderSigningIdentity & { signer: NDKSigner } {
   const identity =
     typeof buyer === "string" ? { pubkey: buyer, signer: ndk.signer } : buyer
   const signer = identity.signer ?? ndk.signer
   if (!signer) throw new Error("Buyer order signer is not connected.")
+  if (signer.pubkey && signer.pubkey !== identity.pubkey) {
+    throw new Error("Buyer order signer does not match its declared pubkey.")
+  }
 
-  return { pubkey: identity.pubkey, signer }
+  return { ...identity, signer }
+}
+
+function assertBuyerOrderScope(
+  rumor: NDKEvent,
+  merchantPubkey: string,
+  identity: BuyerOrderSigningIdentity
+): void {
+  if (!identity.orderId && !identity.merchantPubkey) return
+  const rumorOrderId = rumor.tags.find((tag) => tag[0] === "order")?.[1]
+  const rumorRecipient = rumor.tags.find((tag) => tag[0] === "p")?.[1]
+  const rumorType = rumor.tags.find((tag) => tag[0] === "type")?.[1]
+  if (
+    rumor.kind !== EVENT_KINDS.ORDER ||
+    (rumorType !== "order" && rumorType !== "payment_proof") ||
+    rumorOrderId !== identity.orderId ||
+    rumorRecipient !== merchantPubkey ||
+    merchantPubkey !== identity.merchantPubkey
+  ) {
+    throw new Error("Guest order message is outside its signer scope.")
+  }
 }
 
 /** Stamp the buyer pubkey + derive the rumor id (so it can be cached/wrapped). */
@@ -86,6 +111,7 @@ export async function createBuyerGiftWrapsForMerchantAndSelf(
 }> {
   const giftWrapFn = options.giftWrapFn ?? giftWrap
   const buyerIdentity = resolveBuyerOrderSigningIdentity(ndk, buyer)
+  assertBuyerOrderScope(rumor, merchantPubkey, buyerIdentity)
   const merchantUser = new NDKUser({ pubkey: merchantPubkey })
   const buyerUser = new NDKUser({ pubkey: buyerIdentity.pubkey })
   const wrapParams = { rumorKind: EVENT_KINDS.ORDER }
@@ -130,6 +156,7 @@ export async function publishWrappedToMerchantAndSelf(
   buyer: BuyerOrderIdentityInput
 ): Promise<BuyerMessageDeliveryResult> {
   const buyerIdentity = resolveBuyerOrderSigningIdentity(ndk, buyer)
+  assertBuyerOrderScope(rumor, merchantPubkey, buyerIdentity)
   prepareBuyerRumor(rumor, buyerIdentity.pubkey)
 
   const { wrappedToMerchant, wrappedToSelf } =

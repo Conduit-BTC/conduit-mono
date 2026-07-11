@@ -17,7 +17,9 @@ import {
   getProfileName,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
+  hasPaymentProofEvidence,
   hasWebLN,
+  isExternalPaymentReportMessage,
   isInvoiceCompatibleWithCurrentNetwork,
   mockMakeInvoice,
   normalizeCurrencyAmount,
@@ -439,25 +441,41 @@ function MessageCard({
         {message.type === "payment_proof" && (
           <div className="space-y-2">
             <div className="text-[var(--text-primary)]">
-              Lightning payment proof received
+              {isExternalPaymentReportMessage(message)
+                ? "External payment reported"
+                : hasPaymentProofEvidence(message.payload)
+                  ? "Lightning payment proof received"
+                  : "Unverified payment report received"}
               {message.payload.amount != null
                 ? ` - ${message.payload.amount.toLocaleString()}`
                 : ""}
               {message.payload.currency ? ` ${message.payload.currency}` : ""}
             </div>
+            {isExternalPaymentReportMessage(message) && (
+              <div className="text-xs text-warning">
+                Buyer reported paying this invoice. Confirm payment before
+                fulfillment.
+              </div>
+            )}
             <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs">
-              <div className="min-w-0">
-                <div className="text-[var(--text-muted)]">Invoice</div>
-                <div className="max-h-16 overflow-hidden break-all font-mono leading-5 text-[var(--text-secondary)]">
-                  {message.payload.invoice}
+              {message.payload.invoice && (
+                <div className="min-w-0">
+                  <div className="text-[var(--text-muted)]">Invoice</div>
+                  <div className="max-h-16 overflow-hidden break-all font-mono leading-5 text-[var(--text-secondary)]">
+                    {message.payload.invoice}
+                  </div>
                 </div>
-              </div>
-              <div className="min-w-0 border-t border-[var(--border)] pt-2">
-                <div className="text-[var(--text-muted)]">Payment preimage</div>
-                <div className="break-all font-mono leading-5 text-[var(--text-secondary)]">
-                  {message.payload.preimage}
+              )}
+              {message.payload.preimage && (
+                <div className="min-w-0 border-t border-[var(--border)] pt-2">
+                  <div className="text-[var(--text-muted)]">
+                    Payment preimage
+                  </div>
+                  <div className="break-all font-mono leading-5 text-[var(--text-secondary)]">
+                    {message.payload.preimage}
+                  </div>
                 </div>
-              </div>
+              )}
               {message.payload.paymentHash && (
                 <div className="min-w-0 border-t border-[var(--border)] pt-2">
                   <div className="text-[var(--text-muted)]">Payment hash</div>
@@ -1058,6 +1076,13 @@ function OrdersPage() {
                   buyerProfile,
                   conversation.buyerPubkey
                 )
+                const conversationSummary = extractOrderSummary(
+                  conversation.messages ?? []
+                )
+                const buyerDisplayName =
+                  conversationSummary.buyerIdentityKind === "guest_ephemeral"
+                    ? "Guest shopper"
+                    : buyerName
                 return (
                   <button
                     key={conversation.id}
@@ -1080,7 +1105,7 @@ function OrdersPage() {
                       </Badge>
                     </div>
                     <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                      Buyer: {buyerName}
+                      Buyer: {buyerDisplayName}
                     </div>
                     <div className="mt-1 font-mono text-[11px] text-[var(--text-muted)]">
                       {formatNpub(conversation.buyerPubkey, 8)}
@@ -1122,7 +1147,11 @@ function OrdersPage() {
                     orderId={selected.orderId}
                     status={selected.status}
                     counterpartyLabel="Buyer"
-                    counterpartyName={selectedBuyerName ?? undefined}
+                    counterpartyName={
+                      orderSummary.buyerIdentityKind === "guest_ephemeral"
+                        ? "Guest shopper"
+                        : (selectedBuyerName ?? undefined)
+                    }
                     counterpartyPubkeyLabel={formatNpub(
                       selected.buyerPubkey,
                       8

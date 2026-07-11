@@ -143,6 +143,26 @@ export function buildLifecyclePaymentProofContentJson(
   })
 }
 
+export function buildLifecycleResendProofContentJson(
+  lifecycle: Parameters<typeof buildLifecyclePaymentProofContentJson>[0]
+): string {
+  const isExternalWalletReport = lifecycle.checkoutMode === "external_wallet"
+
+  return buildLifecyclePaymentProofContentJson(lifecycle, {
+    ...(isExternalWalletReport
+      ? {
+          action: "external_invoice" as const,
+          source: "external",
+          verificationState: "needs_merchant_verification" as const,
+          note: `External wallet payment for order ${lifecycle.orderId}`,
+        }
+      : {
+          source: "buyer",
+          note: `Payment for order ${lifecycle.orderId}`,
+        }),
+  })
+}
+
 export interface OrderPaymentContext {
   orderId: string
   buyerPubkey: string
@@ -535,10 +555,7 @@ export async function resendOrderProof(
   if (!lifecycle || lifecycle.paymentStatus !== "paid" || !lifecycle.invoice) {
     return runtimeStates.get(orderId)
   }
-  const content = buildLifecyclePaymentProofContentJson(lifecycle, {
-    source: "buyer",
-    note: `Payment for order ${orderId}`,
-  })
+  const content = buildLifecycleResendProofContentJson(lifecycle)
   const ndk = getNdk()
   const proofRumor = buildPaymentProofRumor({
     merchantPubkey: lifecycle.merchantPubkey,
