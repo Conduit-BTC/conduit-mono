@@ -207,6 +207,19 @@ describe("buildOrderTimeline", () => {
     expect(paymentRow?.title).toBe("Payment needs review")
     expect(paymentRow?.subtitle).toContain("couldn't confirm")
   })
+
+  it("stops guest timelines at outbound receipt delivery", () => {
+    const rows = buildOrderTimeline(
+      vmFromLifecycle({ buyerIdentityKind: "guest_ephemeral" })
+    )
+
+    expect(rows.map((row) => row.key)).toEqual([
+      "order_sent",
+      "invoice",
+      "payment",
+      "receipt",
+    ])
+  })
 })
 
 describe("getOrderFilterPhase", () => {
@@ -262,6 +275,16 @@ describe("deriveOrderHeaderStatus", () => {
     expect(status.detailLabel).toBe("Waiting for merchant")
     expect(status.actionNeeded).toBe(false)
     expect(status.showSpinner).toBe(true)
+  })
+
+  it("finishes guest tracking when the outbound receipt is delivered", () => {
+    const status = deriveOrderHeaderStatus(
+      vmFromLifecycle({ buyerIdentityKind: "guest_ephemeral" })
+    )
+
+    expect(status.primaryLabel).toBe("Receipt sent")
+    expect(status.detailLabel).toBe("Merchant follow-up uses phone and email")
+    expect(status.showSpinner).toBe(false)
   })
 
   it("Pending · Awaiting invoice after order send", () => {

@@ -230,6 +230,32 @@ describe("commerce gateway", () => {
     expect(result.data[0]?.product.title).toBe("Cached Item")
   })
 
+  it("normalizes JSON-shaped summaries restored from the product cache", async () => {
+    cachedProducts.push({
+      id: "30402:merchant:cached-json-summary",
+      pubkey: "merchant",
+      title: "Love, Love, Love",
+      summary: JSON.stringify({
+        title: "Love, Love, Love",
+        description: "Nutti loves Ecash",
+        pricing: "free",
+      }),
+      price: 0,
+      currency: "SATS",
+      type: "simple",
+      visibility: "public",
+      images: [{ url: "https://example.com/cached-json-summary.png" }],
+      tags: ["Ecash"],
+      createdAt: FIXED_NOW - 5_000,
+      updatedAt: FIXED_NOW - 5_000,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+
+    const result = await getCachedMarketplaceProducts()
+
+    expect(result.data[0]?.product.summary).toBe("Nutti loves Ecash")
+  })
+
   it("scopes cached marketplace reads to the requested author set at the loader", async () => {
     for (const pubkey of ["merchant-a", "merchant-b", "merchant-c"]) {
       cachedProducts.push({
@@ -952,7 +978,7 @@ describe("commerce gateway", () => {
     expect(second.data[0]?.orderId).toBe("order-3")
   })
 
-  it("shows merchant payment-proof-only conversations as paid", async () => {
+  it("excludes payment-proof-only buckets with no role-defining order", async () => {
     const merchantPubkey = "merchant"
     const buyerPubkey = "buyer"
     const wrappedEvent = {
@@ -1002,14 +1028,10 @@ describe("commerce gateway", () => {
       limit: 50,
     })
 
-    expect(result.data).toHaveLength(1)
-    expect(result.data[0]?.orderId).toBe("order-proof-1")
-    expect(result.data[0]?.buyerPubkey).toBe(buyerPubkey)
-    expect(result.data[0]?.latestType).toBe("payment_proof")
-    expect(result.data[0]?.status).toBe("paid")
+    expect(result.data).toHaveLength(0)
   })
 
-  it("does not mark malformed payment-proof-only conversations as paid", async () => {
+  it("excludes malformed payment-proof-only buckets", async () => {
     const merchantPubkey = "merchant"
     const buyerPubkey = "buyer"
     const wrappedEvent = {
@@ -1047,11 +1069,7 @@ describe("commerce gateway", () => {
       limit: 50,
     })
 
-    expect(result.data).toHaveLength(1)
-    expect(result.data[0]?.orderId).toBe("order-proof-malformed")
-    expect(result.data[0]?.buyerPubkey).toBe(buyerPubkey)
-    expect(result.data[0]?.latestType).toBe("payment_proof")
-    expect(result.data[0]?.status).toBeNull()
+    expect(result.data).toHaveLength(0)
   })
 
   it("queries expanded merchant inbox relays for gift-wrapped orders", async () => {

@@ -143,6 +143,15 @@ describe("getMerchantOrderActions", () => {
     )
   })
 
+  it("preserves acceptance when a later paid status becomes current", () => {
+    expect(
+      getMerchantOrderActions({ status: "paid", accepted: true, paid: true })
+    ).toEqual([
+      { status: "cancelled", label: "Cancel order", kind: "destructive" },
+      { status: "shipped", label: "Mark as shipped", kind: "primary" },
+    ])
+  })
+
   it("gates shipping on payment (accepted but unpaid → cancel only)", () => {
     expect(getMerchantOrderActions({ status: "accepted" })).toEqual([
       { status: "cancelled", label: "Cancel order", kind: "destructive" },
@@ -154,5 +163,6 @@ describe("getMerchantOrderActions", () => {
     expect(getMerchantOrderActions("delivered")).toEqual([])
     expect(getMerchantOrderActions("cancelled")).toEqual([])
     expect(getMerchantOrderActions("refund_requested")).toEqual([])
+    expect(getMerchantOrderActions("future_terminal_status")).toEqual([])
   })
 })

@@ -22,17 +22,16 @@ import {
   requireNdkConnected,
 } from "./ndk"
 import { extractOrderSummary } from "./order-summary"
-import {
-  isPaymentProofEvidenceMessage,
-  parseOrderMessageRumorEvent,
-  type ParsedOrderMessage,
-} from "./orders"
+import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import {
   evaluateListingSafety,
   isListingMarketVisible,
   type ListingSafetyEvaluation,
 } from "./listing-safety"
-import { parseProductEvent } from "./products"
+import {
+  normalizeProductSummaryForDisplay,
+  parseProductEvent,
+} from "./products"
 import { parseProfileEvent } from "./profiles"
 import {
   getCommerceReadRelayUrls,
@@ -671,11 +670,19 @@ function toCachedProduct(record: CommerceProductRecord) {
 function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
   const zapMessagePolicy =
     row.zapMessagePolicy === "custom" ? row.zapMessagePolicy : "generic_only"
+  const summary = normalizeProductSummaryForDisplay(row.summary, {
+    title: row.title,
+    priceInfo: {
+      price: row.sourcePrice?.amount ?? row.price,
+      currency: row.sourcePrice?.currency ?? row.currency,
+    },
+    tags: row.tags ?? [],
+  })
   const product: Product = {
     id: row.id,
     pubkey: row.pubkey,
     title: row.title,
-    summary: row.summary,
+    summary,
     price: row.price,
     currency: row.currency,
     priceSats: row.priceSats,
@@ -2242,42 +2249,6 @@ async function fetchParsedOrderMessages(
   }
 }
 
-// Message types with a fixed author: the buyer sends order/payment_proof to the
-// merchant; the merchant sends invoice/status/shipping/receipt to the buyer.
-// `message` (chat) can come from either side, so it can't decide role.
-const BUYER_AUTHORED_TYPES = new Set(["order", "payment_proof"])
-const MERCHANT_AUTHORED_TYPES = new Set([
-  "payment_request",
-  "status_update",
-  "shipping_update",
-  "receipt",
-])
-
-// Resolve the principal's role in an order conversation from message direction,
-// preferring the `order` message. Returns null when the bucket only holds
-// ambiguous (chat) messages — such a bucket is excluded from both role lists so
-// a dual-role pubkey never sees the same conversation twice.
-function resolvePrincipalRole(
-  bucket: ParsedOrderMessage[],
-  principalPubkey: string
-): "buyer" | "merchant" | null {
-  const order = bucket.find((message) => message.type === "order")
-  if (order) {
-    if (order.senderPubkey === principalPubkey) return "buyer"
-    if (order.recipientPubkey === principalPubkey) return "merchant"
-  }
-  for (const message of bucket) {
-    if (BUYER_AUTHORED_TYPES.has(message.type)) {
-      if (message.senderPubkey === principalPubkey) return "buyer"
-      if (message.recipientPubkey === principalPubkey) return "merchant"
-    } else if (MERCHANT_AUTHORED_TYPES.has(message.type)) {
-      if (message.senderPubkey === principalPubkey) return "merchant"
-      if (message.recipientPubkey === principalPubkey) return "buyer"
-    }
-  }
-  return null
-}
-
 function buildBuyerConversationSummaries(
   messages: ParsedOrderMessage[],
   buyerPubkey: string
@@ -2296,29 +2267,18 @@ function buildBuyerConversationSummaries(
     const latest = bucket[bucket.length - 1]
     if (!latest) continue
 
-    // Role gate: only include orders the principal placed as the buyer. Role is
-    // inferred from message direction (works for proof-only/partial buckets);
-    // chat-only buckets are ambiguous and excluded from both lists.
-    if (resolvePrincipalRole(bucket, buyerPubkey) !== "buyer") continue
+    const orderMessage = bucket.find((message) => message.type === "order")
+    if (!orderMessage || orderMessage.senderPubkey !== buyerPubkey) continue
+    const merchantPubkey = orderMessage.recipientPubkey
 
     const latestStatus = [...bucket]
       .reverse()
-      .find((message) => message.type === "status_update")
-    const latestPaymentProof = [...bucket]
-      .reverse()
-      .find(isPaymentProofEvidenceMessage)
-    const otherParticipants = Array.from(
-      new Set(
-        bucket
-          .map((message) =>
-            message.senderPubkey === buyerPubkey
-              ? message.recipientPubkey
-              : message.senderPubkey
-          )
-          .filter(Boolean)
+      .find(
+        (message) =>
+          message.type === "status_update" &&
+          message.senderPubkey === merchantPubkey &&
+          message.recipientPubkey === buyerPubkey
       )
-    )
-    const merchantPubkey = otherParticipants[0] ?? ""
     const summary = extractOrderSummary(bucket)
 
     conversations.push({
@@ -2330,9 +2290,7 @@ function buildBuyerConversationSummaries(
       status:
         latestStatus?.type === "status_update"
           ? latestStatus.payload.status
-          : latestPaymentProof
-            ? "paid"
-            : null,
+          : null,
       totalSummary:
         summary.items.length > 0
           ? `${summary.subtotal} ${summary.currency}`
@@ -2365,29 +2323,19 @@ function buildMerchantConversationSummaries(
     const latest = bucket[bucket.length - 1]
     if (!latest) continue
 
-    // Role gate: only include orders the principal received as the merchant.
-    // Role is inferred from message direction (works for proof-only/partial
-    // buckets); chat-only buckets are ambiguous and excluded from both lists.
-    if (resolvePrincipalRole(bucket, merchantPubkey) !== "merchant") continue
+    const orderMessage = bucket.find((message) => message.type === "order")
+    if (!orderMessage || orderMessage.recipientPubkey !== merchantPubkey)
+      continue
+    const buyerPubkey = orderMessage.senderPubkey
 
     const latestStatus = [...bucket]
       .reverse()
-      .find((message) => message.type === "status_update")
-    const latestPaymentProof = [...bucket]
-      .reverse()
-      .find(isPaymentProofEvidenceMessage)
-    const otherParticipants = Array.from(
-      new Set(
-        bucket
-          .map((message) =>
-            message.senderPubkey === merchantPubkey
-              ? message.recipientPubkey
-              : message.senderPubkey
-          )
-          .filter(Boolean)
+      .find(
+        (message) =>
+          message.type === "status_update" &&
+          message.senderPubkey === merchantPubkey &&
+          message.recipientPubkey === buyerPubkey
       )
-    )
-    const buyerPubkey = otherParticipants[0] ?? ""
     const summary = extractOrderSummary(bucket)
 
     conversations.push({
@@ -2399,9 +2347,7 @@ function buildMerchantConversationSummaries(
       status:
         latestStatus?.type === "status_update"
           ? latestStatus.payload.status
-          : latestPaymentProof
-            ? "paid"
-            : null,
+          : null,
       totalSummary:
         summary.items.length > 0
           ? `${summary.subtotal} ${summary.currency}`

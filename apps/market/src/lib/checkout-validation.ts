@@ -47,6 +47,7 @@ export const sanitizeShippingPhoneInput = sanitizePhoneInput
 
 export const SHIPPING_PHONE_HELP_ID = "ship-phone-help"
 export const SHIPPING_PHONE_ERROR_ID = "ship-phone-error"
+export const SHIPPING_EMAIL_ERROR_ID = "ship-email-error"
 export const SHIPPING_PHONE_HELP_COPY =
   "Use + country code if this number is outside the delivery country."
 
@@ -120,6 +121,77 @@ export function validateShippingFields(
   }
 
   return errors
+}
+
+function validateContactFields(
+  shipping: ShippingFormState
+): ShippingValidationError[] {
+  const errors: ShippingValidationError[] = []
+  const country = shipping.country.trim().toUpperCase()
+  const addressResult = validateAddressConsistency({
+    name: `${shipping.firstName.trim()} ${shipping.lastName.trim()}`.trim(),
+    street: shipping.street,
+    city: shipping.city,
+    state: shipping.state,
+    postalCode: shipping.postalCode,
+    country,
+    email: shipping.email,
+    phone: shipping.phone,
+  })
+
+  for (const issue of addressResult.issues) {
+    if (issue.field !== "email" && issue.field !== "phone") continue
+    const error = shippingErrorFromAddressIssue(issue, false)
+    if (error && !errors.some((item) => item.field === error.field)) {
+      errors.push(error)
+    }
+  }
+
+  return errors
+}
+
+function appendRequiredGuestContactErrors(
+  errors: ShippingValidationError[],
+  shipping: ShippingFormState
+): ShippingValidationError[] {
+  const next = [...errors]
+  if (
+    shipping.phone.trim().length === 0 &&
+    !next.some((error) => error.field === "phone")
+  ) {
+    next.push({
+      field: "phone",
+      message: "Phone is required for guest checkout",
+    })
+  }
+  if (
+    shipping.email.trim().length === 0 &&
+    !next.some((error) => error.field === "email")
+  ) {
+    next.push({
+      field: "email",
+      message: "Email is required for guest checkout",
+    })
+  }
+  return next
+}
+
+export function validateGuestContactFields(
+  shipping: ShippingFormState
+): ShippingValidationError[] {
+  return appendRequiredGuestContactErrors(
+    validateContactFields(shipping),
+    shipping
+  )
+}
+
+export function validateGuestShippingFields(
+  shipping: ShippingFormState
+): ShippingValidationError[] {
+  return appendRequiredGuestContactErrors(
+    validateShippingFields(shipping),
+    shipping
+  )
 }
 
 function shippingErrorFromAddressIssue(

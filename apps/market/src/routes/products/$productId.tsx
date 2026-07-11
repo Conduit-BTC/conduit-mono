@@ -12,7 +12,6 @@ import {
   getProfileName,
   pubkeyToNpub,
   useProfile,
-  type Product,
 } from "@conduit/core"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
@@ -23,6 +22,7 @@ import {
   getMerchantDisplayName,
   getProfileNip05,
 } from "../../components/MerchantIdentity"
+import { ProductDescriptionMarkdown } from "../../components/ProductDescriptionMarkdown"
 import {
   ProductGridCard,
   ProductGridCardSkeleton,
@@ -34,34 +34,18 @@ import {
   useProgressiveProducts,
 } from "../../hooks/useProgressiveProducts"
 import { getProductPriceDisplay } from "../../lib/pricing"
+import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
 
 export const Route = createFileRoute("/products/$productId")({
   component: ProductPage,
 })
 
-const PRODUCT_SUMMARY_FALLBACK =
-  "This listing does not include a merchant-written summary yet. Product pricing, identity, and the order flow are still available."
 const PRODUCT_DESCRIPTION_COLLAPSED_ROWS = 5
 
 type DescriptionMetrics = {
   canExpand: boolean
   collapsedHeight: number
   expandedHeight: number
-}
-
-function getProductDisplaySummary(product: Product): string {
-  let summary = product.summary?.trim() ?? ""
-
-  for (const image of product.images) {
-    summary = summary.split(image.url).join("")
-  }
-
-  return (
-    summary
-      .replace(/[ \t]+\n/g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim() || PRODUCT_SUMMARY_FALLBACK
-  )
 }
 
 function ProductPage() {
@@ -77,7 +61,7 @@ function ProductPage() {
       collapsedHeight: 0,
       expandedHeight: 0,
     })
-  const descriptionRef = useRef<HTMLParagraphElement>(null)
+  const descriptionRef = useRef<HTMLDivElement>(null)
   const btcUsdRateQuery = useBtcUsdRate()
 
   const productQuery = useProgressiveProductDetail(productId)
@@ -183,7 +167,11 @@ function ProductPage() {
         lineHeight * PRODUCT_DESCRIPTION_COLLAPSED_ROWS
       )
       const expandedHeight = Math.ceil(descriptionElement.scrollHeight)
-      const canExpand = expandedHeight > collapsedHeight + 1
+      const hasFocusableContent = descriptionElement.querySelector(
+        "a[href], button, input, select, textarea, [tabindex]:not([tabindex='-1'])"
+      )
+      const canExpand =
+        !hasFocusableContent && expandedHeight > collapsedHeight + 1
 
       setDescriptionMetrics((current) => {
         if (
@@ -612,9 +600,7 @@ function ProductPage() {
                   <div className="relative">
                     <div
                       className={[
-                        descriptionMetrics.canExpand
-                          ? "overflow-hidden transition-[max-height] duration-300 ease-out motion-reduce:transition-none"
-                          : "",
+                        descriptionMetrics.canExpand ? "overflow-hidden" : "",
                       ].join(" ")}
                       style={
                         descriptionMaxHeight === undefined
@@ -622,12 +608,10 @@ function ProductPage() {
                           : { maxHeight: `${descriptionMaxHeight}px` }
                       }
                     >
-                      <p
+                      <ProductDescriptionMarkdown
                         ref={descriptionRef}
-                        className="break-words whitespace-pre-line text-sm leading-7 text-[var(--text-secondary)] [overflow-wrap:anywhere]"
-                      >
-                        {displaySummary}
-                      </p>
+                        text={displaySummary ?? ""}
+                      />
                     </div>
                     <div
                       aria-hidden="true"
@@ -651,7 +635,7 @@ function ProductPage() {
                       {showFullDescription ? "Show less" : "Show more"}
                       <ChevronDown
                         className={[
-                          "h-3.5 w-3.5 transition-transform",
+                          "size-3.5 transition-transform",
                           showFullDescription ? "rotate-180" : "",
                         ].join(" ")}
                       />

@@ -3,7 +3,7 @@
 **Status:** Active
 **Owner:** Protocol / Market Lead
 **Applies to:** Conduit Market, Merchant Portal, Store Builder, shared protocol utilities
-**Last updated:** 2026-02-10
+**Last updated:** 2026-07-10
 **Decision rule:** Spec-first. External implementations inform compatibility, not correctness.
 
 ## External Codebase References (Expandable)
@@ -168,3 +168,24 @@ Add short entries here as they arise:
 - Conduit behavior: ...
 - Risk: Level 1 / Level 2 / Level 3
 - Action: adapter / escalate / ignore (with reason)
+
+- **[2026-07-08]** Partial JSON listing content display fallback
+- Spec expectation: NIP-99/Gamma product listing `content` is human-readable Markdown description; structured metadata belongs in tags.
+- Observed behavior: Some relayed listings use JSON object content with fields such as `title` and `description`, but do not match Conduit's legacy product schema.
+- Conduit behavior: Continue parsing full legacy Conduit JSON listings, but for partial JSON content only project safe display fields (`title`, `summary`/`description`) and never render the raw JSON object as product copy.
+- Risk: Level 1 rendering mismatch.
+- Action: adapter.
+
+- **[2026-07-09]** Generated storefront/card metadata in product summaries
+- Spec expectation: Product listing `content` and `summary` are product description surfaces; title, price, type, category, and merchant identity have dedicated tags or profile surfaces.
+- Observed behavior: Some relayed listings place generated Markdown card text in `summary`, including bare price/category/type lines and `Listed by [merchant](url)` attribution.
+- Conduit behavior: Treat these repeated card metadata lines as display-only noise and strip them from parsed product summaries while preserving remaining merchant-authored description text.
+- Risk: Level 1 rendering mismatch.
+- Action: adapter.
+
+- **[2026-07-09]** Product description Markdown rendering
+- Spec expectation: NIP-99/Gamma product listing `content` is human-readable Markdown description text; authoritative commerce fields such as price remain in structured tags or related commerce events.
+- Observed behavior: External listings may include price, category, attribution, links, or other generated display copy in Markdown even when structured tags are present.
+- Conduit behavior: Render product descriptions through a constrained Markdown renderer for display only. Do not infer checkout price, shipping, stock, payment, merchant identity, or order state from Markdown text.
+- Risk: Level 1 rendering mismatch.
+- Action: adapter.

@@ -12,6 +12,7 @@ import {
   AuthProvider,
   ConduitSessionProvider,
   pruneCommerceCaches,
+  pruneExpiredGuestOrderData,
   useBtcUsdRate,
   useConduitSession,
 } from "@conduit/core"
@@ -19,6 +20,8 @@ import bricolageMediumUrl from "../../../packages/ui/src/assets/fonts/BricolageG
 import bricolageRegularUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-Regular.ttf?url"
 import bricolageSemiBoldUrl from "../../../packages/ui/src/assets/fonts/BricolageGrotesque-SemiBold.ttf?url"
 import { routeTree } from "./routeTree.gen"
+import { pruneExpiredCheckoutShippingSession } from "./lib/checkout-session"
+import { pruneExpiredSessionGuestOrderSigningIdentities } from "./lib/guest-order-identity"
 import "@conduit/ui/styles/site.css"
 import "./styles/index.css"
 
@@ -88,7 +91,18 @@ declare module "@tanstack/react-router" {
   }
 }
 
+function pruneGuestRecoveryState() {
+  pruneExpiredSessionGuestOrderSigningIdentities()
+  pruneExpiredCheckoutShippingSession()
+  void pruneExpiredGuestOrderData().catch(() => {})
+}
+
 void pruneCommerceCaches()
+pruneGuestRecoveryState()
+window.addEventListener("focus", pruneGuestRecoveryState)
+window.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") pruneGuestRecoveryState()
+})
 preloadCriticalMarketFonts()
 
 createRoot(document.getElementById("root")!).render(

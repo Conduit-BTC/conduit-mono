@@ -1,6 +1,5 @@
 import {
   convertCommerceAmountToSats,
-  isPaymentProofEvidenceMessage,
   type MerchantConversationSummary,
   type ParsedOrderMessage,
   type PricingRateInput,
@@ -37,7 +36,6 @@ export interface DashboardChartData {
   totalOrders: number
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000
 const PAID_STATUSES = new Set(["paid", "shipped", "complete", "delivered"])
 
 const STATUS_ORDER: StatusSlice["key"][] = [
@@ -75,9 +73,19 @@ function orderMessageOf(
   )
 }
 
-function isPaid(conversation: MerchantConversationSummary): boolean {
-  if (PAID_STATUSES.has((conversation.status ?? "").toLowerCase())) return true
-  return (conversation.messages ?? []).some(isPaymentProofEvidenceMessage)
+function paymentConfirmationOf(
+  conversation: MerchantConversationSummary,
+  orderMessage: Extract<ParsedOrderMessage, { type: "order" }>
+): Extract<ParsedOrderMessage, { type: "status_update" }> | undefined {
+  return (conversation.messages ?? []).find(
+    (
+      message
+    ): message is Extract<ParsedOrderMessage, { type: "status_update" }> =>
+      message.type === "status_update" &&
+      message.senderPubkey === orderMessage.recipientPubkey &&
+      message.recipientPubkey === orderMessage.senderPubkey &&
+      PAID_STATUSES.has(message.payload.status.toLowerCase())
+  )
 }
 
 /**
@@ -91,7 +99,9 @@ export function buildDashboardChartData(
   days = 30
 ): DashboardChartData {
   const today = startOfDay(now)
-  const windowStart = today - (days - 1) * DAY_MS
+  const windowStartDate = new Date(today)
+  windowStartDate.setDate(windowStartDate.getDate() - (days - 1))
+  const windowStart = windowStartDate.getTime()
 
   const orderCountByDay = new Map<number, number>()
   const revenueByDay = new Map<number, number>()
@@ -102,6 +112,10 @@ export function buildDashboardChartData(
   for (const conversation of conversations) {
     const orderMessage = orderMessageOf(conversation)
     if (!orderMessage) continue
+    const paymentConfirmation = paymentConfirmationOf(
+      conversation,
+      orderMessage
+    )
 
     const phase = getMerchantOrderPhase(conversation.status)
     statusCounts.set(phase, (statusCounts.get(phase) ?? 0) + 1)
@@ -109,37 +123,50 @@ export function buildDashboardChartData(
     const day = startOfDay(orderMessage.createdAt)
     if (day >= windowStart && day <= today) {
       orderCountByDay.set(day, (orderCountByDay.get(day) ?? 0) + 1)
+    }
 
-      if (isPaid(conversation)) {
-        const sats = convertCommerceAmountToSats(
-          orderMessage.payload.subtotal,
-          orderMessage.payload.currency,
-          rate
-        )
-        if (sats != null) {
+    if (paymentConfirmation) {
+      const sats = convertCommerceAmountToSats(
+        orderMessage.payload.subtotal,
+        orderMessage.payload.currency,
+        rate
+      )
+      if (sats != null) {
+        const paymentDay = startOfDay(paymentConfirmation.createdAt)
+        if (paymentDay >= windowStart && paymentDay <= today) {
           hasRevenue = true
-          revenueByDay.set(day, (revenueByDay.get(day) ?? 0) + sats)
+          revenueByDay.set(
+            paymentDay,
+            (revenueByDay.get(paymentDay) ?? 0) + sats
+          )
         }
       }
     }
 
-    for (const item of orderMessage.payload.items) {
-      const existing = productQty.get(item.productId)
-      const title =
-        item.title?.trim() ||
-        existing?.title ||
-        item.productId.split(":").at(-1) ||
-        "Product"
-      productQty.set(item.productId, {
-        title,
-        quantity: (existing?.quantity ?? 0) + item.quantity,
-      })
+    if (paymentConfirmation) {
+      for (const item of orderMessage.payload.items) {
+        const existing = productQty.get(item.productId)
+        const title =
+          item.title?.trim() ||
+          existing?.title ||
+          item.productId.split(":").at(-1) ||
+          "Product"
+        productQty.set(item.productId, {
+          title,
+          quantity: (existing?.quantity ?? 0) + item.quantity,
+        })
+      }
     }
   }
 
   const ordersByDay: TimeBucketPoint[] = []
   const revenuePoints: TimeBucketPoint[] = []
-  for (let day = windowStart; day <= today; day += DAY_MS) {
+  for (
+    let cursor = new Date(windowStart);
+    cursor.getTime() <= today;
+    cursor.setDate(cursor.getDate() + 1)
+  ) {
+    const day = cursor.getTime()
     ordersByDay.push({
       date: day,
       label: dayLabel(day),

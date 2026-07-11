@@ -29,3 +29,7 @@ export function inferMarketOrigin(): string {
 export function getStorefrontUrl(pubkey: string): string {
   return `${inferMarketOrigin()}/store/${encodeURIComponent(pubkeyToNpub(pubkey))}`
 }
+
+export function getProfileUrl(pubkey: string): string {
+  return `${inferMarketOrigin()}/u/${encodeURIComponent(pubkeyToNpub(pubkey))}`
+}

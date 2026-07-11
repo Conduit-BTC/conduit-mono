@@ -15,6 +15,7 @@ import {
   normalizeLightningInvoice,
   parseOrderMessageRumorEvent,
   publishWithPlanner,
+  pruneExpiredGuestOrderData,
   pubkeyToNpub,
   useAuth,
   useProfile,
@@ -46,7 +47,6 @@ import {
   ShoppingBag,
 } from "lucide-react"
 import { QRCodeSVG } from "qrcode.react"
-import { requireAuth } from "../lib/auth"
 import { CopyButton } from "../components/CopyButton"
 import {
   MerchantAvatarFallback,
@@ -76,6 +76,11 @@ import {
   subscribeOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
+import {
+  clearSessionGuestOrderSigningIdentity,
+  getSessionGuestOrderSigningIdentity,
+  type GuestOrderSigningIdentity,
+} from "../lib/guest-order-identity"
 import type { CheckoutZapMode } from "../lib/checkout-payment"
 
 const ORDERS_SEARCH_DEFAULT: { order?: string } = {}
@@ -101,9 +106,6 @@ export const Route = createFileRoute("/orders")({
     return typeof order === "string" && order.length > 0
       ? { order }
       : ORDERS_SEARCH_DEFAULT
-  },
-  beforeLoad: () => {
-    requireAuth()
   },
   component: OrdersPage,
 })
@@ -521,10 +523,12 @@ function ExternalWalletPanel({
   vm,
   onMarkPaid,
   busy,
+  guestSession,
 }: {
   vm: OrderViewModel
   onMarkPaid: () => void
   busy: boolean
+  guestSession: boolean
 }) {
   const [copied, setCopied] = useState(false)
   const invoice = vm.invoice
@@ -545,9 +549,17 @@ function ExternalWalletPanel({
         Pay with an external wallet
       </h2>
       <p className="mt-1 text-sm text-[var(--text-secondary)]">
-        No automatic wallet was available. Scan or copy this invoice, pay it in
-        your wallet, then send the receipt to the merchant.
+        No automatic wallet was available. Scan or copy this invoice and pay it
+        in your wallet. After the wallet confirms payment, report it to the
+        merchant for verification.
       </p>
+      {guestSession && (
+        <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
+          Keep this tab open until the payment is reported. Closing it ends
+          local access to this guest order. The merchant will follow up using
+          the phone and email contact details submitted at checkout.
+        </p>
+      )}
       <div className="mt-4 flex flex-col items-start gap-4 sm:flex-row">
         <div className="rounded-xl bg-white p-3">
           <QRCodeSVG value={bolt11} size={156} level="M" />
@@ -578,8 +590,12 @@ function ExternalWalletPanel({
             disabled={busy}
             onClick={onMarkPaid}
           >
-            I've paid — send receipt
+            Report payment to merchant
           </Button>
+          <p className="text-xs text-[var(--text-secondary)]">
+            Only report after your wallet confirms payment. This does not verify
+            settlement; the merchant will confirm it.
+          </p>
         </div>
       </div>
     </section>
@@ -608,7 +624,15 @@ async function cacheBuyerConversationRumor(rumor: NDKEvent): Promise<void> {
   }
 }
 
-function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
+function OrderDetail({
+  row,
+  buyerPubkey,
+  guestIdentity,
+}: {
+  row: OrderRow
+  buyerPubkey: string
+  guestIdentity?: GuestOrderSigningIdentity | null
+}) {
   const { vm, headerStatus } = row
   const wallet = useWallet()
   const btcUsdRateQuery = useBtcUsdRate()
@@ -638,6 +662,7 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
   }, [productsQuery.data])
 
   const canTryNwc =
+    !guestIdentity &&
     !!wallet.connection &&
     wallet.status !== "unsupported" &&
     wallet.status !== "error"
@@ -648,7 +673,8 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
     if (!lc.merchantLightningAddress) return null
     return {
       orderId: vm.orderId,
-      buyerPubkey: pubkey,
+      buyerPubkey,
+      buyerIdentity: guestIdentity ?? undefined,
       merchantPubkey: row.merchantPubkey,
       merchantLud16: lc.merchantLightningAddress ?? null,
       zapMode: getRetryZapMode(lc),
@@ -657,6 +683,7 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
       totalMsats: lc.totalMsats,
       walletConnection: wallet.connection,
       tryNwc: canTryNwc,
+      tryWebln: !guestIdentity,
     }
   }
 
@@ -679,6 +706,7 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
 
   const replyMutation = useMutation({
     mutationFn: async () => {
+      if (guestIdentity) throw new Error("Guest orders cannot send messages")
       if (!replyText.trim()) throw new Error("Message is required")
       const ndk = getNdk()
       if (!ndk.signer) throw new Error("Signer not connected")
@@ -698,13 +726,13 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
         note: replyText.trim(),
         orderId: vm.orderId,
         merchantPubkey: row.merchantPubkey,
-        buyerPubkey: pubkey,
+        buyerPubkey,
         createdAt: Date.now(),
       })
-      prepareBuyerConversationRumor(rumor, pubkey)
+      prepareBuyerConversationRumor(rumor, buyerPubkey)
 
       const merchantUser = new NDKUser({ pubkey: row.merchantPubkey })
-      const buyerUser = new NDKUser({ pubkey })
+      const buyerUser = new NDKUser({ pubkey: buyerPubkey })
       const [wrappedToMerchant, wrappedToBuyer] = await Promise.all([
         giftWrap(rumor, merchantUser, ndk.signer, {
           rumorKind: EVENT_KINDS.ORDER,
@@ -716,8 +744,8 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
 
       await publishWithPlanner(wrappedToMerchant, {
         intent: "recipient_event",
-        authorPubkey: pubkey,
-        authenticatedPubkey: pubkey,
+        authorPubkey: buyerPubkey,
+        authenticatedPubkey: buyerPubkey,
         recipientPubkeys: [row.merchantPubkey],
         refreshRelayLists: true,
         deliveryMode: "critical",
@@ -725,9 +753,9 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
       try {
         await publishWithPlanner(wrappedToBuyer, {
           intent: "recipient_event",
-          authorPubkey: pubkey,
-          authenticatedPubkey: pubkey,
-          recipientPubkeys: [pubkey],
+          authorPubkey: buyerPubkey,
+          authenticatedPubkey: buyerPubkey,
+          recipientPubkeys: [buyerPubkey],
           refreshRelayLists: true,
           deliveryMode: "critical",
         })
@@ -741,16 +769,16 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
       setReplyText("")
       await Promise.all([
         queryClient.invalidateQueries({
-          queryKey: ["buyer-messages", pubkey],
+          queryKey: ["buyer-messages", buyerPubkey],
         }),
         queryClient.invalidateQueries({
-          queryKey: ["buyer-messages-live", pubkey],
+          queryKey: ["buyer-messages-live", buyerPubkey],
         }),
       ])
     },
   })
 
-  const messageMerchant = (
+  const messageMerchant = guestIdentity ? null : (
     <Button
       variant="outline"
       className="h-10 px-4 text-sm"
@@ -818,14 +846,20 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
           >
             <p className="text-sm text-[var(--text-secondary)]">
               No automatic wallet was available. Pay the invoice below, then
-              send the receipt to the merchant.
+              report the payment to the merchant for verification.
             </p>
           </StatusNotice>
           <ExternalWalletPanel
             vm={vm}
             busy={busy}
+            guestSession={!!guestIdentity}
             onMarkPaid={() =>
-              void withBusy(() => submitExternalPaymentProof(vm.orderId))
+              void withBusy(() =>
+                submitExternalPaymentProof(
+                  vm.orderId,
+                  guestIdentity ?? undefined
+                )
+              )
             }
           />
         </div>
@@ -857,7 +891,9 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
                 className="h-10 px-4 text-sm"
                 disabled={busy}
                 onClick={() =>
-                  void withBusy(() => resendOrderProof(vm.orderId))
+                  void withBusy(() =>
+                    resendOrderProof(vm.orderId, guestIdentity ?? undefined)
+                  )
                 }
               >
                 <RotateCw className="h-4 w-4" />
@@ -896,13 +932,15 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
                 <h3 className="text-sm font-semibold text-[var(--text-primary)]">
                   Shipping address
                 </h3>
-                <Button
-                  variant="ghost"
-                  className="h-8 px-3 text-xs"
-                  onClick={() => setMessagesOpen(true)}
-                >
-                  Edit
-                </Button>
+                {!guestIdentity && (
+                  <Button
+                    variant="ghost"
+                    className="h-8 px-3 text-xs"
+                    onClick={() => setMessagesOpen(true)}
+                  >
+                    Send correction
+                  </Button>
+                )}
               </div>
               <div className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
                 <div className="text-[var(--text-primary)]">
@@ -926,6 +964,8 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
             <button
               type="button"
               onClick={() => setDetailsOpen((open) => !open)}
+              aria-expanded={detailsOpen}
+              aria-controls="market-order-details-panel"
               className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left"
             >
               <span className="text-sm font-semibold text-[var(--text-primary)]">
@@ -936,7 +976,10 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
               />
             </button>
             {detailsOpen && (
-              <div className="space-y-2 border-t border-[var(--border)] px-5 py-4 text-sm">
+              <div
+                id="market-order-details-panel"
+                className="space-y-2 border-t border-[var(--border)] px-5 py-4 text-sm"
+              >
                 <DetailRow label="Order ID">
                   <span className="font-mono text-xs">
                     {formatPubkey(vm.orderId, 8)}
@@ -987,31 +1030,42 @@ function OrderDetail({ row, pubkey }: { row: OrderRow; pubkey: string }) {
               Need help?
             </h3>
             <p className="mt-1 text-sm text-[var(--text-secondary)]">
-              Message the merchant for any questions or issues.
+              {guestIdentity
+                ? "The merchant will use the phone and email contact details submitted at checkout for questions and fulfillment updates."
+                : "Message the merchant for any questions or issues."}
             </p>
-            <div className="mt-3">{messageMerchant}</div>
+            {messageMerchant && <div className="mt-3">{messageMerchant}</div>}
           </section>
         </div>
       </div>
 
-      <OrderMessagesWidget
-        open={messagesOpen}
-        onOpenChange={setMessagesOpen}
-        subtitle={merchantName}
-        messages={row.conversation?.messages ?? []}
-        selfPubkey={pubkey}
-        replyValue={replyText}
-        onReplyChange={setReplyText}
-        onSend={() => replyMutation.mutate()}
-        sending={replyMutation.isPending}
-        placeholder="Message the merchant, then press Enter"
-        resolveItem={(id) => {
-          const product = productsById.get(id)
-          return product
-            ? { title: product.title, imageUrl: product.images[0]?.url }
-            : undefined
-        }}
-      />
+      {!guestIdentity && (
+        <OrderMessagesWidget
+          open={messagesOpen}
+          onOpenChange={setMessagesOpen}
+          subtitle={merchantName}
+          messages={row.conversation?.messages ?? []}
+          selfPubkey={buyerPubkey}
+          replyValue={replyText}
+          onReplyChange={setReplyText}
+          onSend={() => replyMutation.mutate()}
+          sending={replyMutation.isPending}
+          error={
+            replyMutation.error instanceof Error
+              ? replyMutation.error.message
+              : replyMutation.error
+                ? "Failed to send message"
+                : null
+          }
+          placeholder="Message the merchant, then press Enter"
+          resolveItem={(id) => {
+            const product = productsById.get(id)
+            return product
+              ? { title: product.title, imageUrl: product.images[0]?.url }
+              : undefined
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -1044,6 +1098,27 @@ function OrdersPage() {
   const [searchValue, setSearchValue] = useState("")
   const [tab, setTab] = useState<PhaseTab>("all")
   const [changeOrderOpen, setChangeOrderOpen] = useState(false)
+  const [, setGuestSessionEpoch] = useState(0)
+  const guestIdentity =
+    !signerConnected && selectedFromUrl
+      ? getSessionGuestOrderSigningIdentity(selectedFromUrl)
+      : null
+  const activeBuyerPubkey = signerConnected
+    ? pubkey
+    : (guestIdentity?.pubkey ?? null)
+  useEffect(() => {
+    if (!guestIdentity) return
+    const delayMs = Math.max(0, guestIdentity.expiresAt - Date.now())
+    const timer = window.setTimeout(() => {
+      clearSessionGuestOrderSigningIdentity(guestIdentity.orderId)
+      void pruneExpiredGuestOrderData()
+        .catch(() => {})
+        .finally(() => {
+          setGuestSessionEpoch((epoch) => epoch + 1)
+        })
+    }, delayMs)
+    return () => window.clearTimeout(timer)
+  }, [guestIdentity])
   const [refreshButtonState, setRefreshButtonState] = useState<
     "idle" | "refreshing" | "done"
   >("idle")
@@ -1052,30 +1127,41 @@ function OrdersPage() {
   )
 
   const lifecyclesQuery = useQuery({
-    queryKey: ["order-lifecycles", pubkey ?? "none"],
-    enabled: signerConnected,
-    queryFn: () => listOrderLifecycles(pubkey!),
+    queryKey: [
+      "order-lifecycles",
+      activeBuyerPubkey ?? "none",
+      selectedFromUrl ?? "all",
+    ],
+    enabled: !!activeBuyerPubkey,
+    queryFn: async () => {
+      if (signerConnected) return listOrderLifecycles(activeBuyerPubkey!)
+      if (!selectedFromUrl || !guestIdentity) return []
+      const lifecycle = await db.orderLifecycles.get(selectedFromUrl)
+      if (!lifecycle || lifecycle.buyerPubkey !== guestIdentity.pubkey)
+        return []
+      return [lifecycle]
+    },
     refetchInterval: 30_000,
   })
   const messagesQuery = useQuery({
-    queryKey: ["buyer-messages-live", pubkey ?? "none"],
+    queryKey: ["buyer-messages-live", activeBuyerPubkey ?? "none"],
     enabled: signerConnected,
-    queryFn: () => fetchBuyerConversations(pubkey!),
+    queryFn: () => fetchBuyerConversations(activeBuyerPubkey!),
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   })
   const cachedMessagesQuery = useQuery({
-    queryKey: ["buyer-messages", pubkey ?? "none"],
+    queryKey: ["buyer-messages", activeBuyerPubkey ?? "none"],
     enabled: signerConnected,
-    queryFn: () => fetchCachedBuyerConversations(pubkey!),
+    queryFn: () => fetchCachedBuyerConversations(activeBuyerPubkey!),
     staleTime: 5_000,
   })
 
   const isFetching = messagesQuery.isFetching || lifecyclesQuery.isFetching
   const refetchAll = useCallback(() => {
-    void messagesQuery.refetch()
+    if (signerConnected) void messagesQuery.refetch()
     void lifecyclesQuery.refetch()
-  }, [messagesQuery, lifecyclesQuery])
+  }, [lifecyclesQuery, messagesQuery, signerConnected])
 
   useEffect(() => {
     if (isFetching) {
@@ -1104,10 +1190,10 @@ function OrdersPage() {
   )
 
   const handleRefresh = useCallback(() => {
-    if (!signerConnected) return
+    if (!activeBuyerPubkey) return
     setRefreshButtonState("refreshing")
     refetchAll()
-  }, [refetchAll, signerConnected])
+  }, [activeBuyerPubkey, refetchAll])
 
   const conversations = useMemo(
     () => messagesQuery.data?.data ?? cachedMessagesQuery.data?.data ?? [],
@@ -1164,7 +1250,7 @@ function OrdersPage() {
     [orders]
   )
   const merchantProfilesQuery = useProfiles(merchantPubkeys, {
-    enabled: signerConnected && merchantPubkeys.length > 0,
+    enabled: merchantPubkeys.length > 0,
     priority: "background",
     refetchUnresolvedMs: 12_000,
     maxUnresolvedRefetches: 1,
@@ -1265,13 +1351,15 @@ function OrdersPage() {
             Orders
           </h1>
           <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
-            Track your purchases, payment status, and shipping progress.
+            {signerConnected
+              ? "Track your purchases, payment status, and shipping progress."
+              : "Finish this guest payment and review locally saved checkout status. Merchant follow-up uses your submitted phone and email contact details."}
           </p>
         </div>
         <Button
           variant="outline"
           className="h-11 px-4 text-sm"
-          disabled={!signerConnected || isFetching}
+          disabled={!activeBuyerPubkey || isFetching}
           onClick={handleRefresh}
         >
           <span className="inline-flex items-center gap-2">
@@ -1291,26 +1379,40 @@ function OrdersPage() {
         </Button>
       </div>
 
-      {!signerConnected && (
+      {!activeBuyerPubkey && (
         <EmptyState
-          title="Connect to view your orders"
-          body="Order updates, invoices, and merchant replies are tied to your signer identity."
-        />
-      )}
-
-      {signerConnected && !lifecyclesQuery.isLoading && !hasOrders && (
-        <EmptyState
-          title="No orders yet"
-          body="Place your first order and it will appear here with live status."
-          action={
-            <Button asChild className="h-11 px-4 text-sm">
-              <Link to="/products">Browse products</Link>
-            </Button>
+          title={
+            selectedFromUrl
+              ? "Guest order session not found"
+              : "Connect to view your orders"
+          }
+          body={
+            selectedFromUrl
+              ? "Guest checkout orders are tied to the browser session that created them. Return from checkout in the same tab before the session expires; merchant follow-up uses the phone and email contact details submitted at checkout."
+              : "Order updates, invoices, and merchant replies are tied to your signer identity."
           }
         />
       )}
 
-      {signerConnected && hasOrders && (
+      {activeBuyerPubkey && !lifecyclesQuery.isLoading && !hasOrders && (
+        <EmptyState
+          title={signerConnected ? "No orders yet" : "Guest order not found"}
+          body={
+            signerConnected
+              ? "Place your first order and it will appear here with live status."
+              : "This guest order is not available in local order history on this device."
+          }
+          action={
+            signerConnected ? (
+              <Button asChild className="h-11 px-4 text-sm">
+                <Link to="/products">Browse products</Link>
+              </Button>
+            ) : undefined
+          }
+        />
+      )}
+
+      {activeBuyerPubkey && hasOrders && (
         <div className="grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
           {/* Desktop left rail */}
           <aside className="hidden xl:block">
@@ -1380,7 +1482,12 @@ function OrdersPage() {
           {/* Detail */}
           <section className="min-w-0">
             {selectedRow ? (
-              <OrderDetail row={selectedRow} pubkey={pubkey!} />
+              <OrderDetail
+                key={selectedRow.orderId}
+                row={selectedRow}
+                buyerPubkey={activeBuyerPubkey}
+                guestIdentity={guestIdentity}
+              />
             ) : (
               <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6 text-center text-sm text-[var(--text-secondary)]">
                 Select an order to view its status.
@@ -1404,6 +1511,7 @@ function SearchBox({
     <div className="relative mt-3">
       <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
       <input
+        aria-label="Search orders"
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder="Search orders"

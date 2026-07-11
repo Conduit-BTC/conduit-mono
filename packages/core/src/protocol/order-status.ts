@@ -36,8 +36,10 @@ export interface OrderTimelineStep {
 /** Derived merchant-facing order state, independent of message ordering. */
 export interface MerchantOrderState {
   status: string | null | undefined
-  /** A buyer payment proof (or a `paid` status) has been observed. */
+  /** Merchant-confirmed payment has been observed. */
   paid?: boolean
+  /** Merchant acceptance has been observed anywhere in the trusted history. */
+  accepted?: boolean
   /** The merchant has sent a payment request (invoice) for this order. */
   invoiceSent?: boolean
 }
@@ -62,6 +64,18 @@ const TERMINAL_ACTION_STATUSES = new Set([
   "delivered",
   "refund_requested",
 ])
+const KNOWN_ACTION_STATUSES = new Set([
+  "pending",
+  "invoiced",
+  "paid",
+  "accepted",
+  "processing",
+  "shipped",
+  "complete",
+  "delivered",
+  "cancelled",
+  "refund_requested",
+])
 
 function normalizeStatus(status: string | null | undefined): string {
   return (status ?? "pending").toLowerCase()
@@ -75,8 +89,14 @@ function toState(
   return input
 }
 
-function isPaid(state: MerchantOrderState): boolean {
+export function isMerchantOrderPaid(state: MerchantOrderState): boolean {
   return !!state.paid || PAID_STATUSES.has(normalizeStatus(state.status))
+}
+
+export function isMerchantOrderAccepted(state: MerchantOrderState): boolean {
+  return (
+    !!state.accepted || ACCEPTED_STATUSES.has(normalizeStatus(state.status))
+  )
 }
 
 function titleCase(value: string): string {
@@ -123,7 +143,9 @@ export function deriveOrderFlow(
   input: MerchantOrderState | string | null | undefined
 ): OrderFlow {
   const state = toState(input)
-  return isPaid(state) && !state.invoiceSent ? "prepaid" : "invoice"
+  return isMerchantOrderPaid(state) && !state.invoiceSent
+    ? "prepaid"
+    : "invoice"
 }
 
 const PREPAID_CHECKOUT_MODES = new Set([
@@ -153,7 +175,8 @@ export function buildOrderStatusTimeline(
   const state = toState(input)
   const status = normalizeStatus(state.status)
   const cancelled = status === "cancelled"
-  const paid = isPaid(state)
+  const paid = isMerchantOrderPaid(state)
+  const acceptedGate = isMerchantOrderAccepted(state)
   const flow = deriveOrderFlow(state)
 
   const placed: StageSpec = {
@@ -177,7 +200,7 @@ export function buildOrderStatusTimeline(
     key: "accepted",
     title: "Merchant accepted",
     subtitle: "Order confirmed",
-    done: ACCEPTED_STATUSES.has(status),
+    done: acceptedGate,
   }
   const shipped: StageSpec = {
     key: "shipped",
@@ -255,9 +278,10 @@ export function getMerchantOrderActions(
   const state = toState(input)
   const status = normalizeStatus(state.status)
 
+  if (!KNOWN_ACTION_STATUSES.has(status)) return []
   if (TERMINAL_ACTION_STATUSES.has(status)) return []
 
-  if (!ACCEPTED_STATUSES.has(status)) {
+  if (!isMerchantOrderAccepted(state)) {
     return [
       { status: "cancelled", label: "Decline order", kind: "destructive" },
       { status: "accepted", label: "Accept order", kind: "primary" },
@@ -267,7 +291,7 @@ export function getMerchantOrderActions(
   // Accepted-or-beyond, but already shipped → nothing left for the merchant.
   if (SHIPPED_STATUSES.has(status)) return []
 
-  if (isPaid(state)) {
+  if (isMerchantOrderPaid(state)) {
     return [
       { status: "cancelled", label: "Cancel order", kind: "destructive" },
       { status: "shipped", label: "Mark as shipped", kind: "primary" },

@@ -47,17 +47,30 @@ function conversation(
   subtotal: number
 ): MerchantConversationSummary {
   const order = orderMessage(orderId, createdAt, items, subtotal)
+  const statusMessage: ParsedOrderMessage | null = status
+    ? ({
+        id: `${orderId}-status`,
+        orderId,
+        type: "status_update",
+        createdAt: createdAt + 1_000,
+        senderPubkey: "merchant",
+        recipientPubkey: "buyer",
+        rawContent: "",
+        payload: { status },
+      } as ParsedOrderMessage)
+    : null
+  const messages = statusMessage ? [order, statusMessage] : [order]
   return {
     id: orderId,
     orderId,
     buyerPubkey: "buyer",
-    latestAt: createdAt,
-    latestType: "order",
+    latestAt: statusMessage?.createdAt ?? createdAt,
+    latestType: statusMessage?.type ?? "order",
     status,
     totalSummary: `${subtotal} SATS`,
     preview: "Order",
-    messageCount: 1,
-    messages: [order],
+    messageCount: messages.length,
+    messages,
   }
 }
 
@@ -112,7 +125,7 @@ describe("buildDashboardChartData", () => {
     expect(data.topProducts[0]).toEqual({
       productId: "p:w",
       title: "Widget",
-      quantity: 3,
+      quantity: 1,
     })
     expect(data.totalOrders).toBe(3)
   })

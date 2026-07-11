@@ -87,6 +87,7 @@ function VerticalBarChart({
       width="100%"
       preserveAspectRatio="none"
       role="img"
+      aria-label="Orders over time"
       className="h-44 w-full"
     >
       <line
@@ -115,7 +116,7 @@ function VerticalBarChart({
                 y={H - 6}
                 textAnchor="middle"
                 fill="var(--text-muted)"
-                style={{ fontSize: 10 }}
+                style={{ fontSize: 12 }}
               >
                 {point.label}
               </text>
@@ -204,6 +205,7 @@ export function StatusBreakdownChart({ slices }: { slices: StatusSlice[] }) {
             width={size}
             height={size}
             role="img"
+            aria-label="Order status breakdown"
             className="shrink-0"
           >
             <g transform={`rotate(-90 ${size / 2} ${size / 2})`}>
@@ -243,7 +245,7 @@ export function StatusBreakdownChart({ slices }: { slices: StatusSlice[] }) {
               y={size / 2 + 16}
               textAnchor="middle"
               fill="var(--text-secondary)"
-              style={{ fontSize: 11 }}
+              style={{ fontSize: 12 }}
             >
               orders
             </text>

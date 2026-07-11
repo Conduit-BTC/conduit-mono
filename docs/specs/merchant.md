@@ -50,11 +50,19 @@ The current product uses focused pages plus dashboard readiness. Do not re-open 
 5. Confirm payment state
 6. Send status and shipping updates
 
+For `guest_ephemeral` orders, steps 3 and 6 occur out of band using the required
+phone/email shown in order details. The guest pubkey is an outbound order sender,
+not a reply-capable Nostr inbox; Merchant must not offer Nostr invoice, status,
+shipping, or reply controls for that order.
+
 ### Communication
 
 1. Keep buyer communication order-linked where possible
 2. Reply via signed/encrypted NIP-17 messages
 3. Preserve payment requests, payment proofs, status updates, shipping updates, and receipts as conversation evidence
+
+The NIP-17 reply path applies to signed-in buyers. Guest order/payment reports
+remain visible as inbound evidence, while follow-up uses the order contact fields.
 
 ## Pages
 

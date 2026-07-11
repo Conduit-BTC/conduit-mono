@@ -5,6 +5,7 @@ import {
 } from "./orders"
 
 export type OrderSummary = {
+  buyerIdentityKind: "signed_in" | "guest_ephemeral" | null
   items: Array<{
     productId: string
     title?: string
@@ -27,6 +28,10 @@ export type OrderSummary = {
     postalCode: string
     country: string
   } | null
+  guestContact: {
+    email: string
+    phone: string
+  } | null
   orderNote: string | null
   invoiceSent: boolean
   invoiceCount: number
@@ -36,9 +41,40 @@ export type OrderSummary = {
   paymentProofCount: number
   paymentProofAmount: number | null
   paymentProofCurrency: string | null
+  paymentReportReceived: boolean
+  paymentReportCount: number
+  paymentReportAmount: number | null
+  paymentReportCurrency: string | null
+  accepted: boolean
+  paymentConfirmed: boolean
   trackingCarrier: string | null
   trackingNumber: string | null
   trackingUrl: string | null
+}
+
+function isExternalPaymentReport(
+  message: ParsedOrderMessage
+): message is Extract<ParsedOrderMessage, { type: "payment_proof" }> {
+  if (message.type !== "payment_proof") return false
+  const verificationState = message.payload.verification?.state
+  if (
+    verificationState === "verification_failed" ||
+    verificationState === "disputed"
+  ) {
+    return false
+  }
+
+  return (
+    Boolean(message.payload.invoice) &&
+    (message.payload.action === "external_invoice" ||
+      message.payload.source === "external")
+  )
+}
+
+export function isExternalPaymentReportMessage(
+  message: ParsedOrderMessage
+): boolean {
+  return isExternalPaymentReport(message)
 }
 
 /**
@@ -52,18 +88,72 @@ export function extractOrderSummary(
   messages: ParsedOrderMessage[]
 ): OrderSummary {
   const firstOrder = messages.find((m) => m.type === "order")
+  const buyerPubkey = firstOrder?.senderPubkey ?? ""
+  const merchantPubkey = firstOrder?.recipientPubkey ?? ""
+  const isBuyerToMerchant = (message: ParsedOrderMessage) =>
+    !!buyerPubkey &&
+    !!merchantPubkey &&
+    message.senderPubkey === buyerPubkey &&
+    message.recipientPubkey === merchantPubkey
+  const isMerchantToBuyer = (message: ParsedOrderMessage) =>
+    !!buyerPubkey &&
+    !!merchantPubkey &&
+    message.senderPubkey === merchantPubkey &&
+    message.recipientPubkey === buyerPubkey
   const latestInvoice = [...messages]
     .reverse()
-    .find((m) => m.type === "payment_request")
+    .find(
+      (
+        message
+      ): message is Extract<ParsedOrderMessage, { type: "payment_request" }> =>
+        message.type === "payment_request" && isMerchantToBuyer(message)
+    )
   const invoiceCount = messages.filter(
-    (message) => message.type === "payment_request"
+    (message) =>
+      message.type === "payment_request" && isMerchantToBuyer(message)
   ).length
-  const paymentProofMessages = messages.filter(isPaymentProofEvidenceMessage)
+  const paymentProofMessages = messages.filter(
+    (
+      message
+    ): message is Extract<ParsedOrderMessage, { type: "payment_proof" }> =>
+      isPaymentProofEvidenceMessage(message) && isBuyerToMerchant(message)
+  )
   const latestPaymentProof = [...paymentProofMessages].reverse()[0]
   const paymentProofCount = paymentProofMessages.length
+  const paymentReportMessages = messages.filter(
+    (
+      message
+    ): message is Extract<ParsedOrderMessage, { type: "payment_proof" }> =>
+      isBuyerToMerchant(message) &&
+      (isPaymentProofEvidenceMessage(message) ||
+        isExternalPaymentReport(message))
+  )
+  const latestPaymentReport = [...paymentReportMessages].reverse()[0]
+  const paymentReportCount = paymentReportMessages.length
   const latestShipping = [...messages]
     .reverse()
-    .find((m) => m.type === "shipping_update")
+    .find(
+      (
+        message
+      ): message is Extract<ParsedOrderMessage, { type: "shipping_update" }> =>
+        message.type === "shipping_update" && isMerchantToBuyer(message)
+    )
+  const merchantStatuses = messages.filter(
+    (
+      message
+    ): message is Extract<ParsedOrderMessage, { type: "status_update" }> =>
+      message.type === "status_update" && isMerchantToBuyer(message)
+  )
+  const accepted = merchantStatuses.some((message) =>
+    ["accepted", "processing", "shipped", "complete", "delivered"].includes(
+      message.payload.status.toLowerCase()
+    )
+  )
+  const paymentConfirmed = merchantStatuses.some((message) =>
+    ["paid", "shipped", "complete", "delivered"].includes(
+      message.payload.status.toLowerCase()
+    )
+  )
 
   const items =
     firstOrder?.type === "order"
@@ -94,6 +184,14 @@ export function extractOrderSummary(
         }
       : null
 
+  const guestContact =
+    firstOrder?.type === "order" && firstOrder.payload.guestContact
+      ? {
+          email: firstOrder.payload.guestContact.email,
+          phone: firstOrder.payload.guestContact.phone,
+        }
+      : null
+
   const orderNote =
     firstOrder?.type === "order" && firstOrder.payload.note
       ? firstOrder.payload.note
@@ -118,6 +216,9 @@ export function extractOrderSummary(
   const paymentProofReceived = Boolean(latestPaymentProof)
   const paymentProofAmount = latestPaymentProof?.payload.amount ?? null
   const paymentProofCurrency = latestPaymentProof?.payload.currency ?? null
+  const paymentReportReceived = Boolean(latestPaymentReport)
+  const paymentReportAmount = latestPaymentReport?.payload.amount ?? null
+  const paymentReportCurrency = latestPaymentReport?.payload.currency ?? null
 
   const trackingCarrier =
     latestShipping?.type === "shipping_update"
@@ -133,10 +234,15 @@ export function extractOrderSummary(
       : null
 
   return {
+    buyerIdentityKind:
+      firstOrder?.type === "order"
+        ? (firstOrder.payload.buyerIdentityKind ?? null)
+        : null,
     items,
     subtotal,
     currency,
     shippingAddress,
+    guestContact,
     orderNote,
     invoiceSent,
     invoiceCount,
@@ -146,6 +252,12 @@ export function extractOrderSummary(
     paymentProofCount,
     paymentProofAmount,
     paymentProofCurrency,
+    paymentReportReceived,
+    paymentReportCount,
+    paymentReportAmount,
+    paymentReportCurrency,
+    accepted,
+    paymentConfirmed,
     trackingCarrier,
     trackingNumber,
     trackingUrl,

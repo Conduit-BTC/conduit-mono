@@ -147,6 +147,9 @@ describe("cart model", () => {
           priceSats: 100,
           shippingCostSats: 25,
           shippingOptionId: "standard",
+          shippingCountryRules: [
+            { code: "US", name: "United States", restrictTo: [], exclude: [] },
+          ],
         }),
         item({
           productId: "30402:merchant-a:product-b",
@@ -154,6 +157,9 @@ describe("cart model", () => {
           priceSats: 500,
           shippingCostSats: 50,
           shippingOptionId: "standard",
+          shippingCountryRules: [
+            { code: "US", name: "United States", restrictTo: [], exclude: [] },
+          ],
         }),
       ])
     ).toMatchObject({
@@ -185,14 +191,13 @@ describe("cart model", () => {
     })
   })
 
-  it("blocks cart-level zap-out readiness when a physical item has no shipping zone", () => {
+  it("blocks cart-level zap-out readiness when a physical item has no shipping snapshot", () => {
     expect(
       getCartCostSummary([
         item({
           quantity: 2,
           priceSats: 100,
           shippingCostSats: 25,
-          shippingOptionId: undefined,
         }),
       ])
     ).toMatchObject({
@@ -202,6 +207,29 @@ describe("cart model", () => {
       itemPricesAvailable: true,
       shippingReadyForZap: false,
       canZapOut: false,
+    })
+  })
+
+  it("accepts a product shipping snapshot without a preset reference", () => {
+    expect(
+      getCartCostSummary([
+        item({
+          quantity: 2,
+          priceSats: 100,
+          shippingCostSats: 25,
+          shippingOptionId: undefined,
+          shippingCountryRules: [
+            { code: "US", name: "United States", restrictTo: [], exclude: [] },
+          ],
+        }),
+      ])
+    ).toMatchObject({
+      count: 2,
+      itemSubtotalSats: 200,
+      totalSats: 200,
+      itemPricesAvailable: true,
+      shippingReadyForZap: true,
+      canZapOut: true,
     })
   })
 

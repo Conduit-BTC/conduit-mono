@@ -556,7 +556,12 @@ function DashboardPage() {
                   ]?.picture
                 }
                 active={false}
-                onClick={() => navigate({ to: "/orders" })}
+                onClick={() =>
+                  navigate({
+                    to: "/orders",
+                    search: { order: conversation.orderId },
+                  })
+                }
               />
             ))}
           </div>
