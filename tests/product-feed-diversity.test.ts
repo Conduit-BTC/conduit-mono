@@ -102,4 +102,30 @@ describe("merchant feed diversity", () => {
 
     expect(ordered.map((item) => item.id)).toEqual(["a1", "b1", "a2", "c1"])
   })
+
+  it("handles one early cap violation in a wide catalog without re-sorting every merchant", () => {
+    const products = [
+      product("a1", "merchant-a", 10_000),
+      product("a2", "merchant-a", 9_999),
+      product("a3", "merchant-a", 9_998),
+      ...Array.from({ length: 9_997 }, (_, index) =>
+        product(`u${index}`, `merchant-${index}`, 9_997 - index)
+      ),
+    ]
+
+    const startedAt = performance.now()
+    const ordered = diversifyMerchantProductOrder(products)
+    const durationMs = performance.now() - startedAt
+
+    expect(ordered.slice(0, 5).map((item) => item.id)).toEqual([
+      "a1",
+      "a2",
+      "u0",
+      "a3",
+      "u1",
+    ])
+    expect(ordered).toHaveLength(products.length)
+    expect(new Set(ordered.map((item) => item.id)).size).toBe(products.length)
+    expect(durationMs).toBeLessThan(500)
+  })
 })

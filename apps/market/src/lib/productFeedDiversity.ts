@@ -9,7 +9,57 @@ type IndexedProduct = {
 
 type MerchantBucket = {
   cursor: number
+  merchant: string
   products: IndexedProduct[]
+}
+
+function nextProductIndex(bucket: MerchantBucket): number {
+  return bucket.products[bucket.cursor]?.index ?? Number.MAX_SAFE_INTEGER
+}
+
+function pushMerchantBucket(
+  heap: MerchantBucket[],
+  bucket: MerchantBucket
+): void {
+  heap.push(bucket)
+  let index = heap.length - 1
+
+  while (index > 0) {
+    const parentIndex = Math.floor((index - 1) / 2)
+    const parent = heap[parentIndex]
+    if (nextProductIndex(parent) <= nextProductIndex(bucket)) break
+
+    heap[index] = parent
+    index = parentIndex
+  }
+
+  heap[index] = bucket
+}
+
+function popMerchantBucket(heap: MerchantBucket[]): MerchantBucket | undefined {
+  const first = heap[0]
+  const last = heap.pop()
+  if (!first || !last || heap.length === 0) return first
+
+  let index = 0
+  while (true) {
+    const leftIndex = index * 2 + 1
+    if (leftIndex >= heap.length) break
+
+    const rightIndex = leftIndex + 1
+    const childIndex =
+      rightIndex < heap.length &&
+      nextProductIndex(heap[rightIndex]) < nextProductIndex(heap[leftIndex])
+        ? rightIndex
+        : leftIndex
+
+    if (nextProductIndex(last) <= nextProductIndex(heap[childIndex])) break
+    heap[index] = heap[childIndex]
+    index = childIndex
+  }
+
+  heap[index] = last
+  return first
 }
 
 export function diversifyMerchantProductOrder(
@@ -47,59 +97,55 @@ export function diversifyMerchantProductOrder(
   const buckets = new Map<string, MerchantBucket>()
 
   for (const [index, product] of products.entries()) {
-    const bucket = buckets.get(product.pubkey) ?? { cursor: 0, products: [] }
+    const bucket = buckets.get(product.pubkey) ?? {
+      cursor: 0,
+      merchant: product.pubkey,
+      products: [],
+    }
     bucket.products.push({ index, product })
     buckets.set(product.pubkey, bucket)
   }
 
   const diversified: Product[] = []
-  const activeMerchants = Array.from(buckets.keys())
+  const merchantHeap: MerchantBucket[] = []
+  for (const bucket of buckets.values()) {
+    pushMerchantBucket(merchantHeap, bucket)
+  }
   let lastMerchant: string | null = null
   let consecutiveCount = 0
 
-  while (activeMerchants.length > 0) {
+  while (merchantHeap.length > 0) {
     // Preserve the caller's order until the next product would exceed the cap.
     // At that point, promote the nearest alternative publisher and then resume.
-    activeMerchants.sort((a, b) => {
-      const aBucket = buckets.get(a)
-      const bBucket = buckets.get(b)
-      return (
-        (aBucket?.products[aBucket.cursor]?.index ?? Number.MAX_SAFE_INTEGER) -
-        (bBucket?.products[bBucket.cursor]?.index ?? Number.MAX_SAFE_INTEGER)
-      )
-    })
+    let bucket = popMerchantBucket(merchantHeap)
+    if (!bucket) break
 
-    let selectedMerchantIndex = 0
     if (
-      activeMerchants[0] === lastMerchant &&
-      consecutiveCount >= maxConsecutive
+      bucket.merchant === lastMerchant &&
+      consecutiveCount >= maxConsecutive &&
+      merchantHeap.length > 0
     ) {
-      const alternativeIndex = activeMerchants.findIndex(
-        (merchant) => merchant !== lastMerchant
-      )
-      if (alternativeIndex >= 0) selectedMerchantIndex = alternativeIndex
+      const blockedBucket = bucket
+      const alternativeBucket = popMerchantBucket(merchantHeap)
+      if (alternativeBucket) {
+        bucket = alternativeBucket
+        pushMerchantBucket(merchantHeap, blockedBucket)
+      }
     }
 
-    const merchant = activeMerchants[selectedMerchantIndex]
-    const bucket = buckets.get(merchant)
-    const nextProduct = bucket?.products[bucket.cursor]
-    if (!bucket || !nextProduct) {
-      activeMerchants.splice(selectedMerchantIndex, 1)
-      continue
-    }
-
+    const nextProduct = bucket.products[bucket.cursor]
     diversified.push(nextProduct.product)
     bucket.cursor += 1
 
-    if (merchant === lastMerchant) {
+    if (bucket.merchant === lastMerchant) {
       consecutiveCount += 1
     } else {
-      lastMerchant = merchant
+      lastMerchant = bucket.merchant
       consecutiveCount = 1
     }
 
-    if (bucket.cursor >= bucket.products.length) {
-      activeMerchants.splice(selectedMerchantIndex, 1)
+    if (bucket.cursor < bucket.products.length) {
+      pushMerchantBucket(merchantHeap, bucket)
     }
   }
 
