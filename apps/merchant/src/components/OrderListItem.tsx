@@ -1,9 +1,7 @@
 import { UserRound } from "lucide-react"
-import {
-  getOrderStatusDisplay,
-  type MerchantConversationSummary,
-} from "@conduit/core"
+import { type MerchantConversationSummary } from "@conduit/core"
 import { StatusPill } from "@conduit/ui"
+import { getMerchantConversationStatusDisplay } from "../lib/order-phase"
 
 export function BuyerAvatar({
   name,
@@ -41,7 +39,7 @@ export function OrderListItem({
   active: boolean
   onClick: () => void
 }) {
-  const statusDisplay = getOrderStatusDisplay(conversation.status)
+  const statusDisplay = getMerchantConversationStatusDisplay(conversation)
   return (
     <button
       type="button"

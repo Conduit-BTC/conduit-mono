@@ -4,7 +4,7 @@ import {
   type ParsedOrderMessage,
   type PricingRateInput,
 } from "@conduit/core"
-import { getMerchantOrderPhase, type OrderPhaseTab } from "./order-phase"
+import { getMerchantConversationPhase, type OrderPhaseTab } from "./order-phase"
 
 export interface TimeBucketPoint {
   /** Day start (ms). */
@@ -117,7 +117,7 @@ export function buildDashboardChartData(
       orderMessage
     )
 
-    const phase = getMerchantOrderPhase(conversation.status)
+    const phase = getMerchantConversationPhase(conversation)
     statusCounts.set(phase, (statusCounts.get(phase) ?? 0) + 1)
 
     const day = startOfDay(orderMessage.createdAt)

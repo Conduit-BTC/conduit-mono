@@ -74,6 +74,37 @@ function conversation(
   }
 }
 
+function withPaymentProof(
+  value: MerchantConversationSummary
+): MerchantConversationSummary {
+  const proof: ParsedOrderMessage = {
+    id: `${value.orderId}-proof`,
+    orderId: value.orderId,
+    type: "payment_proof",
+    createdAt: value.latestAt + 1_000,
+    senderPubkey: "buyer",
+    recipientPubkey: "merchant",
+    rawContent: "",
+    payload: {
+      orderId: value.orderId,
+      rail: "lightning",
+      action: "private_checkout",
+      amount: 100,
+      currency: "SATS",
+      invoice: "lnbc100n1proof",
+      preimage: "paid-preimage",
+      paymentHash: "paid-hash",
+      proofDeliveryStatus: "pending",
+    },
+  } as ParsedOrderMessage
+  return {
+    ...value,
+    latestAt: proof.createdAt,
+    latestType: proof.type,
+    messages: [...(value.messages ?? []), proof],
+  }
+}
+
 describe("buildDashboardChartData", () => {
   const conversations = [
     conversation(
@@ -113,6 +144,22 @@ describe("buildDashboardChartData", () => {
       { key: "in_progress", label: "In Progress", count: 1 },
       { key: "cancelled", label: "Cancelled", count: 1 },
     ])
+  })
+
+  it("buckets proof-only prepaid orders as in progress", () => {
+    const proofOnly = withPaymentProof(
+      conversation(
+        "proof-only",
+        null,
+        NOW,
+        [{ productId: "p:w", title: "Widget", quantity: 1 }],
+        100
+      )
+    )
+
+    expect(
+      buildDashboardChartData([proofOnly], null, NOW, 30).statusSlices
+    ).toEqual([{ key: "in_progress", label: "In Progress", count: 1 }])
   })
 
   it("sums revenue for paid orders only", () => {

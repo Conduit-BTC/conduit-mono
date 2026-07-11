@@ -11,7 +11,6 @@ import {
   appendConduitClientTag,
   extractOrderSummary,
   formatNpub,
-  getOrderStatusDisplay,
   getCachedMerchantConversationList,
   getCurrencyAmountStep,
   getNdk,
@@ -63,7 +62,9 @@ import {
 import { requireAuth } from "../lib/auth"
 import { BuyerAvatar, OrderListItem } from "../components/OrderListItem"
 import {
-  getMerchantOrderPhase,
+  getMerchantConversationPhase,
+  getMerchantConversationStatusDisplay,
+  isMerchantConversationActiveFulfillment,
   ORDER_PHASE_OPTIONS,
   type OrderPhaseTab,
 } from "../lib/order-phase"
@@ -298,7 +299,8 @@ function MobileOrdersScroller({
           <div className="flex min-w-max snap-x snap-mandatory gap-3 pb-1 pr-14">
             {conversations.map((conversation) => {
               const active = conversation.id === selectedId
-              const statusDisplay = getOrderStatusDisplay(conversation.status)
+              const statusDisplay =
+                getMerchantConversationStatusDisplay(conversation)
               return (
                 <button
                   key={conversation.id}
@@ -745,7 +747,7 @@ function OrdersPage() {
     return conversations.filter((conversation) => {
       if (
         phaseTab !== "all" &&
-        getMerchantOrderPhase(conversation.status) !== phaseTab
+        getMerchantConversationPhase(conversation) !== phaseTab
       ) {
         return false
       }
@@ -771,7 +773,7 @@ function OrdersPage() {
         conversation.buyerPubkey,
         conversation.preview,
         conversation.totalSummary ?? "",
-        getOrderStatusDisplay(conversation.status).label,
+        getMerchantConversationStatusDisplay(conversation).label,
         itemText,
       ]
         .join(" ")
@@ -885,6 +887,11 @@ function OrdersPage() {
     () => (selected ? extractOrderSummary(selected.messages ?? []) : null),
     [selected]
   )
+  const selectedStatusDisplay = useMemo(
+    () =>
+      selected ? getMerchantConversationStatusDisplay(selected) : undefined,
+    [selected]
+  )
   const isGuestOrder = orderSummary?.buyerIdentityKind === "guest_ephemeral"
   const assertBuyerHasNostrInbox = useCallback(() => {
     if (isGuestOrder) {
@@ -938,13 +945,7 @@ function OrdersPage() {
     [conversations]
   )
   const activeFulfillmentCount = useMemo(
-    () =>
-      conversations.filter(
-        (conversation) =>
-          conversation.status === "paid" ||
-          conversation.status === "processing" ||
-          conversation.status === "shipped"
-      ).length,
+    () => conversations.filter(isMerchantConversationActiveFulfillment).length,
     [conversations]
   )
 
@@ -2019,10 +2020,10 @@ function OrdersPage() {
                           </div>
                         </div>
                         <StatusPill
-                          variant={getOrderStatusDisplay(selected.status).tone}
+                          variant={selectedStatusDisplay?.tone ?? "neutral"}
                           className="shrink-0 capitalize"
                         >
-                          {getOrderStatusDisplay(selected.status).label}
+                          {selectedStatusDisplay?.label ?? "Unknown"}
                         </StatusPill>
                       </div>
                       {!isGuestOrder && (
