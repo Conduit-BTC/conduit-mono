@@ -50,7 +50,7 @@ export type OrderSummary = {
   trackingUrl: string | null
 }
 
-export function isExternalPaymentReportMessage(
+function isExternalPaymentReport(
   message: ParsedOrderMessage
 ): message is Extract<ParsedOrderMessage, { type: "payment_proof" }> {
   if (message.type !== "payment_proof") return false
@@ -67,6 +67,12 @@ export function isExternalPaymentReportMessage(
     (message.payload.action === "external_invoice" ||
       message.payload.source === "external")
   )
+}
+
+export function isExternalPaymentReportMessage(
+  message: ParsedOrderMessage
+): boolean {
+  return isExternalPaymentReport(message)
 }
 
 /**
@@ -91,8 +97,7 @@ export function extractOrderSummary(
   const paymentProofCount = paymentProofMessages.length
   const paymentReportMessages = messages.filter(
     (message) =>
-      isPaymentProofEvidenceMessage(message) ||
-      isExternalPaymentReportMessage(message)
+      isPaymentProofEvidenceMessage(message) || isExternalPaymentReport(message)
   )
   const latestPaymentReport = [...paymentReportMessages].reverse()[0]
   const paymentReportCount = paymentReportMessages.length
