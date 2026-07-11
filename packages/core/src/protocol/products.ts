@@ -557,11 +557,13 @@ export function parseProductEvent(
     const parsed = JSON.parse(event.content || "{}") as Partial<ProductSchema>
     const candidate: Partial<ProductSchema> = {
       ...parsed,
-      id: parsed.id ?? (dTag ? `30402:${event.pubkey}:${dTag}` : event.id),
-      pubkey: parsed.pubkey ?? event.pubkey,
+      // Compatibility content may describe the product, but it cannot replace
+      // identity or time committed to by the signed event envelope.
+      id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
+      pubkey: event.pubkey,
       ...zapPolicy,
-      createdAt: parsed.createdAt ?? createdAtMs,
-      updatedAt: parsed.updatedAt ?? createdAtMs,
+      createdAt: createdAtMs,
+      updatedAt: createdAtMs,
     }
 
     const pricedCandidate =

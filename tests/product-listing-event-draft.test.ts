@@ -266,6 +266,28 @@ describe("product listing event parsing", () => {
     expect(parsed.publicZapPolicyKnown).toBe(false)
   })
 
+  it("uses signed event identity and time over legacy JSON fields", () => {
+    const parsed = parseProductEvent({
+      id: "signed-event",
+      pubkey: "signed-merchant",
+      created_at: 1_779_762_725,
+      content: JSON.stringify(
+        baseProduct({
+          id: "content-controlled-id",
+          pubkey: "content-controlled-merchant",
+          createdAt: 9_999_999_999_999,
+          updatedAt: 9_999_999_999_999,
+        })
+      ),
+      tags: [["d", "signed-product"]],
+    })
+
+    expect(parsed.id).toBe("30402:signed-merchant:signed-product")
+    expect(parsed.pubkey).toBe("signed-merchant")
+    expect(parsed.createdAt).toBe(1_779_762_725_000)
+    expect(parsed.updatedAt).toBe(1_779_762_725_000)
+  })
+
   it("normalizes JSON-shaped summaries in legacy Conduit listings", () => {
     const product = baseProduct({
       summary: JSON.stringify({ description: "Legacy display copy" }),
