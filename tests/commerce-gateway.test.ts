@@ -854,6 +854,75 @@ describe("commerce gateway", () => {
     expect(asMerchant.data.map((row) => row.orderId)).not.toContain("orphan")
   })
 
+  it("excludes partial buckets with conflicting roles or counterparties", async () => {
+    const partialRow = (
+      id: string,
+      orderId: string,
+      type: "payment_proof" | "status_update",
+      senderPubkey: string,
+      recipientPubkey: string
+    ): CachedOrderMessage => ({
+      id,
+      orderId,
+      type,
+      senderPubkey,
+      recipientPubkey,
+      createdAt: FIXED_NOW - 5_000,
+      rawContent: JSON.stringify({
+        id,
+        orderId,
+        type,
+        createdAt: FIXED_NOW - 5_000,
+        senderPubkey,
+        recipientPubkey,
+        rawContent: "",
+        payload: type === "status_update" ? { status: "accepted" } : {},
+      }),
+      cachedAt: FIXED_NOW - 5_000,
+    })
+
+    cachedOrderMessages.push(
+      partialRow(
+        "role-proof",
+        "role-conflict",
+        "payment_proof",
+        "dual",
+        "counterparty"
+      ),
+      partialRow(
+        "role-status",
+        "role-conflict",
+        "status_update",
+        "dual",
+        "counterparty"
+      ),
+      partialRow(
+        "counterparty-proof-a",
+        "counterparty-conflict",
+        "payment_proof",
+        "buyer-a",
+        "dual"
+      ),
+      partialRow(
+        "counterparty-proof-b",
+        "counterparty-conflict",
+        "payment_proof",
+        "buyer-b",
+        "dual"
+      )
+    )
+
+    const asBuyer = await getCachedBuyerConversationList({
+      principalPubkey: "dual",
+    })
+    const asMerchant = await getCachedMerchantConversationList({
+      principalPubkey: "dual",
+    })
+
+    expect(asBuyer.data).toHaveLength(0)
+    expect(asMerchant.data).toHaveLength(0)
+  })
+
   it("persists buyer-originated order messages into the conversation cache", async () => {
     await cacheParsedOrderMessage({
       id: "local-order-msg",
@@ -978,7 +1047,7 @@ describe("commerce gateway", () => {
     expect(second.data[0]?.orderId).toBe("order-3")
   })
 
-  it("excludes payment-proof-only buckets with no role-defining order", async () => {
+  it("keeps payment-proof-only merchant conversations visible without marking them paid", async () => {
     const merchantPubkey = "merchant"
     const buyerPubkey = "buyer"
     const wrappedEvent = {
@@ -1028,10 +1097,14 @@ describe("commerce gateway", () => {
       limit: 50,
     })
 
-    expect(result.data).toHaveLength(0)
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.orderId).toBe("order-proof-1")
+    expect(result.data[0]?.buyerPubkey).toBe(buyerPubkey)
+    expect(result.data[0]?.latestType).toBe("payment_proof")
+    expect(result.data[0]?.status).toBeNull()
   })
 
-  it("excludes malformed payment-proof-only buckets", async () => {
+  it("keeps malformed payment-proof-only buckets visible but unpaid", async () => {
     const merchantPubkey = "merchant"
     const buyerPubkey = "buyer"
     const wrappedEvent = {
@@ -1069,7 +1142,9 @@ describe("commerce gateway", () => {
       limit: 50,
     })
 
-    expect(result.data).toHaveLength(0)
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.orderId).toBe("order-proof-malformed")
+    expect(result.data[0]?.status).toBeNull()
   })
 
   it("queries expanded merchant inbox relays for gift-wrapped orders", async () => {

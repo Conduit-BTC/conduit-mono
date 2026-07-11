@@ -38,6 +38,8 @@ export interface MerchantOrderState {
   status: string | null | undefined
   /** Merchant-confirmed payment has been observed. */
   paid?: boolean
+  /** Buyer payment evidence has been observed, but may still need verification. */
+  paymentObserved?: boolean
   /** Merchant acceptance has been observed anywhere in the trusted history. */
   accepted?: boolean
   /** The merchant has sent a payment request (invoice) for this order. */
@@ -143,7 +145,8 @@ export function deriveOrderFlow(
   input: MerchantOrderState | string | null | undefined
 ): OrderFlow {
   const state = toState(input)
-  return isMerchantOrderPaid(state) && !state.invoiceSent
+  return (isMerchantOrderPaid(state) || !!state.paymentObserved) &&
+    !state.invoiceSent
     ? "prepaid"
     : "invoice"
 }
@@ -176,6 +179,7 @@ export function buildOrderStatusTimeline(
   const status = normalizeStatus(state.status)
   const cancelled = status === "cancelled"
   const paid = isMerchantOrderPaid(state)
+  const paymentObserved = paid || !!state.paymentObserved
   const acceptedGate = isMerchantOrderAccepted(state)
   const flow = deriveOrderFlow(state)
 
@@ -187,14 +191,21 @@ export function buildOrderStatusTimeline(
   }
   const payment: StageSpec = {
     key: "payment",
-    title: "Payment received",
-    subtitle:
-      flow === "prepaid"
-        ? "Paid at checkout"
-        : state.invoiceSent
-          ? "Invoice sent to buyer"
-          : "Lightning payment",
-    done: paid,
+    title: paid
+      ? "Payment confirmed"
+      : paymentObserved
+        ? "Payment proof received"
+        : "Payment",
+    subtitle: paid
+      ? "Confirmed by merchant"
+      : paymentObserved
+        ? "Buyer evidence received; verify settlement"
+        : flow === "prepaid"
+          ? "Awaiting checkout payment evidence"
+          : state.invoiceSent
+            ? "Invoice sent to buyer"
+            : "Lightning payment",
+    done: paymentObserved,
   }
   const accepted: StageSpec = {
     key: "accepted",

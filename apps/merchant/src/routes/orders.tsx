@@ -899,6 +899,7 @@ function OrdersPage() {
   const merchantOrderState = {
     status: selected?.status ?? null,
     paid: orderSummary?.paymentConfirmed ?? false,
+    paymentObserved: orderSummary?.paymentProofReceived ?? false,
     accepted: orderSummary?.accepted ?? false,
     invoiceSent: orderSummary?.invoiceSent ?? false,
   }

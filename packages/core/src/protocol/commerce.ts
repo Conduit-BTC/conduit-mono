@@ -2249,6 +2249,68 @@ async function fetchParsedOrderMessages(
   }
 }
 
+const BUYER_AUTHORED_TYPES = new Set(["order", "payment_proof"])
+const MERCHANT_AUTHORED_TYPES = new Set([
+  "payment_request",
+  "status_update",
+  "shipping_update",
+  "receipt",
+])
+
+interface PrincipalResolution {
+  role: "buyer" | "merchant"
+  counterpartyPubkey: string
+}
+
+function resolvePrincipal(
+  bucket: ParsedOrderMessage[],
+  principalPubkey: string
+): PrincipalResolution | null {
+  const order = bucket.find((message) => message.type === "order")
+  if (order) {
+    if (order.senderPubkey === principalPubkey) {
+      return { role: "buyer", counterpartyPubkey: order.recipientPubkey }
+    }
+    if (order.recipientPubkey === principalPubkey) {
+      return { role: "merchant", counterpartyPubkey: order.senderPubkey }
+    }
+    return null
+  }
+
+  const roles = new Set<"buyer" | "merchant">()
+  const counterparties = new Set<string>()
+  for (const message of bucket) {
+    let role: "buyer" | "merchant" | null = null
+    let counterpartyPubkey: string | null = null
+    if (BUYER_AUTHORED_TYPES.has(message.type)) {
+      if (message.senderPubkey === principalPubkey) {
+        role = "buyer"
+        counterpartyPubkey = message.recipientPubkey
+      } else if (message.recipientPubkey === principalPubkey) {
+        role = "merchant"
+        counterpartyPubkey = message.senderPubkey
+      }
+    } else if (MERCHANT_AUTHORED_TYPES.has(message.type)) {
+      if (message.senderPubkey === principalPubkey) {
+        role = "merchant"
+        counterpartyPubkey = message.recipientPubkey
+      } else if (message.recipientPubkey === principalPubkey) {
+        role = "buyer"
+        counterpartyPubkey = message.senderPubkey
+      }
+    }
+    if (!role || !counterpartyPubkey || counterpartyPubkey === principalPubkey)
+      continue
+    roles.add(role)
+    counterparties.add(counterpartyPubkey)
+    if (roles.size > 1 || counterparties.size > 1) return null
+  }
+
+  const role = [...roles][0]
+  const counterpartyPubkey = [...counterparties][0]
+  return role && counterpartyPubkey ? { role, counterpartyPubkey } : null
+}
+
 function buildBuyerConversationSummaries(
   messages: ParsedOrderMessage[],
   buyerPubkey: string
@@ -2267,9 +2329,9 @@ function buildBuyerConversationSummaries(
     const latest = bucket[bucket.length - 1]
     if (!latest) continue
 
-    const orderMessage = bucket.find((message) => message.type === "order")
-    if (!orderMessage || orderMessage.senderPubkey !== buyerPubkey) continue
-    const merchantPubkey = orderMessage.recipientPubkey
+    const principal = resolvePrincipal(bucket, buyerPubkey)
+    if (!principal || principal.role !== "buyer") continue
+    const merchantPubkey = principal.counterpartyPubkey
 
     const latestStatus = [...bucket]
       .reverse()
@@ -2323,10 +2385,9 @@ function buildMerchantConversationSummaries(
     const latest = bucket[bucket.length - 1]
     if (!latest) continue
 
-    const orderMessage = bucket.find((message) => message.type === "order")
-    if (!orderMessage || orderMessage.recipientPubkey !== merchantPubkey)
-      continue
-    const buyerPubkey = orderMessage.senderPubkey
+    const principal = resolvePrincipal(bucket, merchantPubkey)
+    if (!principal || principal.role !== "merchant") continue
+    const buyerPubkey = principal.counterpartyPubkey
 
     const latestStatus = [...bucket]
       .reverse()

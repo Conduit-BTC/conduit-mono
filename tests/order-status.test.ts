@@ -121,6 +121,9 @@ describe("deriveOrderFlow", () => {
       deriveOrderFlow({ status: "paid", paid: true, invoiceSent: true })
     ).toBe("invoice")
     expect(deriveOrderFlow({ status: "pending" })).toBe("invoice")
+    expect(deriveOrderFlow({ status: "pending", paymentObserved: true })).toBe(
+      "prepaid"
+    )
   })
 })
 
@@ -154,6 +157,24 @@ describe("getMerchantOrderActions", () => {
 
   it("gates shipping on payment (accepted but unpaid → cancel only)", () => {
     expect(getMerchantOrderActions({ status: "accepted" })).toEqual([
+      { status: "cancelled", label: "Cancel order", kind: "destructive" },
+    ])
+  })
+
+  it("shows buyer payment evidence without unlocking shipping", () => {
+    const state = {
+      status: "accepted",
+      accepted: true,
+      paymentObserved: true,
+      paid: false,
+    }
+    expect(
+      buildOrderStatusTimeline(state).find((step) => step.key === "payment")
+    ).toMatchObject({
+      title: "Payment proof received",
+      status: "complete",
+    })
+    expect(getMerchantOrderActions(state)).toEqual([
       { status: "cancelled", label: "Cancel order", kind: "destructive" },
     ])
   })
