@@ -34,6 +34,7 @@ import {
   useProfile,
   type AddressValidityResult,
   type OrderAddressValidity,
+  type OrderGuestContact,
   type OrderLifecycleItem,
   type OrderShippingZoneEligibility,
   type Profile,
@@ -56,6 +57,7 @@ import {
   getMerchantDisplayName,
   getProfileNip05,
 } from "../components/MerchantIdentity"
+import { SignerSwitch } from "../components/SignerSwitch"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
@@ -64,7 +66,6 @@ import {
   type WalletBalanceState,
   type WalletBudgetState,
 } from "../hooks/useWallet"
-import { requireAuth } from "../lib/auth"
 import {
   getCartShippingDestinationEligibility,
   getCartShippingOptionsAvailable,
@@ -82,16 +83,24 @@ import {
   getShippingRegionRequirement,
   getValidationErrorFields,
   sanitizeShippingPhoneInput,
+  SHIPPING_EMAIL_ERROR_ID,
   SHIPPING_PHONE_ERROR_ID,
   SHIPPING_PHONE_HELP_COPY,
   SHIPPING_PHONE_HELP_ID,
   shippingFieldLabel,
+  validateGuestContactFields,
+  validateGuestShippingFields,
   validateShippingFields,
   type ShippingFormState,
   type ShippingFieldKey,
   type ShippingCheckoutState,
   type ShippingValidationError,
 } from "../lib/checkout-validation"
+import {
+  clearCheckoutShippingSession,
+  readCheckoutShippingSession,
+  writeCheckoutShippingSession,
+} from "../lib/checkout-session"
 import {
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
@@ -105,8 +114,12 @@ import {
 import { isAnonZapSignerConfigured } from "../lib/anon-zap-signer"
 import {
   getDeliveryNotice,
-  publishWrappedToMerchantAndSelf,
+  publishBuyerOrderMessage,
 } from "../lib/order-publish"
+import {
+  clearSessionGuestOrderSigningIdentity,
+  createSessionGuestOrderSigningIdentity,
+} from "../lib/guest-order-identity"
 import {
   runOrderPayment,
   type OrderPaymentContext,
@@ -129,28 +142,11 @@ type CheckoutSearch = {
 type CheckoutTelemetryMode = "checkout" | "order_first" | CheckoutZapMode
 
 /** Priced "ok" intent — the only shape we proceed to payment with. */
-// Shipping is session-scoped: pre-fills within a browser session, never
-// persisted permanently to localStorage.
-const CHECKOUT_STORAGE_KEY = "conduit:checkout-shipping"
 const CHECKOUT_PRICE_REFRESH_TIMEOUT_MS = 5_000
 const CHECKOUT_PRICE_REFRESH_RETRY_MS = 30_000
 
 type CheckoutPricingRefreshState =
   "ready" | "refreshing" | "stale_retryable" | "unavailable"
-
-const DEFAULT_SHIPPING_FORM: ShippingFormState = {
-  firstName: "",
-  lastName: "",
-  street: "",
-  line2: "",
-  city: "",
-  state: "",
-  postalCode: "",
-  country: "US",
-  name: "",
-  phone: "",
-  email: "",
-}
 
 const SHIPPING_VALIDATION_FIELDS: ShippingFieldKey[] = [
   "country",
@@ -179,35 +175,9 @@ const COUNTRY_COMBOBOX_OPTIONS = SHIPPING_COUNTRIES.map((country) => ({
 
 // ─── Session storage ──────────────────────────────────────────────────────────
 
-function readSessionShipping(): ShippingFormState {
-  if (typeof window === "undefined") return DEFAULT_SHIPPING_FORM
-  try {
-    const raw = sessionStorage.getItem(CHECKOUT_STORAGE_KEY)
-    if (!raw) return DEFAULT_SHIPPING_FORM
-    return {
-      ...DEFAULT_SHIPPING_FORM,
-      ...(JSON.parse(raw) as Partial<ShippingFormState>),
-    }
-  } catch {
-    return DEFAULT_SHIPPING_FORM
-  }
-}
-
-function writeSessionShipping(value: ShippingFormState): void {
-  if (typeof window === "undefined") return
-  try {
-    sessionStorage.setItem(CHECKOUT_STORAGE_KEY, JSON.stringify(value))
-  } catch {
-    // ignore
-  }
-}
-
 // ─── Route ────────────────────────────────────────────────────────────────────
 
 export const Route = createFileRoute("/checkout")({
-  beforeLoad: () => {
-    requireAuth()
-  },
   validateSearch: (search: Record<string, unknown>): CheckoutSearch => ({
     merchant:
       typeof search.merchant === "string"
@@ -653,7 +623,7 @@ function OrderSummary({
 // ─── Checkout page ────────────────────────────────────────────────────────────
 
 function CheckoutPage() {
-  const { pubkey } = useAuth()
+  const { pubkey, status: authStatus } = useAuth()
   const cart = useCart()
   const search = Route.useSearch()
   const navigate = useNavigate()
@@ -662,7 +632,7 @@ function CheckoutPage() {
 
   const [step, setStep] = useState<CheckoutStep>("shipping")
   const [shipping, setShipping] = useState<ShippingFormState>(() =>
-    readSessionShipping()
+    readCheckoutShippingSession()
   )
   const [note, setNote] = useState("")
   const [error, setError] = useState<string | null>(null)
@@ -679,6 +649,7 @@ function CheckoutPage() {
   const [paidNotice, setPaidNotice] = useState<string | null>(null)
   // Lightning-strike click feedback while the order publishes before navigation.
   const [overlayPlaying, setOverlayPlaying] = useState(false)
+  const [connectOpen, setConnectOpen] = useState(false)
   // Synchronous re-entrancy guard for the payment flow. A `step`/`disabled`
   // check can't prevent a double-click because the state change doesn't commit
   // until React re-renders; this ref flips synchronously inside the click's
@@ -690,7 +661,6 @@ function CheckoutPage() {
     ? "anonymous_public_zap"
     : "public_zap_as_shopper"
   const [zapMode, setZapMode] = useState<CheckoutZapMode>(defaultPublicZapMode)
-  const zapVisibility = getCheckoutZapVisibility(zapMode)
   const [zapContent, setZapContent] = useState("")
   const [zapContentEdited, setZapContentEdited] = useState(false)
   const [weblnAvailable, setWeblnAvailable] = useState(false)
@@ -701,10 +671,10 @@ function CheckoutPage() {
   const btcUsdRate = btcUsdRateQuery.data ?? null
   const refetchBtcUsdRate = btcUsdRateQuery.refetch
   const btcUsdRateIsFetching = btcUsdRateQuery.isFetching
-  const liveShippingErrors = useMemo(
-    () => validateShippingFields(shipping),
-    [shipping]
-  )
+  const signerConnected = authStatus === "connected" && !!pubkey
+  const signedBuyerPubkey = signerConnected ? pubkey : null
+  const authPending = authStatus === "restoring" || authStatus === "connecting"
+  const isGuestCheckout = !signerConnected && !authPending
 
   // LNURL probe state
   const [lnurlPayAvailable, setLnurlPayAvailable] = useState(false)
@@ -744,6 +714,14 @@ function CheckoutPage() {
   const anonZapModeDescription = !anonZapSignerAvailable
     ? "Anon Conduit Shopper signing is not configured yet."
     : publicZapModeDescription
+  const guestZapMode: CheckoutZapMode =
+    anonZapSignerAvailable &&
+    lnurlAllowsNostr &&
+    publicZapPolicy.publicZapsAllowed
+      ? "anonymous_public_zap"
+      : "private_checkout"
+  const selectedZapMode = isGuestCheckout ? guestZapMode : zapMode
+  const zapVisibility = getCheckoutZapVisibility(selectedZapMode)
 
   // True when every item in the cart is a digital product (no shipping needed)
   const isAllDigital = useMemo(
@@ -752,6 +730,15 @@ function CheckoutPage() {
       checkoutItems.every((item) => item.format === "digital"),
     [checkoutItems]
   )
+  const requiresCheckoutDetailsStep = !isAllDigital || isGuestCheckout
+  const liveShippingErrors = useMemo(() => {
+    if (isAllDigital) {
+      return isGuestCheckout ? validateGuestContactFields(shipping) : []
+    }
+    return isGuestCheckout
+      ? validateGuestShippingFields(shipping)
+      : validateShippingFields(shipping)
+  }, [isAllDigital, isGuestCheckout, shipping])
 
   const physicalItemsMissingShippingZone =
     hasPhysicalItemsMissingShippingZone(checkoutItems)
@@ -795,12 +782,9 @@ function CheckoutPage() {
     () => checkoutItems.some((item) => !getPriceSats(item, btcUsdRate)),
     [btcUsdRate, checkoutItems]
   )
-  const shippingSubmitDisabled =
-    !isAllDigital && (hasUnpricedCheckoutItems || liveShippingErrors.length > 0)
-
   const merchantTrust = useMerchantTrustContext({
     merchantPubkey: selectedMerchant ?? null,
-    viewerPubkey: pubkey,
+    viewerPubkey: signedBuyerPubkey,
   })
   const merchantProfile = merchantTrust.profile
   const merchantLud16 = merchantProfile?.lud16
@@ -826,26 +810,28 @@ function CheckoutPage() {
       buildDefaultZapContent({
         items: checkoutItems,
         merchantName,
-        mode: zapMode,
+        mode: selectedZapMode,
       })
     )
-  }, [checkoutItems, merchantName, zapContentEdited, zapMode])
+  }, [checkoutItems, merchantName, selectedZapMode, zapContentEdited])
 
   useEffect(() => {
+    if (isGuestCheckout) return
     if (
       !publicZapPolicy.publicZapsAllowed &&
       isCheckoutPublicZapMode(zapMode)
     ) {
       setZapMode("private_checkout")
     }
-  }, [publicZapPolicy.publicZapsAllowed, zapMode])
+  }, [isGuestCheckout, publicZapPolicy.publicZapsAllowed, zapMode])
 
   useEffect(() => {
+    if (isGuestCheckout) return
     if (zapMode === "anonymous_public_zap" && !anonZapSignerAvailable) {
       setZapMode("public_zap_as_shopper")
       setZapContentEdited(false)
     }
-  }, [anonZapSignerAvailable, zapMode])
+  }, [anonZapSignerAvailable, isGuestCheckout, zapMode])
 
   useEffect(() => {
     if (!zapContentEditable && zapContentEdited) {
@@ -900,10 +886,11 @@ function CheckoutPage() {
   }, [merchantLud16])
 
   useEffect(() => {
+    if (isGuestCheckout) return
     if (lnurlPayAvailable && !lnurlAllowsNostr) {
       setZapMode("private_checkout")
     }
-  }, [lnurlAllowsNostr, lnurlPayAvailable])
+  }, [isGuestCheckout, lnurlAllowsNostr, lnurlPayAvailable])
 
   const pricingPreview = useMemo(
     () => buildCheckoutPricingIntent(checkoutItems, btcUsdRate, Date.now()),
@@ -1024,7 +1011,7 @@ function CheckoutPage() {
     wallet.status !== "error" &&
     !walletPaymentConstraint
   const canAttemptLightningPayment = canTrySavedNwcWallet || weblnAvailable
-  const requiresPublicZap = isCheckoutPublicZapMode(zapMode)
+  const requiresPublicZap = isCheckoutPublicZapMode(selectedZapMode)
   const lnurlReadyForSelectedPayment =
     getLnurlReadyForCheckoutPayment({
       visibility: zapVisibility,
@@ -1108,7 +1095,7 @@ function CheckoutPage() {
   })()
 
   const visibleCheckoutStep: CheckoutStep =
-    isAllDigital && step === "shipping" ? "payment" : step
+    !requiresCheckoutDetailsStep && step === "shipping" ? "payment" : step
 
   function recordCheckoutStepResult(input: {
     checkoutMode: CheckoutTelemetryMode
@@ -1176,6 +1163,17 @@ function CheckoutPage() {
     })
   }
 
+  function validateCheckoutDetails(
+    nextShipping: ShippingFormState
+  ): ShippingValidationError[] {
+    if (isAllDigital) {
+      return isGuestCheckout ? validateGuestContactFields(nextShipping) : []
+    }
+    return isGuestCheckout
+      ? validateGuestShippingFields(nextShipping)
+      : validateShippingFields(nextShipping)
+  }
+
   function updateShipping<K extends keyof ShippingFormState>(
     field: K,
     value: ShippingFormState[K]
@@ -1186,8 +1184,8 @@ function CheckoutPage() {
         : value
     const next = { ...shipping, [field]: normalizedValue }
     setShipping(next)
-    writeSessionShipping(next)
-    setShippingErrors(validateShippingFields(next))
+    writeCheckoutShippingSession(next)
+    setShippingErrors(validateCheckoutDetails(next))
     if (isValidationField(field)) {
       markShippingFieldTouched(field)
     }
@@ -1246,12 +1244,12 @@ function CheckoutPage() {
     }
   }, [error, shippingAttempted, shippingErrors.length])
 
-  // Skip shipping step for all-digital carts
+  // Skip checkout details only when no shipping address or guest contact is needed.
   useEffect(() => {
-    if (isAllDigital && step === "shipping") {
+    if (!requiresCheckoutDetailsStep && step === "shipping") {
       setStep("payment")
     }
-  }, [isAllDigital, step])
+  }, [requiresCheckoutDetailsStep, step])
 
   // ─── Build shipping address from form state ──────────────────────────────
 
@@ -1276,6 +1274,18 @@ function CheckoutPage() {
       shipping.email.trim() ? `Email: ${shipping.email.trim()}` : undefined,
     ].filter(Boolean) as string[]
     return lines.length > 0 ? lines.join("\n") : undefined
+  }
+
+  function buildBuyerNote(): string | undefined {
+    return note.trim() || undefined
+  }
+
+  function buildGuestContact(): OrderGuestContact | undefined {
+    if (!isGuestCheckout) return undefined
+    const email = shipping.email.trim()
+    const phone = shipping.phone.trim()
+    if (!email || !phone) return undefined
+    return { email, phone }
   }
 
   /**
@@ -1355,7 +1365,8 @@ function CheckoutPage() {
   // ─── Order-first path (existing flow) ───────────────────────────────────
 
   async function placeOrder(): Promise<void> {
-    if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
+    if (!signedBuyerPubkey || !selectedMerchant || checkoutItems.length === 0)
+      return
     if (paymentInFlightRef.current) return
     paymentInFlightRef.current = true
 
@@ -1399,7 +1410,8 @@ function CheckoutPage() {
       const payload = {
         id: orderId,
         merchantPubkey: selectedMerchant,
-        buyerPubkey: pubkey,
+        buyerPubkey: signedBuyerPubkey,
+        buyerIdentityKind: "signed_in" as const,
         items,
         subtotal: total,
         currency,
@@ -1436,10 +1448,16 @@ function CheckoutPage() {
       setStep("sending")
 
       const [delivery] = await Promise.all([
-        publishWrappedToMerchantAndSelf(rumor, ndk, selectedMerchant, pubkey),
+        publishBuyerOrderMessage(
+          rumor,
+          ndk,
+          selectedMerchant,
+          signedBuyerPubkey
+        ),
         new Promise((resolve) => window.setTimeout(resolve, 900)),
       ])
       orderDelivered = true
+      clearCheckoutShippingSession()
       const deliveryNotice = getDeliveryNotice(delivery, "Order")
       if (deliveryNotice) setPaidNotice(deliveryNotice)
 
@@ -1450,7 +1468,8 @@ function CheckoutPage() {
       const addressValidity = computeAddressValidity(shippingAddress)
       await createOrderLifecycle({
         orderId,
-        buyerPubkey: pubkey,
+        buyerPubkey: signedBuyerPubkey,
+        buyerIdentityKind: "signed_in",
         merchantPubkey: selectedMerchant,
         checkoutMode: "pay_later",
         merchantLightningAddress: merchantLud16 ?? undefined,
@@ -1576,24 +1595,27 @@ function CheckoutPage() {
    * Orders (CND-120).
    */
   async function payNow(): Promise<void> {
-    if (!pubkey || !selectedMerchant || checkoutItems.length === 0) return
+    if (!selectedMerchant || checkoutItems.length === 0) return
+    if (!signedBuyerPubkey && !isGuestCheckout) return
+    const checkoutMode = selectedZapMode
     let publishedOrderId: string | null = null
     let publishedTotalSats: number | null = null
     let orderDelivered = false
+    let guestOrderIdToClear: string | null = null
 
     const webLnAvailableNow = hasWebLN()
     if (webLnAvailableNow !== weblnAvailable)
       setWeblnAvailable(webLnAvailableNow)
     if (!merchantLud16) {
       recordCheckoutStepResult({
-        checkoutMode: zapMode,
+        checkoutMode,
         rail: "lightning",
         status: "blocked",
         stepName: "direct_payment",
       })
       recordCheckoutResult({
         amountSats: total,
-        checkoutMode: zapMode,
+        checkoutMode,
         rail: "lightning",
         status: "blocked",
       })
@@ -1610,7 +1632,7 @@ function CheckoutPage() {
     setStep("sending")
     recordCheckoutStepResult({
       amountSats: total,
-      checkoutMode: zapMode,
+      checkoutMode,
       status: "started",
       stepName: "direct_payment",
     })
@@ -1661,6 +1683,7 @@ function CheckoutPage() {
         methods: wallet.info?.methods,
       })
       const shouldTrySavedNwcWallet =
+        !isGuestCheckout &&
         !!wallet.connection &&
         wallet.status !== "unsupported" &&
         wallet.status !== "error" &&
@@ -1669,20 +1692,36 @@ function CheckoutPage() {
       const orderId = crypto.randomUUID()
       publishedOrderId = orderId
       publishedTotalSats = pricingIntent.totalSats
+      const guestIdentity = signedBuyerPubkey
+        ? null
+        : createSessionGuestOrderSigningIdentity(orderId, selectedMerchant)
+      guestOrderIdToClear = guestIdentity ? orderId : null
+      const buyerPubkey = signedBuyerPubkey ?? guestIdentity?.pubkey
+      if (!buyerPubkey) throw new Error("Buyer order identity is unavailable.")
+      const buyerIdentityKind = guestIdentity
+        ? ("guest_ephemeral" as const)
+        : ("signed_in" as const)
+      const guestContact = buildGuestContact()
+      if (guestIdentity && !guestContact) {
+        throw new Error("Phone and email are required for guest checkout.")
+      }
+      const orderCreatedAt = guestIdentity?.createdAt ?? Date.now()
       const currency = "SATS"
       const ndk = getNdk()
       const orderPayload = {
         id: orderId,
         merchantPubkey: selectedMerchant,
-        buyerPubkey: pubkey,
+        buyerPubkey,
+        buyerIdentityKind,
         items: pricingIntent.items,
         subtotal: pricingIntent.totalSats,
         currency,
         shippingCostSats: pricingIntent.shippingCost.totalSats,
         shippingCostStatus: pricingIntent.shippingCost.status,
         shippingAddress,
-        note: buildContactNote(),
-        createdAt: Date.now(),
+        guestContact,
+        note: guestIdentity ? buildBuyerNote() : buildContactNote(),
+        createdAt: orderCreatedAt,
         pricingQuote: pricingIntent.quote,
       }
 
@@ -1705,24 +1744,28 @@ function CheckoutPage() {
       orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
       orderRumor.content = JSON.stringify(orderPayload)
 
-      const orderDelivery = await publishWrappedToMerchantAndSelf(
+      const orderDelivery = await publishBuyerOrderMessage(
         orderRumor,
         ndk,
         selectedMerchant,
-        pubkey
+        guestIdentity ?? buyerPubkey
       )
       orderDelivered = true
+      clearCheckoutShippingSession()
       const orderDeliveryNotice = getDeliveryNotice(orderDelivery, "Order")
 
-      const canAutoPay = shouldTrySavedNwcWallet || webLnAvailableNow
+      const canAutoPay =
+        !guestIdentity && (shouldTrySavedNwcWallet || webLnAvailableNow)
       // The order is now durably with the merchant. Persist the lifecycle so
       // Orders can render it immediately, then hand payment to the service.
       await createOrderLifecycle({
         orderId,
-        buyerPubkey: pubkey,
+        createdAt: orderCreatedAt,
+        buyerPubkey,
+        buyerIdentityKind,
         merchantPubkey: selectedMerchant,
-        checkoutMode: canAutoPay ? zapMode : "external_wallet",
-        publicZapSigner: getCheckoutPublicZapSigner(zapMode) ?? undefined,
+        checkoutMode: canAutoPay ? checkoutMode : "external_wallet",
+        publicZapSigner: getCheckoutPublicZapSigner(checkoutMode) ?? undefined,
         merchantLightningAddress: merchantLud16,
         items: buildLifecycleItems(pricingIntent.items),
         itemSubtotalSats: pricingIntent.itemSubtotalSats,
@@ -1741,8 +1784,13 @@ function CheckoutPage() {
             }
           : undefined,
         zapContent,
-        shippingAddress: shippingAddress ?? undefined,
-        contactNote: buildContactNote(),
+        // The merchant receives guest fulfillment/contact data inside the
+        // encrypted order. Do not retain another plaintext copy in IndexedDB.
+        shippingAddress: guestIdentity
+          ? undefined
+          : (shippingAddress ?? undefined),
+        contactNote: guestIdentity ? undefined : buildContactNote(),
+        guestContact: undefined,
         addressValidity: addressValidity.status as OrderAddressValidity,
         shippingZoneEligibility,
         orderDeliveryStatus: "sent",
@@ -1756,13 +1804,13 @@ function CheckoutPage() {
       cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
       recordCheckoutSuccess({
         amountSats: pricingIntent.totalSats,
-        checkoutMode: zapMode,
+        checkoutMode,
         rail: "lightning",
         status: "order_sent",
       })
       recordCheckoutResult({
         amountSats: pricingIntent.totalSats,
-        checkoutMode: zapMode,
+        checkoutMode,
         rail: "lightning",
         status: "success",
       })
@@ -1772,15 +1820,17 @@ function CheckoutPage() {
       // appears on Orders (CND-120).
       const serviceCtx: OrderPaymentContext = {
         orderId,
-        buyerPubkey: pubkey,
+        buyerPubkey,
+        buyerIdentity: guestIdentity ?? undefined,
         merchantPubkey: selectedMerchant,
         merchantLud16,
-        zapMode,
+        zapMode: checkoutMode,
         zapContent,
         totalSats: pricingIntent.totalSats,
         totalMsats: pricingIntent.totalMsats,
-        walletConnection: wallet.connection,
-        tryNwc: shouldTrySavedNwcWallet,
+        walletConnection: guestIdentity ? null : wallet.connection,
+        tryNwc: !guestIdentity && shouldTrySavedNwcWallet,
+        tryWebln: !guestIdentity,
       }
 
       try {
@@ -1812,13 +1862,13 @@ function CheckoutPage() {
         paymentInFlightRef.current = false
         recordCheckoutSuccess({
           amountSats: deliveredAmountSats,
-          checkoutMode: zapMode,
+          checkoutMode,
           rail: "lightning",
           status: "order_sent_local_tracking_failed",
         })
         recordCheckoutResult({
           amountSats: deliveredAmountSats,
-          checkoutMode: zapMode,
+          checkoutMode,
           rail: "lightning",
           status: "success_local_tracking_failed",
         })
@@ -1834,16 +1884,19 @@ function CheckoutPage() {
       // so a full retry can't create a duplicate.
       recordCheckoutStepResult({
         amountSats: total,
-        checkoutMode: zapMode,
+        checkoutMode,
         status: "failed",
         stepName: "direct_payment",
       })
       recordCheckoutResult({
         amountSats: total,
-        checkoutMode: zapMode,
+        checkoutMode,
         rail: "lightning",
         status: "failed",
       })
+      if (!orderDelivered && guestOrderIdToClear) {
+        clearSessionGuestOrderSigningIdentity(guestOrderIdToClear)
+      }
       setError(message)
       setStep("payment")
       paymentInFlightRef.current = false
@@ -1866,6 +1919,23 @@ function CheckoutPage() {
       onComplete={() => setOverlayPlaying(false)}
     />
   )
+
+  if (authPending) {
+    return (
+      <div className="flex min-h-[70vh] items-center justify-center">
+        <section className="w-full max-w-xl rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
+          <SpinnerIcon className="mx-auto h-8 w-8 animate-spin text-secondary-400" />
+          <h1 className="mt-5 text-2xl font-semibold text-[var(--text-primary)]">
+            Restoring checkout
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
+            Checking whether this browser has a connected signer before choosing
+            the checkout path.
+          </p>
+        </section>
+      </div>
+    )
+  }
 
   if (step === "sending") {
     return (
@@ -2050,9 +2120,9 @@ function CheckoutPage() {
     <div className="space-y-6">
       <CheckoutBreadcrumb
         current={visibleCheckoutStep === "payment" ? "send-order" : "shipping"}
-        includesShippingStep={!isAllDigital}
+        includesShippingStep={requiresCheckoutDetailsStep}
         onShippingClick={
-          visibleCheckoutStep === "payment" && !isAllDigital
+          visibleCheckoutStep === "payment" && requiresCheckoutDetailsStep
             ? () => setStep("shipping")
             : undefined
         }
@@ -2065,12 +2135,14 @@ function CheckoutPage() {
             <>
               <div>
                 <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-                  Shipping
+                  {isAllDigital ? "Contact" : "Shipping"}
                 </h1>
                 <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
-                  Add delivery details for this order. Merchant follow-up and
-                  payment requests are sent through your Nostr account after the
-                  order is sent.
+                  {isGuestCheckout
+                    ? isAllDigital
+                      ? "Add phone and email so the merchant can follow up on this guest order."
+                      : "Add delivery and contact details so the merchant can fulfill this guest order."
+                    : "Add delivery details for this order. Merchant follow-up and payment requests are sent through your Nostr account after the order is sent."}
                 </p>
               </div>
 
@@ -2088,190 +2160,203 @@ function CheckoutPage() {
                     </div>
                   )}
 
-                  {/* Country */}
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="ship-country">
-                      Country <span className="text-error">*</span>
-                    </Label>
-                    <Combobox
-                      id="ship-country"
-                      value={shipping.country}
-                      selectedLabel={getCountryLabel(shipping.country)}
-                      options={COUNTRY_COMBOBOX_OPTIONS}
-                      invalid={fieldInvalid("country")}
-                      onValueChange={(countryCode) =>
-                        updateShipping("country", countryCode)
-                      }
-                      placeholder="Search countries..."
-                      searchPlaceholder="Search countries..."
-                      emptyText="No supported countries found."
-                      triggerClassName="h-10 rounded-xl bg-[var(--surface-elevated)]"
-                      contentClassName="rounded-xl border-[var(--border-overlay)] bg-[var(--surface-overlay)]"
-                    />
-                    {fieldInvalid("country") && (
-                      <p className="text-xs text-error">
-                        {fieldError("country")}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Name */}
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <div className="grid gap-1.5">
-                      <Label htmlFor="ship-first-name">
-                        First name <span className="text-error">*</span>
-                      </Label>
-                      <Input
-                        id="ship-first-name"
-                        value={shipping.firstName}
-                        onChange={(e) =>
-                          updateShipping("firstName", e.target.value)
-                        }
-                        onBlur={() => markShippingFieldTouched("firstName")}
-                        autoComplete="given-name"
-                        placeholder="Jane"
-                        aria-invalid={fieldInvalid("firstName")}
-                        className={fieldClassName("firstName")}
-                      />
-                      {fieldInvalid("firstName") && (
-                        <p className="text-xs text-error">
-                          {fieldError("firstName")}
-                        </p>
-                      )}
-                    </div>
-                    <div className="grid gap-1.5">
-                      <Label htmlFor="ship-last-name">
-                        Last name <span className="text-error">*</span>
-                      </Label>
-                      <Input
-                        id="ship-last-name"
-                        value={shipping.lastName}
-                        onChange={(e) =>
-                          updateShipping("lastName", e.target.value)
-                        }
-                        onBlur={() => markShippingFieldTouched("lastName")}
-                        autoComplete="family-name"
-                        placeholder="Doe"
-                        aria-invalid={fieldInvalid("lastName")}
-                        className={fieldClassName("lastName")}
-                      />
-                      {fieldInvalid("lastName") && (
-                        <p className="text-xs text-error">
-                          {fieldError("lastName")}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Street */}
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="ship-street">
-                      Street address <span className="text-error">*</span>
-                    </Label>
-                    <Input
-                      id="ship-street"
-                      value={shipping.street}
-                      onChange={(e) => updateShipping("street", e.target.value)}
-                      onBlur={() => markShippingFieldTouched("street")}
-                      autoComplete="address-line1"
-                      placeholder="123 Main St"
-                      aria-invalid={fieldInvalid("street")}
-                      className={fieldClassName("street")}
-                    />
-                    {fieldInvalid("street") && (
-                      <p className="text-xs text-error">
-                        {fieldError("street")}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Line 2 */}
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="ship-line2">
-                      Apt, suite, etc. (optional)
-                    </Label>
-                    <Input
-                      id="ship-line2"
-                      value={shipping.line2}
-                      onChange={(e) => updateShipping("line2", e.target.value)}
-                      autoComplete="address-line2"
-                      placeholder="Unit 4B"
-                    />
-                  </div>
-
-                  {/* Postal / City / State */}
-                  <div className="grid gap-4 sm:grid-cols-3">
-                    <div className="grid gap-1.5">
-                      <Label htmlFor="ship-postal">
-                        Postal/ZIP code <span className="text-error">*</span>
-                      </Label>
-                      <Input
-                        id="ship-postal"
-                        value={shipping.postalCode}
-                        onChange={(e) =>
-                          updateShipping("postalCode", e.target.value)
-                        }
-                        onBlur={() => markShippingFieldTouched("postalCode")}
-                        autoComplete="postal-code"
-                        placeholder="78701"
-                        aria-invalid={fieldInvalid("postalCode")}
-                        className={fieldClassName("postalCode")}
-                      />
-                      {fieldInvalid("postalCode") && (
-                        <p className="text-xs text-error">
-                          {fieldError("postalCode")}
-                        </p>
-                      )}
-                    </div>
-                    <div className="grid gap-1.5">
-                      <Label htmlFor="ship-city">
-                        City <span className="text-error">*</span>
-                      </Label>
-                      <Input
-                        id="ship-city"
-                        value={shipping.city}
-                        onChange={(e) => updateShipping("city", e.target.value)}
-                        onBlur={() => markShippingFieldTouched("city")}
-                        autoComplete="address-level2"
-                        placeholder="Austin"
-                        aria-invalid={fieldInvalid("city")}
-                        className={fieldClassName("city")}
-                      />
-                      {fieldInvalid("city") && (
-                        <p className="text-xs text-error">
-                          {fieldError("city")}
-                        </p>
-                      )}
-                    </div>
-                    <div className="grid gap-1.5">
-                      <Label htmlFor="ship-state">
-                        {shippingRegionRequirement.label}
-                        {shippingRegionRequirement.required && (
-                          <>
-                            {" "}
-                            <span className="text-error">*</span>
-                          </>
+                  {!isAllDigital && (
+                    <>
+                      {/* Country */}
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="ship-country">
+                          Country <span className="text-error">*</span>
+                        </Label>
+                        <Combobox
+                          id="ship-country"
+                          value={shipping.country}
+                          selectedLabel={getCountryLabel(shipping.country)}
+                          options={COUNTRY_COMBOBOX_OPTIONS}
+                          invalid={fieldInvalid("country")}
+                          onValueChange={(countryCode) =>
+                            updateShipping("country", countryCode)
+                          }
+                          placeholder="Search countries..."
+                          searchPlaceholder="Search countries..."
+                          emptyText="No supported countries found."
+                          triggerClassName="h-10 rounded-xl bg-[var(--surface-elevated)]"
+                          contentClassName="rounded-xl border-[var(--border-overlay)] bg-[var(--surface-overlay)]"
+                        />
+                        {fieldInvalid("country") && (
+                          <p className="text-xs text-error">
+                            {fieldError("country")}
+                          </p>
                         )}
-                      </Label>
-                      <Input
-                        id="ship-state"
-                        value={shipping.state}
-                        onChange={(e) =>
-                          updateShipping("state", e.target.value)
-                        }
-                        onBlur={() => markShippingFieldTouched("state")}
-                        autoComplete="address-level1"
-                        placeholder="TX"
-                        aria-invalid={fieldInvalid("state")}
-                        className={fieldClassName("state")}
-                      />
-                      {fieldInvalid("state") && (
-                        <p className="text-xs text-error">
-                          {fieldError("state")}
-                        </p>
-                      )}
-                    </div>
-                  </div>
+                      </div>
+
+                      {/* Name */}
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <div className="grid gap-1.5">
+                          <Label htmlFor="ship-first-name">
+                            First name <span className="text-error">*</span>
+                          </Label>
+                          <Input
+                            id="ship-first-name"
+                            value={shipping.firstName}
+                            onChange={(e) =>
+                              updateShipping("firstName", e.target.value)
+                            }
+                            onBlur={() => markShippingFieldTouched("firstName")}
+                            autoComplete="given-name"
+                            placeholder="Jane"
+                            aria-invalid={fieldInvalid("firstName")}
+                            className={fieldClassName("firstName")}
+                          />
+                          {fieldInvalid("firstName") && (
+                            <p className="text-xs text-error">
+                              {fieldError("firstName")}
+                            </p>
+                          )}
+                        </div>
+                        <div className="grid gap-1.5">
+                          <Label htmlFor="ship-last-name">
+                            Last name <span className="text-error">*</span>
+                          </Label>
+                          <Input
+                            id="ship-last-name"
+                            value={shipping.lastName}
+                            onChange={(e) =>
+                              updateShipping("lastName", e.target.value)
+                            }
+                            onBlur={() => markShippingFieldTouched("lastName")}
+                            autoComplete="family-name"
+                            placeholder="Doe"
+                            aria-invalid={fieldInvalid("lastName")}
+                            className={fieldClassName("lastName")}
+                          />
+                          {fieldInvalid("lastName") && (
+                            <p className="text-xs text-error">
+                              {fieldError("lastName")}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Street */}
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="ship-street">
+                          Street address <span className="text-error">*</span>
+                        </Label>
+                        <Input
+                          id="ship-street"
+                          value={shipping.street}
+                          onChange={(e) =>
+                            updateShipping("street", e.target.value)
+                          }
+                          onBlur={() => markShippingFieldTouched("street")}
+                          autoComplete="address-line1"
+                          placeholder="123 Main St"
+                          aria-invalid={fieldInvalid("street")}
+                          className={fieldClassName("street")}
+                        />
+                        {fieldInvalid("street") && (
+                          <p className="text-xs text-error">
+                            {fieldError("street")}
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Line 2 */}
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="ship-line2">
+                          Apt, suite, etc. (optional)
+                        </Label>
+                        <Input
+                          id="ship-line2"
+                          value={shipping.line2}
+                          onChange={(e) =>
+                            updateShipping("line2", e.target.value)
+                          }
+                          autoComplete="address-line2"
+                          placeholder="Unit 4B"
+                        />
+                      </div>
+
+                      {/* Postal / City / State */}
+                      <div className="grid gap-4 sm:grid-cols-3">
+                        <div className="grid gap-1.5">
+                          <Label htmlFor="ship-postal">
+                            Postal/ZIP code{" "}
+                            <span className="text-error">*</span>
+                          </Label>
+                          <Input
+                            id="ship-postal"
+                            value={shipping.postalCode}
+                            onChange={(e) =>
+                              updateShipping("postalCode", e.target.value)
+                            }
+                            onBlur={() =>
+                              markShippingFieldTouched("postalCode")
+                            }
+                            autoComplete="postal-code"
+                            placeholder="78701"
+                            aria-invalid={fieldInvalid("postalCode")}
+                            className={fieldClassName("postalCode")}
+                          />
+                          {fieldInvalid("postalCode") && (
+                            <p className="text-xs text-error">
+                              {fieldError("postalCode")}
+                            </p>
+                          )}
+                        </div>
+                        <div className="grid gap-1.5">
+                          <Label htmlFor="ship-city">
+                            City <span className="text-error">*</span>
+                          </Label>
+                          <Input
+                            id="ship-city"
+                            value={shipping.city}
+                            onChange={(e) =>
+                              updateShipping("city", e.target.value)
+                            }
+                            onBlur={() => markShippingFieldTouched("city")}
+                            autoComplete="address-level2"
+                            placeholder="Austin"
+                            aria-invalid={fieldInvalid("city")}
+                            className={fieldClassName("city")}
+                          />
+                          {fieldInvalid("city") && (
+                            <p className="text-xs text-error">
+                              {fieldError("city")}
+                            </p>
+                          )}
+                        </div>
+                        <div className="grid gap-1.5">
+                          <Label htmlFor="ship-state">
+                            {shippingRegionRequirement.label}
+                            {shippingRegionRequirement.required && (
+                              <>
+                                {" "}
+                                <span className="text-error">*</span>
+                              </>
+                            )}
+                          </Label>
+                          <Input
+                            id="ship-state"
+                            value={shipping.state}
+                            onChange={(e) =>
+                              updateShipping("state", e.target.value)
+                            }
+                            onBlur={() => markShippingFieldTouched("state")}
+                            autoComplete="address-level1"
+                            placeholder="TX"
+                            aria-invalid={fieldInvalid("state")}
+                            className={fieldClassName("state")}
+                          />
+                          {fieldInvalid("state") && (
+                            <p className="text-xs text-error">
+                              {fieldError("state")}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  )}
 
                   {/* Contact */}
                   <div className="border-t border-[var(--border)] pt-5">
@@ -2280,12 +2365,20 @@ function CheckoutPage() {
                         Contact
                       </div>
                       <div className="text-xs text-[var(--text-muted)]">
-                        (optional)
+                        {isGuestCheckout ? "required" : "(optional)"}
                       </div>
                     </div>
                     <div className="mt-4 grid gap-4">
                       <div className="grid gap-1.5">
-                        <Label htmlFor="ship-phone">Phone</Label>
+                        <Label htmlFor="ship-phone">
+                          Phone
+                          {isGuestCheckout && (
+                            <>
+                              {" "}
+                              <span className="text-error">*</span>
+                            </>
+                          )}
+                        </Label>
                         <Input
                           id="ship-phone"
                           type="tel"
@@ -2298,6 +2391,8 @@ function CheckoutPage() {
                           autoComplete="tel"
                           placeholder="+1 555 123 4567"
                           aria-invalid={fieldInvalid("phone")}
+                          aria-required={isGuestCheckout}
+                          required={isGuestCheckout}
                           aria-describedby={getShippingPhoneDescribedBy(
                             fieldInvalid("phone")
                           )}
@@ -2319,7 +2414,15 @@ function CheckoutPage() {
                         )}
                       </div>
                       <div className="grid gap-1.5">
-                        <Label htmlFor="ship-email">Email</Label>
+                        <Label htmlFor="ship-email">
+                          Email
+                          {isGuestCheckout && (
+                            <>
+                              {" "}
+                              <span className="text-error">*</span>
+                            </>
+                          )}
+                        </Label>
                         <Input
                           id="ship-email"
                           type="email"
@@ -2331,10 +2434,20 @@ function CheckoutPage() {
                           autoComplete="email"
                           placeholder="jane@example.com"
                           aria-invalid={fieldInvalid("email")}
+                          aria-required={isGuestCheckout}
+                          aria-describedby={
+                            fieldInvalid("email")
+                              ? SHIPPING_EMAIL_ERROR_ID
+                              : undefined
+                          }
+                          required={isGuestCheckout}
                           className={fieldClassName("email")}
                         />
                         {fieldInvalid("email") && (
-                          <p className="text-xs text-error">
+                          <p
+                            id={SHIPPING_EMAIL_ERROR_ID}
+                            className="text-xs text-error"
+                          >
                             {fieldError("email")}
                           </p>
                         )}
@@ -2390,16 +2503,18 @@ function CheckoutPage() {
 
                   <Button
                     className="mt-2 h-11 w-full text-sm"
-                    disabled={shippingSubmitDisabled}
                     onClick={continueToPayment}
                   >
                     Continue to Send Order
                   </Button>
 
-                  <p className="text-xs leading-6 text-[var(--text-muted)]">
-                    Your order details will be sent to the merchant through your
-                    signed Nostr account so they can follow up with payment and
-                    fulfillment.
+                  <p
+                    className="text-xs leading-6 text-[var(--text-muted)]"
+                    role={isGuestCheckout ? "note" : undefined}
+                  >
+                    {isGuestCheckout
+                      ? "Your order details will be sent privately with a temporary key that this client uses only for this order and its payment report. Keep this tab open until the payment is reported; merchant follow-up uses the required phone and email contact details."
+                      : "Your order details will be sent to the merchant through your signed Nostr account so they can follow up with payment and fulfillment."}
                   </p>
                 </div>
               </div>
@@ -2414,13 +2529,15 @@ function CheckoutPage() {
                   Send Order
                 </h1>
                 <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
-                  {fastEligible
-                    ? wallet.status === "pay-capable"
-                      ? "Your wallet is connected and ready. Zap out now, or send the order first and pay later."
-                      : "Zap out is available for this merchant, or you can send the order first and pay later."
-                    : pricingOnlyFastCheckoutBlocker
-                      ? "Conduit is refreshing the price conversion before offering zap out. You can still send the order first."
-                      : "Send the order to the merchant first. They can confirm shipping and reply with payment details."}
+                  {isGuestCheckout
+                    ? "Send the order with a temporary guest key, then pay the Lightning invoice with your wallet."
+                    : fastEligible
+                      ? wallet.status === "pay-capable"
+                        ? "Your wallet is connected and ready. Zap out now, or send the order first and pay later."
+                        : "Zap out is available for this merchant, or you can send the order first and pay later."
+                      : pricingOnlyFastCheckoutBlocker
+                        ? "Conduit is refreshing the price conversion before offering zap out. You can still send the order first."
+                        : "Send the order to the merchant first. They can confirm shipping and reply with payment details."}
                 </p>
               </div>
 
@@ -2436,9 +2553,10 @@ function CheckoutPage() {
                       </div>
                       <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
                         This merchant cart contains only digital products, so no
-                        shipping address is needed. Merchant follow-up still
-                        happens through your Nostr account after the order is
-                        sent.
+                        shipping address is needed.{" "}
+                        {isGuestCheckout
+                          ? "The merchant will use your required phone and email contact details for follow-up."
+                          : "Merchant follow-up happens through the order thread after the order is sent."}
                       </p>
                     </div>
                   </div>
@@ -2480,29 +2598,35 @@ function CheckoutPage() {
                     <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
                       {pricingOnlyFastCheckoutBlocker
                         ? "The cart total is visible, but direct payment needs a fresh conversion before funds can move. Conduit is refreshing it now."
-                        : walletPaymentConstraint
-                          ? zapMode === "anonymous_public_zap"
-                            ? "Conduit will deliver the private order and request an Anon-signed public zap invoice. Your connected wallet will be skipped for this total."
-                            : zapMode === "public_zap_as_shopper"
-                              ? "Conduit will deliver the order and request a shopper-signed public zap invoice. Your connected wallet will be skipped for this total."
-                              : "Conduit will deliver the order and request a private LNURL invoice. Your connected wallet will be skipped for this total."
-                          : zapMode === "anonymous_public_zap"
-                            ? "Conduit will deliver the private order, request an Anon-signed public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."
-                            : zapMode === "public_zap_as_shopper"
-                              ? "Conduit will deliver the order, request a shopper-signed public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."
-                              : "Conduit will deliver the order, request a private LNURL invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."}
+                        : isGuestCheckout
+                          ? selectedZapMode === "anonymous_public_zap"
+                            ? "Conduit will deliver the private order with a guest key and request an Anon-signed public zap invoice. Payment stays in your Lightning wallet."
+                            : "Conduit will deliver the private order with a guest key and request a Lightning invoice. Payment stays in your Lightning wallet."
+                          : walletPaymentConstraint
+                            ? selectedZapMode === "anonymous_public_zap"
+                              ? "Conduit will deliver the private order and request an Anon-signed public zap invoice. Your connected wallet will be skipped for this total."
+                              : selectedZapMode === "public_zap_as_shopper"
+                                ? "Conduit will deliver the order and request a shopper-signed public zap invoice. Your connected wallet will be skipped for this total."
+                                : "Conduit will deliver the order and request a private LNURL invoice. Your connected wallet will be skipped for this total."
+                            : selectedZapMode === "anonymous_public_zap"
+                              ? "Conduit will deliver the private order, request an Anon-signed public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."
+                              : selectedZapMode === "public_zap_as_shopper"
+                                ? "Conduit will deliver the order, request a shopper-signed public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."
+                                : "Conduit will deliver the order, request a private LNURL invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."}
                     </p>
-                    {wallet.connection && !pricingOnlyFastCheckoutBlocker && (
-                      <CheckoutWalletReadiness
-                        balance={wallet.balance}
-                        budget={wallet.budget}
-                        constraint={walletPaymentConstraint}
-                      />
-                    )}
+                    {!isGuestCheckout &&
+                      wallet.connection &&
+                      !pricingOnlyFastCheckoutBlocker && (
+                        <CheckoutWalletReadiness
+                          balance={wallet.balance}
+                          budget={wallet.budget}
+                          constraint={walletPaymentConstraint}
+                        />
+                      )}
                   </div>
                 )}
 
-                {!lnurlProbing && fastEligible && (
+                {!isGuestCheckout && !lnurlProbing && fastEligible && (
                   <div className="mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-5">
                     <div className="text-sm font-medium text-[var(--text-primary)]">
                       Zap visibility
@@ -2618,12 +2742,14 @@ function CheckoutPage() {
                         1. Your order is sent to the merchant through Nostr.
                       </li>
                       <li>
-                        2. The merchant reviews the order and replies with
-                        payment details.
+                        {isGuestCheckout
+                          ? "2. Pay the invoice shown here and send the receipt before closing this tab."
+                          : "2. The merchant reviews the order and replies with payment details."}
                       </li>
                       <li>
-                        3. You track order updates from the merchant in your
-                        order history.
+                        {isGuestCheckout
+                          ? "3. The merchant follows up using the phone and email contact details submitted at checkout."
+                          : "3. You track order updates from the merchant in your order history."}
                       </li>
                     </ul>
                     {fastUnavailableReasons.length > 0 && (
@@ -2684,9 +2810,11 @@ function CheckoutPage() {
                       }}
                     >
                       <LightningIcon className="h-4 w-4" />
-                      {walletPaymentConstraint && !weblnAvailable
+                      {isGuestCheckout
                         ? "Send order and show invoice"
-                        : "Zap out"}
+                        : walletPaymentConstraint && !weblnAvailable
+                          ? "Send order and show invoice"
+                          : "Zap out"}
                     </Button>
                   )}
                   {pricingOnlyFastCheckoutBlocker && !fastEligible && (
@@ -2709,18 +2837,33 @@ function CheckoutPage() {
                     </Button>
                   )}
 
-                  <Button
-                    variant={
-                      fastEligible || pricingOnlyFastCheckoutBlocker
-                        ? "outline"
-                        : "primary"
-                    }
-                    className="h-11 px-5 text-sm"
-                    onClick={placeOrder}
-                  >
-                    <OrderIcon className="h-4 w-4" />
-                    Send order
-                  </Button>
+                  {isGuestCheckout && !fastEligible && (
+                    <Button
+                      variant={
+                        pricingOnlyFastCheckoutBlocker ? "outline" : "primary"
+                      }
+                      className="h-11 px-5 text-sm"
+                      onClick={() => setConnectOpen(true)}
+                    >
+                      <KeyRound className="h-4 w-4" />
+                      Connect signer to send order
+                    </Button>
+                  )}
+
+                  {!isGuestCheckout && (
+                    <Button
+                      variant={
+                        fastEligible || pricingOnlyFastCheckoutBlocker
+                          ? "outline"
+                          : "primary"
+                      }
+                      className="h-11 px-5 text-sm"
+                      onClick={placeOrder}
+                    >
+                      <OrderIcon className="h-4 w-4" />
+                      Send order
+                    </Button>
+                  )}
                 </div>
               </div>
             </>
@@ -2735,6 +2878,11 @@ function CheckoutPage() {
       </div>
 
       {lightningOverlay}
+      <SignerSwitch
+        open={connectOpen}
+        onOpenChange={setConnectOpen}
+        hideTrigger
+      />
     </div>
   )
 }

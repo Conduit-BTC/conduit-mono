@@ -59,6 +59,36 @@ function parsedOrder() {
   )
 }
 
+function parsedGuestOrder() {
+  return parseOrderMessageRumorEvent(
+    rumor({
+      id: "guest-order-event",
+      type: "order",
+      content: JSON.stringify({
+        id: "order-1",
+        merchantPubkey,
+        buyerPubkey,
+        buyerIdentityKind: "guest_ephemeral",
+        items: [
+          {
+            productId: "product-1",
+            quantity: 1,
+            priceAtPurchase: 21,
+            currency: "SATS",
+          },
+        ],
+        subtotal: 21,
+        currency: "SATS",
+        guestContact: {
+          email: "buyer@example.com",
+          phone: "+15551234567",
+        },
+        createdAt: 1,
+      }),
+    }) as never
+  )
+}
+
 describe("payment proof model", () => {
   it("builds strict v1 public zap proofs with a zap request id", () => {
     const proof = buildLightningPaymentProofMessage({
@@ -240,6 +270,16 @@ describe("payment proof model", () => {
     expect(summary.items[0]?.title).toBe("CND26 Public Product Ref Test")
   })
 
+  it("projects structured guest contact into order summaries", () => {
+    const summary = extractOrderSummary([parsedGuestOrder()])
+
+    expect(summary.guestContact).toEqual({
+      email: "buyer@example.com",
+      phone: "+15551234567",
+    })
+    expect(summary.buyerIdentityKind).toBe("guest_ephemeral")
+  })
+
   it("requires concrete payment evidence before proof messages affect payment summaries", () => {
     const order = parsedOrder()
     const incompleteForeignProof = parseOrderMessageRumorEvent(
@@ -289,6 +329,8 @@ describe("payment proof model", () => {
     ])
     expect(summaryBeforeEvidence.paymentProofReceived).toBe(false)
     expect(summaryBeforeEvidence.paymentProofCount).toBe(0)
+    expect(summaryBeforeEvidence.paymentReportReceived).toBe(false)
+    expect(summaryBeforeEvidence.paymentReportCount).toBe(0)
 
     const summaryAfterEvidence = extractOrderSummary([
       order,
@@ -299,6 +341,79 @@ describe("payment proof model", () => {
     expect(summaryAfterEvidence.paymentProofCount).toBe(1)
     expect(summaryAfterEvidence.paymentProofAmount).toBe(21)
     expect(summaryAfterEvidence.paymentProofCurrency).toBe("SATS")
+    expect(summaryAfterEvidence.paymentReportReceived).toBe(true)
+    expect(summaryAfterEvidence.paymentReportCount).toBe(1)
+    expect(summaryAfterEvidence.paymentReportAmount).toBe(21)
+    expect(summaryAfterEvidence.paymentReportCurrency).toBe("SATS")
+  })
+
+  it("separates external wallet payment reports from strict payment evidence", () => {
+    const order = parsedOrder()
+    const externalReport = parseOrderMessageRumorEvent(
+      rumor({
+        id: "external-payment-report",
+        type: "payment_proof",
+        content: JSON.stringify({
+          version: 1,
+          orderId: "order-1",
+          rail: "lightning",
+          action: "external_invoice",
+          amount: 21,
+          amountMsats: 21_000,
+          currency: "SATS",
+          invoice: "lnbc1invoice",
+          source: "external",
+          verification: {
+            state: "needs_merchant_verification",
+            checks: [],
+          },
+        }),
+      }) as never
+    )
+
+    expect(externalReport.type).toBe("payment_proof")
+    if (externalReport.type !== "payment_proof") return
+
+    expect(hasPaymentProofEvidence(externalReport.payload)).toBe(false)
+
+    const summary = extractOrderSummary([order, externalReport])
+    expect(summary.paymentProofReceived).toBe(false)
+    expect(summary.paymentProofCount).toBe(0)
+    expect(summary.paymentReportReceived).toBe(true)
+    expect(summary.paymentReportCount).toBe(1)
+    expect(summary.paymentReportAmount).toBe(21)
+    expect(summary.paymentReportCurrency).toBe("SATS")
+  })
+
+  it("recognizes legacy external-source reports emitted before external_invoice action", () => {
+    const order = parsedOrder()
+    const legacyExternalReport = parseOrderMessageRumorEvent(
+      rumor({
+        id: "legacy-external-payment-report",
+        type: "payment_proof",
+        content: JSON.stringify({
+          version: 1,
+          orderId: "order-1",
+          rail: "lightning",
+          action: "private_checkout",
+          amount: 21,
+          amountMsats: 21_000,
+          currency: "SATS",
+          invoice: "lnbc1invoice",
+          source: "external",
+        }),
+      }) as never
+    )
+
+    expect(legacyExternalReport.type).toBe("payment_proof")
+    if (legacyExternalReport.type !== "payment_proof") return
+
+    expect(hasPaymentProofEvidence(legacyExternalReport.payload)).toBe(false)
+
+    const summary = extractOrderSummary([order, legacyExternalReport])
+    expect(summary.paymentProofReceived).toBe(false)
+    expect(summary.paymentReportReceived).toBe(true)
+    expect(summary.paymentReportCount).toBe(1)
   })
 
   it("does not count disputed or failed proof claims as payment evidence", () => {

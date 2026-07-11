@@ -4,6 +4,8 @@
  */
 import { describe, expect, it, mock, afterEach } from "bun:test"
 import {
+  validateGuestContactFields,
+  validateGuestShippingFields,
   validateShippingFields,
   isFastCheckoutEligible,
   getFastCheckoutUnavailableReasons,
@@ -56,7 +58,10 @@ import {
   parseShippingOptionEvent,
 } from "../packages/core/src/protocol/shipping"
 import { parseProductEvent } from "../packages/core/src/protocol/products"
-import { paymentProofMessageSchema } from "../packages/core/src/schemas"
+import {
+  orderSchema,
+  paymentProofMessageSchema,
+} from "../packages/core/src/schemas"
 
 const FAKE_PUBKEY = "a".repeat(64)
 const FAKE_SECRET = "b".repeat(64)
@@ -282,6 +287,46 @@ describe("validateShippingFields", () => {
 })
 
 // ─── getShippingStepBlockingMessage ───────────────────────────────────────────
+
+describe("guest checkout contact validation", () => {
+  it("requires phone and email for guest contact-only checkout", () => {
+    const errors = validateGuestContactFields(validShipping())
+
+    expect(errors.some((e) => e.field === "phone")).toBe(true)
+    expect(errors.some((e) => e.field === "email")).toBe(true)
+    expect(errors.some((e) => e.field === "street")).toBe(false)
+  })
+
+  it("keeps guest contact-only checkout format validation", () => {
+    const errors = validateGuestContactFields(
+      validShipping({ phone: "abc", email: "not-an-email" })
+    )
+
+    expect(errors.some((e) => e.field === "phone")).toBe(true)
+    expect(errors.some((e) => e.field === "email")).toBe(true)
+  })
+
+  it("requires guest contact alongside physical shipping fields", () => {
+    const errors = validateGuestShippingFields(
+      validShipping({ street: "", phone: "", email: "" })
+    )
+
+    expect(errors.some((e) => e.field === "street")).toBe(true)
+    expect(errors.some((e) => e.field === "phone")).toBe(true)
+    expect(errors.some((e) => e.field === "email")).toBe(true)
+  })
+
+  it("accepts complete guest contact fields", () => {
+    expect(
+      validateGuestShippingFields(
+        validShipping({
+          phone: "+1 800 555-1234",
+          email: "alice@example.com",
+        })
+      )
+    ).toEqual([])
+  })
+})
 
 describe("getShippingStepBlockingMessage", () => {
   it("blocks unpriced items before moving to Send Order", () => {
@@ -1169,6 +1214,112 @@ describe("checkout payment helpers", () => {
 
 // ─── payment proof payload ──────────────────────────────────────────────────
 
+describe("order payload schema", () => {
+  it("accepts structured guest contact on ephemeral guest orders", () => {
+    const parsed = orderSchema.parse({
+      id: "order-1",
+      merchantPubkey: "merchant",
+      buyerPubkey: "b".repeat(64),
+      buyerIdentityKind: "guest_ephemeral",
+      items: [
+        {
+          productId: "product-1",
+          quantity: 1,
+          priceAtPurchase: 1000,
+          currency: "SATS",
+        },
+      ],
+      subtotal: 1000,
+      currency: "SATS",
+      guestContact: {
+        phone: "+18005551234",
+        email: "alice@example.com",
+      },
+      createdAt: 1_700_000_000_000,
+    })
+
+    expect(parsed.buyerIdentityKind).toBe("guest_ephemeral")
+    expect(parsed.guestContact?.email).toBe("alice@example.com")
+  })
+
+  it("rejects guest orders without the required phone and email", () => {
+    expect(() =>
+      orderSchema.parse({
+        id: "order-guest-missing-contact",
+        merchantPubkey: "merchant",
+        buyerPubkey: "b".repeat(64),
+        buyerIdentityKind: "guest_ephemeral",
+        items: [
+          {
+            productId: "product-1",
+            quantity: 1,
+            priceAtPurchase: 1000,
+            currency: "SATS",
+          },
+        ],
+        subtotal: 1000,
+        currency: "SATS",
+        createdAt: 1_700_000_000_000,
+      })
+    ).toThrow("Guest orders require phone and email contact.")
+  })
+
+  it("keeps guest contact metadata out of signed-in orders", () => {
+    expect(() =>
+      orderSchema.parse({
+        id: "order-signed-in",
+        merchantPubkey: "merchant",
+        buyerPubkey: "b".repeat(64),
+        buyerIdentityKind: "signed_in",
+        items: [
+          {
+            productId: "product-1",
+            quantity: 1,
+            priceAtPurchase: 1000,
+            currency: "SATS",
+          },
+        ],
+        subtotal: 1000,
+        currency: "SATS",
+        guestContact: {
+          phone: "+18005551234",
+          email: "alice@example.com",
+        },
+        createdAt: 1_700_000_000_000,
+      })
+    ).toThrow(
+      "Guest contact metadata requires an explicit ephemeral guest identity."
+    )
+  })
+
+  it("rejects guest contact when the identity marker is omitted", () => {
+    expect(() =>
+      orderSchema.parse({
+        id: "order-unmarked-contact",
+        merchantPubkey: "merchant",
+        buyerPubkey: "b".repeat(64),
+        items: [
+          {
+            productId: "product-1",
+            quantity: 1,
+            priceAtPurchase: 1000,
+            currency: "SATS",
+          },
+        ],
+        subtotal: 1000,
+        currency: "SATS",
+        guestContact: {
+          phone: "+18005551234",
+          email: "alice@example.com",
+        },
+        createdAt: 1_700_000_000_000,
+      })
+    ).toThrow(
+      "Guest contact metadata requires an explicit ephemeral guest identity."
+    )
+  })
+})
+
 describe("payment proof payload", () => {
   it("accepts private checkout proof without a zap request id", () => {
     expect(
@@ -1290,6 +1441,38 @@ describe("payCheckoutInvoice", () => {
       status: "manual_required",
       reason: "No automatic Lightning payment rail is currently available.",
     })
+  })
+
+  it("can skip WebLN even when the browser advertises it", async () => {
+    const weblnPay = mock(async () => ({
+      preimage: "webln-preimage",
+      paymentHash: "webln-hash",
+    }))
+
+    const result = await payCheckoutInvoice(
+      {
+        invoice: "lnbc1test",
+        amountMsats: 1000,
+        walletConnection: null,
+        tryNwc: false,
+        tryWebln: false,
+        timeoutMs: 60_000,
+        appId: "market",
+      },
+      {
+        nwcSessionPayInvoice: mock(async () => {
+          throw new Error("should not use NWC")
+        }) as never,
+        hasWebLN: () => true,
+        weblnSendPayment: weblnPay as never,
+      }
+    )
+
+    expect(result).toEqual({
+      status: "manual_required",
+      reason: "No automatic Lightning payment rail is currently available.",
+    })
+    expect(weblnPay).toHaveBeenCalledTimes(0)
   })
 
   it("returns sanitized NWC diagnostics when relay failure falls back to manual invoice", async () => {

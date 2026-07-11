@@ -3,6 +3,8 @@ import { describe, expect, it } from "bun:test"
 import { db } from "../packages/core/src/db"
 import {
   buildLifecyclePaymentProofContentJson,
+  buildLifecycleResendProofContentJson,
+  canSubmitExternalPaymentReport,
   getLifecyclePaymentProofAction,
   isOrderPaymentRunning,
   runOrderPayment,
@@ -57,6 +59,23 @@ function lifecycle(overrides: Partial<OrderLifecycle> = {}): OrderLifecycle {
 }
 
 describe("runOrderPayment", () => {
+  it("only accepts the first manual external-wallet payment report", () => {
+    expect(canSubmitExternalPaymentReport(lifecycle())).toBe(true)
+    expect(
+      canSubmitExternalPaymentReport(
+        lifecycle({ proofDeliveryStatus: "pending" })
+      )
+    ).toBe(false)
+    expect(
+      canSubmitExternalPaymentReport(lifecycle({ paymentStatus: "paid" }))
+    ).toBe(false)
+    expect(
+      canSubmitExternalPaymentReport(
+        lifecycle({ checkoutMode: "private_checkout" })
+      )
+    ).toBe(false)
+  })
+
   it("keeps public zap proof retries public for external-wallet fallback orders", () => {
     expect(
       getLifecyclePaymentProofAction({
@@ -108,6 +127,48 @@ describe("runOrderPayment", () => {
 
     expect(content.action).toBe("private_checkout")
     expect(content.zapRequestId).toBeUndefined()
+  })
+
+  it("marks manual external-wallet payment reports for merchant verification", () => {
+    const content = JSON.parse(
+      buildLifecyclePaymentProofContentJson(
+        lifecycle({ publicZapSigner: undefined, zapRequestId: undefined }),
+        {
+          action: "external_invoice",
+          source: "external",
+          verificationState: "needs_merchant_verification",
+          note: "External wallet payment for order external-wallet-proof-test",
+        }
+      )
+    )
+
+    expect(content).toMatchObject({
+      action: "external_invoice",
+      source: "external",
+      verification: {
+        state: "needs_merchant_verification",
+        checks: [],
+      },
+    })
+    expect(content.preimage).toBeUndefined()
+  })
+
+  it("preserves external payment-report semantics when resending", () => {
+    const content = JSON.parse(
+      buildLifecycleResendProofContentJson(
+        lifecycle({ publicZapSigner: undefined, zapRequestId: undefined })
+      )
+    )
+
+    expect(content).toMatchObject({
+      action: "external_invoice",
+      source: "external",
+      verification: {
+        state: "needs_merchant_verification",
+        checks: [],
+      },
+    })
+    expect(content.preimage).toBeUndefined()
   })
 
   it("releases the order in-flight lock when lifecycle patching fails", async () => {

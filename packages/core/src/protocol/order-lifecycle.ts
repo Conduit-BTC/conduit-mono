@@ -6,6 +6,19 @@ import {
   type OrderPublicZapSigner,
 } from "../db"
 
+export const GUEST_ORDER_LOCAL_RETENTION_MS = 24 * 60 * 60 * 1_000
+
+export function isGuestOrderDataExpired(
+  lifecycle: Pick<OrderLifecycle, "buyerIdentityKind" | "createdAt">,
+  nowMs = Date.now(),
+  retentionMs = GUEST_ORDER_LOCAL_RETENTION_MS
+): boolean {
+  return (
+    lifecycle.buyerIdentityKind === "guest_ephemeral" &&
+    lifecycle.createdAt <= nowMs - retentionMs
+  )
+}
+
 /**
  * Durable buyer-side order lifecycle repository (CND-122).
  *
@@ -144,4 +157,36 @@ export async function listOrderLifecycles(
     .equals(buyerPubkey)
     .toArray()
   return rows.sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+/**
+ * Guest checkout is intentionally recoverable only for a short browser session.
+ * Remove the matching local lifecycle, payment attempt, and decrypted message
+ * cache once that window has elapsed so checkout secrets do not become an
+ * indefinite browser-profile record.
+ */
+export async function pruneExpiredGuestOrderData(
+  nowMs = Date.now(),
+  retentionMs = GUEST_ORDER_LOCAL_RETENTION_MS
+): Promise<number> {
+  const expired = await db.orderLifecycles
+    .filter((lifecycle) =>
+      isGuestOrderDataExpired(lifecycle, nowMs, retentionMs)
+    )
+    .toArray()
+  if (expired.length === 0) return 0
+
+  const orderIds = expired.map((lifecycle) => lifecycle.orderId)
+  await db.transaction(
+    "rw",
+    [db.orderLifecycles, db.paymentAttempts, db.orderMessages],
+    async () => {
+      await Promise.all([
+        db.orderLifecycles.bulkDelete(orderIds),
+        db.paymentAttempts.where("orderId").anyOf(orderIds).delete(),
+        db.orderMessages.where("orderId").anyOf(orderIds).delete(),
+      ])
+    }
+  )
+  return orderIds.length
 }

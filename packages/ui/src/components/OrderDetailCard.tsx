@@ -23,6 +23,11 @@ type ShippingAddress = {
   country: string
 }
 
+type GuestContact = {
+  email: string
+  phone: string
+}
+
 export type OrderDetailCardProps = {
   orderId: string
   status: string | null
@@ -33,6 +38,7 @@ export type OrderDetailCardProps = {
   subtotal: number
   currency: string
   shippingAddress: ShippingAddress | null
+  guestContact?: GuestContact | null
   orderNote: string | null
   invoiceSent: boolean
   invoiceCount: number
@@ -42,6 +48,10 @@ export type OrderDetailCardProps = {
   paymentProofCount?: number
   paymentProofAmount?: number | null
   paymentProofCurrency?: string | null
+  paymentReportReceived?: boolean
+  paymentReportCount?: number
+  paymentReportAmount?: number | null
+  paymentReportCurrency?: string | null
   trackingCarrier: string | null
   trackingNumber: string | null
   trackingUrl: string | null
@@ -66,6 +76,7 @@ export function OrderDetailCard({
   subtotal,
   currency,
   shippingAddress,
+  guestContact,
   orderNote,
   invoiceSent,
   invoiceCount,
@@ -75,6 +86,10 @@ export function OrderDetailCard({
   paymentProofCount = 0,
   paymentProofAmount = null,
   paymentProofCurrency = null,
+  paymentReportReceived = paymentProofReceived,
+  paymentReportCount = paymentProofCount,
+  paymentReportAmount = paymentProofAmount,
+  paymentReportCurrency = paymentProofCurrency,
   trackingCarrier,
   trackingNumber,
   trackingUrl,
@@ -162,6 +177,28 @@ export function OrderDetailCard({
           </div>
         )}
 
+        {guestContact && (
+          <div className="space-y-1">
+            <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+              Guest contact
+            </div>
+            <div className="space-y-1 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-2 text-xs text-[var(--text-secondary)]">
+              <div>
+                Phone:{" "}
+                <span className="text-[var(--text-primary)]">
+                  {guestContact.phone}
+                </span>
+              </div>
+              <div>
+                Email:{" "}
+                <span className="text-[var(--text-primary)]">
+                  {guestContact.email}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
         {orderNote && (
           <div className="space-y-1">
             <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
@@ -190,6 +227,23 @@ export function OrderDetailCard({
                 Buyer payment proof is attached.
                 {paymentProofCount > 1
                   ? ` ${paymentProofCount} payment proofs are attached to this order.`
+                  : ""}
+              </div>
+            </div>
+          ) : paymentReportReceived ? (
+            <div className="space-y-1">
+              <div className="text-sm text-[var(--text-primary)]">
+                External payment reported
+                {paymentReportAmount != null
+                  ? ` - ${paymentReportAmount.toLocaleString()}`
+                  : ""}
+                {paymentReportCurrency ? ` ${paymentReportCurrency}` : ""}
+              </div>
+              <div className="text-xs text-[var(--text-secondary)]">
+                Buyer reported paying this invoice. Confirm payment before
+                fulfillment.
+                {paymentReportCount > 1
+                  ? ` ${paymentReportCount} payment reports are attached to this order.`
                   : ""}
               </div>
             </div>
