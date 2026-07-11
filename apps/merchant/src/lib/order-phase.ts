@@ -4,6 +4,7 @@ import {
   isMerchantOrderPaid,
   type MerchantConversationSummary,
   type MerchantOrderState,
+  type OrderSummary,
   type OrderStatusDisplay,
 } from "@conduit/core"
 
@@ -46,13 +47,19 @@ export function getMerchantOrderPhase(
   }
 }
 
-export function getMerchantConversationState(
+export function getMerchantOrderSummary(
   conversation: MerchantConversationSummary
-): MerchantOrderState {
-  const summary = extractOrderSummary(conversation.messages ?? [], {
+): OrderSummary {
+  return extractOrderSummary(conversation.messages ?? [], {
     buyerPubkey: conversation.buyerPubkey,
     merchantPubkey: conversation.merchantPubkey,
   })
+}
+
+export function getMerchantConversationState(
+  conversation: MerchantConversationSummary
+): MerchantOrderState {
+  const summary = getMerchantOrderSummary(conversation)
   return {
     status: conversation.status,
     paid: summary.paymentConfirmed,

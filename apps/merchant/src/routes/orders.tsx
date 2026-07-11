@@ -9,7 +9,6 @@ import {
   decodeLightningInvoiceAmount,
   EVENT_KINDS,
   appendConduitClientTag,
-  extractOrderSummary,
   formatNpub,
   getCachedMerchantConversationList,
   getCurrencyAmountStep,
@@ -64,6 +63,7 @@ import { BuyerAvatar, OrderListItem } from "../components/OrderListItem"
 import {
   getMerchantConversationPhase,
   getMerchantConversationStatusDisplay,
+  getMerchantOrderSummary,
   isMerchantConversationActiveFulfillment,
   ORDER_PHASE_OPTIONS,
   type OrderPhaseTab,
@@ -667,8 +667,8 @@ function OrdersPage() {
           conversations
             .filter(
               (conversation) =>
-                extractOrderSummary(conversation.messages ?? [])
-                  .buyerIdentityKind !== "guest_ephemeral"
+                getMerchantOrderSummary(conversation).buyerIdentityKind !==
+                "guest_ephemeral"
             )
             .map((conversation) => conversation.buyerPubkey)
             .filter(Boolean)
@@ -788,7 +788,7 @@ function OrdersPage() {
   )
   const buyerNameForConversation = useCallback(
     (conversation: MerchantConversationSummary) =>
-      extractOrderSummary(conversation.messages ?? []).buyerIdentityKind ===
+      getMerchantOrderSummary(conversation).buyerIdentityKind ===
       "guest_ephemeral"
         ? "Guest shopper"
         : buyerNameFor(conversation.buyerPubkey),
@@ -884,7 +884,7 @@ function OrdersPage() {
   }, [selected])
 
   const orderSummary = useMemo(
-    () => (selected ? extractOrderSummary(selected.messages ?? []) : null),
+    () => (selected ? getMerchantOrderSummary(selected) : null),
     [selected]
   )
   const selectedStatusDisplay = useMemo(
@@ -933,7 +933,8 @@ function OrdersPage() {
       conversations.filter((conversation) => {
         const messages = conversation.messages ?? []
         if (
-          extractOrderSummary(messages).buyerIdentityKind === "guest_ephemeral"
+          getMerchantOrderSummary(conversation).buyerIdentityKind ===
+          "guest_ephemeral"
         ) {
           return false
         }

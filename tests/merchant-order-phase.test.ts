@@ -6,6 +6,7 @@ import type {
 import {
   getMerchantConversationPhase,
   getMerchantConversationStatusDisplay,
+  getMerchantOrderSummary,
   isMerchantConversationActiveFulfillment,
 } from "../apps/merchant/src/lib/order-phase"
 
@@ -86,6 +87,11 @@ describe("merchant order phase", () => {
     expect(getMerchantConversationStatusDisplay(partialConversation)).toEqual({
       tone: "info",
       label: "Payment proof received",
+    })
+    expect(getMerchantOrderSummary(partialConversation)).toMatchObject({
+      paymentProofReceived: true,
+      invoiceSent: false,
+      accepted: false,
     })
     expect(isMerchantConversationActiveFulfillment(partialConversation)).toBe(
       true
