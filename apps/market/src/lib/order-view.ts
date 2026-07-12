@@ -282,8 +282,8 @@ export function buildOrderViewModel(
   const flow: OrderFlow = lifecycle?.checkoutMode
     ? orderFlowFromCheckoutMode(lifecycle.checkoutMode)
     : deriveOrderFlow({
-        status: merchantStatus,
-        paid: paymentPaid,
+        status: null,
+        paymentObserved: paymentStatus === "paid",
         invoiceSent:
           invoiceStatus === "received" || invoiceStatus === "manual_required",
       })

@@ -226,9 +226,13 @@ describe("computeOrderTimelineStatuses", () => {
 
     expect(vm.paymentStatus).toBe("not_started")
     expect(vm.phase).toBe("in_progress")
+    expect(vm.flow).toBe("invoice")
     expect(computeOrderTimelineStatuses(vm).payment).toBe("complete")
     expect(getOrderFilterPhase(vm)).toBe("in_progress")
     expect(deriveOrderHeaderStatus(vm).primaryLabel).not.toBe("Pending")
+    expect(
+      buildOrderTimeline(vm).find((row) => row.key === "invoice")?.title
+    ).toBe("Invoice received")
   })
 
   it("lets merchant confirmation supersede a stale local payment failure", () => {
