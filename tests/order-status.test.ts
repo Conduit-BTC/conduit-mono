@@ -4,7 +4,42 @@ import {
   deriveOrderFlow,
   getMerchantOrderActions,
   getOrderStatusDisplay,
+  KNOWN_ORDER_STATUSES,
+  orderStatusEnum,
+  orderStatusSchema,
+  type KnownOrderStatus,
+  type OrderStatus,
 } from "@conduit/core"
+
+describe("canonical order statuses", () => {
+  it("keeps schema, domain types, and presentation on one vocabulary", () => {
+    const domainStatuses: OrderStatus[] = [...KNOWN_ORDER_STATUSES]
+    const expectedLabels: Record<KnownOrderStatus, string> = {
+      pending: "Pending",
+      invoiced: "Invoiced",
+      paid: "Paid",
+      accepted: "Accepted",
+      processing: "Processing",
+      shipped: "Shipped",
+      complete: "Complete",
+      delivered: "Delivered",
+      cancelled: "Cancelled",
+      refund_requested: "Refund requested",
+    }
+
+    expect(orderStatusEnum.options).toEqual(domainStatuses)
+    for (const status of domainStatuses) {
+      expect(orderStatusSchema.parse(status)).toBe(status)
+      expect(getOrderStatusDisplay(status).label).toBe(expectedLabels[status])
+    }
+  })
+
+  it("continues to parse unknown incoming statuses for forward compatibility", () => {
+    expect(orderStatusSchema.parse("future_merchant_status")).toBe(
+      "future_merchant_status"
+    )
+  })
+})
 
 describe("getOrderStatusDisplay", () => {
   it("maps known statuses to a tone + label", () => {

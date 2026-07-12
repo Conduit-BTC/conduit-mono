@@ -2,6 +2,9 @@ import {
   deriveOrderFlow,
   extractOrderSummary,
   getOrderPublicZapSigner,
+  isKnownOrderStatus,
+  isMerchantOrderAccepted,
+  isMerchantOrderPaid,
   orderFlowFromCheckoutMode,
   type BuyerConversationSummary,
   type OrderFlow,
@@ -12,6 +15,7 @@ import {
   type OrderInvoiceStatus,
   type OrderLifecycle,
   type OrderLifecyclePhase,
+  type KnownOrderStatus,
   type OrderPaymentStatus,
   type OrderProofDeliveryStatus,
   type OrderPublicZapSigner,
@@ -66,16 +70,7 @@ export interface OrderViewModel {
   addressValidity: OrderAddressValidity
 
   // Merchant-driven state, observed from the conversation.
-  merchantStatus:
-    | "pending"
-    | "invoiced"
-    | "paid"
-    | "accepted"
-    | "processing"
-    | "shipped"
-    | "complete"
-    | "cancelled"
-    | null
+  merchantStatus: KnownOrderStatus | null
   tracking: {
     carrier: string | null
     number: string | null
@@ -135,16 +130,11 @@ export function getOrderPaymentMethodLabel(
   }
 }
 
-const MERCHANT_STATUSES = new Set([
-  "pending",
-  "invoiced",
-  "paid",
-  "accepted",
-  "processing",
-  "shipped",
-  "complete",
-  "cancelled",
-])
+function isCompletedMerchantStatus(
+  status: OrderViewModel["merchantStatus"]
+): boolean {
+  return status === "complete" || status === "delivered"
+}
 
 /** Best-effort human title from an order item product reference. */
 export function deriveItemDisplayTitle(productId: string): string {
@@ -169,14 +159,10 @@ function latestMerchantStatus(
       if (message.type !== "status_update") continue
       if (merchantPubkey && message.senderPubkey !== merchantPubkey) continue
       const status = message.payload.status
-      if (MERCHANT_STATUSES.has(status)) {
-        return status as OrderViewModel["merchantStatus"]
-      }
+      if (isKnownOrderStatus(status)) return status
     }
   }
-  if (fallback && MERCHANT_STATUSES.has(fallback)) {
-    return fallback as OrderViewModel["merchantStatus"]
-  }
+  if (fallback && isKnownOrderStatus(fallback)) return fallback
   return null
 }
 
@@ -257,7 +243,7 @@ export function buildOrderViewModel(
   const phase: OrderLifecyclePhase =
     merchantStatus === "cancelled"
       ? "cancelled"
-      : merchantStatus === "complete"
+      : isCompletedMerchantStatus(merchantStatus)
         ? "completed"
         : (lifecycle?.phase ??
           (paymentStatus === "paid" || orderDeliveryStatus === "sent"
@@ -466,17 +452,17 @@ function copyFor(
 export function computeOrderTimelineStatuses(
   vm: OrderViewModel
 ): Record<OrderTimelineRowKey, StatusStepperRowStatus> {
-  const paid = vm.paymentStatus === "paid"
-  const merchantConfirmed =
-    vm.merchantStatus === "accepted" ||
-    vm.merchantStatus === "processing" ||
-    vm.merchantStatus === "shipped" ||
-    vm.merchantStatus === "complete"
+  const paid =
+    vm.paymentStatus === "paid" ||
+    isMerchantOrderPaid({ status: vm.merchantStatus })
+  const merchantConfirmed = isMerchantOrderAccepted({
+    status: vm.merchantStatus,
+  })
   const shipped =
     vm.merchantStatus === "shipped" ||
-    vm.merchantStatus === "complete" ||
+    isCompletedMerchantStatus(vm.merchantStatus) ||
     !!vm.tracking
-  const completed = vm.merchantStatus === "complete"
+  const completed = isCompletedMerchantStatus(vm.merchantStatus)
 
   // 1. Order sent
   let orderSent: StatusStepperRowStatus = "waiting"
@@ -558,7 +544,10 @@ export function getOrderFilterPhase(
   if (vm.merchantStatus === "cancelled" || vm.phase === "cancelled") {
     return "cancelled"
   }
-  if (vm.merchantStatus === "complete" || vm.phase === "completed") {
+  if (
+    isCompletedMerchantStatus(vm.merchantStatus) ||
+    vm.phase === "completed"
+  ) {
     return "completed"
   }
   if (
@@ -630,7 +619,16 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       showSpinner: false,
     }
   }
-  if (vm.merchantStatus === "complete") {
+  if (vm.merchantStatus === "refund_requested") {
+    return {
+      tone: "warning",
+      primaryLabel: "Refund requested",
+      detailLabel: "Awaiting merchant response",
+      actionNeeded: false,
+      showSpinner: false,
+    }
+  }
+  if (isCompletedMerchantStatus(vm.merchantStatus)) {
     return {
       tone: "success",
       primaryLabel: "Completed",

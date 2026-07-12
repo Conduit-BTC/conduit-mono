@@ -1,5 +1,6 @@
 import {
   convertCommerceAmountToSats,
+  isMerchantOrderPaid,
   type MerchantConversationSummary,
   type ParsedOrderMessage,
   type PricingRateInput,
@@ -35,8 +36,6 @@ export interface DashboardChartData {
   hasRevenue: boolean
   totalOrders: number
 }
-
-const PAID_STATUSES = new Set(["paid", "shipped", "complete", "delivered"])
 
 const STATUS_ORDER: StatusSlice["key"][] = [
   "pending",
@@ -84,7 +83,7 @@ function paymentConfirmationOf(
       message.type === "status_update" &&
       message.senderPubkey === orderMessage.recipientPubkey &&
       message.recipientPubkey === orderMessage.senderPubkey &&
-      PAID_STATUSES.has(message.payload.status.toLowerCase())
+      isMerchantOrderPaid({ status: message.payload.status })
   )
 }
 

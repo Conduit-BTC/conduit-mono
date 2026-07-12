@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import type { OrderLifecycle } from "@conduit/core"
+import type { KnownOrderStatus, OrderLifecycle } from "@conduit/core"
 import {
   buildOrderTimeline,
   buildOrderViewModel,
@@ -51,6 +51,26 @@ function vmFromLifecycle(
   return buildOrderViewModel({
     orderId: "order-1",
     lifecycle: baseLifecycle(overrides),
+  })
+}
+
+function vmWithMerchantStatus(status: KnownOrderStatus): OrderViewModel {
+  return buildOrderViewModel({
+    orderId: "order-1",
+    merchantPubkey: "merchant",
+    lifecycle: baseLifecycle(),
+    messages: [
+      {
+        id: `status-${status}`,
+        orderId: "order-1",
+        createdAt: 2,
+        senderPubkey: "merchant",
+        recipientPubkey: "buyer",
+        rawContent: "{}",
+        type: "status_update",
+        payload: { status },
+      } as never,
+    ],
   })
 }
 
@@ -337,27 +357,31 @@ describe("deriveOrderHeaderStatus", () => {
   })
 
   it("Completed · Delivered when the merchant marks the order complete", () => {
-    const vm = buildOrderViewModel({
-      orderId: "order-1",
-      merchantPubkey: "merchant",
-      lifecycle: baseLifecycle(),
-      messages: [
-        {
-          id: "s1",
-          orderId: "order-1",
-          createdAt: 2,
-          senderPubkey: "merchant",
-          recipientPubkey: "buyer",
-          rawContent: "{}",
-          type: "status_update",
-          payload: { status: "complete" },
-        } as never,
-      ],
-    })
+    const vm = vmWithMerchantStatus("complete")
     const status = deriveOrderHeaderStatus(vm)
     expect(status.primaryLabel).toBe("Completed")
     expect(status.detailLabel).toBe("Delivered")
     expect(vm.phase).toBe("completed")
     expect(status.showSpinner).toBe(false)
+  })
+
+  it("treats delivered as the same terminal completion state", () => {
+    const vm = vmWithMerchantStatus("delivered")
+    const status = deriveOrderHeaderStatus(vm)
+
+    expect(getOrderFilterPhase(vm)).toBe("completed")
+    expect(computeOrderTimelineStatuses(vm).complete).toBe("complete")
+    expect(status.primaryLabel).toBe("Completed")
+    expect(status.detailLabel).toBe("Delivered")
+  })
+
+  it("surfaces a refund request without claiming a payout occurred", () => {
+    const status = deriveOrderHeaderStatus(
+      vmWithMerchantStatus("refund_requested")
+    )
+
+    expect(status.tone).toBe("warning")
+    expect(status.primaryLabel).toBe("Refund requested")
+    expect(status.detailLabel).toBe("Awaiting merchant response")
   })
 })

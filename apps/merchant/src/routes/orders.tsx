@@ -29,8 +29,8 @@ import {
   publishWithPlanner,
   weblnMakeInvoice,
   type MerchantConversationSummary,
+  type KnownOrderStatus,
   type Profile,
-  type StatusUpdateMessageSchema,
   useAuth,
   useProfiles,
 } from "@conduit/core"
@@ -543,9 +543,7 @@ function OrdersPage() {
   const [invoiceAmount, setInvoiceAmount] = useState("")
   const [invoiceCurrency, setInvoiceCurrency] = useState("USD")
   const [invoiceNote, setInvoiceNote] = useState("")
-  const [orderStatus, setOrderStatus] = useState<
-    StatusUpdateMessageSchema["status"] | ""
-  >("")
+  const [orderStatus, setOrderStatus] = useState<KnownOrderStatus | "">("")
   const [statusNote, setStatusNote] = useState("")
   const [carrier, setCarrier] = useState("")
   const [trackingNumber, setTrackingNumber] = useState("")
@@ -553,9 +551,8 @@ function OrdersPage() {
   const [shippingNote, setShippingNote] = useState("")
   const [replyNote, setReplyNote] = useState("")
   const [successFlash, setSuccessFlash] = useState<string | null>(null)
-  const [pendingDestructiveStatus, setPendingDestructiveStatus] = useState<
-    string | null
-  >(null)
+  const [pendingDestructiveStatus, setPendingDestructiveStatus] =
+    useState<KnownOrderStatus | null>(null)
   const [weblnAvailable, setWeblnAvailable] = useState(false)
   const [refreshButtonState, setRefreshButtonState] = useState<
     "idle" | "refreshing" | "done"
@@ -1085,6 +1082,7 @@ function OrdersPage() {
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
       assertBuyerHasNostrInbox()
+      if (!orderStatus) throw new Error("Choose an order status")
       if (orderStatus === "shipped" || orderStatus === "complete") {
         assertPaidForFulfillment()
       }
@@ -1108,7 +1106,7 @@ function OrdersPage() {
   })
 
   const advanceStatusMutation = useMutation({
-    mutationFn: async (nextStatus: string) => {
+    mutationFn: async (nextStatus: KnownOrderStatus) => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
       assertBuyerHasNostrInbox()
       if (nextStatus === "shipped" || nextStatus === "complete") {
@@ -1719,9 +1717,7 @@ function OrdersPage() {
                                 <Select
                                   value={orderStatus}
                                   onValueChange={(value) =>
-                                    setOrderStatus(
-                                      value as StatusUpdateMessageSchema["status"]
-                                    )
+                                    setOrderStatus(value as KnownOrderStatus)
                                   }
                                 >
                                   <SelectTrigger aria-label="Choose status">

@@ -1,4 +1,5 @@
 import { decodeLightningInvoiceAmount } from "./lightning"
+import { isMerchantOrderAccepted, isMerchantOrderPaid } from "./order-status"
 import {
   isPaymentProofEvidenceMessage,
   type ParsedOrderMessage,
@@ -153,14 +154,10 @@ export function extractOrderSummary(
       message.type === "status_update" && isMerchantToBuyer(message)
   )
   const accepted = merchantStatuses.some((message) =>
-    ["accepted", "processing", "shipped", "complete", "delivered"].includes(
-      message.payload.status.toLowerCase()
-    )
+    isMerchantOrderAccepted({ status: message.payload.status })
   )
   const paymentConfirmed = merchantStatuses.some((message) =>
-    ["paid", "shipped", "complete", "delivered"].includes(
-      message.payload.status.toLowerCase()
-    )
+    isMerchantOrderPaid({ status: message.payload.status })
   )
 
   const items =

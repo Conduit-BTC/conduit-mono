@@ -27,7 +27,8 @@ Market performs that pruning on startup.
 Fields:
 
 - Identity: `orderId`, `buyerPubkey`, `merchantPubkey`, `checkoutMode`
-  (`public_zap` | `private_checkout` | `pay_later` | `external_wallet`).
+  (`anonymous_public_zap` | `public_zap_as_shopper` | `public_zap` |
+  `private_checkout` | `pay_later` | `external_wallet`).
 - Snapshot: `items` (productId, qty, price-at-purchase, source price, shipping
   option), `itemSubtotalSats`, `shippingCostSats`, `totalSats`, `totalMsats`,
   `currency`, `pricingQuote`.
@@ -77,25 +78,34 @@ Two checkout flows are first-class and produce the same NIP-17 order messages
 (`order`, `payment_request`, `payment_proof`, `receipt`, `status_update`,
 `shipping_update`) in a different order:
 
-- **Prepaid (zap-out)** — `checkoutMode: public_zap`: the buyer pays at
-  checkout (payment proof published up front), then the merchant accepts.
-  Payment precedes acceptance.
+- **Prepaid (zap-out)** — a public-zap checkout mode (`anonymous_public_zap`,
+  `public_zap_as_shopper`, or legacy `public_zap`): the buyer pays at checkout
+  (payment proof published up front), then the merchant accepts. Payment
+  precedes acceptance.
 - **Invoice (order-first)** — `checkoutMode: private_checkout` / `pay_later`:
   the buyer places the order, the merchant accepts and sends a
   `payment_request` (invoice), then the buyer pays. Acceptance precedes payment.
 
-Because the sequence differs, order state is modeled as two **independent
-gates** rather than a linear status: `paid` (a `payment_proof`/`paid` status was
-observed) and `accepted` (a merchant `status_update` of accepted-or-beyond).
-State is derived from which events exist, not their order.
+Because the sequence differs, acceptance and payment are modeled independently
+rather than as one linear status. Payment has two distinct signals:
+
+- `paymentObserved`: valid buyer `payment_proof` evidence was received, but the
+  merchant may still need to verify settlement.
+- `paymentConfirmed` / `paid`: the merchant emitted a `paid`-or-beyond
+  `status_update` after confirming settlement.
+- `accepted`: a merchant `status_update` of accepted-or-beyond was observed.
+
+State is derived from which trusted, fixed-direction events exist, not their
+arrival order.
 
 - The buyer knows its flow from `checkoutMode`.
-- The merchant infers it: a payment proof received **without** a preceding
-  merchant invoice ⇒ prepaid; otherwise invoice-first. Shared helper
-  `deriveOrderFlow({ status, paid, invoiceSent })` in
-  `@conduit/core/order-status` encodes this, and drives the merchant timeline
-  ordering (payment↔acceptance) and next actions. Shipping is gated on `paid`,
-  so an unpaid order cannot be marked shipped.
+- The merchant infers it: observed buyer payment evidence **without** a merchant
+  invoice ⇒ prepaid; otherwise invoice-first. Shared helper
+  `deriveOrderFlow({ status, paid, paymentObserved, invoiceSent })` in
+  `@conduit/core/order-status` encodes this and drives the merchant timeline
+  ordering (payment↔acceptance). Payment evidence may update flow and timeline
+  presentation, but only merchant-confirmed payment unlocks shipping and revenue
+  accounting.
 
 Status vocabulary is unified across schema and presentation: `pending`,
 `invoiced`, `paid`, `accepted`/`processing`, `shipped`, `complete`/`delivered`,
@@ -108,11 +118,11 @@ protocol non-goals (`docs/specs/protocol.md`). Therefore:
 
 - Cancelling a **paid** order does not reverse funds. The app sets `cancelled`
   and must tell the merchant a refund is a separate, manual step.
-- A refund is an **out-of-band, non-custodial payout** the merchant sends over
-  the same NWC/WebLN rails used for invoicing (to a fresh buyer invoice or a zap
-  to the buyer pubkey), optionally **recorded** as a merchant→buyer proof
-  (mirroring `payment_proof`). `refund_requested` is the buyer-initiated signal;
-  the app never custodies, escrows, or guarantees the payout.
+- Refund coordination and payout are currently **out of band**. Conduit does not
+  create or pay a refund invoice, emit a standardized refund proof, custody
+  funds, escrow payment, or guarantee repayment. `refund_requested` is reserved
+  in the canonical status vocabulary for compatible clients and presentation;
+  a tracked refund workflow requires a separate protocol/spec change.
 
 ## Idempotency and recovery invariants
 

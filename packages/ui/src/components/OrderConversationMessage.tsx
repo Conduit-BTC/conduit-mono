@@ -1,15 +1,16 @@
 import { useCallback, useState } from "react"
-import { Badge } from "./Badge"
-import { Button } from "./Button"
+import { QRCodeSVG } from "qrcode.react"
 import {
   decodeLightningInvoiceAmount,
   getLightningInvoiceNetwork,
   getLightningNetworkMismatchMessage,
+  getOrderStatusDisplay,
   isInvoiceCompatibleWithCurrentNetwork,
   normalizeLightningInvoice,
   type ParsedOrderMessage,
 } from "@conduit/core"
-import { QRCodeSVG } from "qrcode.react"
+import { Badge } from "./Badge"
+import { Button } from "./Button"
 
 export function formatProductReference(productId: string): {
   title: string
@@ -140,7 +141,8 @@ export function getConversationPreview(message: ParsedOrderMessage): string {
       return message.payload.note ?? "Invoice sent"
     case "status_update":
       return (
-        message.payload.note ?? `Status updated to ${message.payload.status}`
+        message.payload.note ??
+        `Status updated to ${getOrderStatusDisplay(message.payload.status).label}`
       )
     case "shipping_update":
       return message.payload.note ?? "Shipping updated"
@@ -277,7 +279,7 @@ export function OrderConversationMessage({
         {message.type === "status_update" && (
           <div className="space-y-1">
             <div className="text-[var(--text-primary)]">
-              Status: {message.payload.status}
+              Status: {getOrderStatusDisplay(message.payload.status).label}
             </div>
             {message.payload.note && (
               <div className="text-xs text-[var(--text-secondary)]">

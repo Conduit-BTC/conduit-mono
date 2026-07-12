@@ -14,6 +14,8 @@
 // structurally so callers can pass the output straight through — without core
 // depending on @conduit/ui.
 
+import { isKnownOrderStatus, type KnownOrderStatus } from "../schemas"
+
 export type OrderStatusTone =
   "success" | "info" | "warning" | "error" | "neutral"
 
@@ -66,19 +68,6 @@ const TERMINAL_ACTION_STATUSES = new Set([
   "delivered",
   "refund_requested",
 ])
-const KNOWN_ACTION_STATUSES = new Set([
-  "pending",
-  "invoiced",
-  "paid",
-  "accepted",
-  "processing",
-  "shipped",
-  "complete",
-  "delivered",
-  "cancelled",
-  "refund_requested",
-])
-
 function normalizeStatus(status: string | null | undefined): string {
   return (status ?? "pending").toLowerCase()
 }
@@ -113,30 +102,23 @@ function titleCase(value: string): string {
 export function getOrderStatusDisplay(
   status: string | null | undefined
 ): OrderStatusDisplay {
-  switch (normalizeStatus(status)) {
-    case "pending":
-      return { tone: "warning", label: "Pending" }
-    case "invoiced":
-      return { tone: "info", label: "Invoiced" }
-    case "paid":
-      return { tone: "info", label: "Paid" }
-    case "accepted":
-      return { tone: "info", label: "Accepted" }
-    case "processing":
-      return { tone: "info", label: "Processing" }
-    case "shipped":
-      return { tone: "info", label: "Shipped" }
-    case "complete":
-      return { tone: "success", label: "Complete" }
-    case "delivered":
-      return { tone: "success", label: "Delivered" }
-    case "cancelled":
-      return { tone: "neutral", label: "Cancelled" }
-    case "refund_requested":
-      return { tone: "warning", label: "Refund requested" }
-    default:
-      return { tone: "neutral", label: titleCase(status ?? "") }
-  }
+  const normalized = normalizeStatus(status)
+  return isKnownOrderStatus(normalized)
+    ? ORDER_STATUS_DISPLAYS[normalized]
+    : { tone: "neutral", label: titleCase(status ?? "") }
+}
+
+const ORDER_STATUS_DISPLAYS: Record<KnownOrderStatus, OrderStatusDisplay> = {
+  pending: { tone: "warning", label: "Pending" },
+  invoiced: { tone: "info", label: "Invoiced" },
+  paid: { tone: "info", label: "Paid" },
+  accepted: { tone: "info", label: "Accepted" },
+  processing: { tone: "info", label: "Processing" },
+  shipped: { tone: "info", label: "Shipped" },
+  complete: { tone: "success", label: "Complete" },
+  delivered: { tone: "success", label: "Delivered" },
+  cancelled: { tone: "neutral", label: "Cancelled" },
+  refund_requested: { tone: "warning", label: "Refund requested" },
 }
 
 // Infer the flow: the buyer paid without ever being invoiced by the merchant.
@@ -273,7 +255,7 @@ export type MerchantOrderActionKind = "primary" | "destructive"
 
 export interface MerchantOrderAction {
   /** Status to publish when the action is taken. */
-  status: string
+  status: KnownOrderStatus
   /** Button label for the action. */
   label: string
   kind: MerchantOrderActionKind
@@ -289,7 +271,7 @@ export function getMerchantOrderActions(
   const state = toState(input)
   const status = normalizeStatus(state.status)
 
-  if (!KNOWN_ACTION_STATUSES.has(status)) return []
+  if (!isKnownOrderStatus(status)) return []
   if (TERMINAL_ACTION_STATUSES.has(status)) return []
 
   if (!isMerchantOrderAccepted(state)) {
