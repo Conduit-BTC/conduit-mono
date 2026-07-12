@@ -208,6 +208,15 @@ raw status vocabulary as a general-purpose manual console. Useful queue filters
 are **Paid—fulfill**, **Payment reported—verify**, **Unpaid—review**, **Shipped**,
 and **Closed**, plus an all-orders view.
 
+Order-progress copy is state-aware: completed rows describe what happened, the
+single active row names the current task and tells the merchant how to advance,
+and waiting rows describe the later gate. A row must not use completed-state
+wording such as `Shipped` while its status is still in progress. The Actions
+surface presents the recommended **Next step** first. Cancellation and other
+destructive alternatives appear afterward under **Other actions**, use
+destructive styling, and retain confirmation plus refund-risk copy where funds
+have already moved.
+
 Shipment is one domain action: it requires a tracking code and carrier, accepts
 an optional tracking URL and additional notes, records the shipping update, and
 advances fulfillment to `shipped`. Merchants should not have to publish a

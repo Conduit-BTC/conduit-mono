@@ -161,9 +161,10 @@ export function orderFlowFromCheckoutMode(
 
 interface StageSpec {
   key: string
-  title: string
-  subtitle: string
   done: boolean
+  complete: { title: string; subtitle: string }
+  active: { title: string; subtitle: string }
+  waiting: { title: string; subtitle: string }
 }
 
 export function buildOrderStatusTimeline(
@@ -179,46 +180,111 @@ export function buildOrderStatusTimeline(
 
   const placed: StageSpec = {
     key: "placed",
-    title: "Order placed",
-    subtitle: "Order received from buyer",
     done: true,
+    complete: {
+      title: "Order placed",
+      subtitle: "Order received from buyer.",
+    },
+    active: {
+      title: "Receiving order",
+      subtitle: "Wait for the buyer's order details.",
+    },
+    waiting: {
+      title: "Order",
+      subtitle: "The buyer's order will appear here.",
+    },
   }
   const payment: StageSpec = {
     key: "payment",
-    title: paid
-      ? "Payment confirmed"
-      : paymentObserved
-        ? "Payment proof received"
-        : "Payment",
-    subtitle: paid
-      ? "Confirmed by merchant"
-      : paymentObserved
-        ? "Buyer evidence received; verify settlement"
-        : flow === "prepaid"
-          ? "Awaiting checkout payment evidence"
-          : state.invoiceSent
-            ? "Invoice sent to buyer"
-            : "Lightning payment",
     done: paid,
+    complete: {
+      title: "Payment confirmed",
+      subtitle: "Settlement confirmed by merchant.",
+    },
+    active: paymentObserved
+      ? {
+          title: "Confirm payment",
+          subtitle: "Verify settlement before fulfilling the order.",
+        }
+      : flow === "prepaid"
+        ? {
+            title: "Await payment evidence",
+            subtitle: "Verify the checkout payment when evidence arrives.",
+          }
+        : state.invoiceSent
+          ? {
+              title: "Await payment",
+              subtitle: "Confirm payment after the buyer pays the invoice.",
+            }
+          : {
+              title: "Request payment",
+              subtitle: "Send an invoice to the buyer.",
+            },
+    waiting: {
+      title: "Payment",
+      subtitle:
+        flow === "prepaid"
+          ? "Verify payment evidence when it arrives."
+          : "Accept the order before requesting payment.",
+    },
   }
   const accepted: StageSpec = {
     key: "accepted",
-    title: "Merchant accepted",
-    subtitle: "Order confirmed",
     done: acceptedGate,
+    complete: {
+      title: "Order accepted",
+      subtitle: "Merchant confirmed the order.",
+    },
+    active: {
+      title: "Review order",
+      subtitle:
+        flow === "prepaid"
+          ? "Accept the order after payment is confirmed."
+          : "Accept the order to request payment.",
+    },
+    waiting: {
+      title: "Order review",
+      subtitle:
+        flow === "prepaid"
+          ? "Review the order after payment is verified."
+          : "Review the order before requesting payment.",
+    },
   }
   const shippedGate = !!state.shippingUpdated || SHIPPED_STATUSES.has(status)
   const shipped: StageSpec = {
     key: "shipped",
-    title: "Shipped",
-    subtitle: "Sent to buyer",
     done: shippedGate,
+    complete: {
+      title: "Shipped",
+      subtitle: "Tracking details recorded.",
+    },
+    active: {
+      title: "Shipping in progress",
+      subtitle: "Add tracking details to mark this order shipped.",
+    },
+    waiting: {
+      title: "Shipping",
+      subtitle: "Add tracking after payment is confirmed.",
+    },
   }
   const delivered: StageSpec = {
     key: "delivered",
-    title: "Delivered",
-    subtitle: "Order completed",
     done: DELIVERED_STATUSES.has(status),
+    complete: {
+      title: "Delivered",
+      subtitle: "Order completed.",
+    },
+    active: {
+      title: "Confirm delivery",
+      subtitle: "Mark the order delivered when fulfillment is complete.",
+    },
+    waiting: {
+      title: "Delivery",
+      subtitle:
+        state.requiresShipping === false
+          ? "Confirm delivery after fulfilling the digital order."
+          : "Confirm delivery after shipment.",
+    },
   }
 
   // Payment and acceptance are ordered by the flow; everything else is shared.
@@ -233,8 +299,8 @@ export function buildOrderStatusTimeline(
     if (stage.done) {
       return {
         key: stage.key,
-        title: stage.title,
-        subtitle: stage.subtitle,
+        title: stage.complete.title,
+        subtitle: stage.complete.subtitle,
         status: "complete",
       }
     }
@@ -243,23 +309,23 @@ export function buildOrderStatusTimeline(
       if (cancelled) {
         return {
           key: stage.key,
-          title: stage.title,
-          subtitle: "Order cancelled",
+          title: "Order cancelled",
+          subtitle: "No further action is required.",
           status: "failed",
           label: "Cancelled",
         }
       }
       return {
         key: stage.key,
-        title: stage.title,
-        subtitle: stage.subtitle,
+        title: stage.active.title,
+        subtitle: stage.active.subtitle,
         status: "in_progress",
       }
     }
     return {
       key: stage.key,
-      title: stage.title,
-      subtitle: stage.subtitle,
+      title: stage.waiting.title,
+      subtitle: stage.waiting.subtitle,
       status: "waiting",
     }
   })

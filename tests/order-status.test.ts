@@ -157,7 +157,51 @@ describe("buildOrderStatusTimeline", () => {
       "waiting",
       "waiting",
     ])
+    expect(rows[1]).toMatchObject({
+      title: "Order cancelled",
+      subtitle: "No further action is required.",
+    })
     expect(rows[1]?.label).toBe("Cancelled")
+  })
+
+  it("uses state-aware copy that tells the merchant what happens next", () => {
+    const shipping = buildOrderStatusTimeline({ status: "paid", paid: true })
+    expect(shipping.find((row) => row.key === "shipped")).toMatchObject({
+      title: "Shipping in progress",
+      subtitle: "Add tracking details to mark this order shipped.",
+      status: "in_progress",
+    })
+    expect(shipping.find((row) => row.key === "delivered")).toMatchObject({
+      title: "Delivery",
+      subtitle: "Confirm delivery after shipment.",
+      status: "waiting",
+    })
+
+    const delivery = buildOrderStatusTimeline({
+      status: "paid",
+      paid: true,
+      shippingUpdated: true,
+    })
+    expect(delivery.find((row) => row.key === "shipped")).toMatchObject({
+      title: "Shipped",
+      subtitle: "Tracking details recorded.",
+      status: "complete",
+    })
+    expect(delivery.find((row) => row.key === "delivered")).toMatchObject({
+      title: "Confirm delivery",
+      subtitle: "Mark the order delivered when fulfillment is complete.",
+      status: "in_progress",
+    })
+
+    const verification = buildOrderStatusTimeline({
+      status: "pending",
+      paymentObserved: true,
+    })
+    expect(verification.find((row) => row.key === "payment")).toMatchObject({
+      title: "Confirm payment",
+      subtitle: "Verify settlement before fulfilling the order.",
+      status: "in_progress",
+    })
   })
 })
 
@@ -353,7 +397,7 @@ describe("getMerchantOrderActions", () => {
     expect(
       buildOrderStatusTimeline(state).find((step) => step.key === "payment")
     ).toMatchObject({
-      title: "Payment proof received",
+      title: "Confirm payment",
       status: "in_progress",
     })
     expect(getMerchantOrderActions(state)).toEqual([
