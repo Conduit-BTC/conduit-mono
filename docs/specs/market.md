@@ -28,6 +28,74 @@ Use Figma MCP tools to extract design context for screen work. Do not rely on ol
 4. View merchant context on `/store/$pubkey`
 5. Add items to cart
 
+#### Discovery ordering
+
+The default Market catalog is a network-discovery surface, not a strictly
+chronological archive. Its opening results should demonstrate the breadth and
+activity of the available merchant network. Shoppers who want to explore one
+merchant in depth can use that merchant's storefront or the store filter.
+
+##### Current release policy: Fresh & diverse
+
+The shopper-facing `Fresh & diverse` order applies after catalog-source,
+search, tag, and store filters determine the eligible catalog and before the
+visible result slice is selected.
+
+- A product is fresh when its signed event `created_at` is within the inclusive
+  previous 60 days and is not future-dated.
+- Merchant identity comes from the product event's signed `pubkey`, not a
+  profile name or client-provided product metadata.
+- The newest fresh product from every discovered eligible merchant is emitted
+  before any eligible merchant receives a second product. Additional fresh
+  products are emitted in subsequent merchant rounds.
+- Older and future-dated products remain available after the fresh catalog
+  rather than being discarded.
+- Explicit price ordering remains literal and does not use this discovery
+  policy.
+- During progressive catalog discovery, the prepared order may improve as
+  additional valid merchants and products are discovered.
+
+This guarantee applies to the currently discovered, market-visible catalog. It
+does not imply that every merchant on the wider Nostr network has already been
+discovered.
+
+##### Why this policy exists
+
+Bulk publication by one merchant must not monopolize the Market's primary
+discovery surface. The default order favors recent merchant representation
+while preserving freshness within each merchant's inventory. It is intended to
+make the active commerce network legible, not to grant a permanent position to
+any product or merchant.
+
+##### Policy evolution
+
+`Fresh & diverse` is the policy for the current release, not a permanent or
+universal ranking formula. Future discovery policies may vary by surface and
+shopper intent and may use signals such as catalog freshness, followed
+merchants, provenance, availability, graph confidence, or deliberate
+exploration of underexposed inventory.
+
+The durable implementation boundary is:
+
+- A discovery policy consumes prepared, normalized catalog state plus explicit
+  ordering context.
+- A discovery policy does not fetch relays, parse protocol events, or mutate
+  catalog storage.
+- Merchant and product identity remain grounded in signed event provenance.
+- Shopper-facing labels describe the ordering semantics actually in use.
+- A policy is deterministic and independently testable for a fixed catalog
+  snapshot and clock.
+
+The current release does not require a general-purpose ranking engine or policy
+registry. When multiple contextual policies exist, their shared contract should
+define policy identity, applicability, required inputs, fallbacks, and
+explanation metadata without taking ownership of catalog ingestion or storage.
+
+As catalog ingestion moves behind a prepared Commerce Graph, that graph can
+provide product-frontier, freshness, provenance, and completeness state. Market
+discovery policies can then order the prepared state without coupling the UI or
+the ranking policy to graph storage and synchronization.
+
 ### Checkout
 
 1. Review cart
