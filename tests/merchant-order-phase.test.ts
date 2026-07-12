@@ -4,6 +4,7 @@ import type {
   ParsedOrderMessage,
 } from "@conduit/core"
 import {
+  getMerchantConversationCommunication,
   getMerchantConversationQueue,
   getMerchantConversationPhase,
   getMerchantConversationStatusDisplay,
@@ -108,6 +109,37 @@ const shippingUpdate = {
 } as ParsedOrderMessage
 
 describe("merchant order phase", () => {
+  it("keeps loaded legacy orders replyable but treats orderless reads as unknown", () => {
+    expect(getMerchantConversationCommunication(conversation)).toBe(
+      "nostr_replyable"
+    )
+    expect(
+      getMerchantConversationCommunication({
+        ...conversation,
+        messageCount: 1,
+        messages: [proof],
+      })
+    ).toBe("unknown")
+    expect(
+      getMerchantConversationCommunication({
+        ...conversation,
+        messages: [
+          {
+            ...order,
+            payload: {
+              ...order.payload,
+              buyerIdentityKind: "guest_ephemeral",
+              guestContact: {
+                email: "guest@example.com",
+                phone: "+15555550100",
+              },
+            },
+          } as ParsedOrderMessage,
+        ],
+      })
+    ).toBe("guest_out_of_band")
+  })
+
   it("uses observed buyer payment evidence consistently across list surfaces", () => {
     expect(getMerchantConversationPhase(conversation)).toBe("in_progress")
     expect(getMerchantConversationStatusDisplay(conversation)).toEqual({

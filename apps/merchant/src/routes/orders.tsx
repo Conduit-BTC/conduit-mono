@@ -58,6 +58,7 @@ import { requireAuth } from "../lib/auth"
 import { BuyerAvatar, OrderListItem } from "../components/OrderListItem"
 import {
   getMerchantConversationQueue,
+  getMerchantConversationCommunication,
   getMerchantConversationState,
   getMerchantConversationStatusDisplay,
   getMerchantOrderSummary,
@@ -780,7 +781,10 @@ function OrdersPage() {
     [selected]
   )
   const isGuestOrder = orderSummary?.buyerIdentityKind === "guest_ephemeral"
-  const buyerInboxKnown = orderSummary?.buyerIdentityKind === "signed_in"
+  const communicationState = selected
+    ? getMerchantConversationCommunication(selected)
+    : "unknown"
+  const buyerInboxKnown = communicationState === "nostr_replyable"
   const operationalDelivery = buyerInboxKnown ? "buyer_and_self" : "self_only"
   const assertBuyerHasNostrInbox = useCallback(() => {
     if (!buyerInboxKnown) {
@@ -832,7 +836,12 @@ function OrdersPage() {
     () =>
       conversations.filter((conversation) => {
         const summary = getMerchantOrderSummary(conversation)
-        if (summary.buyerIdentityKind !== "signed_in") return false
+        if (
+          getMerchantConversationCommunication(conversation) !==
+          "nostr_replyable"
+        ) {
+          return false
+        }
         return (
           !summary.invoiceSent &&
           !summary.paymentProofReceived &&

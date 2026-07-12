@@ -96,6 +96,24 @@ export function getMerchantConversationState(
 }
 
 export type MerchantOrderQueue = Exclude<OrderQueueTab, "all">
+export type MerchantOrderCommunication =
+  "nostr_replyable" | "guest_out_of_band" | "unknown"
+
+export function getMerchantConversationCommunication(
+  conversation: MerchantConversationSummary
+): MerchantOrderCommunication {
+  const summary = getMerchantOrderSummary(conversation)
+  if (summary.buyerIdentityKind === "guest_ephemeral") {
+    return "guest_out_of_band"
+  }
+  if (
+    summary.buyerIdentityKind === "signed_in" ||
+    (conversation.messages ?? []).some((message) => message.type === "order")
+  ) {
+    return "nostr_replyable"
+  }
+  return "unknown"
+}
 
 export function getMerchantConversationQueue(
   conversation: MerchantConversationSummary
