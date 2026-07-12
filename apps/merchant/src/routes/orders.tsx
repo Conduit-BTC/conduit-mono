@@ -25,6 +25,7 @@ import {
   publishMerchantOrderMessage,
   weblnMakeInvoice,
   type MerchantConversationSummary,
+  type MerchantOrderState,
   type KnownOrderStatus,
   type Profile,
   useAuth,
@@ -61,12 +62,14 @@ import {
   getMerchantConversationCommunication,
   getMerchantConversationState,
   getMerchantConversationStatusDisplay,
+  getMerchantOrderRequiresShipping,
   getMerchantOrderSummary,
   isMerchantConversationActiveFulfillment,
   ORDER_PHASE_OPTIONS,
   type OrderQueueTab,
 } from "../lib/order-phase"
 import { getProfileUrl } from "../lib/market-links"
+import { prepareShippingUpdate } from "../lib/shipping-update"
 import {
   Check,
   CheckCircle2,
@@ -104,24 +107,6 @@ function normalizeInvoiceCurrencyChoice(
   if (normalized === "SAT" || normalized === "SATS") return "SATS"
   if (normalized === "USD") return "USD"
   return ""
-}
-
-function normalizeTrackingUrl(raw: string): string | undefined {
-  const trimmed = raw.trim()
-  if (!trimmed) return undefined
-
-  let parsed: URL
-  try {
-    parsed = new URL(trimmed)
-  } catch {
-    throw new Error("Tracking URL must be a valid http(s) link.")
-  }
-
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error("Tracking URL must start with http:// or https://.")
-  }
-
-  return parsed.toString()
 }
 
 function getDisplayName(profile: Profile | undefined, pubkey: string): string {
@@ -365,7 +350,14 @@ function OrderItemsCard({
     priceAtPurchase: number
     currency: string
   }>
-  productLookup: Map<string, { title: string; imageUrl?: string }>
+  productLookup: Map<
+    string,
+    {
+      title: string
+      imageUrl?: string
+      format: "physical" | "digital"
+    }
+  >
   subtotal: number
   currency: string
 }) {
@@ -602,15 +594,24 @@ function OrdersPage() {
   })
 
   const productLookup = useMemo(() => {
-    const map = new Map<string, { title: string; imageUrl?: string }>()
+    const map = new Map<
+      string,
+      {
+        title: string
+        imageUrl?: string
+        format: "physical" | "digital"
+      }
+    >()
     for (const record of orderProductsQuery.data?.data ?? []) {
+      if (record.product.pubkey !== pubkey) continue
       map.set(record.addressId, {
         title: record.product.title,
         imageUrl: getProductImageCandidates(record.product)[0]?.url,
+        format: record.product.format,
       })
     }
     return map
-  }, [orderProductsQuery.data])
+  }, [orderProductsQuery.data, pubkey])
 
   // Searchable text (name + description + tags) per resolved product listing,
   // populated once the listings load; search falls back to order-message item
@@ -796,8 +797,14 @@ function OrdersPage() {
 
   // Buyer evidence still requires verification. Merchant-confirmed settlement
   // implies acceptance and moves the order directly into fulfillment.
-  const merchantOrderState = selected
-    ? getMerchantConversationState(selected)
+  const merchantOrderState: MerchantOrderState = selected
+    ? {
+        ...getMerchantConversationState(selected),
+        requiresShipping: getMerchantOrderRequiresShipping(
+          orderSummary?.items ?? [],
+          productLookup
+        ),
+      }
     : { status: null }
   const merchantPaid = isMerchantOrderPaid(merchantOrderState)
   const safeTrackingUrl = normalizeSafeHttpUrl(orderSummary?.trackingUrl)
@@ -824,6 +831,7 @@ function OrdersPage() {
   const canRecordShipping =
     selectedQueue === "paid_fulfill" &&
     merchantPaid &&
+    merchantOrderState.requiresShipping !== false &&
     !merchantOrderState.shippingUpdated
 
   const selectedBuyerProfile = selected
@@ -1021,23 +1029,26 @@ function OrdersPage() {
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
       assertPaidForFulfillment()
-      const normalizedTrackingUrl = normalizeTrackingUrl(trackingUrl)
+      const prepared = prepareShippingUpdate({
+        trackingNumber,
+        carrier,
+        trackingUrl,
+        note: shippingNote,
+      })
       await publishMerchantOrderMessage({
         merchantPubkey: pubkey,
         buyerPubkey: selected.buyerPubkey,
         orderId: selected.orderId,
         type: "shipping_update",
         tags: [
-          ...(carrier.trim() ? [["carrier", carrier.trim()]] : []),
-          ...(trackingNumber.trim()
-            ? [["tracking", trackingNumber.trim()]]
-            : []),
+          ["tracking", prepared.trackingNumber],
+          ["carrier", prepared.carrier],
         ],
         payload: {
-          carrier: carrier.trim() || undefined,
-          trackingNumber: trackingNumber.trim() || undefined,
-          trackingUrl: normalizedTrackingUrl,
-          note: shippingNote.trim() || undefined,
+          carrier: prepared.carrier,
+          trackingNumber: prepared.trackingNumber,
+          trackingUrl: prepared.trackingUrl,
+          note: prepared.note,
         },
         delivery: operationalDelivery,
       })
@@ -1597,38 +1608,63 @@ function OrdersPage() {
                                   shippingMutation.mutate()
                                 }}
                               >
-                                <Input
-                                  aria-label="Shipping carrier"
-                                  value={carrier}
-                                  onChange={(event) =>
-                                    setCarrier(event.target.value)
-                                  }
-                                  placeholder="Carrier (optional)"
-                                />
-                                <Input
-                                  aria-label="Tracking number"
-                                  value={trackingNumber}
-                                  onChange={(event) =>
-                                    setTrackingNumber(event.target.value)
-                                  }
-                                  placeholder="Tracking number"
-                                />
-                                <Input
-                                  aria-label="Tracking URL"
-                                  value={trackingUrl}
-                                  onChange={(event) =>
-                                    setTrackingUrl(event.target.value)
-                                  }
-                                  placeholder="Tracking URL (optional)"
-                                />
-                                <Input
-                                  aria-label="Shipping note"
-                                  value={shippingNote}
-                                  onChange={(event) =>
-                                    setShippingNote(event.target.value)
-                                  }
-                                  placeholder="Optional note"
-                                />
+                                <div className="grid gap-1">
+                                  <Label htmlFor="shipping-tracking-code">
+                                    Tracking code
+                                  </Label>
+                                  <Input
+                                    id="shipping-tracking-code"
+                                    required
+                                    pattern=".*\S.*"
+                                    title="Enter a tracking code."
+                                    value={trackingNumber}
+                                    onChange={(event) =>
+                                      setTrackingNumber(event.target.value)
+                                    }
+                                  />
+                                </div>
+                                <div className="grid gap-1">
+                                  <Label htmlFor="shipping-carrier">
+                                    Carrier
+                                  </Label>
+                                  <Input
+                                    id="shipping-carrier"
+                                    required
+                                    pattern=".*\S.*"
+                                    title="Enter a carrier."
+                                    value={carrier}
+                                    onChange={(event) =>
+                                      setCarrier(event.target.value)
+                                    }
+                                  />
+                                </div>
+                                <div className="grid gap-1">
+                                  <Label htmlFor="shipping-tracking-url">
+                                    Tracking URL (optional)
+                                  </Label>
+                                  <Input
+                                    id="shipping-tracking-url"
+                                    type="url"
+                                    inputMode="url"
+                                    value={trackingUrl}
+                                    onChange={(event) =>
+                                      setTrackingUrl(event.target.value)
+                                    }
+                                  />
+                                </div>
+                                <div className="grid gap-1">
+                                  <Label htmlFor="shipping-additional-notes">
+                                    Additional notes (optional)
+                                  </Label>
+                                  <Input
+                                    id="shipping-additional-notes"
+                                    maxLength={2000}
+                                    value={shippingNote}
+                                    onChange={(event) =>
+                                      setShippingNote(event.target.value)
+                                    }
+                                  />
+                                </div>
                                 <Button
                                   type="submit"
                                   size="sm"
@@ -1647,7 +1683,10 @@ function OrdersPage() {
                             {(invoiceMutation.error ||
                               shippingMutation.error ||
                               noteMutation.error) && (
-                              <div className="rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
+                              <div
+                                role="alert"
+                                className="rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error"
+                              >
                                 {[
                                   invoiceMutation.error,
                                   shippingMutation.error,

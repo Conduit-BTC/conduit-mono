@@ -208,10 +208,15 @@ raw status vocabulary as a general-purpose manual console. Useful queue filters
 are **Paid—fulfill**, **Payment reported—verify**, **Unpaid—review**, **Shipped**,
 and **Closed**, plus an all-orders view.
 
-Shipment is one domain action: it captures available carrier and tracking
-details, records the shipping update, and advances fulfillment to `shipped`.
-Merchants should not have to publish a separate generic `shipped` status after
-recording the shipment.
+Shipment is one domain action: it requires a tracking code and carrier, accepts
+an optional tracking URL and additional notes, records the shipping update, and
+advances fulfillment to `shipped`. Merchants should not have to publish a
+separate generic `shipped` status after recording the shipment. Digital-only
+orders skip shipment and proceed directly to delivery confirmation; mixed
+orders still follow the physical shipment path. Merchant may skip shipment only
+after resolving every product reference to merchant-authored listings and
+confirming they are all digital; missing, deleted, unresolved, or legacy
+listings remain shipping-required.
 
 ## Order Message Types
 

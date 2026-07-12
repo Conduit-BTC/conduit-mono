@@ -88,6 +88,7 @@ export interface Order {
 
 export interface OrderItem {
   productId: string
+  format: "physical" | "digital"
   quantity: number
   priceAtPurchase: number
   currency: string

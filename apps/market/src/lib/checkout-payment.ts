@@ -40,6 +40,7 @@ export type CheckoutPaymentStage =
 export type CheckoutPricingItem = {
   productId: string
   title?: string
+  format: "physical" | "digital"
   quantity: number
   priceAtPurchase: number
   currency: "SATS"
@@ -254,6 +255,7 @@ export function buildCheckoutPricingIntent(
     pricedItems.push({
       productId: item.productId,
       title: item.title,
+      format: item.format ?? "physical",
       quantity: item.quantity,
       priceAtPurchase: itemSats,
       currency: "SATS",

@@ -66,6 +66,25 @@ export function getMerchantOrderSummary(
   })
 }
 
+export function getMerchantOrderRequiresShipping(
+  items: Array<{ productId: string }>,
+  productLookup: Map<
+    string,
+    { format: "physical" | "digital" | null | undefined }
+  >
+): boolean | undefined {
+  if (items.length === 0) return undefined
+
+  let hasUnresolvedItem = false
+  for (const item of items) {
+    const format = productLookup.get(item.productId)?.format
+    if (format === "physical") return true
+    if (format !== "digital") hasUnresolvedItem = true
+  }
+
+  return hasUnresolvedItem ? undefined : false
+}
+
 export function getMerchantConversationState(
   conversation: MerchantConversationSummary
 ): MerchantOrderState {

@@ -226,6 +226,35 @@ describe("getMerchantOrderActions", () => {
     ])
   })
 
+  it("skips shipment and offers delivery confirmation for digital-only orders", () => {
+    const state = {
+      status: "paid",
+      paid: true,
+      requiresShipping: false,
+    }
+
+    expect(buildOrderStatusTimeline(state).map((step) => step.key)).toEqual([
+      "placed",
+      "payment",
+      "accepted",
+      "delivered",
+    ])
+    expect(getMerchantOrderActions(state)).toEqual([
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Cancel order",
+        kind: "destructive",
+      },
+      {
+        action: "complete",
+        status: "complete",
+        label: "Confirm delivery",
+        kind: "primary",
+      },
+    ])
+  })
+
   it("routes buyer payment evidence to verification before fulfillment", () => {
     expect(
       getMerchantOrderActions({

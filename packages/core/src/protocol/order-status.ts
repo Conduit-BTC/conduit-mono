@@ -50,6 +50,8 @@ export interface MerchantOrderState {
   invoiceSent?: boolean
   /** A merchant shipping update has been recorded, with or without tracking. */
   shippingUpdated?: boolean
+  /** False only for an explicitly digital-only order. */
+  requiresShipping?: boolean
 }
 
 export type OrderFlow = "prepaid" | "invoice"
@@ -220,10 +222,11 @@ export function buildOrderStatusTimeline(
   }
 
   // Payment and acceptance are ordered by the flow; everything else is shared.
+  const fulfillmentStages = state.requiresShipping === false ? [] : [shipped]
   const ordered =
     flow === "prepaid"
-      ? [placed, payment, accepted, shipped, delivered]
-      : [placed, accepted, payment, shipped, delivered]
+      ? [placed, payment, accepted, ...fulfillmentStages, delivered]
+      : [placed, accepted, payment, ...fulfillmentStages, delivered]
 
   let frontMarked = false
   return ordered.map((stage): OrderTimelineStep => {
@@ -287,6 +290,22 @@ export function getMerchantOrderActions(
   if (TERMINAL_ACTION_STATUSES.has(status)) return []
 
   if (isMerchantOrderPaid(state)) {
+    if (state.requiresShipping === false) {
+      return [
+        {
+          action: "cancel",
+          status: "cancelled",
+          label: "Cancel order",
+          kind: "destructive",
+        },
+        {
+          action: "complete",
+          status: "complete",
+          label: "Confirm delivery",
+          kind: "primary",
+        },
+      ]
+    }
     if (!!state.shippingUpdated || status === "shipped") {
       return [
         {

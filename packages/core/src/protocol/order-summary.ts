@@ -10,6 +10,7 @@ export type OrderSummary = {
   items: Array<{
     productId: string
     title?: string
+    format: "physical" | "digital"
     quantity: number
     priceAtPurchase: number
     currency: string
@@ -170,6 +171,7 @@ export function extractOrderSummary(
       ? firstOrder.payload.items.map((item) => ({
           productId: item.productId,
           title: item.title,
+          format: item.format,
           quantity: item.quantity,
           priceAtPurchase: item.priceAtPurchase,
           currency: item.currency,

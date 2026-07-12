@@ -8,6 +8,7 @@ import {
   getMerchantConversationQueue,
   getMerchantConversationPhase,
   getMerchantConversationStatusDisplay,
+  getMerchantOrderRequiresShipping,
   getMerchantOrderSummary,
   isMerchantConversationActiveFulfillment,
 } from "../apps/merchant/src/lib/order-phase"
@@ -177,6 +178,68 @@ describe("merchant order phase", () => {
     expect(getMerchantConversationStatusDisplay(confirmed).label).toBe("Paid")
     expect(getMerchantConversationQueue(confirmed)).toBe("paid_fulfill")
     expect(getMerchantOrderSummary(confirmed).accepted).toBe(true)
+  })
+
+  it("skips shipment only when every merchant listing resolves as digital", () => {
+    const digitalOrder = {
+      ...order,
+      payload: {
+        ...order.payload,
+        items: [
+          {
+            productId: "download",
+            format: "digital",
+            quantity: 1,
+            priceAtPurchase: 100,
+            currency: "SATS",
+          },
+        ],
+      },
+    } as ParsedOrderMessage
+    const mixedOrder = {
+      ...digitalOrder,
+      payload: {
+        ...digitalOrder.payload,
+        items: [
+          ...digitalOrder.payload.items,
+          {
+            productId: "shirt",
+            format: "physical",
+            quantity: 1,
+            priceAtPurchase: 100,
+            currency: "SATS",
+          },
+        ],
+      },
+    } as ParsedOrderMessage
+
+    const digitalItems = getMerchantOrderSummary({
+      ...conversation,
+      messages: [digitalOrder, proof],
+    }).items
+    const mixedItems = getMerchantOrderSummary({
+      ...conversation,
+      messages: [mixedOrder, proof],
+    }).items
+
+    expect(
+      getMerchantOrderRequiresShipping(
+        digitalItems,
+        new Map([["download", { format: "digital" }]])
+      )
+    ).toBe(false)
+    expect(
+      getMerchantOrderRequiresShipping(
+        mixedItems,
+        new Map([
+          ["download", { format: "digital" }],
+          ["shirt", { format: "physical" }],
+        ])
+      )
+    ).toBe(true)
+    expect(
+      getMerchantOrderRequiresShipping(digitalItems, new Map())
+    ).toBeUndefined()
   })
 
   it("treats the shipment event as shipped even without a generic status", () => {

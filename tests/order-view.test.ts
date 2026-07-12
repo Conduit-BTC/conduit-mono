@@ -84,6 +84,25 @@ describe("buildOrderViewModel", () => {
     expect(vm.paymentStatus).toBe("paid")
   })
 
+  it("skips fulfillment shipping for an explicitly digital-only order", () => {
+    const vm = vmFromLifecycle({
+      items: [
+        {
+          productId: "30402:merchant:digital-download",
+          format: "digital",
+          quantity: 1,
+          priceAtPurchase: 111,
+          currency: "SATS",
+        },
+      ],
+    })
+
+    expect(vm.requiresShipping).toBe(false)
+    expect(buildOrderTimeline(vm).map((row) => row.key)).not.toContain(
+      "fulfillment"
+    )
+  })
+
   it("preserves public zap attribution for external-wallet fallback orders", () => {
     const anon = vmFromLifecycle({
       checkoutMode: "external_wallet",

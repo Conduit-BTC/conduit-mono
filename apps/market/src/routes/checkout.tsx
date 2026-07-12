@@ -1330,6 +1330,7 @@ function CheckoutPage() {
     items: Array<{
       productId: string
       title?: string
+      format: "physical" | "digital"
       quantity: number
       priceAtPurchase: number
       currency: string
@@ -1346,6 +1347,7 @@ function CheckoutPage() {
     return items.map((item) => ({
       productId: item.productId,
       title: item.title,
+      format: item.format,
       quantity: item.quantity,
       priceAtPurchase: item.priceAtPurchase,
       currency: item.currency,
@@ -1395,6 +1397,7 @@ function CheckoutPage() {
       const currency = "SATS"
       const items = checkoutItems.map((item) => ({
         productId: item.productId,
+        format: item.format ?? "physical",
         quantity: item.quantity,
         priceAtPurchase: getPriceSats(item, btcUsdRate)?.sats ?? 0,
         currency,

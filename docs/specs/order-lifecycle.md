@@ -29,9 +29,9 @@ Fields:
 - Identity: `orderId`, `buyerPubkey`, `merchantPubkey`, `checkoutMode`
   (`anonymous_public_zap` | `public_zap_as_shopper` | `public_zap` |
   `private_checkout` | `pay_later` | `external_wallet`).
-- Snapshot: `items` (productId, qty, price-at-purchase, source price, shipping
-  option), `itemSubtotalSats`, `shippingCostSats`, `totalSats`, `totalMsats`,
-  `currency`, `pricingQuote`.
+- Snapshot: `items` (productId, fulfillment format, qty, price-at-purchase,
+  source price, shipping option), `itemSubtotalSats`, `shippingCostSats`,
+  `totalSats`, `totalMsats`, `currency`, `pricingQuote`.
 - Local-only PII: `shippingAddress`, `contactNote`. **Never** sent to telemetry.
 - Gates: `addressValidity`, `shippingZoneEligibility` (distinct; see below).
 - Progress: `orderDeliveryStatus`, `invoiceStatus`, `paymentStatus`,
@@ -144,19 +144,26 @@ general-purpose status console as the primary workflow:
 
 - `reported` or `proof_observed`: verify settlement, then confirm payment or
   cancel the order; no separate disputed wire status is introduced here.
-- confirmed and not shipped: record shipment or cancel and coordinate a manual
-  refund.
+- confirmed physical or mixed order and not shipped: record shipment or cancel
+  and coordinate a manual refund.
+- confirmed digital-only order: confirm delivery directly or cancel and
+  coordinate a manual refund; no shipping milestone is shown or required.
 - shipped: complete delivery when appropriate.
 - unpaid and unreviewed: accept/request payment or decline.
 
-The shipment action records the available carrier and tracking details and
-advances fulfillment to `shipped` as one operation. It must not require a
-separate generic status update. Normal invoice controls are suppressed after
-confirmed payment. For backward compatibility, an authentic merchant-authored
-shipment event also backfills the paid and accepted gates when older history
-lacks the now-required explicit confirmation. Requesting extra funds because a
-displayed price or shipping option was insufficient is not part of the ordinary
-paid-order flow.
+The shipment action requires non-empty tracking-code and carrier values, may
+include a tracking URL and additional notes, and advances fulfillment to
+`shipped` as one operation. It must not require a separate generic status
+update. Digital-only orders skip this action and advance from confirmed payment
+to delivery confirmation. Mixed orders retain the physical shipment path. The
+Merchant skip is authorized only by resolved merchant-authored product
+listings; buyer-provided snapshots alone cannot remove a fulfillment gate, and
+missing, deleted, unresolved, or legacy listings are treated as requiring
+shipping. Normal invoice controls are suppressed after confirmed payment. For
+backward compatibility, an authentic merchant-authored shipment event also
+backfills the paid and accepted gates when older history lacks the now-required
+explicit confirmation. Requesting extra funds because a displayed price or
+shipping option was insufficient is not part of the ordinary paid-order flow.
 
 The Merchant order queue exposes work-oriented filters: **Paid—fulfill**,
 **Payment reported—verify**, **Unpaid—review**, **Shipped**, and **Closed**, with

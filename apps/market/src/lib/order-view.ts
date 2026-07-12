@@ -39,6 +39,7 @@ import type { StatusStepperRow, StatusStepperRowStatus } from "@conduit/ui"
 export interface OrderViewItem {
   productId: string
   displayTitle: string
+  format: "physical" | "digital"
   quantity: number
   priceAtPurchase: number
   currency: string
@@ -56,6 +57,8 @@ export interface OrderViewModel {
   updatedAt: number
 
   items: OrderViewItem[]
+  /** False only when every item was explicitly snapshotted as digital. */
+  requiresShipping: boolean
   totalSats: number | null
   currency: string
   shippingAddress: OrderSummary["shippingAddress"]
@@ -202,6 +205,7 @@ export function buildOrderViewModel(
         productId: item.productId,
         displayTitle:
           item.title?.trim() || deriveItemDisplayTitle(item.productId),
+        format: item.format ?? "physical",
         quantity: item.quantity,
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,
@@ -210,6 +214,7 @@ export function buildOrderViewModel(
         productId: item.productId,
         displayTitle:
           item.title?.trim() || deriveItemDisplayTitle(item.productId),
+        format: item.format,
         quantity: item.quantity,
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,
@@ -299,6 +304,8 @@ export function buildOrderViewModel(
     createdAt: lifecycle?.createdAt ?? conversation?.latestAt ?? Date.now(),
     updatedAt: lifecycle?.updatedAt ?? conversation?.latestAt ?? Date.now(),
     items,
+    requiresShipping:
+      items.length === 0 || items.some((item) => item.format !== "digital"),
     totalSats,
     currency: lifecycle?.currency ?? summary?.currency ?? "SATS",
     shippingAddress:
@@ -535,7 +542,11 @@ export function computeOrderTimelineStatuses(
   else if (vm.merchantStatus === "processing") fulfillment = "in_progress"
 
   // 7. Complete
-  const complete: StatusStepperRowStatus = completed ? "complete" : "waiting"
+  const complete: StatusStepperRowStatus = completed
+    ? "complete"
+    : !vm.requiresShipping && merchantConfirmed
+      ? "in_progress"
+      : "waiting"
 
   return {
     order_sent: orderSent,
@@ -583,7 +594,9 @@ export function buildOrderTimeline(vm: OrderViewModel): StatusStepperRow[] {
   const rowOrder =
     vm.buyerIdentityKind === "guest_ephemeral"
       ? TIMELINE_ROW_ORDER.slice(0, 4)
-      : TIMELINE_ROW_ORDER
+      : vm.requiresShipping
+        ? TIMELINE_ROW_ORDER
+        : TIMELINE_ROW_ORDER.filter((key) => key !== "fulfillment")
   return rowOrder.map((key) => {
     const status = statuses[key]
     const copy = copyFor(key, status)

@@ -989,6 +989,7 @@ describe("checkout payment helpers", () => {
 
     expect(intent.status).toBe("ok")
     if (intent.status !== "ok") return
+    expect(intent.items[0]?.format).toBe("digital")
     expect(intent.totalSats).toBe(1_298)
     expect(shippingCost.status).toBe("not_required")
     expect(
@@ -1215,6 +1216,43 @@ describe("checkout payment helpers", () => {
 // ─── payment proof payload ──────────────────────────────────────────────────
 
 describe("order payload schema", () => {
+  it("preserves item fulfillment format and defaults legacy items to physical", () => {
+    const baseOrder = {
+      id: "order-format",
+      merchantPubkey: "merchant",
+      buyerPubkey: "buyer",
+      subtotal: 1000,
+      currency: "SATS",
+      createdAt: 1_700_000_000_000,
+    }
+    const digital = orderSchema.parse({
+      ...baseOrder,
+      items: [
+        {
+          productId: "digital-product",
+          format: "digital",
+          quantity: 1,
+          priceAtPurchase: 1000,
+          currency: "SATS",
+        },
+      ],
+    })
+    const legacy = orderSchema.parse({
+      ...baseOrder,
+      items: [
+        {
+          productId: "legacy-product",
+          quantity: 1,
+          priceAtPurchase: 1000,
+          currency: "SATS",
+        },
+      ],
+    })
+
+    expect(digital.items[0]?.format).toBe("digital")
+    expect(legacy.items[0]?.format).toBe("physical")
+  })
+
   it("accepts structured guest contact on ephemeral guest orders", () => {
     const parsed = orderSchema.parse({
       id: "order-1",
