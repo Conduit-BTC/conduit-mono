@@ -268,6 +268,23 @@ describe("getMerchantOrderActions", () => {
     ])
   })
 
+  it("backfills confirmed fulfillment gates for legacy shipment-only history", () => {
+    const state = { status: "pending", shippingUpdated: true }
+    const rows = buildOrderStatusTimeline(state)
+    expect(rows.find((step) => step.key === "payment")?.status).toBe("complete")
+    expect(rows.find((step) => step.key === "accepted")?.status).toBe(
+      "complete"
+    )
+    expect(getMerchantOrderActions(state)).toEqual([
+      {
+        action: "complete",
+        status: "complete",
+        label: "Mark delivered",
+        kind: "primary",
+      },
+    ])
+  })
+
   it("preserves acceptance when a later paid status becomes current", () => {
     expect(
       getMerchantOrderActions({ status: "paid", accepted: true, paid: true })

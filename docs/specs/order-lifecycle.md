@@ -147,8 +147,11 @@ general-purpose status console as the primary workflow:
 The shipment action records the available carrier and tracking details and
 advances fulfillment to `shipped` as one operation. It must not require a
 separate generic status update. Normal invoice controls are suppressed after
-settlement is confirmed; requesting extra funds because a displayed price or
-shipping option was insufficient is not part of the ordinary paid-order flow.
+confirmed payment. For backward compatibility, an authentic merchant-authored
+shipment event also backfills the paid and accepted gates when older history
+lacks the now-required explicit confirmation. Requesting extra funds because a
+displayed price or shipping option was insufficient is not part of the ordinary
+paid-order flow.
 
 The Merchant order queue exposes work-oriented filters: **Paid—fulfill**,
 **Payment reported—verify**, **Unpaid—review**, **Shipped**, and **Closed**, with

@@ -85,7 +85,11 @@ function toState(
 }
 
 export function isMerchantOrderPaid(state: MerchantOrderState): boolean {
-  return !!state.paid || PAID_STATUSES.has(normalizeStatus(state.status))
+  return (
+    !!state.paid ||
+    !!state.shippingUpdated ||
+    PAID_STATUSES.has(normalizeStatus(state.status))
+  )
 }
 
 export function isMerchantOrderAccepted(state: MerchantOrderState): boolean {

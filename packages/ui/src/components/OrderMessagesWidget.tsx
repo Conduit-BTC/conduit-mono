@@ -133,7 +133,15 @@ export function OrderMessagesWidget({
         <DialogTrigger asChild>
           <button
             type="button"
-            aria-label={open ? "Close messages" : "Open messages"}
+            aria-label={
+              readOnly
+                ? open
+                  ? "Close order history"
+                  : "Open order history"
+                : open
+                  ? "Close messages"
+                  : "Open messages"
+            }
             className={`relative flex size-14 items-center justify-center rounded-full bg-primary-500 text-white shadow-xl transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)] ${open ? "max-sm:hidden" : ""}`}
           >
             {open ? (
