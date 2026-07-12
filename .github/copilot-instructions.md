@@ -36,8 +36,8 @@ When reviewing PRs:
 - Focus comments on behavior impact and reproducible scenarios.
 - Ask for tests where behavior changes are not covered.
 - Keep comments concise and actionable.
-- Include a reviewer-owned context decision when relevant: `No docs follow-up needed`, `Docs-only PR after merge`, or `Docs/spec PR required before merge`.
-- Treat broad docs/context updates as separate senior-reviewed docs PRs unless the current PR is explicitly a docs/spec PR.
+- Include a reviewer-owned contract decision when relevant: `Contract updated in this PR`, `No contract change needed`, or `Separate decision/docs-only PR required`.
+- Block merge for missing or mismatched contracts, not because contract and implementation changes share a PR.
 
 ## Reliability Checks (Orders/Messaging)
 
@@ -68,13 +68,14 @@ For changes touching agent automation, telemetry, or smoke-test artifacts:
 - Verify telemetry properties match `docs/analytics/events.md`.
 - Verify code-changing agent paths require maintainer intent and do not run for high-risk protocol/auth/payment/privacy work without human planning.
 
-## Context Follow-Up Checks
+## Contract Checks
 
-For implementation PRs, reviewers decide whether the merged work changes durable repo context. Agents may suggest possible docs drift, but they should not present autonomous context upgrades as required workflow.
+For implementation PRs, reviewers decide whether the work changes the durable repo contract. PR descriptions should distinguish `Contract changes` from `Implementation changes`.
 
-- Use `Docs/spec PR required before merge` when product requirements, protocol behavior, shared UX rules, architecture, or cross-team implementation expectations changed before the repo contract was updated.
-- Use `Docs-only PR after merge` when the implementation fits current contracts but reveals stale docs, missing agent routing, missing source references, or completed phase criteria.
-- Use `No docs follow-up needed` when existing docs and Linear context remain sufficient.
+- Use `Contract updated in this PR` when product requirements, protocol behavior, shared UX rules, architecture, or cross-team implementation expectations change with the code.
+- Use `No contract change needed` when existing docs remain accurate.
+- Use `Separate decision/docs-only PR required` only for broad cross-PR architecture or external consensus that must be settled before implementation.
+- Block merge when a required contract change is missing or disagrees with the implementation.
 
 ## Suggested Validation Commands
 

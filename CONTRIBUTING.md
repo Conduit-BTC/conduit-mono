@@ -43,31 +43,29 @@ Public `conduit-mono` docs are implementation guidance for the code in this repo
 - `docs/DESIGN.md` tracks shared visual and UI-system guidance
 - `docs/knowledge/*` holds supporting notes and references, not the final source of truth
 
-Product strategy, ticket sequencing, ownership, private commercial plans, and private operating context live outside this public repository. If an external tracker conflicts with `docs/specs/*` or `docs/ARCHITECTURE.md` on implementation behavior, update the repo contract before coding.
+Product strategy, ticket sequencing, ownership, private commercial plans, and private operating context live outside this public repository. If an external tracker conflicts with `docs/specs/*` or `docs/ARCHITECTURE.md` on implementation behavior, resolve the repo contract mismatch before merge.
 
-If work changes product requirements, protocol behavior, shared UX rules, or cross-team implementation expectations:
+If work changes product requirements, protocol behavior, shared UX rules, or cross-team implementation expectations, update the relevant repo contract in the implementation PR. Distinguish `Contract changes` from `Implementation changes` in the PR description so reviewers can evaluate them together before merge.
 
-1. Open the relevant docs/spec PR first.
-2. Merge that PR to `main`.
-3. Start the implementation `feat/*` branch only after the docs/spec change lands.
+Use a separate decision or docs-only PR only for broad cross-PR architecture or external consensus that must be settled before implementation.
 
 For UI and theming work, also check [docs/DESIGN.md](docs/DESIGN.md) before introducing new shared styles or tokens.
 
 For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also check [external-nostr-references.md](docs/knowledge/external-nostr-references.md) and the relevant public NIP or GammaMarkets source before implementation. Product listings are NIP-99 + GammaMarkets `kind:30402`; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
 
-### Reviewer-Owned Context Follow-Up
+### Reviewer-Owned Contract Check
 
 Reviewers decide whether implementation work requires repo context updates. This is not an autonomous agent responsibility.
 
 During review, mark one of:
 
-- `No docs follow-up needed`
-- `Docs-only PR after merge`
-- `Docs/spec PR required before merge`
+- `Contract updated in this PR`
+- `No contract change needed`
+- `Separate decision/docs-only PR required`
 
-Use `Docs/spec PR required before merge` when the PR changes behavior that needs a stable contract before code lands. Use `Docs-only PR after merge` when the code fits existing contracts but reveals stale docs, missing agent routing, missing source references, or completed phase criteria.
+Block merge when a required contract change is missing or disagrees with the implementation. Do not require a separate PR solely because the contract and implementation changed together.
 
-Docs follow-up PRs should be docs-only, reference the merged implementation PR and relevant tracker issue when available, and be reviewed separately. Agents may draft them only when a reviewer or maintainer asks.
+Use `Separate decision/docs-only PR required` only for broad cross-PR architecture or external consensus that must be settled before implementation.
 
 ### Commits
 
@@ -126,7 +124,7 @@ bun run telemetry:check # Must pass when telemetry/analytics surfaces are affect
 - Use the repo PR template in `.github/pull_request_template.md`
 - Write a clear description of what changed and why
 - Link the relevant tracker issue when available
-- If applicable, link the docs/spec PR that established the implementation contract
+- Describe any contract changes separately from implementation changes and link an external decision PR when one is required
 - Include a test plan (how to verify the changes work)
 - PRs require review before merging to `main`
 - PRs from forks may need a maintainer to approve GitHub Actions before CI runs

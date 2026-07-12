@@ -16,17 +16,17 @@ This is the Conduit monorepo - a decentralized Nostr-based commerce platform. Se
 1. Read `docs/README.md` to understand which docs are authoritative.
 2. Read the relevant `docs/specs/*.md` before changing feature or protocol behavior.
 3. For UI/theming work, read `docs/DESIGN.md` before introducing shared style values or tokens.
-4. If the work changes product requirements, protocol behavior, or shared implementation expectations, land the docs/spec PR to `main` before starting the implementation `feat/*` branch.
+4. If the work changes product requirements, protocol behavior, or shared implementation expectations, update the relevant contract in the implementation PR before merge and keep contract and code aligned.
 5. Use `@conduit/core` Zod schemas for validation. Interop parsing stays best-effort, but shared contracts should be reflected in repo docs first.
 6. For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, read `docs/knowledge/external-nostr-references.md` and the relevant public NIP/GammaMarkets source before implementation.
 
 Product strategy, ticket status, ownership, sequencing, private commercial plans, and private operating context live outside this public repository.
 
-Reviewer-owned context follow-up:
+Reviewer-owned contract check:
 
-- Implementation PRs should not silently bundle broad repo-context updates unless they are docs/spec PRs.
-- Surface possible docs drift in the PR, but reviewers decide whether follow-up is required.
-- Reviewer decisions are `No docs follow-up needed`, `Docs-only PR after merge`, or `Docs/spec PR required before merge`.
+- Implementation PRs should separate contract changes from implementation changes in the PR description.
+- Reviewers block merge when a required contract is missing or disagrees with the implementation, not because it was not pre-merged on another branch.
+- Reviewer decisions are `Contract updated in this PR`, `No contract change needed`, `Follow-up docs cleanup`, or `External/architecture decision required before merge`.
 - Draft docs-only follow-up PRs only when a reviewer or maintainer asks.
 
 ## UI Component Rules

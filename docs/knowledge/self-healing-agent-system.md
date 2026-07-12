@@ -37,12 +37,13 @@ acceptance criteria, and risk class.
 
 ## Product Feature Loop
 
-Idea -> spec agent -> Linear ticket -> groom for SFD -> implementation agent ->
-PR review/harden loop.
+Idea -> Linear ticket -> groom for SFD -> implementation agent -> same-PR
+contract and implementation review/harden loop.
 
 Feature work should be groomed before implementation. If product requirements,
-protocol behavior, or shared expectations change, land the relevant public docs
-or spec update before implementation.
+protocol behavior, or shared expectations change, update the relevant public
+contract in the implementation PR before merge. Use a separate decision PR only
+for broad cross-PR architecture or external consensus that must be settled first.
 
 ## Linear Label Kickoff
 

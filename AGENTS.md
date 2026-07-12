@@ -78,13 +78,14 @@ Nostr-sensitive work must read `docs/knowledge/external-nostr-references.md` and
 
 3. **Plan before implementing**: For non-trivial implementation work, write a concise plan from the relevant spec/docs. If the user has already asked for implementation, proceed after the plan unless the work hits a stop condition.
 
-4. **Spec-first rule**:
-   - If work changes product requirements, protocol behavior, or shared implementation expectations, land the relevant docs/spec PR to `main` before starting the implementation `feat/*` branch
+4. **Same-PR contract gate**:
+   - If work changes product requirements, protocol behavior, shared UX rules, or shared implementation expectations, update the relevant repo contract in the implementation PR before merge.
+   - Separate decision or docs-only PRs are reserved for broad cross-PR architecture or external consensus that must be settled before implementation.
 
-5. **Reviewer-owned context follow-up**:
-   - For implementation PRs, surface possible docs drift in the PR or final summary, but do not silently bundle broad repo-context changes into the code PR.
-   - The reviewer decides: `No docs follow-up needed`, `Docs-only PR after merge`, or `Docs/spec PR required before merge`.
-   - Draft docs-only follow-up PRs only when a reviewer or maintainer asks.
+5. **Reviewer-owned contract check**:
+   - PRs distinguish `Contract changes` from `Implementation changes`.
+   - Reviewers block merge when a required contract change is missing or disagrees with the implementation, not because it shares the implementation PR.
+   - Use a separate decision or docs-only PR only for broad cross-PR architecture or external consensus.
 
 6. **End**: Report validation and any doc/status follow-ups. Do not add product strategy, sequencing, private commercial, or private planning notes to tracked docs.
 
@@ -273,4 +274,4 @@ Pull request required for all changes.
 - Use the same convention for PR titles unless the PR is a release or sync promotion with an explicit repo-level naming rule
 - Branch names for new work should use conventional prefixes such as `feat/*`, `fix/*`, `chore/*`, or `docs/*`
 - Use `.github/pull_request_template.md` for all PRs
-- For spec-driven work, merge the relevant docs/spec PR to `main` before starting the implementation `feat/*` branch
+- For spec-driven work, update the relevant repo contract in the implementation PR before merge; use a separate decision PR only for broad architecture or external consensus
