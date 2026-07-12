@@ -52,8 +52,8 @@ export interface MerchantOrderState {
   shippingUpdated?: boolean
   /** False only for an explicitly digital-only order. */
   requiresShipping?: boolean
-  /** False when this order has no confirmed Nostr reply inbox. */
-  buyerReplyable?: boolean
+  /** False for a known out-of-band guest; `unknown` for partial identity reads. */
+  buyerReplyable?: boolean | "unknown"
 }
 
 export type OrderFlow = "prepaid" | "invoice"
@@ -224,7 +224,9 @@ export function buildOrderStatusTimeline(
               subtitle:
                 state.buyerReplyable === false
                   ? "Contact the buyer outside Nostr to request payment."
-                  : "Send an invoice to the buyer.",
+                  : state.buyerReplyable === "unknown"
+                    ? "Recover the buyer identity before requesting payment."
+                    : "Send an invoice to the buyer.",
             },
     waiting: {
       title: "Payment",

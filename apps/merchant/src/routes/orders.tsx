@@ -811,7 +811,12 @@ function OrdersPage() {
   const merchantOrderState: MerchantOrderState = selected
     ? {
         ...getMerchantConversationState(selected),
-        buyerReplyable: buyerInboxKnown,
+        buyerReplyable:
+          communicationState === "nostr_replyable"
+            ? true
+            : communicationState === "guest_out_of_band"
+              ? false
+              : "unknown",
         requiresShipping: getMerchantOrderRequiresShipping(
           orderSummary?.items ?? [],
           productLookup
@@ -843,7 +848,7 @@ function OrdersPage() {
     merchantOrderState.requiresShipping !== false &&
     !merchantOrderState.shippingUpdated
   const canRequestPaymentOutOfBand =
-    !buyerInboxKnown &&
+    communicationState === "guest_out_of_band" &&
     selectedQueue === "unpaid_review" &&
     !merchantPaid &&
     !merchantOrderState.paymentObserved &&

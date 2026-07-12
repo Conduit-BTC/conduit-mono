@@ -235,6 +235,17 @@ describe("buildOrderStatusTimeline", () => {
       status: "in_progress",
     })
 
+    const unknownBuyer = buildOrderStatusTimeline({
+      status: "accepted",
+      accepted: true,
+      buyerReplyable: "unknown",
+    })
+    expect(unknownBuyer.find((row) => row.key === "payment")).toMatchObject({
+      title: "Request payment",
+      subtitle: "Recover the buyer identity before requesting payment.",
+      status: "in_progress",
+    })
+
     const legacyShipped = buildOrderStatusTimeline({ status: "shipped" })
     expect(legacyShipped.find((row) => row.key === "shipped")).toMatchObject({
       title: "Shipped",
@@ -454,6 +465,20 @@ describe("getMerchantOrderActions", () => {
         buyerReplyable: false,
       }).map((action) => action.action)
     ).toEqual(["cancel", "record_shipment"])
+    expect(
+      getMerchantOrderActions({
+        status: "accepted",
+        accepted: true,
+        buyerReplyable: "unknown",
+      })
+    ).toEqual([
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Cancel order",
+        kind: "destructive",
+      },
+    ])
   })
 
   it("shows buyer payment evidence without unlocking shipping", () => {
