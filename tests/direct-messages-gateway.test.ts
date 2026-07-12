@@ -164,6 +164,57 @@ describe("general direct-message gateway", () => {
     expect(result.meta.degraded).toBe(true)
   })
 
+  it("re-attempts only previously-failed wraps on a later read", async () => {
+    const unwrapCalls: Record<string, number> = {}
+    let badResolves = false
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
+          ? ([giftWrapEvent("wrap-ok"), giftWrapEvent("wrap-bad")] as never)
+          : [],
+      giftUnwrap: async (event) => {
+        unwrapCalls[event.id] = (unwrapCalls[event.id] ?? 0) + 1
+        if (event.id === "wrap-ok") {
+          return directRumor({
+            id: "dm-ok",
+            sender: MERCHANT,
+            recipient: BUYER,
+            content: "readable",
+            createdAt: 101,
+          }) as never
+        }
+        return (
+          badResolves
+            ? directRumor({
+                id: "dm-recovered",
+                sender: MERCHANT,
+                recipient: BUYER,
+                content: "recovered",
+                createdAt: 102,
+              })
+            : null
+        ) as never
+      },
+    })
+
+    const first = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+    expect(first.meta.decryptFailures).toHaveLength(1)
+
+    badResolves = true
+    const second = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+
+    // wrap-ok parsed on the first read is not unwrapped again; wrap-bad is.
+    expect(unwrapCalls["wrap-ok"]).toBe(1)
+    expect(unwrapCalls["wrap-bad"]).toBe(2)
+    expect(second.meta.decryptFailures ?? []).toHaveLength(0)
+    expect(second.data[0]?.messageCount).toBe(2)
+  })
+
   it("returns a single counterparty thread", async () => {
     __setCommerceTestOverrides({
       fetchEventsFanout: async (filter) =>
