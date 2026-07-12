@@ -67,7 +67,10 @@ export function getMerchantOrderSummary(
 }
 
 export function getMerchantOrderRequiresShipping(
-  items: Array<{ productId: string }>,
+  items: Array<{
+    productId: string
+    format?: "physical" | "digital"
+  }>,
   productLookup: Map<
     string,
     { format: "physical" | "digital" | null | undefined }
@@ -77,6 +80,8 @@ export function getMerchantOrderRequiresShipping(
 
   let hasUnresolvedItem = false
   for (const item of items) {
+    if (item.format === "physical") return true
+
     const format = productLookup.get(item.productId)?.format
     if (format === "physical") return true
     if (format !== "digital") hasUnresolvedItem = true

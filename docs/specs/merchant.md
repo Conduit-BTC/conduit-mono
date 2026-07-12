@@ -215,8 +215,9 @@ separate generic `shipped` status after recording the shipment. Digital-only
 orders skip shipment and proceed directly to delivery confirmation; mixed
 orders still follow the physical shipment path. Merchant may skip shipment only
 after resolving every product reference to merchant-authored listings and
-confirming they are all digital; missing, deleted, unresolved, or legacy
-listings remain shipping-required.
+confirming both the order snapshot and current listing are digital. Either
+source may preserve a physical requirement; missing, deleted, unresolved, or
+legacy listings remain shipping-required.
 
 ## Order Message Types
 

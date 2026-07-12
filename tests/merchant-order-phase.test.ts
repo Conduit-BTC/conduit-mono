@@ -240,6 +240,12 @@ describe("merchant order phase", () => {
     expect(
       getMerchantOrderRequiresShipping(digitalItems, new Map())
     ).toBeUndefined()
+    expect(
+      getMerchantOrderRequiresShipping(
+        [{ productId: "changed-listing", format: "physical" }],
+        new Map([["changed-listing", { format: "digital" }]])
+      )
+    ).toBe(true)
   })
 
   it("treats the shipment event as shipped even without a generic status", () => {

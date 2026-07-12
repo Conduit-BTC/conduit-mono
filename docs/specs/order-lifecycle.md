@@ -157,9 +157,10 @@ include a tracking URL and additional notes, and advances fulfillment to
 update. Digital-only orders skip this action and advance from confirmed payment
 to delivery confirmation. Mixed orders retain the physical shipment path. The
 Merchant skip is authorized only by resolved merchant-authored product
-listings; buyer-provided snapshots alone cannot remove a fulfillment gate, and
-missing, deleted, unresolved, or legacy listings are treated as requiring
-shipping. Normal invoice controls are suppressed after confirmed payment. For
+listings that agree with the order snapshot that every item is digital. Either
+source may preserve a physical requirement, while buyer-provided snapshots
+alone cannot remove one; missing, deleted, unresolved, or legacy listings are
+treated as requiring shipping. Normal invoice controls are suppressed after confirmed payment. For
 backward compatibility, an authentic merchant-authored shipment event also
 backfills the paid and accepted gates when older history lacks the now-required
 explicit confirmation. Requesting extra funds because a displayed price or
