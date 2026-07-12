@@ -11,6 +11,7 @@ import {
   type CachedProduct,
   type CachedProductTombstone,
   type CachedProfile,
+  type StoredMessage,
 } from "../db"
 import { config } from "../config"
 import { compareCommercePrices } from "../pricing"
@@ -24,6 +25,13 @@ import {
 } from "./ndk"
 import { extractOrderSummary } from "./order-summary"
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
+import {
+  parseDirectMessageRumor,
+  unwrapGiftWraps,
+  type DecryptFailure,
+  type ParsedDirectMessage,
+  type UnwrapGiftWrapOptions,
+} from "./messaging"
 import {
   evaluateListingSafety,
   isListingMarketVisible,
@@ -82,6 +90,12 @@ export interface CommerceQueryMeta {
   capabilities: CommerceCapabilities
   fetchedAt: number
   nextCursor?: string
+  /**
+   * Gift wraps that could not be turned into messages this read (id + coarse
+   * reason only, never content). Surfaced so UIs render a retryable degraded
+   * state instead of silently dropping messages.
+   */
+  decryptFailures?: DecryptFailure[]
 }
 
 export interface CommerceResult<T> {
@@ -207,6 +221,14 @@ type RawMessageFetchResult = {
   messages: ParsedOrderMessage[]
   source: CommerceReadSource
   stale: boolean
+  decryptFailures: DecryptFailure[]
+}
+
+type RawDirectMessageFetchResult = {
+  messages: ParsedDirectMessage[]
+  source: CommerceReadSource
+  stale: boolean
+  decryptFailures: DecryptFailure[]
 }
 
 type CommerceTestOverrides = {
@@ -236,6 +258,10 @@ type CommerceTestOverrides = {
     principalPubkey: string
   ) => Promise<CachedOrderMessage[]>
   putCachedOrderMessages?: (rows: CachedOrderMessage[]) => Promise<void>
+  getCachedDirectMessages?: (
+    principalPubkey: string
+  ) => Promise<StoredMessage[]>
+  putCachedDirectMessages?: (rows: StoredMessage[]) => Promise<void>
 }
 
 const PRODUCT_CAPABILITIES: CommerceCapabilities = {
@@ -427,16 +453,28 @@ function createMeta(
   planName: CommerceReadPlanName,
   source: CommerceReadSource,
   capabilities: CommerceCapabilities,
-  options: { stale?: boolean; degraded?: boolean; nextCursor?: string } = {}
+  options: {
+    stale?: boolean
+    degraded?: boolean
+    nextCursor?: string
+    decryptFailures?: DecryptFailure[]
+  } = {}
 ): CommerceQueryMeta {
   const plan = resolveReadPlan(planName)
+  const decryptFailures =
+    options.decryptFailures && options.decryptFailures.length > 0
+      ? options.decryptFailures
+      : undefined
   return {
     source,
     stale: options.stale ?? source === "local_cache",
-    degraded: options.degraded ?? source !== plan.sources[0],
+    degraded:
+      options.degraded ??
+      (source !== plan.sources[0] || decryptFailures !== undefined),
     capabilities,
     fetchedAt: now(),
     nextCursor: options.nextCursor,
+    decryptFailures,
   }
 }
 
@@ -2495,65 +2533,11 @@ function getConversationPreview(message: ParsedOrderMessage): string {
   }
 }
 
-function raceTimeout<T>(
-  promise: Promise<T>,
-  ms: number,
-  fallback: T
-): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
-  ])
-}
-
-async function tryUnwrap(event: NDKEvent, signer: NDKSigner) {
-  try {
-    if (testOverrides.giftUnwrap) {
-      return await raceTimeout(
-        testOverrides.giftUnwrap(event, signer),
-        8_000,
-        null
-      )
-    }
-
-    return await raceTimeout(
-      (async () => {
-        try {
-          return await giftUnwrap(event, undefined, signer, "nip44")
-        } catch {
-          // fall through to nip04
-        }
-
-        try {
-          return await giftUnwrap(event, undefined, signer, "nip04")
-        } catch {
-          return null
-        }
-      })(),
-      8_000,
-      null
-    )
-  } catch {
-    return null
-  }
-}
-
-async function unwrapBatch(
-  events: NDKEvent[],
-  signer: NDKSigner,
-  batchSize = 5
-): Promise<Array<Awaited<ReturnType<typeof tryUnwrap>>>> {
-  const results: Array<Awaited<ReturnType<typeof tryUnwrap>>> = []
-
-  for (let index = 0; index < events.length; index += batchSize) {
-    const batch = events.slice(index, index + batchSize)
-    const batchResults = await Promise.all(
-      batch.map((event) => tryUnwrap(event, signer))
-    )
-    results.push(...batchResults)
-  }
-
-  return results
+/** Route the commerce test giftUnwrap override into the shared boundary. */
+function unwrapOptions(): UnwrapGiftWrapOptions {
+  return testOverrides.giftUnwrap
+    ? { giftUnwrap: testOverrides.giftUnwrap }
+    : {}
 }
 
 async function fetchParsedOrderMessages(
@@ -2579,60 +2563,44 @@ async function fetchParsedOrderMessages(
         const messages = Array.from(cachedById.values()).sort(
           (a, b) => a.createdAt - b.createdAt
         )
-        return { messages, source: "local_cache", stale: true }
+        return {
+          messages,
+          source: "local_cache",
+          stale: true,
+          decryptFailures: [],
+        }
       }
       throw new Error("Connect your Nostr signer to view order conversations.")
     }
 
-    const filter: NDKFilter = {
-      kinds: [EVENT_KINDS.GIFT_WRAP],
-      "#p": [principalPubkey],
-      limit,
-    }
+    const newWrapped = await fetchNewInboxWraps(principalPubkey, limit)
+    const outcomes = await unwrapGiftWraps(newWrapped, signer, unwrapOptions())
 
-    const dmRelayUrls = await planCommerceReadRelays({
-      intent: "dm_inbox",
-      recipients: [principalPubkey],
-      authenticatedPubkey: principalPubkey,
-      maxRelays: DM_INBOX_READ_FANOUT,
-      extraRelayUrls: config.appWriteRelayUrls,
-    })
-
-    const wrapped = await runFetchEventsFanout(filter, {
-      relayUrls: dmRelayUrls,
-      connectTimeoutMs: 4_000,
-      fetchTimeoutMs: 12_000,
-    })
-
-    const newWrapped = wrapped.filter((event) => !knownWrapIds.has(event.id))
-    const unwrapped = await unwrapBatch(newWrapped, signer)
-
-    const newRows: Array<{
-      id: string
-      orderId: string
-      type: string
-      senderPubkey: string
-      recipientPubkey: string
-      createdAt: number
-      rawContent: string
-      cachedAt: number
-    }> = []
+    const newRows: CachedOrderMessage[] = []
     const parsedWrapIds = new Set<string>()
+    const decryptFailures: DecryptFailure[] = []
 
-    for (const [index, rumor] of unwrapped.entries()) {
-      if (!rumor || rumor.kind !== EVENT_KINDS.ORDER) continue
-      const wrapper = newWrapped[index]
-      if (!wrapper) continue
+    for (const outcome of outcomes) {
+      if (outcome.status === "decrypt_failed") {
+        decryptFailures.push({
+          wrapId: outcome.wrapId,
+          reason: outcome.reason,
+        })
+        continue
+      }
+      // Non-order rumors (kind 14 general DMs) are left for the DM fetch and
+      // are not marked known here, so they can still be routed there.
+      if (outcome.status !== "ok" || outcome.category !== "order") continue
 
       try {
-        const parsed = parseOrderMessageRumorEvent(rumor)
+        const parsed = parseOrderMessageRumorEvent(outcome.rumor)
         if (!cachedById.has(parsed.id)) {
           newRows.push(cachedOrderMessageRow(parsed))
         }
         cachedById.set(parsed.id, parsed)
-        parsedWrapIds.add(wrapper.id)
+        parsedWrapIds.add(outcome.wrapId)
       } catch {
-        // ignore malformed order messages
+        decryptFailures.push({ wrapId: outcome.wrapId, reason: "malformed" })
       }
     }
 
@@ -2645,13 +2613,182 @@ async function fetchParsedOrderMessages(
     const messages = Array.from(cachedById.values()).sort(
       (a, b) => a.createdAt - b.createdAt
     )
-    return { messages, source: "commerce", stale: false }
+    return { messages, source: "commerce", stale: false, decryptFailures }
   } catch (error) {
     if (cachedById.size > 0) {
       const messages = Array.from(cachedById.values()).sort(
         (a, b) => a.createdAt - b.createdAt
       )
-      return { messages, source: "local_cache", stale: true }
+      return {
+        messages,
+        source: "local_cache",
+        stale: true,
+        decryptFailures: [],
+      }
+    }
+    throw error
+  }
+}
+
+/**
+ * Read the principal's NIP-17 gift-wrap inbox and return only wraps not yet
+ * processed this session. Shared by the order and general-DM fetches so the two
+ * conversation reads dedup unwrapping through `knownWrapIds`.
+ */
+async function fetchNewInboxWraps(
+  principalPubkey: string,
+  limit: number
+): Promise<NDKEvent[]> {
+  const filter: NDKFilter = {
+    kinds: [EVENT_KINDS.GIFT_WRAP],
+    "#p": [principalPubkey],
+    limit,
+  }
+
+  const dmRelayUrls = await planCommerceReadRelays({
+    intent: "dm_inbox",
+    recipients: [principalPubkey],
+    authenticatedPubkey: principalPubkey,
+    maxRelays: DM_INBOX_READ_FANOUT,
+    extraRelayUrls: config.appWriteRelayUrls,
+  })
+
+  const wrapped = await runFetchEventsFanout(filter, {
+    relayUrls: dmRelayUrls,
+    connectTimeoutMs: 4_000,
+    fetchTimeoutMs: 12_000,
+  })
+
+  return wrapped.filter((event) => !knownWrapIds.has(event.id))
+}
+
+async function loadCachedDirectMessages(
+  principalPubkey: string
+): Promise<StoredMessage[]> {
+  if (testOverrides.getCachedDirectMessages) {
+    return await testOverrides.getCachedDirectMessages(principalPubkey)
+  }
+
+  return await db.messages
+    .where("recipientPubkey")
+    .equals(principalPubkey)
+    .or("senderPubkey")
+    .equals(principalPubkey)
+    .filter((row) => row.kind === EVENT_KINDS.DIRECT_MESSAGE)
+    .toArray()
+}
+
+async function storeCachedDirectMessages(rows: StoredMessage[]): Promise<void> {
+  if (rows.length === 0) return
+  if (testOverrides.putCachedDirectMessages) {
+    await testOverrides.putCachedDirectMessages(rows)
+    return
+  }
+  await db.messages.bulkPut(rows)
+}
+
+function cachedDirectMessageRow(message: ParsedDirectMessage): StoredMessage {
+  return {
+    id: message.id,
+    senderPubkey: message.senderPubkey,
+    recipientPubkey: message.recipientPubkey,
+    content: message.content,
+    kind: EVENT_KINDS.DIRECT_MESSAGE,
+    createdAt: message.createdAt,
+    read: 0,
+  }
+}
+
+function parseCachedDirectMessage(row: StoredMessage): ParsedDirectMessage {
+  return {
+    id: row.id,
+    senderPubkey: row.senderPubkey,
+    recipientPubkey: row.recipientPubkey,
+    content: row.decrypted ?? row.content,
+    createdAt: row.createdAt,
+  }
+}
+
+async function fetchParsedDirectMessages(
+  principalPubkey: string,
+  limit: number
+): Promise<RawDirectMessageFetchResult> {
+  const cached = await loadCachedDirectMessages(principalPubkey)
+  const cachedById = new Map<string, ParsedDirectMessage>()
+  for (const row of cached) {
+    cachedById.set(row.id, parseCachedDirectMessage(row))
+  }
+
+  try {
+    const ndk = await runRequireNdkConnected()
+    const signer = ndk.signer
+    if (!signer) {
+      if (cachedById.size > 0) {
+        const messages = Array.from(cachedById.values()).sort(
+          (a, b) => a.createdAt - b.createdAt
+        )
+        return {
+          messages,
+          source: "local_cache",
+          stale: true,
+          decryptFailures: [],
+        }
+      }
+      throw new Error("Connect your Nostr signer to view messages.")
+    }
+
+    const newWrapped = await fetchNewInboxWraps(principalPubkey, limit)
+    const outcomes = await unwrapGiftWraps(newWrapped, signer, unwrapOptions())
+
+    const newRows: StoredMessage[] = []
+    const parsedWrapIds = new Set<string>()
+    const decryptFailures: DecryptFailure[] = []
+
+    for (const outcome of outcomes) {
+      if (outcome.status === "decrypt_failed") {
+        decryptFailures.push({
+          wrapId: outcome.wrapId,
+          reason: outcome.reason,
+        })
+        continue
+      }
+      // Order rumors (kind 16) belong to the order fetch; leave them unmarked.
+      if (outcome.status !== "ok" || outcome.category !== "direct") continue
+
+      try {
+        const parsed = parseDirectMessageRumor(outcome.rumor)
+        if (!parsed.id) continue
+        if (!cachedById.has(parsed.id)) {
+          newRows.push(cachedDirectMessageRow(parsed))
+        }
+        cachedById.set(parsed.id, parsed)
+        parsedWrapIds.add(outcome.wrapId)
+      } catch {
+        decryptFailures.push({ wrapId: outcome.wrapId, reason: "malformed" })
+      }
+    }
+
+    if (newRows.length > 0) {
+      await storeCachedDirectMessages(newRows)
+    }
+
+    for (const id of parsedWrapIds) knownWrapIds.add(id)
+
+    const messages = Array.from(cachedById.values()).sort(
+      (a, b) => a.createdAt - b.createdAt
+    )
+    return { messages, source: "commerce", stale: false, decryptFailures }
+  } catch (error) {
+    if (cachedById.size > 0) {
+      const messages = Array.from(cachedById.values()).sort(
+        (a, b) => a.createdAt - b.createdAt
+      )
+      return {
+        messages,
+        source: "local_cache",
+        stale: true,
+        decryptFailures: [],
+      }
     }
     throw error
   }
@@ -2854,7 +2991,7 @@ export async function getBuyerConversationList(
       "protected_conversation_list",
       result.source,
       CONVERSATION_CAPABILITIES,
-      { stale: result.stale }
+      { stale: result.stale, decryptFailures: result.decryptFailures }
     ),
   }
 }
@@ -2902,7 +3039,7 @@ export async function getMerchantConversationList(
       "protected_conversation_list",
       result.source,
       CONVERSATION_CAPABILITIES,
-      { stale: result.stale }
+      { stale: result.stale, decryptFailures: result.decryptFailures }
     ),
   }
 }
@@ -2947,7 +3084,149 @@ export async function getConversationDetail(
       "conversation_detail",
       result.source,
       CONVERSATION_CAPABILITIES,
-      { stale: result.stale }
+      { stale: result.stale, decryptFailures: result.decryptFailures }
     ),
   }
+}
+
+// --- General direct messages (kind 14), threaded by counterparty pubkey ---
+
+export interface DirectConversationSummary {
+  /** Counterparty pubkey; also the thread id. */
+  id: string
+  counterpartyPubkey: string
+  latestAt: number
+  preview: string
+  messageCount: number
+  unreadFromCounterparty: number
+  messages?: ParsedDirectMessage[]
+}
+
+export interface DirectMessageThreadQuery {
+  principalPubkey: string
+  counterpartyPubkey: string
+  limit?: number
+}
+
+export interface DirectMessageThread {
+  counterpartyPubkey: string
+  messages: ParsedDirectMessage[]
+}
+
+function counterpartyOf(
+  message: ParsedDirectMessage,
+  principalPubkey: string
+): string {
+  return message.senderPubkey === principalPubkey
+    ? message.recipientPubkey
+    : message.senderPubkey
+}
+
+function buildDirectConversationSummaries(
+  messages: ParsedDirectMessage[],
+  principalPubkey: string
+): DirectConversationSummary[] {
+  const grouped = new Map<string, ParsedDirectMessage[]>()
+  for (const message of messages) {
+    const counterparty = counterpartyOf(message, principalPubkey)
+    if (!counterparty) continue
+    const bucket = grouped.get(counterparty) ?? []
+    bucket.push(message)
+    grouped.set(counterparty, bucket)
+  }
+
+  const conversations: DirectConversationSummary[] = []
+  for (const [counterpartyPubkey, bucket] of grouped.entries()) {
+    bucket.sort((a, b) => a.createdAt - b.createdAt)
+    const latest = bucket[bucket.length - 1]
+    if (!latest) continue
+    conversations.push({
+      id: counterpartyPubkey,
+      counterpartyPubkey,
+      latestAt: latest.createdAt,
+      preview: latest.content.slice(0, 140),
+      messageCount: bucket.length,
+      unreadFromCounterparty: bucket.filter(
+        (message) => message.senderPubkey === counterpartyPubkey
+      ).length,
+      messages: bucket,
+    })
+  }
+
+  conversations.sort((a, b) => b.latestAt - a.latestAt)
+  return conversations
+}
+
+export async function getDirectMessageConversationList(
+  query: ConversationListQuery
+): Promise<CommerceResult<DirectConversationSummary[]>> {
+  const result = await fetchParsedDirectMessages(
+    query.principalPubkey,
+    query.limit ?? 400
+  )
+  return {
+    data: buildDirectConversationSummaries(
+      result.messages,
+      query.principalPubkey
+    ),
+    meta: createMeta(
+      "protected_conversation_list",
+      result.source,
+      CONVERSATION_CAPABILITIES,
+      { stale: result.stale, decryptFailures: result.decryptFailures }
+    ),
+  }
+}
+
+export async function getCachedDirectMessageConversationList(
+  query: ConversationListQuery
+): Promise<CommerceResult<DirectConversationSummary[]>> {
+  const cached = await loadCachedDirectMessages(query.principalPubkey)
+  const messages = cached
+    .map(parseCachedDirectMessage)
+    .sort((a, b) => a.createdAt - b.createdAt)
+  const limited =
+    query.limit && query.limit > 0 ? messages.slice(-query.limit) : messages
+  return {
+    data: buildDirectConversationSummaries(limited, query.principalPubkey),
+    meta: createMeta(
+      "protected_conversation_list",
+      "local_cache",
+      CONVERSATION_CAPABILITIES,
+      { stale: true, degraded: limited.length > 0 }
+    ),
+  }
+}
+
+export async function getDirectMessageThread(
+  query: DirectMessageThreadQuery
+): Promise<CommerceResult<DirectMessageThread | null>> {
+  const result = await fetchParsedDirectMessages(
+    query.principalPubkey,
+    query.limit ?? 400
+  )
+  const messages = result.messages.filter(
+    (message) =>
+      counterpartyOf(message, query.principalPubkey) ===
+      query.counterpartyPubkey
+  )
+  return {
+    data:
+      messages.length > 0
+        ? { counterpartyPubkey: query.counterpartyPubkey, messages }
+        : null,
+    meta: createMeta(
+      "conversation_detail",
+      result.source,
+      CONVERSATION_CAPABILITIES,
+      { stale: result.stale, decryptFailures: result.decryptFailures }
+    ),
+  }
+}
+
+/** Cache a sent/echoed general direct message locally (used by the send path). */
+export async function cacheParsedDirectMessage(
+  message: ParsedDirectMessage
+): Promise<void> {
+  await storeCachedDirectMessages([cachedDirectMessageRow(message)])
 }
