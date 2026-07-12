@@ -39,6 +39,18 @@ export {
 } from "./Dialog"
 export { Input, type InputProps } from "./Input"
 export { Textarea, type TextareaProps } from "./Textarea"
+export {
+  ConversationMessageBubble,
+  type ConversationMessageBubbleProps,
+} from "./ConversationMessageBubble"
+export {
+  MessageComposer,
+  type MessageComposerProps,
+} from "./MessageComposer"
+export {
+  DecryptFailureNotice,
+  type DecryptFailureNoticeProps,
+} from "./DecryptFailureNotice"
 export { Label } from "./Label"
 export {
   Popover,
