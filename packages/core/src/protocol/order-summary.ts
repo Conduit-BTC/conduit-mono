@@ -43,11 +43,13 @@ export type OrderSummary = {
   paymentProofAmount: number | null
   paymentProofCurrency: string | null
   paymentReportReceived: boolean
+  externalPaymentReportReceived: boolean
   paymentReportCount: number
   paymentReportAmount: number | null
   paymentReportCurrency: string | null
   accepted: boolean
   paymentConfirmed: boolean
+  shippingUpdateReceived: boolean
   trackingCarrier: string | null
   trackingNumber: string | null
   trackingUrl: string | null
@@ -139,6 +141,9 @@ export function extractOrderSummary(
   )
   const latestPaymentReport = [...paymentReportMessages].reverse()[0]
   const paymentReportCount = paymentReportMessages.length
+  const externalPaymentReportMessages = messages.filter(
+    (message) => isBuyerToMerchant(message) && isExternalPaymentReport(message)
+  )
   const latestShipping = [...messages]
     .reverse()
     .find(
@@ -258,11 +263,13 @@ export function extractOrderSummary(
     paymentProofAmount,
     paymentProofCurrency,
     paymentReportReceived,
+    externalPaymentReportReceived: externalPaymentReportMessages.length > 0,
     paymentReportCount,
     paymentReportAmount,
     paymentReportCurrency,
     accepted,
     paymentConfirmed,
+    shippingUpdateReceived: Boolean(latestShipping),
     trackingCarrier,
     trackingNumber,
     trackingUrl,

@@ -143,6 +143,22 @@ export function generateId(): string {
   return crypto.randomUUID()
 }
 
+/** Normalize an untrusted link for rendering, allowing web URLs only. */
+export function normalizeSafeHttpUrl(
+  value: string | null | undefined
+): string | null {
+  if (!value) return null
+  try {
+    const parsed = new URL(value)
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null
+    }
+    return parsed.toString()
+  } catch {
+    return null
+  }
+}
+
 /**
  * Debounce function
  */

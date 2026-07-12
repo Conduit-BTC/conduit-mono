@@ -1,6 +1,34 @@
 import { describe, expect, it } from "bun:test"
+import {
+  buildMerchantOrderRumorTags,
+  getMerchantOrderDeliveryRecipients,
+} from "@conduit/core"
 
 describe("guest order UI contracts", () => {
+  it("publishes guest operations to the merchant self-copy only", () => {
+    expect(
+      getMerchantOrderDeliveryRecipients({
+        merchantPubkey: "merchant",
+        buyerPubkey: "ephemeral-guest",
+        delivery: "self_only",
+      })
+    ).toEqual(["merchant"])
+    expect(
+      getMerchantOrderDeliveryRecipients({
+        merchantPubkey: "merchant",
+        buyerPubkey: "buyer",
+        delivery: "buyer_and_self",
+      })
+    ).toEqual(["buyer", "merchant"])
+    expect(
+      buildMerchantOrderRumorTags({
+        buyerPubkey: "ephemeral-guest",
+        orderId: "guest-order",
+        type: "shipping_update",
+      })
+    ).toContainEqual(["p", "ephemeral-guest"])
+  })
+
   it("keeps buyer recovery local and disables guest relay inbox reads", async () => {
     const source = await Bun.file("apps/market/src/routes/orders.tsx").text()
 
@@ -11,15 +39,25 @@ describe("guest order UI contracts", () => {
     expect(source).not.toContain("expectedCounterpartyPubkey")
   })
 
-  it("removes guest Nostr actions and excludes guests from invoice metrics", async () => {
+  it("records guest fulfillment without claiming a guest relay inbox", async () => {
     const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
+    const publisher = await Bun.file(
+      "packages/core/src/protocol/merchant-order-publish.ts"
+    ).text()
 
     expect(source).toContain("assertBuyerHasNostrInbox()")
-    expect(source).toContain("{!isGuestOrder && (")
+    expect(source).toContain("delivery: operationalDelivery")
+    expect(source).toContain("readOnly={!buyerInboxKnown}")
+    expect(source).toContain('"Record shipping update"')
     expect(source).toContain('"guest_ephemeral"')
     expect(source).toContain("return false")
     expect(source).toContain("This guest has no Nostr reply inbox")
     expect(source).toContain("assertPaidForFulfillment()")
+    expect(source).not.toContain("{!isGuestOrder && (")
+    expect(publisher).toContain(
+      'export type MerchantOrderDelivery = "buyer_and_self" | "self_only"'
+    )
+    expect(publisher).toContain("? [input.merchantPubkey]")
   })
 
   it("omits guest contact and shipping details from durable buyer history", async () => {

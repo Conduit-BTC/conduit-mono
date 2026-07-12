@@ -6,9 +6,9 @@
 //     accepts. Payment precedes acceptance.
 //   - invoice ("order-first"): the merchant accepts, sends an invoice, then the
 //     buyer pays. Acceptance precedes payment.
-// So "paid" and "accepted" are treated as two independent gates rather than a
-// fixed linear sequence. The flow is inferred from message presence (was the
-// buyer's payment proof received without a merchant invoice?).
+// Buyer evidence and merchant-confirmed settlement remain separate gates. Once
+// the merchant confirms settlement, acceptance is implied: the remaining
+// choice is to fulfill or cancel/refund, not to accept a paid order again.
 //
 // Types mirror @conduit/ui's StatusPill variant and StatusStepperRow shape
 // structurally so callers can pass the output straight through — without core
@@ -42,10 +42,14 @@ export interface MerchantOrderState {
   paid?: boolean
   /** Buyer payment evidence has been observed, but may still need verification. */
   paymentObserved?: boolean
+  /** The buyer specifically reported an external payment. */
+  paymentReported?: boolean
   /** Merchant acceptance has been observed anywhere in the trusted history. */
   accepted?: boolean
   /** The merchant has sent a payment request (invoice) for this order. */
   invoiceSent?: boolean
+  /** A merchant shipping update has been recorded, with or without tracking. */
+  shippingUpdated?: boolean
 }
 
 export type OrderFlow = "prepaid" | "invoice"
@@ -86,7 +90,9 @@ export function isMerchantOrderPaid(state: MerchantOrderState): boolean {
 
 export function isMerchantOrderAccepted(state: MerchantOrderState): boolean {
   return (
-    !!state.accepted || ACCEPTED_STATUSES.has(normalizeStatus(state.status))
+    isMerchantOrderPaid(state) ||
+    !!state.accepted ||
+    ACCEPTED_STATUSES.has(normalizeStatus(state.status))
   )
 }
 
@@ -187,7 +193,7 @@ export function buildOrderStatusTimeline(
           : state.invoiceSent
             ? "Invoice sent to buyer"
             : "Lightning payment",
-    done: paymentObserved,
+    done: paid,
   }
   const accepted: StageSpec = {
     key: "accepted",
@@ -195,11 +201,12 @@ export function buildOrderStatusTimeline(
     subtitle: "Order confirmed",
     done: acceptedGate,
   }
+  const shippedGate = !!state.shippingUpdated || SHIPPED_STATUSES.has(status)
   const shipped: StageSpec = {
     key: "shipped",
     title: "Shipped",
     subtitle: "Sent to buyer",
-    done: SHIPPED_STATUSES.has(status),
+    done: shippedGate,
   }
   const delivered: StageSpec = {
     key: "delivered",
@@ -254,17 +261,18 @@ export function buildOrderStatusTimeline(
 export type MerchantOrderActionKind = "primary" | "destructive"
 
 export interface MerchantOrderAction {
-  /** Status to publish when the action is taken. */
-  status: KnownOrderStatus
+  action:
+    "accept" | "confirm_payment" | "record_shipment" | "complete" | "cancel"
+  /** Status to publish for state transitions; shipment publishes its domain event. */
+  status?: KnownOrderStatus
   /** Button label for the action. */
   label: string
   kind: MerchantOrderActionKind
 }
 
-// The merchant's next actions, flow-aware and gate-driven. Destructive action
-// (decline / cancel) is ordered before the primary one. Shipping is gated on
-// payment so an unpaid order can't be shipped; delivery is buyer-confirmed, so
-// once shipped the merchant has none.
+// The merchant's next actions, flow-aware and gate-driven. Shipping is gated on
+// confirmed payment, and a shipment event leads to explicit completion rather
+// than exposing the raw status vocabulary as a manual console.
 export function getMerchantOrderActions(
   input: MerchantOrderState | string | null | undefined
 ): MerchantOrderAction[] {
@@ -274,23 +282,76 @@ export function getMerchantOrderActions(
   if (!isKnownOrderStatus(status)) return []
   if (TERMINAL_ACTION_STATUSES.has(status)) return []
 
+  if (isMerchantOrderPaid(state)) {
+    if (!!state.shippingUpdated || status === "shipped") {
+      return [
+        {
+          action: "complete",
+          status: "complete",
+          label: "Mark delivered",
+          kind: "primary",
+        },
+      ]
+    }
+    return [
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Cancel order",
+        kind: "destructive",
+      },
+      {
+        action: "record_shipment",
+        label: "Add shipping details",
+        kind: "primary",
+      },
+    ]
+  }
+
+  if (state.paymentObserved) {
+    return [
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Cancel order",
+        kind: "destructive",
+      },
+      {
+        action: "confirm_payment",
+        status: "paid",
+        label: "Confirm payment",
+        kind: "primary",
+      },
+    ]
+  }
+
   if (!isMerchantOrderAccepted(state)) {
     return [
-      { status: "cancelled", label: "Decline order", kind: "destructive" },
-      { status: "accepted", label: "Accept order", kind: "primary" },
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Decline order",
+        kind: "destructive",
+      },
+      {
+        action: "accept",
+        status: "accepted",
+        label: "Accept order",
+        kind: "primary",
+      },
     ]
   }
 
   // Accepted-or-beyond, but already shipped → nothing left for the merchant.
   if (SHIPPED_STATUSES.has(status)) return []
 
-  if (isMerchantOrderPaid(state)) {
-    return [
-      { status: "cancelled", label: "Cancel order", kind: "destructive" },
-      { status: "shipped", label: "Mark as shipped", kind: "primary" },
-    ]
-  }
-
   // Accepted but awaiting payment (invoice flow): shipping is not offered yet.
-  return [{ status: "cancelled", label: "Cancel order", kind: "destructive" }]
+  return [
+    {
+      action: "cancel",
+      status: "cancelled",
+      label: "Cancel order",
+      kind: "destructive",
+    },
+  ]
 }

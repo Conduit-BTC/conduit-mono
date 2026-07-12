@@ -4,15 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   buildOrderStatusTimeline,
   canMockInvoice,
-  cacheParsedOrderMessage,
   convertCommerceAmountToSats,
   decodeLightningInvoiceAmount,
-  EVENT_KINDS,
-  appendConduitClientTag,
   formatNpub,
   getCachedMerchantConversationList,
   getCurrencyAmountStep,
-  getNdk,
   getProfileName,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
@@ -24,9 +20,9 @@ import {
   isMerchantOrderPaid,
   mockMakeInvoice,
   normalizeCurrencyAmount,
+  normalizeSafeHttpUrl,
   nwcMakeInvoice,
-  parseOrderMessageRumorEvent,
-  publishWithPlanner,
+  publishMerchantOrderMessage,
   weblnMakeInvoice,
   type MerchantConversationSummary,
   type KnownOrderStatus,
@@ -61,15 +57,15 @@ import {
 import { requireAuth } from "../lib/auth"
 import { BuyerAvatar, OrderListItem } from "../components/OrderListItem"
 import {
-  getMerchantConversationPhase,
+  getMerchantConversationQueue,
+  getMerchantConversationState,
   getMerchantConversationStatusDisplay,
   getMerchantOrderSummary,
   isMerchantConversationActiveFulfillment,
   ORDER_PHASE_OPTIONS,
-  type OrderPhaseTab,
+  type OrderQueueTab,
 } from "../lib/order-phase"
 import { getProfileUrl } from "../lib/market-links"
-import { giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import {
   Check,
   CheckCircle2,
@@ -97,8 +93,6 @@ export const Route = createFileRoute("/orders")({
   },
   component: OrdersPage,
 })
-
-type ActionKind = "invoice" | "status" | "shipping"
 
 const INVOICE_CURRENCY_OPTIONS = ["USD", "SATS"] as const
 
@@ -206,7 +200,7 @@ function SearchBox({
 // batched relay read stays bounded on large inboxes.
 const ORDER_SEARCH_PRODUCT_CAP = 100
 
-function emptyOrdersLabel(query: string, phase: OrderPhaseTab): string {
+function emptyOrdersLabel(query: string, phase: OrderQueueTab): string {
   if (query) return `No orders match "${query}".`
   if (phase !== "all") {
     const label =
@@ -220,8 +214,8 @@ function OrderPhaseFilter({
   value,
   onChange,
 }: {
-  value: OrderPhaseTab
-  onChange: (value: OrderPhaseTab) => void
+  value: OrderQueueTab
+  onChange: (value: OrderQueueTab) => void
 }) {
   return (
     <div
@@ -357,104 +351,6 @@ function MobileOrdersScroller({
   )
 }
 
-function prepareMerchantConversationRumor(
-  rumor: NDKEvent,
-  merchantPubkey: string
-): void {
-  rumor.pubkey = merchantPubkey
-  if (rumor.id) return
-
-  try {
-    rumor.id = rumor.getEventHash()
-  } catch (error) {
-    console.warn("Failed to derive merchant message rumor id", error)
-  }
-}
-
-async function cacheMerchantConversationRumor(rumor: NDKEvent): Promise<void> {
-  try {
-    if (!rumor.id) throw new Error("Missing merchant message rumor id")
-    const parsed = parseOrderMessageRumorEvent(rumor)
-    await cacheParsedOrderMessage(parsed)
-  } catch (error) {
-    console.warn("Failed to cache merchant message", error)
-  }
-}
-
-async function publishOrderConversationMessage(params: {
-  merchantPubkey: string
-  buyerPubkey: string
-  orderId: string
-  type:
-    | "payment_request"
-    | "status_update"
-    | "shipping_update"
-    | "receipt"
-    | "message"
-  payload: Record<string, unknown>
-  tags?: string[][]
-}): Promise<void> {
-  const ndk = getNdk()
-  if (!ndk.signer) {
-    throw new Error("Signer not connected")
-  }
-
-  const rumor = new NDKEvent(ndk)
-  rumor.kind = EVENT_KINDS.ORDER
-  rumor.created_at = Math.floor(Date.now() / 1000)
-  rumor.tags = [
-    ["p", params.buyerPubkey],
-    ["type", params.type],
-    ["order", params.orderId],
-    ...(params.tags ?? []),
-  ]
-  rumor.tags = appendConduitClientTag(rumor.tags, "merchant")
-  rumor.content = JSON.stringify({
-    ...params.payload,
-    orderId: params.orderId,
-    merchantPubkey: params.merchantPubkey,
-    buyerPubkey: params.buyerPubkey,
-    createdAt: Date.now(),
-  })
-  prepareMerchantConversationRumor(rumor, params.merchantPubkey)
-
-  const buyerUser = new NDKUser({ pubkey: params.buyerPubkey })
-  const merchantUser = new NDKUser({ pubkey: params.merchantPubkey })
-
-  const [wrappedToBuyer, wrappedToMerchant] = await Promise.all([
-    giftWrap(rumor, buyerUser, ndk.signer, {
-      rumorKind: EVENT_KINDS.ORDER,
-    }),
-    giftWrap(rumor, merchantUser, ndk.signer, {
-      rumorKind: EVENT_KINDS.ORDER,
-    }),
-  ])
-
-  await publishWithPlanner(wrappedToBuyer, {
-    intent: "recipient_event",
-    authorPubkey: params.merchantPubkey,
-    authenticatedPubkey: params.merchantPubkey,
-    recipientPubkeys: [params.buyerPubkey],
-    refreshRelayLists: true,
-    deliveryMode: "critical",
-  })
-
-  try {
-    await publishWithPlanner(wrappedToMerchant, {
-      intent: "recipient_event",
-      authorPubkey: params.merchantPubkey,
-      authenticatedPubkey: params.merchantPubkey,
-      recipientPubkeys: [params.merchantPubkey],
-      refreshRelayLists: true,
-      deliveryMode: "critical",
-    })
-  } catch (error) {
-    console.warn("Merchant message self-copy publish failed", error)
-  }
-
-  await cacheMerchantConversationRumor(rumor)
-}
-
 function OrderItemsCard({
   items,
   productLookup,
@@ -534,17 +430,14 @@ function OrdersPage() {
     string | null
   >(null)
   const [orderSearch, setOrderSearch] = useState("")
-  const [phaseTab, setPhaseTab] = useState<OrderPhaseTab>("all")
+  const [phaseTab, setPhaseTab] = useState<OrderQueueTab>("all")
   const [ordersSheetOpen, setOrdersSheetOpen] = useState(false)
   const [orderDetailsOpen, setOrderDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
-  const [actionKind, setActionKind] = useState<ActionKind>("invoice")
   const [invoice, setInvoice] = useState("")
   const [invoiceAmount, setInvoiceAmount] = useState("")
   const [invoiceCurrency, setInvoiceCurrency] = useState("USD")
   const [invoiceNote, setInvoiceNote] = useState("")
-  const [orderStatus, setOrderStatus] = useState<KnownOrderStatus | "">("")
-  const [statusNote, setStatusNote] = useState("")
   const [carrier, setCarrier] = useState("")
   const [trackingNumber, setTrackingNumber] = useState("")
   const [trackingUrl, setTrackingUrl] = useState("")
@@ -744,7 +637,7 @@ function OrdersPage() {
     return conversations.filter((conversation) => {
       if (
         phaseTab !== "all" &&
-        getMerchantConversationPhase(conversation) !== phaseTab
+        getMerchantConversationQueue(conversation) !== phaseTab
       ) {
         return false
       }
@@ -858,13 +751,10 @@ function OrdersPage() {
     setSuccessFlash(null)
     setOrderDetailsOpen(false)
     setMessagesOpen(false)
-    setActionKind("invoice")
     setInvoice("")
     setInvoiceAmount("")
     setInvoiceCurrency("USD")
     setInvoiceNote("")
-    setOrderStatus("")
-    setStatusNote("")
     setCarrier("")
     setTrackingNumber("")
     setTrackingUrl("")
@@ -890,24 +780,23 @@ function OrdersPage() {
     [selected]
   )
   const isGuestOrder = orderSummary?.buyerIdentityKind === "guest_ephemeral"
+  const buyerInboxKnown = orderSummary?.buyerIdentityKind === "signed_in"
+  const operationalDelivery = buyerInboxKnown ? "buyer_and_self" : "self_only"
   const assertBuyerHasNostrInbox = useCallback(() => {
-    if (isGuestOrder) {
+    if (!buyerInboxKnown) {
       throw new Error(
-        "Guest shoppers do not have a Nostr inbox. Follow up using the phone and email contact details on the order."
+        "This order has no confirmed Nostr reply inbox. Follow up using the contact details on the order."
       )
     }
-  }, [isGuestOrder])
+  }, [buyerInboxKnown])
 
-  // Payment and acceptance are independent gates; both order flows (prepaid
-  // zap-out and invoice-first) derive from this state.
-  const merchantOrderState = {
-    status: selected?.status ?? null,
-    paid: orderSummary?.paymentConfirmed ?? false,
-    paymentObserved: orderSummary?.paymentProofReceived ?? false,
-    accepted: orderSummary?.accepted ?? false,
-    invoiceSent: orderSummary?.invoiceSent ?? false,
-  }
+  // Buyer evidence still requires verification. Merchant-confirmed settlement
+  // implies acceptance and moves the order directly into fulfillment.
+  const merchantOrderState = selected
+    ? getMerchantConversationState(selected)
+    : { status: null }
   const merchantPaid = isMerchantOrderPaid(merchantOrderState)
+  const safeTrackingUrl = normalizeSafeHttpUrl(orderSummary?.trackingUrl)
   const assertPaidForFulfillment = useCallback(() => {
     if (!merchantPaid) {
       throw new Error(
@@ -918,6 +807,20 @@ function OrdersPage() {
   const orderActions = selected
     ? getMerchantOrderActions(merchantOrderState)
     : []
+  const buttonActions = orderActions.filter(
+    (action) => action.action !== "record_shipment"
+  )
+  const selectedQueue = selected ? getMerchantConversationQueue(selected) : null
+  const canSendInvoice =
+    buyerInboxKnown &&
+    selectedQueue === "unpaid_review" &&
+    !merchantPaid &&
+    !merchantOrderState.paymentObserved &&
+    merchantOrderState.accepted
+  const canRecordShipping =
+    selectedQueue === "paid_fulfill" &&
+    merchantPaid &&
+    !merchantOrderState.shippingUpdated
 
   const selectedBuyerProfile = selected
     ? buyerProfilesQuery.data?.[selected.buyerPubkey]
@@ -928,16 +831,13 @@ function OrdersPage() {
   const awaitingInvoiceCount = useMemo(
     () =>
       conversations.filter((conversation) => {
-        const messages = conversation.messages ?? []
-        if (
-          getMerchantOrderSummary(conversation).buyerIdentityKind ===
-          "guest_ephemeral"
-        ) {
-          return false
-        }
+        const summary = getMerchantOrderSummary(conversation)
+        if (summary.buyerIdentityKind !== "signed_in") return false
         return (
-          !messages.some((message) => message.type === "payment_request") &&
-          !messages.some((message) => message.type === "payment_proof")
+          !summary.invoiceSent &&
+          !summary.paymentProofReceived &&
+          !summary.externalPaymentReportReceived &&
+          !summary.paymentConfirmed
         )
       }).length,
     [conversations]
@@ -963,6 +863,9 @@ function OrdersPage() {
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
       assertBuyerHasNostrInbox()
+      if (!canSendInvoice) {
+        throw new Error("This order is not eligible for another invoice.")
+      }
 
       const amountSats = invoiceAmountSats ?? 0
       if (amountSats <= 0) throw new Error("Amount must be greater than 0")
@@ -1009,7 +912,7 @@ function OrdersPage() {
       const actualCurrency = decoded.currency ?? "SATS"
 
       // Auto-send the invoice DM to the buyer
-      await publishOrderConversationMessage({
+      await publishMerchantOrderMessage({
         merchantPubkey: pubkey,
         buyerPubkey: selected.buyerPubkey,
         orderId: selected.orderId,
@@ -1025,6 +928,7 @@ function OrdersPage() {
           currency: actualCurrency,
           note: invoiceNote.trim() || undefined,
         },
+        delivery: operationalDelivery,
       })
 
       return { invoice: bolt11 }
@@ -1041,6 +945,9 @@ function OrdersPage() {
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
       assertBuyerHasNostrInbox()
+      if (!canSendInvoice) {
+        throw new Error("This order is not eligible for another invoice.")
+      }
       if (!invoice.trim()) throw new Error("Invoice is required")
       const manualInvoice = invoice.trim()
       const mismatch = getLightningNetworkMismatchMessage(manualInvoice)
@@ -1052,7 +959,7 @@ function OrdersPage() {
           "Invoice must include a decodable amount before it can be sent."
         )
       }
-      await publishOrderConversationMessage({
+      await publishMerchantOrderMessage({
         merchantPubkey: pubkey,
         buyerPubkey: selected.buyerPubkey,
         orderId: selected.orderId,
@@ -1068,6 +975,7 @@ function OrdersPage() {
           currency: decoded.currency,
           note: invoiceNote.trim() || undefined,
         },
+        delivery: operationalDelivery,
       })
     },
     onSuccess: async () => {
@@ -1078,51 +986,24 @@ function OrdersPage() {
     },
   })
 
-  const statusMutation = useMutation({
-    mutationFn: async () => {
-      if (!pubkey || !selected) throw new Error("No conversation selected")
-      assertBuyerHasNostrInbox()
-      if (!orderStatus) throw new Error("Choose an order status")
-      if (orderStatus === "shipped" || orderStatus === "complete") {
-        assertPaidForFulfillment()
-      }
-      await publishOrderConversationMessage({
-        merchantPubkey: pubkey,
-        buyerPubkey: selected.buyerPubkey,
-        orderId: selected.orderId,
-        type: "status_update",
-        tags: [["status", orderStatus]],
-        payload: {
-          status: orderStatus,
-          note: statusNote.trim() || undefined,
-        },
-      })
-    },
-    onSuccess: async () => {
-      setStatusNote("")
-      flash("Status update sent to buyer")
-      await invalidateOrderQueries()
-    },
-  })
-
   const advanceStatusMutation = useMutation({
     mutationFn: async (nextStatus: KnownOrderStatus) => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
-      assertBuyerHasNostrInbox()
       if (nextStatus === "shipped" || nextStatus === "complete") {
         assertPaidForFulfillment()
       }
-      await publishOrderConversationMessage({
+      await publishMerchantOrderMessage({
         merchantPubkey: pubkey,
         buyerPubkey: selected.buyerPubkey,
         orderId: selected.orderId,
         type: "status_update",
         tags: [["status", nextStatus]],
         payload: { status: nextStatus },
+        delivery: operationalDelivery,
       })
     },
     onSuccess: async () => {
-      flash("Status update sent to buyer")
+      flash(buyerInboxKnown ? "Status update sent to buyer" : "Status recorded")
       await invalidateOrderQueries()
     },
   })
@@ -1130,10 +1011,9 @@ function OrdersPage() {
   const shippingMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
-      assertBuyerHasNostrInbox()
       assertPaidForFulfillment()
       const normalizedTrackingUrl = normalizeTrackingUrl(trackingUrl)
-      await publishOrderConversationMessage({
+      await publishMerchantOrderMessage({
         merchantPubkey: pubkey,
         buyerPubkey: selected.buyerPubkey,
         orderId: selected.orderId,
@@ -1150,6 +1030,7 @@ function OrdersPage() {
           trackingUrl: normalizedTrackingUrl,
           note: shippingNote.trim() || undefined,
         },
+        delivery: operationalDelivery,
       })
     },
     onSuccess: async () => {
@@ -1157,7 +1038,11 @@ function OrdersPage() {
       setTrackingNumber("")
       setTrackingUrl("")
       setShippingNote("")
-      flash("Shipping update sent to buyer")
+      flash(
+        buyerInboxKnown
+          ? "Shipping update sent to buyer"
+          : "Shipping update recorded"
+      )
       await invalidateOrderQueries()
     },
   })
@@ -1167,7 +1052,7 @@ function OrdersPage() {
       if (!pubkey || !selected) throw new Error("No conversation selected")
       assertBuyerHasNostrInbox()
       if (!replyNote.trim()) throw new Error("Message is required")
-      await publishOrderConversationMessage({
+      await publishMerchantOrderMessage({
         merchantPubkey: pubkey,
         buyerPubkey: selected.buyerPubkey,
         orderId: selected.orderId,
@@ -1175,6 +1060,7 @@ function OrdersPage() {
         payload: {
           note: replyNote.trim(),
         },
+        delivery: operationalDelivery,
       })
     },
     onSuccess: async () => {
@@ -1427,13 +1313,16 @@ function OrdersPage() {
                       <h3 className="text-sm font-semibold text-[var(--text-primary)]">
                         {isGuestOrder ? "Guest order" : "Actions"}
                       </h3>
-                      {isGuestOrder ? (
-                        <p className="mt-4 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm leading-6 text-warning">
-                          {orderSummary.guestContact
-                            ? "This guest has no Nostr reply inbox. Use the phone and email contact details on the order for invoices and fulfillment updates."
-                            : "This guest has no Nostr reply inbox and the order is missing required contact details. Treat it as incomplete."}
-                        </p>
-                      ) : (
+                      <>
+                        {!buyerInboxKnown && (
+                          <p className="mt-4 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm leading-6 text-warning">
+                            {isGuestOrder
+                              ? orderSummary.guestContact
+                                ? "This guest has no Nostr reply inbox. Contact them by phone or email; fulfillment actions below are recorded to your encrypted order history."
+                                : "This guest has no Nostr reply inbox and the order is missing required contact details. Fulfillment actions below are recorded only to your encrypted order history."
+                              : "This partial order history does not prove the buyer has a Nostr reply inbox. Actions are recorded to your encrypted order history until the order identity is recovered."}
+                          </p>
+                        )}
                         <div className="mt-4 space-y-5">
                           {successFlash && (
                             <div className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-400">
@@ -1441,45 +1330,57 @@ function OrdersPage() {
                             </div>
                           )}
 
-                          {orderActions.length > 0 && (
+                          {buttonActions.length > 0 && (
                             <div className="space-y-2">
                               <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
                                 Respond
                               </div>
                               <div className="flex flex-wrap gap-2">
-                                {orderActions.map((action) => (
+                                {buttonActions.map((action) => (
                                   <Button
-                                    key={action.label}
+                                    key={action.action}
                                     size="sm"
                                     variant={
                                       action.kind === "destructive"
                                         ? "outline"
                                         : "primary"
                                     }
-                                    disabled={advanceStatusMutation.isPending}
+                                    disabled={
+                                      advanceStatusMutation.isPending ||
+                                      shippingMutation.isPending
+                                    }
                                     onClick={() => {
                                       if (action.kind === "destructive") {
-                                        setPendingDestructiveStatus(
-                                          action.status
-                                        )
+                                        if (action.status) {
+                                          setPendingDestructiveStatus(
+                                            action.status
+                                          )
+                                        }
                                         return
                                       }
-                                      advanceStatusMutation.mutate(
-                                        action.status
-                                      )
+                                      if (action.action === "record_shipment") {
+                                        return
+                                      }
+                                      if (action.status) {
+                                        advanceStatusMutation.mutate(
+                                          action.status
+                                        )
+                                      }
                                     }}
                                   >
                                     {advanceStatusMutation.isPending &&
                                     advanceStatusMutation.variables ===
                                       action.status
-                                      ? "Sending…"
+                                      ? buyerInboxKnown
+                                        ? "Sending…"
+                                        : "Recording…"
                                       : action.label}
                                   </Button>
                                 ))}
                               </div>
                               {merchantOrderState.paid &&
                                 orderActions.some(
-                                  (action) => action.status === "cancelled"
+                                  (action) => action.action === "cancel"
                                 ) && (
                                   <p className="text-xs text-[var(--text-secondary)]">
                                     This order is already paid. Cancelling won't
@@ -1492,39 +1393,12 @@ function OrdersPage() {
 
                           <div
                             className={
-                              orderActions.length > 0
+                              buttonActions.length > 0
                                 ? "space-y-3 border-t border-[var(--border)] pt-4"
                                 : "space-y-3"
                             }
                           >
-                            <div className="grid gap-1">
-                              <Label htmlFor="action-kind">Manual action</Label>
-                              <Select
-                                value={actionKind}
-                                onValueChange={(value) =>
-                                  setActionKind(value as ActionKind)
-                                }
-                              >
-                                <SelectTrigger id="action-kind">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="invoice">
-                                    Send invoice
-                                  </SelectItem>
-                                  <SelectItem value="status">
-                                    Status update
-                                  </SelectItem>
-                                  {merchantPaid && (
-                                    <SelectItem value="shipping">
-                                      Shipping update
-                                    </SelectItem>
-                                  )}
-                                </SelectContent>
-                              </Select>
-                            </div>
-
-                            {actionKind === "invoice" && (
+                            {canSendInvoice && (
                               <div className="space-y-2">
                                 <div className="grid grid-cols-2 gap-2">
                                   <div className="grid gap-1">
@@ -1706,67 +1580,7 @@ function OrdersPage() {
                               </div>
                             )}
 
-                            {actionKind === "status" && (
-                              <form
-                                className="space-y-2"
-                                onSubmit={(event) => {
-                                  event.preventDefault()
-                                  statusMutation.mutate()
-                                }}
-                              >
-                                <Select
-                                  value={orderStatus}
-                                  onValueChange={(value) =>
-                                    setOrderStatus(value as KnownOrderStatus)
-                                  }
-                                >
-                                  <SelectTrigger aria-label="Choose status">
-                                    <SelectValue placeholder="Choose status" />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="paid">paid</SelectItem>
-                                    <SelectItem value="processing">
-                                      processing
-                                    </SelectItem>
-                                    {merchantPaid && (
-                                      <>
-                                        <SelectItem value="shipped">
-                                          shipped
-                                        </SelectItem>
-                                        <SelectItem value="complete">
-                                          complete
-                                        </SelectItem>
-                                      </>
-                                    )}
-                                    <SelectItem value="cancelled">
-                                      cancelled
-                                    </SelectItem>
-                                  </SelectContent>
-                                </Select>
-                                <Input
-                                  aria-label="Status note"
-                                  value={statusNote}
-                                  onChange={(event) =>
-                                    setStatusNote(event.target.value)
-                                  }
-                                  placeholder="Optional note"
-                                />
-                                <Button
-                                  type="submit"
-                                  size="sm"
-                                  className="w-full"
-                                  disabled={
-                                    statusMutation.isPending || !orderStatus
-                                  }
-                                >
-                                  {statusMutation.isPending
-                                    ? "Sending…"
-                                    : "Send status DM"}
-                                </Button>
-                              </form>
-                            )}
-
-                            {actionKind === "shipping" && merchantPaid && (
+                            {canRecordShipping && (
                               <form
                                 className="space-y-2"
                                 onSubmit={(event) => {
@@ -1814,19 +1628,19 @@ function OrdersPage() {
                                 >
                                   {shippingMutation.isPending
                                     ? "Sending…"
-                                    : "Send shipping DM"}
+                                    : buyerInboxKnown
+                                      ? "Send shipping update"
+                                      : "Record shipping update"}
                                 </Button>
                               </form>
                             )}
 
                             {(invoiceMutation.error ||
-                              statusMutation.error ||
                               shippingMutation.error ||
                               noteMutation.error) && (
                               <div className="rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
                                 {[
                                   invoiceMutation.error,
-                                  statusMutation.error,
                                   shippingMutation.error,
                                   noteMutation.error,
                                 ]
@@ -1841,7 +1655,7 @@ function OrdersPage() {
                             )}
                           </div>
                         </div>
-                      )}
+                      </>
                     </section>
                   </div>
 
@@ -1918,9 +1732,9 @@ function OrdersPage() {
                               {orderSummary.trackingNumber}
                             </div>
                           )}
-                          {orderSummary.trackingUrl && (
+                          {safeTrackingUrl && (
                             <a
-                              href={orderSummary.trackingUrl}
+                              href={safeTrackingUrl}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="text-xs text-[var(--accent)] underline-offset-2 hover:underline"
@@ -2023,50 +1837,47 @@ function OrdersPage() {
                           {selectedStatusDisplay?.label ?? "Unknown"}
                         </StatusPill>
                       </div>
-                      {!isGuestOrder && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="mt-3 w-full"
-                          onClick={() => setMessagesOpen(true)}
-                        >
-                          <MessageCircle className="h-4 w-4" />
-                          Message
-                          {(selected.messages?.length ?? 0) > 0 && (
-                            <span className="ml-1 rounded-full bg-[var(--surface)] px-1.5 text-xs text-[var(--text-secondary)]">
-                              {selected.messages?.length}
-                            </span>
-                          )}
-                        </Button>
-                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="mt-3 w-full"
+                        onClick={() => setMessagesOpen(true)}
+                      >
+                        <MessageCircle className="size-4" aria-hidden="true" />
+                        {buyerInboxKnown ? "Message" : "Order history"}
+                        {(selected.messages?.length ?? 0) > 0 && (
+                          <span className="ml-1 rounded-full bg-[var(--surface)] px-1.5 text-xs text-[var(--text-secondary)]">
+                            {selected.messages?.length}
+                          </span>
+                        )}
+                      </Button>
                     </section>
                   </div>
                 </div>
 
-                {!isGuestOrder && (
-                  <OrderMessagesWidget
-                    open={messagesOpen}
-                    onOpenChange={setMessagesOpen}
-                    subtitle={
-                      selectedBuyerName ?? formatNpub(selected.buyerPubkey, 8)
-                    }
-                    messages={selected.messages ?? []}
-                    selfPubkey={pubkey}
-                    replyValue={replyNote}
-                    onReplyChange={setReplyNote}
-                    onSend={() => noteMutation.mutate()}
-                    sending={noteMutation.isPending}
-                    error={
-                      noteMutation.error instanceof Error
-                        ? noteMutation.error.message
-                        : noteMutation.error
-                          ? "Failed to send message"
-                          : null
-                    }
-                    placeholder="Message the buyer, then press Enter"
-                    resolveItem={(id) => productLookup.get(id)}
-                  />
-                )}
+                <OrderMessagesWidget
+                  open={messagesOpen}
+                  onOpenChange={setMessagesOpen}
+                  subtitle={
+                    selectedBuyerName ?? formatNpub(selected.buyerPubkey, 8)
+                  }
+                  messages={selected.messages ?? []}
+                  selfPubkey={pubkey}
+                  replyValue={replyNote}
+                  onReplyChange={setReplyNote}
+                  onSend={() => noteMutation.mutate()}
+                  sending={noteMutation.isPending}
+                  error={
+                    noteMutation.error instanceof Error
+                      ? noteMutation.error.message
+                      : noteMutation.error
+                        ? "Failed to send message"
+                        : null
+                  }
+                  placeholder="Message the buyer, then press Enter"
+                  readOnly={!buyerInboxKnown}
+                  resolveItem={(id) => productLookup.get(id)}
+                />
 
                 <Dialog
                   open={!!pendingDestructiveStatus}
@@ -2080,7 +1891,9 @@ function OrdersPage() {
                       <DialogDescription>
                         {merchantPaid
                           ? "This records the order as cancelled but does not return funds. Any refund must be sent separately."
-                          : "This records the order as cancelled and notifies the buyer."}
+                          : buyerInboxKnown
+                            ? "This records the order as cancelled and notifies the buyer."
+                            : "This records the order as cancelled in your encrypted order history. Contact the buyer separately if needed."}
                       </DialogDescription>
                     </DialogHeader>
                     <DialogFooter>
@@ -2102,7 +1915,9 @@ function OrdersPage() {
                         }}
                       >
                         {advanceStatusMutation.isPending
-                          ? "Sending…"
+                          ? buyerInboxKnown
+                            ? "Sending…"
+                            : "Recording…"
                           : "Cancel order"}
                       </Button>
                     </DialogFooter>

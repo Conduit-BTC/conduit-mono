@@ -20,6 +20,7 @@ export type OrderMessagesWidgetProps = {
   sending?: boolean
   error?: string | null
   placeholder?: string
+  readOnly?: boolean
   resolveItem?: (
     productId: string
   ) => { title?: string; imageUrl?: string } | undefined
@@ -38,6 +39,7 @@ export function OrderMessagesWidget({
   sending = false,
   error = null,
   placeholder = "Message, then press Enter",
+  readOnly = false,
   resolveItem,
 }: OrderMessagesWidgetProps) {
   const replyInputId = useId()
@@ -83,43 +85,49 @@ export function OrderMessagesWidget({
             <div ref={messageEndRef} aria-hidden="true" />
           </div>
 
-          <form
-            className="border-t border-[var(--border)] p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]"
-            onSubmit={(event) => {
-              event.preventDefault()
-              if (sending || !replyValue.trim()) return
-              onSend()
-            }}
-          >
-            <Label htmlFor={replyInputId} className="sr-only">
-              Message
-            </Label>
-            <div className="flex items-center gap-2">
-              <Input
-                id={replyInputId}
-                value={replyValue}
-                onChange={(event) => onReplyChange(event.target.value)}
-                placeholder={placeholder}
-                className="flex-1"
-                aria-invalid={!!error}
-                aria-describedby={error ? errorId : undefined}
-              />
-              <Button
-                type="submit"
-                size="icon"
-                className="shrink-0"
-                disabled={sending || !replyValue.trim()}
-                aria-label="Send message"
-              >
-                <Send className="size-4" aria-hidden="true" />
-              </Button>
-            </div>
-            {error && (
-              <p id={errorId} className="mt-2 text-xs text-error" role="alert">
-                {error}
-              </p>
-            )}
-          </form>
+          {!readOnly && (
+            <form
+              className="border-t border-[var(--border)] p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]"
+              onSubmit={(event) => {
+                event.preventDefault()
+                if (sending || !replyValue.trim()) return
+                onSend()
+              }}
+            >
+              <Label htmlFor={replyInputId} className="sr-only">
+                Message
+              </Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id={replyInputId}
+                  value={replyValue}
+                  onChange={(event) => onReplyChange(event.target.value)}
+                  placeholder={placeholder}
+                  className="flex-1"
+                  aria-invalid={!!error}
+                  aria-describedby={error ? errorId : undefined}
+                />
+                <Button
+                  type="submit"
+                  size="icon"
+                  className="shrink-0"
+                  disabled={sending || !replyValue.trim()}
+                  aria-label="Send message"
+                >
+                  <Send className="size-4" aria-hidden="true" />
+                </Button>
+              </div>
+              {error && (
+                <p
+                  id={errorId}
+                  className="mt-2 text-xs text-error"
+                  role="alert"
+                >
+                  {error}
+                </p>
+              )}
+            </form>
+          )}
         </DialogContent>
 
         <DialogTrigger asChild>

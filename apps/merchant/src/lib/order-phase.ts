@@ -10,14 +10,24 @@ import {
 
 export type OrderPhaseTab = "all" | "pending" | "in_progress" | "completed"
 
+export type OrderQueueTab =
+  | "all"
+  | "paid_fulfill"
+  | "verify_payment"
+  | "unpaid_review"
+  | "shipped"
+  | "closed"
+
 export const ORDER_PHASE_OPTIONS: Array<{
-  value: OrderPhaseTab
+  value: OrderQueueTab
   label: string
 }> = [
   { value: "all", label: "All" },
-  { value: "pending", label: "Pending" },
-  { value: "in_progress", label: "In Progress" },
-  { value: "completed", label: "Completed" },
+  { value: "paid_fulfill", label: "Paid — fulfill" },
+  { value: "verify_payment", label: "Payment reported — verify" },
+  { value: "unpaid_review", label: "Unpaid — review" },
+  { value: "shipped", label: "Shipped" },
+  { value: "closed", label: "Closed" },
 ]
 
 // Coarse bucket for an order status. Cancelled belongs to no active tab, so it
@@ -60,13 +70,50 @@ export function getMerchantConversationState(
   conversation: MerchantConversationSummary
 ): MerchantOrderState {
   const summary = getMerchantOrderSummary(conversation)
+  const terminalStatus = [...(conversation.messages ?? [])]
+    .reverse()
+    .find(
+      (message) =>
+        message.type === "status_update" &&
+        message.senderPubkey === conversation.merchantPubkey &&
+        ["cancelled", "complete", "delivered", "refund_requested"].includes(
+          message.payload.status
+        )
+    )
   return {
-    status: conversation.status,
+    status:
+      terminalStatus?.type === "status_update"
+        ? terminalStatus.payload.status
+        : conversation.status,
     paid: summary.paymentConfirmed,
-    paymentObserved: summary.paymentProofReceived,
+    paymentObserved:
+      summary.paymentProofReceived || summary.paymentReportReceived,
+    paymentReported: summary.externalPaymentReportReceived,
     accepted: summary.accepted,
     invoiceSent: summary.invoiceSent,
+    shippingUpdated: summary.shippingUpdateReceived,
   }
+}
+
+export type MerchantOrderQueue = Exclude<OrderQueueTab, "all">
+
+export function getMerchantConversationQueue(
+  conversation: MerchantConversationSummary
+): MerchantOrderQueue {
+  const state = getMerchantConversationState(conversation)
+  const status = (state.status ?? "pending").toLowerCase()
+  if (
+    status === "cancelled" ||
+    status === "complete" ||
+    status === "delivered" ||
+    status === "refund_requested"
+  ) {
+    return "closed"
+  }
+  if (state.shippingUpdated || status === "shipped") return "shipped"
+  if (state.paid || status === "paid") return "paid_fulfill"
+  if (state.paymentObserved) return "verify_payment"
+  return "unpaid_review"
 }
 
 export function getMerchantConversationPhase(
@@ -80,13 +127,27 @@ export function getMerchantConversationStatusDisplay(
 ): OrderStatusDisplay {
   const state = getMerchantConversationState(conversation)
   const status = (state.status ?? "pending").toLowerCase()
-  if (status !== "pending") return getOrderStatusDisplay(state.status)
-  if (state.paid) return getOrderStatusDisplay("paid")
+  if (
+    status === "cancelled" ||
+    status === "complete" ||
+    status === "delivered" ||
+    status === "refund_requested"
+  ) {
+    return getOrderStatusDisplay(state.status)
+  }
+  if (state.shippingUpdated || status === "shipped") {
+    return getOrderStatusDisplay("shipped")
+  }
+  if (isMerchantOrderPaid(state)) return getOrderStatusDisplay("paid")
+  if (state.paymentReported) {
+    return { tone: "warning", label: "Payment reported — verify" }
+  }
   if (state.paymentObserved) {
     return { tone: "info", label: "Payment proof received" }
   }
   if (state.accepted) return getOrderStatusDisplay("accepted")
   if (state.invoiceSent) return getOrderStatusDisplay("invoiced")
+  if (status !== "pending") return getOrderStatusDisplay(state.status)
   return getOrderStatusDisplay(state.status)
 }
 

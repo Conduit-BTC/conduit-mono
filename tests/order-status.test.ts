@@ -5,6 +5,7 @@ import {
   getMerchantOrderActions,
   getOrderStatusDisplay,
   KNOWN_ORDER_STATUSES,
+  normalizeSafeHttpUrl,
   orderStatusEnum,
   orderStatusSchema,
   type KnownOrderStatus,
@@ -38,6 +39,17 @@ describe("canonical order statuses", () => {
     expect(orderStatusSchema.parse("future_merchant_status")).toBe(
       "future_merchant_status"
     )
+  })
+})
+
+describe("normalizeSafeHttpUrl", () => {
+  it("allows web URLs and rejects executable or malformed schemes", () => {
+    expect(normalizeSafeHttpUrl("https://carrier.example/track/1")).toBe(
+      "https://carrier.example/track/1"
+    )
+    expect(normalizeSafeHttpUrl("javascript:alert(1)")).toBeNull()
+    expect(normalizeSafeHttpUrl("data:text/html,payload")).toBeNull()
+    expect(normalizeSafeHttpUrl("not a url")).toBeNull()
   })
 })
 
@@ -100,7 +112,7 @@ describe("buildOrderStatusTimeline", () => {
     ])
   })
 
-  it("orders payment before acceptance for prepaid (zap-out) orders", () => {
+  it("treats confirmed prepaid payment as merchant acceptance", () => {
     expect(stepKeys({ status: "pending", paid: true })).toEqual([
       "placed",
       "payment",
@@ -108,12 +120,12 @@ describe("buildOrderStatusTimeline", () => {
       "shipped",
       "delivered",
     ])
-    // Paid at checkout, awaiting merchant acceptance.
+    // A merchant-confirmed payment is already a commitment to fulfill.
     expect(stepStatuses({ status: "pending", paid: true })).toEqual([
       "complete",
       "complete",
+      "complete",
       "in_progress",
-      "waiting",
       "waiting",
     ])
   })
@@ -164,35 +176,124 @@ describe("deriveOrderFlow", () => {
 
 describe("getMerchantOrderActions", () => {
   it("offers decline + accept before acceptance", () => {
-    for (const status of ["pending", "paid"]) {
-      expect(getMerchantOrderActions(status)).toEqual([
-        { status: "cancelled", label: "Decline order", kind: "destructive" },
-        { status: "accepted", label: "Accept order", kind: "primary" },
-      ])
-    }
+    expect(getMerchantOrderActions("pending")).toEqual([
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Decline order",
+        kind: "destructive",
+      },
+      {
+        action: "accept",
+        status: "accepted",
+        label: "Accept order",
+        kind: "primary",
+      },
+    ])
   })
 
   it("offers cancel + ship once accepted and paid", () => {
     expect(getMerchantOrderActions({ status: "accepted", paid: true })).toEqual(
       [
-        { status: "cancelled", label: "Cancel order", kind: "destructive" },
-        { status: "shipped", label: "Mark as shipped", kind: "primary" },
+        {
+          action: "cancel",
+          status: "cancelled",
+          label: "Cancel order",
+          kind: "destructive",
+        },
+        {
+          action: "record_shipment",
+          label: "Add shipping details",
+          kind: "primary",
+        },
       ]
     )
+  })
+
+  it("does not require a separate accept action after confirmed payment", () => {
+    expect(getMerchantOrderActions({ status: "pending", paid: true })).toEqual([
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Cancel order",
+        kind: "destructive",
+      },
+      {
+        action: "record_shipment",
+        label: "Add shipping details",
+        kind: "primary",
+      },
+    ])
+  })
+
+  it("routes buyer payment evidence to verification before fulfillment", () => {
+    expect(
+      getMerchantOrderActions({
+        status: "pending",
+        paymentObserved: true,
+        paymentReported: true,
+      })
+    ).toEqual([
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Cancel order",
+        kind: "destructive",
+      },
+      {
+        action: "confirm_payment",
+        status: "paid",
+        label: "Confirm payment",
+        kind: "primary",
+      },
+    ])
+  })
+
+  it("treats a shipping update as the shipped lifecycle transition", () => {
+    const state = {
+      status: "paid",
+      paid: true,
+      shippingUpdated: true,
+    }
+    expect(
+      buildOrderStatusTimeline(state).find((step) => step.key === "shipped")
+    ).toMatchObject({ status: "complete" })
+    expect(getMerchantOrderActions(state)).toEqual([
+      {
+        action: "complete",
+        status: "complete",
+        label: "Mark delivered",
+        kind: "primary",
+      },
+    ])
   })
 
   it("preserves acceptance when a later paid status becomes current", () => {
     expect(
       getMerchantOrderActions({ status: "paid", accepted: true, paid: true })
     ).toEqual([
-      { status: "cancelled", label: "Cancel order", kind: "destructive" },
-      { status: "shipped", label: "Mark as shipped", kind: "primary" },
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Cancel order",
+        kind: "destructive",
+      },
+      {
+        action: "record_shipment",
+        label: "Add shipping details",
+        kind: "primary",
+      },
     ])
   })
 
   it("gates shipping on payment (accepted but unpaid → cancel only)", () => {
     expect(getMerchantOrderActions({ status: "accepted" })).toEqual([
-      { status: "cancelled", label: "Cancel order", kind: "destructive" },
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Cancel order",
+        kind: "destructive",
+      },
     ])
   })
 
@@ -207,15 +308,33 @@ describe("getMerchantOrderActions", () => {
       buildOrderStatusTimeline(state).find((step) => step.key === "payment")
     ).toMatchObject({
       title: "Payment proof received",
-      status: "complete",
+      status: "in_progress",
     })
     expect(getMerchantOrderActions(state)).toEqual([
-      { status: "cancelled", label: "Cancel order", kind: "destructive" },
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Cancel order",
+        kind: "destructive",
+      },
+      {
+        action: "confirm_payment",
+        status: "paid",
+        label: "Confirm payment",
+        kind: "primary",
+      },
     ])
   })
 
-  it("offers nothing once shipped (buyer confirms delivery) or terminal", () => {
-    expect(getMerchantOrderActions("shipped")).toEqual([])
+  it("offers completion once shipped and nothing once terminal", () => {
+    expect(getMerchantOrderActions("shipped")).toEqual([
+      {
+        action: "complete",
+        status: "complete",
+        label: "Mark delivered",
+        kind: "primary",
+      },
+    ])
     expect(getMerchantOrderActions("delivered")).toEqual([])
     expect(getMerchantOrderActions("cancelled")).toEqual([])
     expect(getMerchantOrderActions("refund_requested")).toEqual([])

@@ -424,6 +424,7 @@ describe("payment proof model", () => {
     expect(summaryAfterEvidence.paymentProofAmount).toBe(21)
     expect(summaryAfterEvidence.paymentProofCurrency).toBe("SATS")
     expect(summaryAfterEvidence.paymentReportReceived).toBe(true)
+    expect(summaryAfterEvidence.externalPaymentReportReceived).toBe(false)
     expect(summaryAfterEvidence.paymentReportCount).toBe(1)
     expect(summaryAfterEvidence.paymentReportAmount).toBe(21)
     expect(summaryAfterEvidence.paymentReportCurrency).toBe("SATS")
@@ -462,6 +463,7 @@ describe("payment proof model", () => {
     expect(summary.paymentProofReceived).toBe(false)
     expect(summary.paymentProofCount).toBe(0)
     expect(summary.paymentReportReceived).toBe(true)
+    expect(summary.externalPaymentReportReceived).toBe(true)
     expect(summary.paymentReportCount).toBe(1)
     expect(summary.paymentReportAmount).toBe(21)
     expect(summary.paymentReportCurrency).toBe("SATS")
@@ -495,6 +497,7 @@ describe("payment proof model", () => {
     const summary = extractOrderSummary([order, legacyExternalReport])
     expect(summary.paymentProofReceived).toBe(false)
     expect(summary.paymentReportReceived).toBe(true)
+    expect(summary.externalPaymentReportReceived).toBe(true)
     expect(summary.paymentReportCount).toBe(1)
   })
 
