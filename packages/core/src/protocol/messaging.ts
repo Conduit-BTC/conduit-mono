@@ -254,8 +254,14 @@ export async function publishPrivateMessage(
       ),
     input.retry
   )
-  const wrappedToSelf = selfCopy
-    ? await withTransientNip07Retry(
+
+  // The self-copy is a non-critical local-recovery leg: a signer failure while
+  // wrapping it must never block the critical recipient delivery below.
+  let selfCopyError: string | null = null
+  let wrappedToSelf: NDKEvent | null = null
+  if (selfCopy) {
+    try {
+      wrappedToSelf = await withTransientNip07Retry(
         () =>
           giftWrapFn(
             input.rumor,
@@ -265,7 +271,11 @@ export async function publishPrivateMessage(
           ),
         input.retry
       )
-    : null
+    } catch (error) {
+      selfCopyError =
+        error instanceof Error ? error.message : "Self-copy wrap failed"
+    }
+  }
 
   await publishWithPlanner(wrappedToRecipient, {
     intent: "recipient_event",
@@ -276,7 +286,6 @@ export async function publishPrivateMessage(
     deliveryMode: "critical",
   })
 
-  let selfCopyError: string | null = null
   if (wrappedToSelf) {
     try {
       await publishWithPlanner(wrappedToSelf, {

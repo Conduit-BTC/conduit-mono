@@ -189,9 +189,17 @@ function MessagesPage() {
         )}
 
       {showEmpty && (
-        <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
-          No buyer messages yet.
-        </div>
+        <>
+          <DecryptFailureNotice
+            count={liveMeta?.decryptFailures?.length ?? 0}
+            onRetry={() => void liveQuery.refetch()}
+            retrying={liveQuery.isRefetching}
+            className="xl:shrink-0"
+          />
+          <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+            No buyer messages yet.
+          </div>
+        </>
       )}
 
       {signerConnected && conversations.length > 0 && (

@@ -215,6 +215,44 @@ describe("general direct-message gateway", () => {
     expect(second.data[0]?.messageCount).toBe(2)
   })
 
+  it("adds the principal's kind-10050 inbox relays to the DM read fanout", async () => {
+    let giftWrapReadRelays: string[] | undefined
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter, options) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRIVATE_MESSAGE_RELAYS)) {
+          return [
+            {
+              id: "relays-10050",
+              kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+              pubkey: BUYER,
+              created_at: 90,
+              content: "",
+              tags: [["relay", "wss://inbox.example"]],
+            },
+          ] as never
+        }
+        if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
+          giftWrapReadRelays = options?.relayUrls as string[] | undefined
+          return [giftWrapEvent("wrap-a")] as never
+        }
+        return []
+      },
+      giftUnwrap: async () =>
+        directRumor({
+          id: "dm-a",
+          sender: MERCHANT,
+          recipient: BUYER,
+          content: "hi",
+          createdAt: 101,
+        }) as never,
+    })
+
+    await getDirectMessageConversationList({ principalPubkey: BUYER })
+
+    expect(giftWrapReadRelays).toContain("wss://inbox.example")
+  })
+
   it("returns a single counterparty thread", async () => {
     __setCommerceTestOverrides({
       fetchEventsFanout: async (filter) =>

@@ -27,6 +27,7 @@ import { extractOrderSummary } from "./order-summary"
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import {
   parseDirectMessageRumor,
+  parsePrivateMessageRelays,
   unwrapGiftWraps,
   type DecryptFailure,
   type ParsedDirectMessage,
@@ -299,6 +300,7 @@ const READ_PLANS: Record<CommerceReadPlanName, CommerceReadSource[]> = {
 
 let testOverrides: CommerceTestOverrides = {}
 const knownWrapIds = new Set<string>()
+const inboxRelayUrlCache = new Map<string, string[]>()
 
 function now(): number {
   return testOverrides.now?.() ?? Date.now()
@@ -447,6 +449,7 @@ export function __setCommerceTestOverrides(
 export function __resetCommerceTestOverrides(): void {
   testOverrides = {}
   knownWrapIds.clear()
+  inboxRelayUrlCache.clear()
 }
 
 function createMeta(
@@ -2635,6 +2638,46 @@ async function fetchParsedOrderMessages(
  * processed this session. Shared by the order and general-DM fetches so the two
  * conversation reads dedup unwrapping through `knownWrapIds`.
  */
+/**
+ * Resolve the principal's own kind-10050 private-message inbox relays (where
+ * peers deliver gift wraps to them). Best-effort and cached; falls back to an
+ * empty set so DM reads still use NIP-65 + config defaults when no 10050 exists.
+ */
+async function resolveInboxReadRelays(
+  principalPubkey: string
+): Promise<string[]> {
+  const cached = inboxRelayUrlCache.get(principalPubkey)
+  if (cached) return cached
+  try {
+    const events = await runFetchEventsFanout(
+      {
+        kinds: [EVENT_KINDS.PRIVATE_MESSAGE_RELAYS],
+        authors: [principalPubkey],
+        limit: 1,
+      },
+      {
+        relayUrls: publicReadRelayUrls(),
+        connectTimeoutMs: 3_000,
+        fetchTimeoutMs: 6_000,
+      }
+    )
+    let relays: string[] = []
+    let newest = -1
+    for (const event of events) {
+      const parsed = parsePrivateMessageRelays(event)
+      if (parsed && (event.created_at ?? 0) > newest) {
+        relays = parsed.relayUrls
+        newest = event.created_at ?? 0
+      }
+    }
+    const secure = relays.filter((url) => !isInsecureRelayUrl(url))
+    inboxRelayUrlCache.set(principalPubkey, secure)
+    return secure
+  } catch {
+    return []
+  }
+}
+
 async function fetchNewInboxWraps(
   principalPubkey: string,
   limit: number
@@ -2645,12 +2688,13 @@ async function fetchNewInboxWraps(
     limit,
   }
 
+  const inboxRelayUrls = await resolveInboxReadRelays(principalPubkey)
   const dmRelayUrls = await planCommerceReadRelays({
     intent: "dm_inbox",
     recipients: [principalPubkey],
     authenticatedPubkey: principalPubkey,
     maxRelays: DM_INBOX_READ_FANOUT,
-    extraRelayUrls: config.appWriteRelayUrls,
+    extraRelayUrls: [...config.appWriteRelayUrls, ...inboxRelayUrls],
   })
 
   const wrapped = await runFetchEventsFanout(filter, {

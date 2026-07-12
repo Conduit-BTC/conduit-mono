@@ -71,10 +71,14 @@ The boundary provides:
   public draft/client references and recipient capability detection are in place.
   Legacy NIP-04 remains **read-only** decrypt fallback; Conduit never sends NIP-04.
   NWC/NIP-47 wallet traffic stays on its wallet-supported version regardless.
-- **Private-message relay hints (kind `10050`).** When a counterparty advertises a
-  kind-10050 private-message relay list, its relays bias DM read/write planning.
-  Absent a `10050`, planning falls back to NIP-65 relay lists and the configured
-  DM inbox defaults; kind-10050 is an input, not the only routing model.
+- **Private-message relay hints (kind `10050`).** The principal's own kind-10050
+  inbox relays augment the **DM inbox read** set, so gift wraps a peer delivers
+  only to those declared relays are still fetched. Absent a `10050`, reads fall
+  back to NIP-65 relay lists and the configured DM inbox defaults; kind-10050 is
+  an input, not the only routing model. Recipient-side kind-10050 **write**
+  routing (delivering to a peer's declared inbox relays, for interop with
+  clients that advertise only a `10050`) is parsed and ready but not yet wired
+  into the publish planner — a tracked follow-up.
 
 ## Conversation model and cache
 
