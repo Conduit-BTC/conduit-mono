@@ -150,18 +150,28 @@ describe("buildOrderStatusTimeline", () => {
 
   it("marks the stopped stage failed when cancelled", () => {
     const rows = buildOrderStatusTimeline("cancelled")
-    expect(rows.map((row) => row.status)).toEqual([
-      "complete",
-      "failed",
-      "waiting",
-      "waiting",
-      "waiting",
-    ])
+    expect(rows.map((row) => row.status)).toEqual(["complete", "failed"])
     expect(rows[1]).toMatchObject({
       title: "Order cancelled",
-      subtitle: "No further action is required.",
+      subtitle: "No further order action is required.",
     })
     expect(rows[1]?.label).toBe("Cancelled")
+  })
+
+  it("stops refund-requested orders without presenting fulfillment as active", () => {
+    const rows = buildOrderStatusTimeline({
+      status: "refund_requested",
+      paid: true,
+    })
+
+    expect(rows.at(-1)).toMatchObject({
+      title: "Refund requested",
+      subtitle: "Coordinate the Lightning refund outside Conduit.",
+      status: "retry_needed",
+      label: "Refund requested",
+    })
+    expect(rows.some((row) => row.status === "in_progress")).toBe(false)
+    expect(rows.some((row) => row.status === "waiting")).toBe(false)
   })
 
   it("uses state-aware copy that tells the merchant what happens next", () => {
@@ -201,6 +211,35 @@ describe("buildOrderStatusTimeline", () => {
       title: "Confirm payment",
       subtitle: "Verify settlement before fulfilling the order.",
       status: "in_progress",
+    })
+
+    const invoicedVerification = buildOrderStatusTimeline({
+      status: "pending",
+      invoiceSent: true,
+      paymentObserved: true,
+    })
+    expect(invoicedVerification[1]).toMatchObject({
+      key: "payment",
+      title: "Confirm payment",
+      status: "in_progress",
+    })
+
+    const guestInvoice = buildOrderStatusTimeline({
+      status: "accepted",
+      accepted: true,
+      buyerReplyable: false,
+    })
+    expect(guestInvoice.find((row) => row.key === "payment")).toMatchObject({
+      title: "Request payment",
+      subtitle: "Contact the buyer outside Nostr to request payment.",
+      status: "in_progress",
+    })
+
+    const legacyShipped = buildOrderStatusTimeline({ status: "shipped" })
+    expect(legacyShipped.find((row) => row.key === "shipped")).toMatchObject({
+      title: "Shipped",
+      subtitle: "Order marked shipped.",
+      status: "complete",
     })
   })
 })
@@ -385,6 +424,36 @@ describe("getMerchantOrderActions", () => {
         kind: "destructive",
       },
     ])
+  })
+
+  it("lets non-replyable accepted orders record verified out-of-band payment", () => {
+    expect(
+      getMerchantOrderActions({
+        status: "accepted",
+        accepted: true,
+        buyerReplyable: false,
+      })
+    ).toEqual([
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Cancel order",
+        kind: "destructive",
+      },
+      {
+        action: "confirm_payment",
+        status: "paid",
+        label: "Confirm payment received",
+        kind: "primary",
+      },
+    ])
+    expect(
+      getMerchantOrderActions({
+        status: "paid",
+        paid: true,
+        buyerReplyable: false,
+      }).map((action) => action.action)
+    ).toEqual(["cancel", "record_shipment"])
   })
 
   it("shows buyer payment evidence without unlocking shipping", () => {

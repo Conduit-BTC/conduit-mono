@@ -215,7 +215,13 @@ wording such as `Shipped` while its status is still in progress. The Actions
 surface presents the recommended **Next step** first. Cancellation and other
 destructive alternatives appear afterward under **Other actions**, use
 destructive styling, and retain confirmation plus refund-risk copy where funds
-have already moved.
+have already moved or payment evidence suggests they may have moved. Cancelled
+and refund-requested orders stop at their terminal row instead of presenting a
+later fulfillment task as active or waiting. When the buyer has no confirmed
+Nostr reply inbox, the next-step prompt must direct the merchant to the order's
+out-of-band contact details rather than offering an invoice that cannot be
+delivered. After verifying out-of-band settlement, the merchant can record a
+self-copy payment confirmation that unlocks fulfillment.
 
 Shipment is one domain action: it requires a tracking code and carrier, accepts
 an optional tracking URL and additional notes, records the shipping update, and

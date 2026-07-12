@@ -30,6 +30,12 @@ export {
   DialogDescription,
   DialogTrigger,
   DialogClose,
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogFooter,
+  AlertDialogTitle,
+  AlertDialogDescription,
 } from "./Dialog"
 export { Input, type InputProps } from "./Input"
 export { Textarea, type TextareaProps } from "./Textarea"

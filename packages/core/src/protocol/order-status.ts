@@ -52,6 +52,8 @@ export interface MerchantOrderState {
   shippingUpdated?: boolean
   /** False only for an explicitly digital-only order. */
   requiresShipping?: boolean
+  /** False when this order has no confirmed Nostr reply inbox. */
+  buyerReplyable?: boolean
 }
 
 export type OrderFlow = "prepaid" | "invoice"
@@ -172,7 +174,8 @@ export function buildOrderStatusTimeline(
 ): OrderTimelineStep[] {
   const state = toState(input)
   const status = normalizeStatus(state.status)
-  const cancelled = status === "cancelled"
+  const stoppedStatus =
+    status === "cancelled" || status === "refund_requested" ? status : null
   const paid = isMerchantOrderPaid(state)
   const paymentObserved = paid || !!state.paymentObserved
   const acceptedGate = isMerchantOrderAccepted(state)
@@ -218,7 +221,10 @@ export function buildOrderStatusTimeline(
             }
           : {
               title: "Request payment",
-              subtitle: "Send an invoice to the buyer.",
+              subtitle:
+                state.buyerReplyable === false
+                  ? "Contact the buyer outside Nostr to request payment."
+                  : "Send an invoice to the buyer.",
             },
     waiting: {
       title: "Payment",
@@ -256,7 +262,9 @@ export function buildOrderStatusTimeline(
     done: shippedGate,
     complete: {
       title: "Shipped",
-      subtitle: "Tracking details recorded.",
+      subtitle: state.shippingUpdated
+        ? "Tracking details recorded."
+        : "Order marked shipped.",
     },
     active: {
       title: "Shipping in progress",
@@ -290,45 +298,59 @@ export function buildOrderStatusTimeline(
   // Payment and acceptance are ordered by the flow; everything else is shared.
   const fulfillmentStages = state.requiresShipping === false ? [] : [shipped]
   const ordered =
-    flow === "prepaid"
+    paymentObserved && !paid
       ? [placed, payment, accepted, ...fulfillmentStages, delivered]
-      : [placed, accepted, payment, ...fulfillmentStages, delivered]
+      : flow === "prepaid"
+        ? [placed, payment, accepted, ...fulfillmentStages, delivered]
+        : [placed, accepted, payment, ...fulfillmentStages, delivered]
 
   let frontMarked = false
-  return ordered.map((stage): OrderTimelineStep => {
+  const rows: OrderTimelineStep[] = []
+  for (const stage of ordered) {
     if (stage.done) {
-      return {
+      rows.push({
         key: stage.key,
         title: stage.complete.title,
         subtitle: stage.complete.subtitle,
         status: "complete",
-      }
+      })
+      continue
     }
     if (!frontMarked) {
       frontMarked = true
-      if (cancelled) {
-        return {
+      if (stoppedStatus) {
+        rows.push({
           key: stage.key,
-          title: "Order cancelled",
-          subtitle: "No further action is required.",
-          status: "failed",
-          label: "Cancelled",
-        }
+          title:
+            stoppedStatus === "cancelled"
+              ? "Order cancelled"
+              : "Refund requested",
+          subtitle:
+            stoppedStatus === "cancelled"
+              ? "No further order action is required."
+              : "Coordinate the Lightning refund outside Conduit.",
+          status: stoppedStatus === "cancelled" ? "failed" : "retry_needed",
+          label:
+            stoppedStatus === "cancelled" ? "Cancelled" : "Refund requested",
+        })
+        break
       }
-      return {
+      rows.push({
         key: stage.key,
         title: stage.active.title,
         subtitle: stage.active.subtitle,
         status: "in_progress",
-      }
+      })
+      continue
     }
-    return {
+    rows.push({
       key: stage.key,
       title: stage.waiting.title,
       subtitle: stage.waiting.subtitle,
       status: "waiting",
-    }
-  })
+    })
+  }
+  return rows
 }
 
 export type MerchantOrderActionKind = "primary" | "destructive"
@@ -433,6 +455,23 @@ export function getMerchantOrderActions(
 
   // Accepted-or-beyond, but already shipped → nothing left for the merchant.
   if (SHIPPED_STATUSES.has(status)) return []
+
+  if (state.buyerReplyable === false) {
+    return [
+      {
+        action: "cancel",
+        status: "cancelled",
+        label: "Cancel order",
+        kind: "destructive",
+      },
+      {
+        action: "confirm_payment",
+        status: "paid",
+        label: "Confirm payment received",
+        kind: "primary",
+      },
+    ]
+  }
 
   // Accepted but awaiting payment (invoice flow): shipping is not offered yet.
   return [

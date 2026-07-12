@@ -25,6 +25,7 @@ import {
   publishMerchantOrderMessage,
   weblnMakeInvoice,
   type MerchantConversationSummary,
+  type MerchantOrderAction,
   type MerchantOrderState,
   type KnownOrderStatus,
   type Profile,
@@ -32,13 +33,13 @@ import {
   useProfiles,
 } from "@conduit/core"
 import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
   Button,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
   Input,
   Label,
   OrderMessagesWidget,
@@ -69,6 +70,12 @@ import {
   ORDER_PHASE_OPTIONS,
   type OrderQueueTab,
 } from "../lib/order-phase"
+import {
+  buildMerchantOrderActionView,
+  getMerchantOrderCancellationCopy,
+  isMerchantOrderActionSurfacePending,
+  runExclusiveOrderAction,
+} from "../lib/order-action-view"
 import { getProfileUrl } from "../lib/market-links"
 import { prepareShippingUpdate } from "../lib/shipping-update"
 import {
@@ -438,8 +445,11 @@ function OrdersPage() {
   const [shippingNote, setShippingNote] = useState("")
   const [replyNote, setReplyNote] = useState("")
   const [successFlash, setSuccessFlash] = useState<string | null>(null)
-  const [pendingDestructiveStatus, setPendingDestructiveStatus] =
-    useState<KnownOrderStatus | null>(null)
+  const [pendingDestructiveAction, setPendingDestructiveAction] =
+    useState<MerchantOrderAction | null>(null)
+  const [confirmingOutOfBandPayment, setConfirmingOutOfBandPayment] =
+    useState(false)
+  const orderActionLockRef = useRef(false)
   const [weblnAvailable, setWeblnAvailable] = useState(false)
   const [refreshButtonState, setRefreshButtonState] = useState<
     "idle" | "refreshing" | "done"
@@ -801,6 +811,7 @@ function OrdersPage() {
   const merchantOrderState: MerchantOrderState = selected
     ? {
         ...getMerchantConversationState(selected),
+        buyerReplyable: buyerInboxKnown,
         requiresShipping: getMerchantOrderRequiresShipping(
           orderSummary?.items ?? [],
           productLookup
@@ -819,26 +830,47 @@ function OrdersPage() {
   const orderActions = selected
     ? getMerchantOrderActions(merchantOrderState)
     : []
-  const primaryButtonActions = orderActions.filter(
-    (action) => action.kind === "primary" && action.action !== "record_shipment"
-  )
-  const destructiveActions = orderActions.filter(
-    (action) => action.kind === "destructive"
-  )
   const selectedQueue = selected ? getMerchantConversationQueue(selected) : null
   const canSendInvoice =
     buyerInboxKnown &&
     selectedQueue === "unpaid_review" &&
     !merchantPaid &&
     !merchantOrderState.paymentObserved &&
-    merchantOrderState.accepted
+    !!merchantOrderState.accepted
   const canRecordShipping =
     selectedQueue === "paid_fulfill" &&
     merchantPaid &&
     merchantOrderState.requiresShipping !== false &&
     !merchantOrderState.shippingUpdated
-  const hasNextStep =
-    primaryButtonActions.length > 0 || canSendInvoice || canRecordShipping
+  const canRequestPaymentOutOfBand =
+    !buyerInboxKnown &&
+    selectedQueue === "unpaid_review" &&
+    !merchantPaid &&
+    !merchantOrderState.paymentObserved &&
+    !!merchantOrderState.accepted
+  const actionView = buildMerchantOrderActionView({
+    actions: orderActions,
+    canSendInvoice,
+    canRecordShipping,
+    canRequestPaymentOutOfBand,
+  })
+  const { primaryButtonActions, destructiveActions, hasNextStep } = actionView
+  const destructiveCancellationCopy = destructiveActions[0]
+    ? getMerchantOrderCancellationCopy({
+        actionLabel: destructiveActions[0].label,
+        buyerInboxKnown,
+        merchantPaid,
+        paymentObserved: !!merchantOrderState.paymentObserved,
+      })
+    : null
+  const cancellationCopy = pendingDestructiveAction
+    ? getMerchantOrderCancellationCopy({
+        actionLabel: pendingDestructiveAction.label,
+        buyerInboxKnown,
+        merchantPaid,
+        paymentObserved: !!merchantOrderState.paymentObserved,
+      })
+    : null
 
   const selectedBuyerProfile = selected
     ? buyerProfilesQuery.data?.[selected.buyerPubkey]
@@ -883,79 +915,80 @@ function OrdersPage() {
 
   // Generate invoice via WebLN (Alby) or NWC, then auto-send as payment_request DM
   const generateInvoiceMutation = useMutation({
-    mutationFn: async () => {
-      if (!pubkey || !selected) throw new Error("No conversation selected")
-      assertBuyerHasNostrInbox()
-      if (!canSendInvoice) {
-        throw new Error("This order is not eligible for another invoice.")
-      }
+    mutationFn: () =>
+      runExclusiveOrderAction(orderActionLockRef, async () => {
+        if (!pubkey || !selected) throw new Error("No conversation selected")
+        assertBuyerHasNostrInbox()
+        if (!canSendInvoice) {
+          throw new Error("This order is not eligible for another invoice.")
+        }
 
-      const amountSats = invoiceAmountSats ?? 0
-      if (amountSats <= 0) throw new Error("Amount must be greater than 0")
+        const amountSats = invoiceAmountSats ?? 0
+        if (amountSats <= 0) throw new Error("Amount must be greater than 0")
 
-      let bolt11: string
+        let bolt11: string
 
-      if (canMockInvoice()) {
-        bolt11 = mockMakeInvoice({
-          amountSats,
-          memo: `Conduit order ${selected.orderId}`,
-        }).invoice
-      } else if (weblnAvailable) {
-        // Primary path: WebLN (Alby browser extension) — zero config
-        const result = await weblnMakeInvoice({
-          amountSats,
-          memo: `Conduit order ${selected.orderId}`,
-        })
-        bolt11 = result.invoice
-      } else if (nwc.connection) {
-        // Fallback: NWC connection URI
-        const result = await nwcMakeInvoice(
-          nwc.connection,
-          {
-            amountMsats: amountSats * 1000,
-            description: `Conduit order ${selected.orderId}`,
+        if (canMockInvoice()) {
+          bolt11 = mockMakeInvoice({
+            amountSats,
+            memo: `Conduit order ${selected.orderId}`,
+          }).invoice
+        } else if (weblnAvailable) {
+          // Primary path: WebLN (Alby browser extension) — zero config
+          const result = await weblnMakeInvoice({
+            amountSats,
+            memo: `Conduit order ${selected.orderId}`,
+          })
+          bolt11 = result.invoice
+        } else if (nwc.connection) {
+          // Fallback: NWC connection URI
+          const result = await nwcMakeInvoice(
+            nwc.connection,
+            {
+              amountMsats: amountSats * 1000,
+              description: `Conduit order ${selected.orderId}`,
+            },
+            30_000,
+            "merchant"
+          )
+          bolt11 = result.invoice
+        } else {
+          throw new Error(
+            "No wallet available. Install Alby extension or connect NWC."
+          )
+        }
+
+        const mismatch = getLightningNetworkMismatchMessage(bolt11)
+        if (mismatch) {
+          throw new Error(mismatch)
+        }
+
+        const decoded = decodeLightningInvoiceAmount(bolt11)
+        const actualAmount = decoded.sats ?? decoded.msats ?? amountSats
+        const actualCurrency = decoded.currency ?? "SATS"
+
+        // Auto-send the invoice DM to the buyer
+        await publishMerchantOrderMessage({
+          merchantPubkey: pubkey,
+          buyerPubkey: selected.buyerPubkey,
+          orderId: selected.orderId,
+          type: "payment_request",
+          tags: [
+            ["amount", String(actualAmount)],
+            ["currency", actualCurrency],
+            ["payment_method", "lightning"],
+          ],
+          payload: {
+            invoice: bolt11,
+            amount: actualAmount,
+            currency: actualCurrency,
+            note: invoiceNote.trim() || undefined,
           },
-          30_000,
-          "merchant"
-        )
-        bolt11 = result.invoice
-      } else {
-        throw new Error(
-          "No wallet available. Install Alby extension or connect NWC."
-        )
-      }
+          delivery: operationalDelivery,
+        })
 
-      const mismatch = getLightningNetworkMismatchMessage(bolt11)
-      if (mismatch) {
-        throw new Error(mismatch)
-      }
-
-      const decoded = decodeLightningInvoiceAmount(bolt11)
-      const actualAmount = decoded.sats ?? decoded.msats ?? amountSats
-      const actualCurrency = decoded.currency ?? "SATS"
-
-      // Auto-send the invoice DM to the buyer
-      await publishMerchantOrderMessage({
-        merchantPubkey: pubkey,
-        buyerPubkey: selected.buyerPubkey,
-        orderId: selected.orderId,
-        type: "payment_request",
-        tags: [
-          ["amount", String(actualAmount)],
-          ["currency", actualCurrency],
-          ["payment_method", "lightning"],
-        ],
-        payload: {
-          invoice: bolt11,
-          amount: actualAmount,
-          currency: actualCurrency,
-          note: invoiceNote.trim() || undefined,
-        },
-        delivery: operationalDelivery,
-      })
-
-      return { invoice: bolt11 }
-    },
+        return { invoice: bolt11 }
+      }),
     onSuccess: async () => {
       setInvoice("")
       setInvoiceNote("")
@@ -965,42 +998,43 @@ function OrdersPage() {
   })
 
   const invoiceMutation = useMutation({
-    mutationFn: async () => {
-      if (!pubkey || !selected) throw new Error("No conversation selected")
-      assertBuyerHasNostrInbox()
-      if (!canSendInvoice) {
-        throw new Error("This order is not eligible for another invoice.")
-      }
-      if (!invoice.trim()) throw new Error("Invoice is required")
-      const manualInvoice = invoice.trim()
-      const mismatch = getLightningNetworkMismatchMessage(manualInvoice)
-      if (mismatch) throw new Error(mismatch)
-      const decoded = decodeLightningInvoiceAmount(manualInvoice)
-      const actualAmount = decoded.sats ?? decoded.msats
-      if (!actualAmount || !decoded.currency) {
-        throw new Error(
-          "Invoice must include a decodable amount before it can be sent."
-        )
-      }
-      await publishMerchantOrderMessage({
-        merchantPubkey: pubkey,
-        buyerPubkey: selected.buyerPubkey,
-        orderId: selected.orderId,
-        type: "payment_request",
-        tags: [
-          ["amount", String(actualAmount)],
-          ["currency", decoded.currency],
-          ["payment_method", "lightning"],
-        ],
-        payload: {
-          invoice: manualInvoice,
-          amount: actualAmount,
-          currency: decoded.currency,
-          note: invoiceNote.trim() || undefined,
-        },
-        delivery: operationalDelivery,
-      })
-    },
+    mutationFn: () =>
+      runExclusiveOrderAction(orderActionLockRef, async () => {
+        if (!pubkey || !selected) throw new Error("No conversation selected")
+        assertBuyerHasNostrInbox()
+        if (!canSendInvoice) {
+          throw new Error("This order is not eligible for another invoice.")
+        }
+        if (!invoice.trim()) throw new Error("Invoice is required")
+        const manualInvoice = invoice.trim()
+        const mismatch = getLightningNetworkMismatchMessage(manualInvoice)
+        if (mismatch) throw new Error(mismatch)
+        const decoded = decodeLightningInvoiceAmount(manualInvoice)
+        const actualAmount = decoded.sats ?? decoded.msats
+        if (!actualAmount || !decoded.currency) {
+          throw new Error(
+            "Invoice must include a decodable amount before it can be sent."
+          )
+        }
+        await publishMerchantOrderMessage({
+          merchantPubkey: pubkey,
+          buyerPubkey: selected.buyerPubkey,
+          orderId: selected.orderId,
+          type: "payment_request",
+          tags: [
+            ["amount", String(actualAmount)],
+            ["currency", decoded.currency],
+            ["payment_method", "lightning"],
+          ],
+          payload: {
+            invoice: manualInvoice,
+            amount: actualAmount,
+            currency: decoded.currency,
+            note: invoiceNote.trim() || undefined,
+          },
+          delivery: operationalDelivery,
+        })
+      }),
     onSuccess: async () => {
       setInvoice("")
       setInvoiceNote("")
@@ -1010,21 +1044,22 @@ function OrdersPage() {
   })
 
   const advanceStatusMutation = useMutation({
-    mutationFn: async (nextStatus: KnownOrderStatus) => {
-      if (!pubkey || !selected) throw new Error("No conversation selected")
-      if (nextStatus === "shipped" || nextStatus === "complete") {
-        assertPaidForFulfillment()
-      }
-      await publishMerchantOrderMessage({
-        merchantPubkey: pubkey,
-        buyerPubkey: selected.buyerPubkey,
-        orderId: selected.orderId,
-        type: "status_update",
-        tags: [["status", nextStatus]],
-        payload: { status: nextStatus },
-        delivery: operationalDelivery,
-      })
-    },
+    mutationFn: (nextStatus: KnownOrderStatus) =>
+      runExclusiveOrderAction(orderActionLockRef, async () => {
+        if (!pubkey || !selected) throw new Error("No conversation selected")
+        if (nextStatus === "shipped" || nextStatus === "complete") {
+          assertPaidForFulfillment()
+        }
+        await publishMerchantOrderMessage({
+          merchantPubkey: pubkey,
+          buyerPubkey: selected.buyerPubkey,
+          orderId: selected.orderId,
+          type: "status_update",
+          tags: [["status", nextStatus]],
+          payload: { status: nextStatus },
+          delivery: operationalDelivery,
+        })
+      }),
     onSuccess: async () => {
       flash(buyerInboxKnown ? "Status update sent to buyer" : "Status recorded")
       await invalidateOrderQueries()
@@ -1032,33 +1067,34 @@ function OrdersPage() {
   })
 
   const shippingMutation = useMutation({
-    mutationFn: async () => {
-      if (!pubkey || !selected) throw new Error("No conversation selected")
-      assertPaidForFulfillment()
-      const prepared = prepareShippingUpdate({
-        trackingNumber,
-        carrier,
-        trackingUrl,
-        note: shippingNote,
-      })
-      await publishMerchantOrderMessage({
-        merchantPubkey: pubkey,
-        buyerPubkey: selected.buyerPubkey,
-        orderId: selected.orderId,
-        type: "shipping_update",
-        tags: [
-          ["tracking", prepared.trackingNumber],
-          ["carrier", prepared.carrier],
-        ],
-        payload: {
-          carrier: prepared.carrier,
-          trackingNumber: prepared.trackingNumber,
-          trackingUrl: prepared.trackingUrl,
-          note: prepared.note,
-        },
-        delivery: operationalDelivery,
-      })
-    },
+    mutationFn: () =>
+      runExclusiveOrderAction(orderActionLockRef, async () => {
+        if (!pubkey || !selected) throw new Error("No conversation selected")
+        assertPaidForFulfillment()
+        const prepared = prepareShippingUpdate({
+          trackingNumber,
+          carrier,
+          trackingUrl,
+          note: shippingNote,
+        })
+        await publishMerchantOrderMessage({
+          merchantPubkey: pubkey,
+          buyerPubkey: selected.buyerPubkey,
+          orderId: selected.orderId,
+          type: "shipping_update",
+          tags: [
+            ["tracking", prepared.trackingNumber],
+            ["carrier", prepared.carrier],
+          ],
+          payload: {
+            carrier: prepared.carrier,
+            trackingNumber: prepared.trackingNumber,
+            trackingUrl: prepared.trackingUrl,
+            note: prepared.note,
+          },
+          delivery: operationalDelivery,
+        })
+      }),
     onSuccess: async () => {
       setCarrier("")
       setTrackingNumber("")
@@ -1094,6 +1130,13 @@ function OrdersPage() {
       flash("Message sent to buyer")
       await invalidateOrderQueries()
     },
+  })
+
+  const orderActionPending = isMerchantOrderActionSurfacePending({
+    generateInvoice: generateInvoiceMutation.isPending,
+    sendInvoice: invoiceMutation.isPending,
+    advanceStatus: advanceStatusMutation.isPending,
+    recordShipping: shippingMutation.isPending,
   })
 
   return (
@@ -1351,7 +1394,11 @@ function OrdersPage() {
                         )}
                         <div className="mt-4 space-y-5">
                           {successFlash && (
-                            <div className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-400">
+                            <div
+                              role="status"
+                              aria-live="polite"
+                              className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-400"
+                            >
                               {successFlash}
                             </div>
                           )}
@@ -1362,6 +1409,19 @@ function OrdersPage() {
                             </h4>
                           )}
 
+                          {canRequestPaymentOutOfBand && (
+                            <div className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm leading-6 text-warning">
+                              <div className="font-semibold">
+                                Request payment outside Nostr
+                              </div>
+                              <p className="mt-1">
+                                {orderSummary.guestContact
+                                  ? "Use the phone or email on this order to request payment. Confirm it below only after settlement."
+                                  : "Recover a buyer contact method before requesting payment. Confirm it below only after settlement."}
+                              </p>
+                            </div>
+                          )}
+
                           {primaryButtonActions.length > 0 && (
                             <div className="space-y-2">
                               <div className="flex flex-wrap gap-2">
@@ -1370,11 +1430,15 @@ function OrdersPage() {
                                     key={action.action}
                                     size="sm"
                                     variant="primary"
-                                    disabled={
-                                      advanceStatusMutation.isPending ||
-                                      shippingMutation.isPending
-                                    }
+                                    disabled={orderActionPending}
                                     onClick={() => {
+                                      if (
+                                        action.action === "confirm_payment" &&
+                                        canRequestPaymentOutOfBand
+                                      ) {
+                                        setConfirmingOutOfBandPayment(true)
+                                        return
+                                      }
                                       if (action.status) {
                                         advanceStatusMutation.mutate(
                                           action.status
@@ -1495,7 +1559,7 @@ function OrdersPage() {
                                         size="sm"
                                         className="w-full"
                                         disabled={
-                                          generateInvoiceMutation.isPending ||
+                                          orderActionPending ||
                                           !(invoiceAmountNumber > 0) ||
                                           !invoiceAmountSats
                                         }
@@ -1563,7 +1627,7 @@ function OrdersPage() {
                                         type="submit"
                                         size="sm"
                                         className="w-full"
-                                        disabled={invoiceMutation.isPending}
+                                        disabled={orderActionPending}
                                       >
                                         {invoiceMutation.isPending
                                           ? "Sending…"
@@ -1653,7 +1717,7 @@ function OrdersPage() {
                                     type="submit"
                                     size="sm"
                                     className="w-full"
-                                    disabled={shippingMutation.isPending}
+                                    disabled={orderActionPending}
                                   >
                                     {shippingMutation.isPending
                                       ? "Sending…"
@@ -1701,11 +1765,9 @@ function OrdersPage() {
                               <h4 className="text-sm font-semibold text-[var(--text-primary)]">
                                 Other actions
                               </h4>
-                              {merchantPaid && (
+                              {destructiveCancellationCopy?.warning && (
                                 <p className="text-pretty text-xs leading-5 text-[var(--text-secondary)]">
-                                  This order is already paid. Cancelling won't
-                                  return funds — send a manual Lightning refund
-                                  to the buyer separately.
+                                  {destructiveCancellationCopy.warning}
                                 </p>
                               )}
                               <div className="flex flex-wrap gap-2">
@@ -1714,12 +1776,10 @@ function OrdersPage() {
                                     key={action.action}
                                     size="sm"
                                     variant="destructive"
-                                    disabled={advanceStatusMutation.isPending}
+                                    disabled={orderActionPending}
                                     onClick={() => {
                                       if (action.status) {
-                                        setPendingDestructiveStatus(
-                                          action.status
-                                        )
+                                        setPendingDestructiveAction(action)
                                       }
                                     }}
                                   >
@@ -1954,50 +2014,89 @@ function OrdersPage() {
                   resolveItem={(id) => productLookup.get(id)}
                 />
 
-                <Dialog
-                  open={!!pendingDestructiveStatus}
+                <AlertDialog
+                  open={!!pendingDestructiveAction}
                   onOpenChange={(open) => {
-                    if (!open) setPendingDestructiveStatus(null)
+                    if (!open) setPendingDestructiveAction(null)
                   }}
                 >
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>Cancel this order?</DialogTitle>
-                      <DialogDescription>
-                        {merchantPaid
-                          ? "This records the order as cancelled but does not return funds. Any refund must be sent separately."
-                          : buyerInboxKnown
-                            ? "This records the order as cancelled and notifies the buyer."
-                            : "This records the order as cancelled in your encrypted order history. Contact the buyer separately if needed."}
-                      </DialogDescription>
-                    </DialogHeader>
-                    <DialogFooter>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        {cancellationCopy?.title}
+                      </AlertDialogTitle>
+                      <AlertDialogDescription>
+                        {cancellationCopy?.description}
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
                       <Button
                         type="button"
                         variant="outline"
-                        onClick={() => setPendingDestructiveStatus(null)}
+                        onClick={() => setPendingDestructiveAction(null)}
                       >
                         Keep order
                       </Button>
                       <Button
                         type="button"
                         variant="destructive"
-                        disabled={advanceStatusMutation.isPending}
+                        disabled={orderActionPending}
                         onClick={() => {
-                          if (!pendingDestructiveStatus) return
-                          advanceStatusMutation.mutate(pendingDestructiveStatus)
-                          setPendingDestructiveStatus(null)
+                          if (!pendingDestructiveAction?.status) return
+                          advanceStatusMutation.mutate(
+                            pendingDestructiveAction.status
+                          )
+                          setPendingDestructiveAction(null)
                         }}
                       >
                         {advanceStatusMutation.isPending
                           ? buyerInboxKnown
                             ? "Sending…"
                             : "Recording…"
-                          : "Cancel order"}
+                          : cancellationCopy?.confirmLabel}
                       </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+
+                <AlertDialog
+                  open={confirmingOutOfBandPayment}
+                  onOpenChange={setConfirmingOutOfBandPayment}
+                >
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        Confirm payment received?
+                      </AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Continue only after verifying the buyer's payment
+                        outside Nostr. This records payment as confirmed in your
+                        encrypted order history and unlocks fulfillment.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setConfirmingOutOfBandPayment(false)}
+                      >
+                        Keep unpaid
+                      </Button>
+                      <Button
+                        type="button"
+                        disabled={orderActionPending}
+                        onClick={() => {
+                          advanceStatusMutation.mutate("paid")
+                          setConfirmingOutOfBandPayment(false)
+                        }}
+                      >
+                        {advanceStatusMutation.isPending
+                          ? "Recording…"
+                          : "Confirm payment"}
+                      </Button>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
               </div>
             ) : (
               <div className="text-sm text-[var(--text-secondary)]">

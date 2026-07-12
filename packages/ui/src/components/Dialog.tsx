@@ -12,6 +12,7 @@ const Dialog = DialogPrimitive.Root
 const DialogTrigger = DialogPrimitive.Trigger
 const DialogPortal = DialogPrimitive.Portal
 const DialogClose = DialogPrimitive.Close
+const AlertDialog = DialogPrimitive.Root
 
 const DialogOverlay = forwardRef<
   ElementRef<typeof DialogPrimitive.Overlay>,
@@ -30,8 +31,10 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 
 const DialogContent = forwardRef<
   ElementRef<typeof DialogPrimitive.Content>,
-  ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
+  ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
+    showCloseButton?: boolean
+  }
+>(({ className, children, showCloseButton = true, ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay />
     <DialogPrimitive.Content
@@ -43,10 +46,12 @@ const DialogContent = forwardRef<
       {...props}
     >
       {children}
-      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-[var(--surface-dialog)] transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-[var(--surface-elevated)]">
-        <X className="h-4 w-4" />
-        <span className="sr-only">Close</span>
-      </DialogPrimitive.Close>
+      {showCloseButton && (
+        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-[var(--surface-dialog)] transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-[var(--surface-elevated)]">
+          <X className="h-4 w-4" />
+          <span className="sr-only">Close</span>
+        </DialogPrimitive.Close>
+      )}
     </DialogPrimitive.Content>
   </DialogPortal>
 ))
@@ -107,6 +112,32 @@ const DialogDescription = forwardRef<
 ))
 DialogDescription.displayName = DialogPrimitive.Description.displayName
 
+const AlertDialogContent = forwardRef<
+  ElementRef<typeof DialogPrimitive.Content>,
+  ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
+>(({ onInteractOutside, onPointerDownOutside, ...props }, ref) => (
+  <DialogContent
+    ref={ref}
+    role="alertdialog"
+    showCloseButton={false}
+    onInteractOutside={(event) => {
+      event.preventDefault()
+      onInteractOutside?.(event)
+    }}
+    onPointerDownOutside={(event) => {
+      event.preventDefault()
+      onPointerDownOutside?.(event)
+    }}
+    {...props}
+  />
+))
+AlertDialogContent.displayName = "AlertDialogContent"
+
+const AlertDialogHeader = DialogHeader
+const AlertDialogFooter = DialogFooter
+const AlertDialogTitle = DialogTitle
+const AlertDialogDescription = DialogDescription
+
 export {
   Dialog,
   DialogPortal,
@@ -118,4 +149,10 @@ export {
   DialogDescription,
   DialogTrigger,
   DialogClose,
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogFooter,
+  AlertDialogTitle,
+  AlertDialogDescription,
 }
