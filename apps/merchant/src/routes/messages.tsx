@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, Link } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useEffect, useMemo, useState } from "react"
 import {
@@ -250,13 +250,21 @@ function MessagesPage() {
           <section className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:overflow-hidden">
             {selected ? (
               <div className="xl:flex xl:h-full xl:min-h-0 xl:flex-col">
-                <div className="mb-3 xl:shrink-0">
-                  <div className="text-sm font-semibold text-[var(--text-primary)]">
-                    {selectedName}
+                <div className="mb-3 flex items-start justify-between gap-2 xl:shrink-0">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold text-[var(--text-primary)]">
+                      {selectedName}
+                    </div>
+                    <div className="font-mono text-[11px] text-[var(--text-muted)]">
+                      {formatNpub(selected.counterpartyPubkey, 12)}
+                    </div>
                   </div>
-                  <div className="font-mono text-[11px] text-[var(--text-muted)]">
-                    {formatNpub(selected.counterpartyPubkey, 12)}
-                  </div>
+                  <Link
+                    to="/orders"
+                    className="shrink-0 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface)]"
+                  >
+                    View orders
+                  </Link>
                 </div>
 
                 <DecryptFailureNotice
