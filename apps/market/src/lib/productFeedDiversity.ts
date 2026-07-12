@@ -1,49 +1,52 @@
 import type { Product } from "@conduit/core"
 
-const DEFAULT_DIVERSITY_WINDOW_SIZE = 72
+const RECENT_PRODUCT_WINDOW_MS = 60 * 24 * 60 * 60 * 1_000
 
+type MerchantBucket = {
+  cursor: number
+  products: Product[]
+}
+
+/** Orders a newest-first prepared catalog for merchant-diverse discovery. */
 export function diversifyMerchantProductOrder(
-  products: Product[],
-  options: { windowSize?: number } = {}
+  products: readonly Product[],
+  options: { nowMs?: number } = {}
 ): Product[] {
-  const windowSize = options.windowSize ?? DEFAULT_DIVERSITY_WINDOW_SIZE
-  if (products.length <= 2 || windowSize <= 1) return [...products]
+  if (products.length <= 1) return [...products]
 
-  const diversified: Product[] = []
+  const nowMs = options.nowMs ?? Date.now()
+  const recentCutoff = nowMs - RECENT_PRODUCT_WINDOW_MS
+  const recentBuckets = new Map<string, MerchantBucket>()
+  const nonRecentProducts: Product[] = []
 
-  for (let start = 0; start < products.length; start += windowSize) {
-    const window = products.slice(start, start + windowSize)
-    const buckets = new Map<string, Product[]>()
-
-    for (const product of window) {
-      const bucket = buckets.get(product.pubkey) ?? []
-      bucket.push(product)
-      buckets.set(product.pubkey, bucket)
+  for (const product of products) {
+    if (product.createdAt < recentCutoff || product.createdAt > nowMs) {
+      nonRecentProducts.push(product)
+      continue
     }
 
-    let activeMerchants = Array.from(buckets.keys()).sort(
-      (a, b) =>
-        (buckets.get(b)?.[0]?.createdAt ?? 0) -
-        (buckets.get(a)?.[0]?.createdAt ?? 0)
-    )
-
-    while (activeMerchants.length > 0) {
-      const nextRound: string[] = []
-
-      for (const merchant of activeMerchants) {
-        const bucket = buckets.get(merchant)
-        const nextProduct = bucket?.shift()
-        if (nextProduct) diversified.push(nextProduct)
-        if (bucket && bucket.length > 0) nextRound.push(merchant)
-      }
-
-      activeMerchants = nextRound.sort(
-        (a, b) =>
-          (buckets.get(b)?.[0]?.createdAt ?? 0) -
-          (buckets.get(a)?.[0]?.createdAt ?? 0)
-      )
+    const bucket = recentBuckets.get(product.pubkey) ?? {
+      cursor: 0,
+      products: [],
     }
+    bucket.products.push(product)
+    recentBuckets.set(product.pubkey, bucket)
   }
 
-  return diversified
+  const ordered: Product[] = []
+  let activeBuckets = Array.from(recentBuckets.values())
+
+  while (activeBuckets.length > 0) {
+    const nextRound: MerchantBucket[] = []
+
+    for (const bucket of activeBuckets) {
+      ordered.push(bucket.products[bucket.cursor])
+      bucket.cursor += 1
+      if (bucket.cursor < bucket.products.length) nextRound.push(bucket)
+    }
+
+    activeBuckets = nextRound
+  }
+
+  return [...ordered, ...nonRecentProducts]
 }
