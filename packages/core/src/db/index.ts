@@ -219,6 +219,13 @@ export type OrderCheckoutMode =
 
 export type OrderPublicZapSigner = "anon" | "shopper"
 
+export type OrderBuyerIdentityKind = "signed_in" | "guest_ephemeral"
+
+export interface OrderGuestContact {
+  email: string
+  phone: string
+}
+
 /**
  * Buyer-input address validity (CND-127). Distinct from
  * {@link OrderLifecycle.shippingZoneEligibility}, which is the merchant
@@ -280,6 +287,7 @@ export interface OrderLifecycleItem {
 export interface OrderLifecycle {
   orderId: string
   buyerPubkey: string
+  buyerIdentityKind?: OrderBuyerIdentityKind
   merchantPubkey: string
   checkoutMode: OrderCheckoutMode
   publicZapSigner?: OrderPublicZapSigner
@@ -315,6 +323,7 @@ export interface OrderLifecycle {
     country: string
   }
   contactNote?: string
+  guestContact?: OrderGuestContact
 
   addressValidity: OrderAddressValidity
   shippingZoneEligibility: OrderShippingZoneEligibility

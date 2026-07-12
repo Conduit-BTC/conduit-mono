@@ -1,4 +1,9 @@
-import type { ProductZapMessagePolicy } from "@conduit/core"
+import {
+  CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
+  getShippingOptionAddress,
+  type ProductSchema,
+  type ProductZapMessagePolicy,
+} from "@conduit/core"
 import type { ShippingConfig } from "./readiness"
 import { isShippingComplete } from "./readiness"
 import {
@@ -32,6 +37,43 @@ export interface MerchantProductFormValues extends ProductPublishFormValues {
   summary: string
   publicZapEnabled: boolean
   zapMessagePolicy: ProductZapMessagePolicy
+}
+
+export function isProductUsingPresetShippingZone(
+  product: Pick<ProductSchema, "shippingOptionId">,
+  presetAvailable: boolean
+): boolean {
+  return presetAvailable && !!product.shippingOptionId
+}
+
+export function buildProductShippingMetadata(
+  merchantPubkey: string,
+  usePresetShippingZone: boolean,
+  shippingConfig: ShippingConfig
+): Pick<
+  ProductSchema,
+  | "shippingOptionId"
+  | "shippingOptionDTag"
+  | "shippingCountries"
+  | "shippingCountryRules"
+> {
+  if (!isShippingComplete(shippingConfig)) return {}
+
+  return {
+    ...(usePresetShippingZone
+      ? {
+          shippingOptionId: getShippingOptionAddress(merchantPubkey),
+          shippingOptionDTag: CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
+        }
+      : {}),
+    shippingCountries: shippingConfig.countries.map((country) => country.code),
+    shippingCountryRules: shippingConfig.countries.map((country) => ({
+      code: country.code,
+      name: country.name,
+      restrictTo: country.restrictTo,
+      exclude: country.exclude,
+    })),
+  }
 }
 
 export function reconcileProductFormShippingPreset(

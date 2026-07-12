@@ -62,6 +62,7 @@ export async function payCheckoutInvoice(
     amountMsats: number
     walletConnection: NwcConnection | null
     tryNwc: boolean
+    tryWebln?: boolean
     timeoutMs: number
     appId: ConduitAppId
     metadata?: Record<string, unknown>
@@ -119,7 +120,7 @@ export async function payCheckoutInvoice(
     }
   }
 
-  if (dependencies.hasWebLN()) {
+  if (input.tryWebln !== false && dependencies.hasWebLN()) {
     try {
       const result = await dependencies.weblnSendPayment({
         invoice: input.invoice,

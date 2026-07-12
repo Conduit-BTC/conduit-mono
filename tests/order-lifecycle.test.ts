@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test"
-import { deriveOrderLifecyclePhase } from "@conduit/core"
+import {
+  GUEST_ORDER_LOCAL_RETENTION_MS,
+  deriveOrderLifecyclePhase,
+  isGuestOrderDataExpired,
+} from "@conduit/core"
 
 const base = {
   orderDeliveryStatus: "not_started" as const,
@@ -61,5 +65,33 @@ describe("deriveOrderLifecyclePhase", () => {
     expect(deriveOrderLifecyclePhase({ ...base, phase: "cancelled" })).toBe(
       "cancelled"
     )
+  })
+})
+
+describe("guest order data retention", () => {
+  const createdAt = 1_700_000_000_000
+
+  it("expires guest lifecycle data at the bounded recovery deadline", () => {
+    expect(
+      isGuestOrderDataExpired(
+        { buyerIdentityKind: "guest_ephemeral", createdAt },
+        createdAt + GUEST_ORDER_LOCAL_RETENTION_MS - 1
+      )
+    ).toBe(false)
+    expect(
+      isGuestOrderDataExpired(
+        { buyerIdentityKind: "guest_ephemeral", createdAt },
+        createdAt + GUEST_ORDER_LOCAL_RETENTION_MS
+      )
+    ).toBe(true)
+  })
+
+  it("never applies the guest retention rule to signed-in orders", () => {
+    expect(
+      isGuestOrderDataExpired(
+        { buyerIdentityKind: "signed_in", createdAt },
+        createdAt + GUEST_ORDER_LOCAL_RETENTION_MS * 2
+      )
+    ).toBe(false)
   })
 })

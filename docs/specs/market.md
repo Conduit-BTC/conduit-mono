@@ -106,11 +106,20 @@ the ranking policy to graph storage and synchronization.
 
 Checkout collects intent and **starts** the order; Orders owns everything after an order exists. See `docs/specs/order-lifecycle.md` for the durable lifecycle record, status-first tracker, retry idempotency, external-wallet fallback, and the address-validity policy.
 
+Guest external-wallet checkout is the bounded exception: a per-order
+`guest_ephemeral` key submits the encrypted order and payment report, while
+phone/email are required for all merchant follow-up. Guest Orders state is
+local, payment-only, and retained for at most 24 hours; it does not create a
+guest inbox or durable order history. See `docs/specs/protocol.md`.
+
 ### Messaging
 
 1. Open `/messages` or an order-linked conversation
 2. Read NIP-17 encrypted buyer/merchant messages
 3. Receive payment requests, payment proof state, status updates, shipping updates, and receipts inline
+
+This messaging flow requires a signed-in buyer identity. It does not apply to
+`guest_ephemeral` checkout.
 
 ## Pages
 

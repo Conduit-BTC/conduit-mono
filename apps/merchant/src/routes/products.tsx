@@ -52,7 +52,9 @@ import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { requireAuth } from "../lib/auth"
 import { ProductDraftStore, type ProductDraftTarget } from "../lib/productDraft"
 import {
+  buildProductShippingMetadata,
   canSubmitProductForm,
+  isProductUsingPresetShippingZone,
   MAX_PRODUCT_TAG_COUNT,
   MAX_PRODUCT_TAG_LENGTH,
   reconcileProductFormShippingPreset,
@@ -196,7 +198,10 @@ function productToForm(
         : typeof product.shippingCostSats === "number"
           ? formatProductAmountInput(product.shippingCostSats)
           : "",
-    usePresetShippingZone: presetAvailable && !!product.shippingOptionId,
+    usePresetShippingZone: isProductUsingPresetShippingZone(
+      product,
+      presetAvailable
+    ),
     customShippingConfig: productShippingConfigFromProduct(product),
     publicZapEnabled: product.publicZapPolicyKnown
       ? product.publicZapEnabled
@@ -213,23 +218,21 @@ function buildShippingMetadata(
   merchantPubkey: string,
   usePresetShippingZone: boolean,
   customShippingConfig: ShippingConfig
-): Pick<ProductSchema, "shippingCountries" | "shippingCountryRules"> {
+): Pick<
+  ProductSchema,
+  | "shippingOptionId"
+  | "shippingOptionDTag"
+  | "shippingCountries"
+  | "shippingCountryRules"
+> {
   const shippingConfig = usePresetShippingZone
     ? loadShippingConfig(merchantPubkey)
     : customShippingConfig
-  if (!isShippingComplete(shippingConfig)) return {}
-
-  // Snapshot destinations on the listing. The shared preset event has a zero
-  // discovery price, so referencing it would contradict this fixed amount.
-  return {
-    shippingCountries: shippingConfig.countries.map((country) => country.code),
-    shippingCountryRules: shippingConfig.countries.map((country) => ({
-      code: country.code,
-      name: country.name,
-      restrictTo: country.restrictTo,
-      exclude: country.exclude,
-    })),
-  }
+  return buildProductShippingMetadata(
+    merchantPubkey,
+    usePresetShippingZone,
+    shippingConfig
+  )
 }
 
 function getPublishErrorMessage(

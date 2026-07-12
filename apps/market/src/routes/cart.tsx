@@ -22,7 +22,6 @@ import {
   normalizePubkey,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
-  useAuth,
   useProfile,
   type PricingRateInput,
   type Product,
@@ -43,7 +42,6 @@ import {
   getMerchantDisplayName,
   getProfileNip05,
 } from "../components/MerchantIdentity"
-import { SignerSwitch } from "../components/SignerSwitch"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
 import {
@@ -568,16 +566,11 @@ function MerchantCartCard({
 
 function CartPage() {
   const cart = useCart()
-  const { pubkey, status } = useAuth()
   const search = Route.useSearch()
   const navigate = useNavigate()
   const btcUsdRateQuery = useBtcUsdRate()
   const [confirmClearTarget, setConfirmClearTarget] = useState<
     "all" | string | null
-  >(null)
-  const [connectOpen, setConnectOpen] = useState(false)
-  const [pendingCheckoutMerchant, setPendingCheckoutMerchant] = useState<
-    string | null
   >(null)
 
   const merchantGroups = useMemo(() => groupCartItems(cart.items), [cart.items])
@@ -590,8 +583,6 @@ function CartPage() {
     () => relatedSourceItems.flatMap((item) => item.tags ?? []),
     [relatedSourceItems]
   )
-  const signerConnected = status === "connected" && !!pubkey
-
   const continueToCheckout = useCallback(
     (merchant: string): void => {
       navigate({
@@ -625,28 +616,13 @@ function CartPage() {
       properties: {
         count_bucket: getCartTelemetryItemCountBucket(group?.items ?? []),
         product_type: getCartTelemetryProductType(group?.items ?? []),
-        status: signerConnected ? "success" : "auth_required",
+        status: "success",
         surface: "cart",
       },
     })
 
-    if (signerConnected) {
-      continueToCheckout(merchant)
-      return
-    }
-
-    setPendingCheckoutMerchant(merchant)
-    setConnectOpen(true)
+    continueToCheckout(merchant)
   }
-
-  useEffect(() => {
-    if (signerConnected && pendingCheckoutMerchant) {
-      const merchant = pendingCheckoutMerchant
-      setPendingCheckoutMerchant(null)
-      setConnectOpen(false)
-      continueToCheckout(merchant)
-    }
-  }, [continueToCheckout, pendingCheckoutMerchant, signerConnected])
 
   useEffect(() => {
     if (!search.merchant) return
@@ -993,16 +969,6 @@ function CartPage() {
         </aside>
       </div>
 
-      <SignerSwitch
-        open={connectOpen}
-        onOpenChange={(open) => {
-          setConnectOpen(open)
-          if (!open) {
-            setPendingCheckoutMerchant(null)
-          }
-        }}
-        hideTrigger
-      />
       {clearCartDialog}
     </div>
   )

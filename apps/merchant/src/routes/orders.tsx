@@ -17,7 +17,9 @@ import {
   getProfileName,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
+  hasPaymentProofEvidence,
   hasWebLN,
+  isExternalPaymentReportMessage,
   isInvoiceCompatibleWithCurrentNetwork,
   mockMakeInvoice,
   normalizeCurrencyAmount,
@@ -318,6 +320,15 @@ function MessageCard({
                 <div>{message.payload.shippingAddress.country}</div>
               </div>
             )}
+            {message.payload.guestContact && (
+              <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
+                <div className="font-medium text-[var(--text-primary)]">
+                  Guest contact:
+                </div>
+                <div>Phone: {message.payload.guestContact.phone}</div>
+                <div>Email: {message.payload.guestContact.email}</div>
+              </div>
+            )}
             {message.payload.note && (
               <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs text-[var(--text-secondary)]">
                 {message.payload.note}
@@ -430,25 +441,41 @@ function MessageCard({
         {message.type === "payment_proof" && (
           <div className="space-y-2">
             <div className="text-[var(--text-primary)]">
-              Lightning payment proof received
+              {isExternalPaymentReportMessage(message)
+                ? "External payment reported"
+                : hasPaymentProofEvidence(message.payload)
+                  ? "Lightning payment proof received"
+                  : "Unverified payment report received"}
               {message.payload.amount != null
                 ? ` - ${message.payload.amount.toLocaleString()}`
                 : ""}
               {message.payload.currency ? ` ${message.payload.currency}` : ""}
             </div>
+            {isExternalPaymentReportMessage(message) && (
+              <div className="text-xs text-warning">
+                Buyer reported paying this invoice. Confirm payment before
+                fulfillment.
+              </div>
+            )}
             <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-xs">
-              <div className="min-w-0">
-                <div className="text-[var(--text-muted)]">Invoice</div>
-                <div className="max-h-16 overflow-hidden break-all font-mono leading-5 text-[var(--text-secondary)]">
-                  {message.payload.invoice}
+              {message.payload.invoice && (
+                <div className="min-w-0">
+                  <div className="text-[var(--text-muted)]">Invoice</div>
+                  <div className="max-h-16 overflow-hidden break-all font-mono leading-5 text-[var(--text-secondary)]">
+                    {message.payload.invoice}
+                  </div>
                 </div>
-              </div>
-              <div className="min-w-0 border-t border-[var(--border)] pt-2">
-                <div className="text-[var(--text-muted)]">Payment preimage</div>
-                <div className="break-all font-mono leading-5 text-[var(--text-secondary)]">
-                  {message.payload.preimage}
+              )}
+              {message.payload.preimage && (
+                <div className="min-w-0 border-t border-[var(--border)] pt-2">
+                  <div className="text-[var(--text-muted)]">
+                    Payment preimage
+                  </div>
+                  <div className="break-all font-mono leading-5 text-[var(--text-secondary)]">
+                    {message.payload.preimage}
+                  </div>
                 </div>
-              </div>
+              )}
               {message.payload.paymentHash && (
                 <div className="min-w-0 border-t border-[var(--border)] pt-2">
                   <div className="text-[var(--text-muted)]">Payment hash</div>
@@ -668,6 +695,14 @@ function OrdersPage() {
     () => (selected ? extractOrderSummary(selected.messages ?? []) : null),
     [selected]
   )
+  const isGuestOrder = orderSummary?.buyerIdentityKind === "guest_ephemeral"
+  const assertBuyerHasNostrInbox = useCallback(() => {
+    if (isGuestOrder) {
+      throw new Error(
+        "Guest shoppers do not have a Nostr inbox. Follow up using the required phone and email contact details on the order."
+      )
+    }
+  }, [isGuestOrder])
   const selectedBuyerProfile = selected
     ? buyerProfilesQuery.data?.[selected.buyerPubkey]
     : undefined
@@ -676,15 +711,18 @@ function OrdersPage() {
     : null
   const awaitingInvoiceCount = useMemo(
     () =>
-      conversations.filter(
-        (conversation) =>
-          !(conversation.messages ?? []).some(
-            (message) => message.type === "payment_request"
-          ) &&
-          !(conversation.messages ?? []).some(
-            (message) => message.type === "payment_proof"
-          )
-      ).length,
+      conversations.filter((conversation) => {
+        const messages = conversation.messages ?? []
+        if (
+          extractOrderSummary(messages).buyerIdentityKind === "guest_ephemeral"
+        ) {
+          return false
+        }
+        return (
+          !messages.some((message) => message.type === "payment_request") &&
+          !messages.some((message) => message.type === "payment_proof")
+        )
+      }).length,
     [conversations]
   )
   const activeFulfillmentCount = useMemo(
@@ -713,6 +751,7 @@ function OrdersPage() {
   const generateInvoiceMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
+      assertBuyerHasNostrInbox()
 
       const amountSats = invoiceAmountSats ?? 0
       if (amountSats <= 0) throw new Error("Amount must be greater than 0")
@@ -790,6 +829,7 @@ function OrdersPage() {
   const invoiceMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
+      assertBuyerHasNostrInbox()
       if (!invoice.trim()) throw new Error("Invoice is required")
       const manualInvoice = invoice.trim()
       const mismatch = getLightningNetworkMismatchMessage(manualInvoice)
@@ -830,6 +870,7 @@ function OrdersPage() {
   const statusMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
+      assertBuyerHasNostrInbox()
       await publishOrderConversationMessage({
         merchantPubkey: pubkey,
         buyerPubkey: selected.buyerPubkey,
@@ -852,6 +893,7 @@ function OrdersPage() {
   const shippingMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
+      assertBuyerHasNostrInbox()
       const normalizedTrackingUrl = normalizeTrackingUrl(trackingUrl)
       await publishOrderConversationMessage({
         merchantPubkey: pubkey,
@@ -885,6 +927,7 @@ function OrdersPage() {
   const noteMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selected) throw new Error("No conversation selected")
+      assertBuyerHasNostrInbox()
       if (!replyNote.trim()) throw new Error("Message is required")
       await publishOrderConversationMessage({
         merchantPubkey: pubkey,
@@ -1049,6 +1092,13 @@ function OrdersPage() {
                   buyerProfile,
                   conversation.buyerPubkey
                 )
+                const conversationSummary = extractOrderSummary(
+                  conversation.messages ?? []
+                )
+                const buyerDisplayName =
+                  conversationSummary.buyerIdentityKind === "guest_ephemeral"
+                    ? "Guest shopper"
+                    : buyerName
                 return (
                   <button
                     key={conversation.id}
@@ -1071,7 +1121,7 @@ function OrdersPage() {
                       </Badge>
                     </div>
                     <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                      Buyer: {buyerName}
+                      Buyer: {buyerDisplayName}
                     </div>
                     <div className="mt-1 font-mono text-[11px] text-[var(--text-muted)]">
                       {formatNpub(conversation.buyerPubkey, 8)}
@@ -1101,19 +1151,34 @@ function OrdersPage() {
               >
                 <TabsList className="xl:shrink-0">
                   <TabsTrigger value="details">Details</TabsTrigger>
-                  <TabsTrigger value="actions">Actions</TabsTrigger>
-                  <TabsTrigger value="messages">Messages</TabsTrigger>
+                  {!isGuestOrder && (
+                    <TabsTrigger value="actions">Actions</TabsTrigger>
+                  )}
+                  <TabsTrigger value="messages">
+                    {isGuestOrder ? "Activity" : "Messages"}
+                  </TabsTrigger>
                 </TabsList>
 
                 <TabsContent
                   value="details"
                   className="xl:min-h-0 xl:overflow-auto xl:pr-1"
                 >
+                  {isGuestOrder && (
+                    <div className="mb-4 rounded-md border border-warning/30 bg-warning/10 p-4 text-sm leading-6 text-warning">
+                      {orderSummary.guestContact
+                        ? "This guest order has no Nostr reply inbox. Use the required phone and email contact details below for invoices, status updates, shipping information, and other follow-up."
+                        : "This guest order has no Nostr reply inbox and is missing the required phone/email contact. Treat it as incomplete because no buyer follow-up channel is available."}
+                    </div>
+                  )}
                   <OrderDetailCard
                     orderId={selected.orderId}
                     status={selected.status}
                     counterpartyLabel="Buyer"
-                    counterpartyName={selectedBuyerName ?? undefined}
+                    counterpartyName={
+                      orderSummary.buyerIdentityKind === "guest_ephemeral"
+                        ? "Guest shopper"
+                        : (selectedBuyerName ?? undefined)
+                    }
                     counterpartyPubkeyLabel={formatNpub(
                       selected.buyerPubkey,
                       8
@@ -1122,6 +1187,7 @@ function OrdersPage() {
                     subtotal={orderSummary.subtotal}
                     currency={orderSummary.currency}
                     shippingAddress={orderSummary.shippingAddress}
+                    guestContact={orderSummary.guestContact}
                     orderNote={orderSummary.orderNote}
                     invoiceSent={orderSummary.invoiceSent}
                     invoiceCount={orderSummary.invoiceCount}
@@ -1131,6 +1197,10 @@ function OrdersPage() {
                     paymentProofCount={orderSummary.paymentProofCount}
                     paymentProofAmount={orderSummary.paymentProofAmount}
                     paymentProofCurrency={orderSummary.paymentProofCurrency}
+                    paymentReportReceived={orderSummary.paymentReportReceived}
+                    paymentReportCount={orderSummary.paymentReportCount}
+                    paymentReportAmount={orderSummary.paymentReportAmount}
+                    paymentReportCurrency={orderSummary.paymentReportCurrency}
                     trackingCarrier={orderSummary.trackingCarrier}
                     trackingNumber={orderSummary.trackingNumber}
                     trackingUrl={orderSummary.trackingUrl}
@@ -1452,30 +1522,38 @@ function OrdersPage() {
                         />
                       ))}
                     </div>
-                    <form
-                      className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3 xl:shrink-0"
-                      onSubmit={(event) => {
-                        event.preventDefault()
-                        noteMutation.mutate()
-                      }}
-                    >
-                      <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
-                        Reply to buyer
+                    {isGuestOrder ? (
+                      <div className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning xl:shrink-0">
+                        {orderSummary.guestContact
+                          ? "Guest activity is inbound-only. Continue the conversation using the order's phone and email contact details."
+                          : "Guest activity is inbound-only, and this order did not include the required phone/email contact."}
                       </div>
-                      <Input
-                        value={replyNote}
-                        onChange={(event) => setReplyNote(event.target.value)}
-                        placeholder="Send a note to the buyer"
-                      />
-                      <Button
-                        type="submit"
-                        size="sm"
-                        className="w-full"
-                        disabled={noteMutation.isPending || !replyNote.trim()}
+                    ) : (
+                      <form
+                        className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3 xl:shrink-0"
+                        onSubmit={(event) => {
+                          event.preventDefault()
+                          noteMutation.mutate()
+                        }}
                       >
-                        {noteMutation.isPending ? "Sending…" : "Send message"}
-                      </Button>
-                    </form>
+                        <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+                          Reply to buyer
+                        </div>
+                        <Input
+                          value={replyNote}
+                          onChange={(event) => setReplyNote(event.target.value)}
+                          placeholder="Send a note to the buyer"
+                        />
+                        <Button
+                          type="submit"
+                          size="sm"
+                          className="w-full"
+                          disabled={noteMutation.isPending || !replyNote.trim()}
+                        >
+                          {noteMutation.isPending ? "Sending…" : "Send message"}
+                        </Button>
+                      </form>
+                    )}
                   </div>
                 </TabsContent>
               </Tabs>

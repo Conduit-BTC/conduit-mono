@@ -3,6 +3,7 @@ import {
   getOrderPublicZapSigner,
   type BuyerConversationSummary,
   type OrderAddressValidity,
+  type OrderBuyerIdentityKind,
   type OrderCheckoutMode,
   type OrderDeliveryStatus,
   type OrderInvoiceStatus,
@@ -39,6 +40,7 @@ export interface OrderViewItem {
 export interface OrderViewModel {
   orderId: string
   merchantPubkey: string
+  buyerIdentityKind: OrderBuyerIdentityKind | null
   checkoutMode: OrderCheckoutMode | null
   publicZapSigner: OrderPublicZapSigner | null
   createdAt: number
@@ -266,6 +268,8 @@ export function buildOrderViewModel(
   return {
     orderId: input.orderId,
     merchantPubkey,
+    buyerIdentityKind:
+      lifecycle?.buyerIdentityKind ?? summary?.buyerIdentityKind ?? null,
     checkoutMode: lifecycle?.checkoutMode ?? null,
     publicZapSigner: lifecycle?.publicZapSigner ?? null,
     createdAt: lifecycle?.createdAt ?? conversation?.latestAt ?? Date.now(),
@@ -524,7 +528,11 @@ export function computeOrderTimelineStatuses(
 /** Build the seven `StatusStepperRow`s for the order detail timeline. */
 export function buildOrderTimeline(vm: OrderViewModel): StatusStepperRow[] {
   const statuses = computeOrderTimelineStatuses(vm)
-  return TIMELINE_ROW_ORDER.map((key) => {
+  const rowOrder =
+    vm.buyerIdentityKind === "guest_ephemeral"
+      ? TIMELINE_ROW_ORDER.slice(0, 4)
+      : TIMELINE_ROW_ORDER
+  return rowOrder.map((key) => {
     const status = statuses[key]
     const copy = copyFor(key, status)
     let title = copy.title
@@ -648,6 +656,15 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       }
     }
     if (vm.proofDeliveryStatus === "sent") {
+      if (vm.buyerIdentityKind === "guest_ephemeral") {
+        return {
+          tone: "success",
+          primaryLabel: "Receipt sent",
+          detailLabel: "Merchant follow-up uses phone and email",
+          actionNeeded: false,
+          showSpinner: false,
+        }
+      }
       return {
         tone: "info",
         primaryLabel: "Merchant confirmation",

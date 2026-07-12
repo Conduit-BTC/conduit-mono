@@ -21,11 +21,48 @@ Non-goals for the current client repository:
 
 Conduit Market and Merchant Portal user authentication use external signers only.
 
-| Signer path           | Status                  | Notes                                         |
-| --------------------- | ----------------------- | --------------------------------------------- |
-| NIP-07 browser signer | Current client support  | Required path for current interactive signing |
-| NIP-46 remote signer  | Architecture-compatible | Product UX depends on explicit implementation |
-| App-generated keys    | Prohibited              | No key custody or private-key storage         |
+| Signer path           | Status                  | Notes                                                   |
+| --------------------- | ----------------------- | ------------------------------------------------------- |
+| NIP-07 browser signer | Current client support  | Required path for current interactive signing           |
+| NIP-46 remote signer  | Architecture-compatible | Product UX depends on explicit implementation           |
+| App-generated keys    | Prohibited by default   | Only the bounded guest-order exception below is allowed |
+
+### Client Ephemeral Guest Order Key Exception
+
+Guest external-wallet checkout may create a per-order browser-generated key to
+sign the outbound private order and any external-payment report delivered to the
+merchant. This key is an order-scoped sender identity, not a Nostr inbox,
+account authentication, durable account-key or server-side custody, merchant
+signing, product publishing, wallet custody, or public zap signing.
+
+The exception is constrained as follows:
+
+- The key must be generated in the browser for one guest order and stored only
+  in same-tab session storage for local checkout/payment recovery. The key and
+  guest local lifecycle data use a 24-hour recovery deadline: signing and
+  restoration are rejected after the deadline, and expired local rows are
+  pruned on Market startup.
+- The key must not be sent to Conduit services, exposed through `VITE_*`, logs,
+  telemetry, PR comments, tracked files, or analytics.
+- The guest contact/address draft must remain in expiring same-tab storage and
+  be cleared as soon as the encrypted order reaches the merchant.
+- The client may expose the key only to the signing path for the initial private
+  order and same-order payment reports addressed to that order's merchant. This
+  is an application boundary; the extractable raw key is not cryptographically
+  restricted to those events.
+- Guest clients must not publish a buyer self-copy, advertise a `kind:10050`
+  inbox, poll for merchant replies, or cache the decrypted order payload as
+  durable order history.
+- Merchant clients must treat `buyerIdentityKind: "guest_ephemeral"` as
+  outbound-only and use the required structured phone/email fields for
+  invoices, fulfillment updates, and other follow-up.
+- Same-session recovery means local invoice/payment-report continuity only. It
+  does not promise merchant status recovery, a private conversation, or durable
+  order history.
+- This exception does not replace NIP-07/NIP-46 for signed-in buyers and does
+  not broaden the Anon Conduit Shopper public zap signer exception.
+- Converting, claiming, or recovering a guest order into a durable identity is
+  outside this exception and outside the current client flow.
 
 ### Service Signer Exception: Anon Public Zaps
 
