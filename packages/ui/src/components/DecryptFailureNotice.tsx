@@ -43,7 +43,9 @@ export function DecryptFailureNotice({
           onClick={onRetry}
           disabled={retrying}
         >
-          <RefreshCw className={cn("mr-1 size-3.5", retrying && "animate-spin")} />
+          <RefreshCw
+            className={cn("mr-1 size-3.5", retrying && "animate-spin")}
+          />
           Retry
         </Button>
       ) : null}

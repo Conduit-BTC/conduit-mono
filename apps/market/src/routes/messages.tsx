@@ -425,7 +425,8 @@ function MessagesPage() {
   const dmsLiveQuery = useQuery({
     queryKey: ["buyer-dms-live", pubkey ?? "none"],
     enabled: signerConnected,
-    queryFn: () => getDirectMessageConversationList({ principalPubkey: pubkey! }),
+    queryFn: () =>
+      getDirectMessageConversationList({ principalPubkey: pubkey! }),
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
   })

@@ -31,7 +31,9 @@ function rumor(kind: number, overrides: Partial<NDKEvent> = {}): NDKEvent {
 
 describe("classifyPrivateMessageKind", () => {
   it("maps kind 14 to direct and kind 16 to order", () => {
-    expect(classifyPrivateMessageKind(EVENT_KINDS.DIRECT_MESSAGE)).toBe("direct")
+    expect(classifyPrivateMessageKind(EVENT_KINDS.DIRECT_MESSAGE)).toBe(
+      "direct"
+    )
     expect(classifyPrivateMessageKind(EVENT_KINDS.ORDER)).toBe("order")
   })
   it("returns null for unrelated kinds", () => {
@@ -72,7 +74,8 @@ describe("unwrapGiftWrap", () => {
     }
     const outcome = await unwrapGiftWrap(wrap("w4"), signer, { giftUnwrap })
     expect(outcome.status).toBe("decrypt_failed")
-    if (outcome.status === "decrypt_failed") expect(outcome.reason).toBe("nip44_failed")
+    if (outcome.status === "decrypt_failed")
+      expect(outcome.reason).toBe("nip44_failed")
   })
 
   it("reports a timeout reason when unwrap stalls", async () => {
@@ -82,7 +85,8 @@ describe("unwrapGiftWrap", () => {
       timeoutMs: 10,
     })
     expect(outcome.status).toBe("decrypt_failed")
-    if (outcome.status === "decrypt_failed") expect(outcome.reason).toBe("timeout")
+    if (outcome.status === "decrypt_failed")
+      expect(outcome.reason).toBe("timeout")
   })
 
   it("ignores unrelated inner kinds", async () => {

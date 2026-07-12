@@ -63,8 +63,8 @@ The boundary provides:
     `direct` (kind 14);
   - `decrypt_failed` with the wrap event id and a coarse reason
     (`nip44_failed`, `nip04_failed`, `timeout`, `malformed`).
-  Non-order, non-direct kinds are ignored. Decrypt failures are **retained and
-  surfaced**, never collapsed to silence.
+    Non-order, non-direct kinds are ignored. Decrypt failures are **retained and
+    surfaced**, never collapsed to silence.
 - **NIP-44 capability seam.** NIP-44 v2 is the default/fallback wire version.
   Signer capability is probed (`window.nostr.nip44`, optional `nip44v3`) so v3
   can be negotiated later, but v3 is **source-gated OFF** as a send default until

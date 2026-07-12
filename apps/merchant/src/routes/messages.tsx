@@ -68,9 +68,7 @@ function MessagesPage() {
   const counterpartyPubkeys = useMemo(
     () =>
       Array.from(
-        new Set(
-          conversations.map((c) => c.counterpartyPubkey).filter(Boolean)
-        )
+        new Set(conversations.map((c) => c.counterpartyPubkey).filter(Boolean))
       ),
     [conversations]
   )
@@ -91,8 +89,7 @@ function MessagesPage() {
     }
   }, [conversations, selectedId])
 
-  const selected =
-    conversations.find((c) => c.id === selectedId) ?? null
+  const selected = conversations.find((c) => c.id === selectedId) ?? null
   const selectedName = selected
     ? getDisplayName(
         profilesQuery.data?.[selected.counterpartyPubkey],

@@ -27,10 +27,7 @@ export type PrivateMessageCategory = "order" | "direct"
 
 /** Coarse, content-free decrypt-failure reason (docs/specs/messaging.md). */
 export type DecryptFailureReason =
-  | "nip44_failed"
-  | "nip04_failed"
-  | "timeout"
-  | "malformed"
+  "nip44_failed" | "nip04_failed" | "timeout" | "malformed"
 
 /** Content-free record of a gift wrap that could not be turned into a message. */
 export interface DecryptFailure {
@@ -99,13 +96,19 @@ export async function unwrapGiftWrap(
     }
 
     try {
-      return { rumor: await giftUnwrap(event, undefined, signer, "nip44"), reason: null }
+      return {
+        rumor: await giftUnwrap(event, undefined, signer, "nip44"),
+        reason: null,
+      }
     } catch {
       // fall through to legacy nip04 read-only fallback
     }
 
     try {
-      return { rumor: await giftUnwrap(event, undefined, signer, "nip04"), reason: null }
+      return {
+        rumor: await giftUnwrap(event, undefined, signer, "nip04"),
+        reason: null,
+      }
     } catch {
       return { rumor: null, reason: "nip44_failed" }
     }
@@ -124,7 +127,11 @@ export async function unwrapGiftWrap(
 
   const { rumor, reason } = raced
   if (!rumor) {
-    return { status: "decrypt_failed", wrapId, reason: reason ?? "nip44_failed" }
+    return {
+      status: "decrypt_failed",
+      wrapId,
+      reason: reason ?? "nip44_failed",
+    }
   }
 
   const category = classifyPrivateMessageKind(rumor.kind)

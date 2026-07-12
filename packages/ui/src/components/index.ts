@@ -43,10 +43,7 @@ export {
   ConversationMessageBubble,
   type ConversationMessageBubbleProps,
 } from "./ConversationMessageBubble"
-export {
-  MessageComposer,
-  type MessageComposerProps,
-} from "./MessageComposer"
+export { MessageComposer, type MessageComposerProps } from "./MessageComposer"
 export {
   DecryptFailureNotice,
   type DecryptFailureNoticeProps,
