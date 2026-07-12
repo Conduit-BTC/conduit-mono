@@ -205,6 +205,63 @@ describe("computeOrderTimelineStatuses", () => {
     expect(statuses.payment).toBe("retry_needed")
     expect(statuses.merchant_confirmation).toBe("waiting")
   })
+
+  it("trusts a merchant-paid status when the local payment record is absent", () => {
+    const vm = buildOrderViewModel({
+      orderId: "relay-only-paid",
+      merchantPubkey: "merchant",
+      messages: [
+        {
+          id: "status-paid",
+          orderId: "relay-only-paid",
+          createdAt: 2,
+          senderPubkey: "merchant",
+          recipientPubkey: "buyer",
+          rawContent: "{}",
+          type: "status_update",
+          payload: { status: "paid" },
+        } as never,
+      ],
+    })
+
+    expect(vm.paymentStatus).toBe("not_started")
+    expect(vm.phase).toBe("in_progress")
+    expect(computeOrderTimelineStatuses(vm).payment).toBe("complete")
+    expect(getOrderFilterPhase(vm)).toBe("in_progress")
+    expect(deriveOrderHeaderStatus(vm).primaryLabel).not.toBe("Pending")
+  })
+
+  it("lets merchant confirmation supersede a stale local payment failure", () => {
+    const vm = buildOrderViewModel({
+      orderId: "merchant-confirmed-paid",
+      merchantPubkey: "merchant",
+      lifecycle: baseLifecycle({
+        paymentStatus: "ambiguous",
+        proofDeliveryStatus: "not_started",
+        phase: "failed",
+      }),
+      messages: [
+        {
+          id: "status-paid",
+          orderId: "merchant-confirmed-paid",
+          createdAt: 2,
+          senderPubkey: "merchant",
+          recipientPubkey: "buyer",
+          rawContent: "{}",
+          type: "status_update",
+          payload: { status: "paid" },
+        } as never,
+      ],
+    })
+
+    expect(vm.phase).toBe("in_progress")
+    expect(vm.actionNeeded).toBe(false)
+    expect(computeOrderTimelineStatuses(vm).payment).toBe("complete")
+    expect(
+      buildOrderTimeline(vm).find((row) => row.key === "payment")?.title
+    ).toBe("Payment sent")
+    expect(deriveOrderHeaderStatus(vm).primaryLabel).not.toBe("Payment unclear")
+  })
 })
 
 describe("buildOrderTimeline", () => {

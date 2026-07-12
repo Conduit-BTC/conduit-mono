@@ -136,6 +136,21 @@ function isCompletedMerchantStatus(
   return status === "complete" || status === "delivered"
 }
 
+/**
+ * Payment is complete from the buyer's perspective when either the local
+ * payment lifecycle confirms it or the merchant has published a status that
+ * confirms settlement. The latter keeps relay-only and partial-read views
+ * consistent when the buyer's local payment record is unavailable.
+ */
+function isBuyerOrderPaid(
+  vm: Pick<OrderViewModel, "paymentStatus" | "merchantStatus">
+): boolean {
+  return (
+    vm.paymentStatus === "paid" ||
+    isMerchantOrderPaid({ status: vm.merchantStatus })
+  )
+}
+
 /** Best-effort human title from an order item product reference. */
 export function deriveItemDisplayTitle(productId: string): string {
   const segments = productId.split(":")
@@ -229,6 +244,7 @@ export function buildOrderViewModel(
     merchantPubkey,
     conversation?.status ?? null
   )
+  const paymentPaid = isBuyerOrderPaid({ paymentStatus, merchantStatus })
 
   const tracking =
     summary &&
@@ -245,15 +261,18 @@ export function buildOrderViewModel(
       ? "cancelled"
       : isCompletedMerchantStatus(merchantStatus)
         ? "completed"
-        : (lifecycle?.phase ??
-          (paymentStatus === "paid" || orderDeliveryStatus === "sent"
+        : lifecycle?.phase === "completed" || lifecycle?.phase === "cancelled"
+          ? lifecycle.phase
+          : paymentPaid
             ? "in_progress"
-            : "pending"))
+            : (lifecycle?.phase ??
+              (orderDeliveryStatus === "sent" ? "in_progress" : "pending"))
 
   const actionNeeded =
-    paymentStatus === "manual_required" ||
-    paymentStatus === "failed" ||
-    paymentStatus === "ambiguous" ||
+    (!paymentPaid &&
+      (paymentStatus === "manual_required" ||
+        paymentStatus === "failed" ||
+        paymentStatus === "ambiguous")) ||
     orderDeliveryStatus === "failed" ||
     proofDeliveryStatus === "retry_needed" ||
     proofDeliveryStatus === "failed"
@@ -264,7 +283,7 @@ export function buildOrderViewModel(
     ? orderFlowFromCheckoutMode(lifecycle.checkoutMode)
     : deriveOrderFlow({
         status: merchantStatus,
-        paid: paymentStatus === "paid",
+        paid: paymentPaid,
         invoiceSent:
           invoiceStatus === "received" || invoiceStatus === "manual_required",
       })
@@ -452,9 +471,7 @@ function copyFor(
 export function computeOrderTimelineStatuses(
   vm: OrderViewModel
 ): Record<OrderTimelineRowKey, StatusStepperRowStatus> {
-  const paid =
-    vm.paymentStatus === "paid" ||
-    isMerchantOrderPaid({ status: vm.merchantStatus })
+  const paid = isBuyerOrderPaid(vm)
   const merchantConfirmed = isMerchantOrderAccepted({
     status: vm.merchantStatus,
   })
@@ -551,7 +568,7 @@ export function getOrderFilterPhase(
     return "completed"
   }
   if (
-    vm.paymentStatus === "paid" ||
+    isBuyerOrderPaid(vm) ||
     vm.merchantStatus === "accepted" ||
     vm.merchantStatus === "processing" ||
     vm.merchantStatus === "shipped"
@@ -577,7 +594,11 @@ export function buildOrderTimeline(vm: OrderViewModel): StatusStepperRow[] {
       title = status === "complete" ? "Paid directly" : "Direct payment"
       subtitle =
         "Paid the merchant directly over Lightning — no invoice needed."
-    } else if (key === "payment" && vm.paymentStatus === "ambiguous") {
+    } else if (
+      key === "payment" &&
+      vm.paymentStatus === "ambiguous" &&
+      !isBuyerOrderPaid(vm)
+    ) {
       title = "Payment needs review"
       subtitle =
         "We couldn't confirm this payment moved. Check your wallet, then message the merchant before retrying."
@@ -610,6 +631,8 @@ export interface OrderHeaderStatus {
  * (e.g. `Paid · Receipt sent`, `Pending · Awaiting invoice`).
  */
 export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
+  const paid = isBuyerOrderPaid(vm)
+
   if (vm.merchantStatus === "cancelled" || vm.phase === "cancelled") {
     return {
       tone: "neutral",
@@ -646,7 +669,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       showSpinner: false,
     }
   }
-  if (vm.paymentStatus === "failed") {
+  if (vm.paymentStatus === "failed" && !paid) {
     return {
       tone: "error",
       primaryLabel: "Payment failed",
@@ -655,7 +678,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       showSpinner: false,
     }
   }
-  if (vm.paymentStatus === "ambiguous") {
+  if (vm.paymentStatus === "ambiguous" && !paid) {
     return {
       tone: "warning",
       primaryLabel: "Payment unclear",
@@ -664,7 +687,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       showSpinner: false,
     }
   }
-  if (vm.paymentStatus === "manual_required") {
+  if (vm.paymentStatus === "manual_required" && !paid) {
     return {
       tone: "warning",
       primaryLabel: "Action needed",
@@ -673,7 +696,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       showSpinner: false,
     }
   }
-  if (vm.paymentStatus === "paid") {
+  if (paid) {
     if (vm.merchantStatus === "shipped") {
       return {
         tone: "info",
