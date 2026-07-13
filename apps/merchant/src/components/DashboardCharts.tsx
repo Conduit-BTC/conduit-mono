@@ -1,4 +1,5 @@
 import {
+  cn,
   Select,
   SelectContent,
   SelectItem,
@@ -106,16 +107,27 @@ function VerticalBarChart({
   const H = 156
   const padT = 10
   const padB = 2
+  const padX = 16
   const plotH = H - padT - padB
+  const plotW = W - padX * 2
   const n = points.length
   const max = Math.max(1, ...points.map((p) => p.value))
-  const slotW = W / n
+  const slotW = plotW / n
   const barW = Math.min(48, Math.max(3, slotW * 0.72))
   const labelStep = Math.max(1, Math.ceil(n / maxLabels))
-  const showEveryLabel = n <= maxLabels
   const usesExplicitLabels = points.some(
     (point) => point.showAxisLabel !== undefined
   )
+  const visibleLabels = points.map((point, index) =>
+    usesExplicitLabels
+      ? point.showAxisLabel === true
+      : index % labelStep === 0 || index === n - 1
+  )
+  const angleLabels = visibleLabels.filter(Boolean).length > maxLabels
+
+  function slotCenterPercent(index: number): number {
+    return ((padX + (index + 0.5) * slotW) / W) * 100
+  }
 
   return (
     <div>
@@ -128,15 +140,15 @@ function VerticalBarChart({
         className="h-36 w-full"
       >
         <line
-          x1={0}
+          x1={padX}
           y1={padT + plotH}
-          x2={W}
+          x2={W - padX}
           y2={padT + plotH}
           stroke="var(--border)"
           strokeWidth={1}
         />
         {points.map((point, i) => {
-          const x = i * slotW + (slotW - barW) / 2
+          const x = padX + i * slotW + (slotW - barW) / 2
           const h = (point.value / max) * plotH
           const y = padT + plotH - h
           return point.value > 0 ? (
@@ -146,30 +158,36 @@ function VerticalBarChart({
           ) : null
         })}
       </svg>
-      <div className="relative mt-1 h-4 tabular-nums text-xs text-[var(--text-muted)]">
+      <div
+        aria-hidden="true"
+        className={cn(
+          "relative mt-1 tabular-nums text-xs text-[var(--text-muted)]",
+          angleLabels ? "h-14" : "h-4"
+        )}
+      >
         {points.map((point, i) => {
-          const showLabel = usesExplicitLabels
-            ? point.showAxisLabel === true
-            : i % labelStep === 0 || i === n - 1
-          if (!showLabel) return null
+          if (!visibleLabels[i]) return null
 
-          const pinToStart = !showEveryLabel && i === 0
-          const pinToEnd = !showEveryLabel && i === n - 1
+          const left = `${slotCenterPercent(i)}%`
           return (
             <span
               key={point.date}
-              className={`absolute top-0 whitespace-nowrap ${
-                pinToStart || pinToEnd ? "" : "-translate-x-1/2"
-              }`}
-              style={
-                pinToStart
-                  ? { left: 0 }
-                  : pinToEnd
-                    ? { right: 0 }
-                    : { left: `${((i + 0.5) / n) * 100}%` }
-              }
+              className="absolute top-0 w-0"
+              style={{ left }}
             >
-              {point.axisLabel ?? point.label}
+              <span
+                className={cn(
+                  "block w-max whitespace-nowrap",
+                  angleLabels
+                    ? "absolute right-0 top-0 origin-top-right"
+                    : "-translate-x-1/2"
+                )}
+                style={
+                  angleLabels ? { transform: "rotate(-75deg)" } : undefined
+                }
+              >
+                {point.axisLabel ?? point.label}
+              </span>
             </span>
           )
         })}
