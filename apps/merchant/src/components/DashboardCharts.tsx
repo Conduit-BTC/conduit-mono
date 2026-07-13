@@ -21,24 +21,15 @@ function formatSats(sats: number): string {
 }
 
 function ChartCard({
-  eyebrow,
   title,
   children,
-  className,
 }: {
-  eyebrow: string
   title: string
   children: React.ReactNode
-  className?: string
 }) {
   return (
-    <section
-      className={`rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)] ${className ?? ""}`}
-    >
-      <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
-        {eyebrow}
-      </div>
-      <h3 className="mt-2 text-lg font-semibold text-[var(--text-primary)]">
+    <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
+      <h3 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
         {title}
       </h3>
       <div className="mt-4">{children}</div>
@@ -65,82 +56,94 @@ function VerticalBarChart({
   points,
   color,
   formatValue,
+  ariaLabel,
+  maxLabels = 6,
 }: {
   points: TimeBucketPoint[]
   color: string
   formatValue: (value: number) => string
+  ariaLabel: string
+  maxLabels?: number
 }) {
   const W = 640
-  const H = 180
+  const H = 156
   const padT = 10
-  const padB = 20
+  const padB = 2
   const plotH = H - padT - padB
   const n = points.length
   const max = Math.max(1, ...points.map((p) => p.value))
   const gap = 2
   const barW = Math.max(1, (W - gap * (n - 1)) / n)
-  const labelStep = Math.max(1, Math.ceil(n / 6))
+  const labelStep = Math.max(1, Math.ceil(n / maxLabels))
 
   return (
-    <svg
-      viewBox={`0 0 ${W} ${H}`}
-      width="100%"
-      preserveAspectRatio="none"
-      role="img"
-      aria-label="Orders over time"
-      className="h-44 w-full"
-    >
-      <line
-        x1={0}
-        y1={padT + plotH}
-        x2={W}
-        y2={padT + plotH}
-        stroke="var(--border)"
-        strokeWidth={1}
-      />
-      {points.map((point, i) => {
-        const x = i * (barW + gap)
-        const h = (point.value / max) * plotH
-        const y = padT + plotH - h
-        const showLabel = i % labelStep === 0 || i === n - 1
-        return (
-          <g key={point.date}>
-            {point.value > 0 && (
-              <path d={barPath(x, y, barW, h)} fill={color}>
-                <title>{`${point.label}: ${formatValue(point.value)}`}</title>
-              </path>
-            )}
-            {showLabel && (
-              <text
-                x={x + barW / 2}
-                y={H - 6}
-                textAnchor="middle"
-                fill="var(--text-muted)"
-                style={{ fontSize: 12 }}
-              >
-                {point.label}
-              </text>
-            )}
-          </g>
-        )
-      })}
-    </svg>
+    <div>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        width="100%"
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={ariaLabel}
+        className="h-36 w-full"
+      >
+        <line
+          x1={0}
+          y1={padT + plotH}
+          x2={W}
+          y2={padT + plotH}
+          stroke="var(--border)"
+          strokeWidth={1}
+        />
+        {points.map((point, i) => {
+          const x = i * (barW + gap)
+          const h = (point.value / max) * plotH
+          const y = padT + plotH - h
+          return point.value > 0 ? (
+            <path key={point.date} d={barPath(x, y, barW, h)} fill={color}>
+              <title>{`${point.label}: ${formatValue(point.value)}`}</title>
+            </path>
+          ) : null
+        })}
+      </svg>
+      <div className="relative mt-1 h-4 tabular-nums text-xs text-[var(--text-muted)]">
+        {points.map((point, i) => {
+          const showLabel = i % labelStep === 0 || i === n - 1
+          if (!showLabel) return null
+
+          const isFirst = i === 0
+          const isLast = i === n - 1
+          return (
+            <span
+              key={point.date}
+              className={`absolute top-0 whitespace-nowrap ${
+                isFirst || isLast ? "" : "-translate-x-1/2"
+              }`}
+              style={
+                isFirst
+                  ? { left: 0 }
+                  : isLast
+                    ? { right: 0 }
+                    : { left: `${((i + 0.5) / n) * 100}%` }
+              }
+            >
+              {point.label}
+            </span>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 
 export function OrdersOverTimeChart({ points }: { points: TimeBucketPoint[] }) {
   const total = points.reduce((sum, p) => sum + p.value, 0)
   return (
-    <ChartCard
-      eyebrow="Last 30 days"
-      title="Orders over time"
-      className="shadow-[var(--shadow-glass-inset)]"
-    >
+    <ChartCard title="Orders over time">
       {total === 0 ? (
         <EmptyNote>No orders in the last 30 days yet.</EmptyNote>
       ) : (
         <>
-          <div className="mb-3 text-3xl font-semibold text-[var(--text-primary)]">
+          <div className="mb-3 tabular-nums text-3xl font-semibold text-[var(--text-primary)]">
             {total}
             <span className="ml-2 text-sm font-normal text-[var(--text-secondary)]">
               orders
@@ -150,6 +153,7 @@ export function OrdersOverTimeChart({ points }: { points: TimeBucketPoint[] }) {
             points={points}
             color={COUNT_COLOR}
             formatValue={(value) => `${value} order${value === 1 ? "" : "s"}`}
+            ariaLabel="Orders over time"
           />
         </>
       )}
@@ -166,18 +170,20 @@ export function RevenueOverTimeChart({
 }) {
   const total = points.reduce((sum, p) => sum + p.value, 0)
   return (
-    <ChartCard eyebrow="Last 30 days" title="Revenue (paid)">
+    <ChartCard title="Revenue (paid)">
       {!hasRevenue || total === 0 ? (
         <EmptyNote>No convertible paid revenue in the last 30 days.</EmptyNote>
       ) : (
         <>
-          <div className="mb-3 text-2xl font-semibold text-secondary-300">
+          <div className="mb-3 tabular-nums text-2xl font-semibold text-secondary-300">
             {formatSats(total)}
           </div>
           <VerticalBarChart
             points={points}
             color={MONEY_COLOR}
             formatValue={formatSats}
+            ariaLabel="Paid revenue over time"
+            maxLabels={4}
           />
         </>
       )}
@@ -195,7 +201,7 @@ export function StatusBreakdownChart({ slices }: { slices: StatusSlice[] }) {
   let offset = 0
 
   return (
-    <ChartCard eyebrow="Composition" title="Order status">
+    <ChartCard title="Order status">
       {total === 0 ? (
         <EmptyNote>No orders to break down yet.</EmptyNote>
       ) : (
@@ -266,7 +272,7 @@ export function StatusBreakdownChart({ slices }: { slices: StatusSlice[] }) {
                     {slice.label}
                   </span>
                 </span>
-                <span className="shrink-0 font-medium text-[var(--text-primary)]">
+                <span className="shrink-0 tabular-nums font-medium text-[var(--text-primary)]">
                   {slice.count}
                 </span>
               </li>
@@ -281,7 +287,7 @@ export function StatusBreakdownChart({ slices }: { slices: StatusSlice[] }) {
 export function TopProductsChart({ items }: { items: TopProduct[] }) {
   const max = Math.max(1, ...items.map((item) => item.quantity))
   return (
-    <ChartCard eyebrow="Best sellers" title="Top products">
+    <ChartCard title="Top products">
       {items.length === 0 ? (
         <EmptyNote>No ordered items to rank yet.</EmptyNote>
       ) : (
@@ -292,7 +298,7 @@ export function TopProductsChart({ items }: { items: TopProduct[] }) {
                 <span className="truncate text-[var(--text-primary)]">
                   {item.title}
                 </span>
-                <span className="shrink-0 text-[var(--text-secondary)]">
+                <span className="shrink-0 tabular-nums text-[var(--text-secondary)]">
                   {item.quantity}
                 </span>
               </div>

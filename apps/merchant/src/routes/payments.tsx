@@ -166,13 +166,10 @@ function PaymentsPage() {
             {/* Page header */}
             <div className="space-y-5">
               <div>
-                <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
-                  Setup
-                </div>
-                <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
+                <h1 className="text-balance font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
                   Payments
                 </h1>
-                <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
+                <p className="mt-4 max-w-2xl text-pretty text-base leading-7 text-[var(--text-secondary)]">
                   Configure where buyers send Lightning payments.
                 </p>
                 {!editingLud16 && lud16SaveSucceeded && (
@@ -225,9 +222,6 @@ function PaymentsPage() {
                   <div>
                     <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--primary-500)]">
                       PAYMENT METHOD
-                    </div>
-                    <div className="mt-1 text-[1rem] text-[var(--text-secondary)]">
-                      Where buyers send Lightning payments
                     </div>
                   </div>
 

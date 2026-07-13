@@ -105,7 +105,7 @@ test("merchant product drafts survive safe dialog dismissal", async ({
   await page.goto(`${merchantUrl}/products`)
 
   await expect(
-    page.getByRole("heading", { name: "Manage your listings" })
+    page.getByRole("heading", { name: "Products", exact: true })
   ).toBeVisible()
 
   const addProduct = page.getByRole("button", { name: "Add product" }).first()

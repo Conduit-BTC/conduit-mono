@@ -698,7 +698,7 @@ function ProductsPage() {
     ? productFormValidation.firstError
     : editing
       ? "Save changes to publish this listing update."
-      : "Publish this product to create a signed kind 30402 listing."
+      : "Publish this product to add it to your store."
   const productsInitialLoading =
     productsQuery.isLoading && cachedProductsQuery.isLoading
 
@@ -901,15 +901,11 @@ function ProductsPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">
+          <h1 className="text-balance text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
             Products
-          </div>
-          <h1 className="mt-3 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Manage your listings
           </h1>
-          <p className="mt-2 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
-            Publish, update, and remove kind {EVENT_KINDS.PRODUCT} listings for
-            this merchant signer.
+          <p className="mt-2 max-w-2xl text-pretty text-sm leading-7 text-[var(--text-secondary)]">
+            Create, update, and remove the products buyers see in your store.
           </p>
         </div>
 
@@ -1186,8 +1182,8 @@ function ProductsPage() {
             </DialogTitle>
             <DialogDescription>
               {editing
-                ? "Update this kind 30402 product listing."
-                : "Publish a Market-visible kind 30402 listing from this signer."}
+                ? "Update this product listing."
+                : "Add a product to your store."}
             </DialogDescription>
           </DialogHeader>
 

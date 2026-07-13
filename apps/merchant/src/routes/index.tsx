@@ -397,13 +397,10 @@ function DashboardPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">
+          <h1 className="text-balance text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
             Merchant Portal
-          </div>
-          <h1 className="mt-3 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Run your store
           </h1>
-          <p className="mt-2 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
+          <p className="mt-2 max-w-2xl text-pretty text-sm leading-7 text-[var(--text-secondary)]">
             Publish products, manage incoming orders, and keep buyer
             conversations moving from one workspace.
           </p>
@@ -468,10 +465,7 @@ function DashboardPage() {
         <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                Things to do next
-              </div>
-              <h2 className="mt-2 text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
+              <h2 className="text-balance text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
                 Keep your merchant loop moving
               </h2>
             </div>
@@ -517,10 +511,7 @@ function DashboardPage() {
         <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                Recent orders
-              </div>
-              <h2 className="mt-2 text-xl font-semibold text-[var(--text-primary)]">
+              <h2 className="text-balance text-xl font-semibold text-[var(--text-primary)]">
                 Latest buyer activity
               </h2>
             </div>

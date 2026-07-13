@@ -1143,13 +1143,10 @@ function OrdersPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4 xl:shrink-0">
         <div>
-          <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">
+          <h1 className="text-balance text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
             Orders
-          </div>
-          <h1 className="mt-3 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Merchant order inbox
           </h1>
-          <p className="mt-2 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
+          <p className="mt-2 max-w-2xl text-pretty text-sm leading-7 text-[var(--text-secondary)]">
             Review incoming buyer orders, send invoices, update status, and
             share shipping details from one workspace.
           </p>

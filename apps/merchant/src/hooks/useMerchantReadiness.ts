@@ -21,12 +21,11 @@ import {
   MERCHANT_READINESS_STORAGE_EVENT,
   parseShippingConfig,
   saveShippingConfig,
-  shippingOptionToConfig,
   selectConduitShippingOption,
+  shippingOptionToConfig,
+  shouldHydrateShippingConfig,
   isPaymentsComplete,
   isProfileComplete,
-  isShippingComplete,
-  serializeShippingConfig,
 } from "../lib/readiness"
 
 const EMPTY_STORAGE_SNAPSHOT = JSON.stringify([null, null])
@@ -146,10 +145,9 @@ export function useMerchantReadiness() {
     () => parseShippingConfig(rawShippingConfig),
     [rawShippingConfig]
   )
-  const localShippingComplete = isShippingComplete(shippingConfig)
   const remoteShippingQuery = useQuery({
     queryKey: ["merchant-shipping-options", pubkey ?? "none"],
-    enabled: !!pubkey && !localShippingComplete,
+    enabled: !!pubkey && rawShippingConfig === null,
     queryFn: () => getShippingOptions(pubkey!),
     staleTime: 60_000,
   })
@@ -157,31 +155,24 @@ export function useMerchantReadiness() {
     const latest = selectConduitShippingOption(remoteShippingQuery.data)
     return latest ? shippingOptionToConfig(latest) : null
   }, [remoteShippingQuery.data])
-  const remoteShippingComplete = remoteShippingConfig
-    ? isShippingComplete(remoteShippingConfig)
-    : false
-  const effectiveShippingConfig =
-    !localShippingComplete && remoteShippingComplete && remoteShippingConfig
-      ? remoteShippingConfig
-      : shippingConfig
+  const shouldHydrateRemoteShipping = shouldHydrateShippingConfig(
+    rawShippingConfig,
+    remoteShippingConfig
+  )
+  const effectiveShippingConfig = shouldHydrateRemoteShipping
+    ? remoteShippingConfig
+    : shippingConfig
   const hasNwc = useMemo(() => hasNwcConfigured(rawNwcUri), [rawNwcUri])
   const profileComplete = isProfileComplete(profile)
   const paymentsComplete = isPaymentsComplete(profile)
   const shippingCheckPending =
-    !!pubkey && !localShippingComplete && remoteShippingQuery.isFetching
+    !!pubkey && rawShippingConfig === null && remoteShippingQuery.isFetching
 
   useEffect(() => {
-    if (!pubkey || localShippingComplete || !remoteShippingConfig) return
-    if (!isShippingComplete(remoteShippingConfig)) return
-    if (
-      serializeShippingConfig(remoteShippingConfig) ===
-      serializeShippingConfig(shippingConfig)
-    ) {
-      return
-    }
+    if (!pubkey || !shouldHydrateRemoteShipping) return
 
     saveShippingConfig(remoteShippingConfig, pubkey)
-  }, [localShippingComplete, pubkey, remoteShippingConfig, shippingConfig])
+  }, [pubkey, remoteShippingConfig, shouldHydrateRemoteShipping])
 
   useEffect(() => {
     setProfileCheckExpired(false)

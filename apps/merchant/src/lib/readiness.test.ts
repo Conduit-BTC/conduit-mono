@@ -15,6 +15,7 @@ import {
   selectConduitShippingOption,
   serializeShippingConfig,
   shippingOptionToConfig,
+  shouldHydrateShippingConfig,
 } from "./readiness"
 
 declare function describe(name: string, fn: () => void): void
@@ -143,6 +144,17 @@ test("parses stored shipping config defensively", () => {
   expect(serializeShippingConfig(shippingConfig)).toBe(
     JSON.stringify(shippingConfig)
   )
+})
+
+test("does not replace an intentionally stored empty shipping config", () => {
+  expect(
+    shouldHydrateShippingConfig(
+      serializeShippingConfig({ countries: [] }),
+      shippingConfig
+    )
+  ).toBe(false)
+  expect(shouldHydrateShippingConfig(null, shippingConfig)).toBe(true)
+  expect(shouldHydrateShippingConfig(null, { countries: [] })).toBe(true)
 })
 
 test("maps published shipping options back into readiness config", () => {

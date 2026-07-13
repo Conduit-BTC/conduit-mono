@@ -144,13 +144,10 @@ function ProfilePage() {
             {/* Page header */}
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
-                  Setup
-                </div>
-                <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
-                  Store identity
+                <h1 className="text-balance font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
+                  Store Profile
                 </h1>
-                <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
+                <p className="mt-4 max-w-2xl text-pretty text-base leading-7 text-[var(--text-secondary)]">
                   Edit the merchant profile buyers see across Market and your
                   storefront surfaces.
                 </p>

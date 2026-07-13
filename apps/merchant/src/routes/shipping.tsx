@@ -11,12 +11,14 @@ import { Badge, Button, SignedActionStatus } from "@conduit/ui"
 import { ShippingDestinationsEditor } from "../components/ShippingDestinationsEditor"
 import { requireAuth } from "../lib/auth"
 import {
+  getStoredShippingConfigRaw,
   loadShippingConfig,
   saveShippingConfig,
   isShippingComplete,
   serializeShippingConfig,
   shippingOptionToConfig,
   selectConduitShippingOption,
+  shouldHydrateShippingConfig,
   type ShippingConfig,
   type ShippingCountryConfig,
 } from "../lib/readiness"
@@ -111,24 +113,19 @@ function ShippingPage() {
   }
 
   useEffect(() => {
-    if (config.countries.length > 0) return
     if (hasUnsavedChanges) return
     const latest = selectConduitShippingOption(remoteShippingQuery.data)
     if (!latest) return
 
     const remoteConfig = shippingOptionToConfig(latest)
-    if (remoteConfig.countries.length === 0) return
+    const storedConfigRaw = getStoredShippingConfigRaw(pubkey)
+    if (!shouldHydrateShippingConfig(storedConfigRaw, remoteConfig)) return
 
     setConfig(remoteConfig)
     saveShippingConfig(remoteConfig, pubkey)
     setLastSavedConfig(remoteConfig)
     setSaveState({ status: "saved" })
-  }, [
-    config.countries.length,
-    hasUnsavedChanges,
-    pubkey,
-    remoteShippingQuery.data,
-  ])
+  }, [hasUnsavedChanges, pubkey, remoteShippingQuery.data])
 
   return (
     <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
@@ -138,25 +135,26 @@ function ShippingPage() {
             {/* Header */}
             <div className="space-y-5">
               <div>
-                <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
-                  Setup
-                </div>
-                <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
+                <h1 className="text-balance font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
                   Shipping
                 </h1>
-                <div className="mt-4 flex flex-wrap items-center gap-2">
-                  {hasUnsavedChanges ? (
-                    <Badge variant="warning">Unsaved changes</Badge>
-                  ) : saveState.status === "saved" ? (
-                    <Badge variant="success">Saved</Badge>
-                  ) : (
-                    <Badge variant="secondary">No changes to save</Badge>
-                  )}
-                  {remoteShippingQuery.isFetching && (
-                    <Badge variant="outline">Checking published settings</Badge>
-                  )}
-                </div>
-                <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
+                {(hasUnsavedChanges ||
+                  saveState.status === "saved" ||
+                  remoteShippingQuery.isFetching) && (
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    {hasUnsavedChanges ? (
+                      <Badge variant="warning">Unsaved changes</Badge>
+                    ) : saveState.status === "saved" ? (
+                      <Badge variant="success">Saved</Badge>
+                    ) : null}
+                    {remoteShippingQuery.isFetching && (
+                      <Badge variant="outline">
+                        Checking published settings
+                      </Badge>
+                    )}
+                  </div>
+                )}
+                <p className="mt-4 max-w-2xl text-pretty text-base leading-7 text-[var(--text-secondary)]">
                   Define where you ship. Buyers outside your configured
                   destinations will not see your products as available.
                 </p>

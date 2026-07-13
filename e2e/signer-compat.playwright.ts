@@ -118,6 +118,6 @@ test("merchant remembered auth falls back to explicit retry when signer needs ac
   await unlockTestSigner(page, TEST_MERCHANT_PUBKEY)
 
   await expect(
-    page.getByRole("heading", { name: "Run your store" })
+    page.getByRole("heading", { name: "Merchant Portal" })
   ).toBeVisible({ timeout: 10_000 })
 })

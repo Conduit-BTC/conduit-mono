@@ -49,9 +49,7 @@ export type StoredNwcConnection = NwcConnection & {
 }
 
 export type MerchantPaymentCapability =
-  | "not_ready"
-  | "invoice_only"
-  | "direct_payment"
+  "not_ready" | "invoice_only" | "direct_payment"
 
 export interface MerchantSetupReadiness {
   profileComplete: boolean
@@ -250,15 +248,17 @@ function normalizeShippingConfig(value: unknown): ShippingConfig {
 export function loadShippingConfig(
   pubkey?: string | null | undefined
 ): ShippingConfig {
-  try {
-    if (typeof localStorage === "undefined") return { countries: [] }
-    const storageKey = getShippingStorageKey(pubkey)
-    const raw = localStorage.getItem(storageKey)
-    if (raw) return parseShippingConfig(raw)
+  return parseShippingConfig(getStoredShippingConfigRaw(pubkey))
+}
 
-    return { countries: [] }
+export function getStoredShippingConfigRaw(
+  pubkey?: string | null | undefined
+): string | null {
+  try {
+    if (typeof localStorage === "undefined") return null
+    return localStorage.getItem(getShippingStorageKey(pubkey))
   } catch {
-    return { countries: [] }
+    return null
   }
 }
 
@@ -323,4 +323,11 @@ export function selectConduitShippingOption(
 
 export function serializeShippingConfig(config: ShippingConfig): string {
   return JSON.stringify(normalizeShippingConfig(config))
+}
+
+export function shouldHydrateShippingConfig(
+  rawStoredConfig: string | null,
+  remoteConfig: ShippingConfig | null
+): remoteConfig is ShippingConfig {
+  return rawStoredConfig === null && remoteConfig !== null
 }
