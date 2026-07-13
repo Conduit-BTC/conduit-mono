@@ -300,6 +300,47 @@ describe("planPublishRelays", () => {
     expect(result.failedRelayUrls).toEqual([broadcastRelay])
   })
 
+  it("adds extraRelayUrls (e.g. kind-10050 inbox relays) to the delivery targets", async () => {
+    const primaryRelay = "wss://planned.example"
+    const inboxRelay = "wss://inbox-10050.example"
+    let attempted: string[] = []
+    const fakeEvent = {
+      kind: EVENT_KINDS.GIFT_WRAP,
+      publish: async (relaySet: unknown) => {
+        attempted = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        return new Set(attempted.map((url) => ({ url })))
+      },
+    } as never
+
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => ({
+        intent: "recipient_event",
+        primaryRelayUrls: [primaryRelay],
+        broadcastRelayUrls: [],
+        parkedRelayUrls: [],
+      }),
+    })
+
+    await publishWithPlanner(fakeEvent, {
+      intent: "recipient_event",
+      authorPubkey: "alice",
+      recipientPubkeys: ["bob"],
+      extraRelayUrls: [inboxRelay, "ws://insecure.example"],
+    })
+
+    expect(attempted.some((url) => url.includes("planned.example"))).toBe(true)
+    expect(attempted.some((url) => url.includes("inbox-10050.example"))).toBe(
+      true
+    )
+    // insecure hints are dropped
+    expect(attempted.some((url) => url.includes("insecure.example"))).toBe(
+      false
+    )
+  })
+
   it("retries non-NIP-65 author events on public fallback relays when configured writes fail", async () => {
     const primaryRelay = "wss://configured-write.example"
     const normalizedPrimaryRelay = `${primaryRelay}/`

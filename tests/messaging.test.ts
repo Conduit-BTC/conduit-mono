@@ -1,10 +1,12 @@
 import { describe, expect, it } from "bun:test"
 import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
+  __resetInboxRelayCache,
   buildDirectMessageRumor,
   classifyPrivateMessageKind,
   detectNip44Capabilities,
   EVENT_KINDS,
+  fetchInboxRelayUrls,
   parseDirectMessageRumor,
   parsePrivateMessageRelays,
   unwrapGiftWrap,
@@ -151,6 +153,41 @@ describe("detectNip44Capabilities", () => {
     const caps = detectNip44Capabilities({})
     expect(caps.hasNip44).toBe(false)
     expect(caps.supportedVersions).toEqual([])
+  })
+})
+
+describe("fetchInboxRelayUrls", () => {
+  it("resolves and filters a peer's kind-10050 inbox relays", async () => {
+    __resetInboxRelayCache()
+    const relays = await fetchInboxRelayUrls("peer", {
+      relayUrls: ["wss://read.example"],
+      fetchEvents: async () =>
+        [
+          {
+            id: "10050",
+            kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+            pubkey: "peer",
+            created_at: 100,
+            content: "",
+            tags: [
+              ["relay", "wss://inbox.example"],
+              ["relay", "ws://insecure.example"],
+            ],
+          },
+        ] as never,
+    })
+    expect(relays).toEqual(["wss://inbox.example"])
+  })
+
+  it("returns [] on fetch failure so callers fall back to NIP-65", async () => {
+    __resetInboxRelayCache()
+    const relays = await fetchInboxRelayUrls("peer-2", {
+      relayUrls: ["wss://read.example"],
+      fetchEvents: async () => {
+        throw new Error("relay unavailable")
+      },
+    })
+    expect(relays).toEqual([])
   })
 })
 

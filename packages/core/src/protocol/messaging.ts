@@ -6,8 +6,11 @@ import {
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
 import { EVENT_KINDS } from "./kinds"
+import { fetchEventsFanout } from "./ndk"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { publishWithPlanner } from "./relay-publish"
+import { isInsecureRelayUrl } from "./relay-list"
+import { getGeneralReadRelayUrls } from "./relay-settings"
 import {
   withTransientNip07Retry,
   type TransientNip07RetryOptions,
@@ -222,6 +225,15 @@ export interface PublishPrivateMessageInput {
   refreshRelayLists?: boolean
   retry?: TransientNip07RetryOptions
   giftWrapFn?: typeof giftWrap
+  /**
+   * Recipient/sender kind-10050 inbox relays. When omitted they are resolved
+   * best-effort via `resolveInboxRelays` so gift wraps also reach a peer that
+   * advertises a DM inbox only through kind 10050. Pass `[]` to skip.
+   */
+  recipientInboxRelays?: readonly string[]
+  senderInboxRelays?: readonly string[]
+  /** Injectable kind-10050 resolver (tests); defaults to fetchInboxRelayUrls. */
+  resolveInboxRelays?: (pubkey: string) => Promise<string[]>
 }
 
 export interface PublishPrivateMessageResult {
@@ -243,6 +255,17 @@ export async function publishPrivateMessage(
   const selfCopy = input.selfCopy ?? true
   const refreshRelayLists = input.refreshRelayLists ?? true
   const wrapParams = { rumorKind: input.rumorKind }
+  const resolveInboxRelays = input.resolveInboxRelays ?? fetchInboxRelayUrls
+
+  // NIP-17 delivery targets the recipient's declared inbox relays; the self-copy
+  // targets the sender's own. Best-effort — falls back to NIP-65 + config.
+  const recipientInboxRelays =
+    input.recipientInboxRelays ??
+    (await resolveInboxRelays(input.recipientPubkey).catch(() => []))
+  const senderInboxRelays = selfCopy
+    ? (input.senderInboxRelays ??
+      (await resolveInboxRelays(input.senderPubkey).catch(() => [])))
+    : []
 
   const wrappedToRecipient = await withTransientNip07Retry(
     () =>
@@ -282,6 +305,7 @@ export async function publishPrivateMessage(
     authorPubkey: input.senderPubkey,
     authenticatedPubkey: input.senderPubkey,
     recipientPubkeys: [input.recipientPubkey],
+    extraRelayUrls: recipientInboxRelays,
     refreshRelayLists,
     deliveryMode: "critical",
   })
@@ -293,6 +317,7 @@ export async function publishPrivateMessage(
         authorPubkey: input.senderPubkey,
         authenticatedPubkey: input.senderPubkey,
         recipientPubkeys: [input.senderPubkey],
+        extraRelayUrls: senderInboxRelays,
         refreshRelayLists,
         deliveryMode: "critical",
       })
@@ -382,4 +407,58 @@ export function parsePrivateMessageRelays(event: {
     relayUrls.push(url)
   }
   return { pubkey: event.pubkey ?? "", relayUrls }
+}
+
+const inboxRelayCache = new Map<string, string[]>()
+
+export interface FetchInboxRelayOptions {
+  fetchEvents?: typeof fetchEventsFanout
+  relayUrls?: string[]
+}
+
+/** Reset the kind-10050 inbox-relay cache (tests). */
+export function __resetInboxRelayCache(): void {
+  inboxRelayCache.clear()
+}
+
+/**
+ * Best-effort resolve a pubkey's kind-10050 private-message inbox relays (where
+ * peers deliver gift wraps to them). Cached; returns `[]` when none are found or
+ * on error so callers fall back to NIP-65 + config defaults.
+ */
+export async function fetchInboxRelayUrls(
+  pubkey: string,
+  options: FetchInboxRelayOptions = {}
+): Promise<string[]> {
+  const cached = inboxRelayCache.get(pubkey)
+  if (cached) return cached
+  try {
+    const fetchEvents = options.fetchEvents ?? fetchEventsFanout
+    const events = await fetchEvents(
+      {
+        kinds: [EVENT_KINDS.PRIVATE_MESSAGE_RELAYS],
+        authors: [pubkey],
+        limit: 1,
+      },
+      {
+        relayUrls: options.relayUrls ?? getGeneralReadRelayUrls({}),
+        connectTimeoutMs: 3_000,
+        fetchTimeoutMs: 6_000,
+      }
+    )
+    let relayUrls: string[] = []
+    let newest = -1
+    for (const event of events) {
+      const parsed = parsePrivateMessageRelays(event)
+      if (parsed && (event.created_at ?? 0) > newest) {
+        relayUrls = parsed.relayUrls
+        newest = event.created_at ?? 0
+      }
+    }
+    const secure = relayUrls.filter((url) => !isInsecureRelayUrl(url))
+    inboxRelayCache.set(pubkey, secure)
+    return secure
+  } catch {
+    return []
+  }
 }

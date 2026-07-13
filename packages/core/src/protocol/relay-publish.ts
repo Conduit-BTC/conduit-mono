@@ -13,7 +13,7 @@ import {
   type NDKRelay,
 } from "@nostr-dev-kit/ndk"
 import { getNdk } from "./ndk"
-import { getRelayLists } from "./relay-list"
+import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
 import { recordRelayFailure, recordRelaySuccess } from "./relay-health"
 import {
   planRelayWrites,
@@ -41,6 +41,12 @@ export interface PublishWithPlannerInput {
   /** Authenticated pubkey whose own NIP-65 local relays may be used. */
   authenticatedPubkey?: string | null
   recipientPubkeys?: readonly string[]
+  /**
+   * Extra recipient relay hints (e.g. NIP-17 kind-10050 private-message inbox
+   * relays) added as delivery targets alongside the planned NIP-65 set. Secure
+   * URLs only; insecure hints are dropped.
+   */
+  extraRelayUrls?: readonly string[]
   /** Fetch missing NIP-65 hints before planning instead of cache-only lookup. */
   refreshRelayLists?: boolean
   /**
@@ -463,9 +469,22 @@ export async function publishWithPlanner(
   }
   assertSafeReplaceablePublish(event, input.replaceableSafety)
 
-  const plan = testOverrides.planPublishRelays
+  const basePlan = testOverrides.planPublishRelays
     ? await testOverrides.planPublishRelays(input)
     : await planPublishRelays(input)
+  const extraPrimaryRelayUrls = (input.extraRelayUrls ?? []).filter(
+    (url) => !isInsecureRelayUrl(url)
+  )
+  const plan =
+    extraPrimaryRelayUrls.length > 0
+      ? {
+          ...basePlan,
+          primaryRelayUrls: mergeUnique([
+            basePlan.primaryRelayUrls,
+            extraPrimaryRelayUrls,
+          ]),
+        }
+      : basePlan
   const plannedRelayUrls = Array.from(
     new Set([...plan.primaryRelayUrls, ...plan.broadcastRelayUrls])
   )
