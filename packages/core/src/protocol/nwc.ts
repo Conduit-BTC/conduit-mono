@@ -1,8 +1,9 @@
 /**
  * NIP-47 (Nostr Wallet Connect) client.
  *
- * Supports merchant invoice generation (`make_invoice`) and buyer payment
- * (`pay_invoice`) with capability detection (`get_info`).
+ * Supports merchant invoice generation (`make_invoice`), exact incoming
+ * settlement checks (`lookup_invoice`), and buyer payment (`pay_invoice`) with
+ * capability detection (`get_info`).
  *
  * NWC is the wallet RPC transport for invoice payment. It is not the zap
  * protocol itself: checkout should fetch/validate a NIP-57 zap invoice first,
@@ -20,11 +21,14 @@ import type {
   NewNWCClientOptions,
   Nip47GetBalanceResponse,
   Nip47GetInfoResponse,
+  Nip47LookupInvoiceRequest,
   Nip47MakeInvoiceRequest,
   Nip47PayInvoiceRequest,
   Nip47PayResponse,
   Nip47Transaction,
 } from "@getalby/sdk/nwc"
+import { sha256 } from "@noble/hashes/sha256"
+import { bytesToHex } from "@noble/hashes/utils"
 
 import { decodeLightningInvoiceAmount } from "./lightning"
 import type { ConduitAppId } from "./nip89"
@@ -76,6 +80,8 @@ export interface NwcGetInfoResult {
   pubkey?: string
   network?: string
   blockHeight?: number
+  /** Optional Lightning Address the wallet reports for this connection. */
+  lud16?: string
 }
 
 export interface NwcGetBalanceResult {
@@ -83,11 +89,26 @@ export interface NwcGetBalanceResult {
   balanceMsats: number
 }
 
+export interface NwcLookupInvoiceParams {
+  invoice?: string
+  paymentHash?: string
+}
+
+export interface NwcLookupInvoiceResult {
+  type: "incoming" | "outgoing"
+  state: "settled" | "pending" | "failed" | "accepted"
+  invoice: string
+  paymentHash: string
+  amountMsats: number
+  settledAt?: number
+}
+
 type NwcClientLike = {
   getInfo(): Promise<Nip47GetInfoResponse>
   getBalance(): Promise<Nip47GetBalanceResponse>
   makeInvoice(request: Nip47MakeInvoiceRequest): Promise<Nip47Transaction>
   payInvoice(request: Nip47PayInvoiceRequest): Promise<Nip47PayResponse>
+  lookupInvoice(request: Nip47LookupInvoiceRequest): Promise<Nip47Transaction>
   close(): void
   pool?: {
     maxWaitForConnection?: number
@@ -121,6 +142,18 @@ export function parseNwcUri(uri: string): NwcConnection {
     lud16: parsed.lud16,
     uri: uri.trim(),
   }
+}
+
+/**
+ * Produce a stable, non-secret identifier for a saved NWC connection URI.
+ *
+ * Query caches can use this to distinguish credentials without retaining the
+ * secret-bearing URI itself in a cache key or developer tooling.
+ */
+export function getNwcUriFingerprint(uri: string): string {
+  const normalizedUri = uri.trim()
+  if (!normalizedUri) throw new Error("Cannot fingerprint an empty NWC URI")
+  return bytesToHex(sha256(new TextEncoder().encode(normalizedUri)))
 }
 
 // ─── make_invoice ─────────────────────────────────────────────────────────────
@@ -289,10 +322,85 @@ function parseGetInfoResult(result: Nip47GetInfoResponse): NwcGetInfoResult {
     blockHeight:
       typeof result.block_height === "number" ? result.block_height : undefined,
   }
+  if (typeof result.lud16 === "string") parsed.lud16 = result.lud16
   if (notifications.length > 0) {
     parsed.notifications = notifications
   }
   return parsed
+}
+
+// --- lookup_invoice ----------------------------------------------------------
+
+/**
+ * Look up one invoice in the connected wallet without exposing wallet history.
+ * Merchants can use this to confirm that a specific order invoice settled as
+ * an incoming payment before advancing the order.
+ */
+export async function nwcLookupInvoice(
+  connection: NwcConnection,
+  params: NwcLookupInvoiceParams,
+  timeoutMs = 10_000,
+  clientAppId: ConduitAppId
+): Promise<NwcLookupInvoiceResult> {
+  void clientAppId
+  const invoice = params.invoice?.trim()
+  const paymentHash = params.paymentHash?.trim()
+  if (!invoice && !paymentHash) {
+    throw new Error("NWC invoice lookup requires an invoice or payment hash")
+  }
+
+  const client = await createPreparedNwcClient(connection, "probe")
+
+  try {
+    const result = await withNwcTimeout(
+      client.lookupInvoice({
+        ...(invoice ? { invoice } : {}),
+        ...(paymentHash ? { payment_hash: paymentHash } : {}),
+      }),
+      timeoutMs,
+      "lookup_invoice"
+    )
+    return parseLookupInvoiceResult(result)
+  } catch (error) {
+    throw normalizeNwcError(error)
+  } finally {
+    client.close()
+  }
+}
+
+function parseLookupInvoiceResult(
+  result: Nip47Transaction
+): NwcLookupInvoiceResult {
+  if (result.type !== "incoming" && result.type !== "outgoing") {
+    throw new Error("Invalid NWC lookup_invoice response: missing type")
+  }
+  if (
+    result.state !== "settled" &&
+    result.state !== "pending" &&
+    result.state !== "failed" &&
+    result.state !== "accepted"
+  ) {
+    throw new Error("Invalid NWC lookup_invoice response: missing state")
+  }
+  if (typeof result.invoice !== "string" || !result.invoice) {
+    throw new Error("Invalid NWC lookup_invoice response: missing invoice")
+  }
+  if (typeof result.payment_hash !== "string" || !result.payment_hash) {
+    throw new Error("Invalid NWC lookup_invoice response: missing payment hash")
+  }
+  if (typeof result.amount !== "number" || !Number.isFinite(result.amount)) {
+    throw new Error("Invalid NWC lookup_invoice response: missing amount")
+  }
+
+  return {
+    type: result.type,
+    state: result.state,
+    invoice: result.invoice,
+    paymentHash: result.payment_hash,
+    amountMsats: result.amount,
+    settledAt:
+      typeof result.settled_at === "number" ? result.settled_at : undefined,
+  }
 }
 
 // --- get_balance -------------------------------------------------------------

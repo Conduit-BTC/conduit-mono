@@ -1,20 +1,36 @@
 import { useEffect, useState } from "react"
-import { AlertCircle, CheckCircle2, LoaderCircle, Zap } from "lucide-react"
+import {
+  AlertCircle,
+  CheckCircle2,
+  LoaderCircle,
+  RefreshCw,
+  ShieldCheck,
+  Wallet,
+  Zap,
+} from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import {
   fetchLnurlPayMetadata,
   isValidLud16Address,
+  parseNwcUri,
   useAuth,
   useProfile,
   useUpdateProfile,
 } from "@conduit/core"
-import { Button, Input, Label, SignedActionStatus } from "@conduit/ui"
+import {
+  Button,
+  Input,
+  Label,
+  SignedActionStatus,
+  StatusPill,
+} from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
 import {
   profileFormToUpdatePayload,
   profileToFormValues,
 } from "../lib/profileForm"
 import { isPaymentsComplete } from "../lib/readiness"
+import { useMerchantPaymentAutomation } from "../hooks/useMerchantPaymentAutomation"
 
 export const Route = createFileRoute("/payments")({
   beforeLoad: () => {
@@ -166,13 +182,10 @@ function PaymentsPage() {
             {/* Page header */}
             <div className="space-y-5">
               <div>
-                <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
-                  Setup
-                </div>
-                <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
+                <h1 className="text-balance font-display text-4xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-5xl">
                   Payments
                 </h1>
-                <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
+                <p className="mt-4 max-w-2xl text-pretty text-base leading-7 text-[var(--text-secondary)]">
                   Configure where buyers send Lightning payments.
                 </p>
                 {!editingLud16 && lud16SaveSucceeded && (
@@ -225,9 +238,6 @@ function PaymentsPage() {
                   <div>
                     <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--primary-500)]">
                       PAYMENT METHOD
-                    </div>
-                    <div className="mt-1 text-[1rem] text-[var(--text-secondary)]">
-                      Where buyers send Lightning payments
                     </div>
                   </div>
 
@@ -343,6 +353,8 @@ function PaymentsPage() {
                     </div>
                   </div>
                 </section>
+
+                <NwcAutomationSection />
               </div>
             )}
           </div>
@@ -350,6 +362,292 @@ function PaymentsPage() {
       </div>
     </div>
   )
+}
+
+function NwcAutomationSection() {
+  const automation = useMerchantPaymentAutomation()
+  const [uri, setUri] = useState("")
+  const [inputError, setInputError] = useState<string | null>(null)
+  const connected = !!automation.connection
+
+  function connectWallet(event: React.FormEvent) {
+    event.preventDefault()
+    const trimmed = uri.trim()
+    if (!trimmed) {
+      setInputError("Paste a Nostr Wallet Connect connection string.")
+      return
+    }
+    try {
+      parseNwcUri(trimmed)
+    } catch {
+      setInputError("Paste a valid Nostr Wallet Connect connection string.")
+      return
+    }
+    automation.setUri(trimmed)
+    setUri("")
+    setInputError(null)
+  }
+
+  const status = automation.infoPending
+    ? { variant: "info" as const, label: "Checking" }
+    : automation.infoError
+      ? { variant: "warning" as const, label: "Saved — unavailable" }
+      : automation.addressStatus === "mismatch"
+        ? { variant: "warning" as const, label: "Address mismatch" }
+        : automation.canVerifyPayments
+          ? { variant: "success" as const, label: "Verification ready" }
+          : automation.canCreateInvoices
+            ? { variant: "info" as const, label: "Invoice creation ready" }
+            : connected
+              ? { variant: "warning" as const, label: "Needs permission" }
+              : { variant: "neutral" as const, label: "Not connected" }
+
+  return (
+    <section className="space-y-4">
+      <div>
+        <div className="text-[1rem] font-semibold tracking-[0.03em] text-[var(--primary-500)]">
+          AUTOMATIC PAYMENT VERIFICATION
+        </div>
+        <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+          Connect the wallet behind your Lightning Address. Conduit can check
+          exact incoming invoices and confirm matching settled orders while the
+          portal is open.
+        </p>
+      </div>
+
+      <div className="rounded-[2rem] border border-[var(--border)] bg-[color-mix(in_srgb,var(--primary-500)_1%,transparent)] px-6 py-5 shadow-[var(--shadow-glass-inset)]">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <Wallet className="h-5 w-5 shrink-0 text-[var(--text-secondary)]" />
+            <div>
+              <div className="font-semibold text-[var(--text-primary)]">
+                Nostr Wallet Connect
+              </div>
+              <div className="mt-1 text-xs text-[var(--text-muted)]">
+                Optional · stored only in this browser
+              </div>
+            </div>
+          </div>
+          <StatusPill variant={status.variant}>{status.label}</StatusPill>
+        </div>
+
+        {!connected ? (
+          <form onSubmit={connectWallet} className="mt-5 space-y-3">
+            <div className="grid gap-1.5">
+              <Label htmlFor="merchant-nwc-uri">Connection string</Label>
+              <Input
+                id="merchant-nwc-uri"
+                type="password"
+                value={uri}
+                onChange={(event) => {
+                  setUri(event.target.value)
+                  setInputError(null)
+                }}
+                placeholder="nostr+walletconnect://..."
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                aria-invalid={!!inputError}
+                aria-describedby={
+                  inputError || automation.connectionError
+                    ? "merchant-nwc-help merchant-nwc-error"
+                    : "merchant-nwc-help"
+                }
+              />
+              <p
+                id="merchant-nwc-help"
+                className="text-xs leading-5 text-[var(--text-muted)]"
+              >
+                Use a connection with Create invoice and Lookup invoice
+                permissions. The secret is never published or sent to buyers.
+              </p>
+              {(inputError || automation.connectionError) && (
+                <p id="merchant-nwc-error" className="text-sm text-error">
+                  {inputError ?? automation.connectionError}
+                </p>
+              )}
+            </div>
+            <Button type="submit" size="sm">
+              Connect wallet
+            </Button>
+          </form>
+        ) : (
+          <div className="mt-5 space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <CapabilityCard
+                ready={automation.canLookupInvoices}
+                title="Verify payments"
+                detail="Requires Lookup invoice permission"
+              />
+              <CapabilityCard
+                ready={automation.canCreateInvoices}
+                title="Create invoices"
+                detail="Requires Create invoice permission"
+              />
+            </div>
+
+            <NwcAddressStatus status={automation.addressStatus} />
+
+            {automation.infoError && (
+              <div className="rounded-xl border border-[var(--warning)]/50 bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
+                The connection is saved, but the wallet could not be reached.
+                Automatic verification will resume after it reconnects.
+              </div>
+            )}
+
+            <VerificationRunStatus
+              run={automation.run}
+              canVerify={automation.canVerifyPayments}
+            />
+
+            <p className="text-xs leading-5 text-[var(--text-muted)]">
+              The wallet confirms settlement; your Nostr signer may still ask
+              you to approve publishing the paid status to the order.
+            </p>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={automation.retry}
+                disabled={
+                  automation.infoPending || automation.run.status === "checking"
+                }
+              >
+                {automation.infoPending ||
+                automation.run.status === "checking" ? (
+                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+                Check now
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                onClick={automation.disconnect}
+              >
+                Disconnect wallet
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function CapabilityCard({
+  ready,
+  title,
+  detail,
+}: {
+  ready: boolean
+  title: string
+  detail: string
+}) {
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
+      <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+        {ready ? (
+          <CheckCircle2 className="h-4 w-4 text-[var(--success)]" />
+        ) : (
+          <AlertCircle className="h-4 w-4 text-[var(--warning)]" />
+        )}
+        {title}
+      </div>
+      <p className="mt-1 text-xs text-[var(--text-muted)]">{detail}</p>
+    </div>
+  )
+}
+
+function NwcAddressStatus({
+  status,
+}: {
+  status: ReturnType<typeof useMerchantPaymentAutomation>["addressStatus"]
+}) {
+  const content = {
+    match: {
+      title: "Receiving address matches",
+      body: "The wallet reports the same Lightning Address shown to buyers.",
+      tone: "success",
+    },
+    mismatch: {
+      title: "Receiving address does not match",
+      body: "Automatic verification is off because this wallet reports a different Lightning Address.",
+      tone: "warning",
+    },
+    unconfirmed: {
+      title: "Address not reported by wallet",
+      body: "Conduit verifies each exact order invoice directly. An address claim alone is never used to confirm payment.",
+      tone: "neutral",
+    },
+    missing_profile: {
+      title: "Add a Lightning Address first",
+      body: "Automatic verification starts after buyers have a receiving address.",
+      tone: "warning",
+    },
+  }[status]
+
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm leading-6">
+      <ShieldCheck
+        className={`mt-0.5 h-4 w-4 shrink-0 ${
+          content.tone === "success"
+            ? "text-[var(--success)]"
+            : content.tone === "warning"
+              ? "text-[var(--warning)]"
+              : "text-[var(--text-muted)]"
+        }`}
+      />
+      <div>
+        <div className="font-semibold text-[var(--text-primary)]">
+          {content.title}
+        </div>
+        <p className="text-[var(--text-secondary)]">{content.body}</p>
+      </div>
+    </div>
+  )
+}
+
+function VerificationRunStatus({
+  run,
+  canVerify,
+}: {
+  run: ReturnType<typeof useMerchantPaymentAutomation>["run"]
+  canVerify: boolean
+}) {
+  if (!canVerify || run.status === "idle") return null
+  if (run.status === "checking") {
+    return (
+      <p className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+        <LoaderCircle className="h-4 w-4 animate-spin" />
+        Checking reported payments…
+      </p>
+    )
+  }
+  if (run.status === "error") {
+    return <p className="text-sm text-[var(--warning)]">{run.message}</p>
+  }
+  if (run.verified > 0) {
+    return (
+      <p className="text-sm text-[var(--success)]">
+        Verified and advanced {run.verified} paid order
+        {run.verified === 1 ? "" : "s"}.
+      </p>
+    )
+  }
+  if (run.checked > 0) {
+    return (
+      <p className="text-sm text-[var(--text-secondary)]">
+        No new settled payments matched. Reports stay in manual verification.
+      </p>
+    )
+  }
+  return null
 }
 
 function LightningAddressStatus({

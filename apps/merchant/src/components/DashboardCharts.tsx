@@ -1,8 +1,20 @@
-import type {
-  DashboardChartData,
-  StatusSlice,
-  TimeBucketPoint,
-  TopProduct,
+import {
+  cn,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@conduit/ui"
+import {
+  DASHBOARD_RANGE_OPTIONS,
+  getDashboardRangeLabel,
+  isDashboardRangePreset,
+  type DashboardChartData,
+  type DashboardRangePreset,
+  type StatusSlice,
+  type TimeBucketPoint,
+  type TopProduct,
 } from "../lib/dashboard-charts"
 
 // One purple hue for counts, one orange hue for money — single hue per chart.
@@ -21,26 +33,43 @@ function formatSats(sats: number): string {
 }
 
 function ChartCard({
-  eyebrow,
   title,
+  range,
+  onRangeChange,
   children,
-  className,
 }: {
-  eyebrow: string
   title: string
+  range: DashboardRangePreset
+  onRangeChange: (range: DashboardRangePreset) => void
   children: React.ReactNode
-  className?: string
 }) {
   return (
-    <section
-      className={`rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)] ${className ?? ""}`}
-    >
-      <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
-        {eyebrow}
+    <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
+          {title}
+        </h3>
+        <Select
+          value={range}
+          onValueChange={(value) => {
+            if (isDashboardRangePreset(value)) onRangeChange(value)
+          }}
+        >
+          <SelectTrigger
+            aria-label={`Time range for ${title}`}
+            className="w-36"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="end">
+            {DASHBOARD_RANGE_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
-      <h3 className="mt-2 text-lg font-semibold text-[var(--text-primary)]">
-        {title}
-      </h3>
       <div className="mt-4">{children}</div>
     </section>
   )
@@ -65,82 +94,133 @@ function VerticalBarChart({
   points,
   color,
   formatValue,
+  ariaLabel,
+  maxLabels = 7,
 }: {
   points: TimeBucketPoint[]
   color: string
   formatValue: (value: number) => string
+  ariaLabel: string
+  maxLabels?: number
 }) {
   const W = 640
-  const H = 180
+  const H = 156
   const padT = 10
-  const padB = 20
+  const padB = 2
+  const padX = 16
   const plotH = H - padT - padB
+  const plotW = W - padX * 2
   const n = points.length
   const max = Math.max(1, ...points.map((p) => p.value))
-  const gap = 2
-  const barW = Math.max(1, (W - gap * (n - 1)) / n)
-  const labelStep = Math.max(1, Math.ceil(n / 6))
+  const slotW = plotW / n
+  const barW = Math.min(48, Math.max(3, slotW * 0.72))
+  const labelStep = Math.max(1, Math.ceil(n / maxLabels))
+  const usesExplicitLabels = points.some(
+    (point) => point.showAxisLabel !== undefined
+  )
+  const visibleLabels = points.map((point, index) =>
+    usesExplicitLabels
+      ? point.showAxisLabel === true
+      : index % labelStep === 0 || index === n - 1
+  )
+  const angleLabels = visibleLabels.filter(Boolean).length > maxLabels
+
+  function slotCenterPercent(index: number): number {
+    return ((padX + (index + 0.5) * slotW) / W) * 100
+  }
 
   return (
-    <svg
-      viewBox={`0 0 ${W} ${H}`}
-      width="100%"
-      preserveAspectRatio="none"
-      role="img"
-      aria-label="Orders over time"
-      className="h-44 w-full"
-    >
-      <line
-        x1={0}
-        y1={padT + plotH}
-        x2={W}
-        y2={padT + plotH}
-        stroke="var(--border)"
-        strokeWidth={1}
-      />
-      {points.map((point, i) => {
-        const x = i * (barW + gap)
-        const h = (point.value / max) * plotH
-        const y = padT + plotH - h
-        const showLabel = i % labelStep === 0 || i === n - 1
-        return (
-          <g key={point.date}>
-            {point.value > 0 && (
-              <path d={barPath(x, y, barW, h)} fill={color}>
-                <title>{`${point.label}: ${formatValue(point.value)}`}</title>
-              </path>
-            )}
-            {showLabel && (
-              <text
-                x={x + barW / 2}
-                y={H - 6}
-                textAnchor="middle"
-                fill="var(--text-muted)"
-                style={{ fontSize: 12 }}
+    <div>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        width="100%"
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={ariaLabel}
+        className="h-36 w-full"
+      >
+        <line
+          x1={padX}
+          y1={padT + plotH}
+          x2={W - padX}
+          y2={padT + plotH}
+          stroke="var(--border)"
+          strokeWidth={1}
+        />
+        {points.map((point, i) => {
+          const x = padX + i * slotW + (slotW - barW) / 2
+          const h = (point.value / max) * plotH
+          const y = padT + plotH - h
+          return point.value > 0 ? (
+            <path key={point.date} d={barPath(x, y, barW, h)} fill={color}>
+              <title>{`${point.label}: ${formatValue(point.value)}`}</title>
+            </path>
+          ) : null
+        })}
+      </svg>
+      <div
+        aria-hidden="true"
+        className={cn(
+          "relative mt-1 tabular-nums text-xs text-[var(--text-muted)]",
+          angleLabels ? "h-14" : "h-4"
+        )}
+      >
+        {points.map((point, i) => {
+          if (!visibleLabels[i]) return null
+
+          const left = `${slotCenterPercent(i)}%`
+          return (
+            <span
+              key={point.date}
+              className="absolute top-0 w-0"
+              style={{ left }}
+            >
+              <span
+                className={cn(
+                  "block w-max whitespace-nowrap",
+                  angleLabels
+                    ? "absolute right-0 top-0 origin-top-right"
+                    : "-translate-x-1/2"
+                )}
+                style={
+                  angleLabels ? { transform: "rotate(-75deg)" } : undefined
+                }
               >
-                {point.label}
-              </text>
-            )}
-          </g>
-        )
-      })}
-    </svg>
+                {point.axisLabel ?? point.label}
+              </span>
+            </span>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 
-export function OrdersOverTimeChart({ points }: { points: TimeBucketPoint[] }) {
+interface RangeControlledChartProps {
+  range: DashboardRangePreset
+  onRangeChange: (range: DashboardRangePreset) => void
+}
+
+export function OrdersOverTimeChart({
+  points,
+  range,
+  onRangeChange,
+}: {
+  points: TimeBucketPoint[]
+} & RangeControlledChartProps) {
   const total = points.reduce((sum, p) => sum + p.value, 0)
+  const rangeLabel = getDashboardRangeLabel(range)
   return (
     <ChartCard
-      eyebrow="Last 30 days"
       title="Orders over time"
-      className="shadow-[var(--shadow-glass-inset)]"
+      range={range}
+      onRangeChange={onRangeChange}
     >
       {total === 0 ? (
-        <EmptyNote>No orders in the last 30 days yet.</EmptyNote>
+        <EmptyNote>No orders in this range yet.</EmptyNote>
       ) : (
         <>
-          <div className="mb-3 text-3xl font-semibold text-[var(--text-primary)]">
+          <div className="mb-3 tabular-nums text-3xl font-semibold text-[var(--text-primary)]">
             {total}
             <span className="ml-2 text-sm font-normal text-[var(--text-secondary)]">
               orders
@@ -150,6 +230,7 @@ export function OrdersOverTimeChart({ points }: { points: TimeBucketPoint[] }) {
             points={points}
             color={COUNT_COLOR}
             formatValue={(value) => `${value} order${value === 1 ? "" : "s"}`}
+            ariaLabel={`Orders over time, ${rangeLabel}`}
           />
         </>
       )}
@@ -160,24 +241,32 @@ export function OrdersOverTimeChart({ points }: { points: TimeBucketPoint[] }) {
 export function RevenueOverTimeChart({
   points,
   hasRevenue,
+  range,
+  onRangeChange,
 }: {
   points: TimeBucketPoint[]
   hasRevenue: boolean
-}) {
+} & RangeControlledChartProps) {
   const total = points.reduce((sum, p) => sum + p.value, 0)
+  const rangeLabel = getDashboardRangeLabel(range)
   return (
-    <ChartCard eyebrow="Last 30 days" title="Revenue (paid)">
+    <ChartCard
+      title="Revenue (paid)"
+      range={range}
+      onRangeChange={onRangeChange}
+    >
       {!hasRevenue || total === 0 ? (
-        <EmptyNote>No convertible paid revenue in the last 30 days.</EmptyNote>
+        <EmptyNote>No convertible paid revenue in this range.</EmptyNote>
       ) : (
         <>
-          <div className="mb-3 text-2xl font-semibold text-secondary-300">
+          <div className="mb-3 tabular-nums text-2xl font-semibold text-secondary-300">
             {formatSats(total)}
           </div>
           <VerticalBarChart
             points={points}
             color={MONEY_COLOR}
             formatValue={formatSats}
+            ariaLabel={`Paid revenue over time, ${rangeLabel}`}
           />
         </>
       )}
@@ -185,7 +274,13 @@ export function RevenueOverTimeChart({
   )
 }
 
-export function StatusBreakdownChart({ slices }: { slices: StatusSlice[] }) {
+export function StatusBreakdownChart({
+  slices,
+  range,
+  onRangeChange,
+}: {
+  slices: StatusSlice[]
+} & RangeControlledChartProps) {
   const total = slices.reduce((sum, s) => sum + s.count, 0)
   const size = 160
   const stroke = 22
@@ -195,9 +290,9 @@ export function StatusBreakdownChart({ slices }: { slices: StatusSlice[] }) {
   let offset = 0
 
   return (
-    <ChartCard eyebrow="Composition" title="Order status">
+    <ChartCard title="Order status" range={range} onRangeChange={onRangeChange}>
       {total === 0 ? (
-        <EmptyNote>No orders to break down yet.</EmptyNote>
+        <EmptyNote>No orders in this range yet.</EmptyNote>
       ) : (
         <div className="flex flex-wrap items-center gap-6">
           <svg
@@ -266,7 +361,7 @@ export function StatusBreakdownChart({ slices }: { slices: StatusSlice[] }) {
                     {slice.label}
                   </span>
                 </span>
-                <span className="shrink-0 font-medium text-[var(--text-primary)]">
+                <span className="shrink-0 tabular-nums font-medium text-[var(--text-primary)]">
                   {slice.count}
                 </span>
               </li>
@@ -278,12 +373,18 @@ export function StatusBreakdownChart({ slices }: { slices: StatusSlice[] }) {
   )
 }
 
-export function TopProductsChart({ items }: { items: TopProduct[] }) {
+export function TopProductsChart({
+  items,
+  range,
+  onRangeChange,
+}: {
+  items: TopProduct[]
+} & RangeControlledChartProps) {
   const max = Math.max(1, ...items.map((item) => item.quantity))
   return (
-    <ChartCard eyebrow="Best sellers" title="Top products">
+    <ChartCard title="Top products" range={range} onRangeChange={onRangeChange}>
       {items.length === 0 ? (
-        <EmptyNote>No ordered items to rank yet.</EmptyNote>
+        <EmptyNote>No paid products in this range yet.</EmptyNote>
       ) : (
         <ul className="space-y-3">
           {items.map((item) => (
@@ -292,7 +393,7 @@ export function TopProductsChart({ items }: { items: TopProduct[] }) {
                 <span className="truncate text-[var(--text-primary)]">
                   {item.title}
                 </span>
-                <span className="shrink-0 text-[var(--text-secondary)]">
+                <span className="shrink-0 tabular-nums text-[var(--text-secondary)]">
                   {item.quantity}
                 </span>
               </div>
@@ -314,17 +415,51 @@ export function TopProductsChart({ items }: { items: TopProduct[] }) {
   )
 }
 
-export function DashboardCharts({ data }: { data: DashboardChartData }) {
+export type DashboardChartId = "orders" | "status" | "revenue" | "products"
+
+export type DashboardChartRanges = Record<
+  DashboardChartId,
+  DashboardRangePreset
+>
+
+export type DashboardChartDataByCard = Record<
+  DashboardChartId,
+  DashboardChartData
+>
+
+export function DashboardCharts({
+  data,
+  ranges,
+  onRangeChange,
+}: {
+  data: DashboardChartDataByCard
+  ranges: DashboardChartRanges
+  onRangeChange: (chart: DashboardChartId, range: DashboardRangePreset) => void
+}) {
   return (
     <div className="space-y-3">
-      <OrdersOverTimeChart points={data.ordersByDay} />
+      <OrdersOverTimeChart
+        points={data.orders.ordersOverTime}
+        range={ranges.orders}
+        onRangeChange={(range) => onRangeChange("orders", range)}
+      />
       <div className="grid gap-3 lg:grid-cols-3">
-        <StatusBreakdownChart slices={data.statusSlices} />
-        <RevenueOverTimeChart
-          points={data.revenueByDay}
-          hasRevenue={data.hasRevenue}
+        <StatusBreakdownChart
+          slices={data.status.statusSlices}
+          range={ranges.status}
+          onRangeChange={(range) => onRangeChange("status", range)}
         />
-        <TopProductsChart items={data.topProducts} />
+        <RevenueOverTimeChart
+          points={data.revenue.revenueOverTime}
+          hasRevenue={data.revenue.hasRevenue}
+          range={ranges.revenue}
+          onRangeChange={(range) => onRangeChange("revenue", range)}
+        />
+        <TopProductsChart
+          items={data.products.topProducts}
+          range={ranges.products}
+          onRangeChange={(range) => onRangeChange("products", range)}
+        />
       </div>
     </div>
   )

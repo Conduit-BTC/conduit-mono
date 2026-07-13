@@ -45,7 +45,6 @@ export function useNwcConnection(): UseNwcConnectionResult {
   const setUri = useCallback(
     (uri: string) => {
       setError(null)
-      setRawUri(uri)
       try {
         const trimmed = uri.trim()
         if (!storageKey) {
@@ -54,6 +53,7 @@ export function useNwcConnection(): UseNwcConnectionResult {
 
         if (!trimmed) {
           localStorage.removeItem(storageKey)
+          setRawUri("")
           setConnection(null)
           notifyMerchantReadinessStorageChange()
           return
@@ -64,10 +64,10 @@ export function useNwcConnection(): UseNwcConnectionResult {
 
         localStorage.setItem(storageKey, trimmed)
         localStorage.removeItem(NWC_URI_STORAGE_KEY)
+        setRawUri(trimmed)
         setConnection(parsed)
         notifyMerchantReadinessStorageChange()
       } catch (err) {
-        setConnection(null)
         setError(err instanceof Error ? err.message : "Invalid NWC URI")
       }
     },

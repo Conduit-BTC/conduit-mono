@@ -8,6 +8,7 @@ import {
   getNwcRelayDiagnostics,
   nwcGetBalance,
   nwcGetInfo,
+  nwcLookupInvoice,
   nwcMakeInvoice,
   nwcPayInvoice,
   parseNwcUri,
@@ -44,6 +45,23 @@ type FakeNwcClient = {
   }) => Promise<{
     preimage: string
     fees_paid: number
+  }>
+  lookupInvoice: (request: {
+    invoice?: string
+    payment_hash?: string
+  }) => Promise<{
+    type: "incoming" | "outgoing"
+    state: "settled" | "pending" | "failed" | "accepted"
+    invoice: string
+    description: string
+    description_hash: string
+    preimage: string
+    payment_hash: string
+    amount: number
+    fees_paid: number
+    settled_at: number
+    created_at: number
+    expires_at: number
   }>
   close: () => void
   pool?: {
@@ -212,6 +230,7 @@ describe("NWC SDK adapter", () => {
           pubkey: "wallet-node-pubkey",
           network: "bitcoin",
           block_height: 850_000,
+          lud16: "merchant@example.com",
         }),
         close: () => {
           closed = true
@@ -227,6 +246,7 @@ describe("NWC SDK adapter", () => {
       pubkey: "wallet-node-pubkey",
       network: "bitcoin",
       blockHeight: 850_000,
+      lud16: "merchant@example.com",
     })
     expect(closed).toBe(true)
   })
@@ -244,6 +264,56 @@ describe("NWC SDK adapter", () => {
 
     await expect(nwcGetBalance(connection, 100, "market")).resolves.toEqual({
       balanceMsats: 12_345_678,
+    })
+    expect(closed).toBe(true)
+  })
+
+  it("looks up one invoice and maps incoming settlement data", async () => {
+    let request: { invoice?: string; payment_hash?: string } | undefined
+    let closed = false
+    __nwcTestInternals.__setNwcClientFactory(() =>
+      fakeClient({
+        lookupInvoice: async (input) => {
+          request = input
+          return {
+            type: "incoming",
+            state: "settled",
+            invoice: "lnbc1merchant",
+            description: "",
+            description_hash: "",
+            preimage: "preimage",
+            payment_hash: "payment-hash",
+            amount: 50_000,
+            fees_paid: 0,
+            settled_at: 1_700_000_100,
+            created_at: 1_700_000_000,
+            expires_at: 1_700_003_600,
+          }
+        },
+        close: () => {
+          closed = true
+        },
+      })
+    )
+
+    await expect(
+      nwcLookupInvoice(
+        connection,
+        { invoice: "lnbc1merchant", paymentHash: "payment-hash" },
+        100,
+        "merchant"
+      )
+    ).resolves.toEqual({
+      type: "incoming",
+      state: "settled",
+      invoice: "lnbc1merchant",
+      paymentHash: "payment-hash",
+      amountMsats: 50_000,
+      settledAt: 1_700_000_100,
+    })
+    expect(request).toEqual({
+      invoice: "lnbc1merchant",
+      payment_hash: "payment-hash",
     })
     expect(closed).toBe(true)
   })
@@ -530,6 +600,20 @@ function fakeClient(overrides: Partial<FakeNwcClient>): FakeNwcClient {
       created_at: 1,
     }),
     payInvoice: async () => ({ preimage: "preimage", fees_paid: 0 }),
+    lookupInvoice: async () => ({
+      type: "incoming",
+      state: "pending",
+      invoice: "lnbc1default",
+      description: "",
+      description_hash: "",
+      preimage: "",
+      payment_hash: "hash",
+      amount: 1,
+      fees_paid: 0,
+      settled_at: 0,
+      created_at: 1,
+      expires_at: 2,
+    }),
     close: () => {},
     ...overrides,
   }

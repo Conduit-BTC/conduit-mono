@@ -8,9 +8,7 @@ import {
   getMerchantConversationList,
   getMerchantStorefront,
   getProfileName,
-  isPaymentProofEvidenceMessage,
   useAuth,
-  useNdkState,
   useProfiles,
   type ParsedOrderMessage,
   type Profile,
@@ -23,14 +21,29 @@ import {
   UserRound,
   Wallet,
   Wifi,
+  type LucideIcon,
 } from "lucide-react"
-import { useEffect, useMemo, useRef, useState, type ComponentType } from "react"
-import { Badge, Button, StatusPill, cn } from "@conduit/ui"
-import { DashboardCharts } from "../components/DashboardCharts"
+import { useCallback, useMemo, useState, type ComponentType } from "react"
+import { Button, StatusPill } from "@conduit/ui"
+import {
+  DashboardCharts,
+  type DashboardChartDataByCard,
+  type DashboardChartId,
+  type DashboardChartRanges,
+} from "../components/DashboardCharts"
 import { OrderListItem } from "../components/OrderListItem"
-import { buildDashboardChartData } from "../lib/dashboard-charts"
+import {
+  DEFAULT_DASHBOARD_RANGE,
+  buildDashboardChartData,
+  resolveDashboardPresetRange,
+  type DashboardRangePreset,
+} from "../lib/dashboard-charts"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
+import {
+  getMerchantConversationQueue,
+  type OrderQueueTab,
+} from "../lib/order-phase"
 import type { MerchantSetupReadiness } from "../lib/readiness"
 
 export const Route = createFileRoute("/")({
@@ -40,8 +53,6 @@ export const Route = createFileRoute("/")({
 type MerchantDashboardStats = {
   listings: number
   openOrders: number
-  awaitingPayment: number
-  awaitingFulfillment: number
   latestOrders: ParsedOrderMessage[]
 }
 
@@ -95,9 +106,6 @@ async function fetchDashboardStatsFromCacheOnly(
   }
 
   let openOrders = 0
-  let awaitingPayment = 0
-  let awaitingFulfillment = 0
-
   for (const messages of byOrder.values()) {
     // Only orders received as the merchant; skip orders placed as a buyer
     // (the buyer sends the `order`, so a self-sent order is a buyer order).
@@ -105,26 +113,6 @@ async function fetchDashboardStatsFromCacheOnly(
     if (orderMessage && orderMessage.senderPubkey === pubkey) continue
 
     openOrders += 1
-
-    const hasPaymentRequest = messages.some(
-      (message) => message.type === "payment_request"
-    )
-    const hasPaymentProof = messages.some(isPaymentProofEvidenceMessage)
-    const latestStatus = [...messages]
-      .reverse()
-      .find((message) => message.type === "status_update")
-
-    if (!hasPaymentRequest && !hasPaymentProof) awaitingPayment += 1
-    if (latestStatus?.type === "status_update") {
-      if (
-        latestStatus.payload.status === "paid" ||
-        latestStatus.payload.status === "processing"
-      ) {
-        awaitingFulfillment += 1
-      }
-    } else if (hasPaymentProof) {
-      awaitingFulfillment += 1
-    }
   }
 
   const latestOrders = [...parsedMessages]
@@ -138,8 +126,6 @@ async function fetchDashboardStatsFromCacheOnly(
   return {
     listings: 0,
     openOrders,
-    awaitingPayment,
-    awaitingFulfillment,
     latestOrders,
   }
 }
@@ -148,83 +134,35 @@ function StatCard({
   label,
   value,
   icon: Icon,
+  to,
+  search,
 }: {
   label: string
   value: number
-  icon: ComponentType<{ className?: string }>
+  icon: LucideIcon
+  to: "/products" | "/orders"
+  search?: { queue?: OrderQueueTab }
 }) {
   return (
-    <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-glass-inset)]">
+    <Link
+      to={to}
+      search={search}
+      className="block rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-glass-inset)] hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
+    >
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
             {label}
           </div>
-          <div className="mt-3 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
+          <div className="mt-3 text-3xl font-semibold tracking-tight text-[var(--text-primary)] tabular-nums">
             {value}
           </div>
         </div>
         <span className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]">
-          <Icon className="h-5 w-5" />
+          <Icon aria-hidden={true} className="h-5 w-5" />
         </span>
       </div>
-    </div>
-  )
-}
-
-function RelayStatusBadge({ status }: { status: string }) {
-  const previousStatusRef = useRef(status)
-  const [recentlyConnected, setRecentlyConnected] = useState(false)
-  const isConnecting = status === "connecting"
-  const isConnected = status === "connected"
-  const isError = status === "error"
-
-  useEffect(() => {
-    if (status === "connected" && previousStatusRef.current !== "connected") {
-      setRecentlyConnected(true)
-      const timeoutId = window.setTimeout(() => {
-        setRecentlyConnected(false)
-      }, 1_200)
-
-      previousStatusRef.current = status
-      return () => window.clearTimeout(timeoutId)
-    }
-
-    previousStatusRef.current = status
-    return undefined
-  }, [status])
-
-  return (
-    <Badge
-      variant="secondary"
-      className={cn(
-        "gap-1.5 border transition-colors duration-500",
-        isConnecting &&
-          "animate-pulse border-[var(--info)] bg-[color-mix(in_srgb,var(--info)_10%,transparent)] text-[var(--info)]",
-        recentlyConnected &&
-          "border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_10%,transparent)] text-[var(--success)] shadow-[0_0_16px_color-mix(in_srgb,var(--success)_18%,transparent)]",
-        isConnected &&
-          !recentlyConnected &&
-          "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]",
-        isError && "border-error/30 bg-error/10 text-error",
-        !isConnecting &&
-          !isConnected &&
-          !isError &&
-          "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-secondary)]"
-      )}
-    >
-      <span
-        aria-hidden="true"
-        className={cn(
-          "h-1.5 w-1.5 rounded-full",
-          isConnecting && "bg-[var(--info)]",
-          isConnected && "bg-[var(--success)]",
-          isError && "bg-error",
-          !isConnecting && !isConnected && !isError && "bg-[var(--text-muted)]"
-        )}
-      />
-      Relay {status}
-    </Badge>
+    </Link>
   )
 }
 
@@ -341,8 +279,13 @@ function MerchantReadinessPanel({
 function DashboardPage() {
   const { pubkey, error } = useAuth()
   const navigate = useNavigate()
-  const ndk = useNdkState()
   const readiness = useMerchantReadinessState()
+  const [chartRanges, setChartRanges] = useState<DashboardChartRanges>(() => ({
+    orders: DEFAULT_DASHBOARD_RANGE,
+    status: DEFAULT_DASHBOARD_RANGE,
+    revenue: DEFAULT_DASHBOARD_RANGE,
+    products: DEFAULT_DASHBOARD_RANGE,
+  }))
   const statsQuery = useQuery({
     queryKey: ["merchant-dashboard-live", pubkey ?? "none"],
     enabled: !!pubkey,
@@ -370,19 +313,53 @@ function DashboardPage() {
   })
   const btcRateQuery = useBtcUsdRate()
   const stats = statsQuery.data ?? cachedStatsQuery.data
-  const allConversations =
-    conversationsQuery.data?.data ?? cachedConversationsQuery.data?.data ?? []
-  const latestConversations = allConversations.slice(0, 5)
-  const chartData = useMemo(
+  const allConversations = useMemo(
     () =>
-      buildDashboardChartData(
-        conversationsQuery.data?.data ??
-          cachedConversationsQuery.data?.data ??
-          [],
+      conversationsQuery.data?.data ??
+      cachedConversationsQuery.data?.data ??
+      [],
+    [conversationsQuery.data, cachedConversationsQuery.data]
+  )
+  const latestConversations = allConversations.slice(0, 5)
+  const queueCounts = useMemo(() => {
+    let verifyPayment = 0
+    let paidFulfill = 0
+    for (const conversation of allConversations) {
+      const queue = getMerchantConversationQueue(conversation)
+      if (queue === "verify_payment") verifyPayment += 1
+      if (queue === "paid_fulfill") paidFulfill += 1
+    }
+    return { verifyPayment, paidFulfill }
+  }, [allConversations])
+  const chartData = useMemo<DashboardChartDataByCard>(() => {
+    const now = Date.now()
+    const cache = new Map<
+      DashboardRangePreset,
+      ReturnType<typeof buildDashboardChartData>
+    >()
+    const build = (preset: DashboardRangePreset) => {
+      const cached = cache.get(preset)
+      if (cached) return cached
+      const data = buildDashboardChartData(
+        allConversations,
         btcRateQuery.data ?? null,
-        Date.now()
-      ),
-    [conversationsQuery.data, cachedConversationsQuery.data, btcRateQuery.data]
+        resolveDashboardPresetRange(preset, now)
+      )
+      cache.set(preset, data)
+      return data
+    }
+    return {
+      orders: build(chartRanges.orders),
+      status: build(chartRanges.status),
+      revenue: build(chartRanges.revenue),
+      products: build(chartRanges.products),
+    }
+  }, [allConversations, btcRateQuery.data, chartRanges])
+  const changeChartRange = useCallback(
+    (chart: DashboardChartId, range: DashboardRangePreset) => {
+      setChartRanges((current) => ({ ...current, [chart]: range }))
+    },
+    []
   )
   const buyerProfilesQuery = useProfiles(
     latestConversations.map((conversation) => conversation.buyerPubkey),
@@ -395,31 +372,14 @@ function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">
-            Merchant Portal
-          </div>
-          <h1 className="mt-3 text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Run your store
-          </h1>
-          <p className="mt-2 max-w-2xl text-sm leading-7 text-[var(--text-secondary)]">
-            Publish products, manage incoming orders, and keep buyer
-            conversations moving from one workspace.
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {pubkey && (
-            <Badge
-              variant="secondary"
-              className="border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]"
-            >
-              {formatNpub(pubkey, 10)}
-            </Badge>
-          )}
-          <RelayStatusBadge status={ndk.status} />
-        </div>
+      <div>
+        <h1 className="text-balance text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+          Merchant Portal
+        </h1>
+        <p className="mt-2 max-w-2xl text-pretty text-sm leading-7 text-[var(--text-secondary)]">
+          Publish products, manage incoming orders, and keep buyer conversations
+          moving.
+        </p>
       </div>
 
       {error && (
@@ -440,38 +400,46 @@ function DashboardPage() {
           label="Listings"
           value={stats?.listings ?? 0}
           icon={Package}
+          to="/products"
         />
         <StatCard
           label="Open orders"
           value={stats?.openOrders ?? 0}
           icon={ShoppingBag}
+          to="/orders"
+          search={{}}
         />
         <StatCard
-          label="Awaiting payment"
-          value={stats?.awaitingPayment ?? 0}
+          label="Awaiting payment verification"
+          value={queueCounts.verifyPayment}
           icon={Wallet}
+          to="/orders"
+          search={{ queue: "verify_payment" }}
         />
         <StatCard
           label="Awaiting fulfillment"
-          value={stats?.awaitingFulfillment ?? 0}
-          icon={ShoppingBag}
+          value={queueCounts.paidFulfill}
+          icon={Truck}
+          to="/orders"
+          search={{ queue: "paid_fulfill" }}
         />
       </div>
 
       {pubkey && <MerchantReadinessPanel readiness={readiness} />}
 
-      {pubkey && chartData.totalOrders > 0 && (
-        <DashboardCharts data={chartData} />
+      {pubkey && allConversations.length > 0 && (
+        <DashboardCharts
+          data={chartData}
+          ranges={chartRanges}
+          onRangeChange={changeChartRange}
+        />
       )}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">
-        <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
+        <section className="self-start rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                Things to do next
-              </div>
-              <h2 className="mt-2 text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
+              <h2 className="text-balance text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
                 Keep your merchant loop moving
               </h2>
             </div>
@@ -517,10 +485,7 @@ function DashboardPage() {
         <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                Recent orders
-              </div>
-              <h2 className="mt-2 text-xl font-semibold text-[var(--text-primary)]">
+              <h2 className="text-balance text-xl font-semibold text-[var(--text-primary)]">
                 Latest buyer activity
               </h2>
             </div>

@@ -9,6 +9,7 @@ import {
   SHIPPING_COUNTRIES,
   isRelaySetupIncomplete,
   isValidLud16Address,
+  getNwcUriFingerprint,
   parseNwcUri,
   type ParsedShippingOption,
   type NwcConnection,
@@ -49,9 +50,7 @@ export type StoredNwcConnection = NwcConnection & {
 }
 
 export type MerchantPaymentCapability =
-  | "not_ready"
-  | "invoice_only"
-  | "direct_payment"
+  "not_ready" | "invoice_only" | "direct_payment"
 
 export interface MerchantSetupReadiness {
   profileComplete: boolean
@@ -107,6 +106,11 @@ export function getNwcUriStorageKey(
   const normalizedPubkey = pubkey?.trim()
   if (!normalizedPubkey) return null
   return `${NWC_URI_STORAGE_KEY}:${normalizedPubkey}`
+}
+
+export function getNwcConnectionCacheKey(rawUri: string): string {
+  const normalizedUri = rawUri.trim()
+  return normalizedUri ? getNwcUriFingerprint(normalizedUri) : "none"
 }
 
 export function notifyMerchantReadinessStorageChange(): void {
@@ -250,15 +254,17 @@ function normalizeShippingConfig(value: unknown): ShippingConfig {
 export function loadShippingConfig(
   pubkey?: string | null | undefined
 ): ShippingConfig {
-  try {
-    if (typeof localStorage === "undefined") return { countries: [] }
-    const storageKey = getShippingStorageKey(pubkey)
-    const raw = localStorage.getItem(storageKey)
-    if (raw) return parseShippingConfig(raw)
+  return parseShippingConfig(getStoredShippingConfigRaw(pubkey))
+}
 
-    return { countries: [] }
+export function getStoredShippingConfigRaw(
+  pubkey?: string | null | undefined
+): string | null {
+  try {
+    if (typeof localStorage === "undefined") return null
+    return localStorage.getItem(getShippingStorageKey(pubkey))
   } catch {
-    return { countries: [] }
+    return null
   }
 }
 
@@ -323,4 +329,30 @@ export function selectConduitShippingOption(
 
 export function serializeShippingConfig(config: ShippingConfig): string {
   return JSON.stringify(normalizeShippingConfig(config))
+}
+
+export function isStoredShippingConfigAuthoritative(
+  rawStoredConfig: string | null
+): boolean {
+  if (rawStoredConfig === null) return false
+
+  try {
+    const parsed = JSON.parse(rawStoredConfig) as { countries?: unknown }
+    if (!Array.isArray(parsed?.countries)) return false
+    if (parsed.countries.length === 0) return true
+
+    return normalizeShippingConfig(parsed).countries.length > 0
+  } catch {
+    return false
+  }
+}
+
+export function shouldHydrateShippingConfig(
+  rawStoredConfig: string | null,
+  remoteConfig: ShippingConfig | null
+): remoteConfig is ShippingConfig {
+  return (
+    !isStoredShippingConfigAuthoritative(rawStoredConfig) &&
+    remoteConfig !== null
+  )
 }
