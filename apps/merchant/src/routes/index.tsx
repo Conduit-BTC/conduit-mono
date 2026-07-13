@@ -8,7 +8,6 @@ import {
   getMerchantConversationList,
   getMerchantStorefront,
   getProfileName,
-  isPaymentProofEvidenceMessage,
   useAuth,
   useProfiles,
   type ParsedOrderMessage,
@@ -31,7 +30,10 @@ import { OrderListItem } from "../components/OrderListItem"
 import { buildDashboardChartData } from "../lib/dashboard-charts"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
-import type { OrderQueueTab } from "../lib/order-phase"
+import {
+  getMerchantConversationQueue,
+  type OrderQueueTab,
+} from "../lib/order-phase"
 import type { MerchantSetupReadiness } from "../lib/readiness"
 
 export const Route = createFileRoute("/")({
@@ -41,8 +43,6 @@ export const Route = createFileRoute("/")({
 type MerchantDashboardStats = {
   listings: number
   openOrders: number
-  awaitingPayment: number
-  awaitingFulfillment: number
   latestOrders: ParsedOrderMessage[]
 }
 
@@ -96,9 +96,6 @@ async function fetchDashboardStatsFromCacheOnly(
   }
 
   let openOrders = 0
-  let awaitingPayment = 0
-  let awaitingFulfillment = 0
-
   for (const messages of byOrder.values()) {
     // Only orders received as the merchant; skip orders placed as a buyer
     // (the buyer sends the `order`, so a self-sent order is a buyer order).
@@ -106,26 +103,6 @@ async function fetchDashboardStatsFromCacheOnly(
     if (orderMessage && orderMessage.senderPubkey === pubkey) continue
 
     openOrders += 1
-
-    const hasPaymentRequest = messages.some(
-      (message) => message.type === "payment_request"
-    )
-    const hasPaymentProof = messages.some(isPaymentProofEvidenceMessage)
-    const latestStatus = [...messages]
-      .reverse()
-      .find((message) => message.type === "status_update")
-
-    if (!hasPaymentRequest && !hasPaymentProof) awaitingPayment += 1
-    if (latestStatus?.type === "status_update") {
-      if (
-        latestStatus.payload.status === "paid" ||
-        latestStatus.payload.status === "processing"
-      ) {
-        awaitingFulfillment += 1
-      }
-    } else if (hasPaymentProof) {
-      awaitingFulfillment += 1
-    }
   }
 
   const latestOrders = [...parsedMessages]
@@ -139,8 +116,6 @@ async function fetchDashboardStatsFromCacheOnly(
   return {
     listings: 0,
     openOrders,
-    awaitingPayment,
-    awaitingFulfillment,
     latestOrders,
   }
 }
@@ -322,9 +297,24 @@ function DashboardPage() {
   })
   const btcRateQuery = useBtcUsdRate()
   const stats = statsQuery.data ?? cachedStatsQuery.data
-  const allConversations =
-    conversationsQuery.data?.data ?? cachedConversationsQuery.data?.data ?? []
+  const allConversations = useMemo(
+    () =>
+      conversationsQuery.data?.data ??
+      cachedConversationsQuery.data?.data ??
+      [],
+    [conversationsQuery.data, cachedConversationsQuery.data]
+  )
   const latestConversations = allConversations.slice(0, 5)
+  const queueCounts = useMemo(() => {
+    let verifyPayment = 0
+    let paidFulfill = 0
+    for (const conversation of allConversations) {
+      const queue = getMerchantConversationQueue(conversation)
+      if (queue === "verify_payment") verifyPayment += 1
+      if (queue === "paid_fulfill") paidFulfill += 1
+    }
+    return { verifyPayment, paidFulfill }
+  }, [allConversations])
   const chartData = useMemo(
     () =>
       buildDashboardChartData(
@@ -385,15 +375,15 @@ function DashboardPage() {
           search={{}}
         />
         <StatCard
-          label="Awaiting payment"
-          value={stats?.awaitingPayment ?? 0}
+          label="Awaiting payment verification"
+          value={queueCounts.verifyPayment}
           icon={Wallet}
           to="/orders"
-          search={{ queue: "unpaid_review" }}
+          search={{ queue: "verify_payment" }}
         />
         <StatCard
           label="Awaiting fulfillment"
-          value={stats?.awaitingFulfillment ?? 0}
+          value={queueCounts.paidFulfill}
           icon={Truck}
           to="/orders"
           search={{ queue: "paid_fulfill" }}

@@ -90,7 +90,7 @@ import {
   ShoppingBag,
 } from "lucide-react"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
-import { useNwcConnection } from "../hooks/useNwcConnection"
+import { useMerchantPaymentAutomation } from "../hooks/useMerchantPaymentAutomation"
 
 type OrdersSearch = { order?: string; queue?: OrderQueueTab }
 
@@ -495,7 +495,7 @@ function OrdersPage() {
     setSuccessFlash(message)
   }, [])
 
-  const nwc = useNwcConnection()
+  const nwc = useMerchantPaymentAutomation()
 
   const ordersQuery = useQuery({
     queryKey: ["merchant-order-messages-live", pubkey ?? "none"],
@@ -966,7 +966,7 @@ function OrdersPage() {
             memo: `Conduit order ${selected.orderId}`,
           })
           bolt11 = result.invoice
-        } else if (nwc.connection) {
+        } else if (nwc.connection && nwc.canCreateInvoices) {
           // Fallback: NWC connection URI
           const result = await nwcMakeInvoice(
             nwc.connection,
@@ -1575,7 +1575,8 @@ function OrdersPage() {
                                     )}
                                   </div>
 
-                                  {weblnAvailable || nwc.connection ? (
+                                  {weblnAvailable ||
+                                  (nwc.connection && nwc.canCreateInvoices) ? (
                                     <div className="space-y-2">
                                       <Button
                                         type="button"
@@ -1662,7 +1663,7 @@ function OrdersPage() {
                                   <p className="text-xs text-[var(--text-secondary)]">
                                     {weblnAvailable
                                       ? "Invoice via Alby extension."
-                                      : nwc.connection
+                                      : nwc.connection && nwc.canCreateInvoices
                                         ? "Invoice via NWC wallet."
                                         : "Install Alby or configure NWC on Payments for one-click invoicing."}{" "}
                                     Conduit shows the parsed amount when the
