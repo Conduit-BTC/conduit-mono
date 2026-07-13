@@ -59,13 +59,21 @@ Current public handoff values:
   `https://*.conduit-market-coo.pages.dev` and
   `https://*.conduit-market-signet.pages.dev`
 
-Market server or Pages-function config:
+Current Market Pages-function config:
+
+- `ANON_ZAP_ALLOWED_ORIGINS`: browser origins allowed to call the current
+  fail-closed Market Pages endpoints.
+
+Dependent trusted-checkout-proxy config:
+
+This handoff defines the config contract but does not wire the trusted Market
+checkout proxy. Until that dependent implementation is present, the Pages
+endpoints remain fail closed, and setting these values alone does not enable
+anonymous checkout zaps.
 
 - `ANON_ZAP_SIGNER_URL`: server-side URL for the signer Worker.
 - `ANON_SIGNER_REQUEST_AUTH_SECRET`: server-side HMAC secret shared only between
   the trusted Market server boundary and signer Worker.
-- `ANON_ZAP_ALLOWED_ORIGINS`: browser origins allowed to call the Market
-  Pages endpoints.
 - `ANON_ZAP_COMMERCE_RELAYS`: optional comma-separated relay override used to
   resolve the current signed merchant profile and product listings. When unset,
   Market uses its canonical commerce relays.
