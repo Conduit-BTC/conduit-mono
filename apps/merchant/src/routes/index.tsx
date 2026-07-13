@@ -23,11 +23,21 @@ import {
   Wifi,
   type LucideIcon,
 } from "lucide-react"
-import { useMemo, type ComponentType } from "react"
+import { useCallback, useMemo, useState, type ComponentType } from "react"
 import { Button, StatusPill } from "@conduit/ui"
-import { DashboardCharts } from "../components/DashboardCharts"
+import {
+  DashboardCharts,
+  type DashboardChartDataByCard,
+  type DashboardChartId,
+  type DashboardChartRanges,
+} from "../components/DashboardCharts"
 import { OrderListItem } from "../components/OrderListItem"
-import { buildDashboardChartData } from "../lib/dashboard-charts"
+import {
+  DEFAULT_DASHBOARD_RANGE,
+  buildDashboardChartData,
+  resolveDashboardPresetRange,
+  type DashboardRangePreset,
+} from "../lib/dashboard-charts"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
 import {
@@ -270,6 +280,12 @@ function DashboardPage() {
   const { pubkey, error } = useAuth()
   const navigate = useNavigate()
   const readiness = useMerchantReadinessState()
+  const [chartRanges, setChartRanges] = useState<DashboardChartRanges>(() => ({
+    orders: DEFAULT_DASHBOARD_RANGE,
+    status: DEFAULT_DASHBOARD_RANGE,
+    revenue: DEFAULT_DASHBOARD_RANGE,
+    products: DEFAULT_DASHBOARD_RANGE,
+  }))
   const statsQuery = useQuery({
     queryKey: ["merchant-dashboard-live", pubkey ?? "none"],
     enabled: !!pubkey,
@@ -315,16 +331,35 @@ function DashboardPage() {
     }
     return { verifyPayment, paidFulfill }
   }, [allConversations])
-  const chartData = useMemo(
-    () =>
-      buildDashboardChartData(
-        conversationsQuery.data?.data ??
-          cachedConversationsQuery.data?.data ??
-          [],
+  const chartData = useMemo<DashboardChartDataByCard>(() => {
+    const now = Date.now()
+    const cache = new Map<
+      DashboardRangePreset,
+      ReturnType<typeof buildDashboardChartData>
+    >()
+    const build = (preset: DashboardRangePreset) => {
+      const cached = cache.get(preset)
+      if (cached) return cached
+      const data = buildDashboardChartData(
+        allConversations,
         btcRateQuery.data ?? null,
-        Date.now()
-      ),
-    [conversationsQuery.data, cachedConversationsQuery.data, btcRateQuery.data]
+        resolveDashboardPresetRange(preset, now)
+      )
+      cache.set(preset, data)
+      return data
+    }
+    return {
+      orders: build(chartRanges.orders),
+      status: build(chartRanges.status),
+      revenue: build(chartRanges.revenue),
+      products: build(chartRanges.products),
+    }
+  }, [allConversations, btcRateQuery.data, chartRanges])
+  const changeChartRange = useCallback(
+    (chart: DashboardChartId, range: DashboardRangePreset) => {
+      setChartRanges((current) => ({ ...current, [chart]: range }))
+    },
+    []
   )
   const buyerProfilesQuery = useProfiles(
     latestConversations.map((conversation) => conversation.buyerPubkey),
@@ -392,8 +427,12 @@ function DashboardPage() {
 
       {pubkey && <MerchantReadinessPanel readiness={readiness} />}
 
-      {pubkey && chartData.totalOrders > 0 && (
-        <DashboardCharts data={chartData} />
+      {pubkey && allConversations.length > 0 && (
+        <DashboardCharts
+          data={chartData}
+          ranges={chartRanges}
+          onRangeChange={changeChartRange}
+        />
       )}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">

@@ -1,8 +1,19 @@
-import type {
-  DashboardChartData,
-  StatusSlice,
-  TimeBucketPoint,
-  TopProduct,
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@conduit/ui"
+import {
+  DASHBOARD_RANGE_OPTIONS,
+  getDashboardRangeLabel,
+  isDashboardRangePreset,
+  type DashboardChartData,
+  type DashboardRangePreset,
+  type StatusSlice,
+  type TimeBucketPoint,
+  type TopProduct,
 } from "../lib/dashboard-charts"
 
 // One purple hue for counts, one orange hue for money — single hue per chart.
@@ -22,16 +33,42 @@ function formatSats(sats: number): string {
 
 function ChartCard({
   title,
+  range,
+  onRangeChange,
   children,
 }: {
   title: string
+  range: DashboardRangePreset
+  onRangeChange: (range: DashboardRangePreset) => void
   children: React.ReactNode
 }) {
   return (
     <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
-      <h3 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
-        {title}
-      </h3>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
+          {title}
+        </h3>
+        <Select
+          value={range}
+          onValueChange={(value) => {
+            if (isDashboardRangePreset(value)) onRangeChange(value)
+          }}
+        >
+          <SelectTrigger
+            aria-label={`Time range for ${title}`}
+            className="w-36"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="end">
+            {DASHBOARD_RANGE_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
       <div className="mt-4">{children}</div>
     </section>
   )
@@ -126,7 +163,7 @@ function VerticalBarChart({
                     : { left: `${((i + 0.5) / n) * 100}%` }
               }
             >
-              {point.label}
+              {point.axisLabel ?? point.label}
             </span>
           )
         })}
@@ -135,12 +172,28 @@ function VerticalBarChart({
   )
 }
 
-export function OrdersOverTimeChart({ points }: { points: TimeBucketPoint[] }) {
+interface RangeControlledChartProps {
+  range: DashboardRangePreset
+  onRangeChange: (range: DashboardRangePreset) => void
+}
+
+export function OrdersOverTimeChart({
+  points,
+  range,
+  onRangeChange,
+}: {
+  points: TimeBucketPoint[]
+} & RangeControlledChartProps) {
   const total = points.reduce((sum, p) => sum + p.value, 0)
+  const rangeLabel = getDashboardRangeLabel(range)
   return (
-    <ChartCard title="Orders over time">
+    <ChartCard
+      title="Orders over time"
+      range={range}
+      onRangeChange={onRangeChange}
+    >
       {total === 0 ? (
-        <EmptyNote>No orders in the last 30 days yet.</EmptyNote>
+        <EmptyNote>No orders in this range yet.</EmptyNote>
       ) : (
         <>
           <div className="mb-3 tabular-nums text-3xl font-semibold text-[var(--text-primary)]">
@@ -153,7 +206,7 @@ export function OrdersOverTimeChart({ points }: { points: TimeBucketPoint[] }) {
             points={points}
             color={COUNT_COLOR}
             formatValue={(value) => `${value} order${value === 1 ? "" : "s"}`}
-            ariaLabel="Orders over time"
+            ariaLabel={`Orders over time, ${rangeLabel}`}
           />
         </>
       )}
@@ -164,15 +217,22 @@ export function OrdersOverTimeChart({ points }: { points: TimeBucketPoint[] }) {
 export function RevenueOverTimeChart({
   points,
   hasRevenue,
+  range,
+  onRangeChange,
 }: {
   points: TimeBucketPoint[]
   hasRevenue: boolean
-}) {
+} & RangeControlledChartProps) {
   const total = points.reduce((sum, p) => sum + p.value, 0)
+  const rangeLabel = getDashboardRangeLabel(range)
   return (
-    <ChartCard title="Revenue (paid)">
+    <ChartCard
+      title="Revenue (paid)"
+      range={range}
+      onRangeChange={onRangeChange}
+    >
       {!hasRevenue || total === 0 ? (
-        <EmptyNote>No convertible paid revenue in the last 30 days.</EmptyNote>
+        <EmptyNote>No convertible paid revenue in this range.</EmptyNote>
       ) : (
         <>
           <div className="mb-3 tabular-nums text-2xl font-semibold text-secondary-300">
@@ -182,7 +242,7 @@ export function RevenueOverTimeChart({
             points={points}
             color={MONEY_COLOR}
             formatValue={formatSats}
-            ariaLabel="Paid revenue over time"
+            ariaLabel={`Paid revenue over time, ${rangeLabel}`}
             maxLabels={4}
           />
         </>
@@ -191,7 +251,13 @@ export function RevenueOverTimeChart({
   )
 }
 
-export function StatusBreakdownChart({ slices }: { slices: StatusSlice[] }) {
+export function StatusBreakdownChart({
+  slices,
+  range,
+  onRangeChange,
+}: {
+  slices: StatusSlice[]
+} & RangeControlledChartProps) {
   const total = slices.reduce((sum, s) => sum + s.count, 0)
   const size = 160
   const stroke = 22
@@ -201,9 +267,9 @@ export function StatusBreakdownChart({ slices }: { slices: StatusSlice[] }) {
   let offset = 0
 
   return (
-    <ChartCard title="Order status">
+    <ChartCard title="Order status" range={range} onRangeChange={onRangeChange}>
       {total === 0 ? (
-        <EmptyNote>No orders to break down yet.</EmptyNote>
+        <EmptyNote>No orders in this range yet.</EmptyNote>
       ) : (
         <div className="flex flex-wrap items-center gap-6">
           <svg
@@ -284,12 +350,18 @@ export function StatusBreakdownChart({ slices }: { slices: StatusSlice[] }) {
   )
 }
 
-export function TopProductsChart({ items }: { items: TopProduct[] }) {
+export function TopProductsChart({
+  items,
+  range,
+  onRangeChange,
+}: {
+  items: TopProduct[]
+} & RangeControlledChartProps) {
   const max = Math.max(1, ...items.map((item) => item.quantity))
   return (
-    <ChartCard title="Top products">
+    <ChartCard title="Top products" range={range} onRangeChange={onRangeChange}>
       {items.length === 0 ? (
-        <EmptyNote>No ordered items to rank yet.</EmptyNote>
+        <EmptyNote>No paid products in this range yet.</EmptyNote>
       ) : (
         <ul className="space-y-3">
           {items.map((item) => (
@@ -320,17 +392,51 @@ export function TopProductsChart({ items }: { items: TopProduct[] }) {
   )
 }
 
-export function DashboardCharts({ data }: { data: DashboardChartData }) {
+export type DashboardChartId = "orders" | "status" | "revenue" | "products"
+
+export type DashboardChartRanges = Record<
+  DashboardChartId,
+  DashboardRangePreset
+>
+
+export type DashboardChartDataByCard = Record<
+  DashboardChartId,
+  DashboardChartData
+>
+
+export function DashboardCharts({
+  data,
+  ranges,
+  onRangeChange,
+}: {
+  data: DashboardChartDataByCard
+  ranges: DashboardChartRanges
+  onRangeChange: (chart: DashboardChartId, range: DashboardRangePreset) => void
+}) {
   return (
     <div className="space-y-3">
-      <OrdersOverTimeChart points={data.ordersByDay} />
+      <OrdersOverTimeChart
+        points={data.orders.ordersByDay}
+        range={ranges.orders}
+        onRangeChange={(range) => onRangeChange("orders", range)}
+      />
       <div className="grid gap-3 lg:grid-cols-3">
-        <StatusBreakdownChart slices={data.statusSlices} />
-        <RevenueOverTimeChart
-          points={data.revenueByDay}
-          hasRevenue={data.hasRevenue}
+        <StatusBreakdownChart
+          slices={data.status.statusSlices}
+          range={ranges.status}
+          onRangeChange={(range) => onRangeChange("status", range)}
         />
-        <TopProductsChart items={data.topProducts} />
+        <RevenueOverTimeChart
+          points={data.revenue.revenueByDay}
+          hasRevenue={data.revenue.hasRevenue}
+          range={ranges.revenue}
+          onRangeChange={(range) => onRangeChange("revenue", range)}
+        />
+        <TopProductsChart
+          items={data.products.topProducts}
+          range={ranges.products}
+          onRangeChange={(range) => onRangeChange("products", range)}
+        />
       </div>
     </div>
   )

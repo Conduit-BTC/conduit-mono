@@ -19,7 +19,11 @@ function chartPoints(): TimeBucketPoint[] {
 describe("dashboard chart presentation", () => {
   it("renders x-axis labels outside the non-uniformly scaled SVG", () => {
     const markup = renderToStaticMarkup(
-      createElement(OrdersOverTimeChart, { points: chartPoints() })
+      createElement(OrdersOverTimeChart, {
+        points: chartPoints(),
+        range: "month",
+        onRangeChange: () => {},
+      })
     )
     const svgEnd = markup.indexOf("</svg>")
 
@@ -34,9 +38,24 @@ describe("dashboard chart presentation", () => {
       createElement(RevenueOverTimeChart, {
         points: chartPoints(),
         hasRevenue: true,
+        range: "month",
+        onRangeChange: () => {},
       })
     )
 
-    expect(markup).toContain('aria-label="Paid revenue over time"')
+    expect(markup).toContain('aria-label="Paid revenue over time, Past month"')
+  })
+
+  it("labels each chart range selector and shows the active preset", () => {
+    const markup = renderToStaticMarkup(
+      createElement(OrdersOverTimeChart, {
+        points: chartPoints(),
+        range: "month",
+        onRangeChange: () => {},
+      })
+    )
+
+    expect(markup).toContain('aria-label="Time range for Orders over time"')
+    expect(markup).toContain("Past month")
   })
 })
