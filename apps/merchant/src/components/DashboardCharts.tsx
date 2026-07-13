@@ -94,7 +94,7 @@ function VerticalBarChart({
   color,
   formatValue,
   ariaLabel,
-  maxLabels = 6,
+  maxLabels = 7,
 }: {
   points: TimeBucketPoint[]
   color: string
@@ -109,9 +109,10 @@ function VerticalBarChart({
   const plotH = H - padT - padB
   const n = points.length
   const max = Math.max(1, ...points.map((p) => p.value))
-  const gap = 2
-  const barW = Math.max(1, (W - gap * (n - 1)) / n)
+  const slotW = W / n
+  const barW = Math.min(48, Math.max(3, slotW * 0.72))
   const labelStep = Math.max(1, Math.ceil(n / maxLabels))
+  const showEveryLabel = n <= maxLabels
 
   return (
     <div>
@@ -132,7 +133,7 @@ function VerticalBarChart({
           strokeWidth={1}
         />
         {points.map((point, i) => {
-          const x = i * (barW + gap)
+          const x = i * slotW + (slotW - barW) / 2
           const h = (point.value / max) * plotH
           const y = padT + plotH - h
           return point.value > 0 ? (
@@ -147,18 +148,18 @@ function VerticalBarChart({
           const showLabel = i % labelStep === 0 || i === n - 1
           if (!showLabel) return null
 
-          const isFirst = i === 0
-          const isLast = i === n - 1
+          const pinToStart = !showEveryLabel && i === 0
+          const pinToEnd = !showEveryLabel && i === n - 1
           return (
             <span
               key={point.date}
               className={`absolute top-0 whitespace-nowrap ${
-                isFirst || isLast ? "" : "-translate-x-1/2"
+                pinToStart || pinToEnd ? "" : "-translate-x-1/2"
               }`}
               style={
-                isFirst
+                pinToStart
                   ? { left: 0 }
-                  : isLast
+                  : pinToEnd
                     ? { right: 0 }
                     : { left: `${((i + 0.5) / n) * 100}%` }
               }
@@ -243,7 +244,6 @@ export function RevenueOverTimeChart({
             color={MONEY_COLOR}
             formatValue={formatSats}
             ariaLabel={`Paid revenue over time, ${rangeLabel}`}
-            maxLabels={4}
           />
         </>
       )}
@@ -416,7 +416,7 @@ export function DashboardCharts({
   return (
     <div className="space-y-3">
       <OrdersOverTimeChart
-        points={data.orders.ordersByDay}
+        points={data.orders.ordersOverTime}
         range={ranges.orders}
         onRangeChange={(range) => onRangeChange("orders", range)}
       />
@@ -427,7 +427,7 @@ export function DashboardCharts({
           onRangeChange={(range) => onRangeChange("status", range)}
         />
         <RevenueOverTimeChart
-          points={data.revenue.revenueByDay}
+          points={data.revenue.revenueOverTime}
           hasRevenue={data.revenue.hasRevenue}
           range={ranges.revenue}
           onRangeChange={(range) => onRangeChange("revenue", range)}

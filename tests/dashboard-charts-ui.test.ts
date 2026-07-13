@@ -58,4 +58,25 @@ describe("dashboard chart presentation", () => {
     expect(markup).toContain('aria-label="Time range for Orders over time"')
     expect(markup).toContain("Past month")
   })
+
+  it("renders every daily label in the past-week preset", () => {
+    const points = Array.from({ length: 7 }, (_, index) => ({
+      date: index,
+      label: `Day ${index + 1}`,
+      axisLabel: `D${index + 1}`,
+      value: index + 1,
+    }))
+    const markup = renderToStaticMarkup(
+      createElement(RevenueOverTimeChart, {
+        points,
+        hasRevenue: true,
+        range: "week",
+        onRangeChange: () => {},
+      })
+    )
+
+    for (const point of points) {
+      expect(markup).toContain(point.axisLabel)
+    }
+  })
 })

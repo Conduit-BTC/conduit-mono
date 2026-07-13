@@ -12,7 +12,7 @@ import { getMerchantConversationPhase, type OrderPhaseTab } from "./order-phase"
 export interface TimeBucketPoint {
   /** Bucket start (ms). */
   date: number
-  /** Short axis label, e.g. "Jul 9". */
+  /** Full bucket label used by the bar tooltip. */
   label: string
   /** Optional compact label used only on the x-axis. */
   axisLabel?: string
@@ -32,8 +32,8 @@ export interface TopProduct {
 }
 
 export interface DashboardChartData {
-  ordersByDay: TimeBucketPoint[]
-  revenueByDay: TimeBucketPoint[]
+  ordersOverTime: TimeBucketPoint[]
+  revenueOverTime: TimeBucketPoint[]
   statusSlices: StatusSlice[]
   topProducts: TopProduct[]
   /** Any paid order whose amount could be normalized to sats. */
@@ -46,19 +46,40 @@ export interface DashboardDateRange {
   start: number
   /** Inclusive end timestamp. */
   end: number
+  /** Optional time-series layout. Custom ranges default to daily buckets. */
+  bucket?: DashboardTimeBucketLayout
 }
 
 export type DashboardRangePreset = "week" | "month" | "quarter" | "year"
 
+export type DashboardTimeBucketUnit = "day" | "week" | "month" | "quarter"
+
+export interface DashboardTimeBucketLayout {
+  unit: DashboardTimeBucketUnit
+  count: number
+}
+
 export const DASHBOARD_RANGE_OPTIONS: Array<{
   value: DashboardRangePreset
   label: string
-  days: number
+  bucket: DashboardTimeBucketLayout
 }> = [
-  { value: "week", label: "Past week", days: 7 },
-  { value: "month", label: "Past month", days: 30 },
-  { value: "quarter", label: "Past quarter", days: 90 },
-  { value: "year", label: "Past year", days: 365 },
+  { value: "week", label: "Past week", bucket: { unit: "day", count: 7 } },
+  {
+    value: "month",
+    label: "Past month",
+    bucket: { unit: "week", count: 4 },
+  },
+  {
+    value: "quarter",
+    label: "Past quarter",
+    bucket: { unit: "month", count: 3 },
+  },
+  {
+    value: "year",
+    label: "Past year",
+    bucket: { unit: "quarter", count: 4 },
+  },
 ]
 
 export const DEFAULT_DASHBOARD_RANGE: DashboardRangePreset = "month"
@@ -80,13 +101,12 @@ export function resolveDashboardPresetRange(
   preset: DashboardRangePreset,
   now: number
 ): DashboardDateRange {
-  const days =
-    DASHBOARD_RANGE_OPTIONS.find((option) => option.value === preset)?.days ??
-    30
   const end = startOfDay(now)
-  const startDate = new Date(end)
-  startDate.setDate(startDate.getDate() - (days - 1))
-  return { start: startDate.getTime(), end }
+  const bucket =
+    DASHBOARD_RANGE_OPTIONS.find((option) => option.value === preset)?.bucket ??
+    DASHBOARD_RANGE_OPTIONS[1]!.bucket
+  const windows = createRollingBucketWindows(end, bucket)
+  return { start: windows[0]!.start, end, bucket }
 }
 
 const STATUS_ORDER: StatusSlice["key"][] = [
@@ -108,18 +128,163 @@ function startOfDay(ms: number): number {
   return d.getTime()
 }
 
-function dayLabel(ms: number): string {
+function shiftDays(ms: number, days: number): number {
+  const date = new Date(ms)
+  date.setDate(date.getDate() + days)
+  return startOfDay(date.getTime())
+}
+
+function shiftMonthsClamped(ms: number, months: number): number {
+  const date = new Date(ms)
+  const targetDay = date.getDate()
+  date.setDate(1)
+  date.setMonth(date.getMonth() + months)
+  const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate()
+  date.setDate(Math.min(targetDay, lastDay))
+  return startOfDay(date.getTime())
+}
+
+function shiftBucketBoundary(
+  ms: number,
+  unit: DashboardTimeBucketUnit,
+  amount: number
+): number {
+  switch (unit) {
+    case "day":
+      return shiftDays(ms, amount)
+    case "week":
+      return shiftDays(ms, amount * 7)
+    case "month":
+      return shiftMonthsClamped(ms, amount)
+    case "quarter":
+      return shiftMonthsClamped(ms, amount * 3)
+  }
+}
+
+function shortDateLabel(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, {
     month: "short",
     day: "numeric",
   })
 }
 
-function axisLabel(ms: number, rangeDays: number): string {
-  return new Date(ms).toLocaleDateString(undefined, {
+function bucketLabel(start: number, end: number): string {
+  if (start === end) {
+    return new Date(start).toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    })
+  }
+  const startDate = new Date(start)
+  const endDate = new Date(end)
+  const startLabel = startDate.toLocaleDateString(undefined, {
     month: "short",
-    ...(rangeDays > 180 ? { year: "2-digit" } : { day: "numeric" }),
+    day: "numeric",
+    ...(startDate.getFullYear() !== endDate.getFullYear()
+      ? { year: "numeric" }
+      : {}),
   })
+  const endLabel = endDate.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  })
+  return `${startLabel}–${endLabel}`
+}
+
+function bucketAxisLabel(
+  start: number,
+  end: number,
+  unit: DashboardTimeBucketUnit
+): string {
+  switch (unit) {
+    case "day":
+      return shortDateLabel(start)
+    case "week":
+      return shortDateLabel(start)
+    case "month":
+      return new Date(end).toLocaleDateString(undefined, { month: "short" })
+    case "quarter":
+      return new Date(end).toLocaleDateString(undefined, {
+        month: "short",
+        year: "2-digit",
+      })
+  }
+}
+
+interface TimeBucketWindow {
+  start: number
+  end: number
+  label: string
+  axisLabel: string
+}
+
+function createRollingBucketWindows(
+  end: number,
+  layout: DashboardTimeBucketLayout
+): TimeBucketWindow[] {
+  if (!Number.isInteger(layout.count) || layout.count < 1) {
+    throw new Error("Dashboard time bucket count must be a positive integer")
+  }
+  const boundaries = Array.from({ length: layout.count + 1 }, (_, index) =>
+    shiftBucketBoundary(end, layout.unit, index - layout.count)
+  )
+  return Array.from({ length: layout.count }, (_, index) => {
+    const start = shiftDays(boundaries[index]!, 1)
+    const bucketEnd = boundaries[index + 1]!
+    return {
+      start,
+      end: bucketEnd,
+      label: bucketLabel(start, bucketEnd),
+      axisLabel: bucketAxisLabel(start, bucketEnd, layout.unit),
+    }
+  })
+}
+
+function createDailyBucketWindows(
+  start: number,
+  end: number
+): TimeBucketWindow[] {
+  const windows: TimeBucketWindow[] = []
+  for (let cursor = start; cursor <= end; cursor = shiftDays(cursor, 1)) {
+    windows.push({
+      start: cursor,
+      end: cursor,
+      label: bucketLabel(cursor, cursor),
+      axisLabel: shortDateLabel(cursor),
+    })
+  }
+  return windows
+}
+
+function createTimeBucketWindows(
+  range: DashboardDateRange,
+  windowStart: number,
+  windowEnd: number
+): TimeBucketWindow[] {
+  if (!range.bucket) return createDailyBucketWindows(windowStart, windowEnd)
+
+  return createRollingBucketWindows(windowEnd, range.bucket)
+    .map((bucket) => {
+      const start = Math.max(bucket.start, windowStart)
+      return {
+        ...bucket,
+        start,
+        label: bucketLabel(start, bucket.end),
+        axisLabel: bucketAxisLabel(start, bucket.end, range.bucket!.unit),
+      }
+    })
+    .filter((bucket) => bucket.start <= bucket.end)
+}
+
+function findTimeBucket(
+  buckets: TimeBucketWindow[],
+  timestamp: number
+): TimeBucketWindow | undefined {
+  return buckets.find(
+    (bucket) => timestamp >= bucket.start && timestamp <= bucket.end
+  )
 }
 
 function orderMessageOf(
@@ -181,10 +346,10 @@ export function buildDashboardChartData(
   if (windowStart > windowEnd) {
     throw new Error("Dashboard date range start must not be after its end")
   }
-  const rangeDays = Math.floor((windowEnd - windowStart) / 86_400_000) + 1
+  const timeBuckets = createTimeBucketWindows(range, windowStart, windowEnd)
 
-  const orderCountByDay = new Map<number, number>()
-  const revenueByDay = new Map<number, number>()
+  const orderCountByBucket = new Map<number, number>()
+  const revenueByBucket = new Map<number, number>()
   const statusCounts = new Map<StatusSlice["key"], number>()
   const productQty = new Map<string, { title: string; quantity: number }>()
   let hasRevenue = false
@@ -202,7 +367,13 @@ export function buildDashboardChartData(
     const orderInRange = day >= windowStart && day <= windowEnd
     if (orderInRange) {
       totalOrders += 1
-      orderCountByDay.set(day, (orderCountByDay.get(day) ?? 0) + 1)
+      const bucket = findTimeBucket(timeBuckets, day)
+      if (bucket) {
+        orderCountByBucket.set(
+          bucket.start,
+          (orderCountByBucket.get(bucket.start) ?? 0) + 1
+        )
+      }
       const phase = getMerchantConversationPhase(conversation)
       statusCounts.set(phase, (statusCounts.get(phase) ?? 0) + 1)
     }
@@ -224,7 +395,13 @@ export function buildDashboardChartData(
       )
       if (sats != null && paymentInRange) {
         hasRevenue = true
-        revenueByDay.set(paymentDay, (revenueByDay.get(paymentDay) ?? 0) + sats)
+        const bucket = findTimeBucket(timeBuckets, paymentDay)
+        if (bucket) {
+          revenueByBucket.set(
+            bucket.start,
+            (revenueByBucket.get(bucket.start) ?? 0) + sats
+          )
+        }
       }
 
       if (paymentInRange) {
@@ -244,27 +421,18 @@ export function buildDashboardChartData(
     }
   }
 
-  const ordersByDay: TimeBucketPoint[] = []
-  const revenuePoints: TimeBucketPoint[] = []
-  for (
-    let cursor = new Date(windowStart);
-    cursor.getTime() <= windowEnd;
-    cursor.setDate(cursor.getDate() + 1)
-  ) {
-    const day = cursor.getTime()
-    ordersByDay.push({
-      date: day,
-      label: dayLabel(day),
-      axisLabel: axisLabel(day, rangeDays),
-      value: orderCountByDay.get(day) ?? 0,
-    })
-    revenuePoints.push({
-      date: day,
-      label: dayLabel(day),
-      axisLabel: axisLabel(day, rangeDays),
-      value: revenueByDay.get(day) ?? 0,
-    })
-  }
+  const ordersOverTime: TimeBucketPoint[] = timeBuckets.map((bucket) => ({
+    date: bucket.start,
+    label: bucket.label,
+    axisLabel: bucket.axisLabel,
+    value: orderCountByBucket.get(bucket.start) ?? 0,
+  }))
+  const revenueOverTime: TimeBucketPoint[] = timeBuckets.map((bucket) => ({
+    date: bucket.start,
+    label: bucket.label,
+    axisLabel: bucket.axisLabel,
+    value: revenueByBucket.get(bucket.start) ?? 0,
+  }))
 
   const statusSlices: StatusSlice[] = STATUS_ORDER.map((key) => ({
     key,
@@ -282,8 +450,8 @@ export function buildDashboardChartData(
     .slice(0, 5)
 
   return {
-    ordersByDay,
-    revenueByDay: revenuePoints,
+    ordersOverTime,
+    revenueOverTime,
     statusSlices,
     topProducts,
     hasRevenue,

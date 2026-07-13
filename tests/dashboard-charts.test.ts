@@ -11,6 +11,19 @@ import {
 
 const NOW = new Date("2026-07-09T12:00:00Z").getTime()
 
+function offsetDate({
+  days = 0,
+  months = 0,
+}: {
+  days?: number
+  months?: number
+}) {
+  const date = new Date(NOW)
+  date.setDate(date.getDate() - days)
+  date.setMonth(date.getMonth() - months)
+  return date.getTime()
+}
+
 function orderMessage(
   orderId: string,
   createdAt: number,
@@ -143,10 +156,9 @@ describe("buildDashboardChartData", () => {
     resolveDashboardPresetRange("month", NOW)
   )
 
-  it("counts orders per day in a 30-bucket window", () => {
-    expect(data.ordersByDay).toHaveLength(30)
-    expect(data.ordersByDay[data.ordersByDay.length - 1]?.value).toBe(2)
-    expect(data.ordersByDay[data.ordersByDay.length - 4]?.value).toBe(1)
+  it("aggregates the past month into four weekly buckets", () => {
+    expect(data.ordersOverTime).toHaveLength(4)
+    expect(data.ordersOverTime[data.ordersOverTime.length - 1]?.value).toBe(3)
   })
 
   it("buckets status counts (cancelled included)", () => {
@@ -180,7 +192,9 @@ describe("buildDashboardChartData", () => {
   it("sums revenue for paid orders only", () => {
     expect(data.hasRevenue).toBe(true)
     // Only the shipped (paid) order counts; pending does not.
-    expect(data.revenueByDay[data.revenueByDay.length - 1]?.value).toBe(50)
+    expect(data.revenueOverTime[data.revenueOverTime.length - 1]?.value).toBe(
+      50
+    )
   })
 
   it("dates cashflow from payment evidence instead of later confirmation", () => {
@@ -209,7 +223,7 @@ describe("buildDashboardChartData", () => {
     expect(month.hasRevenue).toBe(false)
     expect(month.topProducts).toEqual([])
     expect(
-      quarter.revenueByDay.reduce((sum, point) => sum + point.value, 0)
+      quarter.revenueOverTime.reduce((sum, point) => sum + point.value, 0)
     ).toBe(100)
     expect(quarter.topProducts[0]?.productId).toBe("p:delayed")
   })
@@ -260,23 +274,113 @@ describe("buildDashboardChartData", () => {
       end: NOW,
     })
 
-    expect(custom.ordersByDay).toHaveLength(3)
+    expect(custom.ordersOverTime).toHaveLength(3)
   })
 
-  it("exposes the four rolling presets with the expected bucket counts", () => {
+  it("uses legible bucket counts for each rolling preset", () => {
     expect(DASHBOARD_RANGE_OPTIONS.map((option) => option.value)).toEqual([
       "week",
       "month",
       "quarter",
       "year",
     ])
+    const expectedBucketCounts = {
+      week: 7,
+      month: 4,
+      quarter: 3,
+      year: 4,
+    }
     for (const option of DASHBOARD_RANGE_OPTIONS) {
       const preset = buildDashboardChartData(
         [],
         null,
         resolveDashboardPresetRange(option.value, NOW)
       )
-      expect(preset.ordersByDay).toHaveLength(option.days)
+      expect(preset.ordersOverTime).toHaveLength(
+        expectedBucketCounts[option.value]
+      )
+      expect(preset.revenueOverTime).toHaveLength(
+        expectedBucketCounts[option.value]
+      )
     }
+  })
+
+  it("aggregates orders and revenue into every visible preset bucket", () => {
+    const cases = [
+      {
+        preset: "week" as const,
+        timestamps: Array.from({ length: 7 }, (_, days) =>
+          offsetDate({ days })
+        ),
+      },
+      {
+        preset: "month" as const,
+        timestamps: [0, 7, 14, 21].map((days) => offsetDate({ days })),
+      },
+      {
+        preset: "quarter" as const,
+        timestamps: [0, 1, 2].map((months) => offsetDate({ months })),
+      },
+      {
+        preset: "year" as const,
+        timestamps: [0, 3, 6, 9].map((months) => offsetDate({ months })),
+      },
+    ]
+
+    for (const { preset, timestamps } of cases) {
+      const values = timestamps.map((timestamp, index) =>
+        conversation(
+          `${preset}-${index}`,
+          "paid",
+          timestamp,
+          [{ productId: `${preset}-product`, quantity: 1 }],
+          10
+        )
+      )
+      const result = buildDashboardChartData(
+        values,
+        null,
+        resolveDashboardPresetRange(preset, NOW)
+      )
+
+      expect(result.ordersOverTime.map((point) => point.value)).toEqual(
+        timestamps.map(() => 1)
+      )
+      expect(result.revenueOverTime.map((point) => point.value)).toEqual(
+        timestamps.map(() => 10)
+      )
+      expect(result.ordersOverTime.every((point) => !!point.axisLabel)).toBe(
+        true
+      )
+    }
+  })
+
+  it("keeps rolling month buckets contiguous across different month lengths", () => {
+    const monthEnd = new Date("2028-05-31T12:00:00Z").getTime()
+    const range = resolveDashboardPresetRange("quarter", monthEnd)
+    const dailyOrders: MerchantConversationSummary[] = []
+    const cursor = new Date(range.start)
+    let index = 0
+
+    while (cursor.getTime() <= range.end) {
+      dailyOrders.push(
+        conversation(
+          `month-end-${index}`,
+          "pending",
+          cursor.getTime(),
+          [{ productId: "month-end-product", quantity: 1 }],
+          10
+        )
+      )
+      cursor.setDate(cursor.getDate() + 1)
+      index += 1
+    }
+
+    const result = buildDashboardChartData(dailyOrders, null, range)
+    expect(result.ordersOverTime).toHaveLength(3)
+    expect(
+      result.ordersOverTime.reduce((sum, point) => sum + point.value, 0)
+    ).toBe(dailyOrders.length)
+    expect(result.ordersOverTime.every((point) => point.value > 0)).toBe(true)
   })
 })
