@@ -10,6 +10,7 @@ import {
   getMerchantConversationStatusDisplay,
   getMerchantOrderRequiresShipping,
   getMerchantOrderSummary,
+  isOrderQueueTab,
   isMerchantConversationActiveFulfillment,
 } from "../apps/merchant/src/lib/order-phase"
 
@@ -110,6 +111,14 @@ const shippingUpdate = {
 } as ParsedOrderMessage
 
 describe("merchant order phase", () => {
+  it("recognizes only supported order queue search values", () => {
+    expect(isOrderQueueTab("all")).toBe(true)
+    expect(isOrderQueueTab("unpaid_review")).toBe(true)
+    expect(isOrderQueueTab("paid_fulfill")).toBe(true)
+    expect(isOrderQueueTab("awaiting_payment")).toBe(false)
+    expect(isOrderQueueTab(undefined)).toBe(false)
+  })
+
   it("keeps loaded legacy orders replyable but treats orderless reads as unknown", () => {
     expect(getMerchantConversationCommunication(conversation)).toBe(
       "nostr_replyable"

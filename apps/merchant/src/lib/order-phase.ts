@@ -30,6 +30,10 @@ export const ORDER_PHASE_OPTIONS: Array<{
   { value: "closed", label: "Closed" },
 ]
 
+export function isOrderQueueTab(value: unknown): value is OrderQueueTab {
+  return ORDER_PHASE_OPTIONS.some((option) => option.value === value)
+}
+
 // Coarse bucket for an order status. Cancelled belongs to no active tab, so it
 // only surfaces under "All".
 export function getMerchantOrderPhase(

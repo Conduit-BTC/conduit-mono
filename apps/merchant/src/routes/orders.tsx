@@ -66,6 +66,7 @@ import {
   getMerchantConversationStatusDisplay,
   getMerchantOrderRequiresShipping,
   getMerchantOrderSummary,
+  isOrderQueueTab,
   isMerchantConversationActiveFulfillment,
   ORDER_PHASE_OPTIONS,
   type OrderQueueTab,
@@ -91,14 +92,18 @@ import {
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useNwcConnection } from "../hooks/useNwcConnection"
 
-const ORDERS_SEARCH_DEFAULT: { order?: string } = {}
+type OrdersSearch = { order?: string; queue?: OrderQueueTab }
+
+const ORDERS_SEARCH_DEFAULT: OrdersSearch = {}
 
 export const Route = createFileRoute("/orders")({
-  validateSearch: (search: Record<string, unknown>): { order?: string } => {
+  validateSearch: (search: Record<string, unknown>): OrdersSearch => {
     const order = search.order
-    return typeof order === "string" && order.length > 0
-      ? { order }
-      : ORDERS_SEARCH_DEFAULT
+    const queue = search.queue
+    return {
+      ...(typeof order === "string" && order.length > 0 ? { order } : {}),
+      ...(isOrderQueueTab(queue) && queue !== "all" ? { queue } : {}),
+    }
   },
   beforeLoad: () => {
     requireAuth()
@@ -418,7 +423,8 @@ function OrderItemsCard({
 function OrdersPage() {
   const { pubkey, status } = useAuth()
   const navigate = useNavigate()
-  const { order: selectedFromUrl } = Route.useSearch()
+  const { order: selectedFromUrl, queue: queueFromUrl } = Route.useSearch()
+  const selectedQueueFromUrl = queueFromUrl ?? "all"
   const btcUsdRateQuery = useBtcUsdRate()
   const btcUsdRate = btcUsdRateQuery.data ?? null
   const queryClient = useQueryClient()
@@ -426,7 +432,7 @@ function OrdersPage() {
     string | null
   >(null)
   const [orderSearch, setOrderSearch] = useState("")
-  const [phaseTab, setPhaseTab] = useState<OrderQueueTab>("all")
+  const [phaseTab, setPhaseTab] = useState<OrderQueueTab>(selectedQueueFromUrl)
   const [ordersSheetOpen, setOrdersSheetOpen] = useState(false)
   const [orderDetailsOpen, setOrderDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
@@ -705,12 +711,32 @@ function OrdersPage() {
       )?.orderId
       void navigate({
         to: "/orders",
-        search: orderId ? { order: orderId } : ORDERS_SEARCH_DEFAULT,
+        search: {
+          ...(orderId ? { order: orderId } : {}),
+          ...(phaseTab !== "all" ? { queue: phaseTab } : {}),
+        },
         replace: true,
       })
     },
-    [conversations, navigate]
+    [conversations, navigate, phaseTab]
   )
+
+  const changePhaseTab = useCallback(
+    (nextPhase: OrderQueueTab) => {
+      setPhaseTab(nextPhase)
+      void navigate({
+        to: "/orders",
+        search:
+          nextPhase === "all" ? ORDERS_SEARCH_DEFAULT : { queue: nextPhase },
+        replace: true,
+      })
+    },
+    [navigate]
+  )
+
+  useEffect(() => {
+    setPhaseTab(selectedQueueFromUrl)
+  }, [selectedQueueFromUrl])
 
   useEffect(() => {
     if (filteredConversations.length === 0) {
@@ -1148,7 +1174,7 @@ function OrdersPage() {
           </h1>
           <p className="mt-2 max-w-2xl text-pretty text-sm leading-7 text-[var(--text-secondary)]">
             Review incoming buyer orders, send invoices, update status, and
-            share shipping details from one workspace.
+            share shipping details.
           </p>
           <div className="mt-3">
             <Button
@@ -1269,7 +1295,7 @@ function OrdersPage() {
             </div>
             <div className="xl:shrink-0">
               <SearchBox value={orderSearch} onChange={setOrderSearch} />
-              <OrderPhaseFilter value={phaseTab} onChange={setPhaseTab} />
+              <OrderPhaseFilter value={phaseTab} onChange={changePhaseTab} />
             </div>
             <div className="mt-4 space-y-2 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
               {filteredConversations.length === 0 && (
@@ -1321,7 +1347,7 @@ function OrdersPage() {
                   <SheetTitle>Your orders</SheetTitle>
                 </SheetHeader>
                 <SearchBox value={orderSearch} onChange={setOrderSearch} />
-                <OrderPhaseFilter value={phaseTab} onChange={setPhaseTab} />
+                <OrderPhaseFilter value={phaseTab} onChange={changePhaseTab} />
                 <div className="mt-4 space-y-2">
                   {filteredConversations.length === 0 && (
                     <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm text-[var(--text-secondary)]">

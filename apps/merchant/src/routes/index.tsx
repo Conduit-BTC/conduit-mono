@@ -10,7 +10,6 @@ import {
   getProfileName,
   isPaymentProofEvidenceMessage,
   useAuth,
-  useNdkState,
   useProfiles,
   type ParsedOrderMessage,
   type Profile,
@@ -23,14 +22,16 @@ import {
   UserRound,
   Wallet,
   Wifi,
+  type LucideIcon,
 } from "lucide-react"
-import { useEffect, useMemo, useRef, useState, type ComponentType } from "react"
-import { Badge, Button, StatusPill, cn } from "@conduit/ui"
+import { useMemo, type ComponentType } from "react"
+import { Button, StatusPill } from "@conduit/ui"
 import { DashboardCharts } from "../components/DashboardCharts"
 import { OrderListItem } from "../components/OrderListItem"
 import { buildDashboardChartData } from "../lib/dashboard-charts"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
+import type { OrderQueueTab } from "../lib/order-phase"
 import type { MerchantSetupReadiness } from "../lib/readiness"
 
 export const Route = createFileRoute("/")({
@@ -148,83 +149,35 @@ function StatCard({
   label,
   value,
   icon: Icon,
+  to,
+  search,
 }: {
   label: string
   value: number
-  icon: ComponentType<{ className?: string }>
+  icon: LucideIcon
+  to: "/products" | "/orders"
+  search?: { queue?: OrderQueueTab }
 }) {
   return (
-    <div className="rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-glass-inset)]">
+    <Link
+      to={to}
+      search={search}
+      className="block rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-glass-inset)] hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
+    >
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
             {label}
           </div>
-          <div className="mt-3 text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
+          <div className="mt-3 text-3xl font-semibold tracking-tight text-[var(--text-primary)] tabular-nums">
             {value}
           </div>
         </div>
         <span className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]">
-          <Icon className="h-5 w-5" />
+          <Icon aria-hidden={true} className="h-5 w-5" />
         </span>
       </div>
-    </div>
-  )
-}
-
-function RelayStatusBadge({ status }: { status: string }) {
-  const previousStatusRef = useRef(status)
-  const [recentlyConnected, setRecentlyConnected] = useState(false)
-  const isConnecting = status === "connecting"
-  const isConnected = status === "connected"
-  const isError = status === "error"
-
-  useEffect(() => {
-    if (status === "connected" && previousStatusRef.current !== "connected") {
-      setRecentlyConnected(true)
-      const timeoutId = window.setTimeout(() => {
-        setRecentlyConnected(false)
-      }, 1_200)
-
-      previousStatusRef.current = status
-      return () => window.clearTimeout(timeoutId)
-    }
-
-    previousStatusRef.current = status
-    return undefined
-  }, [status])
-
-  return (
-    <Badge
-      variant="secondary"
-      className={cn(
-        "gap-1.5 border transition-colors duration-500",
-        isConnecting &&
-          "animate-pulse border-[var(--info)] bg-[color-mix(in_srgb,var(--info)_10%,transparent)] text-[var(--info)]",
-        recentlyConnected &&
-          "border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_10%,transparent)] text-[var(--success)] shadow-[0_0_16px_color-mix(in_srgb,var(--success)_18%,transparent)]",
-        isConnected &&
-          !recentlyConnected &&
-          "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]",
-        isError && "border-error/30 bg-error/10 text-error",
-        !isConnecting &&
-          !isConnected &&
-          !isError &&
-          "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-secondary)]"
-      )}
-    >
-      <span
-        aria-hidden="true"
-        className={cn(
-          "h-1.5 w-1.5 rounded-full",
-          isConnecting && "bg-[var(--info)]",
-          isConnected && "bg-[var(--success)]",
-          isError && "bg-error",
-          !isConnecting && !isConnected && !isError && "bg-[var(--text-muted)]"
-        )}
-      />
-      Relay {status}
-    </Badge>
+    </Link>
   )
 }
 
@@ -341,7 +294,6 @@ function MerchantReadinessPanel({
 function DashboardPage() {
   const { pubkey, error } = useAuth()
   const navigate = useNavigate()
-  const ndk = useNdkState()
   const readiness = useMerchantReadinessState()
   const statsQuery = useQuery({
     queryKey: ["merchant-dashboard-live", pubkey ?? "none"],
@@ -395,28 +347,14 @@ function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-balance text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-            Merchant Portal
-          </h1>
-          <p className="mt-2 max-w-2xl text-pretty text-sm leading-7 text-[var(--text-secondary)]">
-            Publish products, manage incoming orders, and keep buyer
-            conversations moving from one workspace.
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {pubkey && (
-            <Badge
-              variant="secondary"
-              className="border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]"
-            >
-              {formatNpub(pubkey, 10)}
-            </Badge>
-          )}
-          <RelayStatusBadge status={ndk.status} />
-        </div>
+      <div>
+        <h1 className="text-balance text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+          Merchant Portal
+        </h1>
+        <p className="mt-2 max-w-2xl text-pretty text-sm leading-7 text-[var(--text-secondary)]">
+          Publish products, manage incoming orders, and keep buyer conversations
+          moving.
+        </p>
       </div>
 
       {error && (
@@ -437,21 +375,28 @@ function DashboardPage() {
           label="Listings"
           value={stats?.listings ?? 0}
           icon={Package}
+          to="/products"
         />
         <StatCard
           label="Open orders"
           value={stats?.openOrders ?? 0}
           icon={ShoppingBag}
+          to="/orders"
+          search={{}}
         />
         <StatCard
           label="Awaiting payment"
           value={stats?.awaitingPayment ?? 0}
           icon={Wallet}
+          to="/orders"
+          search={{ queue: "unpaid_review" }}
         />
         <StatCard
           label="Awaiting fulfillment"
           value={stats?.awaitingFulfillment ?? 0}
-          icon={ShoppingBag}
+          icon={Truck}
+          to="/orders"
+          search={{ queue: "paid_fulfill" }}
         />
       </div>
 
@@ -462,7 +407,7 @@ function DashboardPage() {
       )}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">
-        <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
+        <section className="self-start rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
           <div className="flex items-start justify-between gap-3">
             <div>
               <h2 className="text-balance text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
