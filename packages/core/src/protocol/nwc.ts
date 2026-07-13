@@ -27,6 +27,8 @@ import type {
   Nip47PayResponse,
   Nip47Transaction,
 } from "@getalby/sdk/nwc"
+import { sha256 } from "@noble/hashes/sha256"
+import { bytesToHex } from "@noble/hashes/utils"
 
 import { decodeLightningInvoiceAmount } from "./lightning"
 import type { ConduitAppId } from "./nip89"
@@ -140,6 +142,18 @@ export function parseNwcUri(uri: string): NwcConnection {
     lud16: parsed.lud16,
     uri: uri.trim(),
   }
+}
+
+/**
+ * Produce a stable, non-secret identifier for a saved NWC connection URI.
+ *
+ * Query caches can use this to distinguish credentials without retaining the
+ * secret-bearing URI itself in a cache key or developer tooling.
+ */
+export function getNwcUriFingerprint(uri: string): string {
+  const normalizedUri = uri.trim()
+  if (!normalizedUri) throw new Error("Cannot fingerprint an empty NWC URI")
+  return bytesToHex(sha256(new TextEncoder().encode(normalizedUri)))
 }
 
 // ─── make_invoice ─────────────────────────────────────────────────────────────

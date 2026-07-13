@@ -6,6 +6,7 @@ import {
 } from "@conduit/core"
 import {
   getNwcUriStorageKey,
+  getNwcConnectionCacheKey,
   getShippingStorageKey,
   getMerchantSetupReadiness,
   hasNwcConfigured,
@@ -102,6 +103,24 @@ test("scopes stored NWC URIs to the active merchant pubkey", () => {
   )
   expect(getNwcUriStorageKey("")).toBe(null)
   expect(hasNwcConfigured()).toBe(false)
+})
+
+test("changes the NWC cache identity when saved credentials change", () => {
+  const walletPubkey = "a".repeat(64)
+  const relay = "wss%3A%2F%2Frelay.example.com"
+  const firstSecret = "b".repeat(64)
+  const nextSecret = "c".repeat(64)
+  const firstUri = `nostr+walletconnect://${walletPubkey}?relay=${relay}&secret=${firstSecret}`
+  const nextUri = `nostr+walletconnect://${walletPubkey}?relay=${relay}&secret=${nextSecret}`
+
+  const firstKey = getNwcConnectionCacheKey(firstUri)
+  const nextKey = getNwcConnectionCacheKey(nextUri)
+
+  expect(getNwcConnectionCacheKey(`  ${firstUri}  `)).toBe(firstKey)
+  expect(nextKey === firstKey).toBe(false)
+  expect(firstKey.includes(firstSecret)).toBe(false)
+  expect(firstKey.includes(firstUri)).toBe(false)
+  expect(getNwcConnectionCacheKey("")).toBe("none")
 })
 
 test("scopes stored shipping configs to the active merchant pubkey", () => {

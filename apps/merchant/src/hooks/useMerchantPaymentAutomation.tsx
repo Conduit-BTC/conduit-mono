@@ -24,6 +24,7 @@ import {
   isNwcSettlementMatch,
   type MerchantNwcAddressStatus,
 } from "../lib/merchant-payment-verification"
+import { getNwcConnectionCacheKey } from "../lib/readiness"
 import { useNwcConnection } from "./useNwcConnection"
 
 type VerificationRunState = {
@@ -70,7 +71,7 @@ export function MerchantPaymentAutomationProvider({
   })
   const signerConnected = status === "connected" && !!pubkey
   const connectionKey = nwc.connection
-    ? `${nwc.connection.walletPubkey}:${nwc.connection.relays.join(",")}`
+    ? getNwcConnectionCacheKey(nwc.rawUri)
     : "none"
 
   const infoQuery = useQuery({

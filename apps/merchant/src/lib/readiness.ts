@@ -9,6 +9,7 @@ import {
   SHIPPING_COUNTRIES,
   isRelaySetupIncomplete,
   isValidLud16Address,
+  getNwcUriFingerprint,
   parseNwcUri,
   type ParsedShippingOption,
   type NwcConnection,
@@ -105,6 +106,11 @@ export function getNwcUriStorageKey(
   const normalizedPubkey = pubkey?.trim()
   if (!normalizedPubkey) return null
   return `${NWC_URI_STORAGE_KEY}:${normalizedPubkey}`
+}
+
+export function getNwcConnectionCacheKey(rawUri: string): string {
+  const normalizedUri = rawUri.trim()
+  return normalizedUri ? getNwcUriFingerprint(normalizedUri) : "none"
 }
 
 export function notifyMerchantReadinessStorageChange(): void {
