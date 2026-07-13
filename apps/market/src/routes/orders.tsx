@@ -70,6 +70,8 @@ import {
   type OrderViewModel,
 } from "../lib/order-view"
 import {
+  canObserveOrderPublicZapReceipt,
+  observeOrderPublicZapReceipt,
   resendOrderProof,
   runOrderPayment,
   submitExternalPaymentProof,
@@ -524,11 +526,13 @@ function ExternalWalletPanel({
   onMarkPaid,
   busy,
   guestSession,
+  autoDetectReceipt,
 }: {
   vm: OrderViewModel
   onMarkPaid: () => void
   busy: boolean
   guestSession: boolean
+  autoDetectReceipt: boolean
 }) {
   const [copied, setCopied] = useState(false)
   const invoice = vm.invoice
@@ -549,15 +553,15 @@ function ExternalWalletPanel({
         Pay with an external wallet
       </h2>
       <p className="mt-1 text-sm text-[var(--text-secondary)]">
-        No automatic wallet was available. Scan or copy this invoice and pay it
-        in your wallet. After the wallet confirms payment, report it to the
-        merchant for verification.
+        {autoDetectReceipt
+          ? "Scan or copy this invoice and pay it once. Conduit will match the public Lightning receipt and notify the merchant automatically."
+          : "No automatic wallet was available. Scan or copy this invoice and pay it in your wallet. After the wallet confirms payment, report it to the merchant for verification."}
       </p>
       {guestSession && (
         <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
-          Keep this tab open until the payment is reported. Closing it ends
-          local access to this guest order. The merchant will follow up using
-          the phone and email contact details submitted at checkout.
+          {autoDetectReceipt
+            ? "Return to this same tab after paying so Conduit can finish receipt detection. Closing it ends local access to this guest order."
+            : "Keep this tab open until the payment is reported. Closing it ends local access to this guest order. The merchant will follow up using the phone and email contact details submitted at checkout."}
         </p>
       )}
       <div className="mt-4 flex flex-col items-start gap-4 sm:flex-row">
@@ -584,18 +588,27 @@ function ExternalWalletPanel({
           <div className="max-h-24 overflow-auto rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 font-mono text-xs leading-5 break-all text-[var(--text-secondary)]">
             {invoice}
           </div>
-          <Button
-            variant="primary"
-            className="h-10 px-4 text-sm"
-            disabled={busy}
-            onClick={onMarkPaid}
-          >
-            Report payment to merchant
-          </Button>
-          <p className="text-xs text-[var(--text-secondary)]">
-            Only report after your wallet confirms payment. This does not verify
-            settlement; the merchant will confirm it.
-          </p>
+          {autoDetectReceipt ? (
+            <p className="text-xs leading-5 text-[var(--text-secondary)]">
+              Waiting for the matching receipt. If your wallet confirms payment,
+              do not pay this invoice again while detection completes.
+            </p>
+          ) : (
+            <>
+              <Button
+                variant="primary"
+                className="h-10 px-4 text-sm"
+                disabled={busy}
+                onClick={onMarkPaid}
+              >
+                Report payment to merchant
+              </Button>
+              <p className="text-xs text-[var(--text-secondary)]">
+                Only report after your wallet confirms payment. This does not
+                verify settlement; the merchant will confirm it.
+              </p>
+            </>
+          )}
         </div>
       </div>
     </section>
@@ -681,6 +694,10 @@ function OrderDetail({
       zapContent: lc.zapContent ?? "",
       totalSats: lc.totalSats,
       totalMsats: lc.totalMsats,
+      items: lc.items.map((item) => ({
+        productAddress: item.productId,
+        quantity: item.quantity,
+      })),
       walletConnection: wallet.connection,
       tryNwc: canTryNwc,
       tryWebln: !guestIdentity,
@@ -699,6 +716,11 @@ function OrderDetail({
   const showRetryPayment = vm.paymentStatus === "failed"
   const showAmbiguousPayment = vm.paymentStatus === "ambiguous"
   const showExternalWallet = vm.paymentStatus === "manual_required"
+  const autoDetectPublicReceipt =
+    vm.publicZapSigner === "anon" && vm.zapReceiptStatus === "waiting"
+  const publicReceiptNotObserved =
+    vm.publicZapSigner === "anon" &&
+    vm.zapReceiptStatus === "receipt_not_observed"
   const showResendProof =
     vm.paymentStatus === "paid" &&
     (vm.proofDeliveryStatus === "retry_needed" ||
@@ -841,18 +863,34 @@ function OrderDetail({
         <div className="space-y-3">
           <StatusNotice
             variant="warning"
-            title="Action needed"
-            detail="Pay with an external wallet"
+            title={
+              autoDetectPublicReceipt
+                ? "Pay with any Lightning wallet"
+                : vm.publicZapFallback
+                  ? "Checkout continued privately"
+                  : "Action needed"
+            }
+            detail={
+              autoDetectPublicReceipt
+                ? "Receipt detection is automatic"
+                : vm.publicZapFallback
+                  ? "Optional public note unavailable"
+                  : "Pay with an external wallet"
+            }
           >
             <p className="text-sm text-[var(--text-secondary)]">
-              No automatic wallet was available. Pay the invoice below, then
-              report the payment to the merchant for verification.
+              {autoDetectPublicReceipt
+                ? "Pay the invoice below. Conduit is watching for the matching public receipt and will notify the merchant automatically."
+                : vm.publicZapFallback
+                  ? "Your order is still ready. The optional public checkout note was unavailable, so this invoice is private. Pay it once, then report the payment so the merchant can verify it."
+                  : "No automatic wallet was available. Pay the invoice below, then report the payment to the merchant for verification."}
             </p>
           </StatusNotice>
           <ExternalWalletPanel
             vm={vm}
             busy={busy}
             guestSession={!!guestIdentity}
+            autoDetectReceipt={autoDetectPublicReceipt}
             onMarkPaid={() =>
               void withBusy(() =>
                 submitExternalPaymentProof(
@@ -901,13 +939,15 @@ function OrderDetail({
               </Button>
             )}
             <span className="text-xs text-[var(--text-secondary)]">
-              {showAmbiguousPayment
-                ? "Your wallet may have received the payment request, but Conduit couldn't confirm whether funds moved. Check your wallet and merchant messages before trying again."
-                : showRetryPayment && !buildServiceCtx()
-                  ? "This order did not keep a checkout-time Lightning target, so retry is unavailable from Orders. Message the merchant before attempting another payment path."
-                  : showRetryPayment
-                    ? "No funds moved. You can retry payment for this order."
-                    : "Payment went through; the receipt didn't reach the merchant."}
+              {publicReceiptNotObserved
+                ? "Conduit did not observe the matching public receipt. If your wallet shows payment, do not pay again. The receipt can still reconcile if it reaches the configured relays during this guest session."
+                : showAmbiguousPayment
+                  ? "Your wallet may have received the payment request, but Conduit couldn't confirm whether funds moved. Check your wallet and merchant messages before trying again."
+                  : showRetryPayment && !buildServiceCtx()
+                    ? "This order did not keep a checkout-time Lightning target, so retry is unavailable from Orders. Message the merchant before attempting another payment path."
+                    : showRetryPayment
+                      ? "No funds moved. You can retry payment for this order."
+                      : "Payment went through; the receipt didn't reach the merchant."}
             </span>
           </div>
         </StatusNotice>
@@ -1203,6 +1243,28 @@ function OrdersPage() {
     () => lifecyclesQuery.data ?? [],
     [lifecyclesQuery.data]
   )
+
+  useEffect(() => {
+    const resumeReceiptObservers = () => {
+      if (document.visibilityState === "hidden") return
+      for (const lifecycle of lifecycles) {
+        if (!canObserveOrderPublicZapReceipt(lifecycle)) continue
+        const identity =
+          guestIdentity?.orderId === lifecycle.orderId
+            ? guestIdentity
+            : undefined
+        void observeOrderPublicZapReceipt(lifecycle.orderId, identity)
+      }
+    }
+
+    resumeReceiptObservers()
+    window.addEventListener("focus", resumeReceiptObservers)
+    document.addEventListener("visibilitychange", resumeReceiptObservers)
+    return () => {
+      window.removeEventListener("focus", resumeReceiptObservers)
+      document.removeEventListener("visibilitychange", resumeReceiptObservers)
+    }
+  }, [guestIdentity, lifecycles])
 
   // Merge lifecycle records and relay conversations by orderId.
   const orders = useMemo<OrderRow[]>(() => {

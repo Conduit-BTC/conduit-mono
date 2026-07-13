@@ -1767,7 +1767,11 @@ function CheckoutPage() {
         buyerPubkey,
         buyerIdentityKind,
         merchantPubkey: selectedMerchant,
-        checkoutMode: canAutoPay ? checkoutMode : "external_wallet",
+        checkoutMode: requiresPublicZap
+          ? checkoutMode
+          : canAutoPay
+            ? checkoutMode
+            : "external_wallet",
         publicZapSigner: getCheckoutPublicZapSigner(checkoutMode) ?? undefined,
         merchantLightningAddress: merchantLud16,
         items: buildLifecycleItems(pricingIntent.items),
@@ -1831,6 +1835,10 @@ function CheckoutPage() {
         zapContent,
         totalSats: pricingIntent.totalSats,
         totalMsats: pricingIntent.totalMsats,
+        items: pricingIntent.items.map((item) => ({
+          productAddress: item.productId,
+          quantity: item.quantity,
+        })),
         walletConnection: guestIdentity ? null : wallet.connection,
         tryNwc: !guestIdentity && shouldTrySavedNwcWallet,
         tryWebln: !guestIdentity,

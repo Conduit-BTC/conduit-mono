@@ -8,6 +8,7 @@ import {
   getOrderPublicZapSigner,
   getNdk,
   getOrderLifecycle,
+  isGuestOrderDataExpired,
   patchOrderLifecycle,
   signNdkEventWithTransientNip07Retry,
   validateLightningInvoiceForPayment,
@@ -23,7 +24,10 @@ import {
   type CheckoutZapRequestDraft,
   type SignedCheckoutZapRequest,
 } from "./checkout-payment"
-import { signCheckoutZapRequestWithAnonSigner } from "./anon-zap-signer"
+import {
+  isAnonZapAuthorizationError,
+  signCheckoutZapRequestWithAnonSigner,
+} from "./anon-zap-signer"
 import {
   buildPaymentProofRumor,
   getDeliveryNotice,
@@ -39,6 +43,19 @@ export function getLifecyclePaymentProofAction(
   const publicZapSigner =
     lifecycle.publicZapSigner ?? getOrderPublicZapSigner(lifecycle.checkoutMode)
   return publicZapSigner ? "zap" : "private_checkout"
+}
+
+export function shouldFallbackAnonZapToPrivate(input: {
+  visibility: "public_zap" | "private_checkout"
+  publicZapSigner: "anon" | "shopper" | null
+  lnurlAllowsNostr: boolean
+  error?: unknown
+}): boolean {
+  if (input.visibility !== "public_zap" || input.publicZapSigner !== "anon") {
+    return false
+  }
+  if (!input.lnurlAllowsNostr) return true
+  return isAnonZapAuthorizationError(input.error)
 }
 
 /**
@@ -60,7 +77,10 @@ export function getLifecyclePaymentProofAction(
  * record and the proof DM. Nothing here is forwarded to telemetry.
  */
 
-const ZAP_RECEIPT_WAIT_MS = 5_000
+const ZAP_RECEIPT_SCAN_MS = 5_000
+const ZAP_RECEIPT_RESCAN_DELAY_MS = 10_000
+const ZAP_RECEIPT_EXPIRY_GRACE_SECONDS = 10 * 60
+const DEFAULT_INVOICE_EXPIRY_SECONDS = 60 * 60
 
 /**
  * Build a payment-proof content payload directly (matches the permissive
@@ -78,9 +98,11 @@ function buildProofContentJson(input: {
   paymentHash?: string
   feeMsats?: number
   zapRequestId?: string
+  zapReceiptId?: string
   source: string
   note: string
-  verificationState?: "buyer_evidence_received" | "needs_merchant_verification"
+  verificationState?:
+    "buyer_evidence_received" | "needs_merchant_verification" | "verified"
 }): string {
   return JSON.stringify({
     version: 1,
@@ -95,6 +117,7 @@ function buildProofContentJson(input: {
     ...(input.paymentHash ? { paymentHash: input.paymentHash } : {}),
     ...(typeof input.feeMsats === "number" ? { feeMsats: input.feeMsats } : {}),
     ...(input.zapRequestId ? { zapRequestId: input.zapRequestId } : {}),
+    ...(input.zapReceiptId ? { zapReceiptId: input.zapReceiptId } : {}),
     source: input.source,
     proofDeliveryStatus: "pending",
     verification: {
@@ -118,13 +141,14 @@ export function buildLifecyclePaymentProofContentJson(
     | "paymentHash"
     | "feeMsats"
     | "zapRequestId"
+    | "zapReceiptId"
   >,
   input: {
     source: string
     note: string
     action?: "zap" | "private_checkout" | "external_invoice"
     verificationState?:
-      "buyer_evidence_received" | "needs_merchant_verification"
+      "buyer_evidence_received" | "needs_merchant_verification" | "verified"
   }
 ): string {
   return buildProofContentJson({
@@ -137,6 +161,7 @@ export function buildLifecyclePaymentProofContentJson(
     paymentHash: lifecycle.paymentHash,
     feeMsats: lifecycle.feeMsats,
     zapRequestId: lifecycle.zapRequestId,
+    zapReceiptId: lifecycle.zapReceiptId,
     source: input.source,
     note: input.note,
     verificationState: input.verificationState,
@@ -147,19 +172,29 @@ export function buildLifecycleResendProofContentJson(
   lifecycle: Parameters<typeof buildLifecyclePaymentProofContentJson>[0]
 ): string {
   const isExternalWalletReport = lifecycle.checkoutMode === "external_wallet"
+  const isReceiptLinkedZap = !!(
+    lifecycle.zapRequestId && lifecycle.zapReceiptId
+  )
 
   return buildLifecyclePaymentProofContentJson(lifecycle, {
-    ...(isExternalWalletReport
+    ...(isReceiptLinkedZap
       ? {
-          action: "external_invoice" as const,
+          action: "zap" as const,
           source: "external",
-          verificationState: "needs_merchant_verification" as const,
-          note: `External wallet payment for order ${lifecycle.orderId}`,
+          verificationState: "verified" as const,
+          note: `Public zap receipt observed for order ${lifecycle.orderId}`,
         }
-      : {
-          source: "buyer",
-          note: `Payment for order ${lifecycle.orderId}`,
-        }),
+      : isExternalWalletReport
+        ? {
+            action: "external_invoice" as const,
+            source: "external",
+            verificationState: "needs_merchant_verification" as const,
+            note: `External wallet payment for order ${lifecycle.orderId}`,
+          }
+        : {
+            source: "buyer",
+            note: `Payment for order ${lifecycle.orderId}`,
+          }),
   })
 }
 
@@ -173,6 +208,7 @@ export interface OrderPaymentContext {
   zapContent: string
   totalSats: number
   totalMsats: number
+  items: Array<{ productAddress: string; quantity: number }>
   walletConnection: NwcConnection | null
   tryNwc: boolean
   tryWebln?: boolean
@@ -199,6 +235,8 @@ const runtimeStates = new Map<string, OrderPaymentRuntimeState>()
 const listeners = new Map<string, Set<Listener>>()
 /** Guards against concurrent payment attempts for the same order. */
 const inFlight = new Set<string>()
+const receiptObservers = new Set<string>()
+const receiptRescanTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 export function canSubmitExternalPaymentReport(
   lifecycle: OrderLifecycle | null | undefined
@@ -259,6 +297,236 @@ export function subscribeOrderPayment(
   }
 }
 
+function clearReceiptRescan(orderId: string): void {
+  const timer = receiptRescanTimers.get(orderId)
+  if (timer) clearTimeout(timer)
+  receiptRescanTimers.delete(orderId)
+}
+
+function hasPublicReceiptContext(
+  lifecycle: OrderLifecycle
+): lifecycle is OrderLifecycle & {
+  invoice: string
+  zapRequestId: string
+  zapRequestCreatedAt: number
+  zapLnurl: string
+  zapReceiptPubkey: string
+  zapReceiptRelayUrls: string[]
+  zapReceiptObservationDeadline: number
+} {
+  const publicZapSigner =
+    lifecycle.publicZapSigner ?? getOrderPublicZapSigner(lifecycle.checkoutMode)
+  return (
+    publicZapSigner === "anon" &&
+    !!lifecycle.invoice &&
+    !!lifecycle.zapRequestId &&
+    Number.isSafeInteger(lifecycle.zapRequestCreatedAt) &&
+    lifecycle.zapRequestCreatedAt! > 0 &&
+    !!lifecycle.zapLnurl &&
+    !!lifecycle.zapReceiptPubkey &&
+    Array.isArray(lifecycle.zapReceiptRelayUrls) &&
+    lifecycle.zapReceiptRelayUrls.length > 0 &&
+    Number.isSafeInteger(lifecycle.zapReceiptObservationDeadline) &&
+    lifecycle.zapReceiptObservationDeadline! > 0
+  )
+}
+
+export function canObserveOrderPublicZapReceipt(
+  lifecycle: OrderLifecycle,
+  nowMs = Date.now()
+): boolean {
+  if (!hasPublicReceiptContext(lifecycle)) return false
+  if (isGuestOrderDataExpired(lifecycle, nowMs)) return false
+  if (
+    lifecycle.zapReceiptStatus === "observed" &&
+    lifecycle.proofDeliveryStatus === "sent"
+  ) {
+    return false
+  }
+  return (
+    lifecycle.zapReceiptStatus === "waiting" ||
+    lifecycle.zapReceiptStatus === "receipt_not_observed" ||
+    lifecycle.zapReceiptStatus === "observed"
+  )
+}
+
+async function deliverReceiptLinkedProof(
+  lifecycle: OrderLifecycle & {
+    invoice: string
+    zapRequestId: string
+    zapRequestCreatedAt: number
+    zapReceiptId: string
+  },
+  buyerIdentity?: BuyerOrderSigningIdentity
+): Promise<void> {
+  if (lifecycle.proofDeliveryStatus === "sent") return
+
+  const locked = await patchOrderLifecycle(lifecycle.orderId, {
+    proofDeliveryStatus: "pending",
+  })
+  if (!locked || locked.proofDeliveryStatus !== "pending") return
+
+  const content = buildLifecyclePaymentProofContentJson(locked, {
+    action: "zap",
+    source: "external",
+    verificationState: "verified",
+    note: `Public zap receipt observed for order ${lifecycle.orderId}`,
+  })
+  const ndk = getNdk()
+  const proofRumor = buildPaymentProofRumor({
+    merchantPubkey: locked.merchantPubkey,
+    orderId: locked.orderId,
+    amountSats: locked.totalSats,
+    currency: "SATS",
+    content,
+    createdAt: locked.zapRequestCreatedAt,
+  })
+
+  try {
+    await publishBuyerOrderMessage(
+      proofRumor,
+      ndk,
+      locked.merchantPubkey,
+      buyerIdentity ?? locked.buyerPubkey
+    )
+    await updatePaymentAttempt(locked.orderId, {
+      proofDeliveryStatus: "sent",
+    }).catch(() => {})
+    await patchAndEmit(locked.orderId, {
+      proofDeliveryStatus: "sent",
+    })
+  } catch {
+    await updatePaymentAttempt(locked.orderId, {
+      proofDeliveryStatus: "retry_needed",
+    }).catch(() => {})
+    await patchAndEmit(locked.orderId, {
+      proofDeliveryStatus: "retry_needed",
+    })
+  }
+}
+
+export async function observeOrderPublicZapReceipt(
+  orderId: string,
+  buyerIdentity?: BuyerOrderSigningIdentity
+): Promise<void> {
+  if (receiptObservers.has(orderId)) return
+  receiptObservers.add(orderId)
+  clearReceiptRescan(orderId)
+  let scheduleRescan = false
+
+  try {
+    const lifecycle = await getOrderLifecycle(orderId)
+    if (!lifecycle || !canObserveOrderPublicZapReceipt(lifecycle)) return
+    if (!hasPublicReceiptContext(lifecycle)) return
+
+    if (lifecycle.zapReceiptStatus === "observed" && lifecycle.zapReceiptId) {
+      await deliverReceiptLinkedProof(
+        lifecycle as typeof lifecycle & {
+          invoice: string
+          zapRequestId: string
+          zapReceiptId: string
+        },
+        buyerIdentity
+      )
+      return
+    }
+
+    const nowMs = Date.now()
+    const beforeDeadline = nowMs < lifecycle.zapReceiptObservationDeadline
+    const timeoutMs = beforeDeadline
+      ? Math.min(
+          ZAP_RECEIPT_SCAN_MS,
+          lifecycle.zapReceiptObservationDeadline - nowMs
+        )
+      : 0
+    const receipt = await waitForZapReceipt({
+      zapRequestId: lifecycle.zapRequestId,
+      requestCreatedAt: lifecycle.zapRequestCreatedAt,
+      recipientPubkey: lifecycle.merchantPubkey,
+      expectedAmountMsats: lifecycle.totalMsats,
+      expectedLnurl: lifecycle.zapLnurl,
+      expectedInvoice: lifecycle.invoice,
+      lnurlNostrPubkey: lifecycle.zapReceiptPubkey,
+      relayUrls: lifecycle.zapReceiptRelayUrls,
+      receiptNotAfterSeconds: Math.floor(
+        lifecycle.zapReceiptObservationDeadline / 1000
+      ),
+      timeoutMs,
+    }).catch(() => null)
+
+    if (receipt) {
+      const shouldDeliverProof = lifecycle.proofDeliveryStatus !== "sent"
+      try {
+        await savePaymentAttempt({
+          id: orderId,
+          orderId,
+          buyerPubkey: lifecycle.buyerPubkey,
+          merchantPubkey: lifecycle.merchantPubkey,
+          amountMsats: lifecycle.totalMsats,
+          currency: "SATS",
+          invoice: lifecycle.invoice,
+          zapRequestId: lifecycle.zapRequestId,
+          zapReceiptId: receipt.id,
+          proofDeliveryStatus: shouldDeliverProof ? "pending" : "sent",
+          createdAt: lifecycle.createdAt,
+          updatedAt: Date.now(),
+        })
+      } catch {
+        // Lifecycle persistence remains authoritative for this local flow.
+      }
+      const updated = await patchOrderLifecycle(orderId, {
+        invoiceStatus: "received",
+        paymentStatus: "paid",
+        zapReceiptStatus: "observed",
+        zapReceiptId: receipt.id,
+        lastError: undefined,
+      })
+      emit(orderId, { lifecycle: updated ?? null })
+      if (updated && shouldDeliverProof && hasPublicReceiptContext(updated)) {
+        await deliverReceiptLinkedProof(
+          updated as typeof updated & {
+            zapReceiptId: string
+          },
+          buyerIdentity
+        )
+      }
+      return
+    }
+
+    if (Date.now() >= lifecycle.zapReceiptObservationDeadline) {
+      await patchAndEmit(orderId, {
+        ...(lifecycle.paymentStatus === "paid"
+          ? {}
+          : { paymentStatus: "ambiguous" as const }),
+        zapReceiptStatus: "receipt_not_observed",
+        ...(lifecycle.paymentStatus === "paid"
+          ? {}
+          : {
+              lastError:
+                "A matching public receipt was not observed. Do not pay again if your wallet shows payment.",
+            }),
+      })
+      return
+    }
+    scheduleRescan = true
+  } catch {
+    scheduleRescan = true
+  } finally {
+    receiptObservers.delete(orderId)
+    if (
+      scheduleRescan &&
+      typeof window !== "undefined" &&
+      !receiptRescanTimers.has(orderId)
+    ) {
+      const timer = setTimeout(() => {
+        receiptRescanTimers.delete(orderId)
+        void observeOrderPublicZapReceipt(orderId, buyerIdentity)
+      }, ZAP_RECEIPT_RESCAN_DELAY_MS)
+      receiptRescanTimers.set(orderId, timer)
+    }
+  }
+}
+
 /**
  * Run (or retry) payment for an already-delivered order. Resolves when the flow
  * reaches a terminal state — paid (+proof attempt), manual/external required, or
@@ -312,14 +580,8 @@ export async function runOrderPayment(
     try {
       const ndk = getNdk()
       const lnurlMeta = await fetchLnurlPayMetadata(ctx.merchantLud16)
-      const visibility = getCheckoutZapVisibility(ctx.zapMode)
+      let visibility = getCheckoutZapVisibility(ctx.zapMode)
       const publicZapSigner = getOrderPublicZapSigner(ctx.zapMode)
-      const isPublicZap = visibility === "public_zap"
-      if (isPublicZap && !lnurlMeta.allowsNostr) {
-        throw new Error(
-          "Merchant Lightning Address does not advertise Nostr zap support."
-        )
-      }
       if (
         ctx.totalMsats < lnurlMeta.minSendable ||
         ctx.totalMsats > lnurlMeta.maxSendable
@@ -330,50 +592,126 @@ export async function runOrderPayment(
         )
       }
 
-      const invoiceRequest = await requestCheckoutLnurlInvoice(
-        {
-          visibility,
-          lnurlCallback: lnurlMeta.callback,
-          amountMsats: ctx.totalMsats,
-          lnurl: lnurlMeta.lnurl,
-          recipientPubkey: ctx.merchantPubkey,
-          zapContent: ctx.zapContent,
-          explicitRelayUrls: ndk.explicitRelayUrls ?? [],
-          zapRelayUrls: config.zapRelayUrls,
-        },
-        {
-          fetchLnurlInvoice,
-          fetchZapInvoice,
-          signZapRequest: async (
-            draft: CheckoutZapRequestDraft
-          ): Promise<SignedCheckoutZapRequest> => {
-            if (publicZapSigner === "anon") {
-              return signCheckoutZapRequestWithAnonSigner(draft)
-            }
-            if (publicZapSigner !== "shopper") {
-              throw new Error("Public zap signer was not selected.")
-            }
-            const zapRequest = new NDKEvent(ndk)
-            zapRequest.kind = draft.kind
-            zapRequest.created_at = draft.createdAt
-            zapRequest.content = draft.content
-            zapRequest.tags = draft.tags
-            await signNdkEventWithTransientNip07Retry(zapRequest, ndk.signer)
-            return { id: zapRequest.id, rawEvent: zapRequest.rawEvent() }
+      const requestInvoice = (requestedVisibility: typeof visibility) =>
+        requestCheckoutLnurlInvoice(
+          {
+            visibility: requestedVisibility,
+            lnurlCallback: lnurlMeta.callback,
+            amountMsats: ctx.totalMsats,
+            lnurl: lnurlMeta.lnurl,
+            recipientPubkey: ctx.merchantPubkey,
+            zapContent: ctx.zapContent,
+            explicitRelayUrls: ndk.explicitRelayUrls ?? [],
+            zapRelayUrls: config.zapRelayUrls,
           },
+          {
+            fetchLnurlInvoice,
+            fetchZapInvoice,
+            signZapRequest: async (
+              draft: CheckoutZapRequestDraft
+            ): Promise<SignedCheckoutZapRequest> => {
+              if (publicZapSigner === "anon") {
+                return signCheckoutZapRequestWithAnonSigner(draft, {
+                  merchantPubkey: ctx.merchantPubkey,
+                  amountMsats: ctx.totalMsats,
+                  items: ctx.items,
+                })
+              }
+              if (publicZapSigner !== "shopper") {
+                throw new Error("Public zap signer was not selected.")
+              }
+              const zapRequest = new NDKEvent(ndk)
+              zapRequest.kind = draft.kind
+              zapRequest.created_at = draft.createdAt
+              zapRequest.content = draft.content
+              zapRequest.tags = draft.tags
+              await signNdkEventWithTransientNip07Retry(zapRequest, ndk.signer)
+              return { id: zapRequest.id, rawEvent: zapRequest.rawEvent() }
+            },
+          }
+        )
+
+      let publicZapFallback = false
+      let invoiceRequest: Awaited<
+        ReturnType<typeof requestCheckoutLnurlInvoice>
+      >
+      if (
+        shouldFallbackAnonZapToPrivate({
+          visibility,
+          publicZapSigner,
+          lnurlAllowsNostr: lnurlMeta.allowsNostr,
+        })
+      ) {
+        visibility = "private_checkout"
+        publicZapFallback = true
+        invoiceRequest = await requestInvoice(visibility)
+      } else {
+        try {
+          invoiceRequest = await requestInvoice(visibility)
+        } catch (error) {
+          if (
+            !shouldFallbackAnonZapToPrivate({
+              visibility,
+              publicZapSigner,
+              lnurlAllowsNostr: lnurlMeta.allowsNostr,
+              error,
+            })
+          ) {
+            throw error
+          }
+          visibility = "private_checkout"
+          publicZapFallback = true
+          invoiceRequest = await requestInvoice(visibility)
         }
-      )
-      const { invoice, zapRelayUrls, zapRequestId } = invoiceRequest
+      }
+      if (publicZapFallback) {
+        await patchAndEmit(orderId, {
+          checkoutMode: "external_wallet",
+          publicZapSigner: undefined,
+          publicZapFallback: true,
+          zapReceiptStatus: "not_applicable",
+        })
+      }
+      const isPublicZap = visibility === "public_zap"
+      const {
+        invoice,
+        zapRelayUrls,
+        zapRequestId,
+        zapRequestCreatedAt,
+        expectedLnurl,
+        lnurlNostrPubkey,
+      } = invoiceRequest
 
       const invoiceValidation = validateLightningInvoiceForPayment({
         invoice,
         expectedAmountMsats: ctx.totalMsats,
       })
       if (!invoiceValidation.ok) throw new Error(invoiceValidation.reason)
+      const nowSeconds = Math.floor(Date.now() / 1000)
+      const invoiceExpiresAt =
+        invoiceValidation.metadata.expiresAt ??
+        nowSeconds + DEFAULT_INVOICE_EXPIRY_SECONDS
+      const zapReceiptObservationDeadline =
+        (invoiceExpiresAt + ZAP_RECEIPT_EXPIRY_GRACE_SECONDS) * 1000
 
       await patchAndEmit(
         orderId,
-        { invoiceStatus: "received", invoice, zapRequestId },
+        {
+          invoiceStatus: "received",
+          invoice,
+          zapRequestId,
+          ...(isPublicZap
+            ? {
+                zapRequestCreatedAt,
+                zapReceiptRelayUrls: zapRelayUrls,
+                zapLnurl: expectedLnurl,
+                zapReceiptPubkey: lnurlNostrPubkey,
+                invoiceExpiresAt,
+                zapReceiptObservationDeadline,
+                zapReceiptStatus: "waiting" as const,
+              }
+            : {}),
+        },
         { stage: "paying_invoice" }
       )
 
@@ -393,22 +731,23 @@ export async function runOrderPayment(
       })
 
       if (payResult.status === "manual_required") {
-        // No automatic rail. Surface the invoice on Orders for an external wallet
-        // (CND-120). The order stays put; the buyer pays externally and sends a
-        // receipt afterwards.
+        // No automatic rail. Private invoices retain the buyer-attested report
+        // flow. Public anon-zap invoices are observed by exact NIP-57 receipt
+        // context instead, so the buyer never needs a manual confirmation step.
         await patchAndEmit(
           orderId,
           {
             invoiceStatus: "manual_required",
             paymentStatus: "manual_required",
             invoice,
-            // We won't watch for a zap receipt on the external-wallet path, so
-            // don't leave a public_zap order stuck in "waiting" (CND-120).
-            zapReceiptStatus: "not_applicable",
-            lastError: payResult.reason,
+            zapReceiptStatus: isPublicZap ? "waiting" : "not_applicable",
+            lastError: isPublicZap ? undefined : payResult.reason,
           },
           { running: false, stage: null }
         )
+        if (isPublicZap && zapRequestId) {
+          void observeOrderPublicZapReceipt(orderId, ctx.buyerIdentity)
+        }
         return runtimeStates.get(orderId)!
       }
 
@@ -496,29 +835,7 @@ export async function runOrderPayment(
 
       if (invoiceRequest.shouldWaitForZapReceipt && zapRequestId) {
         emit(orderId, { stage: "checking_receipt" })
-        const receipt = await waitForZapReceipt({
-          zapRequestId,
-          recipientPubkey: ctx.merchantPubkey,
-          expectedAmountMsats: ctx.totalMsats,
-          expectedLnurl: lnurlMeta.lnurl,
-          lnurlNostrPubkey: lnurlMeta.nostrPubkey,
-          relayUrls: zapRelayUrls,
-          timeoutMs: ZAP_RECEIPT_WAIT_MS,
-        }).catch((e) => {
-          console.warn("Failed to observe zap receipt", e)
-          return null
-        })
-        if (receipt) {
-          await updatePaymentAttempt(orderId, {
-            zapReceiptId: receipt.id,
-          }).catch((e) => console.warn("Failed to persist zap receipt id", e))
-          await patchAndEmit(orderId, {
-            zapReceiptStatus: "observed",
-            zapReceiptId: receipt.id,
-          })
-        } else {
-          await patchAndEmit(orderId, { zapReceiptStatus: "timed_out" })
-        }
+        void observeOrderPublicZapReceipt(orderId, ctx.buyerIdentity)
       }
 
       emit(orderId, { running: false, stage: null })
@@ -574,6 +891,10 @@ export async function resendOrderProof(
     amountSats: lifecycle.totalSats,
     currency: "SATS",
     content,
+    createdAt:
+      lifecycle.zapRequestId && lifecycle.zapReceiptId
+        ? lifecycle.zapRequestCreatedAt
+        : undefined,
   })
   await patchAndEmit(orderId, { proofDeliveryStatus: "pending" })
   try {

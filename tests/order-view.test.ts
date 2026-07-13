@@ -118,6 +118,18 @@ describe("buildOrderViewModel", () => {
     expect(getOrderPaymentMethodLabel(shopper)).toBe("Public zap as shopper")
   })
 
+  it("surfaces an anonymous public-note fallback as a private wallet flow", () => {
+    const vm = vmFromLifecycle({
+      checkoutMode: "external_wallet",
+      publicZapSigner: undefined,
+      publicZapFallback: true,
+    })
+
+    expect(vm.publicZapFallback).toBe(true)
+    expect(vm.publicZapSigner).toBeNull()
+    expect(getOrderPaymentMethodLabel(vm)).toBe("External wallet")
+  })
+
   it("prefers the lifecycle product title snapshot over a d-tag fallback", () => {
     const vm = vmFromLifecycle({
       items: [
@@ -308,6 +320,20 @@ describe("buildOrderTimeline", () => {
     expect(paymentRow?.subtitle).toContain("couldn't confirm")
   })
 
+  it("warns against paying again when a public receipt is not observed", () => {
+    const rows = buildOrderTimeline(
+      vmFromLifecycle({
+        paymentStatus: "ambiguous",
+        proofDeliveryStatus: "not_started",
+        zapReceiptStatus: "receipt_not_observed",
+      })
+    )
+    const paymentRow = rows.find((r) => r.key === "payment")
+
+    expect(paymentRow?.title).toBe("Payment not confirmed")
+    expect(paymentRow?.subtitle).toContain("do not pay again")
+  })
+
   it("stops guest timelines at outbound receipt delivery", () => {
     const rows = buildOrderTimeline(
       vmFromLifecycle({ buyerIdentityKind: "guest_ephemeral" })
@@ -424,6 +450,20 @@ describe("deriveOrderHeaderStatus", () => {
     expect(status.tone).toBe("warning")
     expect(status.actionNeeded).toBe(true)
     expect(status.showSpinner).toBe(false)
+  })
+
+  it("does not request another action when a public receipt is not observed", () => {
+    const vm = vmFromLifecycle({
+      paymentStatus: "ambiguous",
+      proofDeliveryStatus: "not_started",
+      zapReceiptStatus: "receipt_not_observed",
+    })
+    const status = deriveOrderHeaderStatus(vm)
+
+    expect(status.primaryLabel).toBe("Payment unclear")
+    expect(status.detailLabel).toBe("Do not pay again")
+    expect(status.actionNeeded).toBe(false)
+    expect(vm.actionNeeded).toBe(false)
   })
 
   it("prefers the wallet-check warning over normal retry guidance", () => {
