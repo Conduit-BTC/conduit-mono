@@ -212,34 +212,29 @@ function OrderPhaseFilter({
   onChange: (value: OrderQueueTab) => void
 }) {
   return (
-    <div
-      className="mt-3 flex gap-2 overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-      style={{
-        maskImage:
-          "linear-gradient(to right, black 0, black calc(100% - 16px), transparent 100%)",
-        WebkitMaskImage:
-          "linear-gradient(to right, black 0, black calc(100% - 16px), transparent 100%)",
+    <Select
+      value={value}
+      onValueChange={(nextValue) => {
+        const selectedOption = ORDER_PHASE_OPTIONS.find(
+          (option) => option.value === nextValue
+        )
+        if (selectedOption) onChange(selectedOption.value)
       }}
     >
-      {ORDER_PHASE_OPTIONS.map((option) => {
-        const active = value === option.value
-        return (
-          <button
-            key={option.value}
-            type="button"
-            aria-pressed={active}
-            onClick={() => onChange(option.value)}
-            className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
-              active
-                ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] text-[var(--text-primary)]"
-                : "border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-            }`}
-          >
+      <SelectTrigger
+        aria-label="Filter orders by status"
+        className="mt-3 h-11 rounded-xl bg-[var(--surface)] px-3 shadow-none"
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {ORDER_PHASE_OPTIONS.map((option) => (
+          <SelectItem key={option.value} value={option.value}>
             {option.label}
-          </button>
-        )
-      })}
-    </div>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   )
 }
 
