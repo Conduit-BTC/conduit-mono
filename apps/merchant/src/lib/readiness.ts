@@ -325,9 +325,28 @@ export function serializeShippingConfig(config: ShippingConfig): string {
   return JSON.stringify(normalizeShippingConfig(config))
 }
 
+export function isStoredShippingConfigAuthoritative(
+  rawStoredConfig: string | null
+): boolean {
+  if (rawStoredConfig === null) return false
+
+  try {
+    const parsed = JSON.parse(rawStoredConfig) as { countries?: unknown }
+    if (!Array.isArray(parsed?.countries)) return false
+    if (parsed.countries.length === 0) return true
+
+    return normalizeShippingConfig(parsed).countries.length > 0
+  } catch {
+    return false
+  }
+}
+
 export function shouldHydrateShippingConfig(
   rawStoredConfig: string | null,
   remoteConfig: ShippingConfig | null
 ): remoteConfig is ShippingConfig {
-  return rawStoredConfig === null && remoteConfig !== null
+  return (
+    !isStoredShippingConfigAuthoritative(rawStoredConfig) &&
+    remoteConfig !== null
+  )
 }

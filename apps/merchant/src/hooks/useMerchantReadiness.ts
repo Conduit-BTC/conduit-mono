@@ -18,6 +18,7 @@ import {
   getShippingStorageKey,
   getMerchantSetupReadiness,
   hasNwcConfigured,
+  isStoredShippingConfigAuthoritative,
   MERCHANT_READINESS_STORAGE_EVENT,
   parseShippingConfig,
   saveShippingConfig,
@@ -145,9 +146,11 @@ export function useMerchantReadiness() {
     () => parseShippingConfig(rawShippingConfig),
     [rawShippingConfig]
   )
+  const hasAuthoritativeStoredShipping =
+    isStoredShippingConfigAuthoritative(rawShippingConfig)
   const remoteShippingQuery = useQuery({
     queryKey: ["merchant-shipping-options", pubkey ?? "none"],
-    enabled: !!pubkey && rawShippingConfig === null,
+    enabled: !!pubkey && !hasAuthoritativeStoredShipping,
     queryFn: () => getShippingOptions(pubkey!),
     staleTime: 60_000,
   })
@@ -166,7 +169,9 @@ export function useMerchantReadiness() {
   const profileComplete = isProfileComplete(profile)
   const paymentsComplete = isPaymentsComplete(profile)
   const shippingCheckPending =
-    !!pubkey && rawShippingConfig === null && remoteShippingQuery.isFetching
+    !!pubkey &&
+    !hasAuthoritativeStoredShipping &&
+    remoteShippingQuery.isFetching
 
   useEffect(() => {
     if (!pubkey || !shouldHydrateRemoteShipping) return

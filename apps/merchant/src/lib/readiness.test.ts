@@ -9,6 +9,7 @@ import {
   getShippingStorageKey,
   getMerchantSetupReadiness,
   hasNwcConfigured,
+  isStoredShippingConfigAuthoritative,
   loadShippingConfig,
   parseShippingConfig,
   parseStoredNwcConnection,
@@ -147,14 +148,32 @@ test("parses stored shipping config defensively", () => {
 })
 
 test("does not replace an intentionally stored empty shipping config", () => {
+  const storedEmptyConfig = serializeShippingConfig({ countries: [] })
+
+  expect(isStoredShippingConfigAuthoritative(storedEmptyConfig)).toBe(true)
   expect(
-    shouldHydrateShippingConfig(
-      serializeShippingConfig({ countries: [] }),
-      shippingConfig
-    )
-  ).toBe(false)
+    isStoredShippingConfigAuthoritative(JSON.stringify(shippingConfig))
+  ).toBe(true)
+  expect(shouldHydrateShippingConfig(storedEmptyConfig, shippingConfig)).toBe(
+    false
+  )
   expect(shouldHydrateShippingConfig(null, shippingConfig)).toBe(true)
   expect(shouldHydrateShippingConfig(null, { countries: [] })).toBe(true)
+})
+
+test("recovers published shipping from malformed stored config", () => {
+  const invalidStoredConfigs = [
+    "not-json",
+    JSON.stringify({}),
+    JSON.stringify({ countries: "US" }),
+    JSON.stringify({ countries: [{ code: 123 }] }),
+  ]
+
+  for (const storedConfig of invalidStoredConfigs) {
+    expect(isStoredShippingConfigAuthoritative(storedConfig)).toBe(false)
+    expect(shouldHydrateShippingConfig(storedConfig, shippingConfig)).toBe(true)
+    expect(shouldHydrateShippingConfig(storedConfig, null)).toBe(false)
+  }
 })
 
 test("maps published shipping options back into readiness config", () => {
