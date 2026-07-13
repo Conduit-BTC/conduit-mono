@@ -25,7 +25,14 @@ Store Builder ──┘
 | `@conduit/core` | Types, schemas, Nostr protocol helpers, relay planning/settings, Dexie persistence, pricing/payment helpers, React hooks |
 | `@conduit/ui`   | Shared shadcn-style components, design tokens, typography, theme styles                                                  |
 
-`@conduit/ui` does not depend on `@conduit/core`. Apps may depend on both shared packages. Shared protocol and business behavior belongs in `@conduit/core`; reusable controls and interaction primitives belong in `@conduit/ui`.
+`@conduit/core` must not depend on `@conduit/ui`. `@conduit/ui` may depend on
+`@conduit/core` for shared protocol **types and pure helpers** — the dependency
+is one-directional (build order `core → ui → apps`, no cycle) and exists so
+shared, protocol-aware presentational components (e.g. the order-message bubble
+and messenger) can live in `@conduit/ui` instead of being duplicated per app.
+`@conduit/ui` must not pull relay/network/Dexie side effects; protocol and
+business behavior still belongs in `@conduit/core`, and reusable controls and
+interaction primitives belong in `@conduit/ui`. Apps may depend on both.
 
 ---
 

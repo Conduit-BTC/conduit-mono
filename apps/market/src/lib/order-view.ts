@@ -1,7 +1,13 @@
 import {
+  deriveOrderFlow,
   extractOrderSummary,
   getOrderPublicZapSigner,
+  isKnownOrderStatus,
+  isMerchantOrderAccepted,
+  isMerchantOrderPaid,
+  orderFlowFromCheckoutMode,
   type BuyerConversationSummary,
+  type OrderFlow,
   type OrderAddressValidity,
   type OrderBuyerIdentityKind,
   type OrderCheckoutMode,
@@ -9,6 +15,7 @@ import {
   type OrderInvoiceStatus,
   type OrderLifecycle,
   type OrderLifecyclePhase,
+  type KnownOrderStatus,
   type OrderPaymentStatus,
   type OrderProofDeliveryStatus,
   type OrderPublicZapSigner,
@@ -32,6 +39,7 @@ import type { StatusStepperRow, StatusStepperRowStatus } from "@conduit/ui"
 export interface OrderViewItem {
   productId: string
   displayTitle: string
+  format: "physical" | "digital"
   quantity: number
   priceAtPurchase: number
   currency: string
@@ -42,11 +50,15 @@ export interface OrderViewModel {
   merchantPubkey: string
   buyerIdentityKind: OrderBuyerIdentityKind | null
   checkoutMode: OrderCheckoutMode | null
+  /** prepaid (zap-out) vs invoice (order-first); shared with the merchant. */
+  flow: OrderFlow
   publicZapSigner: OrderPublicZapSigner | null
   createdAt: number
   updatedAt: number
 
   items: OrderViewItem[]
+  /** False only when every item was explicitly snapshotted as digital. */
+  requiresShipping: boolean
   totalSats: number | null
   currency: string
   shippingAddress: OrderSummary["shippingAddress"]
@@ -61,15 +73,7 @@ export interface OrderViewModel {
   addressValidity: OrderAddressValidity
 
   // Merchant-driven state, observed from the conversation.
-  merchantStatus:
-    | "pending"
-    | "invoiced"
-    | "paid"
-    | "processing"
-    | "shipped"
-    | "complete"
-    | "cancelled"
-    | null
+  merchantStatus: KnownOrderStatus | null
   tracking: {
     carrier: string | null
     number: string | null
@@ -129,15 +133,26 @@ export function getOrderPaymentMethodLabel(
   }
 }
 
-const MERCHANT_STATUSES = new Set([
-  "pending",
-  "invoiced",
-  "paid",
-  "processing",
-  "shipped",
-  "complete",
-  "cancelled",
-])
+function isCompletedMerchantStatus(
+  status: OrderViewModel["merchantStatus"]
+): boolean {
+  return status === "complete" || status === "delivered"
+}
+
+/**
+ * Payment is complete from the buyer's perspective when either the local
+ * payment lifecycle confirms it or the merchant has published a status that
+ * confirms settlement. The latter keeps relay-only and partial-read views
+ * consistent when the buyer's local payment record is unavailable.
+ */
+function isBuyerOrderPaid(
+  vm: Pick<OrderViewModel, "paymentStatus" | "merchantStatus">
+): boolean {
+  return (
+    vm.paymentStatus === "paid" ||
+    isMerchantOrderPaid({ status: vm.merchantStatus })
+  )
+}
 
 /** Best-effort human title from an order item product reference. */
 export function deriveItemDisplayTitle(productId: string): string {
@@ -162,14 +177,10 @@ function latestMerchantStatus(
       if (message.type !== "status_update") continue
       if (merchantPubkey && message.senderPubkey !== merchantPubkey) continue
       const status = message.payload.status
-      if (MERCHANT_STATUSES.has(status)) {
-        return status as OrderViewModel["merchantStatus"]
-      }
+      if (isKnownOrderStatus(status)) return status
     }
   }
-  if (fallback && MERCHANT_STATUSES.has(fallback)) {
-    return fallback as OrderViewModel["merchantStatus"]
-  }
+  if (fallback && isKnownOrderStatus(fallback)) return fallback
   return null
 }
 
@@ -194,6 +205,7 @@ export function buildOrderViewModel(
         productId: item.productId,
         displayTitle:
           item.title?.trim() || deriveItemDisplayTitle(item.productId),
+        format: item.format ?? "physical",
         quantity: item.quantity,
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,
@@ -202,6 +214,7 @@ export function buildOrderViewModel(
         productId: item.productId,
         displayTitle:
           item.title?.trim() || deriveItemDisplayTitle(item.productId),
+        format: item.format,
         quantity: item.quantity,
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,
@@ -236,6 +249,7 @@ export function buildOrderViewModel(
     merchantPubkey,
     conversation?.status ?? null
   )
+  const paymentPaid = isBuyerOrderPaid({ paymentStatus, merchantStatus })
 
   const tracking =
     summary &&
@@ -250,20 +264,34 @@ export function buildOrderViewModel(
   const phase: OrderLifecyclePhase =
     merchantStatus === "cancelled"
       ? "cancelled"
-      : merchantStatus === "complete"
+      : isCompletedMerchantStatus(merchantStatus)
         ? "completed"
-        : (lifecycle?.phase ??
-          (paymentStatus === "paid" || orderDeliveryStatus === "sent"
+        : lifecycle?.phase === "completed" || lifecycle?.phase === "cancelled"
+          ? lifecycle.phase
+          : paymentPaid
             ? "in_progress"
-            : "pending"))
+            : (lifecycle?.phase ??
+              (orderDeliveryStatus === "sent" ? "in_progress" : "pending"))
 
   const actionNeeded =
-    paymentStatus === "manual_required" ||
-    paymentStatus === "failed" ||
-    paymentStatus === "ambiguous" ||
+    (!paymentPaid &&
+      (paymentStatus === "manual_required" ||
+        paymentStatus === "failed" ||
+        paymentStatus === "ambiguous")) ||
     orderDeliveryStatus === "failed" ||
     proofDeliveryStatus === "retry_needed" ||
     proofDeliveryStatus === "failed"
+
+  // Buyer knows the flow authoritatively from checkoutMode; fall back to the
+  // merchant-side heuristic when there's no lifecycle record (relay-only view).
+  const flow: OrderFlow = lifecycle?.checkoutMode
+    ? orderFlowFromCheckoutMode(lifecycle.checkoutMode)
+    : deriveOrderFlow({
+        status: null,
+        paymentObserved: paymentStatus === "paid",
+        invoiceSent:
+          invoiceStatus === "received" || invoiceStatus === "manual_required",
+      })
 
   return {
     orderId: input.orderId,
@@ -271,10 +299,13 @@ export function buildOrderViewModel(
     buyerIdentityKind:
       lifecycle?.buyerIdentityKind ?? summary?.buyerIdentityKind ?? null,
     checkoutMode: lifecycle?.checkoutMode ?? null,
+    flow,
     publicZapSigner: lifecycle?.publicZapSigner ?? null,
     createdAt: lifecycle?.createdAt ?? conversation?.latestAt ?? Date.now(),
     updatedAt: lifecycle?.updatedAt ?? conversation?.latestAt ?? Date.now(),
     items,
+    requiresShipping:
+      items.length === 0 || items.some((item) => item.format !== "digital"),
     totalSats,
     currency: lifecycle?.currency ?? summary?.currency ?? "SATS",
     shippingAddress:
@@ -447,16 +478,15 @@ function copyFor(
 export function computeOrderTimelineStatuses(
   vm: OrderViewModel
 ): Record<OrderTimelineRowKey, StatusStepperRowStatus> {
-  const paid = vm.paymentStatus === "paid"
-  const merchantConfirmed =
-    vm.merchantStatus === "processing" ||
-    vm.merchantStatus === "shipped" ||
-    vm.merchantStatus === "complete"
+  const paid = isBuyerOrderPaid(vm)
+  const merchantConfirmed = isMerchantOrderAccepted({
+    status: vm.merchantStatus,
+  })
   const shipped =
     vm.merchantStatus === "shipped" ||
-    vm.merchantStatus === "complete" ||
+    isCompletedMerchantStatus(vm.merchantStatus) ||
     !!vm.tracking
-  const completed = vm.merchantStatus === "complete"
+  const completed = isCompletedMerchantStatus(vm.merchantStatus)
 
   // 1. Order sent
   let orderSent: StatusStepperRowStatus = "waiting"
@@ -512,7 +542,11 @@ export function computeOrderTimelineStatuses(
   else if (vm.merchantStatus === "processing") fulfillment = "in_progress"
 
   // 7. Complete
-  const complete: StatusStepperRowStatus = completed ? "complete" : "waiting"
+  const complete: StatusStepperRowStatus = completed
+    ? "complete"
+    : !vm.requiresShipping && merchantConfirmed
+      ? "in_progress"
+      : "waiting"
 
   return {
     order_sent: orderSent,
@@ -526,18 +560,58 @@ export function computeOrderTimelineStatuses(
 }
 
 /** Build the seven `StatusStepperRow`s for the order detail timeline. */
+/**
+ * Coarse bucket for the orders-list phase filter, from the buyer's view: an
+ * order awaiting invoice/payment is "pending"; once paid (or the merchant is
+ * fulfilling) it is "in_progress". Distinct from `vm.phase`, which treats any
+ * sent order as in progress.
+ */
+export function getOrderFilterPhase(
+  vm: OrderViewModel
+): "pending" | "in_progress" | "completed" | "cancelled" {
+  if (vm.merchantStatus === "cancelled" || vm.phase === "cancelled") {
+    return "cancelled"
+  }
+  if (
+    isCompletedMerchantStatus(vm.merchantStatus) ||
+    vm.phase === "completed"
+  ) {
+    return "completed"
+  }
+  if (
+    isBuyerOrderPaid(vm) ||
+    vm.merchantStatus === "accepted" ||
+    vm.merchantStatus === "processing" ||
+    vm.merchantStatus === "shipped"
+  ) {
+    return "in_progress"
+  }
+  return "pending"
+}
+
 export function buildOrderTimeline(vm: OrderViewModel): StatusStepperRow[] {
   const statuses = computeOrderTimelineStatuses(vm)
   const rowOrder =
     vm.buyerIdentityKind === "guest_ephemeral"
       ? TIMELINE_ROW_ORDER.slice(0, 4)
-      : TIMELINE_ROW_ORDER
+      : vm.requiresShipping
+        ? TIMELINE_ROW_ORDER
+        : TIMELINE_ROW_ORDER.filter((key) => key !== "fulfillment")
   return rowOrder.map((key) => {
     const status = statuses[key]
     const copy = copyFor(key, status)
     let title = copy.title
     let subtitle = copy.subtitle
-    if (key === "payment" && vm.paymentStatus === "ambiguous") {
+    // Prepaid (zap-out) orders have no merchant invoice; reflect direct payment.
+    if (key === "invoice" && vm.flow === "prepaid") {
+      title = status === "complete" ? "Paid directly" : "Direct payment"
+      subtitle =
+        "Paid the merchant directly over Lightning — no invoice needed."
+    } else if (
+      key === "payment" &&
+      vm.paymentStatus === "ambiguous" &&
+      !isBuyerOrderPaid(vm)
+    ) {
       title = "Payment needs review"
       subtitle =
         "We couldn't confirm this payment moved. Check your wallet, then message the merchant before retrying."
@@ -570,6 +644,8 @@ export interface OrderHeaderStatus {
  * (e.g. `Paid · Receipt sent`, `Pending · Awaiting invoice`).
  */
 export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
+  const paid = isBuyerOrderPaid(vm)
+
   if (vm.merchantStatus === "cancelled" || vm.phase === "cancelled") {
     return {
       tone: "neutral",
@@ -579,7 +655,16 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       showSpinner: false,
     }
   }
-  if (vm.merchantStatus === "complete") {
+  if (vm.merchantStatus === "refund_requested") {
+    return {
+      tone: "warning",
+      primaryLabel: "Refund requested",
+      detailLabel: "Awaiting merchant response",
+      actionNeeded: false,
+      showSpinner: false,
+    }
+  }
+  if (isCompletedMerchantStatus(vm.merchantStatus)) {
     return {
       tone: "success",
       primaryLabel: "Completed",
@@ -597,7 +682,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       showSpinner: false,
     }
   }
-  if (vm.paymentStatus === "failed") {
+  if (vm.paymentStatus === "failed" && !paid) {
     return {
       tone: "error",
       primaryLabel: "Payment failed",
@@ -606,7 +691,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       showSpinner: false,
     }
   }
-  if (vm.paymentStatus === "ambiguous") {
+  if (vm.paymentStatus === "ambiguous" && !paid) {
     return {
       tone: "warning",
       primaryLabel: "Payment unclear",
@@ -615,7 +700,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       showSpinner: false,
     }
   }
-  if (vm.paymentStatus === "manual_required") {
+  if (vm.paymentStatus === "manual_required" && !paid) {
     return {
       tone: "warning",
       primaryLabel: "Action needed",
@@ -624,7 +709,7 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       showSpinner: false,
     }
   }
-  if (vm.paymentStatus === "paid") {
+  if (paid) {
     if (vm.merchantStatus === "shipped") {
       return {
         tone: "info",
@@ -634,7 +719,10 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
         showSpinner: false,
       }
     }
-    if (vm.merchantStatus === "processing") {
+    if (
+      vm.merchantStatus === "processing" ||
+      vm.merchantStatus === "accepted"
+    ) {
       return {
         tone: "info",
         primaryLabel: "In progress",
@@ -679,6 +767,15 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       detailLabel: "Waiting for merchant",
       actionNeeded: false,
       showSpinner: true,
+    }
+  }
+  if (vm.merchantStatus === "accepted") {
+    return {
+      tone: "info",
+      primaryLabel: "In progress",
+      detailLabel: "Merchant accepted",
+      actionNeeded: false,
+      showSpinner: false,
     }
   }
   if (vm.paymentStatus === "paying") {

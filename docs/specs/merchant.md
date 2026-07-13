@@ -45,15 +45,30 @@ The current product uses focused pages plus dashboard readiness. Do not re-open 
 
 1. Receive order via NIP-17 message
 2. View order details and buyer context
-3. Send payment request when fallback invoice flow is needed
-4. Inspect payment proof when buyer sends payment evidence
-5. Confirm payment state
-6. Send status and shipping updates
+3. Inspect and verify a payment report or proof when the buyer sends payment
+   evidence
+4. Send a payment request only for an unpaid order whose flow requires an
+   invoice
+5. Confirm settlement; confirmed paid orders are accepted and move directly to
+   fulfillment
+6. Record processing, shipment, and completion through contextual actions
 
-For `guest_ephemeral` orders, steps 3 and 6 occur out of band using the required
-phone/email shown in order details. The guest pubkey is an outbound order sender,
-not a reply-capable Nostr inbox; Merchant must not offer Nostr invoice, status,
-shipping, or reply controls for that order.
+For `guest_ephemeral` orders, buyer contact occurs out of band using the required
+phone/email shown in order details. The guest pubkey is an outbound order
+sender, not a reply-capable Nostr inbox; Merchant must not claim to send Nostr
+invoice, status, shipping, or reply messages to that key. Merchant may still
+record decisions and fulfillment as encrypted messages addressed to itself so
+the order has a durable operational trail. Guest actions must be labeled as
+records of out-of-band work, not as buyer DMs or proof that the buyer was
+notified.
+
+A confirmed paid order does not require a separate accept action. Its ordinary
+next step is fulfillment, with cancellation plus explicit manual-refund
+coordination as the alternative. Buyer-reported payment and payment proof are
+not equivalent to confirmed settlement and remain in a verification queue until
+the merchant confirms payment or cancels the order. An ordinary invoice action is hidden
+after settlement is confirmed; requesting additional funds for a paid order is
+not part of the standard workflow.
 
 ### Communication
 
@@ -62,7 +77,8 @@ shipping, or reply controls for that order.
 3. Preserve payment requests, payment proofs, status updates, shipping updates, and receipts as conversation evidence
 
 The NIP-17 reply path applies to signed-in buyers. Guest order/payment reports
-remain visible as inbound evidence, while follow-up uses the order contact fields.
+remain visible as inbound evidence, while follow-up uses the order contact
+fields and merchant self-copy records preserve the operational history.
 
 ## Pages
 
@@ -177,7 +193,46 @@ pending -> invoiced -> paid -> processing -> shipped -> complete
 - shipped
 - complete
 - cancelled
-- mismatch/unverified/disputed
+- mismatch/unverified
+
+The merchant workspace projects this event history onto four independent axes:
+
+- **Settlement:** `unpaid`, `reported`, `proof_observed`, or `confirmed`
+- **Decision:** `unreviewed`, `accepted`, or `declined`; confirmed settlement
+  implies `accepted`
+- **Fulfillment:** `not_started`, `processing`, `shipped`, or `complete`
+- **Communication:** `nostr_replyable`, `guest_out_of_band`, or `unknown`
+
+The axes determine a contextual next action. The primary UI must not expose the
+raw status vocabulary as a general-purpose manual console. Useful queue filters
+are **Paid—fulfill**, **Payment reported—verify**, **Unpaid—review**, **Shipped**,
+and **Closed**, plus an all-orders view.
+
+Order-progress copy is state-aware: completed rows describe what happened, the
+single active row names the current task and tells the merchant how to advance,
+and waiting rows describe the later gate. A row must not use completed-state
+wording such as `Shipped` while its status is still in progress. The Actions
+surface presents the recommended **Next step** first. Cancellation and other
+destructive alternatives appear afterward under **Other actions**, use
+destructive styling, and retain confirmation plus refund-risk copy where funds
+have already moved or payment evidence suggests they may have moved. Cancelled
+and refund-requested orders stop at their terminal row instead of presenting a
+later fulfillment task as active or waiting. When the buyer has no confirmed
+Nostr reply inbox, the next-step prompt must direct the merchant to the order's
+out-of-band contact details rather than offering an invoice that cannot be
+delivered. After verifying out-of-band settlement, the merchant can record a
+self-copy payment confirmation that unlocks fulfillment.
+
+Shipment is one domain action: it requires a tracking code and carrier, accepts
+an optional tracking URL and additional notes, records the shipping update, and
+advances fulfillment to `shipped`. Merchants should not have to publish a
+separate generic `shipped` status after recording the shipment. Digital-only
+orders skip shipment and proceed directly to delivery confirmation; mixed
+orders still follow the physical shipment path. Merchant may skip shipment only
+after resolving every product reference to merchant-authored listings and
+confirming both the order snapshot and current listing are digital. Either
+source may preserve a physical requirement; missing, deleted, unresolved, or
+legacy listings remain shipping-required.
 
 ## Order Message Types
 
@@ -191,6 +246,12 @@ Received via NIP-17 DMs:
 | `status_update`   | State transition                      |
 | `shipping_update` | Tracking or shipping info             |
 | `receipt`         | Final confirmation                    |
+
+This iteration preserves the current kind `16` inner private commerce-message
+encoding and existing read behavior. The known kind collision and migration to
+a future Open Markets Foundation/Gamma commerce-message kind are tracked as a
+separate interoperability change. Merchant fulfillment work in this iteration
+must not mix old and proposed kinds or begin a partial migration.
 
 ## Store Profile
 

@@ -1,4 +1,4 @@
-import type { ProductZapMessagePolicy } from "../schemas"
+import type { KnownOrderStatus, ProductZapMessagePolicy } from "../schemas"
 
 // Nostr primitives
 export type Pubkey = string
@@ -71,14 +71,7 @@ export interface Profile {
 }
 
 // Order types
-export type OrderStatus =
-  | "pending"
-  | "paid"
-  | "accepted"
-  | "shipped"
-  | "delivered"
-  | "cancelled"
-  | "refund_requested"
+export type OrderStatus = KnownOrderStatus
 
 export interface Order {
   id: string
@@ -95,6 +88,7 @@ export interface Order {
 
 export interface OrderItem {
   productId: string
+  format: "physical" | "digital"
   quantity: number
   priceAtPurchase: number
   currency: string

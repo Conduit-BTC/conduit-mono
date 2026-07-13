@@ -305,7 +305,7 @@ function UserMenu({ className }: { className?: string } = {}) {
         <button
           type="button"
           className={cn(
-            "inline-flex h-12 min-w-[12.75rem] items-center gap-3 rounded-[16px] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 text-left text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
+            "inline-flex h-12 min-w-[12.75rem] items-center gap-3 rounded-[16px] bg-primary-500 px-3 text-left text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50",
             className
           )}
         >
@@ -322,7 +322,7 @@ function UserMenu({ className }: { className?: string } = {}) {
             {setupIncomplete ? (
               <span
                 aria-hidden="true"
-                className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-[var(--surface-elevated)] bg-[var(--warning)]"
+                className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-primary-500 bg-[var(--warning)]"
               />
             ) : null}
           </span>
@@ -330,11 +330,11 @@ function UserMenu({ className }: { className?: string } = {}) {
             <span className="block truncate text-sm font-semibold">
               {displayName}
             </span>
-            <span className="block truncate text-[11px] text-[var(--text-secondary)]">
+            <span className="block truncate text-[11px] text-white/70">
               {npub}
             </span>
           </span>
-          <ChevronDown className="h-4 w-4 shrink-0 text-[var(--text-secondary)]" />
+          <ChevronDown className="h-4 w-4 shrink-0 text-white/70" />
         </button>
       </DropdownMenuTrigger>
 
@@ -448,7 +448,7 @@ export function MerchantMobileNav() {
         <Button
           variant="ghost"
           size="sm"
-          className="h-11 w-11 rounded-xl lg:hidden"
+          className="h-11 w-11 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-md lg:hidden"
           aria-label="Open menu"
         >
           <Menu className="h-5 w-5" />
@@ -481,12 +481,12 @@ export function MerchantMobileNav() {
             />
           </div>
 
-          <div className="mt-6 shrink-0 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+          <div className="mt-6 shrink-0 space-y-3">
             {config.lightningNetwork !== "mainnet" && (
               <Badge
                 variant="secondary"
                 className={cn(
-                  "mb-3 border",
+                  "self-start border",
                   config.lightningNetwork === "mock"
                     ? "border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] text-[var(--warning)]"
                     : "border-[var(--info)] bg-[color-mix(in_srgb,var(--info)_10%,transparent)] text-[var(--info)]"

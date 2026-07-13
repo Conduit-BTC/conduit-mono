@@ -33,6 +33,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DoubleSideStatusPill,
   Input,
   Label,
   ProductCard,
@@ -276,6 +277,22 @@ function getZapPolicyLabel(product: ProductSchema): string {
   }
 }
 
+function getZapPolicyBadge(product: ProductSchema): {
+  left: string
+  right: string
+} {
+  if (!product.publicZapPolicyKnown) return { left: "Zap", right: "unknown" }
+  if (!product.publicZapEnabled)
+    return { left: "Checkout", right: "invoice only" }
+
+  switch (product.zapMessagePolicy) {
+    case "custom":
+      return { left: "Public zap", right: "shopper custom" }
+    case "generic_only":
+      return { left: "Public zap", right: "generic" }
+  }
+}
+
 function ListingSafetySummary({
   item,
   onEdit,
@@ -290,13 +307,10 @@ function ListingSafetySummary({
 
   if (isActive) {
     return (
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2">
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2">
         <StatusPill variant="success" className="text-[10px]">
           {display.label}
         </StatusPill>
-        <span className="text-xs text-[var(--text-secondary)]">
-          {zapPolicyLabel}
-        </span>
       </div>
     )
   }
@@ -1073,14 +1087,32 @@ function ProductsPage() {
               )
             }
 
+            const isActive = item.safety.state === "active"
+            const zapBadge = getZapPolicyBadge(item.product)
+
             return (
               <div key={item.addressId} className="grid gap-2">
-                <ListingSafetySummary
-                  item={item}
-                  onEdit={() => openEditDialog(item)}
-                />
+                {!isActive && (
+                  <ListingSafetySummary
+                    item={item}
+                    onEdit={() => openEditDialog(item)}
+                  />
+                )}
                 <ProductCard
                   title={item.product.title}
+                  titleAside={
+                    <div className="flex flex-col items-end gap-1">
+                      {isActive && (
+                        <StatusPill variant="success" className="text-[10px]">
+                          Active
+                        </StatusPill>
+                      )}
+                      <DoubleSideStatusPill
+                        left={zapBadge.left}
+                        right={zapBadge.right}
+                      />
+                    </div>
+                  }
                   merchantName="Your store"
                   images={getProductImageCandidates(item.product)}
                   primaryPrice={primary}

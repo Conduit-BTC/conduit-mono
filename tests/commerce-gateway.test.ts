@@ -5,6 +5,8 @@ import {
   __setCommerceTestOverrides,
   cacheParsedOrderMessage,
   getBuyerConversationList,
+  getCachedBuyerConversationList,
+  getCachedMerchantConversationList,
   getCachedMarketplaceProducts,
   getConversationDetail,
   getMarketplaceProducts,
@@ -750,6 +752,177 @@ describe("commerce gateway", () => {
     expect(detailResult.data?.messages).toHaveLength(2)
   })
 
+  it("separates buyer-placed and merchant-received orders by role", async () => {
+    const orderRow = (
+      orderId: string,
+      sender: string,
+      recipient: string
+    ): CachedOrderMessage => ({
+      id: `${orderId}-order`,
+      orderId,
+      type: "order",
+      senderPubkey: sender,
+      recipientPubkey: recipient,
+      createdAt: FIXED_NOW - 10_000,
+      rawContent: JSON.stringify({
+        id: `${orderId}-order`,
+        orderId,
+        type: "order",
+        createdAt: FIXED_NOW - 10_000,
+        senderPubkey: sender,
+        recipientPubkey: recipient,
+        rawContent: "",
+        payload: {
+          id: orderId,
+          merchantPubkey: recipient,
+          buyerPubkey: sender,
+          items: [
+            {
+              productId: "30402:x:item",
+              quantity: 1,
+              priceAtPurchase: 10,
+              currency: "USD",
+            },
+          ],
+          subtotal: 10,
+          currency: "USD",
+          createdAt: FIXED_NOW - 10_000,
+        },
+      }),
+      cachedAt: FIXED_NOW - 10_000,
+    })
+
+    // "dual" is both a buyer (placed order-buy to a merchant) and a merchant
+    // (received order-sell from a buyer); both land in its inbox cache.
+    cachedOrderMessages.push(
+      orderRow("order-buy", "dual", "other-merchant"),
+      orderRow("order-sell", "other-buyer", "dual")
+    )
+
+    __setCommerceTestOverrides({
+      requireNdkConnected: async () => ({ signer: undefined }) as never,
+    })
+
+    const asBuyer = await getCachedBuyerConversationList({
+      principalPubkey: "dual",
+    })
+    const asMerchant = await getCachedMerchantConversationList({
+      principalPubkey: "dual",
+    })
+
+    expect(asBuyer.data.map((row) => row.orderId)).toEqual(["order-buy"])
+    expect(asBuyer.data[0]?.merchantPubkey).toBe("other-merchant")
+    expect(asMerchant.data.map((row) => row.orderId)).toEqual(["order-sell"])
+    expect(asMerchant.data[0]?.buyerPubkey).toBe("other-buyer")
+  })
+
+  it("excludes chat-only (ambiguous-role) buckets from both roles", async () => {
+    // A `message` can come from either side, so a bucket holding only chat has
+    // no determinable role and must not surface in either view.
+    cachedOrderMessages.push({
+      id: "orphan-chat",
+      orderId: "orphan",
+      type: "message",
+      senderPubkey: "someone",
+      recipientPubkey: "dual",
+      createdAt: FIXED_NOW - 5_000,
+      rawContent: JSON.stringify({
+        id: "orphan-chat",
+        orderId: "orphan",
+        type: "message",
+        createdAt: FIXED_NOW - 5_000,
+        senderPubkey: "someone",
+        recipientPubkey: "dual",
+        rawContent: "",
+        payload: { note: "hi" },
+      }),
+      cachedAt: FIXED_NOW - 5_000,
+    })
+
+    __setCommerceTestOverrides({
+      requireNdkConnected: async () => ({ signer: undefined }) as never,
+    })
+
+    const asBuyer = await getCachedBuyerConversationList({
+      principalPubkey: "dual",
+    })
+    const asMerchant = await getCachedMerchantConversationList({
+      principalPubkey: "dual",
+    })
+
+    expect(asBuyer.data.map((row) => row.orderId)).not.toContain("orphan")
+    expect(asMerchant.data.map((row) => row.orderId)).not.toContain("orphan")
+  })
+
+  it("excludes partial buckets with conflicting roles or counterparties", async () => {
+    const partialRow = (
+      id: string,
+      orderId: string,
+      type: "payment_proof" | "status_update",
+      senderPubkey: string,
+      recipientPubkey: string
+    ): CachedOrderMessage => ({
+      id,
+      orderId,
+      type,
+      senderPubkey,
+      recipientPubkey,
+      createdAt: FIXED_NOW - 5_000,
+      rawContent: JSON.stringify({
+        id,
+        orderId,
+        type,
+        createdAt: FIXED_NOW - 5_000,
+        senderPubkey,
+        recipientPubkey,
+        rawContent: "",
+        payload: type === "status_update" ? { status: "accepted" } : {},
+      }),
+      cachedAt: FIXED_NOW - 5_000,
+    })
+
+    cachedOrderMessages.push(
+      partialRow(
+        "role-proof",
+        "role-conflict",
+        "payment_proof",
+        "dual",
+        "counterparty"
+      ),
+      partialRow(
+        "role-status",
+        "role-conflict",
+        "status_update",
+        "dual",
+        "counterparty"
+      ),
+      partialRow(
+        "counterparty-proof-a",
+        "counterparty-conflict",
+        "payment_proof",
+        "buyer-a",
+        "dual"
+      ),
+      partialRow(
+        "counterparty-proof-b",
+        "counterparty-conflict",
+        "payment_proof",
+        "buyer-b",
+        "dual"
+      )
+    )
+
+    const asBuyer = await getCachedBuyerConversationList({
+      principalPubkey: "dual",
+    })
+    const asMerchant = await getCachedMerchantConversationList({
+      principalPubkey: "dual",
+    })
+
+    expect(asBuyer.data).toHaveLength(0)
+    expect(asMerchant.data).toHaveLength(0)
+  })
+
   it("persists buyer-originated order messages into the conversation cache", async () => {
     await cacheParsedOrderMessage({
       id: "local-order-msg",
@@ -874,7 +1047,7 @@ describe("commerce gateway", () => {
     expect(second.data[0]?.orderId).toBe("order-3")
   })
 
-  it("shows merchant payment-proof-only conversations as paid", async () => {
+  it("keeps payment-proof-only merchant conversations visible without marking them paid", async () => {
     const merchantPubkey = "merchant"
     const buyerPubkey = "buyer"
     const wrappedEvent = {
@@ -927,11 +1100,12 @@ describe("commerce gateway", () => {
     expect(result.data).toHaveLength(1)
     expect(result.data[0]?.orderId).toBe("order-proof-1")
     expect(result.data[0]?.buyerPubkey).toBe(buyerPubkey)
+    expect(result.data[0]?.merchantPubkey).toBe(merchantPubkey)
     expect(result.data[0]?.latestType).toBe("payment_proof")
-    expect(result.data[0]?.status).toBe("paid")
+    expect(result.data[0]?.status).toBeNull()
   })
 
-  it("does not mark malformed payment-proof-only conversations as paid", async () => {
+  it("keeps malformed payment-proof-only buckets visible but unpaid", async () => {
     const merchantPubkey = "merchant"
     const buyerPubkey = "buyer"
     const wrappedEvent = {
@@ -971,8 +1145,6 @@ describe("commerce gateway", () => {
 
     expect(result.data).toHaveLength(1)
     expect(result.data[0]?.orderId).toBe("order-proof-malformed")
-    expect(result.data[0]?.buyerPubkey).toBe(buyerPubkey)
-    expect(result.data[0]?.latestType).toBe("payment_proof")
     expect(result.data[0]?.status).toBeNull()
   })
 

@@ -1,14 +1,20 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  appendConduitClientTag,
+  cacheParsedOrderMessage,
   db,
+  EVENT_KINDS,
   formatNpub,
   formatPubkey,
+  getNdk,
   getProductPriceDisplay,
   getOrderPublicZapSigner,
   listOrderLifecycles,
   normalizeLightningInvoice,
+  parseOrderMessageRumorEvent,
+  publishWithPlanner,
   pruneExpiredGuestOrderData,
   pubkeyToNpub,
   useAuth,
@@ -16,8 +22,10 @@ import {
   useProfiles,
   type OrderLifecycle,
 } from "@conduit/core"
+import { giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import {
   Button,
+  OrderMessagesWidget,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -56,6 +64,7 @@ import {
   buildOrderTimeline,
   buildOrderViewModel,
   deriveOrderHeaderStatus,
+  getOrderFilterPhase,
   getOrderPaymentMethodLabel,
   type OrderHeaderStatus,
   type OrderViewModel,
@@ -328,15 +337,17 @@ function MobileOrdersScroller({
   merchantName: (pk: string) => string
   onSelect: (orderId: string) => void
 }) {
-  const orderedRows = useMemo(() => {
-    if (!selectedOrderId) return rows
-    const selectedRow = rows.find((row) => row.orderId === selectedOrderId)
-    if (!selectedRow) return rows
-    return [
-      selectedRow,
-      ...rows.filter((row) => row.orderId !== selectedOrderId),
-    ]
-  }, [rows, selectedOrderId])
+  const cardRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
+
+  // Keep the natural order; scroll the selected order into view instead.
+  useEffect(() => {
+    if (!selectedOrderId) return
+    cardRefs.current.get(selectedOrderId)?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "center",
+    })
+  }, [selectedOrderId])
 
   return (
     <section className="min-w-0 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
@@ -355,12 +366,16 @@ function MobileOrdersScroller({
           }}
         >
           <div className="flex min-w-max gap-3 pb-1 pr-14 snap-x snap-mandatory">
-            {orderedRows.map((row) => {
+            {rows.map((row) => {
               const active = row.orderId === selectedOrderId
               return (
                 <button
                   key={row.orderId}
                   type="button"
+                  ref={(el) => {
+                    if (el) cardRefs.current.set(row.orderId, el)
+                    else cardRefs.current.delete(row.orderId)
+                  }}
                   onClick={() => onSelect(row.orderId)}
                   className={[
                     "w-[16.5rem] shrink-0 snap-start rounded-[1.25rem] border p-4 text-left transition-[border-color,background-color,transform]",
@@ -587,6 +602,28 @@ function ExternalWalletPanel({
   )
 }
 
+function prepareBuyerConversationRumor(
+  rumor: NDKEvent,
+  buyerPubkey: string
+): void {
+  rumor.pubkey = buyerPubkey
+  if (rumor.id) return
+  try {
+    rumor.id = rumor.getEventHash()
+  } catch (error) {
+    console.warn("Failed to derive buyer message rumor id", error)
+  }
+}
+
+async function cacheBuyerConversationRumor(rumor: NDKEvent): Promise<void> {
+  try {
+    if (!rumor.id) throw new Error("Missing buyer message rumor id")
+    await cacheParsedOrderMessage(parseOrderMessageRumorEvent(rumor))
+  } catch (error) {
+    console.warn("Failed to cache buyer message", error)
+  }
+}
+
 function OrderDetail({
   row,
   buyerPubkey,
@@ -605,6 +642,9 @@ function OrderDetail({
   const merchantName = getMerchantDisplayName(profile, row.merchantPubkey)
   const [busy, setBusy] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const [messagesOpen, setMessagesOpen] = useState(false)
+  const [replyText, setReplyText] = useState("")
+  const queryClient = useQueryClient()
 
   const productsQuery = useQuery({
     queryKey: ["selected-order-products", row.merchantPubkey],
@@ -664,12 +704,88 @@ function OrderDetail({
     (vm.proofDeliveryStatus === "retry_needed" ||
       vm.proofDeliveryStatus === "failed")
 
+  const replyMutation = useMutation({
+    mutationFn: async () => {
+      if (guestIdentity) throw new Error("Guest orders cannot send messages")
+      if (!replyText.trim()) throw new Error("Message is required")
+      const ndk = getNdk()
+      if (!ndk.signer) throw new Error("Signer not connected")
+
+      const rumor = new NDKEvent(ndk)
+      rumor.kind = EVENT_KINDS.ORDER
+      rumor.created_at = Math.floor(Date.now() / 1000)
+      rumor.tags = appendConduitClientTag(
+        [
+          ["p", row.merchantPubkey],
+          ["type", "message"],
+          ["order", vm.orderId],
+        ],
+        "market"
+      )
+      rumor.content = JSON.stringify({
+        note: replyText.trim(),
+        orderId: vm.orderId,
+        merchantPubkey: row.merchantPubkey,
+        buyerPubkey,
+        createdAt: Date.now(),
+      })
+      prepareBuyerConversationRumor(rumor, buyerPubkey)
+
+      const merchantUser = new NDKUser({ pubkey: row.merchantPubkey })
+      const buyerUser = new NDKUser({ pubkey: buyerPubkey })
+      const [wrappedToMerchant, wrappedToBuyer] = await Promise.all([
+        giftWrap(rumor, merchantUser, ndk.signer, {
+          rumorKind: EVENT_KINDS.ORDER,
+        }),
+        giftWrap(rumor, buyerUser, ndk.signer, {
+          rumorKind: EVENT_KINDS.ORDER,
+        }),
+      ])
+
+      await publishWithPlanner(wrappedToMerchant, {
+        intent: "recipient_event",
+        authorPubkey: buyerPubkey,
+        authenticatedPubkey: buyerPubkey,
+        recipientPubkeys: [row.merchantPubkey],
+        refreshRelayLists: true,
+        deliveryMode: "critical",
+      })
+      try {
+        await publishWithPlanner(wrappedToBuyer, {
+          intent: "recipient_event",
+          authorPubkey: buyerPubkey,
+          authenticatedPubkey: buyerPubkey,
+          recipientPubkeys: [buyerPubkey],
+          refreshRelayLists: true,
+          deliveryMode: "critical",
+        })
+      } catch (error) {
+        console.warn("Buyer message self-copy publish failed", error)
+      }
+
+      await cacheBuyerConversationRumor(rumor)
+    },
+    onSuccess: async () => {
+      setReplyText("")
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["buyer-messages", buyerPubkey],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["buyer-messages-live", buyerPubkey],
+        }),
+      ])
+    },
+  })
+
   const messageMerchant = guestIdentity ? null : (
-    <Button asChild variant="outline" className="h-10 px-4 text-sm">
-      <Link to="/messages" search={{ tab: "merchants", thread: vm.orderId }}>
-        <MessageCircle className="h-4 w-4" />
-        Message merchant
-      </Link>
+    <Button
+      variant="outline"
+      className="h-10 px-4 text-sm"
+      onClick={() => setMessagesOpen(true)}
+    >
+      <MessageCircle className="h-4 w-4" />
+      Message merchant
     </Button>
   )
 
@@ -817,13 +933,12 @@ function OrderDetail({
                   Shipping address
                 </h3>
                 {!guestIdentity && (
-                  <Button asChild variant="ghost" className="h-8 px-3 text-xs">
-                    <Link
-                      to="/messages"
-                      search={{ tab: "merchants", thread: vm.orderId }}
-                    >
-                      Edit
-                    </Link>
+                  <Button
+                    variant="ghost"
+                    className="h-8 px-3 text-xs"
+                    onClick={() => setMessagesOpen(true)}
+                  >
+                    Send correction
                   </Button>
                 )}
               </div>
@@ -849,6 +964,8 @@ function OrderDetail({
             <button
               type="button"
               onClick={() => setDetailsOpen((open) => !open)}
+              aria-expanded={detailsOpen}
+              aria-controls="market-order-details-panel"
               className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left"
             >
               <span className="text-sm font-semibold text-[var(--text-primary)]">
@@ -859,7 +976,10 @@ function OrderDetail({
               />
             </button>
             {detailsOpen && (
-              <div className="space-y-2 border-t border-[var(--border)] px-5 py-4 text-sm">
+              <div
+                id="market-order-details-panel"
+                className="space-y-2 border-t border-[var(--border)] px-5 py-4 text-sm"
+              >
                 <DetailRow label="Order ID">
                   <span className="font-mono text-xs">
                     {formatPubkey(vm.orderId, 8)}
@@ -918,6 +1038,34 @@ function OrderDetail({
           </section>
         </div>
       </div>
+
+      {!guestIdentity && (
+        <OrderMessagesWidget
+          open={messagesOpen}
+          onOpenChange={setMessagesOpen}
+          subtitle={merchantName}
+          messages={row.conversation?.messages ?? []}
+          selfPubkey={buyerPubkey}
+          replyValue={replyText}
+          onReplyChange={setReplyText}
+          onSend={() => replyMutation.mutate()}
+          sending={replyMutation.isPending}
+          error={
+            replyMutation.error instanceof Error
+              ? replyMutation.error.message
+              : replyMutation.error
+                ? "Failed to send message"
+                : null
+          }
+          placeholder="Message the merchant, then press Enter"
+          resolveItem={(id) => {
+            const product = productsById.get(id)
+            return product
+              ? { title: product.title, imageUrl: product.images[0]?.url }
+              : undefined
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -971,22 +1119,6 @@ function OrdersPage() {
     }, delayMs)
     return () => window.clearTimeout(timer)
   }, [guestIdentity])
-  // The phase tabs only exist on the mobile layout. Track the desktop breakpoint
-  // (xl = 1280px) so a tab chosen on a narrow viewport doesn't silently filter
-  // the tab-less desktop rail after a resize.
-  const [isDesktop, setIsDesktop] = useState(
-    () =>
-      typeof window !== "undefined" &&
-      window.matchMedia("(min-width: 1280px)").matches
-  )
-  useEffect(() => {
-    const mql = window.matchMedia("(min-width: 1280px)")
-    const onChange = () => setIsDesktop(mql.matches)
-    onChange()
-    mql.addEventListener("change", onChange)
-    return () => mql.removeEventListener("change", onChange)
-  }, [])
-  const effectiveTab: PhaseTab = isDesktop ? "all" : tab
   const [refreshButtonState, setRefreshButtonState] = useState<
     "idle" | "refreshing" | "done"
   >("idle")
@@ -1132,11 +1264,7 @@ function OrdersPage() {
   const filteredOrders = useMemo(() => {
     const query = searchValue.trim().toLowerCase()
     return orders.filter((row) => {
-      if (effectiveTab !== "all" && row.vm.phase !== effectiveTab) {
-        // "in_progress" tab also surfaces failed/action-needed active orders.
-        if (!(effectiveTab === "in_progress" && row.headerStatus.actionNeeded))
-          return false
-      }
+      if (tab !== "all" && getOrderFilterPhase(row.vm) !== tab) return false
       if (!query) return true
       return (
         merchantName(row.merchantPubkey).toLowerCase().includes(query) ||
@@ -1148,7 +1276,7 @@ function OrdersPage() {
         )
       )
     })
-  }, [effectiveTab, merchantName, orders, searchValue])
+  }, [tab, merchantName, orders, searchValue])
 
   const selectedOrderId = useMemo(() => {
     if (
@@ -1293,6 +1421,7 @@ function OrdersPage() {
                 Your orders
               </div>
               <SearchBox value={searchValue} onChange={setSearchValue} />
+              <MobileOrderFilterPills tab={tab} onChange={setTab} />
               <OrderList
                 rows={filteredOrders}
                 selectedOrderId={selectedOrderId}
@@ -1336,6 +1465,7 @@ function OrdersPage() {
                   <SheetTitle>Your orders</SheetTitle>
                 </SheetHeader>
                 <SearchBox value={searchValue} onChange={setSearchValue} />
+                <MobileOrderFilterPills tab={tab} onChange={setTab} />
                 <OrderList
                   rows={filteredOrders}
                   selectedOrderId={selectedOrderId}
@@ -1353,6 +1483,7 @@ function OrdersPage() {
           <section className="min-w-0">
             {selectedRow ? (
               <OrderDetail
+                key={selectedRow.orderId}
                 row={selectedRow}
                 buyerPubkey={activeBuyerPubkey}
                 guestIdentity={guestIdentity}
@@ -1380,6 +1511,7 @@ function SearchBox({
     <div className="relative mt-3">
       <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
       <input
+        aria-label="Search orders"
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder="Search orders"

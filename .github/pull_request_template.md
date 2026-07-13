@@ -13,13 +13,21 @@
 - Tracker issue:
 - Workstream:
 - Planning context checked: <!-- Check the relevant tracker/Linear context for current workstream or phase; do not copy private planning details into this public PR. -->
+
+## Contract Changes
+
 - Source docs/specs:
-- Docs/spec PR:
+- Contract delta: <!-- `None` or describe the requirement/protocol/shared UX change included in this PR. -->
+- External decision/proposal: <!-- Link only when broad architecture or external consensus must be settled separately. -->
+
+## Implementation Changes
+
+-
 
 ## PR Checks
 
 - [ ] PR title uses Conventional Commits (`type(scope): description`)
-- [ ] Relevant docs/spec PR is already merged to `main`, or this PR is the docs/spec PR
+- [ ] Required contract changes are included in this PR and match the implementation, or no contract change is needed
 
 ## Scope
 
@@ -47,25 +55,17 @@ Complete this section when the PR touches protocol/app logic, infra/relay behavi
 - [ ] New protocol construction, `giftWrap`, publish, unwrap/decrypt, relay planning, or event parsing lives in `@conduit/core`, or the PR explains why route-local code is unavoidable
 - [ ] Diagnostics/logs/telemetry remain content-free: no plaintext, ciphertext, invoices, order contents, addresses, signer secrets, NWC URIs, or message bodies
 
-## Context Follow-Up
-
-Author notes:
-
-- Potential docs/context follow-up:
+## Contract Review
 
 Reviewer decision:
 
-- [ ] No docs follow-up needed
-- [ ] Docs-only PR after merge
-- [ ] Docs/spec PR required before merge
+- [ ] Contract updated in this PR and matches implementation
+- [ ] No contract change needed
+- [ ] Separate decision/docs-only PR required
 
 Reviewer note:
 
-<!-- Reviewers own this decision. Agents may suggest possible drift, but docs-only follow-up PRs should be opened separately and reviewed separately. -->
-
-## Changes
-
--
+<!-- Block merge for a missing or mismatched contract. Use a separate decision or docs-only PR only for broad cross-PR architecture or external consensus. -->
 
 ## Test Plan
 

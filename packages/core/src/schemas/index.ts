@@ -141,6 +141,8 @@ export type OrderGuestContactSchema = z.infer<typeof orderGuestContactSchema>
 export const orderItemSchema = z.object({
   productId: z.string(),
   title: z.string().max(200).optional(),
+  /** Durable fulfillment snapshot; legacy orders remain physical-safe. */
+  format: z.enum(["physical", "digital"]).default("physical"),
   quantity: z.number().int().min(1),
   priceAtPurchase: z.number().min(0),
   currency: z.string(),
@@ -237,16 +239,29 @@ export type OrderMessageTypeSchema = z.infer<typeof orderMessageTypeSchema>
 /**
  * MVP order status updates sent over NIP-17.
  */
-/** Known status values for our emitters. */
-export const orderStatusEnum = z.enum([
+/** Canonical status values for Conduit emitters and presentation. */
+export const KNOWN_ORDER_STATUSES = [
   "pending",
   "invoiced",
   "paid",
+  "accepted",
   "processing",
   "shipped",
   "complete",
+  "delivered",
   "cancelled",
-])
+  "refund_requested",
+] as const
+
+export const orderStatusEnum = z.enum(KNOWN_ORDER_STATUSES)
+
+export type KnownOrderStatus = z.infer<typeof orderStatusEnum>
+
+const knownOrderStatusSet: ReadonlySet<string> = new Set(KNOWN_ORDER_STATUSES)
+
+export function isKnownOrderStatus(value: string): value is KnownOrderStatus {
+  return knownOrderStatusSet.has(value)
+}
 
 /** Accepts known statuses and any unknown string for forward-compatibility. */
 export const orderStatusSchema = z.union([orderStatusEnum, z.string().min(1)])

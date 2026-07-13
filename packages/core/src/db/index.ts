@@ -8,6 +8,7 @@ export interface StoredOrder {
   merchantPubkey: string
   items: Array<{
     productId: string
+    format?: "physical" | "digital"
     quantity: number
     priceAtPurchase: number
     currency: string
@@ -260,6 +261,8 @@ export interface OrderLifecycleItem {
   productId: string
   /** Local product-title snapshot for buyer order display. Public listing data. */
   title?: string
+  /** Fulfillment type at purchase time. Missing legacy values require shipping. */
+  format?: "physical" | "digital"
   quantity: number
   priceAtPurchase: number
   currency: string

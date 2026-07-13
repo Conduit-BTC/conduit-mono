@@ -1,4 +1,5 @@
 import { decodeLightningInvoiceAmount } from "./lightning"
+import { isMerchantOrderAccepted, isMerchantOrderPaid } from "./order-status"
 import {
   isPaymentProofEvidenceMessage,
   type ParsedOrderMessage,
@@ -9,6 +10,7 @@ export type OrderSummary = {
   items: Array<{
     productId: string
     title?: string
+    format: "physical" | "digital"
     quantity: number
     priceAtPurchase: number
     currency: string
@@ -42,12 +44,21 @@ export type OrderSummary = {
   paymentProofAmount: number | null
   paymentProofCurrency: string | null
   paymentReportReceived: boolean
+  externalPaymentReportReceived: boolean
   paymentReportCount: number
   paymentReportAmount: number | null
   paymentReportCurrency: string | null
+  accepted: boolean
+  paymentConfirmed: boolean
+  shippingUpdateReceived: boolean
   trackingCarrier: string | null
   trackingNumber: string | null
   trackingUrl: string | null
+}
+
+export interface OrderSummaryParticipants {
+  buyerPubkey: string
+  merchantPubkey: string
 }
 
 function isExternalPaymentReport(
@@ -83,33 +94,84 @@ export function isExternalPaymentReportMessage(
  * for buyer-paid confirmation, and the latest `shipping_update` for tracking.
  */
 export function extractOrderSummary(
-  messages: ParsedOrderMessage[]
+  messages: ParsedOrderMessage[],
+  participants?: OrderSummaryParticipants
 ): OrderSummary {
   const firstOrder = messages.find((m) => m.type === "order")
+  const buyerPubkey =
+    firstOrder?.senderPubkey ?? participants?.buyerPubkey ?? ""
+  const merchantPubkey =
+    firstOrder?.recipientPubkey ?? participants?.merchantPubkey ?? ""
+  const isBuyerToMerchant = (message: ParsedOrderMessage) =>
+    !!buyerPubkey &&
+    !!merchantPubkey &&
+    message.senderPubkey === buyerPubkey &&
+    message.recipientPubkey === merchantPubkey
+  const isMerchantToBuyer = (message: ParsedOrderMessage) =>
+    !!buyerPubkey &&
+    !!merchantPubkey &&
+    message.senderPubkey === merchantPubkey &&
+    message.recipientPubkey === buyerPubkey
   const latestInvoice = [...messages]
     .reverse()
-    .find((m) => m.type === "payment_request")
+    .find(
+      (
+        message
+      ): message is Extract<ParsedOrderMessage, { type: "payment_request" }> =>
+        message.type === "payment_request" && isMerchantToBuyer(message)
+    )
   const invoiceCount = messages.filter(
-    (message) => message.type === "payment_request"
+    (message) =>
+      message.type === "payment_request" && isMerchantToBuyer(message)
   ).length
-  const paymentProofMessages = messages.filter(isPaymentProofEvidenceMessage)
+  const paymentProofMessages = messages.filter(
+    (
+      message
+    ): message is Extract<ParsedOrderMessage, { type: "payment_proof" }> =>
+      isPaymentProofEvidenceMessage(message) && isBuyerToMerchant(message)
+  )
   const latestPaymentProof = [...paymentProofMessages].reverse()[0]
   const paymentProofCount = paymentProofMessages.length
   const paymentReportMessages = messages.filter(
-    (message) =>
-      isPaymentProofEvidenceMessage(message) || isExternalPaymentReport(message)
+    (
+      message
+    ): message is Extract<ParsedOrderMessage, { type: "payment_proof" }> =>
+      isBuyerToMerchant(message) &&
+      (isPaymentProofEvidenceMessage(message) ||
+        isExternalPaymentReport(message))
   )
   const latestPaymentReport = [...paymentReportMessages].reverse()[0]
   const paymentReportCount = paymentReportMessages.length
+  const externalPaymentReportMessages = messages.filter(
+    (message) => isBuyerToMerchant(message) && isExternalPaymentReport(message)
+  )
   const latestShipping = [...messages]
     .reverse()
-    .find((m) => m.type === "shipping_update")
+    .find(
+      (
+        message
+      ): message is Extract<ParsedOrderMessage, { type: "shipping_update" }> =>
+        message.type === "shipping_update" && isMerchantToBuyer(message)
+    )
+  const merchantStatuses = messages.filter(
+    (
+      message
+    ): message is Extract<ParsedOrderMessage, { type: "status_update" }> =>
+      message.type === "status_update" && isMerchantToBuyer(message)
+  )
+  const accepted = merchantStatuses.some((message) =>
+    isMerchantOrderAccepted({ status: message.payload.status })
+  )
+  const paymentConfirmed = merchantStatuses.some((message) =>
+    isMerchantOrderPaid({ status: message.payload.status })
+  )
 
   const items =
     firstOrder?.type === "order"
       ? firstOrder.payload.items.map((item) => ({
           productId: item.productId,
           title: item.title,
+          format: item.format,
           quantity: item.quantity,
           priceAtPurchase: item.priceAtPurchase,
           currency: item.currency,
@@ -203,9 +265,13 @@ export function extractOrderSummary(
     paymentProofAmount,
     paymentProofCurrency,
     paymentReportReceived,
+    externalPaymentReportReceived: externalPaymentReportMessages.length > 0,
     paymentReportCount,
     paymentReportAmount,
     paymentReportCurrency,
+    accepted,
+    paymentConfirmed,
+    shippingUpdateReceived: Boolean(latestShipping),
     trackingCarrier,
     trackingNumber,
     trackingUrl,

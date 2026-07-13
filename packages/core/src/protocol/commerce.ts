@@ -22,11 +22,7 @@ import {
   requireNdkConnected,
 } from "./ndk"
 import { extractOrderSummary } from "./order-summary"
-import {
-  isPaymentProofEvidenceMessage,
-  parseOrderMessageRumorEvent,
-  type ParsedOrderMessage,
-} from "./orders"
+import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import {
   evaluateListingSafety,
   isListingMarketVisible,
@@ -185,6 +181,7 @@ export interface BuyerConversationSummary extends ConversationSummaryBase {
 
 export interface MerchantConversationSummary extends ConversationSummaryBase {
   buyerPubkey: string
+  merchantPubkey: string
 }
 
 export type ConversationSummary =
@@ -1857,6 +1854,57 @@ export async function getProductDetail(
   }
 }
 
+// Resolve many product listings by addressId in a single relay fanout (instead
+// of one read per id). Used to hydrate order-item name/image without hammering
+// relays with N separate reads.
+export async function getProductsByIds(
+  productIds: string[]
+): Promise<CommerceResult<CommerceProductRecord[]>> {
+  const addresses = productIds
+    .map((id) => getProductLookupIds(id).address)
+    .filter(
+      (address): address is { kind: number; pubkey: string; d: string } =>
+        !!address && address.kind === EVENT_KINDS.PRODUCT
+    )
+
+  if (addresses.length === 0) {
+    return {
+      data: [],
+      meta: createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES),
+    }
+  }
+
+  const authors = uniqueStrings(addresses.map((address) => address.pubkey))
+  const dTags = uniqueStrings(addresses.map((address) => address.d))
+  const wanted = new Set(
+    addresses.map((address) => `${address.kind}:${address.pubkey}:${address.d}`)
+  )
+
+  try {
+    const records = await fetchPublicProductRecords({
+      authors,
+      dTags,
+      limit: Math.max(addresses.length * 2, 20),
+    })
+    await cacheProductRecords(records)
+    return {
+      data: records.filter((record) => wanted.has(record.addressId)),
+      meta: createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES),
+    }
+  } catch {
+    const cached = await getCachedProductRecords(undefined, {
+      includeStale: true,
+    })
+    return {
+      data: cached.filter((record) => wanted.has(record.addressId)),
+      meta: createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
+        stale: true,
+        degraded: true,
+      }),
+    }
+  }
+}
+
 export async function getCachedProductDetail(
   query: ProductDetailQuery,
   options: CachedProductReadOptions = { includeStale: true }
@@ -2202,6 +2250,68 @@ async function fetchParsedOrderMessages(
   }
 }
 
+const BUYER_AUTHORED_TYPES = new Set(["order", "payment_proof"])
+const MERCHANT_AUTHORED_TYPES = new Set([
+  "payment_request",
+  "status_update",
+  "shipping_update",
+  "receipt",
+])
+
+interface PrincipalResolution {
+  role: "buyer" | "merchant"
+  counterpartyPubkey: string
+}
+
+function resolvePrincipal(
+  bucket: ParsedOrderMessage[],
+  principalPubkey: string
+): PrincipalResolution | null {
+  const order = bucket.find((message) => message.type === "order")
+  if (order) {
+    if (order.senderPubkey === principalPubkey) {
+      return { role: "buyer", counterpartyPubkey: order.recipientPubkey }
+    }
+    if (order.recipientPubkey === principalPubkey) {
+      return { role: "merchant", counterpartyPubkey: order.senderPubkey }
+    }
+    return null
+  }
+
+  const roles = new Set<"buyer" | "merchant">()
+  const counterparties = new Set<string>()
+  for (const message of bucket) {
+    let role: "buyer" | "merchant" | null = null
+    let counterpartyPubkey: string | null = null
+    if (BUYER_AUTHORED_TYPES.has(message.type)) {
+      if (message.senderPubkey === principalPubkey) {
+        role = "buyer"
+        counterpartyPubkey = message.recipientPubkey
+      } else if (message.recipientPubkey === principalPubkey) {
+        role = "merchant"
+        counterpartyPubkey = message.senderPubkey
+      }
+    } else if (MERCHANT_AUTHORED_TYPES.has(message.type)) {
+      if (message.senderPubkey === principalPubkey) {
+        role = "merchant"
+        counterpartyPubkey = message.recipientPubkey
+      } else if (message.recipientPubkey === principalPubkey) {
+        role = "buyer"
+        counterpartyPubkey = message.senderPubkey
+      }
+    }
+    if (!role || !counterpartyPubkey || counterpartyPubkey === principalPubkey)
+      continue
+    roles.add(role)
+    counterparties.add(counterpartyPubkey)
+    if (roles.size > 1 || counterparties.size > 1) return null
+  }
+
+  const role = [...roles][0]
+  const counterpartyPubkey = [...counterparties][0]
+  return role && counterpartyPubkey ? { role, counterpartyPubkey } : null
+}
+
 function buildBuyerConversationSummaries(
   messages: ParsedOrderMessage[],
   buyerPubkey: string
@@ -2220,25 +2330,22 @@ function buildBuyerConversationSummaries(
     const latest = bucket[bucket.length - 1]
     if (!latest) continue
 
+    const principal = resolvePrincipal(bucket, buyerPubkey)
+    if (!principal || principal.role !== "buyer") continue
+    const merchantPubkey = principal.counterpartyPubkey
+
     const latestStatus = [...bucket]
       .reverse()
-      .find((message) => message.type === "status_update")
-    const latestPaymentProof = [...bucket]
-      .reverse()
-      .find(isPaymentProofEvidenceMessage)
-    const otherParticipants = Array.from(
-      new Set(
-        bucket
-          .map((message) =>
-            message.senderPubkey === buyerPubkey
-              ? message.recipientPubkey
-              : message.senderPubkey
-          )
-          .filter(Boolean)
+      .find(
+        (message) =>
+          message.type === "status_update" &&
+          message.senderPubkey === merchantPubkey &&
+          message.recipientPubkey === buyerPubkey
       )
-    )
-    const merchantPubkey = otherParticipants[0] ?? ""
-    const summary = extractOrderSummary(bucket)
+    const summary = extractOrderSummary(bucket, {
+      buyerPubkey,
+      merchantPubkey,
+    })
 
     conversations.push({
       id: orderId,
@@ -2249,9 +2356,7 @@ function buildBuyerConversationSummaries(
       status:
         latestStatus?.type === "status_update"
           ? latestStatus.payload.status
-          : latestPaymentProof
-            ? "paid"
-            : null,
+          : null,
       totalSummary:
         summary.items.length > 0
           ? `${summary.subtotal} ${summary.currency}`
@@ -2284,38 +2389,34 @@ function buildMerchantConversationSummaries(
     const latest = bucket[bucket.length - 1]
     if (!latest) continue
 
+    const principal = resolvePrincipal(bucket, merchantPubkey)
+    if (!principal || principal.role !== "merchant") continue
+    const buyerPubkey = principal.counterpartyPubkey
+
     const latestStatus = [...bucket]
       .reverse()
-      .find((message) => message.type === "status_update")
-    const latestPaymentProof = [...bucket]
-      .reverse()
-      .find(isPaymentProofEvidenceMessage)
-    const otherParticipants = Array.from(
-      new Set(
-        bucket
-          .map((message) =>
-            message.senderPubkey === merchantPubkey
-              ? message.recipientPubkey
-              : message.senderPubkey
-          )
-          .filter(Boolean)
+      .find(
+        (message) =>
+          message.type === "status_update" &&
+          message.senderPubkey === merchantPubkey &&
+          message.recipientPubkey === buyerPubkey
       )
-    )
-    const buyerPubkey = otherParticipants[0] ?? ""
-    const summary = extractOrderSummary(bucket)
+    const summary = extractOrderSummary(bucket, {
+      buyerPubkey,
+      merchantPubkey,
+    })
 
     conversations.push({
       id: orderId,
       orderId,
       buyerPubkey,
+      merchantPubkey,
       latestAt: latest.createdAt,
       latestType: latest.type,
       status:
         latestStatus?.type === "status_update"
           ? latestStatus.payload.status
-          : latestPaymentProof
-            ? "paid"
-            : null,
+          : null,
       totalSummary:
         summary.items.length > 0
           ? `${summary.subtotal} ${summary.currency}`

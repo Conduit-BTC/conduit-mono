@@ -15,24 +15,22 @@ This directory contains public implementation context for the `conduit-mono` cli
 1. Use this repo's docs for implemented behavior, accepted implementation contracts, and agent preflight context.
 2. Keep product strategy, ownership, priority, private commercial plans, and private operating context outside tracked public docs.
 3. Use `docs/specs/*` when product, protocol, or shared implementation behavior needs a stable contract.
-4. Merge the relevant docs/spec PR to `main` before implementation when work changes requirements, protocol behavior, or shared expectations.
-5. If an external tracker conflicts with `docs/specs/*` or `docs/ARCHITECTURE.md` on implementation behavior, stop and update the repo contract before coding.
+4. When work changes requirements, protocol behavior, shared UX rules, or shared expectations, update the relevant repo contract in the implementation PR before merge.
+5. If an external tracker conflicts with `docs/specs/*` or `docs/ARCHITECTURE.md`, resolve the contract mismatch before merge.
 
-## Reviewer-Owned Context Follow-Up
+## Same-PR Contract Gate
 
-Implementation PRs should stay focused on implementation unless they are explicitly docs/spec PRs or the docs edit is directly local and required for correctness.
+Implementation PRs should distinguish `Contract changes` from `Implementation changes`. Include required changes to `docs/specs/*`, `docs/ARCHITECTURE.md`, or `docs/DESIGN.md` in the same PR so reviewers can evaluate the contract and code together.
 
-Reviewers own the judgment about whether a merged implementation changed durable repo context. During review, choose one of:
+During review, choose one of:
 
-- `No docs follow-up needed`
-- `Docs-only PR after merge`
-- `Docs/spec PR required before merge`
+- `Contract updated in this PR`
+- `No contract change needed`
+- `Separate decision/docs-only PR required`
 
-Use `Docs/spec PR required before merge` when the implementation changes product requirements, protocol behavior, shared UX rules, architecture, or cross-team implementation expectations that are not already covered by repo contracts.
+Block merge when a required contract change is missing or disagrees with the implementation. Do not require a separate PR solely because the contract and implementation changed together.
 
-Use `Docs-only PR after merge` when the implementation fits the current contract but reveals that docs, agent routing, source references, or examples should be clarified. That follow-up PR should reference the merged implementation PR and relevant tracker issue when available, contain docs-only changes, and be reviewed separately.
-
-Agents may surface possible docs drift and draft the follow-up when asked, but they should not silently bundle broad repo-context updates into ordinary code PRs.
+Use `Separate decision/docs-only PR required` only for broad cross-PR architecture or external consensus that must be settled before implementation.
 
 ## Where To Put New Docs
 

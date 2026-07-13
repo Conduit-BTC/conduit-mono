@@ -34,6 +34,15 @@ function rumor({
   }
 }
 
+function merchantRumor(input: Parameters<typeof rumor>[0]) {
+  const event = rumor(input)
+  return {
+    ...event,
+    pubkey: merchantPubkey,
+    tags: event.tags.map((tag) => (tag[0] === "p" ? ["p", buyerPubkey] : tag)),
+  }
+}
+
 function parsedOrder() {
   return parseOrderMessageRumorEvent(
     rumor({
@@ -280,6 +289,79 @@ describe("payment proof model", () => {
     expect(summary.buyerIdentityKind).toBe("guest_ephemeral")
   })
 
+  it("accepts only fixed-direction messages when projecting order state", () => {
+    const order = parsedOrder()
+    const buyerAuthoredStatus = parseOrderMessageRumorEvent(
+      rumor({
+        id: "forged-status",
+        type: "status_update",
+        content: JSON.stringify({ status: "complete" }),
+      }) as never
+    )
+    const buyerAuthoredInvoice = parseOrderMessageRumorEvent(
+      rumor({
+        id: "forged-invoice",
+        type: "payment_request",
+        content: JSON.stringify({ invoice: "lnbc1forged" }),
+      }) as never
+    )
+    const buyerAuthoredShipping = parseOrderMessageRumorEvent(
+      rumor({
+        id: "forged-shipping",
+        type: "shipping_update",
+        content: JSON.stringify({ trackingNumber: "forged" }),
+      }) as never
+    )
+    const merchantAuthoredProof = parseOrderMessageRumorEvent(
+      merchantRumor({
+        id: "forged-proof",
+        type: "payment_proof",
+        content: JSON.stringify({
+          invoice: "lnbc1forged",
+          preimage: "forged",
+        }),
+      }) as never
+    )
+
+    const summary = extractOrderSummary([
+      order,
+      buyerAuthoredStatus,
+      buyerAuthoredInvoice,
+      buyerAuthoredShipping,
+      merchantAuthoredProof,
+    ])
+
+    expect(summary.accepted).toBe(false)
+    expect(summary.paymentConfirmed).toBe(false)
+    expect(summary.invoiceSent).toBe(false)
+    expect(summary.paymentProofReceived).toBe(false)
+    expect(summary.trackingNumber).toBeNull()
+  })
+
+  it("tracks merchant acceptance and payment as independent historical gates", () => {
+    const order = parsedOrder()
+    const accepted = parseOrderMessageRumorEvent(
+      merchantRumor({
+        id: "accepted-status",
+        type: "status_update",
+        createdAt: 2,
+        content: JSON.stringify({ status: "accepted" }),
+      }) as never
+    )
+    const paid = parseOrderMessageRumorEvent(
+      merchantRumor({
+        id: "paid-status",
+        type: "status_update",
+        createdAt: 3,
+        content: JSON.stringify({ status: "paid" }),
+      }) as never
+    )
+
+    const summary = extractOrderSummary([order, accepted, paid])
+    expect(summary.accepted).toBe(true)
+    expect(summary.paymentConfirmed).toBe(true)
+  })
+
   it("requires concrete payment evidence before proof messages affect payment summaries", () => {
     const order = parsedOrder()
     const incompleteForeignProof = parseOrderMessageRumorEvent(
@@ -342,6 +424,7 @@ describe("payment proof model", () => {
     expect(summaryAfterEvidence.paymentProofAmount).toBe(21)
     expect(summaryAfterEvidence.paymentProofCurrency).toBe("SATS")
     expect(summaryAfterEvidence.paymentReportReceived).toBe(true)
+    expect(summaryAfterEvidence.externalPaymentReportReceived).toBe(false)
     expect(summaryAfterEvidence.paymentReportCount).toBe(1)
     expect(summaryAfterEvidence.paymentReportAmount).toBe(21)
     expect(summaryAfterEvidence.paymentReportCurrency).toBe("SATS")
@@ -380,6 +463,7 @@ describe("payment proof model", () => {
     expect(summary.paymentProofReceived).toBe(false)
     expect(summary.paymentProofCount).toBe(0)
     expect(summary.paymentReportReceived).toBe(true)
+    expect(summary.externalPaymentReportReceived).toBe(true)
     expect(summary.paymentReportCount).toBe(1)
     expect(summary.paymentReportAmount).toBe(21)
     expect(summary.paymentReportCurrency).toBe("SATS")
@@ -413,6 +497,7 @@ describe("payment proof model", () => {
     const summary = extractOrderSummary([order, legacyExternalReport])
     expect(summary.paymentProofReceived).toBe(false)
     expect(summary.paymentReportReceived).toBe(true)
+    expect(summary.externalPaymentReportReceived).toBe(true)
     expect(summary.paymentReportCount).toBe(1)
   })
 

@@ -1,10 +1,11 @@
 import { describe, expect, it } from "bun:test"
-import type { OrderLifecycle } from "@conduit/core"
+import type { KnownOrderStatus, OrderLifecycle } from "@conduit/core"
 import {
   buildOrderTimeline,
   buildOrderViewModel,
   computeOrderTimelineStatuses,
   deriveOrderHeaderStatus,
+  getOrderFilterPhase,
   getOrderPaymentMethodLabel,
   type OrderViewModel,
 } from "../apps/market/src/lib/order-view"
@@ -53,6 +54,26 @@ function vmFromLifecycle(
   })
 }
 
+function vmWithMerchantStatus(status: KnownOrderStatus): OrderViewModel {
+  return buildOrderViewModel({
+    orderId: "order-1",
+    merchantPubkey: "merchant",
+    lifecycle: baseLifecycle(),
+    messages: [
+      {
+        id: `status-${status}`,
+        orderId: "order-1",
+        createdAt: 2,
+        senderPubkey: "merchant",
+        recipientPubkey: "buyer",
+        rawContent: "{}",
+        type: "status_update",
+        payload: { status },
+      } as never,
+    ],
+  })
+}
+
 describe("buildOrderViewModel", () => {
   it("renders from a durable lifecycle without any relay messages", () => {
     const vm = vmFromLifecycle()
@@ -61,6 +82,25 @@ describe("buildOrderViewModel", () => {
     expect(vm.items[0].displayTitle).toBe("Nostr Hoodie")
     expect(vm.totalSats).toBe(111)
     expect(vm.paymentStatus).toBe("paid")
+  })
+
+  it("skips fulfillment shipping for an explicitly digital-only order", () => {
+    const vm = vmFromLifecycle({
+      items: [
+        {
+          productId: "30402:merchant:digital-download",
+          format: "digital",
+          quantity: 1,
+          priceAtPurchase: 111,
+          currency: "SATS",
+        },
+      ],
+    })
+
+    expect(vm.requiresShipping).toBe(false)
+    expect(buildOrderTimeline(vm).map((row) => row.key)).not.toContain(
+      "fulfillment"
+    )
   })
 
   it("preserves public zap attribution for external-wallet fallback orders", () => {
@@ -184,6 +224,67 @@ describe("computeOrderTimelineStatuses", () => {
     expect(statuses.payment).toBe("retry_needed")
     expect(statuses.merchant_confirmation).toBe("waiting")
   })
+
+  it("trusts a merchant-paid status when the local payment record is absent", () => {
+    const vm = buildOrderViewModel({
+      orderId: "relay-only-paid",
+      merchantPubkey: "merchant",
+      messages: [
+        {
+          id: "status-paid",
+          orderId: "relay-only-paid",
+          createdAt: 2,
+          senderPubkey: "merchant",
+          recipientPubkey: "buyer",
+          rawContent: "{}",
+          type: "status_update",
+          payload: { status: "paid" },
+        } as never,
+      ],
+    })
+
+    expect(vm.paymentStatus).toBe("not_started")
+    expect(vm.phase).toBe("in_progress")
+    expect(vm.flow).toBe("invoice")
+    expect(computeOrderTimelineStatuses(vm).payment).toBe("complete")
+    expect(getOrderFilterPhase(vm)).toBe("in_progress")
+    expect(deriveOrderHeaderStatus(vm).primaryLabel).not.toBe("Pending")
+    expect(
+      buildOrderTimeline(vm).find((row) => row.key === "invoice")?.title
+    ).toBe("Invoice received")
+  })
+
+  it("lets merchant confirmation supersede a stale local payment failure", () => {
+    const vm = buildOrderViewModel({
+      orderId: "merchant-confirmed-paid",
+      merchantPubkey: "merchant",
+      lifecycle: baseLifecycle({
+        paymentStatus: "ambiguous",
+        proofDeliveryStatus: "not_started",
+        phase: "failed",
+      }),
+      messages: [
+        {
+          id: "status-paid",
+          orderId: "merchant-confirmed-paid",
+          createdAt: 2,
+          senderPubkey: "merchant",
+          recipientPubkey: "buyer",
+          rawContent: "{}",
+          type: "status_update",
+          payload: { status: "paid" },
+        } as never,
+      ],
+    })
+
+    expect(vm.phase).toBe("in_progress")
+    expect(vm.actionNeeded).toBe(false)
+    expect(computeOrderTimelineStatuses(vm).payment).toBe("complete")
+    expect(
+      buildOrderTimeline(vm).find((row) => row.key === "payment")?.title
+    ).toBe("Payment sent")
+    expect(deriveOrderHeaderStatus(vm).primaryLabel).not.toBe("Payment unclear")
+  })
 })
 
 describe("buildOrderTimeline", () => {
@@ -218,6 +319,52 @@ describe("buildOrderTimeline", () => {
       "payment",
       "receipt",
     ])
+  })
+})
+
+describe("getOrderFilterPhase", () => {
+  it("buckets an unpaid, awaiting-invoice order as pending", () => {
+    expect(
+      getOrderFilterPhase(
+        vmFromLifecycle({
+          invoiceStatus: "not_requested",
+          paymentStatus: "not_started",
+        })
+      )
+    ).toBe("pending")
+  })
+
+  it("buckets a paid order as in progress", () => {
+    expect(getOrderFilterPhase(vmFromLifecycle())).toBe("in_progress")
+  })
+
+  it("buckets completed and cancelled orders", () => {
+    expect(getOrderFilterPhase(vmFromLifecycle({ phase: "completed" }))).toBe(
+      "completed"
+    )
+    expect(getOrderFilterPhase(vmFromLifecycle({ phase: "cancelled" }))).toBe(
+      "cancelled"
+    )
+  })
+})
+
+describe("accepted status flows through the buyer view-model", () => {
+  it("treats accepted as merchant-confirmed in the timeline", () => {
+    const statuses = computeOrderTimelineStatuses({
+      ...vmFromLifecycle(),
+      merchantStatus: "accepted",
+    })
+    expect(statuses.merchant_confirmation).toBe("complete")
+  })
+
+  it("buckets an accepted (unpaid) order as in progress", () => {
+    expect(
+      getOrderFilterPhase({
+        ...vmFromLifecycle(),
+        merchantStatus: "accepted",
+        paymentStatus: "not_started",
+      })
+    ).toBe("in_progress")
   })
 })
 
@@ -290,27 +437,31 @@ describe("deriveOrderHeaderStatus", () => {
   })
 
   it("Completed · Delivered when the merchant marks the order complete", () => {
-    const vm = buildOrderViewModel({
-      orderId: "order-1",
-      merchantPubkey: "merchant",
-      lifecycle: baseLifecycle(),
-      messages: [
-        {
-          id: "s1",
-          orderId: "order-1",
-          createdAt: 2,
-          senderPubkey: "merchant",
-          recipientPubkey: "buyer",
-          rawContent: "{}",
-          type: "status_update",
-          payload: { status: "complete" },
-        } as never,
-      ],
-    })
+    const vm = vmWithMerchantStatus("complete")
     const status = deriveOrderHeaderStatus(vm)
     expect(status.primaryLabel).toBe("Completed")
     expect(status.detailLabel).toBe("Delivered")
     expect(vm.phase).toBe("completed")
     expect(status.showSpinner).toBe(false)
+  })
+
+  it("treats delivered as the same terminal completion state", () => {
+    const vm = vmWithMerchantStatus("delivered")
+    const status = deriveOrderHeaderStatus(vm)
+
+    expect(getOrderFilterPhase(vm)).toBe("completed")
+    expect(computeOrderTimelineStatuses(vm).complete).toBe("complete")
+    expect(status.primaryLabel).toBe("Completed")
+    expect(status.detailLabel).toBe("Delivered")
+  })
+
+  it("surfaces a refund request without claiming a payout occurred", () => {
+    const status = deriveOrderHeaderStatus(
+      vmWithMerchantStatus("refund_requested")
+    )
+
+    expect(status.tone).toBe("warning")
+    expect(status.primaryLabel).toBe("Refund requested")
+    expect(status.detailLabel).toBe("Awaiting merchant response")
   })
 })

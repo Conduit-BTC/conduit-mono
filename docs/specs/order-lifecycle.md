@@ -27,10 +27,11 @@ Market performs that pruning on startup.
 Fields:
 
 - Identity: `orderId`, `buyerPubkey`, `merchantPubkey`, `checkoutMode`
-  (`public_zap` | `private_checkout` | `pay_later` | `external_wallet`).
-- Snapshot: `items` (productId, qty, price-at-purchase, source price, shipping
-  option), `itemSubtotalSats`, `shippingCostSats`, `totalSats`, `totalMsats`,
-  `currency`, `pricingQuote`.
+  (`anonymous_public_zap` | `public_zap_as_shopper` | `public_zap` |
+  `private_checkout` | `pay_later` | `external_wallet`).
+- Snapshot: `items` (productId, fulfillment format, qty, price-at-purchase,
+  source price, shipping option), `itemSubtotalSats`, `shippingCostSats`,
+  `totalSats`, `totalMsats`, `currency`, `pricingQuote`.
 - Local-only PII: `shippingAddress`, `contactNote`. **Never** sent to telemetry.
 - Gates: `addressValidity`, `shippingZoneEligibility` (distinct; see below).
 - Progress: `orderDeliveryStatus`, `invoiceStatus`, `paymentStatus`,
@@ -56,7 +57,9 @@ Repository helpers: `createOrderLifecycle`, `getOrderLifecycle`,
    completion) is read from the order conversation (`status_update` /
    `shipping_update`) and merged into the interpreted view-model. Guest orders
    stop at local receipt delivery; later merchant coordination occurs through
-   the required phone/email contact fields.
+   the required phone/email contact fields. Merchant records of guest-order
+   decisions and fulfillment are self-addressed operational messages, not
+   replies to a guest Nostr inbox.
 
 ## Interpreted view-model and timeline
 
@@ -70,6 +73,127 @@ attempt into an `OrderViewModel`, and derives:
 sent`, `Pending - Awaiting invoice`, `Action needed - Pay with external
 wallet`, `Completed - Delivered`, plus an `actionNeeded` flag for the list
   marker.
+
+## Order flows and gates
+
+Two checkout flows are first-class and produce the same NIP-17 order messages
+(`order`, `payment_request`, `payment_proof`, `receipt`, `status_update`,
+`shipping_update`) in a different order:
+
+- **Prepaid (zap-out)** — a public-zap checkout mode (`anonymous_public_zap`,
+  `public_zap_as_shopper`, or legacy `public_zap`): the buyer pays at checkout
+  (payment proof published up front). Once the merchant confirms settlement,
+  the order is accepted and ready for fulfillment; it must not require a second
+  accept action. Payment confirmation precedes the fulfillment decision.
+- **Invoice (order-first)** — `checkoutMode: private_checkout` / `pay_later`:
+  the buyer places the order, the merchant accepts and sends a
+  `payment_request` (invoice), then the buyer pays. Acceptance precedes payment.
+
+Because the sequence differs, acceptance and payment are modeled independently
+rather than as one linear status. Payment has two distinct signals:
+
+- `paymentObserved`: valid buyer `payment_proof` evidence was received, but the
+  merchant may still need to verify settlement.
+- `paymentConfirmed` / `paid`: the merchant emitted a `paid`-or-beyond
+  `status_update` after confirming settlement.
+- `accepted`: a merchant `status_update` of accepted-or-beyond was observed.
+
+A merchant-confirmed paid state implies acceptance for operational purposes.
+Buyer-reported payment and buyer payment proof remain evidence to verify; they
+do not by themselves authorize fulfillment or revenue accounting. This keeps a
+forged, stale, mismatched, or otherwise unverified report from advancing the
+merchant workflow while avoiding a redundant accept step after settlement has
+actually been confirmed.
+
+State is derived from which trusted, fixed-direction events exist, not their
+arrival order.
+
+- The buyer knows its flow from `checkoutMode`.
+- The merchant infers it: observed buyer payment evidence **without** a merchant
+  invoice ⇒ prepaid; otherwise invoice-first. Shared helper
+  `deriveOrderFlow({ status, paid, paymentObserved, invoiceSent })` in
+  `@conduit/core/order-status` encodes this and drives the merchant timeline
+  ordering (payment↔acceptance). Payment evidence may update flow and timeline
+  presentation, but only merchant-confirmed payment unlocks shipping and revenue
+  accounting. After confirmation, the normal merchant choices are to fulfill
+  the order or cancel it and coordinate a manual refund; an ordinary additional
+  invoice is no longer a valid next step.
+
+Status vocabulary is unified across schema and presentation: `pending`,
+`invoiced`, `paid`, `accepted`/`processing`, `shipped`, `complete`/`delivered`,
+`cancelled`, `refund_requested`; unknown strings remain forward-compatible.
+
+## Merchant operational projection
+
+Merchant order handling is derived from independent operational axes rather
+than forcing every event into one strictly linear status:
+
+- **Settlement:** `unpaid` | `reported` | `proof_observed` | `confirmed`.
+- **Decision:** `unreviewed` | `accepted` | `declined`. Confirmed settlement
+  projects to `accepted` even when no separate accepted event exists.
+- **Fulfillment:** `not_started` | `processing` | `shipped` | `complete`.
+- **Communication:** `nostr_replyable` | `guest_out_of_band` | `unknown`.
+
+Explicit signed-in orders and loaded legacy order rumors without an identity
+marker are `nostr_replyable`; explicit guest orders are `guest_out_of_band`;
+orderless partial reads remain `unknown` and may write merchant self-copies but
+must not claim buyer delivery.
+
+These axes drive a single contextual next-action surface rather than exposing a
+general-purpose status console as the primary workflow:
+
+- `reported` or `proof_observed`: verify settlement, then confirm payment or
+  cancel the order; no separate disputed wire status is introduced here.
+- confirmed physical or mixed order and not shipped: record shipment or cancel
+  and coordinate a manual refund.
+- confirmed digital-only order: confirm delivery directly or cancel and
+  coordinate a manual refund; no shipping milestone is shown or required.
+- shipped: complete delivery when appropriate.
+- unpaid and unreviewed: accept/request payment or decline.
+
+The shipment action requires non-empty tracking-code and carrier values, may
+include a tracking URL and additional notes, and advances fulfillment to
+`shipped` as one operation. It must not require a separate generic status
+update. Digital-only orders skip this action and advance from confirmed payment
+to delivery confirmation. Mixed orders retain the physical shipment path. The
+Merchant skip is authorized only by resolved merchant-authored product
+listings that agree with the order snapshot that every item is digital. Either
+source may preserve a physical requirement, while buyer-provided snapshots
+alone cannot remove one; missing, deleted, unresolved, or legacy listings are
+treated as requiring shipping. Normal invoice controls are suppressed after confirmed payment. For
+backward compatibility, an authentic merchant-authored shipment event also
+backfills the paid and accepted gates when older history lacks the now-required
+explicit confirmation. Requesting extra funds because a displayed price or
+shipping option was insufficient is not part of the ordinary paid-order flow.
+
+The Merchant order queue exposes work-oriented filters: **Paid—fulfill**,
+**Payment reported—verify**, **Unpaid—review**, **Shipped**, and **Closed**, with
+an all-orders view available for browsing.
+
+For guest orders, the merchant contacts the buyer out of band and records the
+same decision, payment, shipment, and completion milestones through
+merchant-addressed encrypted self-copies. Those records provide local/relay
+operational history without claiming that the ephemeral guest pubkey is a
+reply-capable DM inbox or that Conduit delivered the external phone/email
+message.
+
+This iteration preserves Conduit's current kind `16` private commerce-message
+encoding and reads. Resolving the kind collision and migrating to a future
+Open Markets Foundation/Gamma commerce-message kind is explicitly out of scope
+and tracked separately; this work must not introduce a partial kind migration.
+
+### Cancellation and refunds
+
+Lightning payments are non-custodial and final, and escrow/refunds are explicit
+protocol non-goals (`docs/specs/protocol.md`). Therefore:
+
+- Cancelling a **paid** order does not reverse funds. The app sets `cancelled`
+  and must tell the merchant a refund is a separate, manual step.
+- Refund coordination and payout are currently **out of band**. Conduit does not
+  create or pay a refund invoice, emit a standardized refund proof, custody
+  funds, escrow payment, or guarantee repayment. `refund_requested` is reserved
+  in the canonical status vocabulary for compatible clients and presentation;
+  a tracked refund workflow requires a separate protocol/spec change.
 
 ## Idempotency and recovery invariants
 

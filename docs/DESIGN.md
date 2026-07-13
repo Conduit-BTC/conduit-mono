@@ -284,7 +284,7 @@ Do not introduce these in new code:
 ## PR Expectations For UI Work
 
 - update shared tokens before repeating a new visual value in multiple places
-- link the relevant docs/spec PR if the design change affects shared implementation expectations
+- update the relevant repo contract in the same PR when the design changes shared implementation expectations
 - include screenshots or other visual evidence for meaningful UI changes
 - keep tracked design guidance public-repo-safe and free of private planning language
 

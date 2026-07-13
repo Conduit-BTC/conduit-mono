@@ -10,6 +10,8 @@ export type ProductCardImage = {
 
 export interface ProductCardProps {
   title: string
+  /** Optional compact content shown to the right of the title (e.g. a badge). */
+  titleAside?: ReactNode
   merchantName: string
   merchantNamePending?: boolean
   images: readonly ProductCardImage[]
@@ -26,6 +28,7 @@ export interface ProductCardProps {
 
 export function ProductCard({
   title,
+  titleAside,
   merchantName,
   merchantNamePending = false,
   images,
@@ -122,9 +125,12 @@ export function ProductCard({
 
       <div className="flex flex-1 flex-col p-3">
         <div className="min-h-[3.25rem] space-y-1">
-          <h3 className="line-clamp-2 min-h-[2.5rem] text-sm font-semibold leading-snug text-[var(--text-primary)]">
-            {title}
-          </h3>
+          <div className="flex items-start justify-between gap-2">
+            <h3 className="line-clamp-2 min-h-[2.5rem] flex-1 text-sm font-semibold leading-snug text-[var(--text-primary)]">
+              {title}
+            </h3>
+            {titleAside ? <div className="shrink-0">{titleAside}</div> : null}
+          </div>
           {onMerchantActivate ? (
             <button
               type="button"

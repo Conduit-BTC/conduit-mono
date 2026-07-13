@@ -1,14 +1,16 @@
 import { useCallback, useState } from "react"
-import { Badge, Button } from "@conduit/ui"
+import { QRCodeSVG } from "qrcode.react"
 import {
   decodeLightningInvoiceAmount,
   getLightningInvoiceNetwork,
   getLightningNetworkMismatchMessage,
+  getOrderStatusDisplay,
   isInvoiceCompatibleWithCurrentNetwork,
   normalizeLightningInvoice,
   type ParsedOrderMessage,
 } from "@conduit/core"
-import { QRCodeSVG } from "qrcode.react"
+import { Badge } from "./Badge"
+import { Button } from "./Button"
 
 export function formatProductReference(productId: string): {
   title: string
@@ -139,7 +141,8 @@ export function getConversationPreview(message: ParsedOrderMessage): string {
       return message.payload.note ?? "Invoice sent"
     case "status_update":
       return (
-        message.payload.note ?? `Status updated to ${message.payload.status}`
+        message.payload.note ??
+        `Status updated to ${getOrderStatusDisplay(message.payload.status).label}`
       )
     case "shipping_update":
       return message.payload.note ?? "Shipping updated"
@@ -171,9 +174,14 @@ function friendlyTypeLabel(type: string): string {
 export function OrderConversationMessage({
   message,
   mine,
+  resolveItem,
 }: {
   message: ParsedOrderMessage
   mine: boolean
+  /** Resolve an order item's product listing for a thumbnail + nicer title. */
+  resolveItem?: (
+    productId: string
+  ) => { title?: string; imageUrl?: string } | undefined
 }) {
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
@@ -199,21 +207,38 @@ export function OrderConversationMessage({
               Total: {message.payload.subtotal} {message.payload.currency}
             </div>
             {message.payload.items.map((item) => {
-              const product = formatProductReference(item.productId)
+              const resolved = resolveItem?.(item.productId)
+              const title =
+                item.title?.trim() ||
+                resolved?.title ||
+                formatProductReference(item.productId).title
+              const image = resolved?.imageUrl
               return (
                 <div
                   key={`${message.id}-${item.productId}`}
-                  className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-2.5"
+                  className="flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-2"
                 >
-                  <div className="text-sm text-[var(--text-primary)]">
-                    {product.title}
+                  {image ? (
+                    <img
+                      src={image}
+                      alt=""
+                      loading="lazy"
+                      className="h-10 w-10 shrink-0 rounded-md border border-[var(--border)] object-cover"
+                    />
+                  ) : (
+                    <div className="h-10 w-10 shrink-0 rounded-md border border-[var(--border)] bg-[var(--surface-elevated)]" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm text-[var(--text-primary)]">
+                      {title}
+                    </div>
+                    <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
+                      Qty {item.quantity}
+                    </div>
                   </div>
-                  <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                    Qty {item.quantity} · {item.priceAtPurchase} {item.currency}
-                  </div>
-                  <div className="mt-1 break-all font-mono text-[11px] leading-5 text-[var(--text-muted)]">
-                    {product.detail}
-                  </div>
+                  <span className="shrink-0 text-xs text-[var(--text-secondary)]">
+                    {item.priceAtPurchase} {item.currency}
+                  </span>
                 </div>
               )
             })}
@@ -254,7 +279,7 @@ export function OrderConversationMessage({
         {message.type === "status_update" && (
           <div className="space-y-1">
             <div className="text-[var(--text-primary)]">
-              Status: {message.payload.status}
+              Status: {getOrderStatusDisplay(message.payload.status).label}
             </div>
             {message.payload.note && (
               <div className="text-xs text-[var(--text-secondary)]">

@@ -39,3 +39,6 @@ test-results/
 
 # Turbo
 .turbo/
+
+# TanStack Router temp
+.tanstack/

@@ -1,14 +1,19 @@
-import { createFileRoute, Link } from "@tanstack/react-router"
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
   db,
   formatNpub,
+  getCachedMerchantConversationList,
   getCachedMerchantStorefront,
+  getMerchantConversationList,
   getMerchantStorefront,
+  getProfileName,
   isPaymentProofEvidenceMessage,
   useAuth,
   useNdkState,
+  useProfiles,
   type ParsedOrderMessage,
+  type Profile,
 } from "@conduit/core"
 import {
   ArrowRight,
@@ -19,8 +24,12 @@ import {
   Wallet,
   Wifi,
 } from "lucide-react"
-import { useEffect, useRef, useState, type ComponentType } from "react"
+import { useEffect, useMemo, useRef, useState, type ComponentType } from "react"
 import { Badge, Button, StatusPill, cn } from "@conduit/ui"
+import { DashboardCharts } from "../components/DashboardCharts"
+import { OrderListItem } from "../components/OrderListItem"
+import { buildDashboardChartData } from "../lib/dashboard-charts"
+import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
 import type { MerchantSetupReadiness } from "../lib/readiness"
 
@@ -85,10 +94,18 @@ async function fetchDashboardStatsFromCacheOnly(
     byOrder.set(message.orderId, bucket)
   }
 
+  let openOrders = 0
   let awaitingPayment = 0
   let awaitingFulfillment = 0
 
   for (const messages of byOrder.values()) {
+    // Only orders received as the merchant; skip orders placed as a buyer
+    // (the buyer sends the `order`, so a self-sent order is a buyer order).
+    const orderMessage = messages.find((message) => message.type === "order")
+    if (orderMessage && orderMessage.senderPubkey === pubkey) continue
+
+    openOrders += 1
+
     const hasPaymentRequest = messages.some(
       (message) => message.type === "payment_request"
     )
@@ -111,13 +128,16 @@ async function fetchDashboardStatsFromCacheOnly(
   }
 
   const latestOrders = [...parsedMessages]
-    .filter((message) => message.type === "order")
+    .filter(
+      (message) =>
+        message.type === "order" && message.recipientPubkey === pubkey
+    )
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, 5)
 
   return {
     listings: 0,
-    openOrders: byOrder.size,
+    openOrders,
     awaitingPayment,
     awaitingFulfillment,
     latestOrders,
@@ -320,6 +340,7 @@ function MerchantReadinessPanel({
 
 function DashboardPage() {
   const { pubkey, error } = useAuth()
+  const navigate = useNavigate()
   const ndk = useNdkState()
   const readiness = useMerchantReadinessState()
   const statsQuery = useQuery({
@@ -334,11 +355,43 @@ function DashboardPage() {
     queryFn: () => fetchCachedDashboardStats(pubkey!),
     staleTime: 5_000,
   })
+  const conversationsQuery = useQuery({
+    queryKey: ["merchant-conversations-live", pubkey ?? "none"],
+    enabled: !!pubkey,
+    queryFn: () => getMerchantConversationList({ principalPubkey: pubkey! }),
+    refetchInterval: 30_000,
+  })
+  const cachedConversationsQuery = useQuery({
+    queryKey: ["merchant-conversations", pubkey ?? "none"],
+    enabled: !!pubkey,
+    queryFn: () =>
+      getCachedMerchantConversationList({ principalPubkey: pubkey! }),
+    staleTime: 5_000,
+  })
+  const btcRateQuery = useBtcUsdRate()
   const stats = statsQuery.data ?? cachedStatsQuery.data
-  const latestOrders = (stats?.latestOrders ?? []).filter(
-    (message): message is Extract<ParsedOrderMessage, { type: "order" }> =>
-      message.type === "order"
+  const allConversations =
+    conversationsQuery.data?.data ?? cachedConversationsQuery.data?.data ?? []
+  const latestConversations = allConversations.slice(0, 5)
+  const chartData = useMemo(
+    () =>
+      buildDashboardChartData(
+        conversationsQuery.data?.data ??
+          cachedConversationsQuery.data?.data ??
+          [],
+        btcRateQuery.data ?? null,
+        Date.now()
+      ),
+    [conversationsQuery.data, cachedConversationsQuery.data, btcRateQuery.data]
   )
+  const buyerProfilesQuery = useProfiles(
+    latestConversations.map((conversation) => conversation.buyerPubkey),
+    { enabled: !!pubkey && latestConversations.length > 0 }
+  )
+  const buyerName = (buyerPubkey: string) =>
+    getProfileName(
+      (buyerProfilesQuery.data as Record<string, Profile>)?.[buyerPubkey]
+    ) || formatNpub(buyerPubkey, 8)
 
   return (
     <div className="space-y-6">
@@ -407,6 +460,10 @@ function DashboardPage() {
 
       {pubkey && <MerchantReadinessPanel readiness={readiness} />}
 
+      {pubkey && chartData.totalOrders > 0 && (
+        <DashboardCharts data={chartData} />
+      )}
+
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">
         <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
           <div className="flex items-start justify-between gap-3">
@@ -425,7 +482,7 @@ function DashboardPage() {
               to="/products"
               className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-elevated)]"
             >
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-sm font-medium text-[var(--text-primary)]">
                     Manage listings
@@ -434,7 +491,7 @@ function DashboardPage() {
                     Create, edit, and publish products.
                   </div>
                 </div>
-                <ArrowRight className="h-4 w-4 text-[var(--text-muted)]" />
+                <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
               </div>
             </Link>
 
@@ -442,7 +499,7 @@ function DashboardPage() {
               to="/orders"
               className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-elevated)]"
             >
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-sm font-medium text-[var(--text-primary)]">
                     Open order inbox
@@ -451,7 +508,7 @@ function DashboardPage() {
                     Review buyer messages, invoices, and status updates.
                   </div>
                 </div>
-                <ArrowRight className="h-4 w-4 text-[var(--text-muted)]" />
+                <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
               </div>
             </Link>
           </div>
@@ -472,42 +529,40 @@ function DashboardPage() {
             </Button>
           </div>
 
-          <div className="mt-4 space-y-3">
-            {statsQuery.isLoading && cachedStatsQuery.isLoading && (
-              <div className="text-sm text-[var(--text-secondary)]">
-                Checking cached dashboard state…
-              </div>
-            )}
-
-            {!cachedStatsQuery.isLoading && latestOrders.length === 0 && (
-              <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--text-secondary)]">
-                No buyer orders cached yet. Once Market sends an order to this
-                merchant, it will appear here and in Orders.
-              </div>
-            )}
-
-            {latestOrders.map((message) => (
-              <Link
-                key={message.id}
-                to="/orders"
-                className="block rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-elevated)]"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-medium text-[var(--text-primary)]">
-                      Order {message.orderId.slice(0, 8)}…
-                    </div>
-                    <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                      {message.payload.items.length} item
-                      {message.payload.items.length === 1 ? "" : "s"} ·{" "}
-                      {message.payload.subtotal} {message.payload.currency}
-                    </div>
-                  </div>
-                  <div className="text-xs text-[var(--text-muted)]">
-                    {new Date(message.createdAt).toLocaleDateString()}
-                  </div>
+          <div className="mt-4 space-y-2">
+            {conversationsQuery.isLoading &&
+              cachedConversationsQuery.isLoading && (
+                <div className="text-sm text-[var(--text-secondary)]">
+                  Checking cached dashboard state…
                 </div>
-              </Link>
+              )}
+
+            {!cachedConversationsQuery.isLoading &&
+              latestConversations.length === 0 && (
+                <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--text-secondary)]">
+                  No buyer orders cached yet. Once Market sends an order to this
+                  merchant, it will appear here and in Orders.
+                </div>
+              )}
+
+            {latestConversations.map((conversation) => (
+              <OrderListItem
+                key={conversation.id}
+                conversation={conversation}
+                buyerName={buyerName(conversation.buyerPubkey)}
+                buyerPicture={
+                  (buyerProfilesQuery.data as Record<string, Profile>)?.[
+                    conversation.buyerPubkey
+                  ]?.picture
+                }
+                active={false}
+                onClick={() =>
+                  navigate({
+                    to: "/orders",
+                    search: { order: conversation.orderId },
+                  })
+                }
+              />
             ))}
           </div>
         </section>
