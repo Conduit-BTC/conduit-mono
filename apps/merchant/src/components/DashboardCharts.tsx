@@ -113,6 +113,9 @@ function VerticalBarChart({
   const barW = Math.min(48, Math.max(3, slotW * 0.72))
   const labelStep = Math.max(1, Math.ceil(n / maxLabels))
   const showEveryLabel = n <= maxLabels
+  const usesExplicitLabels = points.some(
+    (point) => point.showAxisLabel !== undefined
+  )
 
   return (
     <div>
@@ -145,7 +148,9 @@ function VerticalBarChart({
       </svg>
       <div className="relative mt-1 h-4 tabular-nums text-xs text-[var(--text-muted)]">
         {points.map((point, i) => {
-          const showLabel = i % labelStep === 0 || i === n - 1
+          const showLabel = usesExplicitLabels
+            ? point.showAxisLabel === true
+            : i % labelStep === 0 || i === n - 1
           if (!showLabel) return null
 
           const pinToStart = !showEveryLabel && i === 0

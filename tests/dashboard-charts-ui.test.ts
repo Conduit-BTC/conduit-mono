@@ -9,7 +9,7 @@ import type { TimeBucketPoint } from "../apps/merchant/src/lib/dashboard-charts"
 
 function chartPoints(): TimeBucketPoint[] {
   return Array.from({ length: 30 }, (_, index) => ({
-    date: `2026-06-${String(index + 1).padStart(2, "0")}`,
+    date: index,
     label:
       index === 0 ? "Jun 13" : index === 29 ? "Jul 12" : `Jun ${index + 13}`,
     value: index === 14 ? 3 : 0,
@@ -21,7 +21,7 @@ describe("dashboard chart presentation", () => {
     const markup = renderToStaticMarkup(
       createElement(OrdersOverTimeChart, {
         points: chartPoints(),
-        range: "month",
+        range: "30d",
         onRangeChange: () => {},
       })
     )
@@ -38,25 +38,27 @@ describe("dashboard chart presentation", () => {
       createElement(RevenueOverTimeChart, {
         points: chartPoints(),
         hasRevenue: true,
-        range: "month",
+        range: "30d",
         onRangeChange: () => {},
       })
     )
 
-    expect(markup).toContain('aria-label="Paid revenue over time, Past month"')
+    expect(markup).toContain(
+      'aria-label="Paid revenue over time, Past 30 days"'
+    )
   })
 
   it("labels each chart range selector and shows the active preset", () => {
     const markup = renderToStaticMarkup(
       createElement(OrdersOverTimeChart, {
         points: chartPoints(),
-        range: "month",
+        range: "30d",
         onRangeChange: () => {},
       })
     )
 
     expect(markup).toContain('aria-label="Time range for Orders over time"')
-    expect(markup).toContain("Past month")
+    expect(markup).toContain("Past 30 days")
   })
 
   it("renders every daily label in the past-week preset", () => {
@@ -78,5 +80,26 @@ describe("dashboard chart presentation", () => {
     for (const point of points) {
       expect(markup).toContain(point.axisLabel)
     }
+  })
+
+  it("renders only explicitly selected labels for dense daily bars", () => {
+    const points = Array.from({ length: 30 }, (_, index) => ({
+      date: index,
+      label: `Day ${index + 1}`,
+      axisLabel: `Axis ${index + 1}`,
+      showAxisLabel: index % 3 === 0,
+      value: index + 1,
+    }))
+    const markup = renderToStaticMarkup(
+      createElement(OrdersOverTimeChart, {
+        points,
+        range: "30d",
+        onRangeChange: () => {},
+      })
+    )
+
+    expect(markup).toContain("Axis 1")
+    expect(markup).toContain("Axis 4")
+    expect(markup).not.toContain(">Axis 2</span>")
   })
 })

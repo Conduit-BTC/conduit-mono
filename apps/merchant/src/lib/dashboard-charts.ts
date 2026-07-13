@@ -16,6 +16,8 @@ export interface TimeBucketPoint {
   label: string
   /** Optional compact label used only on the x-axis. */
   axisLabel?: string
+  /** Whether this bucket's compact label should be rendered. */
+  showAxisLabel?: boolean
   value: number
 }
 
@@ -50,39 +52,51 @@ export interface DashboardDateRange {
   bucket?: DashboardTimeBucketLayout
 }
 
-export type DashboardRangePreset = "week" | "month" | "quarter" | "year"
+export type DashboardRangePreset = "week" | "30d" | "90d" | "year"
 
-export type DashboardTimeBucketUnit = "day" | "week" | "month" | "quarter"
+export type DashboardTimeBucketUnit = "day" | "week"
+
+export type DashboardAxisLabelCadence =
+  { kind: "day"; every: number } | { kind: "month" }
 
 export interface DashboardTimeBucketLayout {
   unit: DashboardTimeBucketUnit
-  count: number
+  axisLabels: DashboardAxisLabelCadence
 }
 
 export const DASHBOARD_RANGE_OPTIONS: Array<{
   value: DashboardRangePreset
   label: string
+  days: number
   bucket: DashboardTimeBucketLayout
 }> = [
-  { value: "week", label: "Past week", bucket: { unit: "day", count: 7 } },
   {
-    value: "month",
-    label: "Past month",
-    bucket: { unit: "week", count: 4 },
+    value: "week",
+    label: "Past Week",
+    days: 7,
+    bucket: { unit: "day", axisLabels: { kind: "day", every: 1 } },
   },
   {
-    value: "quarter",
-    label: "Past quarter",
-    bucket: { unit: "month", count: 3 },
+    value: "30d",
+    label: "Past 30 days",
+    days: 30,
+    bucket: { unit: "day", axisLabels: { kind: "day", every: 3 } },
+  },
+  {
+    value: "90d",
+    label: "Past 90 days",
+    days: 90,
+    bucket: { unit: "day", axisLabels: { kind: "day", every: 9 } },
   },
   {
     value: "year",
-    label: "Past year",
-    bucket: { unit: "quarter", count: 4 },
+    label: "Past Year",
+    days: 365,
+    bucket: { unit: "week", axisLabels: { kind: "month" } },
   },
 ]
 
-export const DEFAULT_DASHBOARD_RANGE: DashboardRangePreset = "month"
+export const DEFAULT_DASHBOARD_RANGE: DashboardRangePreset = "30d"
 
 export function isDashboardRangePreset(
   value: string
@@ -93,7 +107,7 @@ export function isDashboardRangePreset(
 export function getDashboardRangeLabel(preset: DashboardRangePreset): string {
   return (
     DASHBOARD_RANGE_OPTIONS.find((option) => option.value === preset)?.label ??
-    "Past month"
+    "Past 30 days"
   )
 }
 
@@ -102,11 +116,14 @@ export function resolveDashboardPresetRange(
   now: number
 ): DashboardDateRange {
   const end = startOfDay(now)
-  const bucket =
-    DASHBOARD_RANGE_OPTIONS.find((option) => option.value === preset)?.bucket ??
-    DASHBOARD_RANGE_OPTIONS[1]!.bucket
-  const windows = createRollingBucketWindows(end, bucket)
-  return { start: windows[0]!.start, end, bucket }
+  const option =
+    DASHBOARD_RANGE_OPTIONS.find((candidate) => candidate.value === preset) ??
+    DASHBOARD_RANGE_OPTIONS[1]!
+  return {
+    start: shiftDays(end, -(option.days - 1)),
+    end,
+    bucket: option.bucket,
+  }
 }
 
 const STATUS_ORDER: StatusSlice["key"][] = [
@@ -132,33 +149,6 @@ function shiftDays(ms: number, days: number): number {
   const date = new Date(ms)
   date.setDate(date.getDate() + days)
   return startOfDay(date.getTime())
-}
-
-function shiftMonthsClamped(ms: number, months: number): number {
-  const date = new Date(ms)
-  const targetDay = date.getDate()
-  date.setDate(1)
-  date.setMonth(date.getMonth() + months)
-  const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate()
-  date.setDate(Math.min(targetDay, lastDay))
-  return startOfDay(date.getTime())
-}
-
-function shiftBucketBoundary(
-  ms: number,
-  unit: DashboardTimeBucketUnit,
-  amount: number
-): number {
-  switch (unit) {
-    case "day":
-      return shiftDays(ms, amount)
-    case "week":
-      return shiftDays(ms, amount * 7)
-    case "month":
-      return shiftMonthsClamped(ms, amount)
-    case "quarter":
-      return shiftMonthsClamped(ms, amount * 3)
-  }
 }
 
 function shortDateLabel(ms: number): string {
@@ -193,53 +183,12 @@ function bucketLabel(start: number, end: number): string {
   return `${startLabel}–${endLabel}`
 }
 
-function bucketAxisLabel(
-  start: number,
-  end: number,
-  unit: DashboardTimeBucketUnit
-): string {
-  switch (unit) {
-    case "day":
-      return shortDateLabel(start)
-    case "week":
-      return shortDateLabel(start)
-    case "month":
-      return new Date(end).toLocaleDateString(undefined, { month: "short" })
-    case "quarter":
-      return new Date(end).toLocaleDateString(undefined, {
-        month: "short",
-        year: "2-digit",
-      })
-  }
-}
-
 interface TimeBucketWindow {
   start: number
   end: number
   label: string
-  axisLabel: string
-}
-
-function createRollingBucketWindows(
-  end: number,
-  layout: DashboardTimeBucketLayout
-): TimeBucketWindow[] {
-  if (!Number.isInteger(layout.count) || layout.count < 1) {
-    throw new Error("Dashboard time bucket count must be a positive integer")
-  }
-  const boundaries = Array.from({ length: layout.count + 1 }, (_, index) =>
-    shiftBucketBoundary(end, layout.unit, index - layout.count)
-  )
-  return Array.from({ length: layout.count }, (_, index) => {
-    const start = shiftDays(boundaries[index]!, 1)
-    const bucketEnd = boundaries[index + 1]!
-    return {
-      start,
-      end: bucketEnd,
-      label: bucketLabel(start, bucketEnd),
-      axisLabel: bucketAxisLabel(start, bucketEnd, layout.unit),
-    }
-  })
+  axisLabel?: string
+  showAxisLabel: boolean
 }
 
 function createDailyBucketWindows(
@@ -252,10 +201,76 @@ function createDailyBucketWindows(
       start: cursor,
       end: cursor,
       label: bucketLabel(cursor, cursor),
-      axisLabel: shortDateLabel(cursor),
+      showAxisLabel: false,
     })
   }
   return windows
+}
+
+function createWeeklyBucketWindows(
+  start: number,
+  end: number
+): TimeBucketWindow[] {
+  const windows: TimeBucketWindow[] = []
+  for (let bucketEnd = end; bucketEnd >= start;) {
+    const bucketStart = Math.max(start, shiftDays(bucketEnd, -6))
+    windows.unshift({
+      start: bucketStart,
+      end: bucketEnd,
+      label: bucketLabel(bucketStart, bucketEnd),
+      showAxisLabel: false,
+    })
+    bucketEnd = shiftDays(bucketStart, -1)
+  }
+  return windows
+}
+
+function firstFullMonthStart(rangeStart: number): number {
+  const monthStart = new Date(rangeStart)
+  monthStart.setHours(0, 0, 0, 0)
+  monthStart.setDate(1)
+  if (monthStart.getTime() < rangeStart) {
+    monthStart.setMonth(monthStart.getMonth() + 1)
+  }
+  return monthStart.getTime()
+}
+
+function applyAxisLabels(
+  windows: TimeBucketWindow[],
+  cadence: DashboardAxisLabelCadence,
+  windowStart: number,
+  windowEnd: number
+): TimeBucketWindow[] {
+  if (cadence.kind === "day") {
+    if (!Number.isInteger(cadence.every) || cadence.every < 1) {
+      throw new Error("Dashboard day label cadence must be a positive integer")
+    }
+    return windows.map((bucket, index) => ({
+      ...bucket,
+      axisLabel:
+        index % cadence.every === 0 ? shortDateLabel(bucket.start) : undefined,
+      showAxisLabel: index % cadence.every === 0,
+    }))
+  }
+
+  const monthLabels = new Map<number, string>()
+  const cursor = new Date(firstFullMonthStart(windowStart))
+  while (cursor.getTime() <= windowEnd) {
+    const bucket = findTimeBucket(windows, cursor.getTime())
+    if (bucket) {
+      monthLabels.set(
+        bucket.start,
+        cursor.toLocaleDateString(undefined, { month: "short" })
+      )
+    }
+    cursor.setMonth(cursor.getMonth() + 1)
+  }
+
+  return windows.map((bucket) => ({
+    ...bucket,
+    axisLabel: monthLabels.get(bucket.start),
+    showAxisLabel: monthLabels.has(bucket.start),
+  }))
 }
 
 function createTimeBucketWindows(
@@ -263,19 +278,17 @@ function createTimeBucketWindows(
   windowStart: number,
   windowEnd: number
 ): TimeBucketWindow[] {
-  if (!range.bucket) return createDailyBucketWindows(windowStart, windowEnd)
-
-  return createRollingBucketWindows(windowEnd, range.bucket)
-    .map((bucket) => {
-      const start = Math.max(bucket.start, windowStart)
-      return {
-        ...bucket,
-        start,
-        label: bucketLabel(start, bucket.end),
-        axisLabel: bucketAxisLabel(start, bucket.end, range.bucket!.unit),
-      }
-    })
-    .filter((bucket) => bucket.start <= bucket.end)
+  const layout =
+    range.bucket ??
+    ({
+      unit: "day",
+      axisLabels: { kind: "day", every: 1 },
+    } satisfies DashboardTimeBucketLayout)
+  const windows =
+    layout.unit === "week"
+      ? createWeeklyBucketWindows(windowStart, windowEnd)
+      : createDailyBucketWindows(windowStart, windowEnd)
+  return applyAxisLabels(windows, layout.axisLabels, windowStart, windowEnd)
 }
 
 function findTimeBucket(
@@ -425,12 +438,14 @@ export function buildDashboardChartData(
     date: bucket.start,
     label: bucket.label,
     axisLabel: bucket.axisLabel,
+    showAxisLabel: bucket.showAxisLabel,
     value: orderCountByBucket.get(bucket.start) ?? 0,
   }))
   const revenueOverTime: TimeBucketPoint[] = timeBuckets.map((bucket) => ({
     date: bucket.start,
     label: bucket.label,
     axisLabel: bucket.axisLabel,
+    showAxisLabel: bucket.showAxisLabel,
     value: revenueByBucket.get(bucket.start) ?? 0,
   }))
 

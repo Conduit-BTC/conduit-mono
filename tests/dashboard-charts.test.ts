@@ -11,16 +11,9 @@ import {
 
 const NOW = new Date("2026-07-09T12:00:00Z").getTime()
 
-function offsetDate({
-  days = 0,
-  months = 0,
-}: {
-  days?: number
-  months?: number
-}) {
+function offsetDate({ days = 0 }: { days?: number }) {
   const date = new Date(NOW)
   date.setDate(date.getDate() - days)
-  date.setMonth(date.getMonth() - months)
   return date.getTime()
 }
 
@@ -153,12 +146,13 @@ describe("buildDashboardChartData", () => {
   const data = buildDashboardChartData(
     conversations,
     null,
-    resolveDashboardPresetRange("month", NOW)
+    resolveDashboardPresetRange("30d", NOW)
   )
 
-  it("aggregates the past month into four weekly buckets", () => {
-    expect(data.ordersOverTime).toHaveLength(4)
-    expect(data.ordersOverTime[data.ordersOverTime.length - 1]?.value).toBe(3)
+  it("keeps daily bars across the full past 30 days", () => {
+    expect(data.ordersOverTime).toHaveLength(30)
+    expect(data.ordersOverTime[data.ordersOverTime.length - 1]?.value).toBe(2)
+    expect(data.ordersOverTime[data.ordersOverTime.length - 4]?.value).toBe(1)
   })
 
   it("buckets status counts (cancelled included)", () => {
@@ -184,7 +178,7 @@ describe("buildDashboardChartData", () => {
       buildDashboardChartData(
         [proofOnly],
         null,
-        resolveDashboardPresetRange("month", NOW)
+        resolveDashboardPresetRange("30d", NOW)
       ).statusSlices
     ).toEqual([{ key: "in_progress", label: "In Progress", count: 1 }])
   })
@@ -209,23 +203,23 @@ describe("buildDashboardChartData", () => {
       ),
       NOW - 40 * 86_400_000
     )
-    const month = buildDashboardChartData(
+    const thirtyDays = buildDashboardChartData(
       [delayedConfirmation],
       null,
-      resolveDashboardPresetRange("month", NOW)
+      resolveDashboardPresetRange("30d", NOW)
     )
-    const quarter = buildDashboardChartData(
+    const ninetyDays = buildDashboardChartData(
       [delayedConfirmation],
       null,
-      resolveDashboardPresetRange("quarter", NOW)
+      resolveDashboardPresetRange("90d", NOW)
     )
 
-    expect(month.hasRevenue).toBe(false)
-    expect(month.topProducts).toEqual([])
+    expect(thirtyDays.hasRevenue).toBe(false)
+    expect(thirtyDays.topProducts).toEqual([])
     expect(
-      quarter.revenueOverTime.reduce((sum, point) => sum + point.value, 0)
+      ninetyDays.revenueOverTime.reduce((sum, point) => sum + point.value, 0)
     ).toBe(100)
-    expect(quarter.topProducts[0]?.productId).toBe("p:delayed")
+    expect(ninetyDays.topProducts[0]?.productId).toBe("p:delayed")
   })
 
   it("ranks top products by total quantity", () => {
@@ -246,23 +240,23 @@ describe("buildDashboardChartData", () => {
       400
     )
     const all = [...conversations, olderPaidOrder]
-    const month = buildDashboardChartData(
+    const thirtyDays = buildDashboardChartData(
       all,
       null,
-      resolveDashboardPresetRange("month", NOW)
+      resolveDashboardPresetRange("30d", NOW)
     )
-    const quarter = buildDashboardChartData(
+    const ninetyDays = buildDashboardChartData(
       all,
       null,
-      resolveDashboardPresetRange("quarter", NOW)
+      resolveDashboardPresetRange("90d", NOW)
     )
 
-    expect(month.totalOrders).toBe(3)
-    expect(month.topProducts.some((item) => item.productId === "p:old")).toBe(
-      false
-    )
-    expect(quarter.totalOrders).toBe(4)
-    expect(quarter.topProducts[0]).toMatchObject({
+    expect(thirtyDays.totalOrders).toBe(3)
+    expect(
+      thirtyDays.topProducts.some((item) => item.productId === "p:old")
+    ).toBe(false)
+    expect(ninetyDays.totalOrders).toBe(4)
+    expect(ninetyDays.topProducts[0]).toMatchObject({
       productId: "p:old",
       quantity: 4,
     })
@@ -277,87 +271,86 @@ describe("buildDashboardChartData", () => {
     expect(custom.ordersOverTime).toHaveLength(3)
   })
 
-  it("uses legible bucket counts for each rolling preset", () => {
-    expect(DASHBOARD_RANGE_OPTIONS.map((option) => option.value)).toEqual([
-      "week",
-      "month",
-      "quarter",
-      "year",
+  it("uses exact windows, bar intervals, and label cadences per preset", () => {
+    expect(
+      DASHBOARD_RANGE_OPTIONS.map(({ value, label }) => ({ value, label }))
+    ).toEqual([
+      { value: "week", label: "Past Week" },
+      { value: "30d", label: "Past 30 days" },
+      { value: "90d", label: "Past 90 days" },
+      { value: "year", label: "Past Year" },
     ])
-    const expectedBucketCounts = {
-      week: 7,
-      month: 4,
-      quarter: 3,
-      year: 4,
+    const expectations = {
+      week: { bars: 7, labels: 7 },
+      "30d": { bars: 30, labels: 10 },
+      "90d": { bars: 90, labels: 10 },
+      year: { bars: 53, labels: 12 },
     }
+
     for (const option of DASHBOARD_RANGE_OPTIONS) {
-      const preset = buildDashboardChartData(
+      const result = buildDashboardChartData(
         [],
         null,
         resolveDashboardPresetRange(option.value, NOW)
       )
-      expect(preset.ordersOverTime).toHaveLength(
-        expectedBucketCounts[option.value]
-      )
-      expect(preset.revenueOverTime).toHaveLength(
-        expectedBucketCounts[option.value]
-      )
+      const expected = expectations[option.value]
+      expect(result.ordersOverTime).toHaveLength(expected.bars)
+      expect(result.revenueOverTime).toHaveLength(expected.bars)
+      expect(
+        result.ordersOverTime.filter((point) => point.showAxisLabel).length
+      ).toBe(expected.labels)
     }
   })
 
-  it("aggregates orders and revenue into every visible preset bucket", () => {
-    const cases = [
-      {
-        preset: "week" as const,
-        timestamps: Array.from({ length: 7 }, (_, days) =>
-          offsetDate({ days })
-        ),
-      },
-      {
-        preset: "month" as const,
-        timestamps: [0, 7, 14, 21].map((days) => offsetDate({ days })),
-      },
-      {
-        preset: "quarter" as const,
-        timestamps: [0, 1, 2].map((months) => offsetDate({ months })),
-      },
-      {
-        preset: "year" as const,
-        timestamps: [0, 3, 6, 9].map((months) => offsetDate({ months })),
-      },
-    ]
+  it("preserves the full left edge of the exact 30 and 90 day windows", () => {
+    const withinThirtyDays = conversation(
+      "day-30",
+      "pending",
+      offsetDate({ days: 29 }),
+      [{ productId: "p:30", quantity: 1 }],
+      10
+    )
+    const outsideThirtyDays = conversation(
+      "day-31",
+      "pending",
+      offsetDate({ days: 30 }),
+      [{ productId: "p:31", quantity: 1 }],
+      10
+    )
+    const withinNinetyDays = conversation(
+      "day-90",
+      "pending",
+      offsetDate({ days: 89 }),
+      [{ productId: "p:90", quantity: 1 }],
+      10
+    )
+    const outsideNinetyDays = conversation(
+      "day-91",
+      "pending",
+      offsetDate({ days: 90 }),
+      [{ productId: "p:91", quantity: 1 }],
+      10
+    )
 
-    for (const { preset, timestamps } of cases) {
-      const values = timestamps.map((timestamp, index) =>
-        conversation(
-          `${preset}-${index}`,
-          "paid",
-          timestamp,
-          [{ productId: `${preset}-product`, quantity: 1 }],
-          10
-        )
-      )
-      const result = buildDashboardChartData(
-        values,
-        null,
-        resolveDashboardPresetRange(preset, NOW)
-      )
+    const thirtyDays = buildDashboardChartData(
+      [withinThirtyDays, outsideThirtyDays],
+      null,
+      resolveDashboardPresetRange("30d", NOW)
+    )
+    const ninetyDays = buildDashboardChartData(
+      [withinNinetyDays, outsideNinetyDays],
+      null,
+      resolveDashboardPresetRange("90d", NOW)
+    )
 
-      expect(result.ordersOverTime.map((point) => point.value)).toEqual(
-        timestamps.map(() => 1)
-      )
-      expect(result.revenueOverTime.map((point) => point.value)).toEqual(
-        timestamps.map(() => 10)
-      )
-      expect(result.ordersOverTime.every((point) => !!point.axisLabel)).toBe(
-        true
-      )
-    }
+    expect(thirtyDays.totalOrders).toBe(1)
+    expect(thirtyDays.ordersOverTime[0]?.value).toBe(1)
+    expect(ninetyDays.totalOrders).toBe(1)
+    expect(ninetyDays.ordersOverTime[0]?.value).toBe(1)
   })
 
-  it("keeps rolling month buckets contiguous across different month lengths", () => {
-    const monthEnd = new Date("2028-05-31T12:00:00Z").getTime()
-    const range = resolveDashboardPresetRange("quarter", monthEnd)
+  it("keeps every day in the year window while rolling into weekly bars", () => {
+    const range = resolveDashboardPresetRange("year", NOW)
     const dailyOrders: MerchantConversationSummary[] = []
     const cursor = new Date(range.start)
     let index = 0
@@ -365,10 +358,10 @@ describe("buildDashboardChartData", () => {
     while (cursor.getTime() <= range.end) {
       dailyOrders.push(
         conversation(
-          `month-end-${index}`,
+          `year-${index}`,
           "pending",
           cursor.getTime(),
-          [{ productId: "month-end-product", quantity: 1 }],
+          [{ productId: "year-product", quantity: 1 }],
           10
         )
       )
@@ -377,10 +370,12 @@ describe("buildDashboardChartData", () => {
     }
 
     const result = buildDashboardChartData(dailyOrders, null, range)
-    expect(result.ordersOverTime).toHaveLength(3)
+    expect(dailyOrders).toHaveLength(365)
+    expect(result.ordersOverTime).toHaveLength(53)
     expect(
       result.ordersOverTime.reduce((sum, point) => sum + point.value, 0)
-    ).toBe(dailyOrders.length)
-    expect(result.ordersOverTime.every((point) => point.value > 0)).toBe(true)
+    ).toBe(365)
+    expect(result.ordersOverTime[0]?.value).toBe(1)
+    expect(result.ordersOverTime.at(-1)?.value).toBe(7)
   })
 })
