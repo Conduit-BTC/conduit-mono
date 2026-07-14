@@ -10,12 +10,15 @@ import {
   isMsatsLikeCurrency,
   isSatsLikeCurrency,
   normalizeCommercePrice,
+  resolveCartShippingCost,
   type AnonZapRequestDraft,
   type FetchZapInvoiceResult,
   type SignedAnonZapRequest,
   type BtcUsdRateQuote,
   type NwcDiagnostic,
   type PricingRateInput,
+  type ResolvedCartShippingCostStatus,
+  type ResolvedCartShippingCostSummary,
   type SourcePriceQuote,
   type StoredPaymentAttempt,
 } from "@conduit/core"
@@ -53,14 +56,9 @@ export type CheckoutPricingItem = {
   sourcePrice?: SourcePriceQuote
 }
 
-export type CheckoutShippingCostStatus =
-  "not_required" | "included" | "priced" | "manual"
+export type CheckoutShippingCostStatus = ResolvedCartShippingCostStatus
 
-export type CheckoutShippingCostSummary = {
-  status: CheckoutShippingCostStatus
-  totalSats: number
-  missingProductIds: string[]
-}
+export type CheckoutShippingCostSummary = ResolvedCartShippingCostSummary
 
 export type CheckoutPricingIntent =
   | {
@@ -121,43 +119,36 @@ function getKnownShippingCostSats(
   return getShippingCostSats(item, rateInput)
 }
 
+function isCheckoutShippingCostResolvable(item: CartItem): boolean {
+  return (
+    item.format === "digital" ||
+    !!item.shippingOptionId ||
+    (item.shippingCountryRules?.length ?? 0) > 0
+  )
+}
+
+function getCheckoutShippingResolvableItem(item: CartItem): CartItem {
+  return isCheckoutShippingCostResolvable(item)
+    ? item
+    : {
+        ...item,
+        shippingCostSats: undefined,
+        sourceShippingCost: undefined,
+      }
+}
+
+function getCheckoutShippingResolvableItems(items: CartItem[]): CartItem[] {
+  return items.map(getCheckoutShippingResolvableItem)
+}
+
 export function getCheckoutShippingCost(
   items: CartItem[],
   rateInput: PricingRateInput = null
 ): CheckoutShippingCostSummary {
-  const physicalItems = items.filter((item) => item.format !== "digital")
-  if (physicalItems.length === 0) {
-    return {
-      status: "not_required",
-      totalSats: 0,
-      missingProductIds: [],
-    }
-  }
-
-  const missingProductIds = physicalItems
-    .filter((item) => getKnownShippingCostSats(item, rateInput) === null)
-    .map((item) => item.productId)
-
-  if (missingProductIds.length > 0) {
-    return {
-      status: "manual",
-      totalSats: 0,
-      missingProductIds,
-    }
-  }
-
-  const totalSats = physicalItems.reduce(
-    (sum, item) =>
-      sum +
-      (getKnownShippingCostSats(item, rateInput)?.sats ?? 0) * item.quantity,
-    0
+  return resolveCartShippingCost(
+    getCheckoutShippingResolvableItems(items),
+    rateInput
   )
-
-  return {
-    status: totalSats === 0 ? "included" : "priced",
-    totalSats,
-    missingProductIds: [],
-  }
 }
 
 export function buildCheckoutPricingIntent(
@@ -220,8 +211,9 @@ export function buildCheckoutPricingIntent(
       itemSats = normalized.sats
     }
 
-    const shippingSats = getKnownShippingCostSats(item, rateInput)
-    if (!shippingSats && item.sourceShippingCost) {
+    const shippingItem = getCheckoutShippingResolvableItem(item)
+    const shippingSats = getKnownShippingCostSats(shippingItem, rateInput)
+    if (!shippingSats && shippingItem.sourceShippingCost) {
       return {
         status: "error",
         code: "unpriced_items",
@@ -231,7 +223,7 @@ export function buildCheckoutPricingIntent(
     }
     if (
       shippingSats &&
-      shippingCostNeedsFreshQuote(item, shippingSats.approximate)
+      shippingCostNeedsFreshQuote(shippingItem, shippingSats.approximate)
     ) {
       needsFreshQuote = true
       if (!isQuoteObject(rateInput)) {
@@ -260,7 +252,7 @@ export function buildCheckoutPricingIntent(
       priceAtPurchase: itemSats,
       currency: "SATS",
       shippingCostSats: shippingSats?.sats,
-      sourceShippingCost: item.sourceShippingCost,
+      sourceShippingCost: shippingItem.sourceShippingCost,
       shippingOptionId: item.shippingOptionId,
       shippingOptionDTag: item.shippingOptionDTag,
       shippingCountries: item.shippingCountries,

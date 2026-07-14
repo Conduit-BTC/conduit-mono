@@ -65,6 +65,7 @@ import {
 
 const FAKE_PUBKEY = "a".repeat(64)
 const FAKE_SECRET = "b".repeat(64)
+const SHIPPING_OPTION_ID = `30406:${FAKE_PUBKEY}:standard`
 const VALID_NWC_URI = `nostr+walletconnect://${FAKE_PUBKEY}?relay=wss%3A%2F%2Frelay.example.com&secret=${FAKE_SECRET}`
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -798,7 +799,13 @@ describe("checkout payment helpers", () => {
 
   it("adds known physical shipping costs to checkout totals", () => {
     const intent = buildCheckoutPricingIntent(
-      [cartItem({ quantity: 2, shippingCostSats: 500 })],
+      [
+        cartItem({
+          quantity: 2,
+          shippingCostSats: 500,
+          shippingOptionId: SHIPPING_OPTION_ID,
+        }),
+      ],
       null
     )
 
@@ -820,6 +827,7 @@ describe("checkout payment helpers", () => {
       [
         cartItem({
           shippingCostSats: undefined,
+          shippingOptionId: SHIPPING_OPTION_ID,
           sourceShippingCost: {
             amount: 10,
             currency: "USD",
@@ -859,6 +867,7 @@ describe("checkout payment helpers", () => {
       [
         cartItem({
           shippingCostSats: undefined,
+          shippingOptionId: SHIPPING_OPTION_ID,
           sourceShippingCost: {
             amount: 10,
             currency: "USD",
@@ -887,12 +896,41 @@ describe("checkout payment helpers", () => {
       missingProductIds: [],
     })
     expect(
-      getCheckoutShippingCost([cartItem({ shippingCostSats: 0 })])
+      getCheckoutShippingCost([
+        cartItem({
+          shippingCostSats: 0,
+          shippingOptionId: SHIPPING_OPTION_ID,
+        }),
+      ])
     ).toEqual({
       status: "included",
       totalSats: 0,
       missingProductIds: [],
     })
+  })
+
+  it("keeps zone-less physical shipping manual even when a stale snapshot has a cost", () => {
+    const item = cartItem({ shippingCostSats: 500 })
+
+    expect(getCheckoutShippingCost([item])).toEqual({
+      status: "manual",
+      totalSats: 0,
+      missingProductIds: ["product-1"],
+    })
+
+    const intent = buildCheckoutPricingIntent([item], null)
+
+    expect(intent.status).toBe("ok")
+    if (intent.status !== "ok") return
+    expect(intent.itemSubtotalSats).toBe(1_000)
+    expect(intent.totalSats).toBe(1_000)
+    expect(intent.shippingCost).toEqual({
+      status: "manual",
+      totalSats: 0,
+      missingProductIds: ["product-1"],
+    })
+    expect(intent.items[0]?.shippingCostSats).toBeUndefined()
+    expect(intent.items[0]?.sourceShippingCost).toBeUndefined()
   })
 
   it("blocks direct payment when a non-SATS quote is stale", () => {

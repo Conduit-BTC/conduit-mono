@@ -165,7 +165,8 @@ describe("cart model", () => {
     ).toMatchObject({
       count: 3,
       itemSubtotalSats: 700,
-      totalSats: 700,
+      shippingTotalSats: 100,
+      totalSats: 800,
       itemPricesAvailable: true,
       shippingReadyForZap: true,
       canZapOut: true,
@@ -184,6 +185,7 @@ describe("cart model", () => {
     ).toMatchObject({
       count: 2,
       itemSubtotalSats: 200,
+      shippingTotalSats: 0,
       totalSats: 200,
       itemPricesAvailable: true,
       shippingReadyForZap: false,
@@ -203,6 +205,7 @@ describe("cart model", () => {
     ).toMatchObject({
       count: 2,
       itemSubtotalSats: 200,
+      shippingTotalSats: 0,
       totalSats: 200,
       itemPricesAvailable: true,
       shippingReadyForZap: false,
@@ -226,7 +229,8 @@ describe("cart model", () => {
     ).toMatchObject({
       count: 2,
       itemSubtotalSats: 200,
-      totalSats: 200,
+      shippingTotalSats: 50,
+      totalSats: 250,
       itemPricesAvailable: true,
       shippingReadyForZap: true,
       canZapOut: true,
@@ -245,6 +249,7 @@ describe("cart model", () => {
     ).toMatchObject({
       count: 1,
       itemSubtotalSats: 100,
+      shippingTotalSats: 0,
       totalSats: 100,
       itemPricesAvailable: true,
       shippingReadyForZap: true,
