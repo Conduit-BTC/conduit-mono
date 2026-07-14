@@ -27,8 +27,8 @@ import type {
   Nip47PayResponse,
   Nip47Transaction,
 } from "@getalby/sdk/nwc"
-import { sha256 } from "@noble/hashes/sha256"
-import { bytesToHex } from "@noble/hashes/utils"
+import { sha256 } from "@noble/hashes/sha2.js"
+import { bytesToHex } from "@noble/hashes/utils.js"
 
 import { decodeLightningInvoiceAmount } from "./lightning"
 import type { ConduitAppId } from "./nip89"
