@@ -6,37 +6,31 @@ This directory contains public implementation context for the `conduit-mono` cli
 
 - `docs/ARCHITECTURE.md`: system design, protocol boundaries, and data flow
 - `docs/DESIGN.md`: shared design system and theming guidance
-- `docs/specs/*`: active feature, protocol, and product requirements
-- `docs/nips/*`: compact Nostr implementation notes that point back to active specs and canonical public NIPs
-- `docs/knowledge/*`: supporting notes, research, and references that may inform implementation but do not replace the source-of-truth docs above
+- `docs/specs/*`: durable feature, protocol, and product contracts where the repository maintains one
+- `docs/nips/*`: compact Nostr implementation notes linked to canonical public NIPs
+- `docs/knowledge/*`: public-safe implementation notes, research, interoperability references, and reusable agent context
 
 ## Working Model
 
 1. Use this repo's docs for implemented behavior, accepted implementation contracts, and agent preflight context.
 2. Keep product strategy, ownership, priority, private commercial plans, and private operating context outside tracked public docs.
-3. Use `docs/specs/*` when product, protocol, or shared implementation behavior needs a stable contract.
-4. When work changes requirements, protocol behavior, shared UX rules, or shared expectations, update the relevant repo contract in the implementation PR before merge.
-5. If an external tracker conflicts with `docs/specs/*` or `docs/ARCHITECTURE.md`, resolve the contract mismatch before merge.
+3. Read an existing `docs/specs/*` contract when it applies, but do not create or update a spec for ordinary implementation work by default.
+4. Add or update `docs/knowledge/*` in the implementation PR when public-safe context will materially help future contributors or agents.
+5. Update a durable spec, architecture, or design contract when a maintainer requests it or the change genuinely requires a stable public contract.
 
-## Same-PR Contract Gate
+## Implementation Context
 
-Implementation PRs should distinguish `Contract changes` from `Implementation changes`. Include required changes to `docs/specs/*`, `docs/ARCHITECTURE.md`, or `docs/DESIGN.md` in the same PR so reviewers can evaluate the contract and code together.
+Non-trivial internal work should begin with a concise implementation plan. When the work has a Linear issue and the agent has authenticated access, post the plan as a Linear comment before or alongside opening the implementation PR. Keep that private planning context and private tracker links out of public Git history.
 
-During review, choose one of:
+Public PRs should identify the existing implementation context they checked and any public context they changed. Useful `docs/knowledge/*.md` notes may land with the code. A new spec document is not a default merge gate.
 
-- `Contract updated in this PR`
-- `No contract change needed`
-- `Separate decision/docs-only PR required`
-
-Block merge when a required contract change is missing or disagrees with the implementation. Do not require a separate PR solely because the contract and implementation changed together.
-
-Use `Separate decision/docs-only PR required` only for broad cross-PR architecture or external consensus that must be settled before implementation.
+Reviewers may request a durable contract update when the behavior has broad or long-lived public implications, but should not block an otherwise complete change solely because it lacks spec churn.
 
 ## Where To Put New Docs
 
 - Add new architecture-level material to `docs/ARCHITECTURE.md` only with explicit approval.
-- Add stable feature or protocol requirements under `docs/specs/`.
-- Add compact Nostr implementation notes under `docs/nips/`; keep them short and link back to `docs/specs/protocol.md` plus canonical public sources.
+- Add stable feature or protocol requirements under `docs/specs/` when a maintainer requests a durable contract.
+- Add compact Nostr implementation notes under `docs/nips/`; keep them short and link to canonical public sources.
 - Add shared visual and theming guidance to `docs/DESIGN.md`.
 - Add public-safe research notes, interop references, and non-authoritative supporting context under `docs/knowledge/`.
 
@@ -44,7 +38,7 @@ Do not add product strategy, private commercial, private service, release coordi
 
 ## Nostr Source Policy
 
-Before changing Nostr protocol, relay, signer, payment, messaging, product-event, cache, or outbox behavior, read `docs/knowledge/external-nostr-references.md` and the relevant repo spec. Public protocol sources must be checked before implementation, not after review.
+Before changing Nostr protocol, relay, signer, payment, messaging, product-event, cache, or outbox behavior, read `docs/knowledge/external-nostr-references.md`, any applicable existing repo contract, and the relevant public protocol source. Public protocol sources must be checked before implementation, not after review.
 
 ## Public Repo Posture
 
