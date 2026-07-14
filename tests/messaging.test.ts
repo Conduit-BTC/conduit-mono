@@ -4,11 +4,14 @@ import {
   __resetInboxRelayCache,
   buildDirectMessageRumor,
   classifyPrivateMessageKind,
+  decryptLegacyDirectMessage,
   detectNip44Capabilities,
   EVENT_KINDS,
   fetchInboxRelayUrls,
   parseDirectMessageRumor,
   parsePrivateMessageRelays,
+  PrivateMessageRelayReadinessError,
+  publishPrivateMessage,
   unwrapGiftWrap,
   type GiftUnwrapFn,
 } from "@conduit/core"
@@ -29,6 +32,18 @@ function rumor(kind: number, overrides: Partial<NDKEvent> = {}): NDKEvent {
     content: "hi",
     ...overrides,
   } as unknown as NDKEvent
+}
+
+function orderRumor(overrides: Partial<NDKEvent> = {}): NDKEvent {
+  return rumor(EVENT_KINDS.ORDER, {
+    tags: [
+      ["p", "recipient"],
+      ["type", "message"],
+      ["order", "order-id"],
+    ],
+    content: JSON.stringify({ note: "Order update" }),
+    ...overrides,
+  })
 }
 
 describe("classifyPrivateMessageKind", () => {
@@ -54,10 +69,79 @@ describe("unwrapGiftWrap", () => {
   })
 
   it("classifies a kind-16 rumor as an order message", async () => {
-    const giftUnwrap: GiftUnwrapFn = async () => rumor(EVENT_KINDS.ORDER)
+    const giftUnwrap: GiftUnwrapFn = async () => orderRumor()
     const outcome = await unwrapGiftWrap(wrap("w2"), signer, { giftUnwrap })
     expect(outcome.status).toBe("ok")
     if (outcome.status === "ok") expect(outcome.category).toBe("order")
+  })
+
+  it("ignores a NIP-18-shaped kind-16 generic repost", async () => {
+    const giftUnwrap: GiftUnwrapFn = async () =>
+      rumor(EVENT_KINDS.ORDER, {
+        tags: [
+          ["k", "30402"],
+          ["a", "30402:merchant:product-id"],
+        ],
+        content: JSON.stringify({ kind: 30402 }),
+      })
+
+    const outcome = await unwrapGiftWrap(wrap("w-nip18"), signer, {
+      giftUnwrap,
+    })
+
+    expect(outcome).toEqual({
+      status: "ignored",
+      wrapId: "w-nip18",
+      kind: EVENT_KINDS.ORDER,
+    })
+  })
+
+  it("reports a partial Conduit kind-16 envelope as content-free malformed", async () => {
+    const giftUnwrap: GiftUnwrapFn = async () =>
+      rumor(EVENT_KINDS.ORDER, {
+        tags: [
+          ["p", "recipient"],
+          ["type", "message"],
+        ],
+        content: "private order text",
+      })
+
+    const outcome = await unwrapGiftWrap(wrap("w-partial-order"), signer, {
+      giftUnwrap,
+    })
+
+    expect(outcome).toEqual({
+      status: "decrypt_failed",
+      wrapId: "w-partial-order",
+      reason: "malformed",
+    })
+    expect(JSON.stringify(outcome)).not.toContain("private order text")
+  })
+
+  it("rejects a fully tagged kind-16 rumor with non-JSON content", async () => {
+    const giftUnwrap: GiftUnwrapFn = async () =>
+      orderRumor({ content: "arbitrary plaintext" })
+    const outcome = await unwrapGiftWrap(wrap("w-json"), signer, { giftUnwrap })
+
+    expect(outcome).toEqual({
+      status: "decrypt_failed",
+      wrapId: "w-json",
+      reason: "malformed",
+    })
+  })
+
+  it("rejects a fully tagged message rumor without a typed note", async () => {
+    const giftUnwrap: GiftUnwrapFn = async () =>
+      orderRumor({ content: JSON.stringify({}) })
+    const outcome = await unwrapGiftWrap(wrap("w-shape"), signer, {
+      giftUnwrap,
+    })
+
+    expect(outcome).toEqual({
+      status: "decrypt_failed",
+      wrapId: "w-shape",
+      reason: "malformed",
+    })
   })
 
   it("surfaces a decrypt failure (not silence) when unwrap returns null", async () => {
@@ -136,7 +220,306 @@ describe("buildDirectMessageRumor / parseDirectMessageRumor", () => {
       recipientPubkey: "recipient",
       content: "yes we do",
       createdAt: 2_000_000,
+      transport: "nip17",
     })
+  })
+})
+
+describe("decryptLegacyDirectMessage", () => {
+  function legacyEvent(overrides: Partial<NDKEvent> = {}): NDKEvent {
+    return rumor(EVENT_KINDS.DM_LEGACY, {
+      id: "legacy-id",
+      pubkey: "sender",
+      tags: [["p", "recipient"]],
+      content: "ciphertext?iv=secret",
+      ...overrides,
+    })
+  }
+
+  it("decrypts incoming and outgoing kind-4 messages with the counterparty", async () => {
+    const calls: Array<{ pubkey: string; ciphertext: string }> = []
+    const decrypt = async (pubkey: string, ciphertext: string) => {
+      calls.push({ pubkey, ciphertext })
+      return `plain:${ciphertext}`
+    }
+
+    const incoming = await decryptLegacyDirectMessage(
+      legacyEvent(),
+      "recipient",
+      decrypt
+    )
+    const outgoing = await decryptLegacyDirectMessage(
+      legacyEvent({ pubkey: "recipient", tags: [["p", "sender"]] }),
+      "recipient",
+      decrypt
+    )
+
+    expect(incoming.status).toBe("ok")
+    expect(outgoing.status).toBe("ok")
+    if (incoming.status === "ok" && outgoing.status === "ok") {
+      expect(incoming.message.transport).toBe("nip04")
+      expect(outgoing.message.transport).toBe("nip04")
+      expect(incoming.message.content).toBe("plain:ciphertext?iv=secret")
+      expect(outgoing.message.senderPubkey).toBe("recipient")
+    }
+    expect(calls).toEqual([
+      { pubkey: "sender", ciphertext: "ciphertext?iv=secret" },
+      { pubkey: "sender", ciphertext: "ciphertext?iv=secret" },
+    ])
+  })
+
+  it("ignores malformed and unrelated legacy events without decrypting", async () => {
+    let decryptCalls = 0
+    const decrypt = async () => {
+      decryptCalls += 1
+      return "plaintext"
+    }
+
+    expect(
+      await decryptLegacyDirectMessage(
+        legacyEvent({ tags: [] }),
+        "recipient",
+        decrypt
+      )
+    ).toEqual({ status: "ignored", eventId: "legacy-id" })
+    expect(
+      await decryptLegacyDirectMessage(
+        legacyEvent({ pubkey: "other", tags: [["p", "another"]] }),
+        "recipient",
+        decrypt
+      )
+    ).toEqual({ status: "ignored", eventId: "legacy-id" })
+    expect(decryptCalls).toBe(0)
+  })
+
+  it("reports rejection and timeout with content-free failure records", async () => {
+    const rejected = await decryptLegacyDirectMessage(
+      legacyEvent({ id: "legacy-rejected" }),
+      "recipient",
+      async () => {
+        throw new Error("plaintext and ciphertext must stay private")
+      }
+    )
+    const timedOut = await decryptLegacyDirectMessage(
+      legacyEvent({ id: "legacy-timeout" }),
+      "recipient",
+      () => new Promise(() => {}),
+      { timeoutMs: 5 }
+    )
+
+    expect(rejected).toEqual({
+      status: "decrypt_failed",
+      failure: {
+        eventId: "legacy-rejected",
+        reason: "decrypt_failed",
+        retryable: true,
+      },
+    })
+    expect(timedOut).toEqual({
+      status: "decrypt_failed",
+      failure: {
+        eventId: "legacy-timeout",
+        reason: "timeout",
+        retryable: true,
+      },
+    })
+    expect(Object.keys(rejected).sort()).toEqual(["failure", "status"])
+    expect(Object.keys(timedOut).sort()).toEqual(["failure", "status"])
+  })
+})
+
+describe("publishPrivateMessage", () => {
+  it("rejects a rumor kind mismatch before wrapping or publishing", async () => {
+    const mismatchedOrderRumor = orderRumor({
+      content: JSON.stringify({ message: "Order declined" }),
+    })
+
+    await expect(
+      publishPrivateMessage({
+        rumor: mismatchedOrderRumor,
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+        recipientInboxRelays: [],
+        senderInboxRelays: [],
+      })
+    ).rejects.toThrow(
+      "Private message rumor kind does not match requested kind"
+    )
+  })
+
+  it("rejects kind 4 before wrapping or publishing", async () => {
+    let wrapped = false
+    let published = false
+
+    await expect(
+      publishPrivateMessage({
+        rumor: rumor(EVENT_KINDS.DM_LEGACY),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+        recipientInboxRelays: ["wss://recipient.inbox.example"],
+        giftWrapFn: (async () => {
+          wrapped = true
+          return wrap("unexpected-wrap")
+        }) as never,
+        publishFn: (async () => {
+          published = true
+          return {} as never
+        }) as never,
+      })
+    ).rejects.toThrow(
+      "Private message rumor kind does not match requested kind"
+    )
+    expect(wrapped).toBe(false)
+    expect(published).toBe(false)
+  })
+
+  it("does not accept kind 4 as a publish rumorKind", () => {
+    type PublishRumorKind = Parameters<
+      typeof publishPrivateMessage
+    >[0]["rumorKind"]
+    type Kind4IsPublishable =
+      typeof EVENT_KINDS.DM_LEGACY extends PublishRumorKind ? true : false
+    const kind4IsPublishable: Kind4IsPublishable = false
+
+    expect(kind4IsPublishable).toBe(false)
+  })
+
+  it("throws typed recipient_not_ready before wrapping or publishing", async () => {
+    let wrapped = false
+    let published = false
+    let thrown: unknown
+
+    try {
+      await publishPrivateMessage({
+        rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
+        senderPubkey: "sender",
+        recipientPubkey: "recipient",
+        signer,
+        rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+        recipientInboxRelays: [],
+        giftWrapFn: (async () => {
+          wrapped = true
+          return wrap("unexpected-wrap")
+        }) as never,
+        publishFn: (async () => {
+          published = true
+          return {} as never
+        }) as never,
+      })
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(PrivateMessageRelayReadinessError)
+    expect((thrown as PrivateMessageRelayReadinessError).reason).toBe(
+      "recipient_not_ready"
+    )
+    expect(wrapped).toBe(false)
+    expect(published).toBe(false)
+  })
+
+  it("routes recipient and self-copy publishes through their kind-10050 relays", async () => {
+    const resolved: string[] = []
+    const wrappedRecipients: string[] = []
+    const publishes: Array<{
+      id: string
+      recipients: string[]
+      relays: readonly string[]
+    }> = []
+
+    const result = await publishPrivateMessage({
+      rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      resolveInboxRelays: async (pubkey) => {
+        resolved.push(pubkey)
+        return [`wss://${pubkey}.inbox.example`]
+      },
+      giftWrapFn: (async (_rumor, recipient) => {
+        wrappedRecipients.push(recipient.pubkey)
+        return wrap(`wrap-${recipient.pubkey}`)
+      }) as never,
+      publishFn: (async (event, options) => {
+        publishes.push({
+          id: event.id,
+          recipients: options.recipientPubkeys ?? [],
+          relays: options.exclusiveRelayUrls ?? [],
+        })
+        return {} as never
+      }) as never,
+    })
+
+    expect(resolved).toEqual(["recipient", "sender"])
+    expect(wrappedRecipients).toEqual(["recipient", "sender"])
+    expect(publishes).toEqual([
+      {
+        id: "wrap-recipient",
+        recipients: ["recipient"],
+        relays: ["wss://recipient.inbox.example"],
+      },
+      {
+        id: "wrap-sender",
+        recipients: ["sender"],
+        relays: ["wss://sender.inbox.example"],
+      },
+    ])
+    expect(result.selfCopyError).toBeNull()
+  })
+
+  it("skips sender resolution and wrapping when self-copy is disabled", async () => {
+    const resolved: string[] = []
+    const wrappedRecipients: string[] = []
+
+    const result = await publishPrivateMessage({
+      rumor: orderRumor(),
+      senderPubkey: "guest",
+      recipientPubkey: "merchant",
+      signer,
+      rumorKind: EVENT_KINDS.ORDER,
+      selfCopy: false,
+      resolveInboxRelays: async (pubkey) => {
+        resolved.push(pubkey)
+        return ["wss://merchant.inbox.example"]
+      },
+      giftWrapFn: (async (_rumor, recipient) => {
+        wrappedRecipients.push(recipient.pubkey)
+        return wrap(`wrap-${recipient.pubkey}`)
+      }) as never,
+      publishFn: (async () => ({})) as never,
+    })
+
+    expect(resolved).toEqual(["merchant"])
+    expect(wrappedRecipients).toEqual(["merchant"])
+    expect(result.wrappedToSelf).toBeNull()
+  })
+
+  it("keeps recipient delivery successful when self-copy publish fails", async () => {
+    const published: string[] = []
+    const result = await publishPrivateMessage({
+      rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE),
+      senderPubkey: "sender",
+      recipientPubkey: "recipient",
+      signer,
+      rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
+      recipientInboxRelays: ["wss://recipient.inbox.example"],
+      senderInboxRelays: ["wss://sender.inbox.example"],
+      giftWrapFn: (async (_rumor, recipient) =>
+        wrap(`wrap-${recipient.pubkey}`)) as never,
+      publishFn: (async (event) => {
+        published.push(event.id)
+        if (event.id === "wrap-sender") throw new Error("self relay rejected")
+        return {} as never
+      }) as never,
+    })
+
+    expect(published).toEqual(["wrap-recipient", "wrap-sender"])
+    expect(result.selfCopyError).toBe("self relay rejected")
   })
 })
 
@@ -179,15 +562,52 @@ describe("fetchInboxRelayUrls", () => {
     expect(relays).toEqual(["wss://inbox.example"])
   })
 
-  it("returns [] on fetch failure so callers fall back to NIP-65", async () => {
+  it("surfaces fetch failures without caching a fallback result", async () => {
     __resetInboxRelayCache()
-    const relays = await fetchInboxRelayUrls("peer-2", {
-      relayUrls: ["wss://read.example"],
-      fetchEvents: async () => {
-        throw new Error("relay unavailable")
-      },
-    })
-    expect(relays).toEqual([])
+    await expect(
+      fetchInboxRelayUrls("peer-2", {
+        relayUrls: ["wss://read.example"],
+        fetchEvents: async () => {
+          throw new Error("relay unavailable")
+        },
+      })
+    ).rejects.toThrow("relay unavailable")
+  })
+
+  it("does not cache an absent declaration", async () => {
+    __resetInboxRelayCache()
+    let fetches = 0
+    const fetchEvents = async () => {
+      fetches += 1
+      return (
+        fetches === 1
+          ? []
+          : [
+              {
+                id: "10050-later",
+                kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+                pubkey: "peer-3",
+                created_at: 101,
+                content: "",
+                tags: [["relay", "wss://later.example"]],
+              },
+            ]
+      ) as never
+    }
+
+    expect(
+      await fetchInboxRelayUrls("peer-3", {
+        relayUrls: ["wss://read.example"],
+        fetchEvents,
+      })
+    ).toEqual([])
+    expect(
+      await fetchInboxRelayUrls("peer-3", {
+        relayUrls: ["wss://read.example"],
+        fetchEvents,
+      })
+    ).toEqual(["wss://later.example"])
+    expect(fetches).toBe(2)
   })
 })
 

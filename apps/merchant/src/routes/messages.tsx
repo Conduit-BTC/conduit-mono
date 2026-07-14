@@ -7,9 +7,12 @@ import {
   EVENT_KINDS,
   formatNpub,
   getCachedDirectMessageConversationList,
+  getCachedMerchantConversationList,
   getDirectMessageConversationList,
+  getMerchantConversationList,
   getNdk,
   getProfileName,
+  markDirectMessageConversationRead,
   parseDirectMessageRumor,
   publishPrivateMessage,
   useAuth,
@@ -20,6 +23,9 @@ import {
   Badge,
   ConversationMessageBubble,
   DecryptFailureNotice,
+  getConversationMessageDisplayContent,
+  LegacyDirectMessageNotice,
+  LiveReadNotice,
   MessageComposer,
 } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
@@ -97,6 +103,73 @@ function MessagesPage() {
       )
     : null
   const threadMessages = selected?.messages ?? []
+  const relatedOrdersLiveQuery = useQuery({
+    queryKey: [
+      "merchant-message-orders-live",
+      pubkey ?? "none",
+      selected?.counterpartyPubkey ?? "none",
+    ],
+    enabled: signerConnected && !!selected,
+    queryFn: () =>
+      getMerchantConversationList({
+        principalPubkey: pubkey!,
+        counterpartyPubkey: selected!.counterpartyPubkey,
+        limit: 3,
+      }),
+  })
+  const relatedOrdersCacheQuery = useQuery({
+    queryKey: [
+      "merchant-message-orders",
+      pubkey ?? "none",
+      selected?.counterpartyPubkey ?? "none",
+    ],
+    enabled: signerConnected && !!selected,
+    queryFn: () =>
+      getCachedMerchantConversationList({
+        principalPubkey: pubkey!,
+        counterpartyPubkey: selected!.counterpartyPubkey,
+        limit: 3,
+      }),
+  })
+  const relatedOrders =
+    relatedOrdersLiveQuery.data?.data ??
+    relatedOrdersCacheQuery.data?.data ??
+    []
+
+  useEffect(() => {
+    if (!pubkey || !selected?.unreadFromCounterparty) return
+
+    let cancelled = false
+    void markDirectMessageConversationRead({
+      principalPubkey: pubkey,
+      counterpartyPubkey: selected.counterpartyPubkey,
+      transport: selected.transport,
+    })
+      .then(async (updated) => {
+        if (cancelled || updated === 0) return
+        await Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: ["merchant-dms", pubkey],
+          }),
+          queryClient.invalidateQueries({
+            queryKey: ["merchant-dms-live", pubkey],
+          }),
+        ])
+      })
+      .catch(() => {
+        console.warn("Failed to update direct-message read state")
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    pubkey,
+    queryClient,
+    selected?.counterpartyPubkey,
+    selected?.transport,
+    selected?.unreadFromCounterparty,
+  ])
 
   const sendMutation = useMutation({
     mutationFn: async () => {
@@ -165,20 +238,28 @@ function MessagesPage() {
         </div>
       )}
 
-      {signerConnected && liveMeta?.stale && (
-        <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-3 text-xs text-[var(--text-secondary)] xl:shrink-0">
-          Showing cached messages. Reconnecting to relays to fetch the latest.
-        </div>
+      {signerConnected && (liveQuery.error || liveMeta?.degraded) && (
+        <LiveReadNotice
+          state={
+            liveQuery.error
+              ? conversations.length > 0
+                ? "cached"
+                : "unavailable"
+              : "partial"
+          }
+          onRetry={() => void liveQuery.refetch()}
+          retrying={liveQuery.isRefetching}
+          className="xl:shrink-0"
+        />
       )}
 
-      {signerConnected && liveQuery.error && (
-        <div className="rounded-md border border-error/30 bg-error/10 p-4 text-sm text-error">
-          Failed to load messages:{" "}
-          {liveQuery.error instanceof Error
-            ? liveQuery.error.message
-            : "Unknown error"}
-        </div>
-      )}
+      <DecryptFailureNotice
+        count={liveMeta?.legacyDecryptFailures?.length ?? 0}
+        label="Some legacy messages couldn't be decrypted."
+        onRetry={() => void liveQuery.refetch()}
+        retrying={liveQuery.isRefetching}
+        className="xl:shrink-0"
+      />
 
       {signerConnected &&
         conversations.length === 0 &&
@@ -188,7 +269,7 @@ function MessagesPage() {
           </div>
         )}
 
-      {showEmpty && (
+      {showEmpty && !liveQuery.error && !liveMeta?.degraded && (
         <>
           <DecryptFailureNotice
             count={liveMeta?.decryptFailures?.length ?? 0}
@@ -237,13 +318,18 @@ function MessagesPage() {
                           {conversation.unreadFromCounterparty}
                         </Badge>
                       )}
+                      {conversation.transport === "nip04" && (
+                        <Badge variant="secondary">Legacy</Badge>
+                      )}
                     </div>
                     <div className="mt-1 font-mono text-[11px] text-[var(--text-muted)]">
                       {formatNpub(conversation.counterpartyPubkey, 8)}
                     </div>
                     {conversation.preview && (
                       <div className="mt-1 truncate text-xs text-[var(--text-secondary)]">
-                        {conversation.preview}
+                        {getConversationMessageDisplayContent(
+                          conversation.preview
+                        )}
                       </div>
                     )}
                   </button>
@@ -264,12 +350,52 @@ function MessagesPage() {
                       {formatNpub(selected.counterpartyPubkey, 12)}
                     </div>
                   </div>
-                  <Link
-                    to="/orders"
-                    className="shrink-0 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface)]"
-                  >
-                    View orders
-                  </Link>
+                </div>
+
+                <div className="mb-3 border-y border-[var(--border)] py-3 xl:shrink-0">
+                  <div className="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                    Related orders
+                  </div>
+                  {relatedOrdersLiveQuery.isLoading &&
+                  relatedOrdersCacheQuery.isLoading ? (
+                    <div className="text-xs text-[var(--text-secondary)]">
+                      Loading related orders...
+                    </div>
+                  ) : relatedOrders.length > 0 ? (
+                    <div className="space-y-1">
+                      {relatedOrders.map((order) => (
+                        <Link
+                          key={order.id}
+                          to="/orders"
+                          search={{ order: order.orderId }}
+                          className="flex items-center justify-between gap-3 rounded-md px-2 py-2 text-xs transition-colors hover:bg-[var(--surface)]"
+                        >
+                          <span className="min-w-0">
+                            <span className="block truncate font-medium text-[var(--text-primary)]">
+                              {order.status ?? order.preview}
+                            </span>
+                            <span className="block truncate text-[var(--text-muted)]">
+                              {order.totalSummary ?? "Total unavailable"} .{" "}
+                              {new Date(order.latestAt).toLocaleDateString()}
+                            </span>
+                          </span>
+                          <span className="shrink-0 text-[var(--text-secondary)]">
+                            {order.context === "missing_order"
+                              ? "Missing order context"
+                              : "Open"}
+                          </span>
+                        </Link>
+                      ))}
+                    </div>
+                  ) : relatedOrdersLiveQuery.error ? (
+                    <div className="text-xs text-[var(--text-secondary)]">
+                      Related order context is unavailable.
+                    </div>
+                  ) : (
+                    <div className="text-xs text-[var(--text-secondary)]">
+                      No related orders found.
+                    </div>
+                  )}
                 </div>
 
                 <DecryptFailureNotice
@@ -299,19 +425,25 @@ function MessagesPage() {
                 </div>
 
                 <div className="mt-4 space-y-2 xl:shrink-0">
-                  <MessageComposer
-                    value={composerText}
-                    onChange={setComposerText}
-                    onSend={() => sendMutation.mutate()}
-                    sending={sendMutation.isPending}
-                    placeholder="Reply to buyer"
-                  />
-                  {sendMutation.error && (
-                    <div className="text-xs text-error">
-                      {sendMutation.error instanceof Error
-                        ? sendMutation.error.message
-                        : "Failed to send message"}
-                    </div>
+                  {selected.transport === "nip04" ? (
+                    <LegacyDirectMessageNotice />
+                  ) : (
+                    <>
+                      <MessageComposer
+                        value={composerText}
+                        onChange={setComposerText}
+                        onSend={() => sendMutation.mutate()}
+                        sending={sendMutation.isPending}
+                        placeholder="Reply to buyer"
+                      />
+                      {sendMutation.error && (
+                        <div className="text-xs text-error">
+                          {sendMutation.error instanceof Error
+                            ? sendMutation.error.message
+                            : "Failed to send message"}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </div>

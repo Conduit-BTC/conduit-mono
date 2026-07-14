@@ -1,5 +1,40 @@
 import { cn } from "../utils"
 
+type LegacyOrderStatusMessage = {
+  id: string
+  type: number
+  message: string
+  paid: boolean
+  shipped: boolean
+  cancelled: boolean
+}
+
+function isLegacyOrderStatusMessage(
+  value: unknown
+): value is LegacyOrderStatusMessage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+
+  const candidate = value as Record<string, unknown>
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.type === "number" &&
+    typeof candidate.message === "string" &&
+    typeof candidate.paid === "boolean" &&
+    typeof candidate.shipped === "boolean" &&
+    typeof candidate.cancelled === "boolean"
+  )
+}
+
+/** Render known legacy order-status DMs as their buyer-facing message text. */
+export function getConversationMessageDisplayContent(content: string): string {
+  try {
+    const parsed: unknown = JSON.parse(content)
+    return isLegacyOrderStatusMessage(parsed) ? parsed.message : content
+  } catch {
+    return content
+  }
+}
+
 export interface ConversationMessageBubbleProps {
   content: string
   /** True when the signed-in user authored the message (align right). */
@@ -21,6 +56,8 @@ export function ConversationMessageBubble({
   authorLabel,
   className,
 }: ConversationMessageBubbleProps) {
+  const displayContent = getConversationMessageDisplayContent(content)
+
   return (
     <div
       className={cn(
@@ -42,7 +79,7 @@ export function ConversationMessageBubble({
             {authorLabel}
           </span>
         ) : null}
-        <span>{content}</span>
+        <span>{displayContent}</span>
         {timestampLabel ? (
           <span
             className={cn(

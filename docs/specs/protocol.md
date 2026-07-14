@@ -136,6 +136,7 @@ This exception is constrained as follows:
 | ------- | ---------------------------- | ------------ | -------------------------------------------------------- |
 | `0`     | Profile metadata             | both         | NIP-01                                                   |
 | `3`     | Contact list                 | both         | NIP-02 follow graph/trust context                        |
+| `4`     | Legacy encrypted DM          | read-only    | NIP-04 recovery; never published by Conduit              |
 | `5`     | Deletion                     | merchant     | NIP-09 deletion for products/shipping options            |
 | `13`    | Seal                         | both         | NIP-59 / NIP-17 inner encrypted envelope                 |
 | `14`    | Private direct message       | both         | NIP-17 direct message kind                               |
@@ -144,7 +145,7 @@ This exception is constrained as follows:
 | `9734`  | Zap request                  | buyer        | NIP-57                                                   |
 | `9735`  | Zap receipt                  | relay/wallet | NIP-57                                                   |
 | `10002` | Relay list                   | both         | NIP-65 relay hints                                       |
-| `10050` | Private message relays       | both         | NIP-17 recipient relay and encryption hints              |
+| `10050` | Private message relays       | both         | NIP-17 secure-message relay declarations                 |
 | `30402` | Product listing              | merchant     | NIP-99 + GammaMarkets market-spec                        |
 | `30406` | Shipping option              | merchant     | Conduit commerce extension                               |
 | `31989` | Application recommendation   | both         | NIP-89                                                   |
@@ -231,21 +232,69 @@ Buyer-merchant communication is sent as NIP-17 encrypted messages:
 - Seal: kind `13`
 - Gift wrap: kind `1059`
 
-The kind `16` payload is never published directly. It is encrypted and delivered through NIP-17 wrapping. Kind `14` general DMs should remain separate from order-linked kind `16` conversations in product state.
+The kind `16` payload is never published directly. It is encrypted and delivered through NIP-17 wrapping. Kind `14` general DMs remain separate from order-linked kind `16` conversations in product state.
+
+NIP-17 transport routing is exclusive to kind `10050` declarations. Gift-wrap
+reads use only the principal's declared secure-message relays. Each gift-wrap
+write, including a sender self-copy, uses only that wrap recipient's declared
+secure-message relays. NIP-65, configured relay lists, commerce priority, and
+general relay defaults are not fallback routes. An absent, malformed,
+stale-unusable, or unavailable declaration means the principal or recipient is
+not ready for secure messaging and must produce an explicit degraded state; the
+client must not attempt fallback delivery or represent the read as complete.
 
 Current private-message code may continue to interoperate with NIP-44 v2, which is the current public NIP-44 encryption version. Any newer encryption-version work must be source-gated until public draft/client references and capabilities are explicit.
 
 New secure messaging work should route sends and unwraps through a shared `@conduit/core` boundary that:
 
-- preserves NIP-44 v2 fallback for existing signers and peers
+- preserves NIP-44 v2 as the default for existing signers and peers
 - keeps NIP-44 v3 readiness visible without making it the default send path before source and capability gates are satisfied
-- parses kind `10050` private-message relay events enough to read recipient relay and encryption hints
+- resolves NIP-17 reads and writes only through the applicable kind `10050` declaration
 - rejects authenticated-context mismatches instead of returning plaintext when versioned encryption support adds that requirement
 - reports decrypt/unwrap diagnostics without plaintext, ciphertext, invoices, shipping/contact data, order contents, or message bodies
 
 NWC remains NIP-44 v2 by default unless wallet capability discovery and public draft/client references explicitly justify a safer NIP-44 v3 path.
 
-## Order Message Payload
+### Legacy NIP-04 read lane
+
+Conduit supports kind-4 NIP-04 only as a separate, bounded, read-only recovery
+lane. It never publishes kind `4`, never uses NIP-04 as a NIP-17 fallback, and
+never merges a legacy thread with a NIP-17 thread between the same participants.
+Conversation identity is transport-qualified. Legacy fetch, signer, and decrypt
+failures must remain visible and retryable, while logs and diagnostics remain
+content-free.
+
+## Legacy Conduit Order Message Payload (CND-128)
+
+Current Conduit writers and readers use kind `16` with JSON `content` and
+explicit `p`, named `type`, and `order` tags. There is no current Conduit kind
+`17` payment-proof writer and no proposed OMF kind-`1327` writer.
+
+This legacy format is not wire-compatible with the GammaMarkets order-message
+format. GammaMarkets uses numeric kind-16 `type` values, human-readable
+`content`, and kind `17` for payment proof. Shared use of kind `16` and NIP-17
+transport must not be presented as wire compatibility.
+
+Readers must discriminate kind-16 collisions before order parsing. A kind-16
+rumor is a Conduit order message only when its JSON payload and required explicit
+`p`, `type`, and `order` tags validate as the Conduit shape. NIP-18 generic
+reposts, which also use kind `16`, are ignored by this lane and must not become
+orders, messages, or user-visible parse failures.
+
+### Migration gate (CND-191)
+
+The OMF order-message proposal remains unaccepted. Conduit must preserve legacy
+writes and must not enable a new-kind writer or dual-write before acceptance.
+After acceptance, migration proceeds in this order:
+
+1. Add a codec for the accepted format.
+2. Add strict dual-read and semantic deduplication across accepted and legacy
+   representations.
+3. Enable the accepted writer only when peer capability is explicit.
+4. Retire legacy writes after compatibility evidence is sufficient, while
+   retaining bounded legacy reads for recovery.
+
+### Current tags and message types
 
 Required tags for all message types:
 
@@ -279,7 +328,8 @@ Tags:
 
 Content:
 
-- human-readable buyer note or compact JSON payload when required by the implementation schema
+- legacy JSON payload defined by the shared Conduit schema, including any buyer
+  note represented by that schema
 
 ### `payment_request`
 
@@ -293,7 +343,8 @@ Tags:
 
 Content:
 
-- BOLT11 invoice or structured JSON defined by the shared schema
+- legacy JSON payload defined by the shared Conduit schema, including the BOLT11
+  invoice or payment request
 
 ### `payment_proof`
 
@@ -335,7 +386,8 @@ Tags:
 
 Content:
 
-- optional human-readable message
+- legacy JSON payload defined by the shared Conduit schema, including any
+  optional status message
 
 ### `shipping_update`
 
@@ -349,7 +401,8 @@ Tags:
 
 Content:
 
-- optional message
+- legacy JSON payload defined by the shared Conduit schema, including any
+  optional shipping message
 
 ### `receipt`
 
@@ -361,7 +414,8 @@ Tags:
 
 Content:
 
-- optional minimal receipt details
+- legacy JSON payload defined by the shared Conduit schema, including any
+  optional receipt details
 
 ## Payment Metadata
 

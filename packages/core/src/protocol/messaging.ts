@@ -8,6 +8,7 @@ import {
 import { EVENT_KINDS } from "./kinds"
 import { fetchEventsFanout } from "./ndk"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
+import { parseOrderMessageRumorEvent } from "./orders"
 import { publishWithPlanner } from "./relay-publish"
 import { isInsecureRelayUrl } from "./relay-list"
 import { getGeneralReadRelayUrls } from "./relay-settings"
@@ -62,6 +63,47 @@ export interface UnwrapGiftWrapOptions {
 
 const DEFAULT_UNWRAP_TIMEOUT_MS = 8_000
 const UNWRAP_TIMEOUT = Symbol("unwrap_timeout")
+const LEGACY_ORDER_MESSAGE_TYPES = new Set([
+  "order",
+  "payment_request",
+  "status_update",
+  "shipping_update",
+  "receipt",
+  "message",
+  "payment_proof",
+])
+
+function classifyLegacyOrderRumor(
+  rumor: NDKEvent
+): "ok" | "ignored" | "malformed" {
+  const tags = rumor.tags ?? []
+  const type = tags.find((tag) => tag[0] === "type")?.[1]
+  const orderId = tags.find((tag) => tag[0] === "order")?.[1]
+  const recipient = tags.find((tag) => tag[0] === "p")?.[1]
+
+  // Kind 16 is also NIP-18 generic repost. Only a positively identified
+  // Conduit legacy commerce envelope enters the order parser.
+  if (!type && !orderId) return "ignored"
+  if (!type || !orderId || !recipient) return "malformed"
+  if (!LEGACY_ORDER_MESSAGE_TYPES.has(type)) return "ignored"
+  try {
+    const content = JSON.parse(rumor.content) as unknown
+    if (!content || typeof content !== "object" || Array.isArray(content)) {
+      return "malformed"
+    }
+    if (
+      type === "message" &&
+      (typeof (content as { note?: unknown }).note !== "string" ||
+        !(content as { note: string }).note.trim())
+    ) {
+      return "malformed"
+    }
+    parseOrderMessageRumorEvent(rumor)
+    return "ok"
+  } catch {
+    return "malformed"
+  }
+}
 
 /** Map an inner rumor kind to its conversation type, or null when unrelated. */
 export function classifyPrivateMessageKind(
@@ -75,7 +117,7 @@ export function classifyPrivateMessageKind(
 /**
  * Unwrap a single NIP-17 gift wrap into a classified outcome. Decrypt failures
  * are surfaced (id + coarse reason), never collapsed to silence. NIP-44 v2 is
- * the current path; NIP-04 stays a read-only legacy fallback.
+ * the current path; NIP-04 stays in the separate read-only legacy lane.
  */
 export async function unwrapGiftWrap(
   event: NDKEvent,
@@ -101,15 +143,6 @@ export async function unwrapGiftWrap(
     try {
       return {
         rumor: await giftUnwrap(event, undefined, signer, "nip44"),
-        reason: null,
-      }
-    } catch {
-      // fall through to legacy nip04 read-only fallback
-    }
-
-    try {
-      return {
-        rumor: await giftUnwrap(event, undefined, signer, "nip04"),
         reason: null,
       }
     } catch {
@@ -140,6 +173,15 @@ export async function unwrapGiftWrap(
   const category = classifyPrivateMessageKind(rumor.kind)
   if (!category) {
     return { status: "ignored", wrapId, kind: rumor.kind }
+  }
+  if (category === "order") {
+    const classification = classifyLegacyOrderRumor(rumor)
+    if (classification === "ignored") {
+      return { status: "ignored", wrapId, kind: rumor.kind }
+    }
+    if (classification === "malformed") {
+      return { status: "decrypt_failed", wrapId, reason: "malformed" }
+    }
   }
   return { status: "ok", wrapId, rumor, category }
 }
@@ -198,6 +240,101 @@ export interface ParsedDirectMessage {
   content: string
   /** Milliseconds, matching ParsedOrderMessage.createdAt. */
   createdAt: number
+  transport: DirectMessageTransport
+}
+
+export type DirectMessageTransport = "nip17" | "nip04"
+
+export type LegacyDmFailureReason =
+  "nip04_unavailable" | "decrypt_failed" | "timeout" | "malformed"
+
+export interface LegacyDmDecryptFailure {
+  eventId: string
+  reason: LegacyDmFailureReason
+  retryable: boolean
+}
+
+export type LegacyDmDecryptOutcome =
+  | { status: "ok"; message: ParsedDirectMessage }
+  | { status: "ignored"; eventId: string }
+  | { status: "decrypt_failed"; failure: LegacyDmDecryptFailure }
+
+export type LegacyDmDecrypt = (
+  counterpartyPubkey: string,
+  ciphertext: string
+) => Promise<string>
+
+export function createNdkLegacyDmDecrypt(signer: NDKSigner): LegacyDmDecrypt {
+  return async (counterpartyPubkey, ciphertext) =>
+    await signer.decrypt(
+      new NDKUser({ pubkey: counterpartyPubkey }),
+      ciphertext,
+      "nip04"
+    )
+}
+
+export async function decryptLegacyDirectMessage(
+  event: NDKEvent,
+  principalPubkey: string,
+  decrypt: LegacyDmDecrypt,
+  options: { timeoutMs?: number } = {}
+): Promise<LegacyDmDecryptOutcome> {
+  const recipientPubkey =
+    (event.tags ?? []).find((tag) => tag[0] === "p")?.[1] ?? ""
+  if (
+    event.kind !== EVENT_KINDS.DM_LEGACY ||
+    !event.id ||
+    !event.pubkey ||
+    !recipientPubkey ||
+    (event.pubkey !== principalPubkey && recipientPubkey !== principalPubkey)
+  ) {
+    return { status: "ignored", eventId: event.id }
+  }
+
+  const counterpartyPubkey =
+    event.pubkey === principalPubkey ? recipientPubkey : event.pubkey
+  if (!counterpartyPubkey || counterpartyPubkey === principalPubkey) {
+    return { status: "ignored", eventId: event.id }
+  }
+
+  const timeout = Symbol("legacy_dm_timeout")
+  try {
+    const result = await Promise.race([
+      decrypt(counterpartyPubkey, event.content ?? ""),
+      new Promise<typeof timeout>((resolve) =>
+        setTimeout(
+          () => resolve(timeout),
+          options.timeoutMs ?? DEFAULT_UNWRAP_TIMEOUT_MS
+        )
+      ),
+    ])
+    if (result === timeout) {
+      return {
+        status: "decrypt_failed",
+        failure: { eventId: event.id, reason: "timeout", retryable: true },
+      }
+    }
+    return {
+      status: "ok",
+      message: {
+        id: event.id,
+        senderPubkey: event.pubkey,
+        recipientPubkey,
+        content: result,
+        createdAt: (event.created_at ?? 0) * 1000,
+        transport: "nip04",
+      },
+    }
+  } catch {
+    return {
+      status: "decrypt_failed",
+      failure: {
+        eventId: event.id,
+        reason: "decrypt_failed",
+        retryable: true,
+      },
+    }
+  }
 }
 
 /** Parse an unwrapped kind-14 rumor into a general direct message. */
@@ -210,6 +347,7 @@ export function parseDirectMessageRumor(rumor: NDKEvent): ParsedDirectMessage {
     recipientPubkey,
     content: rumor.content ?? "",
     createdAt: (rumor.created_at ?? 0) * 1000,
+    transport: "nip17",
   }
 }
 
@@ -219,21 +357,22 @@ export interface PublishPrivateMessageInput {
   senderPubkey: string
   recipientPubkey: string
   signer: NDKSigner
-  rumorKind: number
+  rumorKind: typeof EVENT_KINDS.DIRECT_MESSAGE | typeof EVENT_KINDS.ORDER
   /** Wrap a sender self-copy for local recovery. Default true. */
   selfCopy?: boolean
   refreshRelayLists?: boolean
   retry?: TransientNip07RetryOptions
   giftWrapFn?: typeof giftWrap
   /**
-   * Recipient/sender kind-10050 inbox relays. When omitted they are resolved
-   * best-effort via `resolveInboxRelays` so gift wraps also reach a peer that
-   * advertises a DM inbox only through kind 10050. Pass `[]` to skip.
+   * Recipient/sender kind-10050 inbox relays. NIP-17 delivery is exclusive to
+   * these declarations; an empty recipient list means the peer is not ready.
    */
   recipientInboxRelays?: readonly string[]
   senderInboxRelays?: readonly string[]
   /** Injectable kind-10050 resolver (tests); defaults to fetchInboxRelayUrls. */
   resolveInboxRelays?: (pubkey: string) => Promise<string[]>
+  /** Injectable relay publisher for focused transport tests. */
+  publishFn?: typeof publishWithPlanner
 }
 
 export interface PublishPrivateMessageResult {
@@ -241,6 +380,23 @@ export interface PublishPrivateMessageResult {
   wrappedToSelf: NDKEvent | null
   /** Non-null when the non-critical self-copy leg needs retry. */
   selfCopyError: string | null
+}
+
+export type PrivateMessageRelayReadinessReason =
+  "recipient_not_ready" | "recipient_lookup_failed"
+
+export class PrivateMessageRelayReadinessError extends Error {
+  readonly reason: PrivateMessageRelayReadinessReason
+
+  constructor(reason: PrivateMessageRelayReadinessReason) {
+    super(
+      reason === "recipient_not_ready"
+        ? "Recipient has not declared NIP-17 inbox relays."
+        : "Recipient inbox relay discovery failed."
+    )
+    this.name = "PrivateMessageRelayReadinessError"
+    this.reason = reason
+  }
 }
 
 /**
@@ -251,17 +407,29 @@ export interface PublishPrivateMessageResult {
 export async function publishPrivateMessage(
   input: PublishPrivateMessageInput
 ): Promise<PublishPrivateMessageResult> {
+  if (input.rumor.kind !== input.rumorKind) {
+    throw new Error("Private message rumor kind does not match requested kind")
+  }
+
   const giftWrapFn = input.giftWrapFn ?? giftWrap
   const selfCopy = input.selfCopy ?? true
   const refreshRelayLists = input.refreshRelayLists ?? true
   const wrapParams = { rumorKind: input.rumorKind }
   const resolveInboxRelays = input.resolveInboxRelays ?? fetchInboxRelayUrls
+  const publishFn = input.publishFn ?? publishWithPlanner
 
-  // NIP-17 delivery targets the recipient's declared inbox relays; the self-copy
-  // targets the sender's own. Best-effort — falls back to NIP-65 + config.
-  const recipientInboxRelays =
-    input.recipientInboxRelays ??
-    (await resolveInboxRelays(input.recipientPubkey).catch(() => []))
+  // NIP-17 requires exclusive delivery to the recipient's declared inbox.
+  let recipientInboxRelays: readonly string[]
+  try {
+    recipientInboxRelays =
+      input.recipientInboxRelays ??
+      (await resolveInboxRelays(input.recipientPubkey))
+  } catch {
+    throw new PrivateMessageRelayReadinessError("recipient_lookup_failed")
+  }
+  if (recipientInboxRelays.length === 0) {
+    throw new PrivateMessageRelayReadinessError("recipient_not_ready")
+  }
   const senderInboxRelays = selfCopy
     ? (input.senderInboxRelays ??
       (await resolveInboxRelays(input.senderPubkey).catch(() => [])))
@@ -300,24 +468,24 @@ export async function publishPrivateMessage(
     }
   }
 
-  await publishWithPlanner(wrappedToRecipient, {
+  await publishFn(wrappedToRecipient, {
     intent: "recipient_event",
     authorPubkey: input.senderPubkey,
     authenticatedPubkey: input.senderPubkey,
     recipientPubkeys: [input.recipientPubkey],
-    extraRelayUrls: recipientInboxRelays,
+    exclusiveRelayUrls: recipientInboxRelays,
     refreshRelayLists,
     deliveryMode: "critical",
   })
 
   if (wrappedToSelf) {
     try {
-      await publishWithPlanner(wrappedToSelf, {
+      await publishFn(wrappedToSelf, {
         intent: "recipient_event",
         authorPubkey: input.senderPubkey,
         authenticatedPubkey: input.senderPubkey,
         recipientPubkeys: [input.senderPubkey],
-        extraRelayUrls: senderInboxRelays,
+        exclusiveRelayUrls: senderInboxRelays,
         refreshRelayLists,
         deliveryMode: "critical",
       })
@@ -422,9 +590,8 @@ export function __resetInboxRelayCache(): void {
 }
 
 /**
- * Best-effort resolve a pubkey's kind-10050 private-message inbox relays (where
- * peers deliver gift wraps to them). Cached; returns `[]` when none are found or
- * on error so callers fall back to NIP-65 + config defaults.
+ * Resolve a pubkey's kind-10050 private-message inbox relays. Positive results
+ * are cached; absent declarations and lookup errors remain retryable.
  */
 export async function fetchInboxRelayUrls(
   pubkey: string,
@@ -432,33 +599,31 @@ export async function fetchInboxRelayUrls(
 ): Promise<string[]> {
   const cached = inboxRelayCache.get(pubkey)
   if (cached) return cached
-  try {
-    const fetchEvents = options.fetchEvents ?? fetchEventsFanout
-    const events = await fetchEvents(
-      {
-        kinds: [EVENT_KINDS.PRIVATE_MESSAGE_RELAYS],
-        authors: [pubkey],
-        limit: 1,
-      },
-      {
-        relayUrls: options.relayUrls ?? getGeneralReadRelayUrls({}),
-        connectTimeoutMs: 3_000,
-        fetchTimeoutMs: 6_000,
-      }
-    )
-    let relayUrls: string[] = []
-    let newest = -1
-    for (const event of events) {
-      const parsed = parsePrivateMessageRelays(event)
-      if (parsed && (event.created_at ?? 0) > newest) {
-        relayUrls = parsed.relayUrls
-        newest = event.created_at ?? 0
-      }
+  const fetchEvents = options.fetchEvents ?? fetchEventsFanout
+  const events = await fetchEvents(
+    {
+      kinds: [EVENT_KINDS.PRIVATE_MESSAGE_RELAYS],
+      authors: [pubkey],
+      limit: 1,
+    },
+    {
+      relayUrls: options.relayUrls ?? getGeneralReadRelayUrls({}),
+      connectTimeoutMs: 3_000,
+      fetchTimeoutMs: 6_000,
     }
-    const secure = relayUrls.filter((url) => !isInsecureRelayUrl(url))
-    inboxRelayCache.set(pubkey, secure)
-    return secure
-  } catch {
-    return []
+  )
+  let relayUrls: string[] = []
+  let newest = -1
+  for (const event of events) {
+    const parsed = parsePrivateMessageRelays(event)
+    if (parsed && (event.created_at ?? 0) > newest) {
+      relayUrls = parsed.relayUrls
+      newest = event.created_at ?? 0
+    }
   }
+  const secure = relayUrls.filter((url) => !isInsecureRelayUrl(url))
+  if (secure.length > 0) {
+    inboxRelayCache.set(pubkey, secure)
+  }
+  return secure
 }

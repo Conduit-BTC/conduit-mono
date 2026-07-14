@@ -6,10 +6,13 @@ import {
   Button,
   ConversationMessageBubble,
   DecryptFailureNotice,
+  LegacyDirectMessageNotice,
+  LiveReadNotice,
   MessageComposer,
   OrderConversationMessage,
   formatProductReference,
   getConversationPreview,
+  getConversationMessageDisplayContent,
 } from "@conduit/ui"
 import { MessageCircleMore, Search, Store } from "lucide-react"
 import {
@@ -23,6 +26,7 @@ import {
   getDirectMessageConversationList,
   getNdk,
   formatPubkey,
+  markDirectMessageConversationRead,
   normalizePubkey,
   parseDirectMessageRumor,
   parseOrderMessageRumorEvent,
@@ -205,6 +209,9 @@ function DmThreadRow({
               {name}
             </div>
             <div className="flex items-center gap-2">
+              {conversation.transport === "nip04" && (
+                <Badge variant="secondary">Legacy</Badge>
+              )}
               {conversation.unreadFromCounterparty > 0 && (
                 <Badge className="bg-fuchsia-500 text-white">
                   {conversation.unreadFromCounterparty}
@@ -222,7 +229,8 @@ function DmThreadRow({
             {formatNpub(conversation.counterpartyPubkey, 8)}
           </div>
           <div className="mt-1.5 line-clamp-2 text-sm text-[var(--text-secondary)]">
-            {conversation.preview || "No messages yet"}
+            {getConversationMessageDisplayContent(conversation.preview) ||
+              "No messages yet"}
           </div>
         </div>
       </div>
@@ -240,6 +248,9 @@ function MessagesPage() {
   const [replyText, setReplyText] = useState("")
   const [dmText, setDmText] = useState("")
   const [selectedDmPubkey, setSelectedDmPubkey] = useState<string | null>(null)
+  const [selectedDmTransport, setSelectedDmTransport] = useState<
+    "nip17" | "nip04"
+  >("nip17")
 
   const activeTab = search.tab ?? "merchants"
 
@@ -450,6 +461,7 @@ function MessagesPage() {
     if (activeTab !== "dms") return
     if (!selectedDmPubkey && search.merchant) {
       setSelectedDmPubkey(search.merchant)
+      setSelectedDmTransport("nip17")
     }
   }, [activeTab, search.merchant, selectedDmPubkey])
 
@@ -459,7 +471,9 @@ function MessagesPage() {
 
   const selectedDm =
     dmConversations.find(
-      (conversation) => conversation.counterpartyPubkey === selectedDmPubkey
+      (conversation) =>
+        conversation.counterpartyPubkey === selectedDmPubkey &&
+        conversation.transport === selectedDmTransport
     ) ?? null
   const selectedDmProfile = useProfile(selectedDmPubkey ?? undefined, {
     maxUnresolvedRefetches: 1,
@@ -468,6 +482,49 @@ function MessagesPage() {
     ? getMerchantDisplayName(selectedDmProfile.data, selectedDmPubkey)
     : null
   const selectedDmMessages = selectedDm?.messages ?? []
+
+  useEffect(() => {
+    if (
+      activeTab !== "dms" ||
+      !pubkey ||
+      !selectedDmPubkey ||
+      !selectedDm?.unreadFromCounterparty
+    ) {
+      return
+    }
+
+    let cancelled = false
+    void markDirectMessageConversationRead({
+      principalPubkey: pubkey,
+      counterpartyPubkey: selectedDmPubkey,
+      transport: selectedDmTransport,
+    })
+      .then(async (updated) => {
+        if (cancelled || updated === 0) return
+        await Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: ["buyer-dms", pubkey],
+          }),
+          queryClient.invalidateQueries({
+            queryKey: ["buyer-dms-live", pubkey],
+          }),
+        ])
+      })
+      .catch(() => {
+        console.warn("Failed to update direct-message read state")
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    activeTab,
+    pubkey,
+    queryClient,
+    selectedDm?.unreadFromCounterparty,
+    selectedDmPubkey,
+    selectedDmTransport,
+  ])
 
   const sendDmMutation = useMutation({
     mutationFn: async () => {
@@ -580,11 +637,25 @@ function MessagesPage() {
                 retrying={dmsLiveQuery.isRefetching}
               />
             )}
-            {dmLiveMeta?.stale && (
-              <div className="text-xs text-[var(--text-muted)]">
-                Showing saved messages
-              </div>
+            {(dmsLiveQuery.error || dmLiveMeta?.degraded) && (
+              <LiveReadNotice
+                state={
+                  dmsLiveQuery.error
+                    ? dmConversations.length > 0
+                      ? "cached"
+                      : "unavailable"
+                    : "partial"
+                }
+                onRetry={() => void dmsLiveQuery.refetch()}
+                retrying={dmsLiveQuery.isRefetching}
+              />
             )}
+            <DecryptFailureNotice
+              count={dmLiveMeta?.legacyDecryptFailures?.length ?? 0}
+              label="Some legacy messages couldn't be decrypted."
+              onRetry={() => void dmsLiveQuery.refetch()}
+              retrying={dmsLiveQuery.isRefetching}
+            />
 
             {dmsCacheQuery.isLoading &&
             dmsLiveQuery.isLoading &&
@@ -593,7 +664,10 @@ function MessagesPage() {
               <div className="text-sm text-[var(--text-secondary)]">
                 Loading your inbox…
               </div>
-            ) : dmConversations.length === 0 && !selectedDmPubkey ? (
+            ) : dmConversations.length === 0 &&
+              !selectedDmPubkey &&
+              !dmsLiveQuery.error &&
+              !dmLiveMeta?.degraded ? (
               <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
                   <MessageCircleMore className="h-7 w-7" />
@@ -613,14 +687,17 @@ function MessagesPage() {
                     {dmConversations.length > 0 ? (
                       dmConversations.map((conversation) => (
                         <DmThreadRow
-                          key={conversation.counterpartyPubkey}
+                          key={conversation.id}
                           conversation={conversation}
                           active={
-                            conversation.counterpartyPubkey === selectedDmPubkey
+                            conversation.counterpartyPubkey ===
+                              selectedDmPubkey &&
+                            conversation.transport === selectedDmTransport
                           }
-                          onClick={() =>
+                          onClick={() => {
                             setSelectedDmPubkey(conversation.counterpartyPubkey)
-                          }
+                            setSelectedDmTransport(conversation.transport)
+                          }}
                         />
                       ))
                     ) : (
@@ -692,19 +769,35 @@ function MessagesPage() {
                       </div>
 
                       <div className="border-t border-[var(--border)] px-6 py-4">
-                        <MessageComposer
-                          value={dmText}
-                          onChange={setDmText}
-                          onSend={() => sendDmMutation.mutate()}
-                          sending={sendDmMutation.isPending}
-                          placeholder="Send a direct message"
-                        />
-                        {sendDmMutation.error && (
-                          <div className="mt-2 text-xs text-error">
-                            {sendDmMutation.error instanceof Error
-                              ? sendDmMutation.error.message
-                              : "Failed to send message"}
+                        {selectedDmTransport === "nip04" ? (
+                          <div className="space-y-3">
+                            <LegacyDirectMessageNotice />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setSelectedDmTransport("nip17")}
+                            >
+                              Start current conversation
+                            </Button>
                           </div>
+                        ) : (
+                          <>
+                            <MessageComposer
+                              value={dmText}
+                              onChange={setDmText}
+                              onSend={() => sendDmMutation.mutate()}
+                              sending={sendDmMutation.isPending}
+                              placeholder="Send a direct message"
+                            />
+                            {sendDmMutation.error && (
+                              <div className="mt-2 text-xs text-error">
+                                {sendDmMutation.error instanceof Error
+                                  ? sendDmMutation.error.message
+                                  : "Failed to send message"}
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
                     </>
@@ -741,18 +834,26 @@ function MessagesPage() {
             </div>
           )}
 
-          {signerConnected && messagesQuery.error && (
-            <div className="rounded-xl border border-error/30 bg-error/10 p-4 text-sm text-error">
-              Failed to load messages:{" "}
-              {messagesQuery.error instanceof Error
-                ? messagesQuery.error.message
-                : "Unknown error"}
-            </div>
-          )}
+          {signerConnected &&
+            (messagesQuery.error || messagesQuery.data?.meta.degraded) && (
+              <LiveReadNotice
+                state={
+                  messagesQuery.error
+                    ? conversations.length > 0
+                      ? "cached"
+                      : "unavailable"
+                    : "partial"
+                }
+                onRetry={() => void messagesQuery.refetch()}
+                retrying={messagesQuery.isRefetching}
+              />
+            )}
 
           {signerConnected &&
             !cachedMessagesQuery.isLoading &&
-            conversations.length === 0 && (
+            conversations.length === 0 &&
+            !messagesQuery.error &&
+            !messagesQuery.data?.meta.degraded && (
               <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
                   <Store className="h-7 w-7" />

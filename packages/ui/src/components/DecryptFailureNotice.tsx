@@ -8,6 +8,7 @@ export interface DecryptFailureNoticeProps {
   onRetry?: () => void
   retrying?: boolean
   className?: string
+  label?: string
 }
 
 /**
@@ -20,6 +21,7 @@ export function DecryptFailureNotice({
   onRetry,
   retrying,
   className,
+  label,
 }: DecryptFailureNoticeProps) {
   if (count <= 0) return null
 
@@ -33,7 +35,8 @@ export function DecryptFailureNotice({
     >
       <span className="flex items-center gap-2">
         <AlertTriangle className="size-4 shrink-0 text-[var(--warning)]" />
-        {count} message{count === 1 ? "" : "s"} couldn&rsquo;t be decrypted.
+        {label ??
+          `${count} message${count === 1 ? "" : "s"} couldn't be decrypted.`}
       </span>
       {onRetry ? (
         <Button

@@ -341,6 +341,35 @@ describe("planPublishRelays", () => {
     )
   })
 
+  it("never leaves the exclusive relay set after every declared relay rejects", async () => {
+    const exclusiveRelay = "wss://declared-inbox.example"
+    const attempts: string[][] = []
+    const fakeEvent = {
+      kind: EVENT_KINDS.GIFT_WRAP,
+      publish: async (relaySet: unknown) => {
+        const relayUrls = [
+          ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
+            []),
+        ]
+        attempts.push(relayUrls)
+        throw new Error("declared inbox rejected the wrap")
+      },
+    } as never
+
+    await expect(
+      publishWithPlanner(fakeEvent, {
+        intent: "recipient_event",
+        authorPubkey: "alice",
+        recipientPubkeys: ["bob"],
+        deliveryMode: "critical",
+        exclusiveRelayUrls: [exclusiveRelay],
+        extraRelayUrls: ["wss://must-not-be-used.example"],
+      })
+    ).rejects.toThrow("required exclusive relay set")
+
+    expect(attempts).toEqual([[`${exclusiveRelay}/`], [`${exclusiveRelay}/`]])
+  })
+
   it("retries non-NIP-65 author events on public fallback relays when configured writes fail", async () => {
     const primaryRelay = "wss://configured-write.example"
     const normalizedPrimaryRelay = `${primaryRelay}/`

@@ -21,7 +21,6 @@ import {
   getProfiles,
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
-  CANONICAL_APP_WRITE_RELAYS,
 } from "@conduit/core"
 import { EVENT_KINDS } from "@conduit/core"
 import type {
@@ -146,6 +145,7 @@ beforeEach(async () => {
   cachedOrderMessages = []
   __setCommerceTestOverrides({
     now: () => FIXED_NOW,
+    resolveInboxRelayUrls: async () => ["wss://inbox.example"],
     getCachedProducts: async (merchantPubkey, authorPubkeys) =>
       cachedProducts.filter(
         (row) =>
@@ -197,6 +197,8 @@ beforeEach(async () => {
         ]
       }
     },
+    getCachedDirectMessages: async () => [],
+    putCachedDirectMessages: async () => {},
   })
 })
 
@@ -1554,7 +1556,7 @@ describe("commerce gateway", () => {
     expect(result.data[0]?.status).toBeNull()
   })
 
-  it("queries expanded merchant inbox relays for gift-wrapped orders", async () => {
+  it("queries only the declared merchant inbox relays for gift-wrapped orders", async () => {
     const merchantPubkey = "merchant"
     const merchantReadRelays = Array.from(
       { length: 8 },
@@ -1577,6 +1579,7 @@ describe("commerce gateway", () => {
     })
     __setCommerceTestOverrides({
       requireNdkConnected: async () => ({ signer: {} }) as never,
+      resolveInboxRelayUrls: async () => merchantReadRelays,
       fetchEventsFanout: async (filter, options) => {
         if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
           seenRelayUrls = options?.relayUrls
@@ -1590,8 +1593,7 @@ describe("commerce gateway", () => {
       limit: 50,
     })
 
-    expect(seenRelayUrls).toContain(CANONICAL_APP_WRITE_RELAYS[0])
-    expect(seenRelayUrls).toContain("wss://merchant-read-7.example")
+    expect(seenRelayUrls).toEqual(merchantReadRelays)
   })
 
   it("retries parsed wrapped order messages when cache persistence fails", async () => {

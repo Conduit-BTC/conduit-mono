@@ -3,7 +3,7 @@ import { pubkeyToNpub } from "@conduit/core"
 // Maps the current merchant host to its paired market origin so links open the
 // buyer/merchant profile on the market app (including preview + local dev).
 export function inferMarketOrigin(): string {
-  if (typeof window === "undefined") return "https://conduit.market"
+  if (typeof window === "undefined") return "https://shop.conduit.market"
 
   const { hostname, protocol, port } = window.location
   const previewHostReplacements: [string, string][] = [
@@ -23,7 +23,7 @@ export function inferMarketOrigin(): string {
     if (localMarketPort) return `${protocol}//${hostname}:${localMarketPort}`
   }
 
-  return "https://conduit.market"
+  return "https://shop.conduit.market"
 }
 
 export function getStorefrontUrl(pubkey: string): string {

@@ -26,10 +26,13 @@ import {
 import { extractOrderSummary } from "./order-summary"
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import {
+  createNdkLegacyDmDecrypt,
+  decryptLegacyDirectMessage,
   parseDirectMessageRumor,
   parsePrivateMessageRelays,
   unwrapGiftWraps,
   type DecryptFailure,
+  type LegacyDmDecryptFailure,
   type ParsedDirectMessage,
   type UnwrapGiftWrapOptions,
 } from "./messaging"
@@ -97,6 +100,8 @@ export interface CommerceQueryMeta {
    * state instead of silently dropping messages.
    */
   decryptFailures?: DecryptFailure[]
+  /** Deprecated kind-4 failures, kept distinct from NIP-17 gift wraps. */
+  legacyDecryptFailures?: LegacyDmDecryptFailure[]
 }
 
 export interface CommerceResult<T> {
@@ -165,6 +170,7 @@ export interface ConversationListQuery {
   principalPubkey: string
   limit?: number
   textQuery?: string
+  counterpartyPubkey?: string
 }
 
 export interface ConversationDetailQuery {
@@ -183,6 +189,7 @@ interface ConversationSummaryBase {
   preview: string
   messageCount: number
   messages?: ParsedOrderMessage[]
+  context: "complete" | "missing_order"
 }
 
 export interface CachedProductReadOptions {
@@ -227,9 +234,22 @@ type RawMessageFetchResult = {
 
 type RawDirectMessageFetchResult = {
   messages: ParsedDirectMessage[]
+  unreadMessageIds: Set<string>
   source: CommerceReadSource
   stale: boolean
   decryptFailures: DecryptFailure[]
+  legacyDecryptFailures: LegacyDmDecryptFailure[]
+}
+
+type PrivateInboxSyncResult = {
+  orderMessages: ParsedOrderMessage[]
+  directMessages: ParsedDirectMessage[]
+  decryptFailures: DecryptFailure[]
+}
+
+type LegacyDmSyncResult = {
+  directMessages: ParsedDirectMessage[]
+  decryptFailures: LegacyDmDecryptFailure[]
 }
 
 type CommerceTestOverrides = {
@@ -263,6 +283,12 @@ type CommerceTestOverrides = {
     principalPubkey: string
   ) => Promise<StoredMessage[]>
   putCachedDirectMessages?: (rows: StoredMessage[]) => Promise<void>
+  resolveInboxRelayUrls?: (principalPubkey: string) => Promise<string[]>
+  markDirectMessagesRead?: (
+    principalPubkey: string,
+    counterpartyPubkey: string,
+    transport?: ParsedDirectMessage["transport"]
+  ) => Promise<number>
 }
 
 const PRODUCT_CAPABILITIES: CommerceCapabilities = {
@@ -299,8 +325,19 @@ const READ_PLANS: Record<CommerceReadPlanName, CommerceReadSource[]> = {
 }
 
 let testOverrides: CommerceTestOverrides = {}
-const knownWrapIds = new Set<string>()
+const successfulWrapIdsByPrincipal = new Map<string, Set<string>>()
+const retryWrapsByPrincipal = new Map<
+  string,
+  Map<string, { event: NDKEvent; failure?: DecryptFailure }>
+>()
+const inboxSyncPromises = new Map<string, Promise<PrivateInboxSyncResult>>()
 const inboxRelayUrlCache = new Map<string, string[]>()
+const successfulLegacyDmIdsByPrincipal = new Map<string, Set<string>>()
+const retryLegacyDmsByPrincipal = new Map<
+  string,
+  Map<string, { event: NDKEvent; failure?: LegacyDmDecryptFailure }>
+>()
+const legacyDmSyncPromises = new Map<string, Promise<LegacyDmSyncResult>>()
 
 function now(): number {
   return testOverrides.now?.() ?? Date.now()
@@ -448,8 +485,13 @@ export function __setCommerceTestOverrides(
 
 export function __resetCommerceTestOverrides(): void {
   testOverrides = {}
-  knownWrapIds.clear()
+  successfulWrapIdsByPrincipal.clear()
+  retryWrapsByPrincipal.clear()
+  inboxSyncPromises.clear()
   inboxRelayUrlCache.clear()
+  successfulLegacyDmIdsByPrincipal.clear()
+  retryLegacyDmsByPrincipal.clear()
+  legacyDmSyncPromises.clear()
 }
 
 function createMeta(
@@ -461,6 +503,7 @@ function createMeta(
     degraded?: boolean
     nextCursor?: string
     decryptFailures?: DecryptFailure[]
+    legacyDecryptFailures?: LegacyDmDecryptFailure[]
   } = {}
 ): CommerceQueryMeta {
   const plan = resolveReadPlan(planName)
@@ -468,16 +511,24 @@ function createMeta(
     options.decryptFailures && options.decryptFailures.length > 0
       ? options.decryptFailures
       : undefined
+  const legacyDecryptFailures =
+    options.legacyDecryptFailures && options.legacyDecryptFailures.length > 0
+      ? options.legacyDecryptFailures
+      : undefined
   return {
     source,
     stale: options.stale ?? source === "local_cache",
     degraded:
       options.degraded ??
-      (source !== plan.sources[0] || decryptFailures !== undefined),
+      (options.stale === true ||
+        source !== plan.sources[0] ||
+        decryptFailures !== undefined ||
+        legacyDecryptFailures !== undefined),
     capabilities,
     fetchedAt: now(),
     nextCursor: options.nextCursor,
     decryptFailures,
+    legacyDecryptFailures,
   }
 }
 
@@ -2545,7 +2596,7 @@ function unwrapOptions(): UnwrapGiftWrapOptions {
 
 async function fetchParsedOrderMessages(
   principalPubkey: string,
-  limit: number
+  _limit: number
 ): Promise<RawMessageFetchResult> {
   const cached = await loadCachedOrderMessages(principalPubkey)
 
@@ -2576,47 +2627,18 @@ async function fetchParsedOrderMessages(
       throw new Error("Connect your Nostr signer to view order conversations.")
     }
 
-    const newWrapped = await fetchNewInboxWraps(principalPubkey, limit)
-    const outcomes = await unwrapGiftWraps(newWrapped, signer, unwrapOptions())
-
-    const newRows: CachedOrderMessage[] = []
-    const parsedWrapIds = new Set<string>()
-    const decryptFailures: DecryptFailure[] = []
-
-    for (const outcome of outcomes) {
-      if (outcome.status === "decrypt_failed") {
-        decryptFailures.push({
-          wrapId: outcome.wrapId,
-          reason: outcome.reason,
-        })
-        continue
-      }
-      // Non-order rumors (kind 14 general DMs) are left for the DM fetch and
-      // are not marked known here, so they can still be routed there.
-      if (outcome.status !== "ok" || outcome.category !== "order") continue
-
-      try {
-        const parsed = parseOrderMessageRumorEvent(outcome.rumor)
-        if (!cachedById.has(parsed.id)) {
-          newRows.push(cachedOrderMessageRow(parsed))
-        }
-        cachedById.set(parsed.id, parsed)
-        parsedWrapIds.add(outcome.wrapId)
-      } catch {
-        decryptFailures.push({ wrapId: outcome.wrapId, reason: "malformed" })
-      }
-    }
-
-    if (newRows.length > 0) {
-      await storeCachedOrderMessages(newRows)
-    }
-
-    for (const id of parsedWrapIds) knownWrapIds.add(id)
+    const sync = await syncPrivateMessageInbox(principalPubkey, signer)
+    for (const parsed of sync.orderMessages) cachedById.set(parsed.id, parsed)
 
     const messages = Array.from(cachedById.values()).sort(
       (a, b) => a.createdAt - b.createdAt
     )
-    return { messages, source: "commerce", stale: false, decryptFailures }
+    return {
+      messages,
+      source: "commerce",
+      stale: false,
+      decryptFailures: sync.decryptFailures,
+    }
   } catch (error) {
     if (cachedById.size > 0) {
       const messages = Array.from(cachedById.values()).sort(
@@ -2633,49 +2655,47 @@ async function fetchParsedOrderMessages(
   }
 }
 
-/**
- * Read the principal's NIP-17 gift-wrap inbox and return only wraps not yet
- * processed this session. Shared by the order and general-DM fetches so the two
- * conversation reads dedup unwrapping through `knownWrapIds`.
- */
-/**
- * Resolve the principal's own kind-10050 private-message inbox relays (where
- * peers deliver gift wraps to them). Best-effort and cached; falls back to an
- * empty set so DM reads still use NIP-65 + config defaults when no 10050 exists.
- */
+/** Resolve the principal's declared NIP-17 inbox. Empty lists are not cached. */
 async function resolveInboxReadRelays(
   principalPubkey: string
 ): Promise<string[]> {
+  if (testOverrides.resolveInboxRelayUrls) {
+    const relays = await testOverrides.resolveInboxRelayUrls(principalPubkey)
+    const secure = relays.filter((url) => !isInsecureRelayUrl(url))
+    if (secure.length === 0) {
+      throw new Error("No NIP-17 inbox relay declaration found.")
+    }
+    return secure
+  }
   const cached = inboxRelayUrlCache.get(principalPubkey)
   if (cached) return cached
-  try {
-    const events = await runFetchEventsFanout(
-      {
-        kinds: [EVENT_KINDS.PRIVATE_MESSAGE_RELAYS],
-        authors: [principalPubkey],
-        limit: 1,
-      },
-      {
-        relayUrls: publicReadRelayUrls(),
-        connectTimeoutMs: 3_000,
-        fetchTimeoutMs: 6_000,
-      }
-    )
-    let relays: string[] = []
-    let newest = -1
-    for (const event of events) {
-      const parsed = parsePrivateMessageRelays(event)
-      if (parsed && (event.created_at ?? 0) > newest) {
-        relays = parsed.relayUrls
-        newest = event.created_at ?? 0
-      }
+  const events = await runFetchEventsFanout(
+    {
+      kinds: [EVENT_KINDS.PRIVATE_MESSAGE_RELAYS],
+      authors: [principalPubkey],
+      limit: 1,
+    },
+    {
+      relayUrls: publicReadRelayUrls(),
+      connectTimeoutMs: 3_000,
+      fetchTimeoutMs: 6_000,
     }
-    const secure = relays.filter((url) => !isInsecureRelayUrl(url))
-    inboxRelayUrlCache.set(principalPubkey, secure)
-    return secure
-  } catch {
-    return []
+  )
+  let relays: string[] = []
+  let newest = -1
+  for (const event of events) {
+    const parsed = parsePrivateMessageRelays(event)
+    if (parsed && (event.created_at ?? 0) > newest) {
+      relays = parsed.relayUrls
+      newest = event.created_at ?? 0
+    }
   }
+  const secure = relays.filter((url) => !isInsecureRelayUrl(url))
+  if (secure.length === 0) {
+    throw new Error("No NIP-17 inbox relay declaration found.")
+  }
+  inboxRelayUrlCache.set(principalPubkey, secure)
+  return secure
 }
 
 async function fetchNewInboxWraps(
@@ -2689,21 +2709,15 @@ async function fetchNewInboxWraps(
   }
 
   const inboxRelayUrls = await resolveInboxReadRelays(principalPubkey)
-  const dmRelayUrls = await planCommerceReadRelays({
-    intent: "dm_inbox",
-    recipients: [principalPubkey],
-    authenticatedPubkey: principalPubkey,
-    maxRelays: DM_INBOX_READ_FANOUT,
-    extraRelayUrls: [...config.appWriteRelayUrls, ...inboxRelayUrls],
-  })
 
   const wrapped = await runFetchEventsFanout(filter, {
-    relayUrls: dmRelayUrls,
+    relayUrls: inboxRelayUrls.slice(0, DM_INBOX_READ_FANOUT),
     connectTimeoutMs: 4_000,
     fetchTimeoutMs: 12_000,
   })
 
-  return wrapped.filter((event) => !knownWrapIds.has(event.id))
+  const successful = successfulWrapIdsByPrincipal.get(principalPubkey)
+  return wrapped.filter((event) => !successful?.has(event.id))
 }
 
 async function loadCachedDirectMessages(
@@ -2718,7 +2732,11 @@ async function loadCachedDirectMessages(
     .equals(principalPubkey)
     .or("senderPubkey")
     .equals(principalPubkey)
-    .filter((row) => row.kind === EVENT_KINDS.DIRECT_MESSAGE)
+    .filter(
+      (row) =>
+        row.kind === EVENT_KINDS.DIRECT_MESSAGE ||
+        row.kind === EVENT_KINDS.DM_LEGACY
+    )
     .toArray()
 }
 
@@ -2737,7 +2755,10 @@ function cachedDirectMessageRow(message: ParsedDirectMessage): StoredMessage {
     senderPubkey: message.senderPubkey,
     recipientPubkey: message.recipientPubkey,
     content: message.content,
-    kind: EVENT_KINDS.DIRECT_MESSAGE,
+    kind:
+      message.transport === "nip04"
+        ? EVENT_KINDS.DM_LEGACY
+        : EVENT_KINDS.DIRECT_MESSAGE,
     createdAt: message.createdAt,
     read: 0,
   }
@@ -2750,17 +2771,298 @@ function parseCachedDirectMessage(row: StoredMessage): ParsedDirectMessage {
     recipientPubkey: row.recipientPubkey,
     content: row.decrypted ?? row.content,
     createdAt: row.createdAt,
+    transport: row.kind === EVENT_KINDS.DM_LEGACY ? "nip04" : "nip17",
+  }
+}
+
+function successfulLegacyDmIds(principalPubkey: string): Set<string> {
+  let ids = successfulLegacyDmIdsByPrincipal.get(principalPubkey)
+  if (!ids) {
+    ids = new Set<string>()
+    successfulLegacyDmIdsByPrincipal.set(principalPubkey, ids)
+  }
+  return ids
+}
+
+function retryLegacyDms(
+  principalPubkey: string
+): Map<string, { event: NDKEvent; failure?: LegacyDmDecryptFailure }> {
+  let events = retryLegacyDmsByPrincipal.get(principalPubkey)
+  if (!events) {
+    events = new Map()
+    retryLegacyDmsByPrincipal.set(principalPubkey, events)
+  }
+  return events
+}
+
+async function runLegacyDmSync(
+  principalPubkey: string,
+  signer: NDKSigner
+): Promise<LegacyDmSyncResult> {
+  const relayUrls = await planCommerceReadRelays({
+    intent: "legacy_dm",
+    authors: [principalPubkey],
+    recipients: [principalPubkey],
+    authenticatedPubkey: principalPubkey,
+    maxRelays: DM_INBOX_READ_FANOUT,
+  })
+  const [incoming, outgoing, cached] = await Promise.all([
+    runFetchEventsFanout(
+      {
+        kinds: [EVENT_KINDS.DM_LEGACY],
+        "#p": [principalPubkey],
+        limit: 400,
+      },
+      { relayUrls, connectTimeoutMs: 4_000, fetchTimeoutMs: 12_000 }
+    ),
+    runFetchEventsFanout(
+      {
+        kinds: [EVENT_KINDS.DM_LEGACY],
+        authors: [principalPubkey],
+        limit: 400,
+      },
+      { relayUrls, connectTimeoutMs: 4_000, fetchTimeoutMs: 12_000 }
+    ),
+    loadCachedDirectMessages(principalPubkey),
+  ])
+  const cachedIds = new Set(cached.map((row) => row.id))
+  const successful = successfulLegacyDmIds(principalPubkey)
+  const retry = retryLegacyDms(principalPubkey)
+  const candidates = new Map<string, NDKEvent>()
+  for (const { event } of retry.values()) candidates.set(event.id, event)
+  for (const event of [...incoming, ...outgoing]) {
+    if (!successful.has(event.id) && !cachedIds.has(event.id)) {
+      candidates.set(event.id, event)
+    }
+  }
+  for (const event of candidates.values()) {
+    retry.set(event.id, { event, failure: retry.get(event.id)?.failure })
+  }
+
+  const decrypt = createNdkLegacyDmDecrypt(signer)
+  const messages: ParsedDirectMessage[] = []
+  for (let index = 0; index < candidates.size; index += 5) {
+    const batch = Array.from(candidates.values()).slice(index, index + 5)
+    const outcomes = await Promise.all(
+      batch.map((event) =>
+        decryptLegacyDirectMessage(event, principalPubkey, decrypt)
+      )
+    )
+    for (const outcome of outcomes) {
+      if (outcome.status === "ignored") {
+        successful.add(outcome.eventId)
+        retry.delete(outcome.eventId)
+      } else if (outcome.status === "decrypt_failed") {
+        const pending = retry.get(outcome.failure.eventId)
+        if (pending)
+          retry.set(outcome.failure.eventId, {
+            ...pending,
+            failure: outcome.failure,
+          })
+      } else {
+        messages.push(outcome.message)
+      }
+    }
+  }
+
+  try {
+    await storeCachedDirectMessages(messages.map(cachedDirectMessageRow))
+    for (const message of messages) {
+      successful.add(message.id)
+      retry.delete(message.id)
+    }
+  } catch {
+    // Keep encrypted events in memory for retry; plaintext remains transient.
+  }
+
+  return {
+    directMessages: messages,
+    decryptFailures: Array.from(retry.values()).flatMap(({ failure }) =>
+      failure ? [failure] : []
+    ),
+  }
+}
+
+async function syncLegacyDms(
+  principalPubkey: string,
+  signer: NDKSigner
+): Promise<LegacyDmSyncResult> {
+  const existing = legacyDmSyncPromises.get(principalPubkey)
+  if (existing) return await existing
+  const pending = runLegacyDmSync(principalPubkey, signer)
+  legacyDmSyncPromises.set(principalPubkey, pending)
+  try {
+    return await pending
+  } finally {
+    if (legacyDmSyncPromises.get(principalPubkey) === pending) {
+      legacyDmSyncPromises.delete(principalPubkey)
+    }
+  }
+}
+
+function successfulWrapIds(principalPubkey: string): Set<string> {
+  let ids = successfulWrapIdsByPrincipal.get(principalPubkey)
+  if (!ids) {
+    ids = new Set<string>()
+    successfulWrapIdsByPrincipal.set(principalPubkey, ids)
+  }
+  return ids
+}
+
+function retryWraps(
+  principalPubkey: string
+): Map<string, { event: NDKEvent; failure?: DecryptFailure }> {
+  let wraps = retryWrapsByPrincipal.get(principalPubkey)
+  if (!wraps) {
+    wraps = new Map()
+    retryWrapsByPrincipal.set(principalPubkey, wraps)
+  }
+  return wraps
+}
+
+async function runPrivateMessageInboxSync(
+  principalPubkey: string,
+  signer: NDKSigner
+): Promise<PrivateInboxSyncResult> {
+  const [cachedOrders, cachedDirect, fetched] = await Promise.all([
+    loadCachedOrderMessages(principalPubkey),
+    loadCachedDirectMessages(principalPubkey),
+    fetchNewInboxWraps(principalPubkey, 400),
+  ])
+  const cachedOrderIds = new Set(cachedOrders.map((row) => row.id))
+  const cachedDirectIds = new Set(cachedDirect.map((row) => row.id))
+  const successful = successfulWrapIds(principalPubkey)
+  const retry = retryWraps(principalPubkey)
+  const candidates = new Map<string, NDKEvent>()
+
+  for (const { event } of retry.values()) candidates.set(event.id, event)
+  for (const event of fetched) candidates.set(event.id, event)
+  for (const event of candidates.values()) {
+    retry.set(event.id, { event, failure: retry.get(event.id)?.failure })
+  }
+
+  const outcomes = await unwrapGiftWraps(
+    Array.from(candidates.values()),
+    signer,
+    unwrapOptions()
+  )
+  const orderEntries: Array<{
+    wrapId: string
+    message: ParsedOrderMessage
+    isCached: boolean
+  }> = []
+  const directEntries: Array<{
+    wrapId: string
+    message: ParsedDirectMessage
+    isCached: boolean
+  }> = []
+
+  for (const outcome of outcomes) {
+    const pending = retry.get(outcome.wrapId)
+    if (!pending) continue
+    if (outcome.status === "decrypt_failed") {
+      retry.set(outcome.wrapId, {
+        event: pending.event,
+        failure: { wrapId: outcome.wrapId, reason: outcome.reason },
+      })
+      continue
+    }
+    if (outcome.status === "ignored") {
+      successful.add(outcome.wrapId)
+      retry.delete(outcome.wrapId)
+      continue
+    }
+
+    try {
+      if (outcome.category === "order") {
+        const message = parseOrderMessageRumorEvent(outcome.rumor)
+        orderEntries.push({
+          wrapId: outcome.wrapId,
+          message,
+          isCached: cachedOrderIds.has(message.id),
+        })
+      } else {
+        const message = parseDirectMessageRumor(outcome.rumor)
+        if (!message.id) throw new Error("Missing direct-message id")
+        directEntries.push({
+          wrapId: outcome.wrapId,
+          message,
+          isCached: cachedDirectIds.has(message.id),
+        })
+      }
+    } catch {
+      retry.set(outcome.wrapId, {
+        event: pending.event,
+        failure: { wrapId: outcome.wrapId, reason: "malformed" },
+      })
+    }
+  }
+
+  const persisted = (wrapId: string) => {
+    successful.add(wrapId)
+    retry.delete(wrapId)
+  }
+  const cachedOrderEntries = orderEntries.filter((entry) => entry.isCached)
+  const newOrderEntries = orderEntries.filter((entry) => !entry.isCached)
+  for (const entry of cachedOrderEntries) persisted(entry.wrapId)
+  try {
+    await storeCachedOrderMessages(
+      newOrderEntries.map((entry) => cachedOrderMessageRow(entry.message))
+    )
+    for (const entry of newOrderEntries) persisted(entry.wrapId)
+  } catch {
+    // Keep wrappers pending for a later cache retry; parsed messages remain usable.
+  }
+
+  const cachedDirectEntries = directEntries.filter((entry) => entry.isCached)
+  const newDirectEntries = directEntries.filter((entry) => !entry.isCached)
+  for (const entry of cachedDirectEntries) persisted(entry.wrapId)
+  try {
+    await storeCachedDirectMessages(
+      newDirectEntries.map((entry) => cachedDirectMessageRow(entry.message))
+    )
+    for (const entry of newDirectEntries) persisted(entry.wrapId)
+  } catch {
+    // Keep wrappers pending for a later cache retry; parsed messages remain usable.
+  }
+
+  return {
+    orderMessages: orderEntries.map((entry) => entry.message),
+    directMessages: directEntries.map((entry) => entry.message),
+    decryptFailures: Array.from(retry.values()).flatMap(({ failure }) =>
+      failure ? [failure] : []
+    ),
+  }
+}
+
+async function syncPrivateMessageInbox(
+  principalPubkey: string,
+  signer: NDKSigner
+): Promise<PrivateInboxSyncResult> {
+  const existing = inboxSyncPromises.get(principalPubkey)
+  if (existing) return await existing
+
+  const pending = runPrivateMessageInboxSync(principalPubkey, signer)
+  inboxSyncPromises.set(principalPubkey, pending)
+  try {
+    return await pending
+  } finally {
+    if (inboxSyncPromises.get(principalPubkey) === pending) {
+      inboxSyncPromises.delete(principalPubkey)
+    }
   }
 }
 
 async function fetchParsedDirectMessages(
   principalPubkey: string,
-  limit: number
+  _limit: number
 ): Promise<RawDirectMessageFetchResult> {
   const cached = await loadCachedDirectMessages(principalPubkey)
   const cachedById = new Map<string, ParsedDirectMessage>()
+  const unreadMessageIds = new Set<string>()
   for (const row of cached) {
     cachedById.set(row.id, parseCachedDirectMessage(row))
+    if (row.read === 0) unreadMessageIds.add(row.id)
   }
 
   try {
@@ -2773,55 +3075,59 @@ async function fetchParsedDirectMessages(
         )
         return {
           messages,
+          unreadMessageIds,
           source: "local_cache",
           stale: true,
           decryptFailures: [],
+          legacyDecryptFailures: [],
         }
       }
       throw new Error("Connect your Nostr signer to view messages.")
     }
 
-    const newWrapped = await fetchNewInboxWraps(principalPubkey, limit)
-    const outcomes = await unwrapGiftWraps(newWrapped, signer, unwrapOptions())
-
-    const newRows: StoredMessage[] = []
-    const parsedWrapIds = new Set<string>()
-    const decryptFailures: DecryptFailure[] = []
-
-    for (const outcome of outcomes) {
-      if (outcome.status === "decrypt_failed") {
-        decryptFailures.push({
-          wrapId: outcome.wrapId,
-          reason: outcome.reason,
-        })
-        continue
-      }
-      // Order rumors (kind 16) belong to the order fetch; leave them unmarked.
-      if (outcome.status !== "ok" || outcome.category !== "direct") continue
-
-      try {
-        const parsed = parseDirectMessageRumor(outcome.rumor)
-        if (!parsed.id) continue
-        if (!cachedById.has(parsed.id)) {
-          newRows.push(cachedDirectMessageRow(parsed))
-        }
-        cachedById.set(parsed.id, parsed)
-        parsedWrapIds.add(outcome.wrapId)
-      } catch {
-        decryptFailures.push({ wrapId: outcome.wrapId, reason: "malformed" })
+    const [currentResult, legacyResult] = await Promise.allSettled([
+      syncPrivateMessageInbox(principalPubkey, signer),
+      syncLegacyDms(principalPubkey, signer),
+    ])
+    if (
+      currentResult.status === "rejected" &&
+      legacyResult.status === "rejected" &&
+      cachedById.size === 0
+    ) {
+      throw currentResult.reason
+    }
+    const current =
+      currentResult.status === "fulfilled"
+        ? currentResult.value
+        : { directMessages: [], decryptFailures: [] }
+    const legacy =
+      legacyResult.status === "fulfilled"
+        ? legacyResult.value
+        : { directMessages: [], decryptFailures: [] }
+    for (const parsed of [
+      ...current.directMessages,
+      ...legacy.directMessages,
+    ]) {
+      const isNew = !cachedById.has(parsed.id)
+      cachedById.set(parsed.id, parsed)
+      if (isNew && parsed.senderPubkey !== principalPubkey) {
+        unreadMessageIds.add(parsed.id)
       }
     }
-
-    if (newRows.length > 0) {
-      await storeCachedDirectMessages(newRows)
-    }
-
-    for (const id of parsedWrapIds) knownWrapIds.add(id)
 
     const messages = Array.from(cachedById.values()).sort(
       (a, b) => a.createdAt - b.createdAt
     )
-    return { messages, source: "commerce", stale: false, decryptFailures }
+    return {
+      messages,
+      unreadMessageIds,
+      source: "commerce",
+      stale:
+        currentResult.status === "rejected" ||
+        legacyResult.status === "rejected",
+      decryptFailures: current.decryptFailures,
+      legacyDecryptFailures: legacy.decryptFailures,
+    }
   } catch (error) {
     if (cachedById.size > 0) {
       const messages = Array.from(cachedById.values()).sort(
@@ -2829,9 +3135,11 @@ async function fetchParsedDirectMessages(
       )
       return {
         messages,
+        unreadMessageIds,
         source: "local_cache",
         stale: true,
         decryptFailures: [],
+        legacyDecryptFailures: [],
       }
     }
     throw error
@@ -2952,6 +3260,9 @@ function buildBuyerConversationSummaries(
       preview: getConversationPreview(latest),
       messageCount: bucket.length,
       messages: bucket,
+      context: bucket.some((message) => message.type === "order")
+        ? "complete"
+        : "missing_order",
     })
   }
 
@@ -3012,6 +3323,9 @@ function buildMerchantConversationSummaries(
       preview: getConversationPreview(latest),
       messageCount: bucket.length,
       messages: bucket,
+      context: bucket.some((message) => message.type === "order")
+        ? "complete"
+        : "missing_order",
     })
   }
 
@@ -3022,15 +3336,18 @@ function buildMerchantConversationSummaries(
 export async function getBuyerConversationList(
   query: ConversationListQuery
 ): Promise<CommerceResult<BuyerConversationSummary[]>> {
-  const result = await fetchParsedOrderMessages(
-    query.principalPubkey,
-    query.limit ?? 200
-  )
+  const result = await fetchParsedOrderMessages(query.principalPubkey, 400)
   return {
     data: buildBuyerConversationSummaries(
       result.messages,
       query.principalPubkey
-    ),
+    )
+      .filter(
+        (conversation) =>
+          !query.counterpartyPubkey ||
+          conversation.merchantPubkey === query.counterpartyPubkey
+      )
+      .slice(0, query.limit ?? 200),
     meta: createMeta(
       "protected_conversation_list",
       result.source,
@@ -3053,16 +3370,24 @@ export async function getCachedBuyerConversationList(
       }
     })
     .sort((a, b) => a.createdAt - b.createdAt)
-  const limited =
-    query.limit && query.limit > 0 ? messages.slice(-query.limit) : messages
+  const conversations = buildBuyerConversationSummaries(
+    messages,
+    query.principalPubkey
+  )
+    .filter(
+      (conversation) =>
+        !query.counterpartyPubkey ||
+        conversation.merchantPubkey === query.counterpartyPubkey
+    )
+    .slice(0, query.limit ?? 200)
 
   return {
-    data: buildBuyerConversationSummaries(limited, query.principalPubkey),
+    data: conversations,
     meta: createMeta(
       "protected_conversation_list",
       "local_cache",
       CONVERSATION_CAPABILITIES,
-      { stale: true, degraded: limited.length > 0 }
+      { stale: true, degraded: conversations.length > 0 }
     ),
   }
 }
@@ -3070,15 +3395,18 @@ export async function getCachedBuyerConversationList(
 export async function getMerchantConversationList(
   query: ConversationListQuery
 ): Promise<CommerceResult<MerchantConversationSummary[]>> {
-  const result = await fetchParsedOrderMessages(
-    query.principalPubkey,
-    query.limit ?? 200
-  )
+  const result = await fetchParsedOrderMessages(query.principalPubkey, 400)
   return {
     data: buildMerchantConversationSummaries(
       result.messages,
       query.principalPubkey
-    ),
+    )
+      .filter(
+        (conversation) =>
+          !query.counterpartyPubkey ||
+          conversation.buyerPubkey === query.counterpartyPubkey
+      )
+      .slice(0, query.limit ?? 200),
     meta: createMeta(
       "protected_conversation_list",
       result.source,
@@ -3101,16 +3429,24 @@ export async function getCachedMerchantConversationList(
       }
     })
     .sort((a, b) => a.createdAt - b.createdAt)
-  const limited =
-    query.limit && query.limit > 0 ? messages.slice(-query.limit) : messages
+  const conversations = buildMerchantConversationSummaries(
+    messages,
+    query.principalPubkey
+  )
+    .filter(
+      (conversation) =>
+        !query.counterpartyPubkey ||
+        conversation.buyerPubkey === query.counterpartyPubkey
+    )
+    .slice(0, query.limit ?? 200)
 
   return {
-    data: buildMerchantConversationSummaries(limited, query.principalPubkey),
+    data: conversations,
     meta: createMeta(
       "protected_conversation_list",
       "local_cache",
       CONVERSATION_CAPABILITIES,
-      { stale: true, degraded: limited.length > 0 }
+      { stale: true, degraded: conversations.length > 0 }
     ),
   }
 }
@@ -3136,8 +3472,9 @@ export async function getConversationDetail(
 // --- General direct messages (kind 14), threaded by counterparty pubkey ---
 
 export interface DirectConversationSummary {
-  /** Counterparty pubkey; also the thread id. */
+  /** Transport-qualified thread id. */
   id: string
+  transport: ParsedDirectMessage["transport"]
   counterpartyPubkey: string
   latestAt: number
   preview: string
@@ -3149,11 +3486,13 @@ export interface DirectConversationSummary {
 export interface DirectMessageThreadQuery {
   principalPubkey: string
   counterpartyPubkey: string
+  transport: ParsedDirectMessage["transport"]
   limit?: number
 }
 
 export interface DirectMessageThread {
   counterpartyPubkey: string
+  transport: ParsedDirectMessage["transport"]
   messages: ParsedDirectMessage[]
 }
 
@@ -3168,30 +3507,36 @@ function counterpartyOf(
 
 function buildDirectConversationSummaries(
   messages: ParsedDirectMessage[],
-  principalPubkey: string
+  principalPubkey: string,
+  unreadMessageIds: ReadonlySet<string>
 ): DirectConversationSummary[] {
   const grouped = new Map<string, ParsedDirectMessage[]>()
   for (const message of messages) {
     const counterparty = counterpartyOf(message, principalPubkey)
     if (!counterparty) continue
-    const bucket = grouped.get(counterparty) ?? []
+    const threadId = `${message.transport}:${counterparty}`
+    const bucket = grouped.get(threadId) ?? []
     bucket.push(message)
-    grouped.set(counterparty, bucket)
+    grouped.set(threadId, bucket)
   }
 
   const conversations: DirectConversationSummary[] = []
-  for (const [counterpartyPubkey, bucket] of grouped.entries()) {
+  for (const [id, bucket] of grouped.entries()) {
     bucket.sort((a, b) => a.createdAt - b.createdAt)
     const latest = bucket[bucket.length - 1]
     if (!latest) continue
+    const counterpartyPubkey = counterpartyOf(latest, principalPubkey)
     conversations.push({
-      id: counterpartyPubkey,
+      id,
+      transport: latest.transport,
       counterpartyPubkey,
       latestAt: latest.createdAt,
       preview: latest.content.slice(0, 140),
       messageCount: bucket.length,
       unreadFromCounterparty: bucket.filter(
-        (message) => message.senderPubkey === counterpartyPubkey
+        (message) =>
+          message.senderPubkey === counterpartyPubkey &&
+          unreadMessageIds.has(message.id)
       ).length,
       messages: bucket,
     })
@@ -3211,13 +3556,18 @@ export async function getDirectMessageConversationList(
   return {
     data: buildDirectConversationSummaries(
       result.messages,
-      query.principalPubkey
+      query.principalPubkey,
+      result.unreadMessageIds
     ),
     meta: createMeta(
       "protected_conversation_list",
       result.source,
       CONVERSATION_CAPABILITIES,
-      { stale: result.stale, decryptFailures: result.decryptFailures }
+      {
+        stale: result.stale,
+        decryptFailures: result.decryptFailures,
+        legacyDecryptFailures: result.legacyDecryptFailures,
+      }
     ),
   }
 }
@@ -3229,10 +3579,17 @@ export async function getCachedDirectMessageConversationList(
   const messages = cached
     .map(parseCachedDirectMessage)
     .sort((a, b) => a.createdAt - b.createdAt)
+  const unreadMessageIds = new Set(
+    cached.filter((row) => row.read === 0).map((row) => row.id)
+  )
   const limited =
     query.limit && query.limit > 0 ? messages.slice(-query.limit) : messages
   return {
-    data: buildDirectConversationSummaries(limited, query.principalPubkey),
+    data: buildDirectConversationSummaries(
+      limited,
+      query.principalPubkey,
+      unreadMessageIds
+    ),
     meta: createMeta(
       "protected_conversation_list",
       "local_cache",
@@ -3252,18 +3609,26 @@ export async function getDirectMessageThread(
   const messages = result.messages.filter(
     (message) =>
       counterpartyOf(message, query.principalPubkey) ===
-      query.counterpartyPubkey
+        query.counterpartyPubkey && message.transport === query.transport
   )
   return {
     data:
       messages.length > 0
-        ? { counterpartyPubkey: query.counterpartyPubkey, messages }
+        ? {
+            counterpartyPubkey: query.counterpartyPubkey,
+            transport: query.transport,
+            messages,
+          }
         : null,
     meta: createMeta(
       "conversation_detail",
       result.source,
       CONVERSATION_CAPABILITIES,
-      { stale: result.stale, decryptFailures: result.decryptFailures }
+      {
+        stale: result.stale,
+        decryptFailures: result.decryptFailures,
+        legacyDecryptFailures: result.legacyDecryptFailures,
+      }
     ),
   }
 }
@@ -3273,4 +3638,32 @@ export async function cacheParsedDirectMessage(
   message: ParsedDirectMessage
 ): Promise<void> {
   await storeCachedDirectMessages([cachedDirectMessageRow(message)])
+}
+
+export async function markDirectMessageConversationRead(input: {
+  principalPubkey: string
+  counterpartyPubkey: string
+  transport?: ParsedDirectMessage["transport"]
+}): Promise<number> {
+  if (testOverrides.markDirectMessagesRead) {
+    return await testOverrides.markDirectMessagesRead(
+      input.principalPubkey,
+      input.counterpartyPubkey,
+      input.transport
+    )
+  }
+
+  return await db.messages
+    .where("recipientPubkey")
+    .equals(input.principalPubkey)
+    .filter(
+      (row) =>
+        row.kind ===
+          (input.transport === "nip04"
+            ? EVENT_KINDS.DM_LEGACY
+            : EVENT_KINDS.DIRECT_MESSAGE) &&
+        row.senderPubkey === input.counterpartyPubkey &&
+        row.read === 0
+    )
+    .modify({ read: 1 })
 }

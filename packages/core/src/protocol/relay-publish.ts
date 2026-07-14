@@ -47,6 +47,11 @@ export interface PublishWithPlannerInput {
    * URLs only; insecure hints are dropped.
    */
   extraRelayUrls?: readonly string[]
+  /**
+   * Publish only to these relays. This bypasses NIP-65 planning and fallback
+   * fanout for protocols such as NIP-17 that define an exclusive relay set.
+   */
+  exclusiveRelayUrls?: readonly string[]
   /** Fetch missing NIP-65 hints before planning instead of cache-only lookup. */
   refreshRelayLists?: boolean
   /**
@@ -417,6 +422,24 @@ async function publishToRelayUrls(input: {
 export async function planPublishRelays(
   input: PublishWithPlannerInput
 ): Promise<RelayWritePlan> {
+  if (input.exclusiveRelayUrls) {
+    const primaryRelayUrls = Array.from(
+      new Set(
+        input.exclusiveRelayUrls
+          .map((url) => tryNormalizeRelayUrl(url))
+          .flatMap((result) =>
+            result.ok && !isInsecureRelayUrl(result.url) ? [result.url] : []
+          )
+      )
+    )
+    return {
+      intent: input.intent,
+      primaryRelayUrls,
+      broadcastRelayUrls: [],
+      parkedRelayUrls: [],
+    }
+  }
+
   const hintPubkeys = Array.from(
     new Set(
       [
@@ -469,12 +492,14 @@ export async function publishWithPlanner(
   }
   assertSafeReplaceablePublish(event, input.replaceableSafety)
 
-  const basePlan = testOverrides.planPublishRelays
-    ? await testOverrides.planPublishRelays(input)
-    : await planPublishRelays(input)
-  const extraPrimaryRelayUrls = (input.extraRelayUrls ?? []).filter(
-    (url) => !isInsecureRelayUrl(url)
-  )
+  const basePlan = input.exclusiveRelayUrls
+    ? await planPublishRelays(input)
+    : testOverrides.planPublishRelays
+      ? await testOverrides.planPublishRelays(input)
+      : await planPublishRelays(input)
+  const extraPrimaryRelayUrls = input.exclusiveRelayUrls
+    ? []
+    : (input.extraRelayUrls ?? []).filter((url) => !isInsecureRelayUrl(url))
   const plan =
     extraPrimaryRelayUrls.length > 0
       ? {
@@ -491,6 +516,11 @@ export async function publishWithPlanner(
   let attemptedRelayUrls = [...plannedRelayUrls]
 
   if (plannedRelayUrls.length === 0) {
+    if (input.exclusiveRelayUrls) {
+      throw new Error(
+        "Refusing to publish without a valid exclusive relay target."
+      )
+    }
     const fallbackRelayUrls = getAuthorEventFallbackRelayUrls({
       eventKind: event.kind,
       intent: input.intent,
@@ -608,6 +638,22 @@ export async function publishWithPlanner(
     const retrySuccessfulRelayUrls = mergeUnique(
       retryResults.map((result) => result.successfulRelayUrls)
     )
+
+    if (input.exclusiveRelayUrls) {
+      const merged = mergePublishResults(retryResults)
+      throw createPublishDiagnosticsError({
+        message: "Could not publish to the required exclusive relay set.",
+        plan,
+        attemptedRelayUrls: mergeUnique([
+          attemptedRelayUrls,
+          retryFailedRelayUrls,
+        ]),
+        successfulRelayUrls: merged.successfulRelayUrls,
+        failedRelayUrls: merged.failedRelayUrls,
+        relayFailureMessages: merged.relayFailureMessages,
+        thrown: retry?.thrown ?? primary.thrown,
+      })
+    }
 
     if (
       fallbackRelayUrls.length > 0 ||
