@@ -8,6 +8,10 @@ import {
   type PricingRateInput,
 } from "../pricing"
 import { normalizePubkey } from "../utils"
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./anon-zap-checkout"
 import { EVENT_KINDS } from "./kinds"
 import { fetchEventsFanout, getEventSourceRelayUrls } from "./ndk"
 
@@ -716,41 +720,113 @@ export function parseOmfZapoutReceipt(
   }
 }
 
+function toSignedPublicNostrEvent(
+  value: unknown
+): SignedPublicNostrEvent | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const candidate = value as Record<string, unknown> & {
+    rawEvent?: () => unknown
+  }
+  const raw =
+    typeof candidate.rawEvent === "function" ? candidate.rawEvent() : candidate
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
+  const event = raw as Record<string, unknown>
+  if (
+    typeof event.id !== "string" ||
+    typeof event.pubkey !== "string" ||
+    typeof event.created_at !== "number" ||
+    typeof event.kind !== "number" ||
+    typeof event.content !== "string" ||
+    typeof event.sig !== "string" ||
+    !Array.isArray(event.tags) ||
+    !event.tags.every(
+      (tag) =>
+        Array.isArray(tag) && tag.every((entry) => typeof entry === "string")
+    )
+  ) {
+    return null
+  }
+  return event as SignedPublicNostrEvent
+}
+
 export function validateZapReceiptEvent({
   event,
   zapRequestId,
+  requestCreatedAt,
+  recipientPubkey,
   expectedAmountMsats,
   expectedLnurl,
+  expectedInvoice,
   lnurlNostrPubkey,
+  receiptNotAfterSeconds,
 }: {
-  event: Pick<NDKEvent, "id" | "kind" | "pubkey" | "tags">
+  event: Pick<
+    NDKEvent,
+    "id" | "kind" | "pubkey" | "created_at" | "content" | "tags" | "sig"
+  > & { rawEvent?: () => unknown }
   zapRequestId: string
+  requestCreatedAt: number
+  recipientPubkey: string
   expectedAmountMsats: number
-  expectedLnurl?: string
-  lnurlNostrPubkey?: string
+  expectedLnurl: string
+  expectedInvoice: string
+  lnurlNostrPubkey: string
+  receiptNotAfterSeconds?: number
 }): boolean {
-  if (event.kind !== EVENT_KINDS.ZAP_RECEIPT) return false
-  if (lnurlNostrPubkey && event.pubkey !== lnurlNostrPubkey) return false
+  const signedReceipt = toSignedPublicNostrEvent(event)
+  if (
+    !signedReceipt ||
+    !isValidSignedPublicNostrEvent(signedReceipt) ||
+    signedReceipt.kind !== EVENT_KINDS.ZAP_RECEIPT ||
+    normalizePubkey(signedReceipt.pubkey) !== normalizePubkey(lnurlNostrPubkey)
+  ) {
+    return false
+  }
+  if (
+    signedReceipt.created_at < requestCreatedAt - 5 ||
+    (receiptNotAfterSeconds !== undefined &&
+      signedReceipt.created_at > receiptNotAfterSeconds)
+  ) {
+    return false
+  }
 
-  const description = getTagValue(event.tags ?? [], "description")
+  const description = getTagValue(signedReceipt.tags, "description")
   if (!description) return false
 
   const zapRequest = parseZapReceiptDescription(description)
-  if (zapRequest?.id !== zapRequestId) return false
+  const signedRequest = toSignedPublicNostrEvent(zapRequest)
+  if (
+    !signedRequest ||
+    !isValidSignedPublicNostrEvent(signedRequest) ||
+    signedRequest.kind !== EVENT_KINDS.ZAP_REQUEST ||
+    signedRequest.id !== zapRequestId ||
+    signedRequest.created_at !== requestCreatedAt
+  ) {
+    return false
+  }
 
-  const requestTags = getZapRequestTags(zapRequest)
+  const requestTags = signedRequest.tags
+  if (
+    normalizePubkey(getTagValue(requestTags, "p")) !==
+      normalizePubkey(recipientPubkey) ||
+    normalizePubkey(getTagValue(signedReceipt.tags, "p")) !==
+      normalizePubkey(recipientPubkey)
+  ) {
+    return false
+  }
   const amountTag = getTagValue(requestTags, "amount")
-  if (amountTag && Number(amountTag) !== expectedAmountMsats) return false
+  if (Number(amountTag) !== expectedAmountMsats) return false
 
   const lnurlTag = getTagValue(requestTags, "lnurl")
-  if (expectedLnurl && lnurlTag && lnurlTag !== expectedLnurl) return false
+  if (lnurlTag !== expectedLnurl) return false
 
-  const bolt11 = getTagValue(event.tags ?? [], "bolt11")
-  if (bolt11) {
-    const decoded = decodeLightningInvoiceAmount(bolt11)
-    if (decoded.msats !== null && decoded.msats !== expectedAmountMsats) {
-      return false
-    }
+  const bolt11 = getTagValue(signedReceipt.tags, "bolt11")
+  if (
+    !bolt11 ||
+    normalizeLightningInvoice(bolt11).toLowerCase() !==
+      normalizeLightningInvoice(expectedInvoice).toLowerCase()
+  ) {
+    return false
   }
 
   return true
@@ -758,29 +834,39 @@ export function validateZapReceiptEvent({
 
 export async function waitForZapReceipt({
   zapRequestId,
+  requestCreatedAt,
   recipientPubkey,
   expectedAmountMsats,
   expectedLnurl,
+  expectedInvoice,
   lnurlNostrPubkey,
   relayUrls,
+  receiptNotAfterSeconds,
   timeoutMs = 5_000,
 }: {
   zapRequestId: string
+  requestCreatedAt: number
   recipientPubkey: string
   expectedAmountMsats: number
-  expectedLnurl?: string
-  lnurlNostrPubkey?: string
+  expectedLnurl: string
+  expectedInvoice: string
+  lnurlNostrPubkey: string
   relayUrls: string[]
+  receiptNotAfterSeconds?: number
   timeoutMs?: number
 }): Promise<NDKEvent | null> {
   const startedAt = Date.now()
+  const stopAt = startedAt + Math.max(0, timeoutMs)
 
-  while (Date.now() - startedAt < timeoutMs) {
+  do {
     const events = (await fetchEventsFanout(
       {
         kinds: [EVENT_KINDS.ZAP_RECEIPT],
         "#p": [recipientPubkey],
-        since: Math.floor((startedAt - 5_000) / 1000),
+        since: Math.max(0, requestCreatedAt - 5),
+        ...(receiptNotAfterSeconds !== undefined
+          ? { until: receiptNotAfterSeconds }
+          : {}),
       },
       {
         relayUrls,
@@ -793,15 +879,24 @@ export async function waitForZapReceipt({
       validateZapReceiptEvent({
         event,
         zapRequestId,
+        requestCreatedAt,
+        recipientPubkey,
         expectedAmountMsats,
         expectedLnurl,
+        expectedInvoice,
         lnurlNostrPubkey,
+        receiptNotAfterSeconds,
       })
     )
     if (receipt) return receipt
 
-    await new Promise((resolve) => setTimeout(resolve, 800))
-  }
+    const remainingMs = stopAt - Date.now()
+    if (remainingMs > 0) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(800, remainingMs))
+      )
+    }
+  } while (Date.now() < stopAt)
 
   return null
 }

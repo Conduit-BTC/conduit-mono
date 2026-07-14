@@ -344,6 +344,20 @@ function constantTimeEquals(left: string, right: string): boolean {
   return mismatch === 0
 }
 
+function isValidRequestAuthSecret(secret: string): boolean {
+  if (/^(?:[0-9a-f]{2}){32,}$/i.test(secret)) return true
+  if (!/^[A-Za-z0-9_-]{43,}$/.test(secret)) return false
+  try {
+    const padded = secret
+      .replace(/-/g, "+")
+      .replace(/_/g, "/")
+      .padEnd(Math.ceil(secret.length / 4) * 4, "=")
+    return atob(padded).length >= 32
+  } catch {
+    return false
+  }
+}
+
 async function createRequestSignature(
   secret: string,
   timestamp: string,
@@ -371,8 +385,10 @@ async function assertAuthenticatedRequest(
   env: AnonZapSignerEnv
 ): Promise<void> {
   const secret = env.ANON_SIGNER_REQUEST_AUTH_SECRET?.trim()
-  if (!secret) {
-    throw new Error("Anon signer request auth is not configured.")
+  if (!secret || !isValidRequestAuthSecret(secret)) {
+    throw new Error(
+      "Anon signer request auth is not configured with a valid 256-bit secret."
+    )
   }
 
   const timestamp = request.headers.get(AUTH_TIMESTAMP_HEADER)?.trim()
@@ -520,6 +536,10 @@ export async function handleAnonZapSignerRequest(
     )
   } catch (error) {
     const message = error instanceof Error ? error.message : "Signing failed."
-    return errorResponse(message, 400, corsHeaders)
+    return errorResponse(
+      message,
+      /not configured/i.test(message) ? 503 : 400,
+      corsHeaders
+    )
   }
 }

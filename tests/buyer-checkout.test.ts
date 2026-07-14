@@ -1199,6 +1199,8 @@ describe("checkout payment helpers", () => {
         "wss://public.example",
       ],
       zapRequestId: "zap-request-id",
+      zapRequestCreatedAt: 123,
+      expectedLnurl: "lnurl1test",
       shouldWaitForZapReceipt: true,
     })
     expect(signZapRequest).toHaveBeenCalledTimes(1)

@@ -228,11 +228,12 @@ export function buildPaymentProofRumor(params: {
   amountSats: number
   currency: string
   content: string
+  createdAt?: number
 }): NDKEvent {
   const ndk = getNdk()
   const rumor = new NDKEvent(ndk)
   rumor.kind = EVENT_KINDS.ORDER
-  rumor.created_at = Math.floor(Date.now() / 1000)
+  rumor.created_at = params.createdAt ?? Math.floor(Date.now() / 1000)
   rumor.tags = appendConduitClientTag(
     [
       ["p", params.merchantPubkey],

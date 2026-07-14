@@ -804,12 +804,21 @@ export function getLnurlReadyForCheckoutPayment(params: {
 
 export type CheckoutZapRequestDraft = AnonZapRequestDraft
 
-export type SignedCheckoutZapRequest = SignedAnonZapRequest
+export type SignedCheckoutZapRequest = SignedAnonZapRequest & {
+  requestCreatedAt?: number
+  lnurlCallback?: string
+  lnurl?: string
+  lnurlNostrPubkey?: string
+  relayUrls?: string[]
+}
 
 export type CheckoutInvoiceRequestResult = {
   invoice: string
   zapRelayUrls: string[]
   zapRequestId?: string
+  zapRequestCreatedAt?: number
+  expectedLnurl?: string
+  lnurlNostrPubkey?: string
   shouldWaitForZapReceipt: boolean
 }
 
@@ -892,17 +901,27 @@ export async function requestCheckoutLnurlInvoice(
     ),
   }
   const signed = await dependencies.signZapRequest(draft)
+  const signedCallback = signed.lnurlCallback ?? params.lnurlCallback
+  const signedLnurl = signed.lnurl ?? params.lnurl
+  const receiptRelayUrls = signed.relayUrls ?? zapRelayUrls
   const result: FetchZapInvoiceResult = await dependencies.fetchZapInvoice(
-    params.lnurlCallback,
+    signedCallback,
     params.amountMsats,
     JSON.stringify(signed.rawEvent),
-    params.lnurl
+    signedLnurl
   )
 
   return {
     invoice: result.invoice,
-    zapRelayUrls,
+    zapRelayUrls: receiptRelayUrls,
     zapRequestId: signed.id,
+    expectedLnurl: signedLnurl,
+    ...(signed.requestCreatedAt !== undefined
+      ? { zapRequestCreatedAt: signed.requestCreatedAt }
+      : { zapRequestCreatedAt: draft.createdAt }),
+    ...(signed.lnurlNostrPubkey
+      ? { lnurlNostrPubkey: signed.lnurlNostrPubkey }
+      : {}),
     shouldWaitForZapReceipt: true,
   }
 }

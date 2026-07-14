@@ -251,7 +251,11 @@ export type OrderProofDeliveryStatus =
   "not_started" | "pending" | "sent" | "retry_needed" | "failed"
 
 export type OrderZapReceiptStatus =
-  "not_applicable" | "waiting" | "observed" | "timed_out"
+  | "not_applicable"
+  | "waiting"
+  | "observed"
+  | "receipt_not_observed"
+  | "timed_out"
 
 /** Coarse bucket used for Orders list filtering (All/Pending/In progress/...). */
 export type OrderLifecyclePhase =
@@ -294,6 +298,8 @@ export interface OrderLifecycle {
   merchantPubkey: string
   checkoutMode: OrderCheckoutMode
   publicZapSigner?: OrderPublicZapSigner
+  /** A public anon-zap attempt failed before invoice issuance and continued privately. */
+  publicZapFallback?: boolean
   merchantLightningAddress?: string
 
   items: OrderLifecycleItem[]
@@ -342,7 +348,13 @@ export interface OrderLifecycle {
   preimage?: string
   feeMsats?: number
   zapRequestId?: string
+  zapRequestCreatedAt?: number
   zapReceiptId?: string
+  zapReceiptRelayUrls?: string[]
+  zapLnurl?: string
+  zapReceiptPubkey?: string
+  invoiceExpiresAt?: number
+  zapReceiptObservationDeadline?: number
 
   /** Coarse bucket derived from the status fields above for list filtering. */
   phase: OrderLifecyclePhase
