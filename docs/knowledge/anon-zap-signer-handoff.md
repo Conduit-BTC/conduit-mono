@@ -4,6 +4,11 @@ This note is the public-safe implementation handoff for the Anon Conduit
 Shopper signer boundary. It does not contain production keys, private
 deployment records, dashboard links, or operator-only runbooks.
 
+This note is subordinate to the normative signer exception in
+`docs/specs/protocol.md`. It records the runtime and request contract needed to
+operate that exception; it does not widen the events, identities, or checkout
+flows the signer may authorize.
+
 ## Scope
 
 The signer exists only to sign validated NIP-57 zap request drafts as the
@@ -40,9 +45,10 @@ Market browser config:
   signing, usually a Pages route such as `/api/anon-zap-sign`. This must not be
   the raw Worker endpoint when Worker auth headers or shared secrets are needed.
 - `VITE_ANON_ZAP_SIGNER_PUBKEY`: public Anon Conduit Shopper identity value
-  used by client-side receipt and signer-readiness logic. Prefer the derived
-  64-character hex pubkey when the caller validates event authors directly; an
-  `npub` is acceptable only where the caller explicitly normalizes it.
+  that will be used by client-side receipt and signer-readiness logic after the
+  dependent checkout integration lands. Prefer the derived 64-character hex
+  pubkey when the caller validates event authors directly; an `npub` is
+  acceptable only where the caller explicitly normalizes it.
 
 Current public handoff values:
 
@@ -73,7 +79,8 @@ anonymous checkout zaps.
 
 - `ANON_ZAP_SIGNER_URL`: server-side URL for the signer Worker.
 - `ANON_SIGNER_REQUEST_AUTH_SECRET`: server-side HMAC secret shared only between
-  the trusted Market server boundary and signer Worker.
+  the trusted Market server boundary and signer Worker. See Secret Lifecycle
+  below.
 - `ANON_ZAP_COMMERCE_RELAYS`: optional comma-separated relay override used to
   resolve the current signed merchant profile and product listings. When unset,
   Market uses its canonical commerce relays.
@@ -91,7 +98,7 @@ Signer Worker config:
   only as deployment secrets.
 - `ANON_CONDUIT_SHOPPER_PUBKEY`: expected public identity pubkey or `npub`.
 - `ANON_SIGNER_REQUEST_AUTH_SECRET`: same server-to-server HMAC secret used by
-  the trusted Market boundary.
+  the trusted Market boundary. See Secret Lifecycle below.
 - `ANON_SIGNER_ALLOWED_ORIGINS`: browser origins allowed by Worker CORS. CORS is
   not authentication; request signing is still required.
 - `ANON_SIGNER_RATE_LIMITER`: Cloudflare rate-limit binding. The Worker fails
@@ -106,6 +113,22 @@ Signer Worker config:
 Local-only signer config:
 
 - `ANON_SIGNER_PORT`: local signer port, defaulting to `7010`.
+
+### Secret Lifecycle
+
+`ANON_SIGNER_REQUEST_AUTH_SECRET` is an authorization credential, not ordinary
+configuration. Generate at least 32 cryptographically random bytes and encode
+them as hex or base64url; both runtimes must use the exact encoded text as the
+HMAC key. Production, preview, CI, and local environments must use different
+values. Never copy the production value into a preview or developer runtime.
+
+The current Worker accepts one active request-auth secret and does not support
+an overlap window. Rotation is therefore fail-closed: disable anonymous public
+signing, update both server runtimes, verify an authenticated request, then
+re-enable the route. Checkout must use its private-payment fallback while the
+signer is disabled. Removing the secret from either runtime is the emergency
+revocation path; missing request authentication must never fall back to an
+unauthenticated Worker call.
 
 ## Signer Request Contract
 
@@ -130,7 +153,7 @@ Worker request:
     ]
   },
   "authorization": {
-    "checkoutSessionId": "<opaque idempotency/session key>",
+    "checkoutSessionId": "<opaque retry/rate-limit key>",
     "merchantPubkey": "<merchant hex pubkey>",
     "amountMsats": 1000,
     "lnurl": "<merchant lnurl>",
@@ -139,10 +162,12 @@ Worker request:
 }
 ```
 
-`checkoutSessionId` is a bounded idempotency and rate-limit key derived by the
-trusted Market boundary from canonical public checkout fields. It does not
-identify an order and does not require server-side storage of order, contact,
-shipping, invoice, note, wallet, or session data.
+`checkoutSessionId` is a server-minted, nonce-bound key used only to group
+signing retries into one rate-limit bucket. It must contain at least 128 bits of
+cryptographic randomness and must not be derived solely from public checkout
+fields. It is not an idempotency key: the Worker stores no replay result and
+does not deduplicate requests. It does not identify an order and must not encode
+order, contact, shipping, invoice, note, wallet, or browser-session data.
 
 Required headers:
 
@@ -199,6 +224,8 @@ Before enabling the dependent checkout integration:
 - production signer Worker has secret bindings and rate limiting configured
 - production and preview allowed origins are confirmed
 - Market server boundary has a signer Worker URL and request-auth secret
+- request-auth secrets meet the entropy, environment-separation, rotation, and
+  emergency-revocation requirements above
 - dev/test throwaway identity strategy is documented for local and CI use
 - no production private key material appears in tracked files, issue text,
   comments, screenshots, logs, or test fixtures
@@ -210,6 +237,14 @@ For this signer boundary, use focused tests before broader checkout QA:
 ```bash
 bun test tests/anon-zap-signer-service.test.ts tests/anon-zap-pages-function.test.ts tests/anon-zap-signer.test.ts
 ```
+
+Deployment evidence must record a UTC timestamp, target environment, status
+code, and secret-free command shape for each check. At minimum, confirm that a
+raw Worker request without HMAC is rejected, the Market Pages endpoints remain
+fail closed until trusted checkout authorization is deployed, disallowed
+origins are rejected, and the configured rate limiter returns a bounded retry
+response. Do not include request signatures, secret values, checkout payloads,
+or private deployment links in the evidence.
 
 Run formatting checks for docs/env-only changes:
 
