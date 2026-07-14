@@ -235,7 +235,11 @@ function getAuthTtlSeconds(env: AnonZapPagesEnv): number {
 
 function getSharedSecret(env: AnonZapPagesEnv): string {
   const secret = env.ANON_SIGNER_REQUEST_AUTH_SECRET?.trim()
-  if (!secret) throw new Error("Anon zap authorization is not configured.")
+  if (!secret || !isValidRequestAuthSecret(secret)) {
+    throw new Error(
+      "Anon zap authorization is not configured with a valid 256-bit secret."
+    )
+  }
   return secret
 }
 
@@ -294,10 +298,18 @@ async function hmacSha256(secret: string, value: string): Promise<Uint8Array> {
   )
 }
 
-async function sha256Hex(value: string): Promise<string> {
-  return bytesToHex(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))
-  )
+function isValidRequestAuthSecret(secret: string): boolean {
+  if (/^(?:[0-9a-f]{2}){32,}$/i.test(secret)) return true
+  if (!/^[A-Za-z0-9_-]{43,}$/.test(secret)) return false
+  try {
+    return base64UrlToBytes(secret).byteLength >= 32
+  } catch {
+    return false
+  }
+}
+
+function createCheckoutSessionId(): string {
+  return bytesToHex(crypto.getRandomValues(new Uint8Array(32)))
 }
 
 function constantTimeEquals(left: Uint8Array, right: Uint8Array): boolean {
@@ -492,12 +504,7 @@ export async function authorizeAnonZapRequest(
       receiptRelayUrls: receiptRelays,
       nowSeconds,
     })
-    const checkoutSessionId = await sha256Hex(
-      JSON.stringify({
-        draft: checkout.draft,
-        authorization: checkout.authorization,
-      })
-    )
+    const checkoutSessionId = createCheckoutSessionId()
     const payload: AnonZapAuthorizationTokenPayload = {
       version: 1,
       expiresAt: nowSeconds + getAuthTtlSeconds(env),

@@ -158,6 +158,21 @@ describe("anonymous public zap checkout authorization", () => {
         ],
       })
     ).toBeNull()
+
+    for (const dTag of ["bad\nvalue", "x".repeat(129)]) {
+      expect(
+        parseAnonZapCheckoutIntent({
+          merchantPubkey: MERCHANT_PUBKEY,
+          amountMsats: 10_000,
+          items: [
+            {
+              productAddress: `30402:${MERCHANT_PUBKEY}:${dTag}`,
+              quantity: 1,
+            },
+          ],
+        })
+      ).toBeNull()
+    }
   })
 
   it("builds a server-owned generic request from signed public state", () => {

@@ -1,5 +1,6 @@
-import { schnorr } from "@noble/curves/secp256k1"
-import { sha256 } from "@noble/hashes/sha256"
+import { schnorr } from "@noble/curves/secp256k1.js"
+import { hexToBytes } from "@noble/curves/utils.js"
+import { sha256 } from "@noble/hashes/sha2.js"
 
 import type { LnurlPayMetadata } from "./lightning"
 import { EVENT_KINDS } from "./kinds"
@@ -92,7 +93,11 @@ export function isValidSignedPublicNostrEvent(
       return false
     }
     if (computeEventId(event) !== event.id.toLowerCase()) return false
-    return schnorr.verify(event.sig, event.id, event.pubkey)
+    return schnorr.verify(
+      hexToBytes(event.sig),
+      hexToBytes(event.id),
+      hexToBytes(event.pubkey)
+    )
   } catch {
     return false
   }
@@ -114,11 +119,20 @@ function parseProductAddress(value: string): {
   merchantPubkey: string
   dTag: string
 } | null {
-  const match = /^30402:([0-9a-f]{64}):([^\u0000-\u001f\u007f]{1,128})$/i.exec(
-    value
-  )
+  const match = /^30402:([0-9a-f]{64}):/.exec(value)
   if (!match) return null
-  return { merchantPubkey: match[1]!.toLowerCase(), dTag: match[2]! }
+  const dTag = value.slice(match[0].length)
+  if (
+    dTag.length === 0 ||
+    dTag.length > 128 ||
+    Array.from(dTag).some((character) => {
+      const codePoint = character.codePointAt(0)!
+      return codePoint <= 0x1f || codePoint === 0x7f
+    })
+  ) {
+    return null
+  }
+  return { merchantPubkey: match[1]!.toLowerCase(), dTag }
 }
 
 export function parseAnonZapCheckoutIntent(

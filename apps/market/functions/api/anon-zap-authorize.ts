@@ -1,6 +1,7 @@
 import {
   assertAllowedOrigin,
   authorizeAnonZapRequest,
+  jsonResponse,
   optionsResponse,
   type AnonZapPagesFunctionContext,
 } from "../_lib/anon-zap-checkout-auth"

@@ -1,5 +1,6 @@
 import {
   assertAllowedOrigin,
+  jsonResponse,
   optionsResponse,
   signAuthorizedAnonZapRequest,
   type AnonZapPagesFunctionContext,

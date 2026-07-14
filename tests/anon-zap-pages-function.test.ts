@@ -9,10 +9,12 @@ import {
   type AnonZapPagesEnv,
 } from "../apps/market/functions/_lib/anon-zap-checkout-auth"
 import {
+  onRequest as authorizeAnonZapMethod,
   onRequestOptions as authorizeAnonZapOptions,
   onRequestPost as authorizeAnonZap,
 } from "../apps/market/functions/api/anon-zap-authorize"
 import {
+  onRequest as signAnonZapMethod,
   onRequestOptions as signAnonZapOptions,
   onRequestPost as signAnonZap,
 } from "../apps/market/functions/api/anon-zap-sign"
@@ -27,7 +29,7 @@ const RECEIPT_PUBKEY = getPublicKey(RECEIPT_SECRET)
 const NOW_SECONDS = 1_800_000_000
 const PRODUCT_D_TAG = "cnd-150-pages-test"
 const PRODUCT_ADDRESS = `30402:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}`
-const AUTH_SECRET = "test-only anon signer request auth secret"
+const AUTH_SECRET = "11".repeat(32)
 
 type AuthorizationResponse = {
   authorizationToken: string
@@ -264,6 +266,32 @@ describe("Anon zap Pages proxy", () => {
     expect(dependencyCalls).toBe(0)
   })
 
+  it("fails closed on an undersized request-auth secret", async () => {
+    let dependencyCalls = 0
+    const dependencies = createDependencies()
+    const response = await authorizeAnonZapRequest(
+      post(
+        "https://shop.conduit.market/api/anon-zap-authorize",
+        checkoutIntent()
+      ),
+      env({ ANON_SIGNER_REQUEST_AUTH_SECRET: "too-short" }),
+      {
+        ...dependencies,
+        async fetchPublicEvents(filter, relayUrls) {
+          dependencyCalls += 1
+          return dependencies.fetchPublicEvents(filter, relayUrls)
+        },
+      }
+    )
+
+    expect(response.status).toBe(503)
+    await expect(response.json()).resolves.toEqual({
+      error:
+        "Anon zap authorization is not configured with a valid 256-bit secret.",
+    })
+    expect(dependencyCalls).toBe(0)
+  })
+
   it("rejects malformed authorization and signing requests", async () => {
     const authorizeResponse = await authorizeAnonZap({
       request: post("https://shop.conduit.market/api/anon-zap-authorize", {}),
@@ -330,6 +358,15 @@ describe("Anon zap Pages proxy", () => {
       expect(response.headers.get("access-control-allow-origin")).toBe(
         "https://shop.conduit.market"
       )
+    }
+  })
+
+  it("returns JSON 405 responses for unsupported methods", async () => {
+    for (const response of [authorizeAnonZapMethod(), signAnonZapMethod()]) {
+      expect(response.status).toBe(405)
+      await expect(response.json()).resolves.toEqual({
+        error: "Method not allowed.",
+      })
     }
   })
 
@@ -419,6 +456,28 @@ describe("Anon zap Pages proxy", () => {
     })
   })
 
+  it("mints an independent opaque rate-limit key for each authorization", async () => {
+    const dependencies = createDependencies()
+    const first = decodeAuthorizationToken(
+      (await issueAuthorization(dependencies)).authorizationToken
+    )
+    const second = decodeAuthorizationToken(
+      (await issueAuthorization(dependencies)).authorizationToken
+    )
+    const firstAuthorization = first.authorization as {
+      checkoutSessionId: string
+    }
+    const secondAuthorization = second.authorization as {
+      checkoutSessionId: string
+    }
+
+    expect(firstAuthorization.checkoutSessionId).toMatch(/^[0-9a-f]{64}$/)
+    expect(secondAuthorization.checkoutSessionId).toMatch(/^[0-9a-f]{64}$/)
+    expect(firstAuthorization.checkoutSessionId).not.toBe(
+      secondAuthorization.checkoutSessionId
+    )
+  })
+
   it("queries deletions by product address and exact event id", async () => {
     const publicEventFilters: unknown[] = []
     await issueAuthorization(createDependencies({ publicEventFilters }))
@@ -442,7 +501,7 @@ describe("Anon zap Pages proxy", () => {
     })
   })
 
-  it("forwards an authenticated canonical draft and replays idempotently", async () => {
+  it("forwards authenticated retries in one rate-limit bucket", async () => {
     const signerCalls: SignerCall[] = []
     const dependencies = createDependencies({ signerCalls })
     const authorization = await issueAuthorization(dependencies)
