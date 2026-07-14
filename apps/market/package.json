@@ -23,7 +23,7 @@
     "qrcode.react": "^4.2.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "react-hook-form": "^7.80.0",
+    "react-hook-form": "^7.81.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "zod": "^4.4.3"
