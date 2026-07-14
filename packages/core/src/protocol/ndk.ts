@@ -4,7 +4,8 @@ import NDK, {
   type NDKFilter,
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
-import { schnorr } from "@noble/curves/secp256k1"
+import { schnorr } from "@noble/curves/secp256k1.js"
+import { hexToBytes } from "@noble/curves/utils.js"
 import { sha256 } from "@noble/hashes/sha256"
 import { bytesToHex } from "@noble/hashes/utils"
 import { config } from "../config"
@@ -191,7 +192,11 @@ function checkEventId(
 function verifySchnorrSync(items: SchnorrItem[]): boolean[] {
   return items.map((item) => {
     try {
-      return schnorr.verify(item.sig, item.id, item.pubkey)
+      return schnorr.verify(
+        hexToBytes(item.sig),
+        hexToBytes(item.id),
+        hexToBytes(item.pubkey)
+      )
     } catch {
       return false
     }
