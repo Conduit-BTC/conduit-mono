@@ -365,7 +365,8 @@ export function authorizeAnonZapCheckout(input: {
       if (
         typeof product.shippingCostSats !== "number" ||
         !Number.isSafeInteger(product.shippingCostSats) ||
-        product.shippingCostSats < 0
+        product.shippingCostSats < 0 ||
+        (product.shippingCountryRules?.length ?? 0) === 0
       ) {
         throw new Error(
           "Checkout product requires merchant-coordinated shipping."

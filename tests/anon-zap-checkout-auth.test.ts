@@ -38,6 +38,7 @@ function productEvent(
     priceSats?: number
     publicZapPolicy?: "true" | "false" | "unknown"
     shippingCostSats?: number | null
+    shippingCountries?: string[]
     dTag?: string
   } = {}
 ): SignedPublicNostrEvent {
@@ -56,6 +57,10 @@ function productEvent(
   }
   if (shippingCostSats !== undefined && shippingCostSats !== null) {
     tags.push(["shipping_cost", String(shippingCostSats)])
+  }
+  for (const country of overrides.shippingCountries ??
+    (shippingCostSats !== undefined ? ["US"] : [])) {
+    tags.push(["shipping_country", country])
   }
   return signMerchantEvent({
     kind: 30402,
@@ -264,6 +269,16 @@ describe("anonymous public zap checkout authorization", () => {
   it("rejects coordinated shipping", () => {
     expect(() =>
       authorize({ productEvents: [productEvent({ shippingCostSats: null })] })
+    ).toThrow("Checkout product requires merchant-coordinated shipping.")
+  })
+
+  it("rejects fixed physical shipping without a country snapshot", () => {
+    expect(() =>
+      authorize({
+        productEvents: [
+          productEvent({ shippingCostSats: 5, shippingCountries: [] }),
+        ],
+      })
     ).toThrow("Checkout product requires merchant-coordinated shipping.")
   })
 
