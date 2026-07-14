@@ -1,8 +1,8 @@
 import {
   assertAllowedOrigin,
-  getCorsHeaders,
   jsonResponse,
   optionsResponse,
+  signAuthorizedAnonZapRequest,
   type AnonZapPagesFunctionContext,
 } from "../_lib/anon-zap-checkout-auth"
 
@@ -12,13 +12,7 @@ export async function onRequestPost({
 }: AnonZapPagesFunctionContext): Promise<Response> {
   const originError = assertAllowedOrigin(request, env)
   if (originError) return originError
-  const corsHeaders = getCorsHeaders(request, env)
-
-  return jsonResponse(
-    { error: "Anon zap signer requires server-trusted checkout state." },
-    403,
-    corsHeaders
-  )
+  return signAuthorizedAnonZapRequest(request, env)
 }
 
 export function onRequestOptions({

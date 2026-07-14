@@ -53,6 +53,7 @@ export interface OrderViewModel {
   /** prepaid (zap-out) vs invoice (order-first); shared with the merchant. */
   flow: OrderFlow
   publicZapSigner: OrderPublicZapSigner | null
+  publicZapFallback: boolean
   createdAt: number
   updatedAt: number
 
@@ -273,11 +274,13 @@ export function buildOrderViewModel(
             : (lifecycle?.phase ??
               (orderDeliveryStatus === "sent" ? "in_progress" : "pending"))
 
+  const publicReceiptNotObserved =
+    paymentStatus === "ambiguous" && zapReceiptStatus === "receipt_not_observed"
   const actionNeeded =
     (!paymentPaid &&
       (paymentStatus === "manual_required" ||
         paymentStatus === "failed" ||
-        paymentStatus === "ambiguous")) ||
+        (paymentStatus === "ambiguous" && !publicReceiptNotObserved))) ||
     orderDeliveryStatus === "failed" ||
     proofDeliveryStatus === "retry_needed" ||
     proofDeliveryStatus === "failed"
@@ -301,6 +304,7 @@ export function buildOrderViewModel(
     checkoutMode: lifecycle?.checkoutMode ?? null,
     flow,
     publicZapSigner: lifecycle?.publicZapSigner ?? null,
+    publicZapFallback: lifecycle?.publicZapFallback === true,
     createdAt: lifecycle?.createdAt ?? conversation?.latestAt ?? Date.now(),
     updatedAt: lifecycle?.updatedAt ?? conversation?.latestAt ?? Date.now(),
     items,
@@ -612,9 +616,15 @@ export function buildOrderTimeline(vm: OrderViewModel): StatusStepperRow[] {
       vm.paymentStatus === "ambiguous" &&
       !isBuyerOrderPaid(vm)
     ) {
-      title = "Payment needs review"
-      subtitle =
-        "We couldn't confirm this payment moved. Check your wallet, then message the merchant before retrying."
+      if (vm.zapReceiptStatus === "receipt_not_observed") {
+        title = "Payment not confirmed"
+        subtitle =
+          "A matching receipt was not observed. If your wallet shows payment, do not pay again."
+      } else {
+        title = "Payment needs review"
+        subtitle =
+          "We couldn't confirm this payment moved. Check your wallet, then message the merchant before retrying."
+      }
     } else if (
       key === "payment" &&
       status === "complete" &&
@@ -688,6 +698,19 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       primaryLabel: "Payment failed",
       detailLabel: "Try payment again",
       actionNeeded: true,
+      showSpinner: false,
+    }
+  }
+  if (
+    vm.paymentStatus === "ambiguous" &&
+    vm.zapReceiptStatus === "receipt_not_observed" &&
+    !paid
+  ) {
+    return {
+      tone: "warning",
+      primaryLabel: "Payment unclear",
+      detailLabel: "Do not pay again",
+      actionNeeded: false,
       showSpinner: false,
     }
   }

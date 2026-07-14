@@ -4,6 +4,34 @@ const CI = !!process.env.CI
 const marketPort = process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
 const merchantPort = process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"
 const e2eEnv = "VITE_DISABLE_DEVTOOLS=true"
+const smokeArea = process.env.PLAYWRIGHT_SMOKE_AREA ?? "all"
+
+if (!new Set(["all", "market", "merchant"]).has(smokeArea)) {
+  throw new Error(`Unknown Playwright smoke area: ${smokeArea}`)
+}
+
+const webServer = [
+  ...(smokeArea === "all" || smokeArea === "market"
+    ? [
+        {
+          command: `${e2eEnv} bun run --filter @conduit/market dev --mode mock --host 127.0.0.1 --port ${marketPort}`,
+          url: `http://127.0.0.1:${marketPort}/products`,
+          reuseExistingServer: !CI,
+          timeout: 120_000,
+        },
+      ]
+    : []),
+  ...(smokeArea === "all" || smokeArea === "merchant"
+    ? [
+        {
+          command: `${e2eEnv} bun run --filter @conduit/merchant dev --mode mock --host 127.0.0.1 --port ${merchantPort}`,
+          url: `http://127.0.0.1:${merchantPort}/`,
+          reuseExistingServer: !CI,
+          timeout: 120_000,
+        },
+      ]
+    : []),
+]
 
 export default defineConfig({
   testDir: "./e2e",
@@ -23,18 +51,5 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
   ],
-  webServer: [
-    {
-      command: `${e2eEnv} bun run --filter @conduit/market dev --mode mock --host 127.0.0.1 --port ${marketPort}`,
-      url: `http://127.0.0.1:${marketPort}/products`,
-      reuseExistingServer: !CI,
-      timeout: 120_000,
-    },
-    {
-      command: `${e2eEnv} bun run --filter @conduit/merchant dev --mode mock --host 127.0.0.1 --port ${merchantPort}`,
-      url: `http://127.0.0.1:${merchantPort}/`,
-      reuseExistingServer: !CI,
-      timeout: 120_000,
-    },
-  ],
+  webServer,
 })

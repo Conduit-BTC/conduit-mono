@@ -9,7 +9,7 @@ import {
 import type { AnonZapRequestDraft } from "@conduit/core"
 
 const PRIVATE_KEY_HEX = "0".repeat(63) + "1"
-const REQUEST_AUTH_SECRET = "test request auth secret with enough entropy"
+const REQUEST_AUTH_SECRET = "22".repeat(32)
 const MERCHANT_PUBKEY = "b".repeat(64)
 const MARKET_NIP89_PUBKEY = "c".repeat(64)
 const MARKET_NIP89_ADDRESS = `31990:${MARKET_NIP89_PUBKEY}:conduit-market`
@@ -464,6 +464,19 @@ describe("Anon zap signer service", () => {
     expect(response.status).toBe(400)
     await expect(response.json()).resolves.toMatchObject({
       error: "Anon signer request authentication is missing.",
+    })
+  })
+
+  it("fails closed on an undersized request-auth secret", async () => {
+    const response = await handleAnonZapSignerRequest(
+      await postRequest(signingRequestBody()),
+      env({ ANON_SIGNER_REQUEST_AUTH_SECRET: "too-short" })
+    )
+
+    expect(response.status).toBe(503)
+    await expect(response.json()).resolves.toEqual({
+      error:
+        "Anon signer request auth is not configured with a valid 256-bit secret.",
     })
   })
 

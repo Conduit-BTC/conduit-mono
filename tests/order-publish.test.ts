@@ -1,8 +1,31 @@
 import { describe, expect, it } from "bun:test"
 
-import { createBuyerGiftWrapsForDelivery } from "../apps/market/src/lib/order-publish"
+import {
+  buildPaymentProofRumor,
+  createBuyerGiftWrapsForDelivery,
+  prepareBuyerRumor,
+} from "../apps/market/src/lib/order-publish"
 
 describe("buyer order gift wrapping", () => {
+  it("recreates the same payment-proof rumor id for receipt retries", () => {
+    const params = {
+      merchantPubkey: "merchant-pubkey",
+      orderId: "guest-order",
+      amountSats: 12,
+      currency: "SATS",
+      content: '{"zapReceiptId":"receipt-id"}',
+      createdAt: 1_700_000_000,
+    }
+    const first = buildPaymentProofRumor(params)
+    const retry = buildPaymentProofRumor(params)
+
+    prepareBuyerRumor(first, "guest-pubkey")
+    prepareBuyerRumor(retry, "guest-pubkey")
+
+    expect(first.created_at).toBe(params.createdAt)
+    expect(retry.id).toBe(first.id)
+  })
+
   it("serializes recipient wraps and retries transient signer bridge failures", async () => {
     const recipients: string[] = []
     const giftWrapFn = async (

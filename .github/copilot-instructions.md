@@ -36,8 +36,8 @@ When reviewing PRs:
 - Focus comments on behavior impact and reproducible scenarios.
 - Ask for tests where behavior changes are not covered.
 - Keep comments concise and actionable.
-- Include a reviewer-owned contract decision when relevant: `Contract updated in this PR`, `No contract change needed`, or `Separate decision/docs-only PR required`.
-- Block merge for missing or mismatched contracts, not because contract and implementation changes share a PR.
+- Include a reviewer-owned public-context decision when relevant: `Public context updated in this PR`, `No public context update needed`, or `Durable contract or external decision needed`.
+- Do not require a new spec document by default; request durable contract work only when the behavior genuinely needs stable public agreement.
 
 ## Reliability Checks (Orders/Messaging)
 
@@ -68,14 +68,14 @@ For changes touching agent automation, telemetry, or smoke-test artifacts:
 - Verify telemetry properties match `docs/analytics/events.md`.
 - Verify code-changing agent paths require maintainer intent and do not run for high-risk protocol/auth/payment/privacy work without human planning.
 
-## Contract Checks
+## Planning and Context Checks
 
-For implementation PRs, reviewers decide whether the work changes the durable repo contract. PR descriptions should distinguish `Contract changes` from `Implementation changes`.
+For non-trivial internal implementation work, the plan belongs on the Linear issue while private tracker context stays out of the public PR. Public PR descriptions should identify the existing repo context checked and any public-safe context changed with the code.
 
-- Use `Contract updated in this PR` when product requirements, protocol behavior, shared UX rules, architecture, or cross-team implementation expectations change with the code.
-- Use `No contract change needed` when existing docs remain accurate.
-- Use `Separate decision/docs-only PR required` only for broad cross-PR architecture or external consensus that must be settled before implementation.
-- Block merge when a required contract change is missing or disagrees with the implementation.
+- Use `Public context updated in this PR` when a public-safe knowledge note or durable contract changed with the implementation.
+- Use `No public context update needed` when the code and tests are sufficient.
+- Use `Durable contract or external decision needed` only when stable public agreement is a genuine implementation blocker.
+- Useful `docs/knowledge/*.md` notes may land with the implementation; a new spec is not a default merge gate.
 
 ## Suggested Validation Commands
 
