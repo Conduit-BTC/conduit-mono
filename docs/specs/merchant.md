@@ -152,8 +152,10 @@ already-loaded product catalog without starting another relay query. Suggestions
 exclude selected tags and are labeled `From your catalog`. Matching prefix
 values rank first, followed by catalog usage count and then alphabetically.
 Selecting a suggestion adds it as a chip, but unmatched freeform values remain
-valid. The combobox supports pointer and touch selection without blur loss,
-Arrow key navigation, Enter to select or add a freeform value, Escape to close,
+valid. A non-empty draft commits through the same normalization and validation
+path when the merchant presses Enter, submits the form, or leaves the field, so
+typed tags are not lost on blur. The combobox supports pointer and touch
+selection without premature blur commit, Arrow key navigation, Escape to close,
 IME-safe input, and the WAI-ARIA editable-combobox contract. Empty and no-match
 states do not render a popup, and the popup remains contained by the product
 dialog on narrow viewports.
