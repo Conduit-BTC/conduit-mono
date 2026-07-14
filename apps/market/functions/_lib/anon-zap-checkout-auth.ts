@@ -276,12 +276,19 @@ function bytesToBase64Url(bytes: Uint8Array): string {
 }
 
 function base64UrlToBytes(value: string): Uint8Array {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error("Invalid base64url value.")
+  }
   const padded = value
     .replace(/-/g, "+")
     .replace(/_/g, "/")
     .padEnd(Math.ceil(value.length / 4) * 4, "=")
   const binary = atob(padded)
-  return Uint8Array.from(binary, (char) => char.charCodeAt(0))
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+  if (bytesToBase64Url(bytes) !== value) {
+    throw new Error("Invalid base64url value.")
+  }
+  return bytes
 }
 
 async function hmacSha256(secret: string, value: string): Promise<Uint8Array> {
