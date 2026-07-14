@@ -15,15 +15,15 @@ Apply these instructions when generating pull request reviews.
    - one-sentence impact statement
    - file path and line reference
    - concrete recommendation
-3. Reviewer contract decision:
-   - `Contract updated in this PR`
-   - `No contract change needed`
-   - `Separate decision/docs-only PR required`
+3. Reviewer public-context decision:
+   - `Public context updated in this PR`
+   - `No public context update needed`
+   - `Durable contract or external decision needed`
 4. Short summary only after findings
 
 ## Mandatory Checks
 
-- User auth flow remains external-signer-only; any service-signer exception must be explicitly documented and scoped in `docs/specs/protocol.md`
+- User auth flow remains external-signer-only; any service-signer exception must be explicitly documented and narrowly scoped in durable public guidance
 - Order/message actions are signer-gated
 - Payment flow remains non-custodial and does not introduce balance management
 - No new behavioral tracking/profiling
@@ -34,8 +34,8 @@ Apply these instructions when generating pull request reviews.
 - NIP-17/private-message changes preserve NIP-59 seal/gift-wrap behavior, NIP-44 v2 compatibility, and source-gate NIP-44 v3 implementation behind public draft/client references and capability detection
 - Relay changes distinguish NIP-65 `kind:10002` general relay preferences from NIP-17 `kind:10050` private-message relay hints
 - New route-local NDK event construction, `giftWrap`, publish, unwrap/decrypt, relay planning, or event parsing is justified or moved behind `@conduit/core`
-- Reviewer blocks merge when a required contract change is missing or disagrees with the implementation, not because contract and implementation changes share a PR
-- Separate decision PRs are reserved for broad cross-PR architecture or external consensus that must be settled before implementation
+- Reviewer does not require a new spec by default; useful public-safe knowledge notes may land with the implementation
+- Durable contract or external decision work is reserved for behavior that genuinely needs stable public agreement before implementation
 
 ## If No Findings
 

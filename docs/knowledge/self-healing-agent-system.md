@@ -5,8 +5,6 @@ Private prompts, Linear/Slack/Cloudflare runbooks, telemetry backend details,
 and release coordination live in the private `Conduit-BTC/conduit-agent-ops`
 repository.
 
-Tracking: CND-87.
-
 ## Public/Private Boundary
 
 Public `conduit-mono` may contain:
@@ -35,15 +33,23 @@ ticket should include the affected app/surface, observed symptom, redacted
 evidence, suspected subsystem, reproduction path or failing check link,
 acceptance criteria, and risk class.
 
+For non-trivial work, the implementation agent should use Plan mode and add the
+concise implementation and validation plan to the Linear issue before or
+alongside opening the implementation PR. The public PR summarizes engineering
+purpose and validation without exposing the private tracker link or planning
+thread.
+
 ## Product Feature Loop
 
-Idea -> Linear ticket -> groom for SFD -> implementation agent -> same-PR
-contract and implementation review/harden loop.
+Idea -> Linear ticket -> Plan mode -> plan comment -> implementation PR ->
+review/harden loop.
 
-Feature work should be groomed before implementation. If product requirements,
-protocol behavior, or shared expectations change, update the relevant public
-contract in the implementation PR before merge. Use a separate decision PR only
-for broad cross-PR architecture or external consensus that must be settled first.
+Feature work should be groomed before implementation. Existing public contracts
+remain relevant when they apply, but a new spec is not a default prerequisite.
+The implementation PR may add public-safe `docs/knowledge/*.md` notes when they
+materially improve reusable agent, interoperability, or operational context.
+Durable contract or external-decision work is reserved for behavior that
+genuinely needs stable public agreement before implementation.
 
 ## Linear Label Kickoff
 

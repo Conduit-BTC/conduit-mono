@@ -125,19 +125,66 @@ jobs:
       - name: Enforce privacy-safe telemetry policy
         run: bun run telemetry:check
 
-  e2e-smoke:
+  smoke-changes:
     if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.select.outputs.shards }}
     steps:
       - uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.5"
-      - run: bun install --frozen-lockfile
+      - name: Select affected smoke shards
+        id: select
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RAW_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            shards='["market","merchant"]'
+          else
+            base_sha="$(git merge-base "$RAW_BASE_SHA" "$HEAD_SHA")"
+            shards="$(bun scripts/ci/select_smoke_shards.ts --base "$base_sha" --head "$HEAD_SHA")"
+          fi
+
+          echo "Selected smoke shards: $shards"
+          echo "shards=$shards" >> "$GITHUB_OUTPUT"
+
+  e2e-smoke-shard:
+    name: e2e-smoke / ${{ matrix.area }}
+    if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'
+    needs: [smoke-changes]
+    strategy:
+      fail-fast: false
+      matrix:
+        area: ${{ fromJSON(needs.smoke-changes.outputs.shards) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: No browser smoke needed
+        if: matrix.area == 'none'
+        run: echo "No browser-facing runtime paths changed."
+      - uses: actions/checkout@v7
+        if: matrix.area != 'none'
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        if: matrix.area != 'none'
+        with:
+          bun-version: "1.3.5"
+      - if: matrix.area != 'none'
+        run: bun install --frozen-lockfile
       - name: Cache Playwright browsers
+        if: matrix.area != 'none'
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
@@ -145,21 +192,52 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-playwright-
       - name: Install Playwright system dependencies
+        if: matrix.area != 'none'
         run: bunx playwright install-deps chromium
       - name: Install Playwright browser
+        if: matrix.area != 'none'
         run: bunx playwright install chromium
-      - name: Run Playwright smoke tests
-        run: bun run test:e2e
+      - name: Run ${{ matrix.area }} Playwright smoke tests
+        if: matrix.area != 'none'
+        env:
+          PLAYWRIGHT_SMOKE_AREA: ${{ matrix.area }}
+        run: bunx playwright test --grep '${{ matrix.area }} '
       - name: Upload Playwright artifacts
-        if: failure()
+        if: failure() && matrix.area != 'none'
         uses: actions/upload-artifact@v7
         with:
-          name: playwright-e2e-artifacts
+          name: playwright-e2e-${{ matrix.area }}-artifacts
           path: |
             playwright-report/
             test-results/
           if-no-files-found: ignore
           retention-days: 7
+
+  e2e-smoke:
+    name: e2e-smoke
+    if: always() && (github.event_name != 'pull_request' || github.actor != 'github-actions[bot]')
+    needs: [smoke-changes, e2e-smoke-shard]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify selected smoke shards
+        env:
+          SELECT_RESULT: ${{ needs.smoke-changes.result }}
+          SHARD_RESULT: ${{ needs.e2e-smoke-shard.result }}
+          SHARDS: ${{ needs.smoke-changes.outputs.shards }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$SELECT_RESULT" != "success" ]]; then
+            echo "Smoke shard selection did not succeed: $SELECT_RESULT"
+            exit 1
+          fi
+          if [[ "$SHARD_RESULT" != "success" ]]; then
+            echo "Smoke shards did not complete successfully: $SHARD_RESULT"
+            exit 1
+          fi
+
+          echo "Smoke shard result: $SHARD_RESULT for $SHARDS"
 
   build-mainnet:
     if: github.event_name != 'pull_request' || github.actor != 'github-actions[bot]'

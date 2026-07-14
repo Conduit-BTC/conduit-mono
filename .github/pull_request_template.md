@@ -8,26 +8,21 @@
 
 <!-- What changed and why? Include user/business impact. -->
 
-## Tracking
+## Planning and Public Context
 
-- Tracker issue:
-- Workstream:
-- Planning context checked: <!-- Check the relevant tracker/Linear context for current workstream or phase; do not copy private planning details into this public PR. -->
+- Implementation plan prepared: <!-- Internal agents post the plan to Linear, but do not link or copy private tracker context here. -->
+- Existing public context checked:
+- Public context delta: <!-- `None` or list public-safe docs changed with the implementation. A new spec is not required by default. -->
 
-## Contract Changes
-
-- Source docs/specs:
-- Contract delta: <!-- `None` or describe the requirement/protocol/shared UX change included in this PR. -->
-- External decision/proposal: <!-- Link only when broad architecture or external consensus must be settled separately. -->
-
-## Implementation Changes
+## Implementation
 
 -
 
 ## PR Checks
 
 - [ ] PR title uses Conventional Commits (`type(scope): description`)
-- [ ] Required contract changes are included in this PR and match the implementation, or no contract change is needed
+- [ ] Non-trivial work has a concise implementation and validation plan
+- [ ] Public implementation context is listed above; useful public-safe knowledge notes are included when needed
 
 ## Scope
 
@@ -48,24 +43,24 @@
 Complete this section when the PR touches protocol/app logic, infra/relay behavior, signer auth, messaging, payments, local cache/outbox, product event parsing/emission, or NDK/relay code.
 
 - [ ] `docs/knowledge/external-nostr-references.md` and the relevant public NIP/GammaMarkets source were checked before implementation
-- [ ] `Source docs/specs` lists the relevant repo spec and public protocol source
+- [ ] Relevant existing repo context and public protocol sources are listed above
 - [ ] Product listings remain NIP-99 + GammaMarkets `kind:30402`; no alternate product-listing protocol terminology, schemas, or assumptions introduced
 - [ ] Relay/source assumptions are stated, including NIP-65 `kind:10002`, NIP-17 `kind:10050`, cache, fallback, stale, or degraded-state behavior when relevant
 - [ ] NIP-44 v3 work cites public draft/client references, keeps v2 fallback, and gates behavior on explicit signer/recipient capability detection
 - [ ] New protocol construction, `giftWrap`, publish, unwrap/decrypt, relay planning, or event parsing lives in `@conduit/core`, or the PR explains why route-local code is unavoidable
 - [ ] Diagnostics/logs/telemetry remain content-free: no plaintext, ciphertext, invoices, order contents, addresses, signer secrets, NWC URIs, or message bodies
 
-## Contract Review
+## Public Context Review
 
 Reviewer decision:
 
-- [ ] Contract updated in this PR and matches implementation
-- [ ] No contract change needed
-- [ ] Separate decision/docs-only PR required
+- [ ] Public context updated in this PR
+- [ ] No public context update needed
+- [ ] Durable contract or external decision needed
 
 Reviewer note:
 
-<!-- Block merge for a missing or mismatched contract. Use a separate decision or docs-only PR only for broad cross-PR architecture or external consensus. -->
+<!-- Do not require spec churn by default. Request durable contract work only when the behavior genuinely needs stable public agreement. -->
 
 ## Test Plan
 
@@ -75,7 +70,7 @@ Reviewer note:
 - [ ] `bun test` passes
 - [ ] `bun run build` passes, or build is not required for this change
 - [ ] `bun run telemetry:check` passes, or telemetry is not affected
-- [ ] `bun run test:e2e` passes, or E2E smoke coverage is not affected
+- [ ] Selected Market/Merchant E2E smoke shards pass, or browser smoke coverage is not affected
 - [ ] Tested locally with mock Lightning
 - [ ] Verified on preview deploy (if applicable)
 

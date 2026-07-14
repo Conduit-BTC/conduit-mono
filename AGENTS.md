@@ -72,20 +72,26 @@ Nostr-sensitive work must read `docs/knowledge/external-nostr-references.md` and
    - `docs/DESIGN.md` - Shared design system and theming guidance
    - `docs/knowledge/self-healing-agent-system.md` - Public-safe agent automation boundary
 
-2. **Before building**: Read the relevant `docs/specs/*.md` for feature details
+2. **Before building**: Read the relevant existing public implementation context
+   - Use `docs/specs/*.md` when an existing durable contract applies; creating or updating a spec is not a default prerequisite
    - For UI/theming work, also read `docs/DESIGN.md`
    - For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also read `docs/knowledge/external-nostr-references.md`
 
-3. **Plan before implementing**: For non-trivial implementation work, write a concise plan from the relevant spec/docs. If the user has already asked for implementation, proceed after the plan unless the work hits a stop condition.
+3. **Plan before implementing**:
+   - For non-trivial work, prefer Plan mode and produce a concise implementation and validation plan before editing
+   - For team work with a Linear issue and authenticated Linear access, add that plan to the issue as a comment before or alongside opening the implementation PR
+   - Keep private tracker links, planning details, and ticket text out of public commits and PR descriptions
+   - Public contributors without Linear access may keep the implementation plan in the PR description
 
-4. **Same-PR contract gate**:
-   - If work changes product requirements, protocol behavior, shared UX rules, or shared implementation expectations, update the relevant repo contract in the implementation PR before merge.
-   - Separate decision or docs-only PRs are reserved for broad cross-PR architecture or external consensus that must be settled before implementation.
+4. **Implementation context**:
+   - Do not require a new or updated spec document for ordinary implementation work
+   - Include public-safe `docs/knowledge/*.md` notes in the implementation PR when they materially improve reusable agent, interoperability, or operational context
+   - Update a durable spec, architecture, or design contract only when a maintainer requests it or the change genuinely needs a stable public contract
 
-5. **Reviewer-owned contract check**:
-   - PRs distinguish `Contract changes` from `Implementation changes`.
-   - Reviewers block merge when a required contract change is missing or disagrees with the implementation, not because it shares the implementation PR.
-   - Use a separate decision or docs-only PR only for broad cross-PR architecture or external consensus.
+5. **Reviewer-owned context check**:
+   - Reviewers identify stale or missing public implementation context based on actual maintenance value
+   - Do not block an otherwise complete implementation solely because it lacks a new spec document
+   - Keep broad architecture or external-consensus decisions explicit before implementation when they are genuine blockers
 
 6. **End**: Report validation and any doc/status follow-ups. Do not add product strategy, sequencing, private commercial, or private planning notes to tracked docs.
 
@@ -274,4 +280,5 @@ Pull request required for all changes.
 - Use the same convention for PR titles unless the PR is a release or sync promotion with an explicit repo-level naming rule
 - Branch names for new work should use conventional prefixes such as `feat/*`, `fix/*`, `chore/*`, or `docs/*`
 - Use `.github/pull_request_template.md` for all PRs
-- For spec-driven work, update the relevant repo contract in the implementation PR before merge; use a separate decision PR only for broad architecture or external consensus
+- For non-trivial internal work, put the implementation plan on the Linear issue and keep private tracker context out of the public PR
+- Add public-safe `docs/knowledge/*.md` context in the implementation PR when it will help future agents or contributors; specs are not required by default

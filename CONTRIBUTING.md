@@ -36,36 +36,34 @@ Examples: `feat/product-search`, `fix/invoice-qr-case`, `chore/upgrade-ndk`
 
 ### Specs and Repo Context
 
-Public `conduit-mono` docs are implementation guidance for the code in this repository:
+Public `conduit-mono` docs provide implementation context for the code in this repository:
 
-- `docs/specs/*` tracks implementation requirements
+- `docs/specs/*` holds durable implementation contracts where one is maintained
 - `docs/ARCHITECTURE.md` tracks system boundaries, protocol surfaces, and data flow
 - `docs/DESIGN.md` tracks shared visual and UI-system guidance
-- `docs/knowledge/*` holds supporting notes and references, not the final source of truth
+- `docs/knowledge/*` holds public-safe implementation notes, research, interoperability references, and reusable agent context
 
-Product strategy, ticket sequencing, ownership, private commercial plans, and private operating context live outside this public repository. If an external tracker conflicts with `docs/specs/*` or `docs/ARCHITECTURE.md` on implementation behavior, resolve the repo contract mismatch before merge.
+Product strategy, ticket sequencing, ownership, private commercial plans, and private operating context live outside this public repository.
 
-If work changes product requirements, protocol behavior, shared UX rules, or cross-team implementation expectations, update the relevant repo contract in the implementation PR. Distinguish `Contract changes` from `Implementation changes` in the PR description so reviewers can evaluate them together before merge.
+For non-trivial internal work, prefer Plan mode and post the concise implementation and validation plan as a comment on the Linear issue before or alongside opening the implementation PR. Keep private tracker links and planning text out of the public PR. Public contributors without Linear access may put their implementation plan in the PR description.
 
-Use a separate decision or docs-only PR only for broad cross-PR architecture or external consensus that must be settled before implementation.
+Read existing specs when they apply, but do not create or update a spec for ordinary implementation work by default. Include public-safe `docs/knowledge/*.md` notes with the implementation when they will materially help future agents or contributors. Update a durable spec, architecture, or design contract when a maintainer requests it or the change genuinely requires one.
 
 For UI and theming work, also check [docs/DESIGN.md](docs/DESIGN.md) before introducing new shared styles or tokens.
 
 For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, also check [external-nostr-references.md](docs/knowledge/external-nostr-references.md) and the relevant public NIP or GammaMarkets source before implementation. Product listings are NIP-99 + GammaMarkets `kind:30402`; do not introduce alternate product-listing protocol terminology, schemas, or assumptions.
 
-### Reviewer-Owned Contract Check
+### Reviewer-Owned Context Check
 
-Reviewers decide whether implementation work requires repo context updates. This is not an autonomous agent responsibility.
+Reviewers decide whether implementation work would benefit from public context updates. This is not a mechanical documentation gate.
 
 During review, mark one of:
 
-- `Contract updated in this PR`
-- `No contract change needed`
-- `Separate decision/docs-only PR required`
+- `Public context updated in this PR`
+- `No public context update needed`
+- `Durable contract or external decision needed`
 
-Block merge when a required contract change is missing or disagrees with the implementation. Do not require a separate PR solely because the contract and implementation changed together.
-
-Use `Separate decision/docs-only PR required` only for broad cross-PR architecture or external consensus that must be settled before implementation.
+Request a durable contract update when the behavior has broad or long-lived public implications. Do not block an otherwise complete implementation solely because it lacks a new spec document.
 
 ### Commits
 
@@ -123,8 +121,8 @@ bun run telemetry:check # Must pass when telemetry/analytics surfaces are affect
 - Keep PRs focused on a single concern
 - Use the repo PR template in `.github/pull_request_template.md`
 - Write a clear description of what changed and why
-- Link the relevant tracker issue when available
-- Describe any contract changes separately from implementation changes and link an external decision PR when one is required
+- Keep private tracker links and planning context out of the public PR
+- List the existing public implementation context checked and any public context changed with the code
 - Include a test plan (how to verify the changes work)
 - PRs require review before merging to `main`
 - PRs from forks may need a maintainer to approve GitHub Actions before CI runs
@@ -181,6 +179,11 @@ Direct Cloudflare Pages checks are useful preview signals, but they are not
 required branch-protection gates because fork PRs cannot reliably produce them.
 The `preview-links` job posts branch preview links for same-repository PRs and
 skips preview comments for fork PRs with an explicit log message.
+
+The required `e2e-smoke` check aggregates path-aware Market and Merchant
+Playwright shards. App-local changes run only that app's shard, shared runtime
+changes run both, docs-only changes skip browser installation, and pushes to
+`main` run both shards.
 
 ## Code Conventions
 
@@ -302,4 +305,4 @@ packages/ui/src/
 - Check [docs/README.md](docs/README.md) for the documentation map
 - Check [ARCHITECTURE.md](docs/ARCHITECTURE.md) for system design
 - Check [DESIGN.md](docs/DESIGN.md) for shared design and theming guidance
-- Check [docs/specs/](docs/specs/) for feature specifications
+- Check existing [docs/specs/](docs/specs/) when a durable feature contract applies
