@@ -2,7 +2,9 @@ import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   canonicalizeProductPrice,
   canonicalizeShippingCost,
+  isSatsLikeCurrency,
   type CommerceShippingCostLike,
+  normalizeCurrencyCode,
 } from "../pricing"
 import {
   productSchema,
@@ -68,6 +70,14 @@ export function buildProductListingEventDraft({
 
   if (content) tags.push(["summary", content])
 
+  if (
+    typeof product.stock === "number" &&
+    Number.isSafeInteger(product.stock) &&
+    product.stock >= 0
+  ) {
+    tags.push(["stock", String(product.stock)])
+  }
+
   if (product.sourceShippingCost) {
     tags.push([
       "shipping_cost",
@@ -78,9 +88,8 @@ export function buildProductListingEventDraft({
     tags.push(["shipping_cost", String(product.shippingCostSats)])
   }
 
-  if (product.shippingOptionId) {
-    tags.push(["shipping_option", product.shippingOptionId])
-  }
+  const shippingOptionTag = buildShippingOptionTag(product, priceCurrency)
+  if (shippingOptionTag) tags.push(shippingOptionTag)
   if (product.shippingCountries && product.shippingCountries.length > 0) {
     tags.push(["shipping_country", ...product.shippingCountries])
   }
@@ -171,17 +180,94 @@ function parseShippingCostTag(
   return canonicalizeShippingCost(amount, currency)
 }
 
-function parseShippingOptionTag(tags: string[][] | undefined): {
+function getProductShippingOptionExtraCostTag(
+  product: ProductSchema,
+  productCurrency: string
+): string | null {
+  const normalizedProductCurrency = normalizeCurrencyCode(productCurrency)
+  const sourceShippingCurrency = product.sourceShippingCost?.normalizedCurrency
+
+  if (
+    product.sourceShippingCost &&
+    sourceShippingCurrency === normalizedProductCurrency
+  ) {
+    return String(product.sourceShippingCost.amount)
+  }
+
+  if (
+    typeof product.shippingCostSats === "number" &&
+    (product.shippingCostSats === 0 ||
+      isSatsLikeCurrency(normalizedProductCurrency))
+  ) {
+    return String(product.shippingCostSats)
+  }
+
+  return null
+}
+
+function buildShippingOptionTag(
+  product: ProductSchema,
+  productCurrency: string
+): string[] | null {
+  if (!product.shippingOptionId) return null
+
+  const tag = ["shipping_option", product.shippingOptionId]
+  const extraCost = getProductShippingOptionExtraCostTag(
+    product,
+    productCurrency
+  )
+  if (extraCost !== null) tag.push(extraCost)
+  return tag
+}
+
+function parseStockTag(
+  tags: string[][] | undefined
+): Pick<ProductSchema, "stock"> {
+  if (!tags) return {}
+
+  for (const tag of tags) {
+    if (tag[0] !== "stock" || typeof tag[1] !== "string") continue
+
+    const raw = tag[1].trim()
+    if (!/^\d+$/.test(raw)) continue
+
+    const stock = Number(raw)
+    if (!Number.isSafeInteger(stock)) continue
+
+    return { stock }
+  }
+
+  return {}
+}
+
+function parseShippingOptionTag(
+  tags: string[][] | undefined,
+  productCurrency: string | undefined
+): {
   shippingOptionId?: string
   shippingOptionDTag?: string
+  extraCost?: CommerceShippingCostLike
 } {
-  const ref = getTagValue(tags, "shipping_option")
+  const tag = tags?.find((t) => t[0] === "shipping_option")
+  const ref = tag?.[1]
   if (!ref) return {}
   const parts = ref.split(":")
+
+  const rawExtraCost = tag?.[2]
+  const amount =
+    typeof rawExtraCost === "string" && rawExtraCost.trim()
+      ? Number(rawExtraCost)
+      : NaN
+  const extraCost =
+    productCurrency && Number.isFinite(amount) && amount >= 0
+      ? canonicalizeShippingCost(amount, productCurrency)
+      : undefined
+
   return {
     shippingOptionId: ref,
     shippingOptionDTag:
       parts.length >= 3 ? parts.slice(2).join(":") : undefined,
+    extraCost,
   }
 }
 
@@ -221,6 +307,23 @@ function parseShippingCountryRules(tags: string[][] | undefined): {
           ?.slice(2)
           .filter(Boolean) ?? [],
     })),
+  }
+}
+
+function parseProductShippingTags(
+  tags: string[][] | undefined,
+  productCurrency: string | undefined
+): Partial<ProductSchema> {
+  const shippingCost = parseShippingCostTag(tags)
+  const shippingOption = parseShippingOptionTag(tags, productCurrency)
+  const { extraCost, ...shippingOptionFields } = shippingOption
+
+  return {
+    ...(Object.keys(shippingCost).length > 0
+      ? shippingCost
+      : (extraCost ?? {})),
+    ...shippingOptionFields,
+    ...parseShippingCountryRules(tags),
   }
 }
 
@@ -551,12 +654,19 @@ export function parseProductEvent(
   const createdAtMs = (event.created_at ?? 0) * 1000
   const dTag = getTagValue(event.tags, "d")
   const zapPolicy = parseProductZapPolicy(event.tags)
+  const stockTag = parseStockTag(event.tags)
 
   // Try legacy Conduit JSON content first for already-published listings.
   try {
     const parsed = JSON.parse(event.content || "{}") as Partial<ProductSchema>
+    const shippingTags = parseProductShippingTags(
+      event.tags,
+      parsed.currency ?? parsePriceTag(event.tags)?.currency
+    )
     const candidate: Partial<ProductSchema> = {
       ...parsed,
+      ...shippingTags,
+      ...stockTag,
       // Compatibility content may describe the product, but it cannot replace
       // identity or time committed to by the signed event envelope.
       id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
@@ -610,9 +720,7 @@ export function parseProductEvent(
     "Untitled"
 
   const priceInfo = parsePriceTag(event.tags)
-  const shippingCost = parseShippingCostTag(event.tags)
-  const shippingOption = parseShippingOptionTag(event.tags)
-  const shippingRules = parseShippingCountryRules(event.tags)
+  const shippingTags = parseProductShippingTags(event.tags, priceInfo?.currency)
   const summaryTag = getTagValue(event.tags, "summary")
   const locationTag = getTagValue(event.tags, "location")
 
@@ -659,10 +767,9 @@ export function parseProductEvent(
       currency: priceInfo?.currency ?? "USD",
       type,
       format,
-      ...shippingCost,
-      ...shippingOption,
-      ...shippingRules,
+      ...shippingTags,
       ...zapPolicy,
+      ...stockTag,
       images,
       tags,
       location: locationTag ?? undefined,
