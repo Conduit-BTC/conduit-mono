@@ -68,6 +68,14 @@ export function buildProductListingEventDraft({
 
   if (content) tags.push(["summary", content])
 
+  if (
+    typeof product.stock === "number" &&
+    Number.isSafeInteger(product.stock) &&
+    product.stock >= 0
+  ) {
+    tags.push(["stock", String(product.stock)])
+  }
+
   if (product.sourceShippingCost) {
     tags.push([
       "shipping_cost",
@@ -169,6 +177,26 @@ function parseShippingCostTag(
   if (!Number.isFinite(amount) || amount < 0) return {}
 
   return canonicalizeShippingCost(amount, currency)
+}
+
+function parseStockTag(
+  tags: string[][] | undefined
+): Pick<ProductSchema, "stock"> {
+  if (!tags) return {}
+
+  for (const tag of tags) {
+    if (tag[0] !== "stock" || typeof tag[1] !== "string") continue
+
+    const raw = tag[1].trim()
+    if (!/^\d+$/.test(raw)) continue
+
+    const stock = Number(raw)
+    if (!Number.isSafeInteger(stock)) continue
+
+    return { stock }
+  }
+
+  return {}
 }
 
 function parseShippingOptionTag(tags: string[][] | undefined): {
@@ -551,12 +579,14 @@ export function parseProductEvent(
   const createdAtMs = (event.created_at ?? 0) * 1000
   const dTag = getTagValue(event.tags, "d")
   const zapPolicy = parseProductZapPolicy(event.tags)
+  const stockTag = parseStockTag(event.tags)
 
   // Try legacy Conduit JSON content first for already-published listings.
   try {
     const parsed = JSON.parse(event.content || "{}") as Partial<ProductSchema>
     const candidate: Partial<ProductSchema> = {
       ...parsed,
+      ...stockTag,
       // Compatibility content may describe the product, but it cannot replace
       // identity or time committed to by the signed event envelope.
       id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
@@ -663,6 +693,7 @@ export function parseProductEvent(
       ...shippingOption,
       ...shippingRules,
       ...zapPolicy,
+      ...stockTag,
       images,
       tags,
       location: locationTag ?? undefined,
