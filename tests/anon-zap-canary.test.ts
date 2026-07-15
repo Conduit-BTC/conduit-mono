@@ -16,8 +16,6 @@ import {
 } from "../scripts/smoke/anon_zap_authorization"
 
 const MERCHANT_PUBKEY = "11".repeat(32)
-const PROVIDER_PUBKEY = "22".repeat(32)
-const OTHER_PROVIDER_PUBKEY = "33".repeat(32)
 const SIGNER_SECRET = Uint8Array.from([...new Uint8Array(31), 4])
 const OTHER_SIGNER_SECRET = Uint8Array.from([...new Uint8Array(31), 5])
 const SIGNER_PUBKEY = getPublicKey(SIGNER_SECRET)
@@ -30,7 +28,6 @@ const PRODUCT_ADDRESS = `30402:${MERCHANT_PUBKEY}:canary-product`
 const LNURL = encodeLnurl(
   "https://wallet.example/.well-known/lnurlp/canary-merchant"
 )
-const CALLBACK = "https://wallet.example/lnurl/callback"
 const RELAYS = ["wss://relay.example", "wss://receipts.example"]
 const NOW_SECONDS = 1_800_000_000
 
@@ -88,7 +85,6 @@ function createFixture(overrides: FixtureOverrides = {}) {
       ["lnurl", LNURL],
       ["relays", ...RELAYS],
       ["omf", "zapout"],
-      ["omf_provider", PROVIDER_PUBKEY],
       ["client", "conduit-market"],
     ],
   }
@@ -107,8 +103,6 @@ function createFixture(overrides: FixtureOverrides = {}) {
     authorizationToken: "preview-canary-token",
     expiresAt: NOW_SECONDS + 120,
     draft,
-    lnurlCallback: CALLBACK,
-    lnurlNostrPubkey: PROVIDER_PUBKEY,
     relayUrls: RELAYS,
     pricing,
   }
@@ -128,9 +122,7 @@ function createFixture(overrides: FixtureOverrides = {}) {
     id: rawEvent.id,
     rawEvent,
     requestCreatedAt: authorizedDraft.createdAt,
-    lnurlCallback: authorization.lnurlCallback,
     lnurl: LNURL,
-    lnurlNostrPubkey: authorization.lnurlNostrPubkey,
     relayUrls: authorization.relayUrls,
   }
   overrides.mutateSignerResponse?.(signerResponse)
@@ -158,7 +150,6 @@ function createFixture(overrides: FixtureOverrides = {}) {
     productAddress: PRODUCT_ADDRESS,
     signerPubkey: SIGNER_PUBKEY,
     expectedLnurl: LNURL,
-    expectedProviderPubkey: PROVIDER_PUBKEY,
     attestationPublicKeys: `${ATTESTATION_KEY_ID}:${ATTESTATION_PUBLIC_KEY}`,
   }
   return { calls, config, fetchImpl }
@@ -227,7 +218,7 @@ describe("anonymous zap deployment canary", () => {
     expect(networkCalls).toBe(0)
   })
 
-  it("rejects altered content, amount, provider, relays, and attestation", async () => {
+  it("rejects altered content, amount, relays, attestation, and provider injection", async () => {
     const mutations: Array<(authorization: JsonRecord) => void> = [
       (authorization) => {
         const draft = authorization.draft as { content: string }
@@ -235,11 +226,6 @@ describe("anonymous zap deployment canary", () => {
       },
       (authorization) =>
         replaceTag(authorization, "amount", ["amount", "22000"]),
-      (authorization) =>
-        replaceTag(authorization, "omf_provider", [
-          "omf_provider",
-          OTHER_PROVIDER_PUBKEY,
-        ]),
       (authorization) => {
         authorization.relayUrls = ["wss://different.example"]
       },
@@ -254,6 +240,10 @@ describe("anonymous zap deployment canary", () => {
               ]
             : tag
         )
+      },
+      (authorization) => {
+        const draft = authorization.draft as { tags: string[][] }
+        draft.tags.push(["omf_provider", "22".repeat(32)])
       },
     ]
 
@@ -288,25 +278,7 @@ describe("anonymous zap deployment canary", () => {
     }
   })
 
-  it("rejects unsafe callbacks and signer responses", async () => {
-    for (const callback of [
-      "https://user:pass@wallet.example/callback",
-      "https://localhost/callback",
-      "https://127.0.0.1/callback",
-      "https://wallet.example:8443/callback",
-    ]) {
-      const unsafeCallback = createFixture({
-        mutateAuthorization: (authorization) => {
-          authorization.lnurlCallback = callback
-        },
-      })
-      await expect(
-        runAnonZapAuthorizationCanary(unsafeCallback.config, {
-          fetchImpl: unsafeCallback.fetchImpl,
-        })
-      ).rejects.toThrow()
-    }
-
+  it("rejects signer responses from the wrong identity", async () => {
     const wrongSigner = createFixture({
       mutateSignerResponse: (response) => {
         const draft = (response.rawEvent as { tags: string[][] }).tags

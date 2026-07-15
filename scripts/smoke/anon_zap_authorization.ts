@@ -39,7 +39,6 @@ export type AnonZapCanaryConfig = {
   productAddress: string
   signerPubkey: string
   expectedLnurl: string
-  expectedProviderPubkey: string
   attestationPublicKeys: string
 }
 
@@ -81,9 +80,6 @@ export function getAnonZapCanaryConfigFromEnv(): AnonZapCanaryConfig {
     productAddress: getRequiredEnv("ANON_ZAP_CANARY_PRODUCT_ADDRESS"),
     signerPubkey: parsePubkey("ANON_ZAP_CANARY_SIGNER_PUBKEY"),
     expectedLnurl: getRequiredEnv("ANON_ZAP_CANARY_EXPECTED_LNURL"),
-    expectedProviderPubkey: parsePubkey(
-      "ANON_ZAP_CANARY_EXPECTED_PROVIDER_PUBKEY"
-    ),
     attestationPublicKeys: getRequiredEnv(
       "ANON_ZAP_CANARY_ATTESTATION_PUBLIC_KEYS"
     ),
@@ -108,12 +104,6 @@ export function createAnonZapCanaryFetch(
     const headers = new Headers(request.headers)
     headers.set("origin", baseUrl.origin)
     return fetchImpl(new Request(request, { headers, redirect: "error" }))
-  }
-}
-
-function assertSafeCallback(raw: string): void {
-  if (!normalizeSafeLnurlPayRequestUrl(raw)) {
-    throw new Error("Anon zap authorization callback is unsafe.")
   }
 }
 
@@ -167,8 +157,7 @@ export async function runAnonZapAuthorizationCanary(
   const signerUrl = new URL("/api/anon-zap-sign", config.baseUrl).href
   const merchantPubkey = normalizePubkey(config.merchantPubkey)
   const signerPubkey = normalizePubkey(config.signerPubkey)
-  const expectedProviderPubkey = normalizePubkey(config.expectedProviderPubkey)
-  if (!merchantPubkey || !signerPubkey || !expectedProviderPubkey) {
+  if (!merchantPubkey || !signerPubkey) {
     throw new Error("Anon zap canary public keys are invalid.")
   }
 
@@ -197,21 +186,17 @@ export async function runAnonZapAuthorizationCanary(
       throw new Error("Anon zap authorization content is invalid.")
     }
     assertExpectedLnurl(authorization.draft, config.expectedLnurl)
-    assertTagValues(authorization.draft, "omf_provider", [
-      expectedProviderPubkey,
-    ])
-    assertTagValues(authorization.draft, "relays", authorization.relayUrls)
-    if (authorization.lnurlNostrPubkey !== expectedProviderPubkey) {
-      throw new Error("Anon zap authorization provider is invalid.")
+    if (getAnonZapDraftTag(authorization.draft, "omf_provider")) {
+      throw new Error("Anon zap authorization included provider authority.")
     }
-    assertSafeCallback(authorization.lnurlCallback)
+    assertTagValues(authorization.draft, "relays", authorization.relayUrls)
     if (
       verifyAnonZapProviderAttestation(
         authorization.draft,
         config.attestationPublicKeys
       ) !== "verified"
     ) {
-      throw new Error("Anon zap authorization provider attestation is invalid.")
+      throw new Error("Anon zap checkout authorization attestation is invalid.")
     }
     if (
       authorization.pricing.items.length !== 1 ||
