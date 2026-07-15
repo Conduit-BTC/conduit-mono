@@ -383,6 +383,12 @@ verify that the exact signed kind `9734` reaches the LNURL callback, the BOLT11
 description hash commits to it, and the resulting kind `9735` is accepted by
 the Zapouts authority path on the configured receipt relays.
 
+A passing canary does not prove checkout resilience. Deliberately make the
+preview signer or its Pages service binding unavailable and verify that one
+encrypted order is delivered, one plain private invoice is requested and can
+be paid, no public zap is claimed, and no second invoice is requested. Treat
+that failure-mode checkout as a release gate for anonymous zap changes.
+
 ## Protocol Sources
 
 - NIP-57 defines zap requests as kind `9734` events sent to the receiver's
