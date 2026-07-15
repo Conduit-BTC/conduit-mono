@@ -36,12 +36,44 @@ describe("checkout completion navigation contracts", () => {
       "let publishedTotalSats: number | null = null"
     )
     expect(checkoutRoute).toContain(
-      "publishedTotalSats = pricingIntent.totalSats"
+      "publishedTotalSats = checkoutPricing.totalSats"
     )
     expect(checkoutRoute).toContain(
       "const deliveredAmountSats = publishedTotalSats ?? total"
     )
     expect(checkoutRoute).toContain("amountSats: deliveredAmountSats")
+  })
+
+  it("keeps anonymous zap preparation behind durable order delivery", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+    const payNowIndex = checkoutRoute.indexOf(
+      "async function payNow(): Promise<void>"
+    )
+    const orderPublishIndex = checkoutRoute.indexOf(
+      "await publishBuyerOrderMessage(",
+      payNowIndex
+    )
+    const lifecycleIndex = checkoutRoute.indexOf(
+      "await createOrderLifecycle(",
+      orderPublishIndex
+    )
+    const paymentServiceIndex = checkoutRoute.indexOf(
+      "void runOrderPayment(serviceCtx)",
+      lifecycleIndex
+    )
+
+    expect(payNowIndex).toBeGreaterThan(-1)
+    expect(orderPublishIndex).toBeGreaterThan(-1)
+    expect(lifecycleIndex).toBeGreaterThan(orderPublishIndex)
+    expect(paymentServiceIndex).toBeGreaterThan(lifecycleIndex)
+    expect(checkoutRoute).not.toContain("prepareAnonZapCheckout")
+    expect(checkoutRoute).not.toContain("pendingAnonAuthorization")
+    expect(checkoutRoute).toContain("for (const item of checkoutPricing.items)")
+    expect(checkoutRoute).toContain(
+      "items: buildLifecycleItems(checkoutPricing.items)"
+    )
   })
 
   it("offers guest shoppers a signer path when invoice checkout is unavailable", async () => {

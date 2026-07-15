@@ -81,9 +81,51 @@ This exception is constrained as follows:
   explicitly permits anonymous public zaps. Request tags and content must exclude
   order identifiers, cart contents, shipping/contact data, invoices, NWC URIs,
   plaintext messages, or other private checkout data.
+- The trusted server boundary derives the anonymous zap amount from current,
+  signed product listings and a fresh server-owned conversion quote when fiat
+  pricing is present. Browser-provided totals are not authorization evidence.
+- Anonymous request content is server-owned and limited to copy such as
+  `Zapped out 1 item at https://shop.conduit.market/` or
+  `Zapped out 4 items at https://shop.conduit.market/`, using the actual summed
+  item quantity. Merchant `custom` policy never makes anonymous content
+  shopper-editable.
+- Before exposing or paying a NIP-57 invoice, clients must verify that its
+  BOLT11 `h` tag equals SHA-256 of the exact signed kind-9734 JSON supplied to
+  the LNURL callback. Missing, duplicate, malformed, or mismatched bindings
+  fail closed for the public-zap claim. Before any invoice reaches a payment
+  rail, that failure may continue the same order through a plain LNURL invoice
+  with no `nostr` parameter. The ordinary invoice must still pass exact amount,
+  network, and expiry validation. Optional public-zap infrastructure must not
+  become a checkout availability dependency.
+- Public zap-receipt presentation must validate both the outer kind-9735 and
+  embedded kind-9734 signatures, then require request/receipt recipient, sender
+  (when `P` is present), and amount tags to agree. Server-authorized anonymous
+  requests include an `omf_auth` proof bound to the exact public request. During
+  checkout, the browser resolves the merchant's LNURL provider directly and
+  requires its callback, receipt pubkey, amount range, and encoded LNURL to
+  agree with the server-authorized request before signing or invoice creation.
+  Provider metadata is not accepted from the authorization response. Public
+  receipt presentation uses a same-origin server authority check only during a
+  bounded payment-time window, with egress restricted to exact operator-allowed
+  LNURL hosts and no persistent provider cache. Historical mutable evidence,
+  profile/provider rotation, and lookup failure are authority-unavailable, not
+  invalid; neither outcome is presented as paid. Feed browsers must not contact
+  receipt-selected wallet domains.
+- The authorization response includes the latest signed listing's public
+  fulfillment format, shipping option identity, and country/postal rules.
+  The browser evaluates the private destination locally against that current
+  snapshot before signing; shipping/contact data is never sent to the signer.
 - Browser `Origin` checks are not authentication. Calls that request signing
   must include server-side request authentication shared only between the
   calling server runtime and the signer Worker.
+- Pages sends HMAC-pseudonymous authorization/authority bucket keys through an
+  authenticated service binding to the signer Worker, which owns the supported
+  Cloudflare Rate Limiting binding. Raw source and merchant identifiers must not
+  be passed to that binding.
+- Authentication and rate limiting protect unpaid authorization, signing, and
+  lookup work. Abuse that requires a settled Lightning payment has an inherent
+  attacker cost and does not justify blocking commerce with additional
+  receipt-only availability gates.
 - This exception does not authorize user key custody, merchant signing,
   buyer-auth signing, order messaging, NIP-17/NIP-44 payload signing, product
   listing publishing, or wallet/NWC custody.
@@ -144,6 +186,8 @@ Checkout privacy behavior:
 - For carts where every item explicitly permits public zaps, the effective zap
   message policy is the most restrictive item policy:
   `generic_only` before `custom`.
+- Anonymous zap request text always uses the fixed server-owned item-count copy.
+  The `custom` policy applies only to shopper-signed public zaps.
 - Public zap request/comment text must not include order contents, cart
   contents, shipping details, contact data, invoices, payment request strings,
   product names, product identifiers, or other private checkout data unless the

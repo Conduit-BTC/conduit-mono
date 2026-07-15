@@ -273,6 +273,12 @@ export interface OrderLifecycleItem {
   shippingCostSats?: number
   shippingOptionId?: string
   shippingOptionDTag?: string
+  /** Signed listing shipping-rule snapshot used to guard payment retries. */
+  shippingCountryRules?: Array<{
+    code: string
+    restrictTo: string[]
+    exclude: string[]
+  }>
   sourcePrice?: {
     amount: number
     currency: string

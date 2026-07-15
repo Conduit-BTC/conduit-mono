@@ -18,8 +18,56 @@
         "period": 60,
       },
     },
+    {
+      "name": "ANON_AUTHORIZATION_RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": {
+        "limit": 30,
+        "period": 60,
+      },
+    },
+    {
+      "name": "ANON_AUTHORITY_RATE_LIMITER",
+      "namespace_id": "1003",
+      "simple": {
+        "limit": 120,
+        "period": 60,
+      },
+    },
   ],
   "observability": {
     "enabled": true,
+  },
+  "env": {
+    "preview": {
+      "name": "conduit-anon-zap-signer-preview",
+      "routes": [],
+      "ratelimits": [
+        {
+          "name": "ANON_SIGNER_RATE_LIMITER",
+          "namespace_id": "2001",
+          "simple": {
+            "limit": 10,
+            "period": 60,
+          },
+        },
+        {
+          "name": "ANON_AUTHORIZATION_RATE_LIMITER",
+          "namespace_id": "2002",
+          "simple": {
+            "limit": 30,
+            "period": 60,
+          },
+        },
+        {
+          "name": "ANON_AUTHORITY_RATE_LIMITER",
+          "namespace_id": "2003",
+          "simple": {
+            "limit": 120,
+            "period": 60,
+          },
+        },
+      ],
+    },
   },
 }
