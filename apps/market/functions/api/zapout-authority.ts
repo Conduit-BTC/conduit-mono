@@ -1,16 +1,18 @@
+import type { AnonZapRequestDraft } from "@conduit/core/protocol/anon-zap"
 import {
-  EVENT_KINDS,
-  fetchEventsFanoutDetailed,
-  fetchLnurlPayMetadata,
   isValidSignedPublicNostrEvent,
-  normalizePubkey,
+  type SignedPublicNostrEvent,
+} from "@conduit/core/protocol/anon-zap-checkout"
+import { EVENT_KINDS } from "@conduit/core/protocol/kinds"
+import {
+  fetchLnurlPayMetadata,
   parseOmfZapoutReceipt,
   verifyOmfZapoutReceiptAuthority,
   type LnurlPayMetadata,
   type OmfZapoutReceiptEvent,
-  type SignedPublicNostrEvent,
-} from "@conduit/core"
-import type { AnonZapRequestDraft } from "@conduit/core/protocol/anon-zap"
+} from "@conduit/core/protocol/lightning"
+import { fetchEventsFanoutDetailed } from "@conduit/core/protocol/ndk"
+import { normalizePubkey } from "@conduit/core/utils"
 
 import {
   assertAllowedOrigin,

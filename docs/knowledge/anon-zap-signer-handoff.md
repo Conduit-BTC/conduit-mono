@@ -116,9 +116,11 @@ amount or comment.
 - `ANON_ZAP_RATE_LIMIT_SERVICE`: required Cloudflare Pages service binding to
   the Anon signer Worker. Pages Functions do not own Rate Limiting bindings;
   they send only HMAC-pseudonymous bucket keys through this authenticated
-  service boundary. `apps/market/wrangler.jsonc` declares the binding so preview
-  and production deployments do not depend on untracked dashboard state. Both
-  sides fail closed on missing or unavailable bindings.
+  service boundary. Configure the binding separately on every Git-connected
+  Pages project because Market, Merchant, and their Signet projects all consume
+  the repository-root `functions/` directory. Do not add a partial app-local
+  Pages Wrangler file: it is outside that project root and cannot represent all
+  four projects. Both sides fail closed on missing or unavailable bindings.
 
 `POST /api/zapout-authority` accepts only a bounded batch of public receipt
 events. It rate-limits before streaming the bounded body, validates signatures
