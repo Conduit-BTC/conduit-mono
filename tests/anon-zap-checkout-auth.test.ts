@@ -1,20 +1,20 @@
 import { describe, expect, it } from "bun:test"
 import {
   authorizeAnonZapCheckout,
+  encodeLnurl,
   parseAnonZapCheckoutIntent,
   type BtcUsdRateQuote,
-  type LnurlPayMetadata,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
 
 const MERCHANT_SECRET = Uint8Array.from([...new Uint8Array(31), 2])
-const RECEIPT_SECRET = Uint8Array.from([...new Uint8Array(31), 3])
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
-const RECEIPT_PUBKEY = getPublicKey(RECEIPT_SECRET)
 const NOW_SECONDS = 1_800_000_000
 const PRODUCT_D_TAG = "cnd-150-test-product"
 const PRODUCT_ADDRESS = `30402:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}`
+const LNURL_PAY_URL = "https://wallet.example/.well-known/lnurlp/merchant"
+const LNURL = encodeLnurl(LNURL_PAY_URL)
 
 function signMerchantEvent(input: {
   kind: number
@@ -85,23 +85,6 @@ function profileEvent(): SignedPublicNostrEvent {
   })
 }
 
-function lnurlMetadata(
-  overrides: Partial<LnurlPayMetadata> = {}
-): LnurlPayMetadata {
-  return {
-    payRequestUrl: "https://wallet.example/.well-known/lnurlp/merchant",
-    lnurl: "lnurl1cnd150test",
-    callback: "https://wallet.example/lnurl/callback",
-    minSendable: 1_000,
-    maxSendable: 100_000_000,
-    tag: "payRequest",
-    allowsNostr: true,
-    nostrPubkey: RECEIPT_PUBKEY,
-    metadata: "[]",
-    ...overrides,
-  }
-}
-
 function authorize(
   overrides: Partial<Parameters<typeof authorizeAnonZapCheckout>[0]> = {}
 ) {
@@ -113,7 +96,6 @@ function authorize(
     productEvents: [productEvent()],
     profileEvents: [profileEvent()],
     deletionEvents: [],
-    lnurlMetadata: lnurlMetadata(),
     receiptRelayUrls: ["wss://relay.example"],
     nowSeconds: NOW_SECONDS,
     ...overrides,
@@ -158,7 +140,7 @@ describe("anonymous public zap checkout authorization", () => {
         merchantPubkey: MERCHANT_PUBKEY,
         items: [
           {
-            productAddress: `30402:${RECEIPT_PUBKEY}:${PRODUCT_D_TAG}`,
+            productAddress: `30402:${"c".repeat(64)}:${PRODUCT_D_TAG}`,
             quantity: 1,
           },
         ],
@@ -196,20 +178,18 @@ describe("anonymous public zap checkout authorization", () => {
       tags: [
         ["p", MERCHANT_PUBKEY],
         ["amount", "30000"],
-        ["lnurl", "lnurl1cnd150test"],
+        ["lnurl", LNURL],
         ["relays", "wss://relay.example"],
         ["omf", "zapout"],
-        ["omf_provider", RECEIPT_PUBKEY],
         ["client", "conduit-market"],
       ],
     })
     expect(result.authorization).toEqual({
       merchantPubkey: MERCHANT_PUBKEY,
       amountMsats: 30_000,
-      lnurl: "lnurl1cnd150test",
+      lnurl: LNURL,
       publicZapPolicy: "anonymous_public_zap_allowed",
     })
-    expect(result.lnurlNostrPubkey).toBe(RECEIPT_PUBKEY)
     expect(result.pricing).toEqual({
       itemSubtotalSats: 20,
       shippingCostSats: 10,
@@ -383,19 +363,20 @@ describe("anonymous public zap checkout authorization", () => {
     ).toThrow("Checkout product requires merchant-coordinated shipping.")
   })
 
-  it("binds authorization to the merchant profile LNURL endpoint", () => {
-    expect(() =>
-      authorize({
-        lnurlMetadata: lnurlMetadata({
-          payRequestUrl: "https://attacker.example/.well-known/lnurlp/merchant",
-        }),
-      })
-    ).toThrow("Merchant Lightning Address metadata is invalid.")
+  it("binds authorization to the signed merchant profile LNURL endpoint", () => {
+    const result = authorize()
+    expect(result.authorization.lnurl).toBe(LNURL)
+    expect(result.draft.tags).toContainEqual(["lnurl", LNURL])
 
     expect(() =>
       authorize({
-        lnurlMetadata: lnurlMetadata({ allowsNostr: false }),
+        profileEvents: [
+          signMerchantEvent({
+            kind: 0,
+            content: JSON.stringify({ lud16: "not-an-address" }),
+          }),
+        ],
       })
-    ).toThrow("Merchant Lightning Address does not support public zaps.")
+    ).toThrow("Merchant Lightning Address is unavailable.")
   })
 })

@@ -6,14 +6,9 @@ import {
   authorizeAnonZapCheckout,
   isValidSignedPublicNostrEvent,
   parseAnonZapCheckoutIntent,
-  resolveAnonZapMerchantLud16,
   type AnonZapSigningAuthorization,
   type SignedPublicNostrEvent,
 } from "@conduit/core/protocol/anon-zap-checkout"
-import {
-  fetchLnurlPayMetadata,
-  type LnurlPayMetadata,
-} from "@conduit/core/protocol/lightning"
 import { fetchEventsFanoutDetailed } from "@conduit/core/protocol/ndk"
 import { parseProductEvent } from "@conduit/core/protocol/products"
 import {
@@ -76,7 +71,6 @@ export type AnonZapPagesDependencies = {
     filter: PublicNostrFilter,
     relayUrls: string[]
   ) => Promise<AnonZapPublicReadResult>
-  fetchLnurlMetadata: (lud16: string) => Promise<LnurlPayMetadata>
   fetchPricingRateQuote: (
     requiredCurrencies: readonly string[]
   ) => Promise<BtcUsdRateQuote>
@@ -89,8 +83,6 @@ type AnonZapAuthorizationTokenPayload = {
   expiresAt: number
   draft: AnonZapRequestDraft
   authorization: AnonZapSigningAuthorization
-  lnurlCallback: string
-  lnurlNostrPubkey: string
   relayUrls: string[]
 }
 
@@ -154,8 +146,6 @@ const defaultDependencies: AnonZapPagesDependencies = {
       })),
     }
   },
-  fetchLnurlMetadata: (lud16) =>
-    fetchLnurlPayMetadata(lud16, { timeoutMs: 6_000 }),
   fetchPricingRateQuote: (requiredCurrencies) =>
     fetchTrustedPricingRateQuote({
       requiredFiatCurrencies: requiredCurrencies,
@@ -821,8 +811,6 @@ function parseAuthorizationPayload(
     !Number.isSafeInteger(value.expiresAt) ||
     !isRecord(value.draft) ||
     !isRecord(value.authorization) ||
-    typeof value.lnurlCallback !== "string" ||
-    typeof value.lnurlNostrPubkey !== "string" ||
     !Array.isArray(value.relayUrls) ||
     !value.relayUrls.every((relay) => typeof relay === "string")
   ) {
@@ -846,8 +834,6 @@ function parseAuthorizationPayload(
     expiresAt: value.expiresAt,
     draft,
     authorization: authorization as AnonZapSigningAuthorization,
-    lnurlCallback: value.lnurlCallback,
-    lnurlNostrPubkey: value.lnurlNostrPubkey,
     relayUrls: value.relayUrls as string[],
   }
 }
@@ -1013,44 +999,24 @@ export async function authorizeAnonZapRequest(
           )
         : []
     const deletionEvents = [...addressDeletionEvents, ...eventDeletionEvents]
-    const lud16 = resolveAnonZapMerchantLud16(
-      intent.merchantPubkey,
-      profileEvents
-    )
-    const lnurlHost = lud16.split("@")[1]?.toLowerCase()
-    const allowedLnurlHosts = new Set(
-      parseCsv(env.ANON_ZAP_LNURL_ALLOWED_HOSTS).map((host) =>
-        host.toLowerCase()
-      )
-    )
-    if (!lnurlHost || !allowedLnurlHosts.has(lnurlHost)) {
-      throw new Error("Merchant Lightning Address host is not allowed.")
-    }
     const requiredPricingCurrencies = getRequiredPricingCurrencies(
       intent,
       productEvents
     )
-    const [pricingRate, lnurlMetadata] = await Promise.all([
+    const pricingRate =
       requiredPricingCurrencies.length > 0
-        ? dependencies
+        ? await dependencies
             .fetchPricingRateQuote(requiredPricingCurrencies)
             .catch(() => {
               throw new Error("Checkout pricing is temporarily unavailable.")
             })
-        : Promise.resolve(null),
-      dependencies.fetchLnurlMetadata(lud16).catch(() => {
-        throw new Error(
-          "Merchant Lightning Address is temporarily unavailable."
-        )
-      }),
-    ])
+        : null
     const nowSeconds = dependencies.nowSeconds()
     const checkout = authorizeAnonZapCheckout({
       intent,
       productEvents,
       profileEvents,
       deletionEvents,
-      lnurlMetadata,
       receiptRelayUrls: receiptRelays,
       pricingRate,
       nowSeconds,
@@ -1070,8 +1036,6 @@ export async function authorizeAnonZapRequest(
       expiresAt: nowSeconds + getAuthTtlSeconds(env),
       draft: attestedDraft,
       authorization: { ...checkout.authorization, checkoutSessionId },
-      lnurlCallback: checkout.lnurlCallback,
-      lnurlNostrPubkey: checkout.lnurlNostrPubkey,
       relayUrls: checkout.relayUrls,
     }
     const authorizationToken = await createAuthorizationToken(
@@ -1083,8 +1047,6 @@ export async function authorizeAnonZapRequest(
         authorizationToken,
         expiresAt: payload.expiresAt,
         draft: payload.draft,
-        lnurlCallback: payload.lnurlCallback,
-        lnurlNostrPubkey: payload.lnurlNostrPubkey,
         relayUrls: payload.relayUrls,
         pricing: checkout.pricing,
       },
@@ -1178,9 +1140,7 @@ export async function signAuthorizedAnonZapRequest(
         id: signed.id,
         rawEvent: signed.rawEvent,
         requestCreatedAt: payload.draft.createdAt,
-        lnurlCallback: payload.lnurlCallback,
         lnurl: payload.authorization.lnurl,
-        lnurlNostrPubkey: payload.lnurlNostrPubkey,
         relayUrls: payload.relayUrls,
       },
       200,

@@ -8,8 +8,8 @@ import {
   normalizeCommercePrice,
   type BtcUsdRateQuote,
 } from "../pricing"
-import type { LnurlPayMetadata } from "./lightning"
 import { EVENT_KINDS } from "./kinds"
+import { encodeLnurl, isValidLud16Address } from "./lightning"
 import { evaluateListingSafety } from "./listing-safety"
 import { parseProductEvent } from "./products"
 import type { AnonZapRequestDraft } from "./anon-zap"
@@ -70,8 +70,6 @@ export type AnonZapSigningAuthorization = {
 export type AuthorizedAnonZapCheckout = {
   draft: AnonZapRequestDraft
   authorization: Omit<AnonZapSigningAuthorization, "checkoutSessionId">
-  lnurlCallback: string
-  lnurlNostrPubkey: string
   relayUrls: string[]
   pricing: AuthorizedAnonZapPricing
 }
@@ -314,51 +312,12 @@ function isAllowedRelayUrl(raw: string): boolean {
   }
 }
 
-function assertLnurlMetadata(
-  metadata: LnurlPayMetadata,
-  amountMsats: number
-): asserts metadata is LnurlPayMetadata & { nostrPubkey: string } {
-  if (!metadata.allowsNostr || !metadata.nostrPubkey) {
-    throw new Error("Merchant Lightning Address does not support public zaps.")
-  }
-  if (!HEX_64.test(metadata.nostrPubkey)) {
-    throw new Error("Merchant Lightning Address has an invalid receipt pubkey.")
-  }
-  if (
-    !Number.isSafeInteger(metadata.minSendable) ||
-    !Number.isSafeInteger(metadata.maxSendable) ||
-    metadata.minSendable <= 0 ||
-    metadata.maxSendable < metadata.minSendable ||
-    amountMsats < metadata.minSendable ||
-    amountMsats > metadata.maxSendable
-  ) {
-    throw new Error("Checkout amount is outside the merchant LNURL range.")
-  }
-  if (!/^lnurl/i.test(metadata.lnurl)) {
-    throw new Error("Merchant Lightning Address returned an invalid LNURL.")
-  }
-  try {
-    const callback = new URL(metadata.callback)
-    if (
-      callback.protocol !== "https:" ||
-      callback.username ||
-      callback.password
-    ) {
-      throw new Error()
-    }
-  } catch {
-    throw new Error("Merchant Lightning Address returned an invalid callback.")
-  }
-}
-
 function getProfileLud16(event: SignedPublicNostrEvent): string | null {
   try {
     const content = JSON.parse(event.content) as unknown
     if (!isRecord(content) || typeof content.lud16 !== "string") return null
     const lud16 = content.lud16.trim().toLowerCase()
-    const match = /^([^@]+)@([^@]+)$/.exec(lud16)
-    if (!match) return null
-    return lud16
+    return isValidLud16Address(lud16) ? lud16 : null
   } catch {
     return null
   }
@@ -390,7 +349,6 @@ export function authorizeAnonZapCheckout(input: {
   productEvents: SignedPublicNostrEvent[]
   profileEvents: SignedPublicNostrEvent[]
   deletionEvents: SignedPublicNostrEvent[]
-  lnurlMetadata: LnurlPayMetadata
   receiptRelayUrls: readonly string[]
   pricingRate?: BtcUsdRateQuote | null
   nowSeconds?: number
@@ -549,10 +507,10 @@ export function authorizeAnonZapCheckout(input: {
 
   const lud16 = resolveAnonZapMerchantLud16(intent.merchantPubkey, profiles)
   const expectedPayRequestUrl = getExpectedLnurlPayRequestUrl(lud16)
-  if (input.lnurlMetadata.payRequestUrl !== expectedPayRequestUrl) {
-    throw new Error("Merchant Lightning Address metadata is invalid.")
+  if (!expectedPayRequestUrl) {
+    throw new Error("Merchant Lightning Address is invalid.")
   }
-  assertLnurlMetadata(input.lnurlMetadata, totalMsats)
+  const lnurl = encodeLnurl(expectedPayRequestUrl)
 
   const relayUrls = Array.from(new Set(input.receiptRelayUrls))
   if (relayUrls.length === 0 || !relayUrls.every(isAllowedRelayUrl)) {
@@ -565,10 +523,9 @@ export function authorizeAnonZapCheckout(input: {
     tags: [
       ["p", intent.merchantPubkey],
       ["amount", String(totalMsats)],
-      ["lnurl", input.lnurlMetadata.lnurl],
+      ["lnurl", lnurl],
       ["relays", ...relayUrls],
       ["omf", "zapout"],
-      ["omf_provider", input.lnurlMetadata.nostrPubkey.toLowerCase()],
       ["client", "conduit-market"],
     ],
   }
@@ -578,11 +535,9 @@ export function authorizeAnonZapCheckout(input: {
     authorization: {
       merchantPubkey: intent.merchantPubkey,
       amountMsats: totalMsats,
-      lnurl: input.lnurlMetadata.lnurl,
+      lnurl,
       publicZapPolicy: "anonymous_public_zap_allowed",
     },
-    lnurlCallback: input.lnurlMetadata.callback,
-    lnurlNostrPubkey: input.lnurlMetadata.nostrPubkey.toLowerCase(),
     relayUrls,
     pricing: {
       itemSubtotalSats,

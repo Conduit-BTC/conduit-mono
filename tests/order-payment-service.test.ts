@@ -472,6 +472,100 @@ describe("runOrderPayment", () => {
     }
   })
 
+  it("blocks payment when authorized pricing requires buyer review", async () => {
+    const orderId = "anon-zap-pricing-review"
+    let stored = lifecycle({
+      orderId,
+      checkoutMode: "anonymous_public_zap",
+      publicZapSigner: "anon",
+      invoice: undefined,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+    })
+    const table = db.orderLifecycles as typeof db.orderLifecycles & {
+      get: typeof db.orderLifecycles.get
+      put: typeof db.orderLifecycles.put
+    }
+    const originalGet = table.get
+    const originalPut = table.put
+    let invoiceCalls = 0
+    let paymentCalls = 0
+
+    table.get = (async () => stored) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+
+    try {
+      const state = await runOrderPayment(
+        basePaymentContext({
+          orderId,
+          merchantLud16: "merchant@wallet.example",
+          zapMode: "anonymous_public_zap",
+          anonZapPreparation: {
+            localPricing: {
+              status: "ok",
+              itemSubtotalSats: 1,
+              totalSats: 1,
+              totalMsats: 1_000,
+              items: [],
+              shippingCost: {
+                status: "not_required",
+                totalSats: 0,
+                missingProductIds: [],
+              },
+              approximate: false,
+            },
+            destination: { country: "US", postalCode: "94107" },
+          },
+        }),
+        paymentDependencies({
+          anonZapSignerPubkey: ANON_SIGNER_PUBKEY,
+          fetchLnurlPayMetadata: async () => lnurlMetadata(),
+          prepareAnonZapCheckout: async () => ({
+            status: "review_required",
+            authorization: {} as never,
+            checkoutPricing: {
+              status: "ok",
+              itemSubtotalSats: 2,
+              totalSats: 2,
+              totalMsats: 2_000,
+              items: [],
+              shippingCost: {
+                status: "not_required",
+                totalSats: 0,
+                missingProductIds: [],
+              },
+              approximate: false,
+            },
+          }),
+          requestCheckoutLnurlInvoice: async () => {
+            invoiceCalls += 1
+            throw new Error("must not request")
+          },
+          payCheckoutInvoice: async () => {
+            paymentCalls += 1
+            throw new Error("must not pay")
+          },
+        })
+      )
+
+      expect(invoiceCalls).toBe(0)
+      expect(paymentCalls).toBe(0)
+      expect(state.error).toContain(
+        "Current signed listing pricing changed from 1 to 2 sats."
+      )
+      expect(state.lifecycle?.checkoutMode).toBe("anonymous_public_zap")
+      expect(state.lifecycle?.publicZapFallback).not.toBe(true)
+      expect(state.lifecycle?.invoiceStatus).toBe("failed")
+      expect(state.lifecycle?.paymentStatus).toBe("failed")
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+    }
+  })
+
   it("falls back privately when public zap invoice issuance fails before payment", async () => {
     const orderId = "anon-zap-prepared-before-order"
     const merchantPubkey = "b".repeat(64)

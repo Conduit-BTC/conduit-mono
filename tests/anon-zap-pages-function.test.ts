@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test"
 import type {
   AuthorizedAnonZapPricing,
   BtcUsdRateQuote,
-  LnurlPayMetadata,
   SignedPublicNostrEvent,
 } from "@conduit/core"
 import { fetchTrustedPricingRateQuote } from "@conduit/core/pricing/trusted-rate-provider"
@@ -35,10 +34,8 @@ import { onRequestGet as getRootAnonZapConfig } from "../functions/api/anon-zap-
 import { onRequestOptions as rootSignAnonZapOptions } from "../functions/api/anon-zap-sign"
 
 const MERCHANT_SECRET = Uint8Array.from([...new Uint8Array(31), 4])
-const RECEIPT_SECRET = Uint8Array.from([...new Uint8Array(31), 5])
 const SHOPPER_SECRET = Uint8Array.from([...new Uint8Array(31), 6])
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
-const RECEIPT_PUBKEY = getPublicKey(RECEIPT_SECRET)
 const NOW_SECONDS = 1_800_000_000
 const PRODUCT_D_TAG = "cnd-150-pages-test"
 const PRODUCT_ADDRESS = `30402:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}`
@@ -58,8 +55,6 @@ type AuthorizationResponse = {
     content: string
     tags: string[][]
   }
-  lnurlCallback: string
-  lnurlNostrPubkey: string
   relayUrls: string[]
   pricing: AuthorizedAnonZapPricing
 }
@@ -128,20 +123,6 @@ function profileEvent(): SignedPublicNostrEvent {
     kind: 0,
     content: JSON.stringify({ lud16: "merchant@wallet.example" }),
   })
-}
-
-function lnurlMetadata(): LnurlPayMetadata {
-  return {
-    payRequestUrl: "https://wallet.example/.well-known/lnurlp/merchant",
-    lnurl: "lnurl1cnd150pagestest",
-    callback: "https://wallet.example/lnurl/callback",
-    minSendable: 1_000,
-    maxSendable: 100_000_000,
-    tag: "payRequest",
-    allowsNostr: true,
-    nostrPubkey: RECEIPT_PUBKEY,
-    metadata: "[]",
-  }
 }
 
 function rateLimitService(
@@ -247,9 +228,6 @@ function createDependencies(
             options.saturatedRead === readKind ? filter.limit : events.length,
         })),
       }
-    },
-    async fetchLnurlMetadata() {
-      return lnurlMetadata()
     },
     async fetchPricingRateQuote(currencies) {
       options.pricingRateCalls?.push([...currencies])
@@ -411,10 +389,6 @@ describe("Anon zap Pages proxy", () => {
         async fetchPublicEvents(filter, relayUrls) {
           dependencyCalls += 1
           return dependencies.fetchPublicEvents(filter, relayUrls)
-        },
-        async fetchLnurlMetadata(lud16) {
-          dependencyCalls += 1
-          return dependencies.fetchLnurlMetadata(lud16)
         },
       }
     )
@@ -581,7 +555,7 @@ describe("Anon zap Pages proxy", () => {
     })
   })
 
-  it("applies all authorization buckets before relay and LNURL work without exposing the source", async () => {
+  it("applies all authorization buckets before public relay work without exposing the source", async () => {
     const keys: string[] = []
     const scopes: string[] = []
     const response = await authorizeAnonZapRequest(
@@ -1005,10 +979,9 @@ describe("Anon zap Pages proxy", () => {
       "Zapped out 1 item at https://shop.conduit.market/"
     )
     expect(authorization.draft.tags).toContainEqual(["amount", "10000"])
-    expect(authorization.draft.tags).toContainEqual([
-      "omf_provider",
-      RECEIPT_PUBKEY,
-    ])
+    expect(
+      authorization.draft.tags.some((tag) => tag[0] === "omf_provider")
+    ).toBe(false)
     expect(
       authorization.draft.tags.find((tag) => tag[0] === "omf_auth")
     ).toEqual([
@@ -1027,6 +1000,10 @@ describe("Anon zap Pages proxy", () => {
       version: 1,
       expiresAt: NOW_SECONDS + 120,
     })
+    expect(authorization).not.toHaveProperty("lnurlCallback")
+    expect(authorization).not.toHaveProperty("lnurlNostrPubkey")
+    expect(tokenPayload).not.toHaveProperty("lnurlCallback")
+    expect(tokenPayload).not.toHaveProperty("lnurlNostrPubkey")
   })
 
   it("prices a fiat listing with a server-owned quote", async () => {

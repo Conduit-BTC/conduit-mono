@@ -101,14 +101,16 @@ amount or comment.
   authorization token. The default is 120 seconds and accepted values are
   bounded from 30 through 300 seconds.
 - `ANON_ZAP_LNURL_ALLOWED_HOSTS`: required exact-host allow-list for LNURL-pay
-  metadata egress. Merchant Lightning Address hosts outside this operator-owned
-  list fail closed before a request is sent.
-- `ANON_ZAP_PROVIDER_ATTESTATION_KEY_ID`: identifier for the active provider
-  attestation signing key. Use a new identifier for every rotation.
+  metadata egress performed by the public Zapouts authority endpoint. Checkout
+  metadata is fetched by the browser, so this allow-list does not gate invoice
+  creation or make Pages a dependency of the merchant's wallet provider.
+- `ANON_ZAP_PROVIDER_ATTESTATION_KEY_ID`: identifier for the active checkout
+  authorization signing key. The deployed name is retained for compatibility;
+  use a new identifier for every rotation.
 - `ANON_ZAP_PROVIDER_ATTESTATION_PRIVATE_KEY_HEX`: dedicated 32-byte Schnorr
-  private key used by Market Pages to bind the exact public request to its
-  checkout-time provider. It must not reuse the Anon Shopper or transport-auth
-  key.
+  private key used by Market Pages to bind `omf_auth` to the exact authorized
+  public request. It does not attest browser-fetched provider metadata and must
+  not reuse the Anon Shopper or transport-auth key.
 - `ANON_ZAP_PROVIDER_ATTESTATION_PUBLIC_KEYS`: comma-separated
   `key-id:hex-pubkey` verification ring shared by Market Pages and the signer
   Worker. Retain public keys for routine rotations; never retain old private
@@ -124,12 +126,12 @@ amount or comment.
 
 `POST /api/zapout-authority` accepts only a bounded batch of public receipt
 events. It rate-limits before streaming the bounded body, validates signatures
-and invoice bindings, and verifies the server-issued `omf_auth` proof that binds
-the exact anonymous request to its checkout-time `omf_provider`. Retired Anon
-Shopper keys are not authority inputs. Non-attested receipts may use current
-merchant/provider metadata only during a five-minute payment-time window;
-older mutable evidence, lookup failure, rate limiting, or provider rotation is
-reported as authority unavailable rather than invalid. Fallback metadata
+and invoice bindings, then resolves current merchant/provider metadata during a
+five-minute payment-time window. The `omf_auth` proof authorizes the anonymous
+request for signing but does not establish provider authority. Retired Anon
+Shopper keys are not authority inputs. Older receipts, lookup failure, rate
+limiting, or provider rotation are reported as authority unavailable rather
+than invalid. Fallback metadata
 lookups are restricted to exact operator-allowed hosts and deduplicated only
 while a request is in flight, so provider revocation is not hidden by a
 persistent cache. Recipient limits affect only that recipient's fallback result
@@ -187,26 +189,29 @@ values. Never copy the production value into a preview or developer runtime.
 The current Worker accepts one active request-auth secret and does not support
 an overlap window. Rotation is therefore fail-closed: disable anonymous public
 signing, update both server runtimes, verify an authenticated request, then
-re-enable the route. Checkout must use its private-payment fallback while the
-signer is disabled. Removing the secret from either runtime is the emergency
-revocation path; missing request authentication must never fall back to an
-unauthenticated Worker call.
+re-enable the route. While signing is disabled, the already-delivered order may
+continue through one plain private invoice before any invoice reaches a payment
+rail. Removing the secret from either runtime is the emergency revocation path;
+missing request authentication must never fall back to an unauthenticated
+Worker call.
 
-Provider attestations use a separate asymmetric key lifecycle. For routine
-rotation, deploy a new key id/private key, add its public key to
+Checkout authorization attestations use a separate asymmetric key lifecycle.
+For routine rotation, deploy a new key id/private key, add its public key to
 `ANON_ZAP_PROVIDER_ATTESTATION_PUBLIC_KEYS`, retain prior public keys for
 historical verification, verify signing, and then destroy the retired private
 key. If an attestation private key is suspected compromised, remove its public
-key from every verifier immediately; receipts using that key become authority
-unavailable rather than being treated as invalid or silently trusted. Preview,
-production, CI, and local environments must use distinct attestation keys.
+key from every signer verifier immediately so affected requests can no longer
+be signed. Preview, production, CI, and local environments must use distinct
+attestation keys.
 
 ## Signer Request Contract
 
 Only the trusted Market server boundary should call the signer Worker. The
 browser sends checkout intent to Market; Market validates public product state,
-merchant zap policy, LNURL support, amount bounds, and the canonical zap draft
-before calling the signer.
+merchant zap policy, amount, the profile-derived LNURL, and the canonical zap
+draft before calling the signer. The browser separately fetches LNURL-pay
+metadata, checks zap support, receipt pubkey, callback safety, amount bounds,
+and exact LNURL agreement before requesting a signature or invoice.
 
 Worker request:
 
@@ -222,7 +227,6 @@ Worker request:
       ["lnurl", "<merchant lnurl>"],
       ["relays", "wss://relay.example"],
       ["omf", "zapout"],
-      ["omf_provider", "<receipt provider hex pubkey>"],
       ["omf_auth", "<attestation key id>", "<Schnorr signature>"],
       ["client", "conduit-market"]
     ]
@@ -271,7 +275,8 @@ The Worker independently enforces:
 - a single merchant `p` tag, `amount` tag, `lnurl` tag, and `relays` tag
 - allowed public tags only: `p`, `amount`, `lnurl`, `relays`, `client`, `omf`,
   `omf_provider`, and `omf_auth`
-- an exact server-issued `omf_auth` proof for OMF provider attestation
+- an exact server-issued `omf_auth` proof for checkout authorization; new
+  requests do not include `omf_provider`
 - `content` length at or below 280 characters
 - draft `p`, `amount`, and `lnurl` match the server-side authorization object
 - private key matches `ANON_CONDUIT_SHOPPER_PUBKEY`
@@ -308,9 +313,9 @@ Before enabling anonymous checkout integration:
 - production and preview allowed origins are confirmed
 - Market server boundary has a signer Worker URL, request-auth secret, and
   access to its trusted pricing providers
-- missing or unhealthy signer configuration is surfaced as public-zap
-  degradation while the same order continues through a plain private invoice;
-  it must never render as a checkout-blocking error
+- missing or unhealthy signer configuration suppresses only the optional public
+  zap; the same delivered order continues through one plain private invoice
+  before any invoice reaches a payment rail
 - request-auth secrets meet the entropy, environment-separation, rotation, and
   emergency-revocation requirements above
 - dev/test throwaway identity strategy is documented for local and CI use

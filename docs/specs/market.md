@@ -216,25 +216,27 @@ Product public-zap policy is cart-wide:
   `Zapped out 1 item at https://shop.conduit.market/` or
   `Zapped out 4 items at https://shop.conduit.market/`, using the actual summed
   cart quantity and the singular noun only for one item.
-- Anonymous public-zap preparation is optional marketing infrastructure, not a
-  checkout availability dependency. Checkout delivers one order first. If
-  authorization, signing, public-invoice issuance, or public-invoice validation
-  fails before an invoice reaches a payment rail, the same order automatically
-  continues with a plain private LNURL invoice. The lifecycle records the
-  fallback and must not claim that a public zap was created.
+- Anonymous public-zap preparation is optional receipt infrastructure, not an
+  order or payment availability dependency. Checkout delivers and persists one
+  order first. If authorization, signing, public-invoice issuance, or
+  public-invoice validation fails before an invoice reaches a payment rail, the
+  same order continues through exactly one plain private LNURL invoice. The
+  lifecycle records the fallback and must not claim that a public zap occurred.
 - Once an invoice reaches a payment rail, timeout or ambiguous payment state
   must not request a second invoice or switch payment modes. The buyer must
   check the original payment state before retrying.
 - The public Zapouts feed accepts only valid signed embedded zap requests whose
   recipient, sender, amount, and BOLT11 description binding agree with the
-  receipt. New anonymous requests include a server-authorized `omf_provider`
-  pubkey and an `omf_auth` proof bound to the exact public request, so Anon
-  Shopper key rotation cannot invalidate historical receipts or leave retired
-  shopper keys as provider authorities. Other receipts use current merchant and
-  provider metadata only during a bounded payment-time window; older evidence
-  or provider rotation is authority-unavailable, not invalid. Any server
-  metadata fallback is restricted to exact operator-allowed LNURL hosts.
-  Visitors never contact receipt-selected wallet domains directly. Relay reads paginate independently,
+  receipt. Anonymous requests include an `omf_auth` proof bound to the exact
+  server-authorized request, while the browser resolves the merchant's current
+  LNURL provider directly before signing and invoice creation. The provider
+  callback and receipt pubkey must match the authorized LNURL and amount, but
+  are not accepted from the server authorization response. The public feed
+  resolves provider authority server-side only during a bounded payment-time
+  window; older evidence, lookup failure, or provider rotation is
+  authority-unavailable, not invalid. Authority metadata egress is restricted
+  to exact operator-allowed LNURL hosts, and feed visitors never contact
+  receipt-selected wallet domains directly. Relay reads paginate independently,
   preserve same-second boundaries, cap relays/candidates/time, and distinguish
   empty results, invalid receipts, unavailable authority, and partial or total
   relay failure.

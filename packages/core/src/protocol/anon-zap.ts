@@ -332,10 +332,10 @@ export function validateAnonZapRequestDraft(
   if (omfMarkerCount > 1 || omfProviderCount > 1 || omfAttestationCount > 1) {
     return { ok: false, reason: "Zap request provider authority is invalid." }
   }
-  if ((omfMarkerCount === 1) !== (omfProviderCount === 1)) {
+  if (omfProviderCount === 1 && omfMarkerCount !== 1) {
     return { ok: false, reason: "Zap request provider authority is missing." }
   }
-  if (omfAttestationCount === 1 && omfProviderCount !== 1) {
+  if (omfAttestationCount === 1 && omfMarkerCount !== 1) {
     return { ok: false, reason: "Zap request provider attestation is invalid." }
   }
 

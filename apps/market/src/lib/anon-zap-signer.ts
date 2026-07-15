@@ -5,6 +5,7 @@ import {
   normalizePubkey,
   validateAnonZapRequestDraft,
   type AuthorizedAnonZapPricing,
+  type LnurlPayMetadata,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 
@@ -38,8 +39,6 @@ export type AuthorizedAnonZapCheckoutClient = {
   authorizationToken: string
   expiresAt: number
   draft: CheckoutZapRequestDraft
-  lnurlCallback: string
-  lnurlNostrPubkey: string
   relayUrls: string[]
   pricing: AuthorizedAnonZapPricing
 }
@@ -57,9 +56,7 @@ type SignerResponse = {
   id: string
   rawEvent: SignedPublicNostrEvent
   requestCreatedAt: number
-  lnurlCallback: string
   lnurl: string
-  lnurlNostrPubkey: string
   relayUrls: string[]
 }
 
@@ -174,8 +171,6 @@ function parseAuthorizationResponse(
     !Number.isSafeInteger(value.expiresAt) ||
     value.expiresAt <= 0 ||
     !isRecord(value.draft) ||
-    typeof value.lnurlCallback !== "string" ||
-    typeof value.lnurlNostrPubkey !== "string" ||
     !Array.isArray(value.relayUrls) ||
     !value.relayUrls.every((relay) => typeof relay === "string") ||
     !isRecord(value.pricing) ||
@@ -188,8 +183,6 @@ function parseAuthorizationResponse(
   const validation = validateAnonZapRequestDraft(draft)
   if (!validation.ok) throw new Error(validation.reason)
   if (
-    !isAllowedCallback(value.lnurlCallback) ||
-    !normalizePubkey(value.lnurlNostrPubkey) ||
     value.relayUrls.length === 0 ||
     !(value.relayUrls as string[]).every(isAllowedRelay)
   ) {
@@ -199,8 +192,6 @@ function parseAuthorizationResponse(
     authorizationToken: value.authorizationToken,
     expiresAt: value.expiresAt,
     draft,
-    lnurlCallback: value.lnurlCallback,
-    lnurlNostrPubkey: normalizePubkey(value.lnurlNostrPubkey)!,
     relayUrls: value.relayUrls as string[],
     pricing,
   }
@@ -212,9 +203,7 @@ function parseSignerResponse(value: unknown): SignerResponse {
     typeof value.id !== "string" ||
     !isRecord(value.rawEvent) ||
     typeof value.requestCreatedAt !== "number" ||
-    typeof value.lnurlCallback !== "string" ||
     typeof value.lnurl !== "string" ||
-    typeof value.lnurlNostrPubkey !== "string" ||
     !Array.isArray(value.relayUrls) ||
     !value.relayUrls.every((relay) => typeof relay === "string")
   ) {
@@ -301,8 +290,7 @@ function eventMatchesDraft(
 function validateServerDraft(
   draft: CheckoutZapRequestDraft,
   context: AnonZapCheckoutAuthorizationContext,
-  pricing: AuthorizedAnonZapPricing,
-  lnurlNostrPubkey: string
+  pricing: AuthorizedAnonZapPricing
 ): void {
   const merchantPubkey = normalizePubkey(context.merchantPubkey)
   if (!merchantPubkey) throw new Error("Merchant pubkey is invalid.")
@@ -316,11 +304,10 @@ function validateServerDraft(
   if (draft.content !== buildAnonZapCheckoutContent(itemCount)) {
     throw new Error("Anon zap draft content is invalid.")
   }
-  if (
-    getSingleTagValue(draft.tags, "omf_provider") !==
-    normalizePubkey(lnurlNostrPubkey)
-  ) {
-    throw new Error("Anon zap draft provider authority is invalid.")
+  if (draft.tags.some((tag) => tag[0] === "omf_provider")) {
+    throw new Error(
+      "Anon zap draft must not attest browser-fetched provider metadata."
+    )
   }
   const providerAttestations = draft.tags.filter((tag) => tag[0] === "omf_auth")
   if (
@@ -329,7 +316,7 @@ function validateServerDraft(
     !/^[A-Za-z0-9_-]{1,32}$/.test(providerAttestations[0]?.[1] ?? "") ||
     !/^[0-9a-f]{128}$/.test(providerAttestations[0]?.[2] ?? "")
   ) {
-    throw new Error("Anon zap draft provider attestation is invalid.")
+    throw new Error("Anon zap draft authorization attestation is invalid.")
   }
   if (
     !Number.isSafeInteger(pricing.itemSubtotalSats) ||
@@ -449,12 +436,7 @@ export async function authorizeCheckoutWithAnonSigner(
         )
       )
     )
-    validateServerDraft(
-      authorization.draft,
-      context,
-      authorization.pricing,
-      authorization.lnurlNostrPubkey
-    )
+    validateServerDraft(authorization.draft, context, authorization.pricing)
     return authorization
   } catch (error) {
     throw wrapAuthorizationError(error)
@@ -502,13 +484,9 @@ export async function signAuthorizedAnonZapCheckout(
     }
     if (
       signed.requestCreatedAt !== authorization.draft.createdAt ||
-      signed.lnurlCallback !== authorization.lnurlCallback ||
       signed.lnurl !== getSingleTagValue(authorization.draft.tags, "lnurl") ||
-      normalizePubkey(signed.lnurlNostrPubkey) !==
-        authorization.lnurlNostrPubkey ||
       JSON.stringify(signed.relayUrls) !==
         JSON.stringify(authorization.relayUrls) ||
-      !isAllowedCallback(signed.lnurlCallback) ||
       !signed.relayUrls.every(isAllowedRelay)
     ) {
       throw new Error("Anon zap signer receipt metadata is invalid.")
@@ -517,9 +495,7 @@ export async function signAuthorizedAnonZapCheckout(
       id: signed.id,
       rawEvent: signed.rawEvent,
       requestCreatedAt: signed.requestCreatedAt,
-      lnurlCallback: signed.lnurlCallback,
       lnurl: signed.lnurl,
-      lnurlNostrPubkey: normalizePubkey(signed.lnurlNostrPubkey)!,
       relayUrls: signed.relayUrls,
       pricing: authorization.pricing,
       authorizationExpiresAt: authorization.expiresAt,
@@ -555,6 +531,7 @@ type PrepareAnonZapCheckoutDependencies = {
 export async function prepareAnonZapCheckout(input: {
   context: AnonZapCheckoutAuthorizationContext
   localPricing: Extract<CheckoutPricingIntent, { status: "ok" }>
+  lnurlMetadata: LnurlPayMetadata
   destination: { country: string; postalCode: string }
   reusableAuthorization?: AuthorizedAnonZapCheckoutClient | null
   options?: AnonZapSignerOptions
@@ -608,6 +585,23 @@ export async function prepareAnonZapCheckout(input: {
     }
   }
 
+  const lnurlNostrPubkey = normalizePubkey(input.lnurlMetadata.nostrPubkey)
+  if (
+    !input.lnurlMetadata.allowsNostr ||
+    !lnurlNostrPubkey ||
+    !isAllowedCallback(input.lnurlMetadata.callback) ||
+    getSingleTagValue(authorization.draft.tags, "lnurl") !==
+      input.lnurlMetadata.lnurl ||
+    authorization.pricing.totalMsats < input.lnurlMetadata.minSendable ||
+    authorization.pricing.totalMsats > input.lnurlMetadata.maxSendable
+  ) {
+    return {
+      status: "private_fallback",
+      failedStage: "authorization",
+      checkoutPricing,
+    }
+  }
+
   if (
     !reusableAuthorization &&
     hasAuthorizedAnonZapPricingChanged(input.localPricing, checkoutPricing)
@@ -620,10 +614,16 @@ export async function prepareAnonZapCheckout(input: {
   }
 
   try {
+    const prepared = await sign(authorization, input.options)
     return {
       status: "prepared",
       authorization,
-      prepared: await sign(authorization, input.options),
+      prepared: {
+        ...prepared,
+        lnurlCallback: input.lnurlMetadata.callback,
+        lnurl: input.lnurlMetadata.lnurl,
+        lnurlNostrPubkey,
+      },
       checkoutPricing,
     }
   } catch {

@@ -1534,6 +1534,8 @@ describe("checkout payment helpers", () => {
         content: draft.content,
         tags: draft.tags,
       },
+      lnurlCallback: "https://attacker.example/cb",
+      lnurlNostrPubkey: "c".repeat(64),
     }))
 
     const result = await requestCheckoutLnurlInvoice(
@@ -1542,6 +1544,7 @@ describe("checkout payment helpers", () => {
         lnurlCallback: "https://wallet.example/cb",
         amountMsats: 50_000,
         lnurl: "lnurl1test",
+        lnurlNostrPubkey: "d".repeat(64),
         recipientPubkey: FAKE_PUBKEY,
         zapContent: "hello\npublic",
         explicitRelayUrls: ["wss://relay.example", "wss://dup.example"],
@@ -1565,6 +1568,7 @@ describe("checkout payment helpers", () => {
       zapRequestId: "zap-request-id",
       zapRequestCreatedAt: 123,
       expectedLnurl: "lnurl1test",
+      lnurlNostrPubkey: "d".repeat(64),
       shouldWaitForZapReceipt: true,
     })
     expect(signZapRequest).toHaveBeenCalledTimes(1)

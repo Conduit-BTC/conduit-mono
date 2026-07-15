@@ -100,14 +100,16 @@ This exception is constrained as follows:
 - Public zap-receipt presentation must validate both the outer kind-9735 and
   embedded kind-9734 signatures, then require request/receipt recipient, sender
   (when `P` is present), and amount tags to agree. Server-authorized anonymous
-  requests include an `omf_provider` tag plus a server-issued `omf_auth` proof
-  bound to the exact public request. The proof preserves checkout-time provider
-  authority across Anon Shopper key rotation without trusting retired shopper
-  keys. Other receipts use a same-origin server authority check only during a
+  requests include an `omf_auth` proof bound to the exact public request. During
+  checkout, the browser resolves the merchant's LNURL provider directly and
+  requires its callback, receipt pubkey, amount range, and encoded LNURL to
+  agree with the server-authorized request before signing or invoice creation.
+  Provider metadata is not accepted from the authorization response. Public
+  receipt presentation uses a same-origin server authority check only during a
   bounded payment-time window, with egress restricted to exact operator-allowed
   LNURL hosts and no persistent provider cache. Historical mutable evidence,
   profile/provider rotation, and lookup failure are authority-unavailable, not
-  invalid; neither outcome is presented as paid. Browsers must not contact
+  invalid; neither outcome is presented as paid. Feed browsers must not contact
   receipt-selected wallet domains.
 - The authorization response includes the latest signed listing's public
   fulfillment format, shipping option identity, and country/postal rules.

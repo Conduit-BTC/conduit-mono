@@ -1074,6 +1074,7 @@ export async function requestCheckoutLnurlInvoice(
     lnurlCallback: string
     amountMsats: number
     lnurl: string
+    lnurlNostrPubkey?: string
     recipientPubkey: string
     zapContent: string
     explicitRelayUrls: readonly string[]
@@ -1112,11 +1113,10 @@ export async function requestCheckoutLnurlInvoice(
     ),
   }
   const signed = await dependencies.signZapRequest(draft)
-  const signedCallback = signed.lnurlCallback ?? params.lnurlCallback
   const signedLnurl = signed.lnurl ?? params.lnurl
   const receiptRelayUrls = signed.relayUrls ?? zapRelayUrls
   const result: FetchZapInvoiceResult = await dependencies.fetchZapInvoice(
-    signedCallback,
+    params.lnurlCallback,
     params.amountMsats,
     JSON.stringify(signed.rawEvent),
     signedLnurl
@@ -1130,8 +1130,8 @@ export async function requestCheckoutLnurlInvoice(
     ...(signed.requestCreatedAt !== undefined
       ? { zapRequestCreatedAt: signed.requestCreatedAt }
       : { zapRequestCreatedAt: draft.createdAt }),
-    ...(signed.lnurlNostrPubkey
-      ? { lnurlNostrPubkey: signed.lnurlNostrPubkey }
+    ...(params.lnurlNostrPubkey
+      ? { lnurlNostrPubkey: params.lnurlNostrPubkey }
       : {}),
     shouldWaitForZapReceipt: true,
   }

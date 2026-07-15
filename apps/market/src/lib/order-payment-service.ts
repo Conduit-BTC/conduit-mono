@@ -243,7 +243,8 @@ function requirePreparedAnonZap(
     OrderPaymentContext,
     "merchantPubkey" | "totalMsats" | "zapContent" | "preparedAnonZap"
   >,
-  expectedSignerPubkey: string | null
+  expectedSignerPubkey: string | null,
+  expectedLnurl: string
 ): SignedCheckoutZapRequest {
   const prepared = ctx.preparedAnonZap
   if (!prepared || !prepared.rawEvent) {
@@ -270,6 +271,7 @@ function requirePreparedAnonZap(
     getAnonZapDraftTag(draft, "p")?.[1]
   )
   const amountMsats = Number(getAnonZapDraftTag(draft, "amount")?.[1])
+  const lnurl = getAnonZapDraftTag(draft, "lnurl")?.[1]
 
   if (
     prepared.id !== rawEvent.id ||
@@ -279,6 +281,7 @@ function requirePreparedAnonZap(
     !merchantPubkey ||
     eventMerchantPubkey !== merchantPubkey ||
     amountMsats !== ctx.totalMsats ||
+    lnurl !== expectedLnurl ||
     rawEvent.content !== ctx.zapContent
   ) {
     throw new Error(
@@ -679,37 +682,6 @@ export async function runOrderPayment(
       lifecycle,
     })
 
-    if (
-      ctx.zapMode === "anonymous_public_zap" &&
-      !ctx.preparedAnonZap &&
-      ctx.anonZapPreparation
-    ) {
-      try {
-        const preparation = await dependencies.prepareAnonZapCheckout({
-          context: {
-            merchantPubkey: ctx.merchantPubkey,
-            items: ctx.items,
-          },
-          localPricing: ctx.anonZapPreparation.localPricing,
-          destination: ctx.anonZapPreparation.destination,
-          options: {
-            authorizationTimeoutMs: OPTIONAL_ANON_ZAP_AUTHORIZATION_TIMEOUT_MS,
-            signingTimeoutMs: OPTIONAL_ANON_ZAP_SIGNING_TIMEOUT_MS,
-          },
-        })
-        if (preparation.status === "prepared") {
-          ctx = {
-            ...ctx,
-            zapContent: preparation.prepared.rawEvent.content,
-            preparedAnonZap: preparation.prepared,
-          }
-        }
-      } catch {
-        // Preparation is receipt-only. Continuing without a prepared event
-        // intentionally selects the validated private-invoice fallback below.
-      }
-    }
-
     if (!ctx.merchantLud16) {
       await patchAndEmit(
         orderId,
@@ -756,6 +728,48 @@ export async function runOrderPayment(
           "Merchant's Lightning address does not support public zaps."
         )
       }
+      const providerReceiptPubkey = normalizePubkey(lnurlMeta.nostrPubkey)
+
+      if (
+        publicZapSigner === "anon" &&
+        !ctx.preparedAnonZap &&
+        ctx.anonZapPreparation
+      ) {
+        let preparation: Awaited<
+          ReturnType<typeof dependencies.prepareAnonZapCheckout>
+        > | null = null
+        try {
+          preparation = await dependencies.prepareAnonZapCheckout({
+            context: {
+              merchantPubkey: ctx.merchantPubkey,
+              items: ctx.items,
+            },
+            localPricing: ctx.anonZapPreparation.localPricing,
+            lnurlMetadata: lnurlMeta,
+            destination: ctx.anonZapPreparation.destination,
+            options: {
+              authorizationTimeoutMs:
+                OPTIONAL_ANON_ZAP_AUTHORIZATION_TIMEOUT_MS,
+              signingTimeoutMs: OPTIONAL_ANON_ZAP_SIGNING_TIMEOUT_MS,
+            },
+          })
+        } catch {
+          // Preparation is receipt-only. Continuing without a prepared event
+          // intentionally selects the validated private-invoice fallback below.
+        }
+        if (preparation?.status === "review_required") {
+          throw new Error(
+            `Current signed listing pricing changed from ${ctx.totalSats.toLocaleString()} to ${preparation.checkoutPricing.totalSats.toLocaleString()} sats. No invoice was requested; review the updated order total before paying.`
+          )
+        }
+        if (preparation?.status === "prepared") {
+          ctx = {
+            ...ctx,
+            zapContent: preparation.prepared.rawEvent.content,
+            preparedAnonZap: preparation.prepared,
+          }
+        }
+      }
 
       const requestInvoice = (requestedVisibility: typeof visibility) =>
         dependencies.requestCheckoutLnurlInvoice(
@@ -764,6 +778,7 @@ export async function runOrderPayment(
             lnurlCallback: lnurlMeta.callback,
             amountMsats: ctx.totalMsats,
             lnurl: lnurlMeta.lnurl,
+            lnurlNostrPubkey: providerReceiptPubkey ?? undefined,
             recipientPubkey: ctx.merchantPubkey,
             zapContent: ctx.zapContent,
             explicitRelayUrls: ndk.explicitRelayUrls ?? [],
@@ -778,7 +793,8 @@ export async function runOrderPayment(
               if (publicZapSigner === "anon") {
                 return requirePreparedAnonZap(
                   ctx,
-                  dependencies.anonZapSignerPubkey
+                  dependencies.anonZapSignerPubkey,
+                  lnurlMeta.lnurl
                 )
               }
               if (publicZapSigner !== "shopper") {
@@ -809,7 +825,9 @@ export async function runOrderPayment(
       let publicZapFallback =
         visibility === "public_zap" &&
         publicZapSigner === "anon" &&
-        (!lnurlMeta.allowsNostr || !ctx.preparedAnonZap)
+        (!lnurlMeta.allowsNostr ||
+          !providerReceiptPubkey ||
+          !ctx.preparedAnonZap)
       let validatedInvoice: Awaited<
         ReturnType<typeof requestValidatedInvoice>
       > | null = null

@@ -1214,8 +1214,7 @@ export async function verifyOmfZapoutReceiptAuthority(
       : null
   if (
     (providerTags.length > 0 && !attestedProvider) ||
-    (providerAttestationTags.length > 0 &&
-      (!attestedProvider || providerAttestationTags.length !== 1))
+    providerAttestationTags.length > 1
   ) {
     return { status: "invalid", receipt: null }
   }

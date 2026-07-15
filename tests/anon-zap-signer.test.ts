@@ -37,7 +37,6 @@ function draft(
       ["lnurl", "lnurl1test"],
       ["relays", "wss://relay.example"],
       ["omf", "zapout"],
-      ["omf_provider", RECEIPT_PUBKEY],
       ["omf_auth", "test-2026", "a".repeat(128)],
       ["client", "conduit-market"],
     ],
@@ -100,8 +99,6 @@ function authorization(unitPriceSats = 50): AuthorizedAnonZapCheckoutClient {
         tag[0] === "amount" ? ["amount", String(unitPriceSats * 1_000)] : tag
       ),
     }),
-    lnurlCallback: "https://wallet.example/lnurl/callback",
-    lnurlNostrPubkey: RECEIPT_PUBKEY,
     relayUrls: ["wss://relay.example"],
     pricing: {
       itemSubtotalSats: unitPriceSats,
@@ -121,6 +118,21 @@ function authorization(unitPriceSats = 50): AuthorizedAnonZapCheckoutClient {
         },
       ],
     },
+  }
+}
+
+function lnurlMetadata(overrides: Record<string, unknown> = {}) {
+  return {
+    payRequestUrl: "https://wallet.example/.well-known/lnurlp/merchant",
+    lnurl: "lnurl1test",
+    callback: "https://wallet.example/lnurl/callback",
+    minSendable: 1_000,
+    maxSendable: 100_000_000,
+    tag: "payRequest",
+    allowsNostr: true,
+    nostrPubkey: RECEIPT_PUBKEY,
+    metadata: "[]",
+    ...overrides,
   }
 }
 
@@ -149,8 +161,6 @@ function createSignerFetch(
           authorizationToken: "signed.checkout.token",
           expiresAt: NOW_SECONDS + 120,
           draft: draft(),
-          lnurlCallback: "https://wallet.example/lnurl/callback",
-          lnurlNostrPubkey: RECEIPT_PUBKEY,
           relayUrls: ["wss://relay.example"],
           pricing: {
             itemSubtotalSats: 50,
@@ -190,9 +200,7 @@ function createSignerFetch(
         id: rawEvent.id,
         rawEvent,
         requestCreatedAt: zapRequest.createdAt,
-        lnurlCallback: "https://wallet.example/lnurl/callback",
         lnurl: "lnurl1test",
-        lnurlNostrPubkey: RECEIPT_PUBKEY,
         relayUrls: ["wss://relay.example"],
       })
     }
@@ -277,9 +285,7 @@ describe("Anon zap signer client", () => {
     })
     expect(signed).toMatchObject({
       requestCreatedAt: NOW_SECONDS,
-      lnurlCallback: "https://wallet.example/lnurl/callback",
       lnurl: "lnurl1test",
-      lnurlNostrPubkey: RECEIPT_PUBKEY,
       relayUrls: ["wss://relay.example"],
     })
     expect(JSON.stringify(calls)).not.toContain("private-order-id")
@@ -369,6 +375,7 @@ describe("Anon zap signer client", () => {
     const result = await prepareAnonZapCheckout({
       context: context(),
       localPricing: localPricing(),
+      lnurlMetadata: lnurlMetadata(),
       destination: { country: "US", postalCode: "94107" },
       dependencies: {
         authorize: async () => {
@@ -395,6 +402,7 @@ describe("Anon zap signer client", () => {
     const result = await prepareAnonZapCheckout({
       context: context(),
       localPricing: localPricing(),
+      lnurlMetadata: lnurlMetadata(),
       destination: { country: "US", postalCode: "94107" },
       dependencies: {
         authorize: async () => authorized,
@@ -434,6 +442,7 @@ describe("Anon zap signer client", () => {
     const result = await prepareAnonZapCheckout({
       context: context(),
       localPricing: pricing,
+      lnurlMetadata: lnurlMetadata(),
       destination: { country: "CA", postalCode: "H2Y 1C6" },
       dependencies: {
         authorize: async () => authorized,
@@ -457,6 +466,7 @@ describe("Anon zap signer client", () => {
     const result = await prepareAnonZapCheckout({
       context: context(),
       localPricing: localPricing(50),
+      lnurlMetadata: lnurlMetadata(),
       destination: { country: "US", postalCode: "94107" },
       dependencies: {
         authorize: async () => authorization(51),
@@ -470,5 +480,46 @@ describe("Anon zap signer client", () => {
     expect(result.status).toBe("review_required")
     expect(result.checkoutPricing.totalSats).toBe(51)
     expect(signCalls).toBe(0)
+  })
+
+  it("binds browser-fetched provider metadata before signing", async () => {
+    const prepared = await prepareAnonZapCheckout({
+      context: context(),
+      localPricing: localPricing(),
+      lnurlMetadata: lnurlMetadata(),
+      destination: { country: "US", postalCode: "94107" },
+      reusableAuthorization: authorization(),
+      dependencies: {
+        sign: async () => ({
+          id: "event-id",
+          rawEvent: {} as never,
+          requestCreatedAt: NOW_SECONDS,
+          lnurl: "lnurl1test",
+          relayUrls: ["wss://relay.example"],
+          pricing: authorization().pricing,
+          authorizationExpiresAt: NOW_SECONDS + 120,
+        }),
+      },
+    })
+
+    expect(prepared.status).toBe("prepared")
+    if (prepared.status !== "prepared") return
+    expect(prepared.prepared).toMatchObject({
+      lnurlCallback: "https://wallet.example/lnurl/callback",
+      lnurlNostrPubkey: RECEIPT_PUBKEY,
+      lnurl: "lnurl1test",
+    })
+
+    const mismatch = await prepareAnonZapCheckout({
+      context: context(),
+      localPricing: localPricing(),
+      lnurlMetadata: lnurlMetadata({ lnurl: "lnurl1attacker" }),
+      destination: { country: "US", postalCode: "94107" },
+      reusableAuthorization: authorization(),
+    })
+    expect(mismatch).toMatchObject({
+      status: "private_fallback",
+      failedStage: "authorization",
+    })
   })
 })
