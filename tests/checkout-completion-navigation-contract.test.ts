@@ -36,12 +36,27 @@ describe("checkout completion navigation contracts", () => {
       "let publishedTotalSats: number | null = null"
     )
     expect(checkoutRoute).toContain(
-      "publishedTotalSats = pricingIntent.totalSats"
+      "publishedTotalSats = checkoutPricing.totalSats"
     )
     expect(checkoutRoute).toContain(
       "const deliveredAmountSats = publishedTotalSats ?? total"
     )
     expect(checkoutRoute).toContain("amountSats: deliveredAmountSats")
+  })
+
+  it("renders and publishes the same server-authorized anonymous checkout state", async () => {
+    const checkoutRoute = await Bun.file(
+      "apps/market/src/routes/checkout.tsx"
+    ).text()
+
+    expect(checkoutRoute).toContain(
+      "Signed listing total — review before confirming"
+    )
+    expect(checkoutRoute).toContain("authorizedPricing={reviewedAnonPricing}")
+    expect(checkoutRoute).toContain("for (const item of checkoutPricing.items)")
+    expect(checkoutRoute).toContain(
+      "items: buildLifecycleItems(checkoutPricing.items)"
+    )
   })
 
   it("offers guest shoppers a signer path when invoice checkout is unavailable", async () => {

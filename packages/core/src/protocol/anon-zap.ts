@@ -1,3 +1,7 @@
+import { schnorr } from "@noble/curves/secp256k1.js"
+import { sha256 } from "@noble/hashes/sha2.js"
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js"
+
 import { EVENT_KINDS } from "./kinds"
 
 export type AnonZapRequestDraft = {
@@ -26,7 +30,13 @@ export const ANON_ZAP_ALLOWED_TAGS = new Set([
   "relays",
   "client",
   "omf",
+  "omf_provider",
+  "omf_auth",
 ])
+
+export const ANON_ZAP_PROVIDER_ATTESTATION_TAG = "omf_auth"
+const ANON_ZAP_PROVIDER_ATTESTATION_DOMAIN =
+  "conduit-anon-zap-provider-attestation-v1"
 
 function countTags(tags: readonly string[][], name: string): number {
   return tags.reduce((count, tag) => count + (tag[0] === name ? 1 : 0), 0)
@@ -147,7 +157,118 @@ function isValidAllowedAnonZapTag(
   if (name === "omf") {
     return tag.length === 2 && values[0] === "zapout"
   }
+  if (name === "omf_provider") {
+    return tag.length === 2 && isHexPubkey(values[0])
+  }
+  if (name === ANON_ZAP_PROVIDER_ATTESTATION_TAG) {
+    return (
+      tag.length === 3 &&
+      /^[A-Za-z0-9_-]{1,32}$/.test(values[0] ?? "") &&
+      /^[0-9a-f]{128}$/.test(values[1] ?? "")
+    )
+  }
   return false
+}
+
+function providerAttestationDigest(draft: AnonZapRequestDraft): Uint8Array {
+  const publicDraft = [
+    draft.kind,
+    draft.createdAt,
+    draft.content,
+    draft.tags.filter((tag) => tag[0] !== ANON_ZAP_PROVIDER_ATTESTATION_TAG),
+  ]
+  return sha256(
+    new TextEncoder().encode(
+      `${ANON_ZAP_PROVIDER_ATTESTATION_DOMAIN}.${JSON.stringify(publicDraft)}`
+    )
+  )
+}
+
+export function getAnonZapProviderAttestationPublicKey(
+  privateKeyHex: string
+): string | null {
+  if (!/^[0-9a-f]{64}$/i.test(privateKeyHex)) return null
+  try {
+    return bytesToHex(schnorr.getPublicKey(hexToBytes(privateKeyHex)))
+  } catch {
+    return null
+  }
+}
+
+export function parseAnonZapProviderAttestationPublicKeys(
+  raw: string | undefined
+): ReadonlyMap<string, string> | null {
+  const entries = (raw ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+  if (entries.length === 0 || entries.length > 16) return null
+  const keys = new Map<string, string>()
+  for (const entry of entries) {
+    const separator = entry.indexOf(":")
+    const keyId = entry.slice(0, separator)
+    const pubkey = entry.slice(separator + 1).toLowerCase()
+    if (
+      separator < 1 ||
+      !/^[A-Za-z0-9_-]{1,32}$/.test(keyId) ||
+      !/^[0-9a-f]{64}$/.test(pubkey) ||
+      keys.has(keyId)
+    ) {
+      return null
+    }
+    keys.set(keyId, pubkey)
+  }
+  return keys
+}
+
+export function createAnonZapProviderAttestation(
+  draft: AnonZapRequestDraft,
+  keyId: string,
+  privateKeyHex: string
+): string[] {
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(keyId)) {
+    throw new Error("Provider attestation key id is invalid.")
+  }
+  if (!/^[0-9a-f]{64}$/i.test(privateKeyHex)) {
+    throw new Error("Provider attestation private key is invalid.")
+  }
+  const signature = schnorr.sign(
+    providerAttestationDigest(draft),
+    hexToBytes(privateKeyHex)
+  )
+  return [ANON_ZAP_PROVIDER_ATTESTATION_TAG, keyId, bytesToHex(signature)]
+}
+
+export type AnonZapProviderAttestationVerification =
+  "verified" | "invalid" | "unknown_key" | "unconfigured"
+
+export function verifyAnonZapProviderAttestation(
+  draft: AnonZapRequestDraft,
+  rawPublicKeys: string | undefined
+): AnonZapProviderAttestationVerification {
+  const tag = getSingleTag(draft.tags, ANON_ZAP_PROVIDER_ATTESTATION_TAG)
+  if (
+    tag?.length !== 3 ||
+    !/^[A-Za-z0-9_-]{1,32}$/.test(tag[1] ?? "") ||
+    !/^[0-9a-f]{128}$/.test(tag[2] ?? "")
+  ) {
+    return "invalid"
+  }
+  const publicKeys = parseAnonZapProviderAttestationPublicKeys(rawPublicKeys)
+  if (!publicKeys) return "unconfigured"
+  const publicKey = publicKeys.get(tag[1]!)
+  if (!publicKey) return "unknown_key"
+  try {
+    return schnorr.verify(
+      hexToBytes(tag[2]!),
+      providerAttestationDigest(draft),
+      hexToBytes(publicKey)
+    )
+      ? "verified"
+      : "invalid"
+  } catch {
+    return "invalid"
+  }
 }
 
 export function getAnonZapDraftTag(
@@ -201,6 +322,21 @@ export function validateAnonZapRequestDraft(
   }
   if (countTags(draft.tags, "relays") !== 1) {
     return { ok: false, reason: "Zap request relay list is missing." }
+  }
+  const omfMarkerCount = countTags(draft.tags, "omf")
+  const omfProviderCount = countTags(draft.tags, "omf_provider")
+  const omfAttestationCount = countTags(
+    draft.tags,
+    ANON_ZAP_PROVIDER_ATTESTATION_TAG
+  )
+  if (omfMarkerCount > 1 || omfProviderCount > 1 || omfAttestationCount > 1) {
+    return { ok: false, reason: "Zap request provider authority is invalid." }
+  }
+  if ((omfMarkerCount === 1) !== (omfProviderCount === 1)) {
+    return { ok: false, reason: "Zap request provider authority is missing." }
+  }
+  if (omfAttestationCount === 1 && omfProviderCount !== 1) {
+    return { ok: false, reason: "Zap request provider attestation is invalid." }
   }
 
   const amount = Number(getSingleTag(draft.tags, "amount")?.[1])

@@ -210,8 +210,32 @@ Product public-zap policy is cart-wide:
   restrictive item message policy across the cart:
   `generic_only` before `custom`.
 - `generic_only` locks the public comment to generic checkout copy with item
-  count only. `custom` allows shopper-edited public comment text, still subject
-  to the privacy boundary below.
+  count only. `custom` allows shopper-edited public comment text only when the
+  shopper signs the zap request, still subject to the privacy boundary below.
+- Anonymous public zaps always use server-owned copy such as
+  `Zapped out 1 item at https://shop.conduit.market/` or
+  `Zapped out 4 items at https://shop.conduit.market/`, using the actual summed
+  cart quantity and the singular noun only for one item.
+- Anonymous authorization, signing, or zap-invoice validation failures stop
+  before payment. Checkout must not silently replace the selected public zap
+  with a private invoice. After an order exists, Orders may offer a retry or an
+  explicitly confirmed private-invoice transition that reuses that order.
+- The public Zapouts feed accepts only valid signed embedded zap requests whose
+  recipient, sender, amount, and BOLT11 description binding agree with the
+  receipt. New anonymous requests include a server-authorized `omf_provider`
+  pubkey and an `omf_auth` proof bound to the exact public request, so Anon
+  Shopper key rotation cannot invalidate historical receipts or leave retired
+  shopper keys as provider authorities. Other receipts use current merchant and
+  provider metadata only during a bounded payment-time window; older evidence
+  or provider rotation is authority-unavailable, not invalid. Any server
+  metadata fallback is restricted to exact operator-allowed LNURL hosts.
+  Visitors never contact receipt-selected wallet domains directly. Relay reads paginate independently,
+  preserve same-second boundaries, cap relays/candidates/time, and distinguish
+  empty results, invalid receipts, unavailable authority, and partial or total
+  relay failure.
+- Direct anonymous checkout rechecks the private destination locally against
+  the latest signed listing's public country/postal rules before signing. The
+  destination is not disclosed to the authorization or signer service.
 
 Public zap comments are public protocol content. They must not include order
 contents, shipping/contact data, invoices, payment request strings, product

@@ -24,6 +24,12 @@ import {
 } from "@conduit/core"
 import { giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
   Button,
   OrderMessagesWidget,
   Sheet,
@@ -70,9 +76,14 @@ import {
   type OrderViewModel,
 } from "../lib/order-view"
 import {
+  authorizeCheckoutWithAnonSigner,
+  signAuthorizedAnonZapCheckout,
+} from "../lib/anon-zap-signer"
+import {
   canObserveOrderPublicZapReceipt,
   observeOrderPublicZapReceipt,
   resendOrderProof,
+  runOrderPrivateFallback,
   runOrderPayment,
   submitExternalPaymentProof,
   subscribeOrderPayment,
@@ -83,7 +94,10 @@ import {
   getSessionGuestOrderSigningIdentity,
   type GuestOrderSigningIdentity,
 } from "../lib/guest-order-identity"
-import type { CheckoutZapMode } from "../lib/checkout-payment"
+import {
+  doesAuthorizedAnonZapPricingMatchOrder,
+  type CheckoutZapMode,
+} from "../lib/checkout-payment"
 
 const ORDERS_SEARCH_DEFAULT: { order?: string } = {}
 
@@ -654,6 +668,8 @@ function OrderDetail({
   })
   const merchantName = getMerchantDisplayName(profile, row.merchantPubkey)
   const [busy, setBusy] = useState(false)
+  const [privateFallbackOpen, setPrivateFallbackOpen] = useState(false)
+  const [recoveryError, setRecoveryError] = useState<string | null>(null)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
   const [replyText, setReplyText] = useState("")
@@ -706,14 +722,54 @@ function OrderDetail({
 
   const withBusy = useCallback(async (fn: () => Promise<unknown>) => {
     setBusy(true)
+    setRecoveryError(null)
     try {
       await fn()
+    } catch (error) {
+      setRecoveryError(
+        error instanceof Error ? error.message : "Payment recovery failed."
+      )
     } finally {
       setBusy(false)
     }
   }, [])
 
+  async function retryPayment(): Promise<void> {
+    const ctx = buildServiceCtx()
+    if (!ctx) return
+    if (ctx.zapMode !== "anonymous_public_zap") {
+      await runOrderPayment(ctx)
+      return
+    }
+
+    const authorization = await authorizeCheckoutWithAnonSigner({
+      merchantPubkey: ctx.merchantPubkey,
+      items: ctx.items,
+    })
+    if (
+      !row.lifecycle ||
+      !doesAuthorizedAnonZapPricingMatchOrder(
+        row.lifecycle,
+        authorization.pricing
+      )
+    ) {
+      throw new Error(
+        "Current signed listing pricing or fulfillment terms no longer match this order. No payment was attempted; use a private invoice or contact the merchant."
+      )
+    }
+    const preparedAnonZap = await signAuthorizedAnonZapCheckout(authorization)
+    await runOrderPayment({
+      ...ctx,
+      zapContent: preparedAnonZap.rawEvent.content,
+      preparedAnonZap,
+    })
+  }
+
   const showRetryPayment = vm.paymentStatus === "failed"
+  const showAnonPaymentRecovery =
+    showRetryPayment &&
+    vm.publicZapSigner === "anon" &&
+    row.lifecycle?.invoiceStatus === "failed"
   const showAmbiguousPayment = vm.paymentStatus === "ambiguous"
   const showExternalWallet = vm.paymentStatus === "manual_required"
   const autoDetectPublicReceipt =
@@ -914,13 +970,20 @@ function OrderDetail({
               <Button
                 className="h-10 px-4 text-sm"
                 disabled={busy || !buildServiceCtx()}
-                onClick={() => {
-                  const ctx = buildServiceCtx()
-                  if (ctx) void withBusy(() => runOrderPayment(ctx))
-                }}
+                onClick={() => void withBusy(retryPayment)}
               >
                 <RotateCw className="h-4 w-4" />
                 Try payment again
+              </Button>
+            )}
+            {showAnonPaymentRecovery && (
+              <Button
+                variant="outline"
+                className="h-10 px-4 text-sm"
+                disabled={busy || !buildServiceCtx()}
+                onClick={() => setPrivateFallbackOpen(true)}
+              >
+                Use private invoice
               </Button>
             )}
             {showResendProof && (
@@ -946,12 +1009,60 @@ function OrderDetail({
                   : showRetryPayment && !buildServiceCtx()
                     ? "This order did not keep a checkout-time Lightning target, so retry is unavailable from Orders. Message the merchant before attempting another payment path."
                     : showRetryPayment
-                      ? "No funds moved. You can retry payment for this order."
+                      ? showAnonPaymentRecovery
+                        ? "The anonymous zap failed before payment, so no funds moved. Retry it or explicitly continue with a private invoice."
+                        : "No funds moved. You can retry payment for this order."
                       : "Payment went through; the receipt didn't reach the merchant."}
             </span>
+            {recoveryError && (
+              <p
+                role="alert"
+                className="w-full text-sm text-[var(--destructive)]"
+              >
+                {recoveryError}
+              </p>
+            )}
           </div>
         </StatusNotice>
       )}
+
+      <AlertDialog
+        open={privateFallbackOpen}
+        onOpenChange={setPrivateFallbackOpen}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Use a private invoice?</AlertDialogTitle>
+            <AlertDialogDescription className="leading-6">
+              This keeps the existing order but replaces the failed anonymous
+              zap attempt with a normal private Lightning invoice. If an
+              automatic wallet is available, confirming may pay it immediately.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy}
+              onClick={() => setPrivateFallbackOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={busy || !buildServiceCtx()}
+              onClick={() => {
+                const ctx = buildServiceCtx()
+                if (!ctx) return
+                setPrivateFallbackOpen(false)
+                void withBusy(() => runOrderPrivateFallback(ctx))
+              }}
+            >
+              Continue privately
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
         <OrderTimeline vm={vm} />

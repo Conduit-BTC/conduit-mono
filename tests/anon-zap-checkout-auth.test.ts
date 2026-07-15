@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import {
   authorizeAnonZapCheckout,
   parseAnonZapCheckoutIntent,
+  type BtcUsdRateQuote,
   type LnurlPayMetadata,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
@@ -35,31 +36,38 @@ function signMerchantEvent(input: {
 function productEvent(
   overrides: {
     createdAt?: number
-    priceSats?: number
+    price?: number
+    currency?: string
     publicZapPolicy?: "true" | "false" | "unknown"
-    shippingCostSats?: number | null
+    shippingCost?: number | null
+    shippingCurrency?: string
     shippingCountries?: string[]
     dTag?: string
   } = {}
 ): SignedPublicNostrEvent {
   const publicZapPolicy = overrides.publicZapPolicy ?? "true"
-  const shippingCostSats = overrides.shippingCostSats
+  const shippingCost = overrides.shippingCost
+  const currency = overrides.currency ?? "SATS"
   const tags: string[][] = [
     ["d", overrides.dTag ?? PRODUCT_D_TAG],
     ["title", "CND-150 test product"],
-    ["price", String(overrides.priceSats ?? 10), "SATS"],
-    ["type", "simple", shippingCostSats === undefined ? "digital" : "physical"],
+    ["price", String(overrides.price ?? 10), currency],
+    ["type", "simple", shippingCost === undefined ? "digital" : "physical"],
     ["image", "https://cdn.example/cnd-150.png"],
     ["checkout_zap_message_policy", "generic_only"],
   ]
   if (publicZapPolicy !== "unknown") {
     tags.push(["checkout_public_zaps", publicZapPolicy])
   }
-  if (shippingCostSats !== undefined && shippingCostSats !== null) {
-    tags.push(["shipping_cost", String(shippingCostSats)])
+  if (shippingCost !== undefined && shippingCost !== null) {
+    tags.push([
+      "shipping_cost",
+      String(shippingCost),
+      overrides.shippingCurrency ?? currency,
+    ])
   }
   for (const country of overrides.shippingCountries ??
-    (shippingCostSats !== undefined ? ["US"] : [])) {
+    (shippingCost !== undefined ? ["US"] : [])) {
     tags.push(["shipping_country", country])
   }
   return signMerchantEvent({
@@ -100,7 +108,6 @@ function authorize(
   return authorizeAnonZapCheckout({
     intent: {
       merchantPubkey: MERCHANT_PUBKEY,
-      amountMsats: 10_000,
       items: [{ productAddress: PRODUCT_ADDRESS, quantity: 1 }],
     },
     productEvents: [productEvent()],
@@ -118,12 +125,10 @@ describe("anonymous public zap checkout authorization", () => {
     expect(
       parseAnonZapCheckoutIntent({
         merchantPubkey: MERCHANT_PUBKEY.toUpperCase(),
-        amountMsats: 20_000,
         items: [{ productAddress: PRODUCT_ADDRESS, quantity: 2 }],
       })
     ).toEqual({
       merchantPubkey: MERCHANT_PUBKEY,
-      amountMsats: 20_000,
       items: [{ productAddress: PRODUCT_ADDRESS, quantity: 2 }],
     })
 
@@ -132,15 +137,12 @@ describe("anonymous public zap checkout authorization", () => {
         merchantPubkey: MERCHANT_PUBKEY,
         amountMsats: 20_000,
         items: [{ productAddress: PRODUCT_ADDRESS, quantity: 2 }],
-        orderId: "must-not-be-trusted",
-        email: "private@example.com",
       })
     ).toBeNull()
 
     expect(
       parseAnonZapCheckoutIntent({
         merchantPubkey: MERCHANT_PUBKEY,
-        amountMsats: 20_000,
         items: [
           {
             productAddress: PRODUCT_ADDRESS,
@@ -154,7 +156,6 @@ describe("anonymous public zap checkout authorization", () => {
     expect(
       parseAnonZapCheckoutIntent({
         merchantPubkey: MERCHANT_PUBKEY,
-        amountMsats: 10_000,
         items: [
           {
             productAddress: `30402:${RECEIPT_PUBKEY}:${PRODUCT_D_TAG}`,
@@ -168,7 +169,6 @@ describe("anonymous public zap checkout authorization", () => {
       expect(
         parseAnonZapCheckoutIntent({
           merchantPubkey: MERCHANT_PUBKEY,
-          amountMsats: 10_000,
           items: [
             {
               productAddress: `30402:${MERCHANT_PUBKEY}:${dTag}`,
@@ -184,22 +184,22 @@ describe("anonymous public zap checkout authorization", () => {
     const result = authorize({
       intent: {
         merchantPubkey: MERCHANT_PUBKEY,
-        amountMsats: 30_000,
         items: [{ productAddress: PRODUCT_ADDRESS, quantity: 2 }],
       },
-      productEvents: [productEvent({ shippingCostSats: 5 })],
+      productEvents: [productEvent({ shippingCost: 5 })],
     })
 
     expect(result.draft).toEqual({
       kind: 9734,
       createdAt: NOW_SECONDS,
-      content: "Zapped out 2 items on Conduit",
+      content: "Zapped out 2 items at https://shop.conduit.market/",
       tags: [
         ["p", MERCHANT_PUBKEY],
         ["amount", "30000"],
         ["lnurl", "lnurl1cnd150test"],
         ["relays", "wss://relay.example"],
         ["omf", "zapout"],
+        ["omf_provider", RECEIPT_PUBKEY],
         ["client", "conduit-market"],
       ],
     })
@@ -210,18 +210,119 @@ describe("anonymous public zap checkout authorization", () => {
       publicZapPolicy: "anonymous_public_zap_allowed",
     })
     expect(result.lnurlNostrPubkey).toBe(RECEIPT_PUBKEY)
+    expect(result.pricing).toEqual({
+      itemSubtotalSats: 20,
+      shippingCostSats: 10,
+      totalSats: 30,
+      totalMsats: 30_000,
+      items: [
+        {
+          productAddress: PRODUCT_ADDRESS,
+          productEventId: result.pricing.items[0]!.productEventId,
+          format: "physical",
+          quantity: 2,
+          unitPriceSats: 10,
+          unitShippingSats: 5,
+          lineTotalSats: 30,
+          shippingCountryRules: [{ code: "US", restrictTo: [], exclude: [] }],
+        },
+      ],
+    })
   })
 
-  it("rejects client amount mutation", () => {
+  it("derives USD price and shipping from a fresh server rate", () => {
+    const pricingRate: BtcUsdRateQuote = {
+      rate: 100_000,
+      fetchedAt: NOW_SECONDS * 1000,
+      source: "mempool",
+    }
+    const result = authorize({
+      productEvents: [
+        productEvent({
+          price: 10,
+          currency: "USD",
+          shippingCost: 5,
+          shippingCurrency: "USD",
+        }),
+      ],
+      pricingRate,
+    })
+
+    expect(result.draft.content).toBe(
+      "Zapped out 1 item at https://shop.conduit.market/"
+    )
+    expect(result.draft.tags).toContainEqual(["amount", "15000000"])
+    expect(result.authorization.amountMsats).toBe(15_000_000)
+    expect(result.pricing).toEqual({
+      itemSubtotalSats: 10_000,
+      shippingCostSats: 5_000,
+      totalSats: 15_000,
+      totalMsats: 15_000_000,
+      items: [
+        {
+          productAddress: PRODUCT_ADDRESS,
+          productEventId: result.pricing.items[0]!.productEventId,
+          format: "physical",
+          quantity: 1,
+          unitPriceSats: 10_000,
+          unitShippingSats: 5_000,
+          lineTotalSats: 15_000,
+          shippingCountryRules: [{ code: "US", restrictTo: [], exclude: [] }],
+        },
+      ],
+      quote: {
+        rate: 100_000,
+        fetchedAt: NOW_SECONDS * 1000,
+        source: "mempool",
+      },
+    })
+  })
+
+  it("uses the server cross-rate for non-USD fiat", () => {
+    const result = authorize({
+      productEvents: [
+        productEvent({
+          price: 10,
+          currency: "EUR",
+          shippingCost: 2,
+          shippingCurrency: "EUR",
+        }),
+      ],
+      pricingRate: {
+        rate: 100_000,
+        fetchedAt: NOW_SECONDS * 1000,
+        source: "coinbase",
+        fiatUsdRates: { EUR: 1.25 },
+        fiatSource: "frankfurter",
+      },
+    })
+
+    expect(result.pricing.totalSats).toBe(15_000)
+    expect(result.pricing.items[0]).toMatchObject({
+      unitPriceSats: 12_500,
+      unitShippingSats: 2_500,
+    })
+    expect(result.pricing.quote).toMatchObject({
+      source: "coinbase",
+      fiatSource: "frankfurter",
+    })
+  })
+
+  it("fails closed when fiat cannot be priced by a fresh server quote", () => {
+    const usdProduct = productEvent({ price: 10, currency: "USD" })
+    expect(() => authorize({ productEvents: [usdProduct] })).toThrow(
+      "Checkout product price cannot be verified in sats."
+    )
     expect(() =>
       authorize({
-        intent: {
-          merchantPubkey: MERCHANT_PUBKEY,
-          amountMsats: 11_000,
-          items: [{ productAddress: PRODUCT_ADDRESS, quantity: 1 }],
+        productEvents: [usdProduct],
+        pricingRate: {
+          rate: 100_000,
+          fetchedAt: (NOW_SECONDS - 301) * 1000,
+          source: "mempool",
         },
       })
-    ).toThrow("Checkout amount does not match current product pricing.")
+    ).toThrow("Checkout pricing quote is stale.")
   })
 
   it("requires an explicit current public-zap opt-in", () => {
@@ -242,8 +343,8 @@ describe("anonymous public zap checkout authorization", () => {
     expect(() =>
       authorize({
         productEvents: [
-          productEvent({ createdAt: NOW_SECONDS - 10, priceSats: 10 }),
-          productEvent({ createdAt: NOW_SECONDS - 10, priceSats: 11 }),
+          productEvent({ createdAt: NOW_SECONDS - 10, price: 10 }),
+          productEvent({ createdAt: NOW_SECONDS - 10, price: 11 }),
         ],
       })
     ).toThrow("Checkout product has conflicting latest events.")
@@ -268,7 +369,7 @@ describe("anonymous public zap checkout authorization", () => {
 
   it("rejects coordinated shipping", () => {
     expect(() =>
-      authorize({ productEvents: [productEvent({ shippingCostSats: null })] })
+      authorize({ productEvents: [productEvent({ shippingCost: null })] })
     ).toThrow("Checkout product requires merchant-coordinated shipping.")
   })
 
@@ -276,7 +377,7 @@ describe("anonymous public zap checkout authorization", () => {
     expect(() =>
       authorize({
         productEvents: [
-          productEvent({ shippingCostSats: 5, shippingCountries: [] }),
+          productEvent({ shippingCost: 5, shippingCountries: [] }),
         ],
       })
     ).toThrow("Checkout product requires merchant-coordinated shipping.")

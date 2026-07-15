@@ -5,16 +5,21 @@ import {
   fetchLnurlInvoice,
   fetchLnurlPayMetadata,
   fetchZapInvoice,
+  getAnonZapDraftTag,
   getOrderPublicZapSigner,
   getNdk,
   getOrderLifecycle,
+  isValidSignedPublicNostrEvent,
   isGuestOrderDataExpired,
+  normalizePubkey,
   patchOrderLifecycle,
   signNdkEventWithTransientNip07Retry,
+  validateAnonZapRequestDraft,
   validateLightningInvoiceForPayment,
   waitForZapReceipt,
   type NwcConnection,
   type OrderLifecycle,
+  type SignedPublicNostrEvent,
 } from "@conduit/core"
 import {
   getCheckoutZapVisibility,
@@ -24,10 +29,6 @@ import {
   type CheckoutZapRequestDraft,
   type SignedCheckoutZapRequest,
 } from "./checkout-payment"
-import {
-  isAnonZapAuthorizationError,
-  signCheckoutZapRequestWithAnonSigner,
-} from "./anon-zap-signer"
 import {
   buildPaymentProofRumor,
   getDeliveryNotice,
@@ -43,19 +44,6 @@ export function getLifecyclePaymentProofAction(
   const publicZapSigner =
     lifecycle.publicZapSigner ?? getOrderPublicZapSigner(lifecycle.checkoutMode)
   return publicZapSigner ? "zap" : "private_checkout"
-}
-
-export function shouldFallbackAnonZapToPrivate(input: {
-  visibility: "public_zap" | "private_checkout"
-  publicZapSigner: "anon" | "shopper" | null
-  lnurlAllowsNostr: boolean
-  error?: unknown
-}): boolean {
-  if (input.visibility !== "public_zap" || input.publicZapSigner !== "anon") {
-    return false
-  }
-  if (!input.lnurlAllowsNostr) return true
-  return isAnonZapAuthorizationError(input.error)
 }
 
 /**
@@ -209,6 +197,7 @@ export interface OrderPaymentContext {
   totalSats: number
   totalMsats: number
   items: Array<{ productAddress: string; quantity: number }>
+  preparedAnonZap?: SignedCheckoutZapRequest
   walletConnection: NwcConnection | null
   tryNwc: boolean
   tryWebln?: boolean
@@ -220,6 +209,71 @@ export interface OrderPaymentRuntimeState {
   stage: CheckoutPaymentStage | null
   error: string | null
   lifecycle: OrderLifecycle | null
+}
+
+export interface OrderPaymentDependencies {
+  anonZapSignerPubkey: string | null
+  fetchLnurlPayMetadata: typeof fetchLnurlPayMetadata
+  requestCheckoutLnurlInvoice: typeof requestCheckoutLnurlInvoice
+  payCheckoutInvoice: typeof payCheckoutInvoice
+}
+
+const defaultOrderPaymentDependencies: OrderPaymentDependencies = {
+  anonZapSignerPubkey: normalizePubkey(config.anonZapSignerPubkey),
+  fetchLnurlPayMetadata,
+  requestCheckoutLnurlInvoice,
+  payCheckoutInvoice,
+}
+
+function requirePreparedAnonZap(
+  ctx: Pick<
+    OrderPaymentContext,
+    "merchantPubkey" | "totalMsats" | "zapContent" | "preparedAnonZap"
+  >,
+  expectedSignerPubkey: string | null
+): SignedCheckoutZapRequest {
+  const prepared = ctx.preparedAnonZap
+  if (!prepared || !prepared.rawEvent) {
+    throw new Error(
+      "Anonymous zap was not prepared before order delivery. No payment was attempted."
+    )
+  }
+
+  const rawEvent = prepared.rawEvent as SignedPublicNostrEvent
+  if (!isValidSignedPublicNostrEvent(rawEvent)) {
+    throw new Error(
+      "Prepared anonymous zap does not match this order. No payment was attempted."
+    )
+  }
+  const draft: CheckoutZapRequestDraft = {
+    kind: rawEvent.kind,
+    createdAt: rawEvent.created_at,
+    content: rawEvent.content,
+    tags: rawEvent.tags,
+  }
+  const draftValidation = validateAnonZapRequestDraft(draft)
+  const merchantPubkey = normalizePubkey(ctx.merchantPubkey)
+  const eventMerchantPubkey = normalizePubkey(
+    getAnonZapDraftTag(draft, "p")?.[1]
+  )
+  const amountMsats = Number(getAnonZapDraftTag(draft, "amount")?.[1])
+
+  if (
+    prepared.id !== rawEvent.id ||
+    !draftValidation.ok ||
+    !expectedSignerPubkey ||
+    rawEvent.pubkey !== expectedSignerPubkey ||
+    !merchantPubkey ||
+    eventMerchantPubkey !== merchantPubkey ||
+    amountMsats !== ctx.totalMsats ||
+    rawEvent.content !== ctx.zapContent
+  ) {
+    throw new Error(
+      "Prepared anonymous zap does not match this order. No payment was attempted."
+    )
+  }
+
+  return prepared
 }
 
 function isAmbiguousPaymentError(error: unknown): boolean {
@@ -235,6 +289,8 @@ const runtimeStates = new Map<string, OrderPaymentRuntimeState>()
 const listeners = new Map<string, Set<Listener>>()
 /** Guards against concurrent payment attempts for the same order. */
 const inFlight = new Set<string>()
+/** Serializes the explicit anonymous-to-private recovery transition. */
+const privateFallbackTransitions = new Set<string>()
 const receiptObservers = new Set<string>()
 const receiptRescanTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
@@ -272,6 +328,7 @@ async function patchAndEmit(
 ) {
   const lifecycle = await patchOrderLifecycle(orderId, patch)
   emit(orderId, { ...runtime, lifecycle: lifecycle ?? null })
+  return lifecycle
 }
 
 export function getOrderPaymentState(
@@ -281,7 +338,7 @@ export function getOrderPaymentState(
 }
 
 export function isOrderPaymentRunning(orderId: string): boolean {
-  return inFlight.has(orderId)
+  return inFlight.has(orderId) || privateFallbackTransitions.has(orderId)
 }
 
 export function subscribeOrderPayment(
@@ -534,10 +591,15 @@ export async function observeOrderPublicZapReceipt(
  * order and never republishes it.
  */
 export async function runOrderPayment(
-  ctx: OrderPaymentContext
+  ctx: OrderPaymentContext,
+  dependencyOverrides: Partial<OrderPaymentDependencies> = {}
 ): Promise<OrderPaymentRuntimeState> {
   const { orderId } = ctx
-  if (inFlight.has(orderId)) {
+  const dependencies = {
+    ...defaultOrderPaymentDependencies,
+    ...dependencyOverrides,
+  }
+  if (inFlight.has(orderId) || privateFallbackTransitions.has(orderId)) {
     return (
       runtimeStates.get(orderId) ?? {
         orderId,
@@ -555,6 +617,7 @@ export async function runOrderPayment(
       await patchAndEmit(
         orderId,
         {
+          invoiceStatus: "failed",
           paymentStatus: "failed",
           lastError: "Merchant does not have a Lightning address.",
         },
@@ -569,6 +632,7 @@ export async function runOrderPayment(
 
     const currency = "SATS"
     let paymentMoved = false
+    let invoiceReceived = false
 
     emit(orderId, { running: true, error: null, stage: "requesting_invoice" })
     await patchAndEmit(orderId, {
@@ -579,8 +643,10 @@ export async function runOrderPayment(
 
     try {
       const ndk = getNdk()
-      const lnurlMeta = await fetchLnurlPayMetadata(ctx.merchantLud16)
-      let visibility = getCheckoutZapVisibility(ctx.zapMode)
+      const lnurlMeta = await dependencies.fetchLnurlPayMetadata(
+        ctx.merchantLud16
+      )
+      const visibility = getCheckoutZapVisibility(ctx.zapMode)
       const publicZapSigner = getOrderPublicZapSigner(ctx.zapMode)
       if (
         ctx.totalMsats < lnurlMeta.minSendable ||
@@ -591,87 +657,48 @@ export async function runOrderPayment(
             `(${lnurlMeta.minSendable}-${lnurlMeta.maxSendable} msats).`
         )
       }
-
-      const requestInvoice = (requestedVisibility: typeof visibility) =>
-        requestCheckoutLnurlInvoice(
-          {
-            visibility: requestedVisibility,
-            lnurlCallback: lnurlMeta.callback,
-            amountMsats: ctx.totalMsats,
-            lnurl: lnurlMeta.lnurl,
-            recipientPubkey: ctx.merchantPubkey,
-            zapContent: ctx.zapContent,
-            explicitRelayUrls: ndk.explicitRelayUrls ?? [],
-            zapRelayUrls: config.zapRelayUrls,
-          },
-          {
-            fetchLnurlInvoice,
-            fetchZapInvoice,
-            signZapRequest: async (
-              draft: CheckoutZapRequestDraft
-            ): Promise<SignedCheckoutZapRequest> => {
-              if (publicZapSigner === "anon") {
-                return signCheckoutZapRequestWithAnonSigner(draft, {
-                  merchantPubkey: ctx.merchantPubkey,
-                  amountMsats: ctx.totalMsats,
-                  items: ctx.items,
-                })
-              }
-              if (publicZapSigner !== "shopper") {
-                throw new Error("Public zap signer was not selected.")
-              }
-              const zapRequest = new NDKEvent(ndk)
-              zapRequest.kind = draft.kind
-              zapRequest.created_at = draft.createdAt
-              zapRequest.content = draft.content
-              zapRequest.tags = draft.tags
-              await signNdkEventWithTransientNip07Retry(zapRequest, ndk.signer)
-              return { id: zapRequest.id, rawEvent: zapRequest.rawEvent() }
-            },
-          }
+      if (visibility === "public_zap" && !lnurlMeta.allowsNostr) {
+        throw new Error(
+          "Merchant's Lightning address does not support public zaps."
         )
+      }
 
-      let publicZapFallback = false
-      let invoiceRequest: Awaited<
-        ReturnType<typeof requestCheckoutLnurlInvoice>
-      >
-      if (
-        shouldFallbackAnonZapToPrivate({
+      const invoiceRequest = await dependencies.requestCheckoutLnurlInvoice(
+        {
           visibility,
-          publicZapSigner,
-          lnurlAllowsNostr: lnurlMeta.allowsNostr,
-        })
-      ) {
-        visibility = "private_checkout"
-        publicZapFallback = true
-        invoiceRequest = await requestInvoice(visibility)
-      } else {
-        try {
-          invoiceRequest = await requestInvoice(visibility)
-        } catch (error) {
-          if (
-            !shouldFallbackAnonZapToPrivate({
-              visibility,
-              publicZapSigner,
-              lnurlAllowsNostr: lnurlMeta.allowsNostr,
-              error,
-            })
-          ) {
-            throw error
-          }
-          visibility = "private_checkout"
-          publicZapFallback = true
-          invoiceRequest = await requestInvoice(visibility)
+          lnurlCallback: lnurlMeta.callback,
+          amountMsats: ctx.totalMsats,
+          lnurl: lnurlMeta.lnurl,
+          recipientPubkey: ctx.merchantPubkey,
+          zapContent: ctx.zapContent,
+          explicitRelayUrls: ndk.explicitRelayUrls ?? [],
+          zapRelayUrls: config.zapRelayUrls,
+        },
+        {
+          fetchLnurlInvoice,
+          fetchZapInvoice,
+          signZapRequest: async (
+            draft: CheckoutZapRequestDraft
+          ): Promise<SignedCheckoutZapRequest> => {
+            if (publicZapSigner === "anon") {
+              return requirePreparedAnonZap(
+                ctx,
+                dependencies.anonZapSignerPubkey
+              )
+            }
+            if (publicZapSigner !== "shopper") {
+              throw new Error("Public zap signer was not selected.")
+            }
+            const zapRequest = new NDKEvent(ndk)
+            zapRequest.kind = draft.kind
+            zapRequest.created_at = draft.createdAt
+            zapRequest.content = draft.content
+            zapRequest.tags = draft.tags
+            await signNdkEventWithTransientNip07Retry(zapRequest, ndk.signer)
+            return { id: zapRequest.id, rawEvent: zapRequest.rawEvent() }
+          },
         }
-      }
-      if (publicZapFallback) {
-        await patchAndEmit(orderId, {
-          checkoutMode: "external_wallet",
-          publicZapSigner: undefined,
-          publicZapFallback: true,
-          zapReceiptStatus: "not_applicable",
-        })
-      }
+      )
       const isPublicZap = visibility === "public_zap"
       const {
         invoice,
@@ -714,8 +741,9 @@ export async function runOrderPayment(
         },
         { stage: "paying_invoice" }
       )
+      invoiceReceived = true
 
-      const payResult = await payCheckoutInvoice({
+      const payResult = await dependencies.payCheckoutInvoice({
         invoice,
         amountMsats: ctx.totalMsats,
         walletConnection: ctx.walletConnection,
@@ -853,13 +881,21 @@ export async function runOrderPayment(
       } else if (isAmbiguousPaymentError(e)) {
         await patchAndEmit(
           orderId,
-          { paymentStatus: "ambiguous", lastError: message },
+          {
+            ...(invoiceReceived ? {} : { invoiceStatus: "failed" as const }),
+            paymentStatus: "ambiguous",
+            lastError: message,
+          },
           { running: false, stage: null, error: message }
         )
       } else {
         await patchAndEmit(
           orderId,
-          { paymentStatus: "failed", lastError: message },
+          {
+            ...(invoiceReceived ? {} : { invoiceStatus: "failed" as const }),
+            paymentStatus: "failed",
+            lastError: message,
+          },
           { running: false, stage: null, error: message }
         )
       }
@@ -868,6 +904,81 @@ export async function runOrderPayment(
   } finally {
     inFlight.delete(orderId)
   }
+}
+
+/**
+ * Explicit buyer-confirmed recovery from a failed anonymous public zap.
+ *
+ * This transition is deliberately separate from `runOrderPayment`: callers
+ * must invoke it only after the buyer chooses a private invoice. It reuses the
+ * delivered order and refuses states where payment may already have moved.
+ */
+export async function runOrderPrivateFallback(
+  ctx: OrderPaymentContext,
+  dependencyOverrides: Partial<OrderPaymentDependencies> = {}
+): Promise<OrderPaymentRuntimeState> {
+  if (
+    inFlight.has(ctx.orderId) ||
+    privateFallbackTransitions.has(ctx.orderId)
+  ) {
+    throw new Error("Payment is already in progress for this order.")
+  }
+  privateFallbackTransitions.add(ctx.orderId)
+
+  try {
+    const lifecycle = await getOrderLifecycle(ctx.orderId)
+    const publicZapSigner = lifecycle
+      ? (lifecycle.publicZapSigner ??
+        getOrderPublicZapSigner(lifecycle.checkoutMode))
+      : null
+    if (
+      !lifecycle ||
+      publicZapSigner !== "anon" ||
+      lifecycle.invoiceStatus !== "failed" ||
+      lifecycle.paymentStatus !== "failed"
+    ) {
+      throw new Error(
+        "A private invoice is only available after a failed anonymous zap attempt."
+      )
+    }
+
+    const transitioned = await patchAndEmit(ctx.orderId, {
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      publicZapFallback: true,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+      proofDeliveryStatus: "not_started",
+      zapReceiptStatus: "not_applicable",
+      invoice: undefined,
+      paymentHash: undefined,
+      preimage: undefined,
+      feeMsats: undefined,
+      zapRequestId: undefined,
+      zapRequestCreatedAt: undefined,
+      zapReceiptId: undefined,
+      zapReceiptRelayUrls: undefined,
+      zapLnurl: undefined,
+      zapReceiptPubkey: undefined,
+      invoiceExpiresAt: undefined,
+      zapReceiptObservationDeadline: undefined,
+      lastError: undefined,
+    })
+    if (!transitioned) {
+      throw new Error("Order payment state is no longer available.")
+    }
+  } finally {
+    privateFallbackTransitions.delete(ctx.orderId)
+  }
+
+  return runOrderPayment(
+    {
+      ...ctx,
+      zapMode: "private_checkout",
+      zapContent: "",
+    },
+    dependencyOverrides
+  )
 }
 
 /**

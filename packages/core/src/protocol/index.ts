@@ -36,6 +36,7 @@ export {
   connectNdk,
   requireNdkConnected,
   fetchEventsFanout,
+  fetchEventsFanoutDetailed,
   fetchEventsFanoutProgressive,
   disconnectNdk,
   refreshNdkRelaySettings,
@@ -46,4 +47,6 @@ export {
   getNdkState,
   type NdkConnectionState,
   type NdkState,
+  type FetchEventsFanoutResult,
+  type FetchEventsRelayStatus,
 } from "./ndk"

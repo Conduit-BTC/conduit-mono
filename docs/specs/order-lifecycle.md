@@ -46,8 +46,11 @@ Repository helpers: `createOrderLifecycle`, `getOrderLifecycle`,
 
 ## State flow
 
-1. Checkout publishes the order, then `createOrderLifecycle(...)` with
-   `orderDeliveryStatus: "sent"`, and navigates to `/orders?order=<orderId>`.
+1. Anonymous public-zap checkout first obtains server-authoritative pricing and
+   a signed public zap request. Only then does checkout publish the encrypted
+   order using those same totals. Other modes begin with order publication.
+   Checkout then calls `createOrderLifecycle(...)` with
+   `orderDeliveryStatus: "sent"` and navigates to `/orders?order=<orderId>`.
 2. Fast-zap hands payment to a route-independent service
    (`order-payment-service`) that, outside React, requests the invoice, pays via
    NWC/WebLN, publishes the proof, and writes each transition to the lifecycle
@@ -199,6 +202,18 @@ protocol non-goals (`docs/specs/protocol.md`). Therefore:
 
 - Payment/order retries reuse the original `orderId`; the payment service never
   republishes the order, so a retry cannot create a duplicate merchant order.
+  Anonymous payment retry must also exact-match the stored signed fulfillment
+  snapshot, including format, shipping option identity/cost, and country/postal
+  rules. A changed or missing rule snapshot stops before signing or payment.
+- Anonymous authorization, signing, or invoice-binding failure leaves the
+  selected anonymous mode failed and records that no payment moved. It never
+  triggers an automatic private invoice.
+- Anonymous payment retries require the newly authorized item prices,
+  quantities, fulfillment formats, shipping allocations, and shipping option
+  identities to match the delivered lifecycle snapshot; aggregate-total
+  equality alone is insufficient.
+- Moving a failed anonymous order to a private invoice requires an explicit
+  buyer confirmation and reuses the original order and totals.
 - "Try payment again" is offered only when funds did not move
   (`paymentStatus: "failed"`).
 - "Resend receipt" is offered only after payment moved and proof delivery is

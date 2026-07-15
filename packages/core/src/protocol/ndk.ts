@@ -40,6 +40,17 @@ export interface FetchEventsFanoutProgress {
   mergedEvents: NDKEvent[]
 }
 
+export interface FetchEventsRelayStatus {
+  relayUrl: string
+  status: "success" | "partial" | "failed"
+  eventCount: number
+}
+
+export interface FetchEventsFanoutResult {
+  events: NDKEvent[]
+  relays: FetchEventsRelayStatus[]
+}
+
 const EVENT_SOURCE_RELAY_URLS = "__conduitSourceRelayUrls"
 
 type EventWithSourceRelayUrls = NDKEvent & {
@@ -418,7 +429,7 @@ function readRelayEvents(
   filter: NDKFilter,
   connectTimeoutMs: number,
   fetchTimeoutMs: number
-): Promise<{ events: RawNostrEvent[]; ok: boolean }> {
+): Promise<{ events: RawNostrEvent[]; complete: boolean }> {
   return new Promise((resolve) => {
     const conn = getRelayConnection(relayUrl)
     if (conn.idleTimer) {
@@ -432,7 +443,7 @@ function readRelayEvents(
     let connectTimer: ReturnType<typeof setTimeout> | undefined
     let fetchTimer: ReturnType<typeof setTimeout> | undefined
 
-    const finish = (ok: boolean) => {
+    const finish = (complete: boolean) => {
       if (settled) return
       settled = true
       if (connectTimer) clearTimeout(connectTimer)
@@ -448,17 +459,17 @@ function readRelayEvents(
       if (!conn.closed && conn.subs.size === 0) {
         scheduleRelayConnectionIdleClose(conn)
       }
-      resolve({ events, ok })
+      resolve({ events, complete })
     }
 
     conn.subs.set(subId, {
       onEvent: (raw) => {
         events.push(raw)
       },
-      end: (reason) => finish(reason === "eose" ? true : events.length > 0),
+      end: (reason) => finish(reason === "eose"),
     })
 
-    connectTimer = setTimeout(() => finish(events.length > 0), connectTimeoutMs)
+    connectTimer = setTimeout(() => finish(false), connectTimeoutMs)
 
     conn.ready
       .then(() => {
@@ -471,7 +482,7 @@ function readRelayEvents(
           finish(false)
           return
         }
-        fetchTimer = setTimeout(() => finish(events.length > 0), fetchTimeoutMs)
+        fetchTimer = setTimeout(() => finish(false), fetchTimeoutMs)
         try {
           conn.ws.send(JSON.stringify(["REQ", subId, filter]))
         } catch {
@@ -487,22 +498,32 @@ async function fetchEventsFromRelay(
   filter: NDKFilter,
   connectTimeoutMs: number,
   fetchTimeoutMs: number
-): Promise<NDKEvent[]> {
+): Promise<{
+  relayUrl: string
+  events: NDKEvent[]
+  status: FetchEventsRelayStatus["status"]
+}> {
   await acquireRelayReadSlot()
   try {
-    const { events, ok } = await readRelayEvents(
+    const { events, complete } = await readRelayEvents(
       relayUrl,
       filter,
       connectTimeoutMs,
       fetchTimeoutMs
     )
+    const status: FetchEventsRelayStatus["status"] = complete
+      ? "success"
+      : events.length > 0
+        ? "partial"
+        : "failed"
 
-    if (!ok && events.length === 0) {
+    if (status === "failed") {
       recordRelayFailure(relayUrl)
-      return []
+      return { relayUrl, events: [], status }
     }
 
-    recordRelaySuccess(relayUrl)
+    if (status === "success") recordRelaySuccess(relayUrl)
+    else recordRelayFailure(relayUrl)
 
     // Main thread: cheap sha256 id-check + verified-id cache. Anything not
     // already cache-verified is batched to the worker for schnorr.
@@ -538,10 +559,10 @@ async function fetchEventsFromRelay(
       attachEventSourceRelayUrl(event, relayUrl)
       verified.push(event)
     }
-    return verified
+    return { relayUrl, events: verified, status }
   } catch {
     recordRelayFailure(relayUrl)
-    return []
+    return { relayUrl, events: [], status: "failed" }
   } finally {
     releaseRelayReadSlot()
   }
@@ -601,9 +622,16 @@ export async function fetchEventsFanout(
   filter: NDKFilter,
   options: FetchEventsFanoutOptions = {}
 ): Promise<NDKEvent[]> {
+  return (await fetchEventsFanoutDetailed(filter, options)).events
+}
+
+export async function fetchEventsFanoutDetailed(
+  filter: NDKFilter,
+  options: FetchEventsFanoutOptions = {}
+): Promise<FetchEventsFanoutResult> {
   const relayUrls = resolveFanoutRelayUrls(options)
 
-  if (relayUrls.length === 0) return []
+  if (relayUrls.length === 0) return { events: [], relays: [] }
 
   const connectTimeoutMs = options.connectTimeoutMs ?? 4_000
   const fetchTimeoutMs = options.fetchTimeoutMs ?? 8_000
@@ -615,11 +643,18 @@ export async function fetchEventsFanout(
   )
 
   const merged = new Map<string, NDKEvent>()
-  for (const events of perRelayResults) {
-    mergeEventsInto(merged, events)
+  for (const result of perRelayResults) {
+    mergeEventsInto(merged, result.events)
   }
 
-  return Array.from(merged.values())
+  return {
+    events: Array.from(merged.values()),
+    relays: perRelayResults.map((result) => ({
+      relayUrl: result.relayUrl,
+      status: result.status,
+      eventCount: result.events.length,
+    })),
+  }
 }
 
 export async function fetchEventsFanoutProgressive(
@@ -636,16 +671,16 @@ export async function fetchEventsFanoutProgressive(
 
   await Promise.all(
     relayUrls.map(async (relayUrl) => {
-      const events = await fetchEventsFromRelay(
+      const result = await fetchEventsFromRelay(
         relayUrl,
         filter,
         connectTimeoutMs,
         fetchTimeoutMs
       )
-      mergeEventsInto(merged, events)
+      mergeEventsInto(merged, result.events)
       await onProgress({
         relayUrl,
-        events,
+        events: result.events,
         mergedEvents: Array.from(merged.values()),
       })
     })
