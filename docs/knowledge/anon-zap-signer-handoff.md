@@ -348,6 +348,47 @@ Run formatting checks for docs/env-only changes:
 bun run format:check
 ```
 
+### No-Funds Deployment Canary
+
+After a preview deployment is configured, run the authorize/sign canary against
+an explicit preview URL:
+
+```bash
+bun run smoke:anon-zap
+```
+
+The canary requires public, non-secret inputs for its target URL, signed
+merchant/product coordinates, expected Anon Shopper pubkey, expected canonical
+LNURL, and checkout-authorization attestation public key ring:
+
+- `ANON_ZAP_CANARY_BASE_URL`
+- `ANON_ZAP_CANARY_MERCHANT_PUBKEY`
+- `ANON_ZAP_CANARY_PRODUCT_ADDRESS`
+- `ANON_ZAP_CANARY_SIGNER_PUBKEY`
+- `ANON_ZAP_CANARY_EXPECTED_LNURL`
+- `ANON_ZAP_CANARY_ATTESTATION_PUBLIC_KEYS`
+
+It submits only merchant and product coordinates. The Pages boundary derives
+the amount from current signed listings, pricing, shipping, and merchant
+metadata. The canary verifies the canonical kind `9734` content, pricing-bound
+amount, canonical LNURL, receipt relays, asymmetric checkout-authorization
+attestation, absence of server-asserted provider authority, and final Anon
+Shopper signature. It intentionally stops before fetching browser-owned LNURL
+provider metadata, calling the callback, requesting an invoice, publishing an
+event, or sending funds.
+
+This canary proves the Pages authorization and signer deployment boundary only.
+Before release, also complete one minimum-value preview-wallet checkout and
+verify that the exact signed kind `9734` reaches the LNURL callback, the BOLT11
+description hash commits to it, and the resulting kind `9735` is accepted by
+the Zapouts authority path on the configured receipt relays.
+
+A passing canary does not prove checkout resilience. Deliberately make the
+preview signer or its Pages service binding unavailable and verify that one
+encrypted order is delivered, one plain private invoice is requested and can
+be paid, no public zap is claimed, and no second invoice is requested. Treat
+that failure-mode checkout as a release gate for anonymous zap changes.
+
 ## Protocol Sources
 
 - NIP-57 defines zap requests as kind `9734` events sent to the receiver's

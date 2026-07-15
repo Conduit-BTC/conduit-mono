@@ -74,7 +74,7 @@ async function readResponseTextWithLimit(
   return body + decoder.decode()
 }
 
-function normalizeSafeLnurlPayRequestUrl(raw: string): string | null {
+export function normalizeSafeLnurlPayRequestUrl(raw: string): string | null {
   try {
     if (!raw || raw !== raw.trim() || raw.length > 4_096) return null
     const url = new URL(raw)
