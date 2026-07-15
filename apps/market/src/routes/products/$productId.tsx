@@ -675,11 +675,7 @@ function ProductPage() {
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {visibleTags.map((tag) => (
-                        <Badge
-                          key={tag}
-                          variant="outline"
-                          className="capitalize"
-                        >
+                        <Badge key={tag} variant="outline">
                           {tag}
                         </Badge>
                       ))}

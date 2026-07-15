@@ -136,7 +136,7 @@ function CategoryFacetButton({
       onClick={onToggle}
       aria-pressed={option.selected}
       className={[
-        "inline-flex min-w-0 max-w-full items-center rounded-full border px-3 py-2 text-left text-sm font-medium capitalize transition-colors",
+        "inline-flex min-w-0 max-w-full items-center rounded-full border px-3 py-2 text-left text-sm font-medium transition-colors",
         option.selected
           ? "border-primary-500/70 bg-primary-500 font-semibold text-white shadow-[0_12px_28px_color-mix(in_srgb,var(--primary-500)_24%,transparent)]"
           : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",

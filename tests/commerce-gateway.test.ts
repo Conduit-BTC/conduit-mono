@@ -245,7 +245,7 @@ describe("commerce gateway", () => {
       type: "simple",
       visibility: "public",
       images: [{ url: "https://example.com/cached-json-summary.png" }],
-      tags: ["Ecash"],
+      tags: [" Ecash ", "ecash", "BITCOIN"],
       createdAt: FIXED_NOW - 5_000,
       updatedAt: FIXED_NOW - 5_000,
       cachedAt: FIXED_NOW - 1_000,
@@ -254,6 +254,14 @@ describe("commerce gateway", () => {
     const result = await getCachedMarketplaceProducts()
 
     expect(result.data[0]?.product.summary).toBe("Nutti loves Ecash")
+    expect(result.data[0]?.product.tags).toEqual(["ecash", "bitcoin"])
+
+    const filtered = await getCachedMarketplaceProducts({
+      tags: [" BITCOIN "],
+    })
+    expect(filtered.data.map((record) => record.product.id)).toEqual([
+      "30402:merchant:cached-json-summary",
+    ])
   })
 
   it("scopes cached marketplace reads to the requested author set at the loader", async () => {

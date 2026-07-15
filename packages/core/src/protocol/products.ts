@@ -35,6 +35,26 @@ export interface BuildProductListingEventDraftInput {
   clientAppId?: ConduitAppId
 }
 
+export function canonicalizeProductTags(
+  tags: readonly unknown[] | null | undefined
+): string[] {
+  if (!tags) return []
+
+  const canonicalTags: string[] = []
+  const seen = new Set<string>()
+
+  for (const tag of tags) {
+    if (typeof tag !== "string") continue
+    const canonicalTag = tag.trim().toLowerCase()
+    if (!canonicalTag || seen.has(canonicalTag)) continue
+
+    seen.add(canonicalTag)
+    canonicalTags.push(canonicalTag)
+  }
+
+  return canonicalTags
+}
+
 /**
  * Build a spec-aligned kind-30402 listing draft.
  *
@@ -104,9 +124,8 @@ export function buildProductListingEventDraft({
   for (const image of product.images) {
     tags.push(["image", image.url])
   }
-  for (const tag of product.tags) {
-    const normalizedTag = tag.trim()
-    if (normalizedTag) tags.push(["t", normalizedTag])
+  for (const tag of canonicalizeProductTags(product.tags)) {
+    tags.push(["t", tag])
   }
 
   if (clientAppId) {
@@ -667,6 +686,7 @@ export function parseProductEvent(
       ...parsed,
       ...shippingTags,
       ...stockTag,
+      tags: canonicalizeProductTags(parsed.tags),
       // Compatibility content may describe the product, but it cannot replace
       // identity or time committed to by the signed event envelope.
       id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
@@ -737,7 +757,7 @@ export function parseProductEvent(
     .filter((url) => url.startsWith("http://") || url.startsWith("https://"))
     .map((url) => ({ url }))
 
-  const tags = getTagValues(event.tags, "t")
+  const tags = canonicalizeProductTags(getTagValues(event.tags, "t"))
   const summaryContext: ProductSummaryCleanupContext = {
     title,
     priceInfo,

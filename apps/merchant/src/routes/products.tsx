@@ -72,6 +72,7 @@ import {
   normalizePublishableProductPrice,
   parsePlainDecimalAmount,
 } from "../lib/productPriceForm"
+import { buildProductTagCatalog } from "../lib/productTagSuggestions"
 import {
   isShippingComplete,
   loadShippingConfig,
@@ -702,20 +703,10 @@ function ProductsPage() {
   const productsInitialLoading =
     productsQuery.isLoading && cachedProductsQuery.isLoading
 
-  const tagFilters = useMemo(() => {
-    const tagCounts = new Map<string, number>()
-    for (const item of merchantProducts) {
-      for (const tag of item.product.tags) {
-        const normalized = tag.trim()
-        if (!normalized) continue
-        tagCounts.set(normalized, (tagCounts.get(normalized) ?? 0) + 1)
-      }
-    }
-
-    return Array.from(tagCounts.entries())
-      .map(([tag, count]) => ({ tag, count }))
-      .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
-  }, [merchantProducts])
+  const tagFilters = useMemo(
+    () => buildProductTagCatalog(merchantProducts.map((item) => item.product)),
+    [merchantProducts]
+  )
 
   const visibleProducts = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -1569,6 +1560,7 @@ function ProductsPage() {
                 id="product-tags"
                 value={form.tags}
                 onChange={(tags) => setForm((prev) => ({ ...prev, tags }))}
+                catalogTags={tagFilters}
                 errorMessage={productTagFieldError}
                 placeholder="gear, hardware, demo"
               />
