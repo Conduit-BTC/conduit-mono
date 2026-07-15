@@ -216,10 +216,15 @@ Product public-zap policy is cart-wide:
   `Zapped out 1 item at https://shop.conduit.market/` or
   `Zapped out 4 items at https://shop.conduit.market/`, using the actual summed
   cart quantity and the singular noun only for one item.
-- Anonymous authorization, signing, or zap-invoice validation failures stop
-  before payment. Checkout must not silently replace the selected public zap
-  with a private invoice. After an order exists, Orders may offer a retry or an
-  explicitly confirmed private-invoice transition that reuses that order.
+- Anonymous public-zap preparation is optional marketing infrastructure, not a
+  checkout availability dependency. Checkout delivers one order first. If
+  authorization, signing, public-invoice issuance, or public-invoice validation
+  fails before an invoice reaches a payment rail, the same order automatically
+  continues with a plain private LNURL invoice. The lifecycle records the
+  fallback and must not claim that a public zap was created.
+- Once an invoice reaches a payment rail, timeout or ambiguous payment state
+  must not request a second invoice or switch payment modes. The buyer must
+  check the original payment state before retrying.
 - The public Zapouts feed accepts only valid signed embedded zap requests whose
   recipient, sender, amount, and BOLT11 description binding agree with the
   receipt. New anonymous requests include a server-authorized `omf_provider`
@@ -233,9 +238,12 @@ Product public-zap policy is cart-wide:
   preserve same-second boundaries, cap relays/candidates/time, and distinguish
   empty results, invalid receipts, unavailable authority, and partial or total
   relay failure.
-- Direct anonymous checkout rechecks the private destination locally against
-  the latest signed listing's public country/postal rules before signing. The
-  destination is not disclosed to the authorization or signer service.
+- Direct anonymous checkout may recheck the private destination locally against
+  the latest signed listing's public country/postal rules before signing. A
+  failed or unavailable optional recheck suppresses the public zap and falls
+  back to the already-eligible private checkout path; it does not suppress the
+  delivered order or ordinary invoice. The destination is not disclosed to the
+  authorization or signer service.
 
 Public zap comments are public protocol content. They must not include order
 contents, shipping/contact data, invoices, payment request strings, product

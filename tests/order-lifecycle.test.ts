@@ -2,7 +2,10 @@ import { describe, expect, it } from "bun:test"
 import {
   GUEST_ORDER_LOCAL_RETENTION_MS,
   deriveOrderLifecyclePhase,
+  getOrderLifecyclePaymentAdmission,
   isGuestOrderDataExpired,
+  type OrderLifecycle,
+  type OrderPaymentClaimInput,
 } from "@conduit/core"
 
 const base = {
@@ -93,5 +96,101 @@ describe("guest order data retention", () => {
         createdAt + GUEST_ORDER_LOCAL_RETENTION_MS * 2
       )
     ).toBe(false)
+  })
+})
+
+describe("order payment admission", () => {
+  const lifecycle: OrderLifecycle = {
+    orderId: "payment-admission-order",
+    buyerPubkey: "buyer",
+    merchantPubkey: "merchant",
+    merchantLightningAddress: "merchant@wallet.example",
+    checkoutMode: "anonymous_public_zap",
+    publicZapSigner: "anon",
+    items: [
+      {
+        productId: "30402:merchant:item",
+        format: "digital",
+        quantity: 2,
+        priceAtPurchase: 1,
+        currency: "SATS",
+      },
+    ],
+    itemSubtotalSats: 2,
+    shippingCostSats: 0,
+    totalSats: 2,
+    totalMsats: 2_000,
+    currency: "SATS",
+    zapContent: "Zapped out 2 items at https://shop.conduit.market/",
+    addressValidity: "not_required",
+    shippingZoneEligibility: "not_required",
+    orderDeliveryStatus: "sent",
+    invoiceStatus: "not_requested",
+    paymentStatus: "not_started",
+    proofDeliveryStatus: "not_started",
+    zapReceiptStatus: "not_applicable",
+    phase: "in_progress",
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+  }
+  const input: OrderPaymentClaimInput = {
+    orderId: lifecycle.orderId,
+    buyerPubkey: lifecycle.buyerPubkey,
+    merchantPubkey: lifecycle.merchantPubkey,
+    merchantLightningAddress: lifecycle.merchantLightningAddress ?? null,
+    checkoutMode: "anonymous_public_zap",
+    zapContent: lifecycle.zapContent ?? "",
+    totalSats: lifecycle.totalSats,
+    totalMsats: lifecycle.totalMsats,
+    items: lifecycle.items.map((item) => ({
+      productAddress: item.productId,
+      quantity: item.quantity,
+    })),
+  }
+
+  it("admits an exact delivered-order snapshot", () => {
+    expect(getOrderLifecyclePaymentAdmission(lifecycle, input)).toBe(
+      "admissible"
+    )
+  })
+
+  it("rejects payment context that disagrees with the delivered order", () => {
+    expect(
+      getOrderLifecyclePaymentAdmission(lifecycle, {
+        ...input,
+        totalMsats: input.totalMsats + 1_000,
+      })
+    ).toBe("snapshot_mismatch")
+  })
+
+  it("rejects states where an invoice may already be payable or paid", () => {
+    for (const paymentStatus of [
+      "paying",
+      "paid",
+      "manual_required",
+      "ambiguous",
+    ] as const) {
+      expect(
+        getOrderLifecyclePaymentAdmission(
+          { ...lifecycle, paymentStatus },
+          input
+        )
+      ).toBe("unsafe_state")
+    }
+  })
+
+  it("requires a delivered, non-terminal order", () => {
+    expect(
+      getOrderLifecyclePaymentAdmission(
+        { ...lifecycle, orderDeliveryStatus: "pending" },
+        input
+      )
+    ).toBe("unsafe_state")
+    expect(
+      getOrderLifecyclePaymentAdmission(
+        { ...lifecycle, phase: "completed" },
+        input
+      )
+    ).toBe("unsafe_state")
   })
 })

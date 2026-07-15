@@ -92,7 +92,11 @@ This exception is constrained as follows:
 - Before exposing or paying a NIP-57 invoice, clients must verify that its
   BOLT11 `h` tag equals SHA-256 of the exact signed kind-9734 JSON supplied to
   the LNURL callback. Missing, duplicate, malformed, or mismatched bindings
-  fail closed.
+  fail closed for the public-zap claim. Before any invoice reaches a payment
+  rail, that failure may continue the same order through a plain LNURL invoice
+  with no `nostr` parameter. The ordinary invoice must still pass exact amount,
+  network, and expiry validation. Optional public-zap infrastructure must not
+  become a checkout availability dependency.
 - Public zap-receipt presentation must validate both the outer kind-9735 and
   embedded kind-9734 signatures, then require request/receipt recipient, sender
   (when `P` is present), and amount tags to agree. Server-authorized anonymous
@@ -116,6 +120,10 @@ This exception is constrained as follows:
   authenticated service binding to the signer Worker, which owns the supported
   Cloudflare Rate Limiting binding. Raw source and merchant identifiers must not
   be passed to that binding.
+- Authentication and rate limiting protect unpaid authorization, signing, and
+  lookup work. Abuse that requires a settled Lightning payment has an inherent
+  attacker cost and does not justify blocking commerce with additional
+  receipt-only availability gates.
 - This exception does not authorize user key custody, merchant signing,
   buyer-auth signing, order messaging, NIP-17/NIP-44 payload signing, product
   listing publishing, or wallet/NWC custody.

@@ -308,6 +308,9 @@ Before enabling anonymous checkout integration:
 - production and preview allowed origins are confirmed
 - Market server boundary has a signer Worker URL, request-auth secret, and
   access to its trusted pricing providers
+- missing or unhealthy signer configuration is surfaced as public-zap
+  degradation while the same order continues through a plain private invoice;
+  it must never render as a checkout-blocking error
 - request-auth secrets meet the entropy, environment-separation, rotation, and
   emergency-revocation requirements above
 - dev/test throwaway identity strategy is documented for local and CI use
@@ -330,7 +333,9 @@ disallowed origins are rejected, and the configured rate limiter returns a
 bounded retry response. Run the Pages-to-Worker service-binding smoke in both
 production and preview, confirming each targets its environment-specific Worker
 without exposing request signatures, secret values, checkout payloads, or
-private deployment links in the evidence.
+private deployment links in the evidence. Separately test checkout with the
+Pages-to-Worker binding absent or rejected: one order must be delivered, one
+plain invoice must be requested, and no public zap may be claimed.
 
 Run formatting checks for docs/env-only changes:
 

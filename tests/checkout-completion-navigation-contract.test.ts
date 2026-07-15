@@ -44,15 +44,32 @@ describe("checkout completion navigation contracts", () => {
     expect(checkoutRoute).toContain("amountSats: deliveredAmountSats")
   })
 
-  it("renders and publishes the same server-authorized anonymous checkout state", async () => {
+  it("keeps anonymous zap preparation behind durable order delivery", async () => {
     const checkoutRoute = await Bun.file(
       "apps/market/src/routes/checkout.tsx"
     ).text()
-
-    expect(checkoutRoute).toContain(
-      "Signed listing total — review before confirming"
+    const payNowIndex = checkoutRoute.indexOf(
+      "async function payNow(): Promise<void>"
     )
-    expect(checkoutRoute).toContain("authorizedPricing={reviewedAnonPricing}")
+    const orderPublishIndex = checkoutRoute.indexOf(
+      "await publishBuyerOrderMessage(",
+      payNowIndex
+    )
+    const lifecycleIndex = checkoutRoute.indexOf(
+      "await createOrderLifecycle(",
+      orderPublishIndex
+    )
+    const paymentServiceIndex = checkoutRoute.indexOf(
+      "void runOrderPayment(serviceCtx)",
+      lifecycleIndex
+    )
+
+    expect(payNowIndex).toBeGreaterThan(-1)
+    expect(orderPublishIndex).toBeGreaterThan(-1)
+    expect(lifecycleIndex).toBeGreaterThan(orderPublishIndex)
+    expect(paymentServiceIndex).toBeGreaterThan(lifecycleIndex)
+    expect(checkoutRoute).not.toContain("prepareAnonZapCheckout")
+    expect(checkoutRoute).not.toContain("pendingAnonAuthorization")
     expect(checkoutRoute).toContain("for (const item of checkoutPricing.items)")
     expect(checkoutRoute).toContain(
       "items: buildLifecycleItems(checkoutPricing.items)"

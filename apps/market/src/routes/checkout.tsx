@@ -33,7 +33,6 @@ import {
   useAuth,
   useProfile,
   type AddressValidityResult,
-  type AuthorizedAnonZapPricing,
   type OrderAddressValidity,
   type OrderGuestContact,
   type OrderLifecycleItem,
@@ -113,12 +112,7 @@ import {
   isPublicZapContentEditable,
   type CheckoutZapMode,
 } from "../lib/checkout-payment"
-import {
-  isAnonZapSignerConfigured,
-  prepareAnonZapCheckout,
-  type AuthorizedAnonZapCheckoutClient,
-  type PreparedAnonZapCheckout,
-} from "../lib/anon-zap-signer"
+import { isAnonZapSignerConfigured } from "../lib/anon-zap-signer"
 import {
   getDeliveryNotice,
   publishBuyerOrderMessage,
@@ -141,26 +135,6 @@ import {
 
 type CheckoutStep =
   "shipping" | "payment" | "signing" | "sending" | "sent" | "paying" | "paid"
-
-function buildAnonAuthorizationFingerprint(
-  merchantPubkey: string,
-  items: Array<{
-    productId: string
-    quantity: number
-    format?: "physical" | "digital"
-    shippingOptionId?: string
-  }>
-): string {
-  return JSON.stringify({
-    merchantPubkey,
-    items: items.map((item) => ({
-      productAddress: item.productId,
-      quantity: item.quantity,
-      format: item.format ?? "physical",
-      shippingOptionId: item.shippingOptionId ?? null,
-    })),
-  })
-}
 
 type CheckoutSearch = {
   merchant?: string
@@ -477,30 +451,21 @@ function OrderSummary({
   items,
   merchantPubkey,
   btcUsdRate,
-  authorizedPricing,
 }: {
   items: CartItem[]
   merchantPubkey: string
   btcUsdRate: PricingRateInput
-  authorizedPricing?: AuthorizedAnonZapPricing
 }) {
   const { data: merchantProfile } = useProfile(merchantPubkey)
   const merchantName = getMerchantDisplayName(merchantProfile, merchantPubkey)
   const totalItems = items.reduce((sum, item) => sum + item.quantity, 0)
   const shippingCost = getCheckoutShippingCost(items, btcUsdRate)
-  const authorizedLines = new Map(
-    authorizedPricing?.items.map((item) => [item.productAddress, item]) ?? []
-  )
-  const itemSubtotalSats =
-    authorizedPricing?.itemSubtotalSats ??
-    items.reduce((sum, item) => {
-      const sats = getPriceSats(item, btcUsdRate)
-      return sats ? sum + sats.sats * item.quantity : sum
-    }, 0)
-  const totalSats =
-    authorizedPricing?.totalSats ?? itemSubtotalSats + shippingCost.totalSats
-  const allItemsPriced =
-    !!authorizedPricing || items.every((item) => getPriceSats(item, btcUsdRate))
+  const itemSubtotalSats = items.reduce((sum, item) => {
+    const sats = getPriceSats(item, btcUsdRate)
+    return sats ? sum + sats.sats * item.quantity : sum
+  }, 0)
+  const totalSats = itemSubtotalSats + shippingCost.totalSats
+  const allItemsPriced = items.every((item) => getPriceSats(item, btcUsdRate))
   const itemSubtotalPrice = getProductPriceDisplay(
     allItemsPriced
       ? {
@@ -517,20 +482,8 @@ function OrderSummary({
       : { price: 0, currency: "UNSUPPORTED" },
     btcUsdRate
   )
-  const shippingLabel = authorizedPricing
-    ? authorizedPricing.shippingCostSats === 0
-      ? items.every((item) => item.format === "digital")
-        ? "Not required (digital)"
-        : "Included"
-      : getProductPriceDisplay(
-          {
-            price: authorizedPricing.shippingCostSats,
-            currency: "SATS",
-            priceSats: authorizedPricing.shippingCostSats,
-          },
-          btcUsdRate
-        ).primary
-    : shippingCost.status === "not_required"
+  const shippingLabel =
+    shippingCost.status === "not_required"
       ? "Not required (digital)"
       : shippingCost.status === "included"
         ? "Included"
@@ -556,11 +509,6 @@ function OrderSummary({
             {totalItems} item{totalItems === 1 ? "" : "s"}
           </div>
         </div>
-        {authorizedPricing ? (
-          <div className="mt-3 inline-flex rounded-full border border-[var(--success)]/40 bg-[var(--success)]/10 px-3 py-1 text-xs font-medium text-[var(--success)]">
-            Signed listing total — review before confirming
-          </div>
-        ) : null}
         <CheckoutMerchantIdentityLink
           merchantPubkey={merchantPubkey}
           merchantProfile={merchantProfile}
@@ -571,28 +519,21 @@ function OrderSummary({
 
       <div className="mt-4 space-y-4">
         {items.map((item) => {
-          const authorizedLine = authorizedLines.get(item.productId)
           const linePrice = getProductPriceDisplay(
-            authorizedLine
-              ? {
-                  price: authorizedLine.unitPriceSats * item.quantity,
-                  currency: "SATS",
-                  priceSats: authorizedLine.unitPriceSats * item.quantity,
-                }
-              : {
-                  price: item.price * item.quantity,
-                  currency: item.currency,
-                  priceSats:
-                    typeof item.priceSats === "number"
-                      ? item.priceSats * item.quantity
-                      : undefined,
-                  sourcePrice: item.sourcePrice
-                    ? {
-                        ...item.sourcePrice,
-                        amount: item.sourcePrice.amount * item.quantity,
-                      }
-                    : undefined,
-                },
+            {
+              price: item.price * item.quantity,
+              currency: item.currency,
+              priceSats:
+                typeof item.priceSats === "number"
+                  ? item.priceSats * item.quantity
+                  : undefined,
+              sourcePrice: item.sourcePrice
+                ? {
+                    ...item.sourcePrice,
+                    amount: item.sourcePrice.amount * item.quantity,
+                  }
+                : undefined,
+            },
             btcUsdRate
           )
           return (
@@ -723,10 +664,6 @@ function CheckoutPage() {
   const [zapMode, setZapMode] = useState<CheckoutZapMode>(defaultPublicZapMode)
   const [zapContent, setZapContent] = useState("")
   const [zapContentEdited, setZapContentEdited] = useState(false)
-  const [pendingAnonAuthorization, setPendingAnonAuthorization] = useState<{
-    fingerprint: string
-    authorization: AuthorizedAnonZapCheckoutClient
-  } | null>(null)
   const [weblnAvailable, setWeblnAvailable] = useState(false)
   const [pricingRefreshPending, setPricingRefreshPending] = useState(false)
   const [pricingRefreshFailedAt, setPricingRefreshFailedAt] = useState<
@@ -773,41 +710,6 @@ function CheckoutPage() {
       ? "anonymous_public_zap"
       : "private_checkout"
   const selectedZapMode = isGuestCheckout ? guestZapMode : zapMode
-  const currentAnonAuthorizationFingerprint = selectedMerchant
-    ? buildAnonAuthorizationFingerprint(selectedMerchant, checkoutItems)
-    : null
-  const reviewedAnonPricing =
-    selectedZapMode === "anonymous_public_zap" &&
-    currentAnonAuthorizationFingerprint !== null &&
-    pendingAnonAuthorization?.fingerprint ===
-      currentAnonAuthorizationFingerprint &&
-    pendingAnonAuthorization.authorization.expiresAt >
-      Math.floor(Date.now() / 1000) + 5
-      ? pendingAnonAuthorization.authorization.pricing
-      : undefined
-
-  useEffect(() => {
-    if (!pendingAnonAuthorization) return
-    const authorizationToken =
-      pendingAnonAuthorization.authorization.authorizationToken
-    const delayMs = Math.min(
-      2_147_000_000,
-      Math.max(
-        0,
-        pendingAnonAuthorization.authorization.expiresAt * 1000 -
-          Date.now() -
-          5_000
-      )
-    )
-    const timer = window.setTimeout(() => {
-      setPendingAnonAuthorization((current) =>
-        current?.authorization.authorizationToken === authorizationToken
-          ? null
-          : current
-      )
-    }, delayMs)
-    return () => window.clearTimeout(timer)
-  }, [pendingAnonAuthorization])
 
   const zapVisibility = getCheckoutZapVisibility(selectedZapMode)
   const zapContentEditable = isPublicZapContentEditable(
@@ -1714,7 +1616,7 @@ function CheckoutPage() {
   async function payNow(): Promise<void> {
     if (!selectedMerchant || checkoutItems.length === 0) return
     if (!signedBuyerPubkey && !isGuestCheckout) return
-    const checkoutMode = selectedZapMode
+    const requestedCheckoutMode = selectedZapMode
     let publishedOrderId: string | null = null
     let publishedTotalSats: number | null = null
     let orderDelivered = false
@@ -1725,14 +1627,14 @@ function CheckoutPage() {
       setWeblnAvailable(webLnAvailableNow)
     if (!merchantLud16) {
       recordCheckoutStepResult({
-        checkoutMode,
+        checkoutMode: requestedCheckoutMode,
         rail: "lightning",
         status: "blocked",
         stepName: "direct_payment",
       })
       recordCheckoutResult({
         amountSats: total,
-        checkoutMode,
+        checkoutMode: requestedCheckoutMode,
         rail: "lightning",
         status: "blocked",
       })
@@ -1749,7 +1651,7 @@ function CheckoutPage() {
     setStep("sending")
     recordCheckoutStepResult({
       amountSats: total,
-      checkoutMode,
+      checkoutMode: requestedCheckoutMode,
       status: "started",
       stepName: "direct_payment",
     })
@@ -1793,61 +1695,11 @@ function CheckoutPage() {
       if (pricingIntent.status !== "ok") {
         throw new Error(pricingIntent.reason)
       }
-      let checkoutPricing = pricingIntent
-      let preparedAnonZap: PreparedAnonZapCheckout | undefined
-      if (checkoutMode === "anonymous_public_zap") {
-        const authorizationContext = {
-          merchantPubkey: selectedMerchant,
-          items: pricingIntent.items.map((item) => ({
-            productAddress: item.productId,
-            quantity: item.quantity,
-          })),
-        }
-        const fingerprint = buildAnonAuthorizationFingerprint(
-          selectedMerchant,
-          pricingIntent.items
-        )
-        const reusableAuthorization =
-          pendingAnonAuthorization?.fingerprint === fingerprint &&
-          pendingAnonAuthorization.authorization.expiresAt >
-            Math.floor(Date.now() / 1000) + 5
-            ? pendingAnonAuthorization.authorization
-            : null
-        const preparation = await prepareAnonZapCheckout({
-          context: authorizationContext,
-          localPricing: pricingIntent,
-          destination: {
-            country: shippingAddress?.country ?? shipping.country,
-            postalCode: shippingAddress?.postalCode ?? shipping.postalCode,
-          },
-          reusableAuthorization,
-        })
-
-        if (preparation.status === "review_required") {
-          setPendingAnonAuthorization({
-            fingerprint,
-            authorization: preparation.authorization,
-          })
-          setError(
-            `The current signed listings total ${preparation.authorization.pricing.totalSats.toLocaleString()} sats (the cart preview was ${pricingIntent.totalSats.toLocaleString()} sats) with updated signed line or shipping pricing. Review the signed listing total and breakdown in the order summary, then select Zap out again to confirm.`
-          )
-          setStep("payment")
-          paymentInFlightRef.current = false
-          recordCheckoutStepResult({
-            amountSats: preparation.authorization.pricing.totalSats,
-            checkoutMode,
-            status: "blocked",
-            stepName: "direct_payment",
-          })
-          return
-        }
-
-        preparedAnonZap = preparation.prepared
-        checkoutPricing = preparation.checkoutPricing
-        setPendingAnonAuthorization(null)
-      }
+      const checkoutMode = requestedCheckoutMode
+      const checkoutPricing = pricingIntent
       const effectiveZapContent =
-        preparedAnonZap?.rawEvent.content ?? zapContent
+        checkoutMode === "private_checkout" ? "" : zapContent
+      const requiresPublicZap = isCheckoutPublicZapMode(checkoutMode)
       const finalWalletPaymentConstraint = getKnownWalletPaymentConstraint({
         amountMsats: checkoutPricing.totalMsats,
         balance: wallet.balance,
@@ -2008,18 +1860,23 @@ function CheckoutPage() {
           productAddress: item.productId,
           quantity: item.quantity,
         })),
+        anonZapPreparation:
+          checkoutMode === "anonymous_public_zap"
+            ? {
+                localPricing: checkoutPricing,
+                destination: {
+                  country: shippingAddress?.country ?? shipping.country,
+                  postalCode:
+                    shippingAddress?.postalCode ?? shipping.postalCode,
+                },
+              }
+            : undefined,
         walletConnection: guestIdentity ? null : wallet.connection,
         tryNwc: !guestIdentity && shouldTrySavedNwcWallet,
         tryWebln: !guestIdentity,
-        preparedAnonZap,
       }
 
-      try {
-        void runOrderPayment(serviceCtx)
-      } catch {
-        // runOrderPayment is async and should not throw synchronously, but keep
-        // checkout navigation independent from payment service startup.
-      }
+      void runOrderPayment(serviceCtx)
 
       paymentInFlightRef.current = false
       void navigate({
@@ -2043,13 +1900,13 @@ function CheckoutPage() {
         paymentInFlightRef.current = false
         recordCheckoutSuccess({
           amountSats: deliveredAmountSats,
-          checkoutMode,
+          checkoutMode: requestedCheckoutMode,
           rail: "lightning",
           status: "order_sent_local_tracking_failed",
         })
         recordCheckoutResult({
           amountSats: deliveredAmountSats,
-          checkoutMode,
+          checkoutMode: requestedCheckoutMode,
           rail: "lightning",
           status: "success_local_tracking_failed",
         })
@@ -2065,13 +1922,13 @@ function CheckoutPage() {
       // so a full retry can't create a duplicate.
       recordCheckoutStepResult({
         amountSats: total,
-        checkoutMode,
+        checkoutMode: requestedCheckoutMode,
         status: "failed",
         stepName: "direct_payment",
       })
       recordCheckoutResult({
         amountSats: total,
-        checkoutMode,
+        checkoutMode: requestedCheckoutMode,
         rail: "lightning",
         status: "failed",
       })
@@ -3077,7 +2934,6 @@ function CheckoutPage() {
           items={checkoutItems}
           merchantPubkey={selectedMerchant!}
           btcUsdRate={btcUsdRate}
-          authorizedPricing={reviewedAnonPricing}
         />
       </div>
 

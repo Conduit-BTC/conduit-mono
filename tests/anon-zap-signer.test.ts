@@ -363,25 +363,91 @@ describe("Anon zap signer client", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
-  it("does not sign when checkout authorization fails", async () => {
+  it("degrades to private checkout when anon authorization is unavailable", async () => {
     let signCalls = 0
 
-    await expect(
-      prepareAnonZapCheckout({
-        context: context(),
-        localPricing: localPricing(),
-        destination: { country: "US", postalCode: "94107" },
-        dependencies: {
-          authorize: async () => {
-            throw new Error("authorization rejected")
-          },
-          sign: async () => {
-            signCalls += 1
-            throw new Error("must not sign")
-          },
+    const result = await prepareAnonZapCheckout({
+      context: context(),
+      localPricing: localPricing(),
+      destination: { country: "US", postalCode: "94107" },
+      dependencies: {
+        authorize: async () => {
+          throw new AnonZapAuthorizationError("authorization unavailable")
         },
-      })
-    ).rejects.toThrow("authorization rejected")
+        sign: async () => {
+          signCalls += 1
+          throw new Error("must not sign")
+        },
+      },
+    })
+
+    expect(result).toEqual({
+      status: "private_fallback",
+      failedStage: "authorization",
+      checkoutPricing: localPricing(),
+    })
+    expect(signCalls).toBe(0)
+  })
+
+  it("degrades to private checkout with authorized pricing when signing is unavailable", async () => {
+    const authorized = authorization(50)
+
+    const result = await prepareAnonZapCheckout({
+      context: context(),
+      localPricing: localPricing(),
+      destination: { country: "US", postalCode: "94107" },
+      dependencies: {
+        authorize: async () => authorized,
+        sign: async () => {
+          throw new AnonZapAuthorizationError("signer unavailable")
+        },
+      },
+    })
+
+    expect(result).toMatchObject({
+      status: "private_fallback",
+      failedStage: "signing",
+      checkoutPricing: {
+        totalSats: 50,
+        totalMsats: 50_000,
+        items: [
+          {
+            productId: `30402:${MERCHANT_PUBKEY}:test-product`,
+            priceAtPurchase: 50,
+            quantity: 1,
+          },
+        ],
+      },
+    })
+  })
+
+  it("degrades only the public zap when its signed destination check fails", async () => {
+    const authorized = authorization(50)
+    const pricing = localPricing()
+    let signCalls = 0
+    authorized.pricing.items[0]!.format = "physical"
+    authorized.pricing.items[0]!.shippingCountryRules = [
+      { code: "US", restrictTo: [], exclude: [] },
+    ]
+    pricing.items[0]!.format = "physical"
+
+    const result = await prepareAnonZapCheckout({
+      context: context(),
+      localPricing: pricing,
+      destination: { country: "CA", postalCode: "H2Y 1C6" },
+      dependencies: {
+        authorize: async () => authorized,
+        sign: async () => {
+          signCalls += 1
+          throw new Error("must not sign")
+        },
+      },
+    })
+
+    expect(result).toMatchObject({
+      status: "private_fallback",
+      failedStage: "authorization",
+    })
     expect(signCalls).toBe(0)
   })
 

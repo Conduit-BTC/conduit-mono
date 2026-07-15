@@ -1010,7 +1010,7 @@ function OrderDetail({
                     ? "This order did not keep a checkout-time Lightning target, so retry is unavailable from Orders. Message the merchant before attempting another payment path."
                     : showRetryPayment
                       ? showAnonPaymentRecovery
-                        ? "The anonymous zap failed before payment, so no funds moved. Retry it or explicitly continue with a private invoice."
+                        ? "This older anonymous zap attempt failed before automatic fallback was available. No funds moved; retry it or continue with a private invoice."
                         : "No funds moved. You can retry payment for this order."
                       : "Payment went through; the receipt didn't reach the merchant."}
             </span>

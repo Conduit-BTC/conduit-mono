@@ -531,6 +531,11 @@ export async function signAuthorizedAnonZapCheckout(
 
 export type PrepareAnonZapCheckoutResult =
   | {
+      status: "private_fallback"
+      failedStage: "authorization" | "signing"
+      checkoutPricing: Extract<CheckoutPricingIntent, { status: "ok" }>
+    }
+  | {
       status: "review_required"
       authorization: AuthorizedAnonZapCheckoutClient
       checkoutPricing: Extract<CheckoutPricingIntent, { status: "ok" }>
@@ -559,24 +564,48 @@ export async function prepareAnonZapCheckout(input: {
     input.dependencies?.authorize ?? authorizeCheckoutWithAnonSigner
   const sign = input.dependencies?.sign ?? signAuthorizedAnonZapCheckout
   const reusableAuthorization = input.reusableAuthorization ?? null
-  const authorization =
-    reusableAuthorization ?? (await authorize(input.context, input.options))
-  const checkoutPricing = applyAuthorizedAnonZapPricing(
-    input.localPricing,
-    authorization.pricing
-  )
+  let authorization: AuthorizedAnonZapCheckoutClient
+  try {
+    authorization =
+      reusableAuthorization ?? (await authorize(input.context, input.options))
+  } catch {
+    return {
+      status: "private_fallback",
+      failedStage: "authorization",
+      checkoutPricing: input.localPricing,
+    }
+  }
+
+  let checkoutPricing: Extract<CheckoutPricingIntent, { status: "ok" }>
+  try {
+    checkoutPricing = applyAuthorizedAnonZapPricing(
+      input.localPricing,
+      authorization.pricing
+    )
+  } catch {
+    return {
+      status: "private_fallback",
+      failedStage: "authorization",
+      checkoutPricing: input.localPricing,
+    }
+  }
   const destinationEligibility = getAuthorizedAnonZapDestinationEligibility(
     input.destination,
     authorization.pricing
   )
-  if (destinationEligibility.eligible !== true) {
-    const reason =
-      destinationEligibility.reason === "country_unsupported"
-        ? "The current signed listing does not ship to this country."
-        : destinationEligibility.reason === "postal_restricted"
-          ? "The current signed listing does not ship to this postal code."
-          : "The current signed listing shipping zone could not be verified."
-    throw new Error(`${reason} No order was sent and no payment was attempted.`)
+  if (destinationEligibility.eligible === false) {
+    return {
+      status: "private_fallback",
+      failedStage: "authorization",
+      checkoutPricing,
+    }
+  }
+  if (destinationEligibility.eligible === null) {
+    return {
+      status: "private_fallback",
+      failedStage: "authorization",
+      checkoutPricing,
+    }
   }
 
   if (
@@ -590,11 +619,19 @@ export async function prepareAnonZapCheckout(input: {
     }
   }
 
-  return {
-    status: "prepared",
-    authorization,
-    prepared: await sign(authorization, input.options),
-    checkoutPricing,
+  try {
+    return {
+      status: "prepared",
+      authorization,
+      prepared: await sign(authorization, input.options),
+      checkoutPricing,
+    }
+  } catch {
+    return {
+      status: "private_fallback",
+      failedStage: "signing",
+      checkoutPricing,
+    }
   }
 }
 
