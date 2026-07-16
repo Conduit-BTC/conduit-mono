@@ -32,6 +32,7 @@ export interface FetchEventsFanoutOptions {
   connectTimeoutMs?: number
   fetchTimeoutMs?: number
   skipHealthFilter?: boolean
+  reuseRelayConnections?: boolean
 }
 
 export interface FetchEventsFanoutProgress {
@@ -331,8 +332,11 @@ type RelayConnection = {
 const RELAY_CONNECTION_IDLE_MS = 20_000
 const relayConnections = new Map<string, RelayConnection>()
 
-function dropRelayConnection(conn: RelayConnection): void {
-  if (relayConnections.get(conn.url) === conn) relayConnections.delete(conn.url)
+function dropRelayConnection(
+  conn: RelayConnection,
+  connections: Map<string, RelayConnection>
+): void {
+  if (connections.get(conn.url) === conn) connections.delete(conn.url)
   if (conn.closed) return
   conn.closed = true
   if (conn.idleTimer) clearTimeout(conn.idleTimer)
@@ -346,15 +350,21 @@ function dropRelayConnection(conn: RelayConnection): void {
   }
 }
 
-function scheduleRelayConnectionIdleClose(conn: RelayConnection): void {
+function scheduleRelayConnectionIdleClose(
+  conn: RelayConnection,
+  connections: Map<string, RelayConnection>
+): void {
   if (conn.idleTimer) clearTimeout(conn.idleTimer)
   conn.idleTimer = setTimeout(() => {
-    if (conn.subs.size === 0) dropRelayConnection(conn)
+    if (conn.subs.size === 0) dropRelayConnection(conn, connections)
   }, RELAY_CONNECTION_IDLE_MS)
 }
 
-function getRelayConnection(url: string): RelayConnection {
-  const existing = relayConnections.get(url)
+function getRelayConnection(
+  url: string,
+  connections: Map<string, RelayConnection>
+): RelayConnection {
+  const existing = connections.get(url)
   if (existing && !existing.closed) return existing
 
   const conn: RelayConnection = {
@@ -383,11 +393,11 @@ function getRelayConnection(url: string): RelayConnection {
     }
     ws.onerror = () => {
       if (!conn.isOpen) reject(new Error("relay connect failed"))
-      dropRelayConnection(conn)
+      dropRelayConnection(conn, connections)
     }
     ws.onclose = () => {
       if (!conn.isOpen) reject(new Error("relay closed before open"))
-      dropRelayConnection(conn)
+      dropRelayConnection(conn, connections)
     }
     ws.onmessage = (message) => {
       let parsed: unknown
@@ -415,23 +425,32 @@ function getRelayConnection(url: string): RelayConnection {
     // Rejection is handled per-read; swallow here to avoid unhandled rejection.
   })
 
-  relayConnections.set(url, conn)
+  connections.set(url, conn)
   return conn
 }
 
+function closeRelayConnections(
+  connections: Map<string, RelayConnection>
+): void {
+  for (const conn of [...connections.values()]) {
+    dropRelayConnection(conn, connections)
+  }
+  connections.clear()
+}
+
 function closeAllRelayConnections(): void {
-  for (const conn of [...relayConnections.values()]) dropRelayConnection(conn)
-  relayConnections.clear()
+  closeRelayConnections(relayConnections)
 }
 
 function readRelayEvents(
   relayUrl: string,
   filter: NDKFilter,
   connectTimeoutMs: number,
-  fetchTimeoutMs: number
+  fetchTimeoutMs: number,
+  connections: Map<string, RelayConnection>
 ): Promise<{ events: RawNostrEvent[]; complete: boolean }> {
   return new Promise((resolve) => {
-    const conn = getRelayConnection(relayUrl)
+    const conn = getRelayConnection(relayUrl, connections)
     if (conn.idleTimer) {
       clearTimeout(conn.idleTimer)
       conn.idleTimer = undefined
@@ -457,7 +476,7 @@ function readRelayEvents(
         }
       }
       if (!conn.closed && conn.subs.size === 0) {
-        scheduleRelayConnectionIdleClose(conn)
+        scheduleRelayConnectionIdleClose(conn, connections)
       }
       resolve({ events, complete })
     }
@@ -497,7 +516,8 @@ async function fetchEventsFromRelay(
   relayUrl: string,
   filter: NDKFilter,
   connectTimeoutMs: number,
-  fetchTimeoutMs: number
+  fetchTimeoutMs: number,
+  connections: Map<string, RelayConnection>
 ): Promise<{
   relayUrl: string
   events: NDKEvent[]
@@ -509,7 +529,8 @@ async function fetchEventsFromRelay(
       relayUrl,
       filter,
       connectTimeoutMs,
-      fetchTimeoutMs
+      fetchTimeoutMs,
+      connections
     )
     const status: FetchEventsRelayStatus["status"] = complete
       ? "success"
@@ -635,25 +656,39 @@ export async function fetchEventsFanoutDetailed(
 
   const connectTimeoutMs = options.connectTimeoutMs ?? 4_000
   const fetchTimeoutMs = options.fetchTimeoutMs ?? 8_000
+  const connections =
+    options.reuseRelayConnections === false
+      ? new Map<string, RelayConnection>()
+      : relayConnections
 
-  const perRelayResults = await Promise.all(
-    relayUrls.map((relayUrl) =>
-      fetchEventsFromRelay(relayUrl, filter, connectTimeoutMs, fetchTimeoutMs)
+  try {
+    const perRelayResults = await Promise.all(
+      relayUrls.map((relayUrl) =>
+        fetchEventsFromRelay(
+          relayUrl,
+          filter,
+          connectTimeoutMs,
+          fetchTimeoutMs,
+          connections
+        )
+      )
     )
-  )
 
-  const merged = new Map<string, NDKEvent>()
-  for (const result of perRelayResults) {
-    mergeEventsInto(merged, result.events)
-  }
+    const merged = new Map<string, NDKEvent>()
+    for (const result of perRelayResults) {
+      mergeEventsInto(merged, result.events)
+    }
 
-  return {
-    events: Array.from(merged.values()),
-    relays: perRelayResults.map((result) => ({
-      relayUrl: result.relayUrl,
-      status: result.status,
-      eventCount: result.events.length,
-    })),
+    return {
+      events: Array.from(merged.values()),
+      relays: perRelayResults.map((result) => ({
+        relayUrl: result.relayUrl,
+        status: result.status,
+        eventCount: result.events.length,
+      })),
+    }
+  } finally {
+    if (connections !== relayConnections) closeRelayConnections(connections)
   }
 }
 
@@ -668,25 +703,34 @@ export async function fetchEventsFanoutProgressive(
   const connectTimeoutMs = options.connectTimeoutMs ?? 4_000
   const fetchTimeoutMs = options.fetchTimeoutMs ?? 8_000
   const merged = new Map<string, NDKEvent>()
+  const connections =
+    options.reuseRelayConnections === false
+      ? new Map<string, RelayConnection>()
+      : relayConnections
 
-  await Promise.all(
-    relayUrls.map(async (relayUrl) => {
-      const result = await fetchEventsFromRelay(
-        relayUrl,
-        filter,
-        connectTimeoutMs,
-        fetchTimeoutMs
-      )
-      mergeEventsInto(merged, result.events)
-      await onProgress({
-        relayUrl,
-        events: result.events,
-        mergedEvents: Array.from(merged.values()),
+  try {
+    await Promise.all(
+      relayUrls.map(async (relayUrl) => {
+        const result = await fetchEventsFromRelay(
+          relayUrl,
+          filter,
+          connectTimeoutMs,
+          fetchTimeoutMs,
+          connections
+        )
+        mergeEventsInto(merged, result.events)
+        await onProgress({
+          relayUrl,
+          events: result.events,
+          mergedEvents: Array.from(merged.values()),
+        })
       })
-    })
-  )
+    )
 
-  return Array.from(merged.values())
+    return Array.from(merged.values())
+  } finally {
+    if (connections !== relayConnections) closeRelayConnections(connections)
+  }
 }
 
 export async function connectNdk(timeoutMs = 10_000): Promise<void> {

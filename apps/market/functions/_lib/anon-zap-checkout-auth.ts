@@ -37,9 +37,14 @@ export type AnonZapPagesEnv = {
   ANON_ZAP_PROVIDER_ATTESTATION_PRIVATE_KEY_HEX?: string
   ANON_ZAP_PROVIDER_ATTESTATION_PUBLIC_KEYS?: string
   ANON_ZAP_RATE_LIMIT_SERVICE?: AnonZapRateLimitServiceBinding
+  ANON_ZAP_SIGNER_SERVICE?: AnonZapSignerServiceBinding
 }
 
 export type AnonZapRateLimitServiceBinding = {
+  fetch(request: Request): Promise<Response>
+}
+
+export type AnonZapSignerServiceBinding = {
   fetch(request: Request): Promise<Response>
 }
 
@@ -133,6 +138,7 @@ const defaultDependencies: AnonZapPagesDependencies = {
         connectTimeoutMs: 2_500,
         fetchTimeoutMs: 6_000,
         skipHealthFilter: true,
+        reuseRelayConnections: false,
       }
     )
     return {
@@ -1098,6 +1104,16 @@ export async function signAuthorizedAnonZapRequest(
     }
 
     const signerUrl = getSignerUrl(env)
+    const localSignerFallbackAllowed =
+      env.ANON_ZAP_ALLOW_INSECURE_LOCALHOST === "true" &&
+      isExplicitLocalhost(new URL(signerUrl).hostname)
+    if (
+      !env.ANON_ZAP_SIGNER_SERVICE &&
+      dependencies === defaultDependencies &&
+      !localSignerFallbackAllowed
+    ) {
+      throw new Error("Anon zap signer is not configured.")
+    }
     const signerBody = JSON.stringify({
       zapRequest: payload.draft,
       authorization: payload.authorization,
@@ -1115,12 +1131,17 @@ export async function signAuthorizedAnonZapRequest(
     if (origin) headers.set("origin", origin)
     let signerResponse: Response
     try {
-      signerResponse = await dependencies.fetchSigner(signerUrl, {
+      const signerRequestInit: RequestInit = {
         method: "POST",
         headers,
         body: signerBody,
         signal: AbortSignal.timeout(SIGNER_REQUEST_TIMEOUT_MS),
-      })
+      }
+      signerResponse = env.ANON_ZAP_SIGNER_SERVICE
+        ? await env.ANON_ZAP_SIGNER_SERVICE.fetch(
+            new Request(signerUrl, signerRequestInit)
+          )
+        : await dependencies.fetchSigner(signerUrl, signerRequestInit)
     } catch {
       throw new Error("Anon zap signer is temporarily unavailable.")
     }

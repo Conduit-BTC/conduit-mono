@@ -1215,6 +1215,67 @@ describe("Anon zap Pages proxy", () => {
     expect(forwarded.authorization.checkoutSessionId).toMatch(/^[0-9a-f]{64}$/)
   })
 
+  it("uses the signer service binding when configured", async () => {
+    const signerCalls: SignerCall[] = []
+    const dependencies = createDependencies({
+      signerCalls,
+      signerStatus: 503,
+    })
+    const authorization = await issueAuthorization(dependencies)
+    const boundRequests: Request[] = []
+    const response = await signAuthorizedAnonZapRequest(
+      post("https://shop.conduit.market/api/anon-zap-sign", {
+        authorizationToken: authorization.authorizationToken,
+        zapRequest: authorization.draft,
+      }),
+      env({
+        ANON_ZAP_SIGNER_SERVICE: {
+          async fetch(request) {
+            boundRequests.push(request)
+            const body = (await request.json()) as {
+              zapRequest: AuthorizationResponse["draft"]
+            }
+            const rawEvent = finalizeEvent(
+              {
+                kind: body.zapRequest.kind,
+                created_at: body.zapRequest.createdAt,
+                content: body.zapRequest.content,
+                tags: body.zapRequest.tags,
+              },
+              SHOPPER_SECRET
+            )
+            return Response.json({ id: rawEvent.id, rawEvent })
+          },
+        },
+      }),
+      dependencies
+    )
+
+    expect(response.status).toBe(200)
+    expect(boundRequests).toHaveLength(1)
+    expect(boundRequests[0]!.url).toBe("https://anon-signer.example/")
+    expect(
+      boundRequests[0]!.headers.get("x-conduit-anon-signer-signature")
+    ).toMatch(/^[0-9a-f]{64}$/)
+    expect(signerCalls).toHaveLength(0)
+  })
+
+  it("fails closed when the deployed signer service binding is missing", async () => {
+    const authorization = await issueAuthorization(createDependencies())
+    const response = await signAuthorizedAnonZapRequest(
+      post("https://shop.conduit.market/api/anon-zap-sign", {
+        authorizationToken: authorization.authorizationToken,
+        zapRequest: authorization.draft,
+      }),
+      env({ ANON_ZAP_SIGNER_SERVICE: undefined })
+    )
+
+    expect(response.status).toBe(503)
+    await expect(response.json()).resolves.toEqual({
+      error: "Anon zap signer is not configured.",
+    })
+  })
+
   it("rejects token tampering, expiry, and draft mutation before the Worker", async () => {
     const signerCalls: SignerCall[] = []
     const dependencies = createDependencies({ signerCalls })
