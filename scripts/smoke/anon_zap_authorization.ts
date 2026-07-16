@@ -146,10 +146,10 @@ function assertTagValues(
   }
 }
 
-export async function runAnonZapAuthorizationCanary(
+export async function prepareAnonZapAuthorizationCanary(
   config: AnonZapCanaryConfig,
   dependencies: AnonZapCanaryDependencies = {}
-): Promise<{ status: "passed" }> {
+) {
   const fetchImpl = createAnonZapCanaryFetch(
     config.baseUrl,
     dependencies.fetchImpl ?? fetch
@@ -213,11 +213,20 @@ export async function runAnonZapAuthorizationCanary(
     throw new AnonZapCanaryFailure("authorization_validation", error)
   }
 
+  let signed
   try {
-    await signAuthorizedAnonZapCheckout(authorization, options)
+    signed = await signAuthorizedAnonZapCheckout(authorization, options)
   } catch (error) {
     throw new AnonZapCanaryFailure("signing", error)
   }
+  return { authorization, signed }
+}
+
+export async function runAnonZapAuthorizationCanary(
+  config: AnonZapCanaryConfig,
+  dependencies: AnonZapCanaryDependencies = {}
+): Promise<{ status: "passed" }> {
+  await prepareAnonZapAuthorizationCanary(config, dependencies)
   return { status: "passed" }
 }
 

@@ -397,6 +397,43 @@ encrypted order is delivered, one plain private invoice is requested and can
 be paid, no public zap is claimed, and no second invoice is requested. Treat
 that failure-mode checkout as a release gate for anonymous zap changes.
 
+### Provider Invoice-Readiness Canary
+
+`bun run smoke:anon-zap-provider` checks a configured wallet provider beyond
+the Pages signer boundary. It first runs the deployed authorize/sign canary,
+then fetches live LNURL-pay metadata and requires an exact provider host,
+NIP-57 support, a valid receipt pubkey, the exact authorized LNURL, and an
+authorized amount inside the provider range. In invoice mode it sends the exact
+kind `9734` returned by the deployed signer to the provider callback and
+verifies that the returned mainnet BOLT11 encodes the exact server-priced amount
+and commits its description hash to that exact signed request.
+
+The canary never logs or persists the authorization token, signed event,
+provider pubkeys, invoice, or callback query parameters. It never publishes the
+request, pays the invoice, or claims a kind `9735` receipt.
+
+The `Anon Zap Provider Canary` workflow supports manual dispatch and a daily
+schedule. Configure these public repository variables with a team-controlled
+provider fixture before setting `ANON_ZAP_PROVIDER_CANARY_ENABLED=true`:
+
+- `ANON_ZAP_PROVIDER_CANARY_LUD16`
+- `ANON_ZAP_PROVIDER_CANARY_EXPECTED_HOST`
+
+The workflow also requires the six public `ANON_ZAP_CANARY_*` variables listed
+in the no-funds deployment canary section. Configure them for a minimum-value
+product owned by the same merchant pubkey whose signed profile uses the fixture
+Lightning address. The authorized product price controls the invoice amount.
+
+Use a dedicated fixture address whose operator permits recurring unpaid invoice
+requests. Do not point the scheduled callback canary at an unrelated public
+wallet. Run metadata-only checks by setting
+`ANON_ZAP_PROVIDER_CANARY_REQUEST_INVOICE=false`.
+
+This closes the provider compatibility gap through invoice generation, but it
+does not prove settlement or receipt publication. A funded smoke still needs a
+capped NWC credential in a protected deployment environment, explicit approval,
+and verification of the matching kind `9735` on an approved relay.
+
 ## Protocol Sources
 
 - NIP-57 defines zap requests as kind `9734` events sent to the receiver's
