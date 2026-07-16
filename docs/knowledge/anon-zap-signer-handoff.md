@@ -397,6 +397,31 @@ encrypted order is delivered, one plain private invoice is requested and can
 be paid, no public zap is claimed, and no second invoice is requested. Treat
 that failure-mode checkout as a release gate for anonymous zap changes.
 
+### Protected Funded Checkout Fixture
+
+The `Funded Guest Checkout Smoke` workflow is manual-only while its executor is
+under development. Its first safe slice performs the public provider preflight,
+then enters the protected `funded-commerce-smoke` GitHub environment to validate
+that the dedicated merchant signer owns the configured pubkey and product, the
+Lightning address matches the expected provider, receipt relays are secure, the
+payer NWC credential is structurally valid, and the configured payment cap does
+not exceed 1,000 sats. This preflight creates no order, requests no invoice, and
+sends no payment.
+
+Local development may load the same names from an ignored `.env.local`. Store
+`FUNDED_GUEST_SMOKE_MERCHANT_NSEC` and
+`FUNDED_GUEST_SMOKE_PAYER_NWC_URI` only as protected environment secrets in
+GitHub. All other fixture fields are public environment variables. Do not add a
+static buyer key: the eventual executor must generate a fresh guest order key
+for every run.
+
+The draft is not complete until the executor proves merchant order decryption,
+the `guest_ephemeral` buyer projection, exactly one capped NWC payment, the
+matching kind `9735`, and merchant payment-proof convergence. Keep the workflow
+manual-only and retain environment approval until those assertions and
+content-free failure stages are implemented and validated with the dedicated
+Rizful fixture.
+
 ## Protocol Sources
 
 - NIP-57 defines zap requests as kind `9734` events sent to the receiver's
