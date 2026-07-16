@@ -133,6 +133,7 @@ const defaultDependencies: AnonZapPagesDependencies = {
         connectTimeoutMs: 2_500,
         fetchTimeoutMs: 6_000,
         skipHealthFilter: true,
+        reuseRelayConnections: false,
       }
     )
     return {

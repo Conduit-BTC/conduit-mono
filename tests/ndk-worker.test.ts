@@ -259,6 +259,54 @@ describe("NDK relay worker verification fallback", () => {
     ])
   })
 
+  it("can isolate relay connections between server requests", async () => {
+    const validEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PROFILE,
+        created_at: 10,
+        tags: [],
+        content: JSON.stringify({ name: "isolated relay read" }),
+      },
+      Uint8Array.from([...new Uint8Array(31), 1])
+    )
+    const sockets: Array<{ readyState: number }> = []
+    const FakeWebSocket = fakeRelayWebSocket(validEvent)
+
+    class TrackingWebSocket extends FakeWebSocket {
+      constructor() {
+        super()
+        sockets.push(this)
+      }
+    }
+
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: TrackingWebSocket,
+    })
+    Object.defineProperty(globalThis, "Worker", {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    })
+
+    for (let request = 0; request < 2; request += 1) {
+      const result = await fetchEventsFanoutDetailed(
+        { kinds: [EVENT_KINDS.PROFILE] },
+        {
+          relayUrls: ["wss://relay.example"],
+          connectTimeoutMs: 50,
+          fetchTimeoutMs: 50,
+          reuseRelayConnections: false,
+        }
+      )
+      expect(result.events).toHaveLength(1)
+    }
+
+    expect(sockets).toHaveLength(2)
+    expect(sockets.every((socket) => socket.readyState === 3)).toBe(true)
+  })
+
   it("preserves verified events but reports partial when a relay closes before EOSE", async () => {
     const validEvent = finalizeEvent(
       {
