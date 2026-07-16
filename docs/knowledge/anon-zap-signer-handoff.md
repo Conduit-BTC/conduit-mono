@@ -118,11 +118,18 @@ amount or comment.
 - `ANON_ZAP_RATE_LIMIT_SERVICE`: required Cloudflare Pages service binding to
   the Anon signer Worker. Pages Functions do not own Rate Limiting bindings;
   they send only HMAC-pseudonymous bucket keys through this authenticated
-  service boundary. Configure the binding separately on every Git-connected
-  Pages project because Market, Merchant, and their Signet projects all consume
-  the repository-root `functions/` directory. Do not add a partial app-local
-  Pages Wrangler file: it is outside that project root and cannot represent all
-  four projects. Both sides fail closed on missing or unavailable bindings.
+  service boundary.
+- `ANON_ZAP_SIGNER_SERVICE`: required Cloudflare Pages service binding to the
+  same environment-specific signer Worker for authenticated signing requests.
+  This avoids routing a same-account Worker request through a public
+  `workers.dev` or custom-domain hop. `ANON_ZAP_SIGNER_URL` remains the
+  validated logical request URL and local-development fallback.
+
+Configure both service bindings separately on every Git-connected Pages
+project because Market, Merchant, and their Signet projects all consume the
+repository-root `functions/` directory. Do not add a partial app-local Pages
+Wrangler file: it is outside that project root and cannot represent all four
+projects. Both sides fail closed on missing or unavailable rate-limit bindings.
 
 `POST /api/zapout-authority` accepts only a bounded batch of public receipt
 events. It rate-limits before streaming the bounded body, validates signatures
@@ -305,8 +312,9 @@ Before enabling anonymous checkout integration:
   Market signer URL
 - production signer Worker has secret bindings and session-plus-merchant rate
   limiting configured
-- Market Pages has the signer service binding configured; the target Worker has
-  all three rate-limit bindings and uses HMAC-pseudonymous source keys
+- Market Pages has both signer and rate-limit service bindings configured; the
+  target Worker has all three rate-limit bindings and uses HMAC-pseudonymous
+  source keys
 - production Pages targets the production Worker, while preview Pages targets
   the separately configured preview Worker and secrets
 - the signer URL uses HTTPS and its exact hostname is allow-listed
