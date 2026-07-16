@@ -67,33 +67,37 @@ function toSignedPublicEvent(value: OmfZapoutReceiptEvent) {
   return raw as SignedPublicNostrEvent
 }
 
-const defaultDependencies: ZapoutAuthorityDependencies = {
-  fetchProfileEvents: async (recipientPubkeys, relayUrls) => {
-    const result = await fetchEventsFanoutDetailed(
-      {
-        kinds: [EVENT_KINDS.PROFILE],
-        authors: recipientPubkeys,
-        limit: Math.min(300, Math.max(50, recipientPubkeys.length * 10)),
-      },
-      {
-        relayUrls,
-        connectTimeoutMs: 1_500,
-        fetchTimeoutMs: 3_000,
-        skipHealthFilter: true,
-      }
-    )
-    return {
-      events: result.events.map(toSignedPublicEvent),
-      complete:
-        result.relays.length === relayUrls.length &&
-        result.relays.every(
-          (relay) =>
-            relay.status === "success" &&
-            relay.eventCount <
-              Math.min(300, Math.max(50, recipientPubkeys.length * 10))
-        ),
+export async function fetchZapoutAuthorityProfileEvents(
+  recipientPubkeys: string[],
+  relayUrls: string[]
+): ReturnType<ZapoutAuthorityDependencies["fetchProfileEvents"]> {
+  const limit = Math.min(300, Math.max(50, recipientPubkeys.length * 10))
+  const result = await fetchEventsFanoutDetailed(
+    {
+      kinds: [EVENT_KINDS.PROFILE],
+      authors: recipientPubkeys,
+      limit,
+    },
+    {
+      relayUrls,
+      connectTimeoutMs: 1_500,
+      fetchTimeoutMs: 3_000,
+      skipHealthFilter: true,
+      reuseRelayConnections: false,
     }
-  },
+  )
+  return {
+    events: result.events.map(toSignedPublicEvent),
+    complete:
+      result.relays.length === relayUrls.length &&
+      result.relays.every(
+        (relay) => relay.status === "success" && relay.eventCount < limit
+      ),
+  }
+}
+
+const defaultDependencies: ZapoutAuthorityDependencies = {
+  fetchProfileEvents: fetchZapoutAuthorityProfileEvents,
   fetchLnurlMetadata: fetchLnurlPayMetadata,
   nowMs: Date.now,
 }

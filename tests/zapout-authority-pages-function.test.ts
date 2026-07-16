@@ -8,6 +8,7 @@ import { createAnonZapProviderAttestation } from "@conduit/core/protocol/anon-za
 import { finalizeEvent, getPublicKey } from "nostr-tools"
 
 import {
+  fetchZapoutAuthorityProfileEvents,
   onRequest as authorityMethod,
   onRequestOptions as authorityOptions,
   onRequestPost as authorityPost,
@@ -215,6 +216,72 @@ function dependencies(options: {
 }
 
 describe("Zapouts payment-time authority Pages function", () => {
+  it("isolates relay connections between consecutive authority requests", async () => {
+    const originalWebSocket = globalThis.WebSocket
+    const sockets: Array<{ readyState: number }> = []
+
+    class RequestScopedWebSocket {
+      static CONNECTING = 0
+      static OPEN = 1
+      static CLOSING = 2
+      static CLOSED = 3
+
+      readyState = RequestScopedWebSocket.CONNECTING
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent<string>) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      onclose: ((event: Event) => void) | null = null
+
+      constructor() {
+        sockets.push(this)
+        queueMicrotask(() => {
+          this.readyState = RequestScopedWebSocket.OPEN
+          this.onopen?.(new Event("open"))
+        })
+      }
+
+      send(payload: string): void {
+        const [type, subId] = JSON.parse(payload) as [string, string]
+        if (type !== "REQ") return
+        queueMicrotask(() => {
+          this.onmessage?.({
+            data: JSON.stringify(["EOSE", subId]),
+          } as MessageEvent<string>)
+        })
+      }
+
+      close(): void {
+        this.readyState = RequestScopedWebSocket.CLOSED
+        this.onclose?.(new Event("close"))
+      }
+    }
+
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: RequestScopedWebSocket,
+    })
+
+    try {
+      for (let request = 0; request < 2; request += 1) {
+        const result = await fetchZapoutAuthorityProfileEvents(
+          [MERCHANT_PUBKEY],
+          ["wss://commerce.example"]
+        )
+        expect(result.complete).toBe(true)
+      }
+
+      expect(sockets).toHaveLength(2)
+      expect(sockets.every((socket) => socket.readyState === 3)).toBe(true)
+    } finally {
+      Object.defineProperty(globalThis, "WebSocket", {
+        configurable: true,
+        writable: true,
+        value: originalWebSocket,
+      })
+    }
+  })
+
   it("verifies a receipt while the recipient's current authority is unchanged", async () => {
     const deps = dependencies({ profileEvents: [profileEvent()] })
     const event = receipt()
