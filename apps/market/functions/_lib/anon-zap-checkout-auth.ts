@@ -1104,6 +1104,16 @@ export async function signAuthorizedAnonZapRequest(
     }
 
     const signerUrl = getSignerUrl(env)
+    const localSignerFallbackAllowed =
+      env.ANON_ZAP_ALLOW_INSECURE_LOCALHOST === "true" &&
+      isExplicitLocalhost(new URL(signerUrl).hostname)
+    if (
+      !env.ANON_ZAP_SIGNER_SERVICE &&
+      dependencies === defaultDependencies &&
+      !localSignerFallbackAllowed
+    ) {
+      throw new Error("Anon zap signer is not configured.")
+    }
     const signerBody = JSON.stringify({
       zapRequest: payload.draft,
       authorization: payload.authorization,

@@ -1260,6 +1260,22 @@ describe("Anon zap Pages proxy", () => {
     expect(signerCalls).toHaveLength(0)
   })
 
+  it("fails closed when the deployed signer service binding is missing", async () => {
+    const authorization = await issueAuthorization(createDependencies())
+    const response = await signAuthorizedAnonZapRequest(
+      post("https://shop.conduit.market/api/anon-zap-sign", {
+        authorizationToken: authorization.authorizationToken,
+        zapRequest: authorization.draft,
+      }),
+      env({ ANON_ZAP_SIGNER_SERVICE: undefined })
+    )
+
+    expect(response.status).toBe(503)
+    await expect(response.json()).resolves.toEqual({
+      error: "Anon zap signer is not configured.",
+    })
+  })
+
   it("rejects token tampering, expiry, and draft mutation before the Worker", async () => {
     const signerCalls: SignerCall[] = []
     const dependencies = createDependencies({ signerCalls })
