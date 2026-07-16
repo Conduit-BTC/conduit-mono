@@ -97,9 +97,21 @@ export interface CachedProduct {
   zapMessagePolicy?: ProductZapMessagePolicy
   publicZapPolicyKnown?: boolean
   location?: string
+  eventId?: string
+  eventCreatedAt?: number
   createdAt?: number
   updatedAt?: number
   sourceRelayUrls?: string[]
+  cachedAt: number
+}
+
+export interface CachedProductTombstone {
+  id: string
+  pubkey: string
+  addressId?: string
+  eventId?: string
+  deletedAt: number
+  deletionEventId: string
   cachedAt: number
 }
 
@@ -376,6 +388,7 @@ class ConduitDB extends Dexie {
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
   products!: EntityTable<CachedProduct, "id">
+  productTombstones!: EntityTable<CachedProductTombstone, "id">
   profiles!: EntityTable<CachedProfile, "pubkey">
   orderMessages!: EntityTable<CachedOrderMessage, "id">
   relayLists!: EntityTable<CachedRelayList, "pubkey">
@@ -468,6 +481,24 @@ class ConduitDB extends Dexie {
       orderLifecycles:
         "orderId, buyerPubkey, merchantPubkey, phase, updatedAt, createdAt",
     })
+
+    this.version(8).stores({
+      orders: "id, buyerPubkey, merchantPubkey, status, createdAt",
+      messages: "id, senderPubkey, recipientPubkey, kind, createdAt, read",
+      products: "id, pubkey, *tags, cachedAt",
+      productTombstones: "id, pubkey, addressId, eventId, deletedAt, cachedAt",
+      profiles: "pubkey, cachedAt",
+      orderMessages:
+        "id, orderId, type, senderPubkey, recipientPubkey, createdAt",
+      relayLists: "pubkey, cachedAt",
+      productSocialSummaries: "key, cachedAt",
+      nip05Verifications:
+        "id, pubkey, normalizedIdentifier, status, expiresAt, cachedAt",
+      paymentAttempts:
+        "id, orderId, buyerPubkey, merchantPubkey, proofDeliveryStatus, createdAt",
+      orderLifecycles:
+        "orderId, buyerPubkey, merchantPubkey, phase, updatedAt, createdAt",
+    })
   }
 }
 
@@ -503,6 +534,7 @@ export async function ensureCommerceCacheScope(): Promise<void> {
 
   await Promise.all([
     db.products.clear(),
+    db.productTombstones.clear(),
     db.profiles.clear(),
     db.orderMessages.clear(),
     db.relayLists.clear(),
