@@ -1,0 +1,40 @@
+name: Guest Checkout Order Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_order_creation:
+        description: Create one persistent encrypted test order
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guest-checkout-order-smoke
+  cancel-in-progress: false
+
+jobs:
+  create-and-recover-order:
+    if: inputs.confirm_order_creation == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: guest-checkout-smoke
+    env:
+      GUEST_CHECKOUT_SMOKE_MERCHANT_PUBKEY: ${{ vars.GUEST_CHECKOUT_SMOKE_MERCHANT_PUBKEY }}
+      GUEST_CHECKOUT_SMOKE_PRODUCT_ADDRESS: ${{ vars.GUEST_CHECKOUT_SMOKE_PRODUCT_ADDRESS }}
+      GUEST_CHECKOUT_SMOKE_SHIPPING_COUNTRY: ${{ vars.GUEST_CHECKOUT_SMOKE_SHIPPING_COUNTRY }}
+      GUEST_CHECKOUT_SMOKE_SHIPPING_POSTAL_CODE: ${{ vars.GUEST_CHECKOUT_SMOKE_SHIPPING_POSTAL_CODE }}
+      GUEST_CHECKOUT_SMOKE_MERCHANT_NSEC: ${{ secrets.GUEST_CHECKOUT_SMOKE_MERCHANT_NSEC }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+      - run: bun install --frozen-lockfile
+      - name: Create and recover encrypted guest order
+        run: bun run smoke:guest-checkout-order

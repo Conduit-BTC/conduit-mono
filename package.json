@@ -45,7 +45,7 @@
     "lint": "bun run --filter '*' lint",
     "telemetry:check": "bun scripts/ci/check_telemetry_policy.ts",
     "smoke:anon-zap": "bun scripts/smoke/anon_zap_authorization.ts",
-    "smoke:funded-guest-config": "bun scripts/smoke/funded_guest_checkout_config.ts",
+    "smoke:guest-checkout-order": "bun scripts/smoke/guest_checkout_order.ts",
     "test": "bun test",
     "test:e2e": "playwright test",
     "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules"
@@ -63,6 +63,7 @@
     "eslint": "^10.6.0",
     "eslint-plugin-react": "^7.37.4",
     "eslint-plugin-react-hooks": "^7.1.1",
+    "fake-indexeddb": "^6.2.5",
     "husky": "^9.1.7",
     "lint-staged": "^17.0.8",
     "nostr-tools": "2.23.9",

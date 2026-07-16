@@ -397,30 +397,29 @@ encrypted order is delivered, one plain private invoice is requested and can
 be paid, no public zap is claimed, and no second invoice is requested. Treat
 that failure-mode checkout as a release gate for anonymous zap changes.
 
-### Protected Funded Checkout Fixture
+### Protected Guest Checkout Order Fixture
 
-The `Funded Guest Checkout Smoke` workflow is manual-only while its executor is
-under development. Its first safe slice performs the public provider preflight,
-then enters the protected `funded-commerce-smoke` GitHub environment to validate
-that the dedicated merchant signer owns the configured pubkey and product, the
-Lightning address matches the expected provider, receipt relays are secure, the
-payer NWC credential is structurally valid, and the configured payment cap does
-not exceed 1,000 sats. This preflight creates no order, requests no invoice, and
-sends no payment.
+The manual-only `Guest Checkout Order Smoke` workflow enters the protected
+`guest-checkout-smoke` GitHub environment, verifies that the dedicated merchant
+signer owns the configured merchant and product, and asks the deployed checkout
+product query for the current signed listing. It then generates a fresh
+`guest_ephemeral` identity, publishes one encrypted order through the shared
+Market delivery path, switches to the merchant signer, and polls Merchant's
+shared conversation query until that exact order decrypts with the expected
+guest identity and product.
 
-Local development may load the same names from an ignored `.env.local`. Store
-`FUNDED_GUEST_SMOKE_MERCHANT_NSEC` and
-`FUNDED_GUEST_SMOKE_PAYER_NWC_URI` only as protected environment secrets in
-GitHub. All other fixture fields are public environment variables. Do not add a
-static buyer key: the eventual executor must generate a fresh guest order key
-for every run.
+Each run leaves one persistent order for the dedicated test merchant. The order
+uses synthetic `.invalid` contact data and is visibly marked as an automated
+test that must not be fulfilled. Keep the workflow manual-only and use only a
+dedicated product. Local development may load the same names from an ignored
+`.env.local`. Store `GUEST_CHECKOUT_SMOKE_MERCHANT_NSEC` only as a protected
+environment secret in GitHub; all other fixture fields are public variables.
+Do not add a static buyer key because every run must create a new guest identity.
 
-The draft is not complete until the executor proves merchant order decryption,
-the `guest_ephemeral` buyer projection, exactly one capped NWC payment, the
-matching kind `9735`, and merchant payment-proof convergence. Keep the workflow
-manual-only and retain environment approval until those assertions and
-content-free failure stages are implemented and validated with the dedicated
-Rizful fixture.
+This order-only smoke does not request an invoice, use a payer credential, move
+funds, wait for a kind `9735`, or send a payment proof. Those assertions belong
+in a separately approved funded slice after the dedicated wallet fixture and
+spend controls are configured.
 
 ## Protocol Sources
 
