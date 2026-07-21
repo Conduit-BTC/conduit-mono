@@ -239,6 +239,89 @@ describe("browser telemetry", () => {
     }
   })
 
+  it("deduplicates only exact routes before sanitizing dynamic pageviews", () => {
+    const previousDocument = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "document"
+    )
+    const previousNavigator = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "navigator"
+    )
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+    const previousEnableTelemetry = process.env.VITE_ENABLE_TELEMETRY
+    const previousAllowedHosts = process.env.VITE_TELEMETRY_ALLOWED_HOSTS
+    const previousPlausibleSrc = process.env.VITE_PLAUSIBLE_SRC
+    const previousPostHogKey = process.env.VITE_POSTHOG_KEY
+
+    const pageUrls: string[] = []
+    const plausible = ((
+      eventName: "pageview" | string,
+      options?: { url?: string }
+    ) => {
+      if (eventName === "pageview" && options?.url) {
+        pageUrls.push(options.url)
+      }
+    }) as PlausibleFunction
+    const fakeDocument = {
+      createElement: () => ({
+        addEventListener: () => undefined,
+        async: false,
+        dataset: {} as Record<string, string>,
+        src: "",
+      }),
+      head: { appendChild: () => undefined },
+      querySelector: () => null,
+    } as unknown as Document
+    const fakeWindow = {
+      location: {
+        hostname: "shop.conduit.market",
+        origin: "https://shop.conduit.market",
+        pathname: "/products/first",
+      },
+      plausible,
+    } as unknown as Window
+
+    try {
+      process.env.VITE_ENABLE_TELEMETRY = "true"
+      process.env.VITE_TELEMETRY_ALLOWED_HOSTS = "shop.conduit.market"
+      process.env.VITE_PLAUSIBLE_SRC = "https://plausible.io/js/test.js"
+      delete process.env.VITE_POSTHOG_KEY
+      replaceGlobalProperty("document", fakeDocument)
+      replaceGlobalProperty("navigator", {} as Navigator)
+      replaceGlobalProperty("window", fakeWindow)
+
+      recordBrowserTelemetryPageView({
+        app: "market",
+        pathname: "/products/first",
+      })
+      recordBrowserTelemetryPageView({
+        app: "market",
+        pathname: "/products/first",
+      })
+      recordBrowserTelemetryPageView({
+        app: "market",
+        pathname: "/products/second",
+      })
+
+      expect(pageUrls).toEqual([
+        "https://shop.conduit.market/products/:productId",
+        "https://shop.conduit.market/products/:productId",
+      ])
+    } finally {
+      restoreProcessEnvValue("VITE_ENABLE_TELEMETRY", previousEnableTelemetry)
+      restoreProcessEnvValue(
+        "VITE_TELEMETRY_ALLOWED_HOSTS",
+        previousAllowedHosts
+      )
+      restoreProcessEnvValue("VITE_PLAUSIBLE_SRC", previousPlausibleSrc)
+      restoreProcessEnvValue("VITE_POSTHOG_KEY", previousPostHogKey)
+      restoreGlobalProperty("document", previousDocument)
+      restoreGlobalProperty("navigator", previousNavigator)
+      restoreGlobalProperty("window", previousWindow)
+    }
+  })
+
   it("strips PostHog SDK defaults from outgoing events", () => {
     expect(
       sanitizePostHogCaptureEvent({

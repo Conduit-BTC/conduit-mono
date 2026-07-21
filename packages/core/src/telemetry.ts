@@ -541,7 +541,10 @@ export function recordBrowserTelemetryPageView(
     pathname: input.pathname,
   })
   const sanitizedPath = sanitizeTelemetryPath(input.pathname)
-  const pageViewSignature = `${input.app}:${pageUrl}`
+  // Keep the raw route only in memory for exact duplicate suppression. Using
+  // the sanitized provider URL here would collapse distinct dynamic routes
+  // such as `/products/a` and `/products/b` into one pageview.
+  const pageViewSignature = `${input.app}:${input.origin ?? window.location.origin}:${input.pathname}`
   if (lastPageViewSignature === pageViewSignature) return
   lastPageViewSignature = pageViewSignature
 
