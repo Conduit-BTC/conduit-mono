@@ -29,6 +29,28 @@ export interface MerchantIdentityView {
   relayHints: string[]
 }
 
+export function allowsGlobalProductSearch(input: {
+  catalogSource: ProductCatalogSourceMode
+  anonymous: boolean
+}): boolean {
+  return input.anonymous || input.catalogSource === "combined"
+}
+
+export function getGlobalProductSearchQueryKey(input: {
+  query: string
+  pubkey: string | null
+  catalogSource: ProductCatalogSourceMode
+  anonymous: boolean
+}) {
+  return [
+    "market-global-product-search",
+    input.query,
+    input.pubkey,
+    input.catalogSource,
+    input.anonymous ? "anonymous" : "connected",
+  ] as const
+}
+
 export interface MarketProductCardView {
   product: Product
   merchant: MerchantIdentityView

@@ -12,7 +12,9 @@ import {
   getStoreFacetOptions,
 } from "../lib/facets"
 import {
+  allowsGlobalProductSearch,
   getBrowseSearchKey,
+  getGlobalProductSearchQueryKey,
   getStoreTriggerLabel,
   hasUnavailablePriceForBrowseSort,
   mergeProductSearchResults,
@@ -71,8 +73,19 @@ export function useMarketBrowseModel({
     sort: "newest",
   })
   const normalizedSearchQuery = search.q?.trim() ?? ""
+  const globalSearchEnabled =
+    normalizedSearchQuery.length > 0 &&
+    allowsGlobalProductSearch({
+      catalogSource: effectiveCatalogSource,
+      anonymous: usesAnonymousPerspective,
+    })
   const globalSearchQuery = useQuery({
-    queryKey: ["market-global-product-search", normalizedSearchQuery, pubkey],
+    queryKey: getGlobalProductSearchQueryKey({
+      query: normalizedSearchQuery,
+      pubkey,
+      catalogSource: effectiveCatalogSource,
+      anonymous: usesAnonymousPerspective,
+    }),
     queryFn: () =>
       getMarketplaceProducts({
         authenticatedPubkey: status === "connected" ? pubkey : null,
@@ -84,7 +97,7 @@ export function useMarketBrowseModel({
           fetchTimeoutMs: 8_000,
         },
       }),
-    enabled: normalizedSearchQuery.length > 0,
+    enabled: globalSearchEnabled,
     staleTime: 20_000,
   })
   const globalSearchProducts = useMemo(
@@ -93,23 +106,27 @@ export function useMarketBrowseModel({
   )
   const productData = useMemo(
     () =>
-      normalizedSearchQuery
+      globalSearchEnabled
         ? mergeProductSearchResults(
             productsQuery.products,
             globalSearchProducts
           )
         : productsQuery.products,
-    [globalSearchProducts, normalizedSearchQuery, productsQuery.products]
+    [globalSearchEnabled, globalSearchProducts, productsQuery.products]
   )
   const preparedProductsQuery = {
     ...productsQuery,
     isInitialLoading:
       productsQuery.isInitialLoading ||
-      (normalizedSearchQuery.length > 0 &&
+      (globalSearchEnabled &&
         productData.length === 0 &&
         globalSearchQuery.isLoading),
-    isHydrating: productsQuery.isHydrating || globalSearchQuery.isFetching,
-    error: productsQuery.error ?? globalSearchQuery.error,
+    isHydrating:
+      productsQuery.isHydrating ||
+      (globalSearchEnabled && globalSearchQuery.isFetching),
+    error:
+      productsQuery.error ??
+      (globalSearchEnabled ? globalSearchQuery.error : null),
   }
   const allMerchantPubkeys = useMemo(() => {
     if (productData.length === 0) return []
