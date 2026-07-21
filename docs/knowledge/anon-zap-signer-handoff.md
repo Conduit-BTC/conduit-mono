@@ -455,6 +455,32 @@ dedicated product. Local development may load the same names from an ignored
 environment secret in GitHub; all other fixture fields are public variables.
 Do not add a static buyer key because every run must create a new guest identity.
 
+Before the first dispatch, create the `guest-checkout-smoke` GitHub environment
+with required reviewers and a deployment-branch policy restricted to `main`.
+The workflow also rejects non-`main` refs so a selected feature branch cannot
+receive the merchant secret. Configure:
+
+- environment secret `GUEST_CHECKOUT_SMOKE_MERCHANT_NSEC`
+- environment variable `GUEST_CHECKOUT_SMOKE_MERCHANT_PUBKEY`
+- environment variable `GUEST_CHECKOUT_SMOKE_PRODUCT_ADDRESS`
+- for a physical fixture, environment variables
+  `GUEST_CHECKOUT_SMOKE_SHIPPING_COUNTRY` and
+  `GUEST_CHECKOUT_SMOKE_SHIPPING_POSTAL_CODE`
+
+The secret must match the public merchant key. The product coordinate must be a
+current signed kind `30402` listing owned by that merchant and available on the
+configured commerce relays. The merchant must also publish the kind `10050`
+inbox-relay declaration required for NIP-17 delivery, and those relays must be
+reachable by both the Market publisher and Merchant recovery query. A physical
+fixture's country and postal code must satisfy its current signed kind `30406`
+shipping rules.
+
+For the workflow's initial introduction, the live dispatch is post-merge
+validation: GitHub only accepts `workflow_dispatch` for a workflow present on
+the default branch, and this workflow intentionally runs only the `main` ref.
+Deterministic payload, publishing, recovery, and redacted-error tests remain in
+normal pull-request CI.
+
 This order-only smoke does not request an invoice, use a payer credential, move
 funds, wait for a kind `9735`, or send a payment proof. Those assertions belong
 in a separately approved funded slice after the dedicated wallet fixture and

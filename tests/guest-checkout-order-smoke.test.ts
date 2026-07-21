@@ -10,6 +10,7 @@ import {
   parseGuestCheckoutOrderSmokeConfig,
   runGuestCheckoutOrderSmoke,
 } from "../scripts/smoke/guest_checkout_order_runner"
+import type { ReadyCheckoutPricing } from "../apps/market/src/lib/checkout-order"
 
 const MERCHANT_SECRET = Uint8Array.from([...new Uint8Array(31), 7])
 const MERCHANT_PUBKEY = getPublicKey(MERCHANT_SECRET)
@@ -30,20 +31,41 @@ function environment(
   }
 }
 
-function pricing(format: "physical" | "digital" = "digital") {
+function pricing(
+  format: "physical" | "digital" = "digital"
+): ReadyCheckoutPricing {
   return {
+    status: "ok",
     itemSubtotalSats: 10,
-    shippingCostSats: format === "physical" ? 2 : 0,
     totalSats: format === "physical" ? 12 : 10,
-    shippingCostStatus: format === "physical" ? "priced" : "not_required",
+    totalMsats: format === "physical" ? 12_000 : 10_000,
+    shippingCost: {
+      status: format === "physical" ? "priced" : "not_required",
+      totalSats: format === "physical" ? 2 : 0,
+      missingProductIds: [],
+    },
     items: [
       {
-        productAddress: `30402:${MERCHANT_PUBKEY}:fixture`,
+        productId: `30402:${MERCHANT_PUBKEY}:fixture`,
         title: "Fixture product",
         format,
         quantity: 1,
-        unitPriceSats: 10,
-        unitShippingSats: format === "physical" ? 2 : 0,
+        priceAtPurchase: 10,
+        currency: "SATS",
+        shippingCostSats: format === "physical" ? 2 : undefined,
+        sourcePrice: {
+          amount: 1,
+          currency: "USD",
+          normalizedCurrency: "USD",
+        },
+        sourceShippingCost:
+          format === "physical"
+            ? {
+                amount: 0.2,
+                currency: "USD",
+                normalizedCurrency: "USD",
+              }
+            : undefined,
         shippingOptionId:
           format === "physical"
             ? `30406:${MERCHANT_PUBKEY}:shipping`
@@ -63,6 +85,13 @@ function pricing(format: "physical" | "digital" = "digital") {
             : [],
       },
     ],
+    quote: {
+      rate: 100_000,
+      fetchedAt: 1_700_000_000_000,
+      source: "mempool",
+      fiatSource: "frankfurter",
+    },
+    approximate: true,
   }
 }
 
@@ -118,6 +147,51 @@ describe("guest checkout order smoke", () => {
     expect(payload.guestContact.email).toEndWith(".invalid")
     expect(payload.note).toContain("do not fulfill")
     expect(payload.items[0].productId).toBe(`30402:${MERCHANT_PUBKEY}:fixture`)
+    expect(payload.items[0].sourcePrice).toEqual({
+      amount: 1,
+      currency: "USD",
+      normalizedCurrency: "USD",
+    })
+    expect(payload.items[0].sourceShippingCost).toEqual({
+      amount: 0.2,
+      currency: "USD",
+      normalizedCurrency: "USD",
+    })
+    expect(payload.pricingQuote).toEqual({
+      rate: 100_000,
+      fetchedAt: 1_700_000_000_000,
+      source: "mempool",
+      fiatSource: "frankfurter",
+    })
+  })
+
+  it("preserves manual-shipping undefined item costs", () => {
+    const manualPricing = pricing("physical")
+    manualPricing.totalSats = 10
+    manualPricing.totalMsats = 10_000
+    manualPricing.shippingCost = {
+      status: "manual",
+      totalSats: 0,
+      missingProductIds: [manualPricing.items[0]!.productId],
+    }
+    manualPricing.items[0]!.shippingCostSats = undefined
+    manualPricing.items[0]!.sourceShippingCost = undefined
+
+    const rumor = buildGuestCheckoutOrderRumor({
+      orderId: "smoke-order",
+      identity: identity(),
+      merchantPubkey: MERCHANT_PUBKEY,
+      pricing: manualPricing,
+      shippingCountry: "US",
+      shippingPostalCode: "00000",
+      createdAt: 1_700_000_000_000,
+    })
+    const payload = JSON.parse(rumor.content)
+
+    expect(payload.shippingCostStatus).toBe("manual")
+    expect(payload).not.toHaveProperty("shippingCostSats")
+    expect(payload.items[0]).not.toHaveProperty("shippingCostSats")
+    expect(payload.items[0]).not.toHaveProperty("sourceShippingCost")
   })
 
   it("publishes once and proves Merchant recovers the same guest order", async () => {
@@ -138,9 +212,13 @@ describe("guest checkout order smoke", () => {
             product: {
               pubkey: MERCHANT_PUBKEY,
               title: "Fixture product",
-              price: 10,
-              priceSats: 10,
-              currency: "SATS",
+              price: 1,
+              currency: "USD",
+              sourcePrice: {
+                amount: 1,
+                currency: "USD",
+                normalizedCurrency: "USD",
+              },
               format: "digital",
               stock: 1,
               shippingCountryRules: [],
@@ -148,6 +226,13 @@ describe("guest checkout order smoke", () => {
             },
           },
         }) as never,
+      getPricingRate: async () => ({
+        rate: 100_000,
+        fetchedAt: 1_700_000_000_000,
+        source: "mempool",
+        fiatUsdRates: {},
+        fiatSource: "frankfurter",
+      }),
       createOrderId: () => "smoke-order",
       createGuestIdentity: () => identity(),
       publishOrder: async (rumor) => {
@@ -200,6 +285,19 @@ describe("guest checkout order smoke", () => {
 
     expect(result).toEqual({ status: "passed" })
     expect(published).not.toBeNull()
+    const payload = JSON.parse(published!.content)
+    expect(payload.items[0].priceAtPurchase).toBe(1_000)
+    expect(payload.items[0].sourcePrice).toEqual({
+      amount: 1,
+      currency: "USD",
+      normalizedCurrency: "USD",
+    })
+    expect(payload.pricingQuote).toEqual({
+      rate: 100_000,
+      fetchedAt: 1_700_000_000_000,
+      source: "mempool",
+      fiatSource: "frankfurter",
+    })
   })
 
   it("formats only a fixed failure stage without credential details", async () => {

@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   create-and-recover-order:
-    if: inputs.confirm_order_creation == true
+    if: inputs.confirm_order_creation == true && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: guest-checkout-smoke

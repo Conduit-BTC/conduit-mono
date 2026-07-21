@@ -2,20 +2,24 @@ import { NDKEvent, NDKPrivateKeySigner, nip19 } from "@nostr-dev-kit/ndk"
 import { getPublicKey } from "nostr-tools"
 
 import {
-  EVENT_KINDS,
-  appendConduitClientTag,
+  fetchBtcUsdRate,
   getMerchantConversationList,
   getNdk,
   getProductDetail,
-  orderSchema,
   removeSigner,
   setSigner,
+  type BtcUsdRateQuote,
   type CommerceProductRecord,
   type MerchantConversationSummary,
 } from "@conduit/core"
 import { normalizePubkey } from "@conduit/core/utils"
 
 import { createGuestOrderSigningIdentity } from "../../apps/market/src/lib/guest-order-identity"
+import {
+  buildCheckoutOrderRumor,
+  type ReadyCheckoutPricing,
+} from "../../apps/market/src/lib/checkout-order"
+import { buildCheckoutPricingIntent } from "../../apps/market/src/lib/checkout-payment"
 import { publishBuyerOrderMessage } from "../../apps/market/src/lib/order-publish"
 
 const DEFAULT_RECOVERY_TIMEOUT_MS = 90_000
@@ -58,32 +62,9 @@ export type GuestCheckoutOrderSmokeConfig = {
 
 type GuestIdentity = ReturnType<typeof createGuestOrderSigningIdentity>
 
-type GuestOrderPricing = {
-  itemSubtotalSats: number
-  shippingCostSats: number
-  totalSats: number
-  shippingCostStatus: "not_required" | "priced" | "manual"
-  items: Array<{
-    productAddress: string
-    title: string
-    format: "physical" | "digital"
-    quantity: number
-    unitPriceSats: number
-    unitShippingSats: number
-    shippingOptionId?: string
-    shippingOptionDTag?: string
-    shippingCountries: string[]
-    shippingCountryRules: Array<{
-      code: string
-      name: string
-      restrictTo: string[]
-      exclude: string[]
-    }>
-  }>
-}
-
 export type GuestCheckoutOrderSmokeDependencies = {
   getProduct?: typeof getProductDetail
+  getPricingRate?: () => Promise<BtcUsdRateQuote>
   createOrderId?: () => string
   createGuestIdentity?: (
     orderId: string,
@@ -210,10 +191,12 @@ export function parseGuestCheckoutOrderSmokeConfig(
   }
 }
 
-function buildGuestOrderPricing(
+async function buildGuestOrderPricing(
   record: CommerceProductRecord | null,
-  config: GuestCheckoutOrderSmokeConfig
-): GuestOrderPricing {
+  config: GuestCheckoutOrderSmokeConfig,
+  getPricingRate: () => Promise<BtcUsdRateQuote>,
+  nowMs: number
+): Promise<ReadyCheckoutPricing> {
   if (
     !record ||
     record.addressId !== config.productAddress ||
@@ -222,85 +205,43 @@ function buildGuestOrderPricing(
     throw new Error("Guest checkout smoke product could not be verified.")
   }
   const product = record.product
-  const unitPriceSats =
-    Number.isSafeInteger(product.priceSats) && (product.priceSats ?? 0) > 0
-      ? product.priceSats!
-      : product.currency.toUpperCase() === "SATS" &&
-          Number.isSafeInteger(product.price) &&
-          product.price > 0
-        ? product.price
-        : null
-  if (unitPriceSats === null || product.stock === 0) {
-    throw new Error("Guest checkout smoke product is not orderable in sats.")
+  if (product.stock === 0) {
+    throw new Error("Guest checkout smoke product is out of stock.")
   }
-  const unitShippingSats =
-    product.format === "physical" &&
-    Number.isSafeInteger(product.shippingCostSats) &&
-    (product.shippingCostSats ?? -1) >= 0
-      ? product.shippingCostSats!
-      : 0
-  const rules = (product.shippingCountryRules ?? []).map((rule) => ({
-    code: rule.code,
-    name: rule.name,
-    restrictTo: [...rule.restrictTo],
-    exclude: [...rule.exclude],
-  }))
-  return {
-    itemSubtotalSats: unitPriceSats,
-    shippingCostSats: unitShippingSats,
-    totalSats: unitPriceSats + unitShippingSats,
-    shippingCostStatus:
-      product.format === "digital"
-        ? "not_required"
-        : product.shippingCostSats === undefined
-          ? "manual"
-          : "priced",
-    items: [
-      {
-        productAddress: config.productAddress,
-        title: product.title,
-        format: product.format,
-        quantity: 1,
-        unitPriceSats,
-        unitShippingSats,
-        ...(product.shippingOptionId
-          ? { shippingOptionId: product.shippingOptionId }
-          : {}),
-        ...(product.shippingOptionDTag
-          ? { shippingOptionDTag: product.shippingOptionDTag }
-          : {}),
-        shippingCountries: [...(product.shippingCountries ?? [])],
-        shippingCountryRules: rules,
-      },
-    ],
-  }
-}
 
-function buildOrderItems(pricing: GuestOrderPricing) {
-  return pricing.items.map((line) => ({
-    productId: line.productAddress,
-    title: line.title,
-    format: line.format,
-    quantity: line.quantity,
-    priceAtPurchase: line.unitPriceSats,
-    currency: "SATS",
-    shippingCostSats: line.unitShippingSats,
-    ...(line.shippingOptionId
-      ? { shippingOptionId: line.shippingOptionId }
-      : {}),
-    ...(line.shippingOptionDTag
-      ? { shippingOptionDTag: line.shippingOptionDTag }
-      : {}),
-    shippingCountries: line.shippingCountries,
-    shippingCountryRules: line.shippingCountryRules,
-  }))
+  const item = {
+    productId: config.productAddress,
+    merchantPubkey: config.merchantPubkey,
+    title: product.title,
+    price: product.sourcePrice?.amount ?? product.price,
+    currency: product.sourcePrice?.currency ?? product.currency,
+    priceSats: product.priceSats,
+    sourcePrice: product.sourcePrice,
+    format: product.format,
+    shippingCostSats: product.shippingCostSats,
+    sourceShippingCost: product.sourceShippingCost,
+    shippingOptionId: product.shippingOptionId,
+    shippingOptionDTag: product.shippingOptionDTag,
+    shippingCountries: product.shippingCountries,
+    shippingCountryRules: product.shippingCountryRules,
+    quantity: 1,
+  }
+
+  let pricing = buildCheckoutPricingIntent([item], null, nowMs)
+  if (pricing.status !== "ok") {
+    pricing = buildCheckoutPricingIntent([item], await getPricingRate(), nowMs)
+  }
+  if (pricing.status !== "ok") {
+    throw new Error(pricing.reason)
+  }
+  return pricing
 }
 
 export function buildGuestCheckoutOrderRumor(input: {
   orderId: string
   identity: GuestIdentity
   merchantPubkey: string
-  pricing: GuestOrderPricing
+  pricing: ReadyCheckoutPricing
   shippingCountry: string
   shippingPostalCode: string
   createdAt: number
@@ -308,16 +249,12 @@ export function buildGuestCheckoutOrderRumor(input: {
   const hasPhysicalItem = input.pricing.items.some(
     (item) => item.format === "physical"
   )
-  const payload = orderSchema.parse({
-    id: input.orderId,
+  return buildCheckoutOrderRumor({
+    orderId: input.orderId,
     merchantPubkey: input.merchantPubkey,
     buyerPubkey: input.identity.pubkey,
     buyerIdentityKind: "guest_ephemeral",
-    items: buildOrderItems(input.pricing),
-    subtotal: input.pricing.totalSats,
-    currency: "SATS",
-    shippingCostSats: input.pricing.shippingCostSats,
-    shippingCostStatus: input.pricing.shippingCostStatus,
+    pricing: input.pricing,
     ...(hasPhysicalItem
       ? {
           shippingAddress: {
@@ -332,27 +269,9 @@ export function buildGuestCheckoutOrderRumor(input: {
     guestContact: SMOKE_CONTACT,
     note: "Automated guest checkout smoke - do not fulfill.",
     createdAt: input.createdAt,
+    ndk: getNdk(),
+    rumorCreatedAt: input.createdAt,
   })
-
-  const rumor = new NDKEvent(getNdk())
-  rumor.kind = EVENT_KINDS.ORDER
-  rumor.created_at = Math.floor(input.createdAt / 1_000)
-  rumor.tags = appendConduitClientTag(
-    [
-      ["p", input.merchantPubkey],
-      ["type", "order"],
-      ["order", input.orderId],
-      ["amount", String(input.pricing.totalSats)],
-      ["currency", "SATS"],
-      ...input.pricing.items.flatMap((item) => [
-        ["item", item.productAddress, String(item.quantity)],
-        ...(item.shippingOptionId ? [["shipping", item.shippingOptionId]] : []),
-      ]),
-    ],
-    "market"
-  )
-  rumor.content = JSON.stringify(payload)
-  return rumor
 }
 
 function hasRecoveredGuestOrder(
@@ -442,13 +361,18 @@ export async function runGuestCheckoutOrderSmoke(
     ((milliseconds: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
 
-  let pricing: GuestOrderPricing
+  let pricing: ReadyCheckoutPricing
   try {
     const product = await getProduct({
       productId: config.productAddress,
       revalidateCanonical: true,
     })
-    pricing = buildGuestOrderPricing(product.data, config)
+    pricing = await buildGuestOrderPricing(
+      product.data,
+      config,
+      dependencies.getPricingRate ?? fetchBtcUsdRate,
+      nowMs()
+    )
   } catch (error) {
     throw new GuestCheckoutOrderSmokeFailure("product_read", error)
   }

@@ -200,6 +200,14 @@ export const orderSchema = z
     guestContact: orderGuestContactSchema.optional(),
     note: z.string().max(2000).optional(),
     createdAt: z.number(),
+    pricingQuote: z
+      .object({
+        rate: z.number().positive(),
+        fetchedAt: z.number(),
+        source: z.string().min(1),
+        fiatSource: z.string().min(1).optional(),
+      })
+      .optional(),
   })
   .superRefine((order, context) => {
     if (order.buyerIdentityKind === "guest_ephemeral" && !order.guestContact) {
