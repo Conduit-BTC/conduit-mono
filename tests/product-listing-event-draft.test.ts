@@ -62,6 +62,24 @@ describe("product listing event drafts", () => {
     ).toEqual(["bitcoin", "hardware"])
   })
 
+  it("uses signed t tags when legacy JSON has a malformed tag collection", () => {
+    const parsed = parseProductEvent({
+      id: "malformed-legacy-tags-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: JSON.stringify({
+        ...baseProduct(),
+        tags: "Bitcoin",
+      }),
+      tags: [
+        ["d", "malformed-legacy-tags"],
+        ["t", " Hardware "],
+      ],
+    })
+
+    expect(parsed.tags).toEqual(["hardware"])
+  })
+
   it("emits and round-trips only canonical lowercase product tags", () => {
     const draft = buildProductListingEventDraft({
       product: baseProduct({

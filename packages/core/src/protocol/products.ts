@@ -35,10 +35,8 @@ export interface BuildProductListingEventDraftInput {
   clientAppId?: ConduitAppId
 }
 
-export function canonicalizeProductTags(
-  tags: readonly unknown[] | null | undefined
-): string[] {
-  if (!tags) return []
+export function canonicalizeProductTags(tags: unknown): string[] {
+  if (!Array.isArray(tags)) return []
 
   const canonicalTags: string[] = []
   const seen = new Set<string>()
@@ -686,7 +684,9 @@ export function parseProductEvent(
       ...parsed,
       ...shippingTags,
       ...stockTag,
-      tags: canonicalizeProductTags(parsed.tags),
+      tags: canonicalizeProductTags(
+        Array.isArray(parsed.tags) ? parsed.tags : getTagValues(event.tags, "t")
+      ),
       // Compatibility content may describe the product, but it cannot replace
       // identity or time committed to by the signed event envelope.
       id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
