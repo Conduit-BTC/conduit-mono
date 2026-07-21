@@ -12,9 +12,11 @@ import {
   getMerchantConversationList,
   getNdk,
   getProfileName,
+  inspectOwnPrivateMessageRelayReadiness,
   markDirectMessageConversationRead,
   parseDirectMessageRumor,
   publishPrivateMessage,
+  publishPrivateMessageRelayDeclaration,
   useAuth,
   useProfiles,
   type Profile,
@@ -26,6 +28,7 @@ import {
   getConversationMessageDisplayContent,
   LegacyDirectMessageNotice,
   LiveReadNotice,
+  MessagingReadinessNotice,
   MessageComposer,
 } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
@@ -48,9 +51,38 @@ function MessagesPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [composerText, setComposerText] = useState("")
 
+  const readinessQuery = useQuery({
+    queryKey: ["merchant-dm-readiness", pubkey ?? "none"],
+    enabled: signerConnected,
+    queryFn: () => inspectOwnPrivateMessageRelayReadiness(pubkey!),
+    staleTime: 30_000,
+  })
+  const messagingReady = readinessQuery.data?.state === "ready"
+  const enableMessagingMutation = useMutation({
+    mutationFn: async () => {
+      const ndk = getNdk()
+      if (!ndk.signer || !pubkey) throw new Error("Signer not connected")
+      await publishPrivateMessageRelayDeclaration({
+        pubkey,
+        signer: ndk.signer,
+        ndk,
+      })
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["merchant-dm-readiness", pubkey ?? "none"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["merchant-dms-live", pubkey ?? "none"],
+        }),
+      ])
+    },
+  })
+
   const liveQuery = useQuery({
     queryKey: ["merchant-dms-live", pubkey ?? "none"],
-    enabled: signerConnected,
+    enabled: signerConnected && messagingReady,
     queryFn: () =>
       getDirectMessageConversationList({ principalPubkey: pubkey! }),
     staleTime: 30_000,
@@ -109,7 +141,7 @@ function MessagesPage() {
       pubkey ?? "none",
       selected?.counterpartyPubkey ?? "none",
     ],
-    enabled: signerConnected && !!selected,
+    enabled: signerConnected && messagingReady && !!selected,
     queryFn: () =>
       getMerchantConversationList({
         principalPubkey: pubkey!,
@@ -213,6 +245,7 @@ function MessagesPage() {
 
   const showEmpty =
     signerConnected &&
+    messagingReady &&
     !cachedQuery.isLoading &&
     !liveQuery.isLoading &&
     conversations.length === 0
@@ -238,30 +271,69 @@ function MessagesPage() {
         </div>
       )}
 
-      {signerConnected && (liveQuery.error || liveMeta?.degraded) && (
-        <LiveReadNotice
-          state={
-            liveQuery.error
-              ? conversations.length > 0
-                ? "cached"
-                : "unavailable"
-              : "partial"
+      {signerConnected && readinessQuery.isLoading && (
+        <div className="text-sm text-[var(--text-secondary)]">
+          Checking encrypted messaging setup...
+        </div>
+      )}
+
+      {signerConnected && !readinessQuery.isLoading && !messagingReady && (
+        <MessagingReadinessNotice
+          state={readinessQuery.error ? "lookup_failed" : "not_declared"}
+          onAction={() => {
+            if (readinessQuery.error) {
+              void readinessQuery.refetch()
+            } else {
+              enableMessagingMutation.mutate()
+            }
+          }}
+          pending={
+            readinessQuery.isRefetching || enableMessagingMutation.isPending
           }
-          onRetry={() => void liveQuery.refetch()}
+          error={
+            enableMessagingMutation.error
+              ? "Could not enable messaging. Retry when your signer and relays are available."
+              : null
+          }
+          className="xl:shrink-0"
+        />
+      )}
+
+      {signerConnected &&
+        messagingReady &&
+        (liveQuery.error || liveMeta?.stale) && (
+          <LiveReadNotice
+            state={
+              liveQuery.error
+                ? conversations.length > 0
+                  ? "cached"
+                  : "unavailable"
+                : "partial"
+            }
+            onRetry={() => void liveQuery.refetch()}
+            retrying={liveQuery.isRefetching}
+            className="xl:shrink-0"
+          />
+        )}
+
+      {messagingReady && (
+        <DecryptFailureNotice
+          count={liveMeta?.legacyDecryptFailures?.length ?? 0}
+          label="Some legacy messages couldn't be decrypted."
+          onRetry={
+            liveMeta?.legacyDecryptFailures?.some(
+              (failure) => failure.retryable
+            )
+              ? () => void liveQuery.refetch()
+              : undefined
+          }
           retrying={liveQuery.isRefetching}
           className="xl:shrink-0"
         />
       )}
 
-      <DecryptFailureNotice
-        count={liveMeta?.legacyDecryptFailures?.length ?? 0}
-        label="Some legacy messages couldn't be decrypted."
-        onRetry={() => void liveQuery.refetch()}
-        retrying={liveQuery.isRefetching}
-        className="xl:shrink-0"
-      />
-
       {signerConnected &&
+        messagingReady &&
         conversations.length === 0 &&
         (cachedQuery.isLoading || liveQuery.isLoading) && (
           <div className="text-sm text-[var(--text-secondary)]">
@@ -427,6 +499,11 @@ function MessagesPage() {
                 <div className="mt-4 space-y-2 xl:shrink-0">
                   {selected.transport === "nip04" ? (
                     <LegacyDirectMessageNotice />
+                  ) : !messagingReady ? (
+                    <div className="text-sm text-[var(--text-secondary)]">
+                      Enable encrypted messaging to reply in this current
+                      conversation.
+                    </div>
                   ) : (
                     <>
                       <MessageComposer

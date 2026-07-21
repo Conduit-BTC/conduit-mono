@@ -24,4 +24,24 @@ describe("legacy direct-message UI contract", () => {
     expect(branch).toContain("<LegacyDirectMessageNotice />")
     expect(branch).not.toContain("<MessageComposer")
   })
+
+  it("gates Market inbox reads behind explicit messaging readiness", async () => {
+    const source = await Bun.file("apps/market/src/routes/messages.tsx").text()
+
+    expect(source).toContain("MessagingReadinessNotice,")
+    expect(source).toContain("enabled: signerConnected && messagingReady")
+    expect(source).toContain("publishPrivateMessageRelayDeclaration")
+    expect(source).toContain("<MessagingReadinessNotice")
+  })
+
+  it("gates Merchant inbox reads behind explicit messaging readiness", async () => {
+    const source = await Bun.file(
+      "apps/merchant/src/routes/messages.tsx"
+    ).text()
+
+    expect(source).toContain("MessagingReadinessNotice,")
+    expect(source).toContain("enabled: signerConnected && messagingReady")
+    expect(source).toContain("publishPrivateMessageRelayDeclaration")
+    expect(source).toContain("<MessagingReadinessNotice")
+  })
 })

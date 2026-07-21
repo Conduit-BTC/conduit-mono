@@ -298,12 +298,18 @@ describe("general direct-message gateway", () => {
     const second = await getDirectMessageConversationList({
       principalPubkey: BUYER,
     })
+    const third = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
 
     expect(first.meta.legacyDecryptFailures).toEqual([
       { eventId: "legacy-bad", reason: "decrypt_failed", retryable: true },
     ])
-    expect(second.meta.legacyDecryptFailures).toEqual(
-      first.meta.legacyDecryptFailures
+    expect(second.meta.legacyDecryptFailures).toEqual([
+      { eventId: "legacy-bad", reason: "decrypt_failed", retryable: false },
+    ])
+    expect(third.meta.legacyDecryptFailures).toEqual(
+      second.meta.legacyDecryptFailures
     )
     expect(decryptCalls).toEqual({ "good-cipher": 1, "bad-cipher": 2 })
     expect(unwrapCalls).toBe(1)
@@ -356,6 +362,40 @@ describe("general direct-message gateway", () => {
     expect(result.data[0]?.preview).toBe("do you ship to NZ?")
     expect(result.data[0]?.unreadFromCounterparty).toBe(1)
     expect(orderRows).toHaveLength(1)
+  })
+
+  it("preserves complete preview content for presentation-time formatting", async () => {
+    const legacyEnvelope = JSON.stringify({
+      id: "2e2811f8-d38e-4929-a937-7b41e5fa6f2e",
+      type: 2,
+      message: "Your order has been declined.",
+      paid: false,
+      shipped: false,
+      cancelled: true,
+      padding: "x".repeat(80),
+    })
+    expect(legacyEnvelope.length).toBeGreaterThan(140)
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)
+          ? ([giftWrapEvent("wrap-legacy-envelope")] as never)
+          : [],
+      giftUnwrap: async () =>
+        directRumor({
+          id: "dm-legacy-envelope",
+          sender: MERCHANT,
+          recipient: BUYER,
+          content: legacyEnvelope,
+          createdAt: 103,
+        }) as never,
+    })
+
+    const result = await getDirectMessageConversationList({
+      principalPubkey: BUYER,
+    })
+
+    expect(result.data[0]?.preview).toBe(legacyEnvelope)
   })
 
   it("unwraps and routes a mixed inbox once across concurrent consumers", async () => {

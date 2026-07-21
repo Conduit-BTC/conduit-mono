@@ -331,6 +331,7 @@ describe("planPublishRelays", () => {
       extraRelayUrls: [inboxRelay, "ws://insecure.example"],
     })
 
+    expect((fakeEvent as { ndk?: unknown }).ndk).toBeDefined()
     expect(attempted.some((url) => url.includes("planned.example"))).toBe(true)
     expect(attempted.some((url) => url.includes("inbox-10050.example"))).toBe(
       true

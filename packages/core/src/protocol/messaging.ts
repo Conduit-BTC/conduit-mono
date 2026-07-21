@@ -5,13 +5,18 @@ import {
   NDKUser,
   type NDKSigner,
 } from "@nostr-dev-kit/ndk"
+import { config, type ConduitConfig } from "../config"
 import { EVENT_KINDS } from "./kinds"
-import { fetchEventsFanout } from "./ndk"
+import {
+  fetchEventsFanout,
+  fetchEventsFanoutWithDiagnostics,
+  getNdk,
+} from "./ndk"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { parseOrderMessageRumorEvent } from "./orders"
 import { publishWithPlanner } from "./relay-publish"
 import { isInsecureRelayUrl } from "./relay-list"
-import { getGeneralReadRelayUrls } from "./relay-settings"
+import { getGeneralReadRelayUrls, tryNormalizeRelayUrl } from "./relay-settings"
 import {
   withTransientNip07Retry,
   type TransientNip07RetryOptions,
@@ -435,6 +440,10 @@ export async function publishPrivateMessage(
       (await resolveInboxRelays(input.senderPubkey).catch(() => [])))
     : []
 
+  // NDK's giftWrap builds and encrypts the seal from rumor.ndk. Attach the
+  // shared instance before wrapping; attaching only at publish time is too late.
+  input.rumor.ndk ??= getNdk()
+
   const wrappedToRecipient = await withTransientNip07Retry(
     () =>
       giftWrapFn(
@@ -556,8 +565,8 @@ export interface PrivateMessageRelays {
 
 /**
  * Parse a kind-10050 private-message relay list into recipient inbox relays.
- * Used as an input to DM relay planning; callers fall back to NIP-65 + config
- * defaults when absent.
+ * An absent or unusable declaration means the recipient is not NIP-17 ready;
+ * general relay lists and configured relays are not delivery fallbacks.
  */
 export function parsePrivateMessageRelays(event: {
   kind?: number
@@ -581,8 +590,12 @@ const inboxRelayCache = new Map<string, string[]>()
 
 export interface FetchInboxRelayOptions {
   fetchEvents?: typeof fetchEventsFanout
+  fetchEventsWithDiagnostics?: typeof fetchEventsFanoutWithDiagnostics
   relayUrls?: string[]
 }
+
+export type OwnPrivateMessageRelayReadiness =
+  { state: "ready"; relayUrls: string[] } | { state: "not_declared" }
 
 /** Reset the kind-10050 inbox-relay cache (tests). */
 export function __resetInboxRelayCache(): void {
@@ -599,31 +612,141 @@ export async function fetchInboxRelayUrls(
 ): Promise<string[]> {
   const cached = inboxRelayCache.get(pubkey)
   if (cached) return cached
-  const fetchEvents = options.fetchEvents ?? fetchEventsFanout
-  const events = await fetchEvents(
-    {
-      kinds: [EVENT_KINDS.PRIVATE_MESSAGE_RELAYS],
-      authors: [pubkey],
-      limit: 1,
-    },
-    {
-      relayUrls: options.relayUrls ?? getGeneralReadRelayUrls({}),
-      connectTimeoutMs: 3_000,
-      fetchTimeoutMs: 6_000,
+  const filter = {
+    kinds: [EVENT_KINDS.PRIVATE_MESSAGE_RELAYS],
+    authors: [pubkey],
+    limit: 1,
+  }
+  const fetchOptions = {
+    relayUrls: options.relayUrls ?? getGeneralReadRelayUrls({}),
+    connectTimeoutMs: 3_000,
+    fetchTimeoutMs: 6_000,
+  }
+  let events: NDKEvent[]
+  let lookupHadFailures = false
+  if (options.fetchEvents) {
+    events = await options.fetchEvents(filter, fetchOptions)
+  } else {
+    const result = await (
+      options.fetchEventsWithDiagnostics ?? fetchEventsFanoutWithDiagnostics
+    )(filter, fetchOptions)
+    if (result.successfulRelayUrls.length === 0) {
+      throw new Error("Private-message relay lookup unavailable")
     }
-  )
+    lookupHadFailures = result.failedRelayUrls.length > 0
+    events = result.events
+  }
   let relayUrls: string[] = []
   let newest = -1
   for (const event of events) {
     const parsed = parsePrivateMessageRelays(event)
-    if (parsed && (event.created_at ?? 0) > newest) {
+    if (parsed?.pubkey === pubkey && (event.created_at ?? 0) > newest) {
       relayUrls = parsed.relayUrls
       newest = event.created_at ?? 0
     }
   }
-  const secure = relayUrls.filter((url) => !isInsecureRelayUrl(url))
+  const secure = relayUrls.flatMap((url) => {
+    const normalized = tryNormalizeRelayUrl(url)
+    return normalized.ok && !isInsecureRelayUrl(normalized.url)
+      ? [normalized.url]
+      : []
+  })
   if (secure.length > 0) {
     inboxRelayCache.set(pubkey, secure)
+  } else if (lookupHadFailures) {
+    throw new Error("Private-message relay lookup incomplete")
   }
   return secure
+}
+
+/** Inspect the principal's kind-10050 declaration without masking lookup errors. */
+export async function inspectOwnPrivateMessageRelayReadiness(
+  pubkey: string,
+  options: FetchInboxRelayOptions = {}
+): Promise<OwnPrivateMessageRelayReadiness> {
+  const relayUrls = await fetchInboxRelayUrls(pubkey, options)
+  return relayUrls.length > 0
+    ? { state: "ready", relayUrls }
+    : { state: "not_declared" }
+}
+
+export interface PublishPrivateMessageRelayDeclarationInput {
+  pubkey: string
+  signer: NDKSigner
+  ndk?: ReturnType<typeof getNdk>
+  /** Defaults to config.dmInboxDefaultRelayUrls. */
+  relayUrls?: readonly string[]
+  createdAt?: number
+  relayConfig?: Pick<ConduitConfig, "dmInboxDefaultRelayUrls">
+  getSignerPubkey?: (signer: NDKSigner) => Promise<string>
+  signFn?: (event: NDKEvent, signer: NDKSigner) => Promise<string>
+  getDiscoveryRelayUrls?: () => readonly string[]
+  publishFn?: typeof publishWithPlanner
+}
+
+function requireSecureRelayUrls(
+  relayUrls: readonly string[],
+  label: string
+): string[] {
+  if (relayUrls.length === 0) {
+    throw new Error(`${label} must include at least one relay URL`)
+  }
+
+  const normalizedRelayUrls: string[] = []
+  const seen = new Set<string>()
+  for (const relayUrl of relayUrls) {
+    const normalized = tryNormalizeRelayUrl(relayUrl)
+    if (!normalized.ok || isInsecureRelayUrl(normalized.url)) {
+      throw new Error(`${label} must contain only secure wss:// relay URLs`)
+    }
+    if (seen.has(normalized.url)) continue
+    seen.add(normalized.url)
+    normalizedRelayUrls.push(normalized.url)
+  }
+  return normalizedRelayUrls
+}
+
+/**
+ * Explicitly sign and publish the principal's replaceable NIP-17 inbox relay
+ * declaration. Callers must invoke this from an intentional signing workflow.
+ */
+export async function publishPrivateMessageRelayDeclaration(
+  input: PublishPrivateMessageRelayDeclarationInput
+): Promise<NDKEvent> {
+  const relayUrls = requireSecureRelayUrls(
+    input.relayUrls ?? (input.relayConfig ?? config).dmInboxDefaultRelayUrls,
+    "Private-message relay declaration"
+  )
+  const discoveryRelayUrls = requireSecureRelayUrls(
+    (input.getDiscoveryRelayUrls ?? (() => getGeneralReadRelayUrls({})))(),
+    "Private-message relay discovery targets"
+  )
+  const getSignerPubkey =
+    input.getSignerPubkey ?? (async (signer) => (await signer.user()).pubkey)
+  const signerPubkey = await getSignerPubkey(input.signer)
+  if (signerPubkey !== input.pubkey) {
+    throw new Error(
+      "Private-message relay declaration signer does not match pubkey"
+    )
+  }
+
+  const event = new NDKEvent(input.ndk ?? getNdk())
+  event.kind = EVENT_KINDS.PRIVATE_MESSAGE_RELAYS
+  event.pubkey = input.pubkey
+  event.created_at = input.createdAt ?? Math.floor(Date.now() / 1000)
+  event.tags = relayUrls.map((relayUrl) => ["relay", relayUrl])
+  event.content = ""
+
+  const signFn = input.signFn ?? ((event, signer) => event.sign(signer))
+  await signFn(event, input.signer)
+  await (input.publishFn ?? publishWithPlanner)(event, {
+    intent: "author_event",
+    authorPubkey: input.pubkey,
+    authenticatedPubkey: input.pubkey,
+    exclusiveRelayUrls: discoveryRelayUrls,
+    deliveryMode: "critical",
+  })
+
+  inboxRelayCache.set(input.pubkey, relayUrls)
+  return event
 }

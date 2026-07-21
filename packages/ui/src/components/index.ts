@@ -54,6 +54,10 @@ export {
   type LegacyDirectMessageNoticeProps,
 } from "./LegacyDirectMessageNotice"
 export { LiveReadNotice, type LiveReadNoticeProps } from "./LiveReadNotice"
+export {
+  MessagingReadinessNotice,
+  type MessagingReadinessNoticeProps,
+} from "./MessagingReadinessNotice"
 export { Label } from "./Label"
 export {
   Popover,

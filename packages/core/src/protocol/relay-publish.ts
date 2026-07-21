@@ -351,6 +351,11 @@ async function publishToRelayUrls(input: {
   relayFailureMessages: Record<string, string>
   thrown: unknown
 }> {
+  // NDKEvent.publish() reads the instance from the event itself even when the
+  // relay set was built with an NDK instance. Gift-wrap helpers can return an
+  // unattached event, so bind it at the shared publish boundary.
+  input.event.ndk ??= input.ndk
+
   if (input.relayUrls.length === 0) {
     return {
       successfulRelayUrls: [],

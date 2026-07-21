@@ -26,10 +26,11 @@ import {
 import { extractOrderSummary } from "./order-summary"
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import {
+  __resetInboxRelayCache,
   createNdkLegacyDmDecrypt,
   decryptLegacyDirectMessage,
+  fetchInboxRelayUrls,
   parseDirectMessageRumor,
-  parsePrivateMessageRelays,
   unwrapGiftWraps,
   type DecryptFailure,
   type LegacyDmDecryptFailure,
@@ -331,11 +332,14 @@ const retryWrapsByPrincipal = new Map<
   Map<string, { event: NDKEvent; failure?: DecryptFailure }>
 >()
 const inboxSyncPromises = new Map<string, Promise<PrivateInboxSyncResult>>()
-const inboxRelayUrlCache = new Map<string, string[]>()
 const successfulLegacyDmIdsByPrincipal = new Map<string, Set<string>>()
+const MAX_LEGACY_DM_DECRYPT_ATTEMPTS = 2
 const retryLegacyDmsByPrincipal = new Map<
   string,
-  Map<string, { event: NDKEvent; failure?: LegacyDmDecryptFailure }>
+  Map<
+    string,
+    { event: NDKEvent; attempts: number; failure?: LegacyDmDecryptFailure }
+  >
 >()
 const legacyDmSyncPromises = new Map<string, Promise<LegacyDmSyncResult>>()
 
@@ -488,7 +492,7 @@ export function __resetCommerceTestOverrides(): void {
   successfulWrapIdsByPrincipal.clear()
   retryWrapsByPrincipal.clear()
   inboxSyncPromises.clear()
-  inboxRelayUrlCache.clear()
+  __resetInboxRelayCache()
   successfulLegacyDmIdsByPrincipal.clear()
   retryLegacyDmsByPrincipal.clear()
   legacyDmSyncPromises.clear()
@@ -2667,34 +2671,13 @@ async function resolveInboxReadRelays(
     }
     return secure
   }
-  const cached = inboxRelayUrlCache.get(principalPubkey)
-  if (cached) return cached
-  const events = await runFetchEventsFanout(
-    {
-      kinds: [EVENT_KINDS.PRIVATE_MESSAGE_RELAYS],
-      authors: [principalPubkey],
-      limit: 1,
-    },
-    {
-      relayUrls: publicReadRelayUrls(),
-      connectTimeoutMs: 3_000,
-      fetchTimeoutMs: 6_000,
-    }
-  )
-  let relays: string[] = []
-  let newest = -1
-  for (const event of events) {
-    const parsed = parsePrivateMessageRelays(event)
-    if (parsed && (event.created_at ?? 0) > newest) {
-      relays = parsed.relayUrls
-      newest = event.created_at ?? 0
-    }
-  }
-  const secure = relays.filter((url) => !isInsecureRelayUrl(url))
+  const secure = await fetchInboxRelayUrls(principalPubkey, {
+    fetchEvents: runFetchEventsFanout,
+    relayUrls: publicReadRelayUrls(),
+  })
   if (secure.length === 0) {
     throw new Error("No NIP-17 inbox relay declaration found.")
   }
-  inboxRelayUrlCache.set(principalPubkey, secure)
   return secure
 }
 
@@ -2786,7 +2769,10 @@ function successfulLegacyDmIds(principalPubkey: string): Set<string> {
 
 function retryLegacyDms(
   principalPubkey: string
-): Map<string, { event: NDKEvent; failure?: LegacyDmDecryptFailure }> {
+): Map<
+  string,
+  { event: NDKEvent; attempts: number; failure?: LegacyDmDecryptFailure }
+> {
   let events = retryLegacyDmsByPrincipal.get(principalPubkey)
   if (!events) {
     events = new Map()
@@ -2829,14 +2815,28 @@ async function runLegacyDmSync(
   const successful = successfulLegacyDmIds(principalPubkey)
   const retry = retryLegacyDms(principalPubkey)
   const candidates = new Map<string, NDKEvent>()
-  for (const { event } of retry.values()) candidates.set(event.id, event)
+  for (const { event, attempts } of retry.values()) {
+    if (attempts < MAX_LEGACY_DM_DECRYPT_ATTEMPTS) {
+      candidates.set(event.id, event)
+    }
+  }
   for (const event of [...incoming, ...outgoing]) {
-    if (!successful.has(event.id) && !cachedIds.has(event.id)) {
+    const pending = retry.get(event.id)
+    if (
+      !successful.has(event.id) &&
+      !cachedIds.has(event.id) &&
+      (!pending || pending.attempts < MAX_LEGACY_DM_DECRYPT_ATTEMPTS)
+    ) {
       candidates.set(event.id, event)
     }
   }
   for (const event of candidates.values()) {
-    retry.set(event.id, { event, failure: retry.get(event.id)?.failure })
+    const pending = retry.get(event.id)
+    retry.set(event.id, {
+      event,
+      attempts: pending?.attempts ?? 0,
+      failure: pending?.failure,
+    })
   }
 
   const decrypt = createNdkLegacyDmDecrypt(signer)
@@ -2854,11 +2854,17 @@ async function runLegacyDmSync(
         retry.delete(outcome.eventId)
       } else if (outcome.status === "decrypt_failed") {
         const pending = retry.get(outcome.failure.eventId)
-        if (pending)
+        if (pending) {
+          const attempts = pending.attempts + 1
           retry.set(outcome.failure.eventId, {
             ...pending,
-            failure: outcome.failure,
+            attempts,
+            failure: {
+              ...outcome.failure,
+              retryable: attempts < MAX_LEGACY_DM_DECRYPT_ATTEMPTS,
+            },
           })
+        }
       } else {
         messages.push(outcome.message)
       }
@@ -3531,7 +3537,9 @@ function buildDirectConversationSummaries(
       transport: latest.transport,
       counterpartyPubkey,
       latestAt: latest.createdAt,
-      preview: latest.content.slice(0, 140),
+      // Keep complete content so presentation can recognize structured legacy
+      // envelopes before applying visual line clamping.
+      preview: latest.content,
       messageCount: bucket.length,
       unreadFromCounterparty: bucket.filter(
         (message) =>
