@@ -4,13 +4,17 @@ import {
   type BtcUsdRateQuote,
   canonicalizeShippingCost,
   compareCommercePrices,
+  DEFAULT_SHOPPER_PRICE_PREFERENCE,
+  formatBitcoinBaseUnits,
   getCurrencyAmountStep,
   getCurrencyFractionDigits,
   getProductPriceDisplay,
   getShippingCostSats,
+  getShopperPriceDisplay,
   isBtcUsdRateQuoteFresh,
   normalizeCommercePrice,
   normalizeCurrencyAmount,
+  normalizeShopperPricePreference,
   orderSchema,
   parseProductEvent,
 } from "@conduit/core"
@@ -36,6 +40,159 @@ const testRates: BtcUsdRateQuote = {
 }
 
 describe("commerce pricing", () => {
+  it("defaults Bitcoin display to integer base units with a sats opt-out", () => {
+    expect(DEFAULT_SHOPPER_PRICE_PREFERENCE).toEqual({
+      currency: "BITCOIN",
+      bitcoinUnit: "bitcoin",
+    })
+    expect(formatBitcoinBaseUnits(1)).toBe("₿1")
+    expect(formatBitcoinBaseUnits(10_000)).toBe("₿10,000")
+    expect(formatBitcoinBaseUnits(100_000_000)).toBe("₿100,000,000")
+    expect(formatBitcoinBaseUnits(10_000, "sats")).toBe("10,000 sats")
+  })
+
+  it("validates persisted shopper price preferences", () => {
+    expect(
+      normalizeShopperPricePreference({
+        currency: "eur",
+        bitcoinUnit: "sats",
+      })
+    ).toEqual({ currency: "EUR", bitcoinUnit: "sats" })
+    expect(
+      normalizeShopperPricePreference({
+        currency: "DOGE",
+        bitcoinUnit: "bits",
+      })
+    ).toEqual(DEFAULT_SHOPPER_PRICE_PREFERENCE)
+  })
+
+  it("formats one shopper currency while preserving the merchant source quote", () => {
+    const euroProduct = {
+      price: 10,
+      currency: "EUR",
+      sourcePrice: {
+        amount: 10,
+        currency: "EUR",
+        normalizedCurrency: "EUR",
+      },
+    }
+
+    expect(getShopperPriceDisplay(euroProduct, undefined, testRates)).toEqual({
+      state: "ready",
+      primary: "~= ₿12,000",
+      secondary: "€10.00 EUR source quote",
+      displayCurrency: "BITCOIN",
+      sats: 12_000,
+      approximate: true,
+      source: euroProduct.sourcePrice,
+    })
+    expect(
+      getShopperPriceDisplay(
+        euroProduct,
+        { currency: "EUR", bitcoinUnit: "bitcoin" },
+        testRates
+      )
+    ).toMatchObject({
+      state: "ready",
+      primary: "€10.00",
+      secondary: "₿12,000",
+      displayCurrency: "EUR",
+      sats: 12_000,
+      approximate: false,
+    })
+    expect(
+      getShopperPriceDisplay(
+        { price: 250_000, currency: "SATS", priceSats: 250_000 },
+        { currency: "USD", bitcoinUnit: "bitcoin" },
+        testRates
+      )
+    ).toMatchObject({
+      state: "ready",
+      primary: "~= $250.00",
+      secondary: "₿250,000 Bitcoin amount",
+      displayCurrency: "USD",
+      sats: 250_000,
+    })
+  })
+
+  it("keeps an exact preferred source quote available without rates", () => {
+    expect(
+      getShopperPriceDisplay(
+        {
+          price: 10,
+          currency: "EUR",
+          sourcePrice: {
+            amount: 10,
+            currency: "EUR",
+            normalizedCurrency: "EUR",
+          },
+        },
+        { currency: "EUR", bitcoinUnit: "bitcoin" }
+      )
+    ).toMatchObject({
+      state: "ready",
+      primary: "€10.00",
+      secondary: null,
+      sats: null,
+      approximate: false,
+    })
+  })
+
+  it("keeps recorded order sats authoritative when current rates change", () => {
+    expect(
+      getShopperPriceDisplay(
+        {
+          price: 8_000,
+          currency: "SATS",
+          priceSats: 8_000,
+          sourcePrice: {
+            amount: 10,
+            currency: "EUR",
+            normalizedCurrency: "EUR",
+          },
+        },
+        DEFAULT_SHOPPER_PRICE_PREFERENCE,
+        testRates,
+        { settledSatsAreAuthoritative: true }
+      )
+    ).toMatchObject({
+      state: "ready",
+      primary: "₿8,000",
+      secondary: "€10.00 EUR source quote",
+      sats: 8_000,
+      approximate: false,
+    })
+  })
+
+  it("reports missing and stale conversion rates explicitly", () => {
+    const fiatProduct = {
+      price: 10,
+      currency: "EUR",
+      sourcePrice: {
+        amount: 10,
+        currency: "EUR",
+        normalizedCurrency: "EUR",
+      },
+    }
+    expect(getShopperPriceDisplay(fiatProduct)).toMatchObject({
+      state: "rate_required",
+      primary: "Price conversion unavailable",
+      secondary: "€10.00 EUR source quote",
+    })
+    expect(
+      getShopperPriceDisplay(
+        fiatProduct,
+        DEFAULT_SHOPPER_PRICE_PREFERENCE,
+        { ...testRates, source: "mempool", fetchedAt: 1_000 },
+        { nowMs: 1_000 + BTC_USD_RATE_STALE_MS + 1 }
+      )
+    ).toMatchObject({
+      state: "rate_stale",
+      primary: "Price conversion is stale",
+      secondary: "€10.00 EUR source quote",
+    })
+  })
+
   it("derives amount precision from supported currency units", () => {
     expect(getCurrencyFractionDigits("USD")).toBe(2)
     expect(getCurrencyAmountStep("USD")).toBe("0.01")

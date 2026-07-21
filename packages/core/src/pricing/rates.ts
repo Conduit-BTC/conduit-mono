@@ -1,10 +1,14 @@
 import { useQuery } from "@tanstack/react-query"
-import type { BtcUsdRateQuote } from "./index"
+import {
+  DEFAULT_PRICING_RATE_MAX_AGE_MS,
+  isPricingRateQuoteFresh,
+  type BtcUsdRateQuote,
+} from "./index"
 import { fetchTrustedPricingRateQuote } from "./trusted-rate-provider"
 
 const STORAGE_KEY = "conduit:btc-usd-rate"
 export const BTC_USD_RATE_QUERY_KEY = ["btc-usd-rate"] as const
-export const BTC_USD_RATE_STALE_MS = 5 * 60_000
+export const BTC_USD_RATE_STALE_MS = DEFAULT_PRICING_RATE_MAX_AGE_MS
 export const BTC_USD_RATE_REFRESH_INTERVAL_MS = 4 * 60_000
 
 type FiatUsdRates = Record<string, number>
@@ -136,11 +140,7 @@ export function isBtcUsdRateQuoteFresh(
   nowMs = Date.now(),
   maxAgeMs = BTC_USD_RATE_STALE_MS
 ): boolean {
-  if (!quote) return false
-  if (quote.source === "env") return true
-  if (!Number.isFinite(quote.fetchedAt)) return false
-  const ageMs = nowMs - quote.fetchedAt
-  return ageMs >= 0 && ageMs <= maxAgeMs
+  return isPricingRateQuoteFresh(quote, nowMs, maxAgeMs)
 }
 
 export function useBtcUsdRate() {
