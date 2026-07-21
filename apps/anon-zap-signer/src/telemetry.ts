@@ -1,5 +1,5 @@
 export type AnonZapSignerTelemetryEnv = {
-  POSTHOG_API_KEY?: string
+  POSTHOG_PROJECT_TOKEN?: string
   POSTHOG_HOST?: string
 }
 
@@ -34,6 +34,23 @@ const ALLOWED_POSTHOG_ORIGINS = new Set([
   "https://eu.i.posthog.com",
   "https://us.i.posthog.com",
 ])
+const ALLOWED_ACTIONS = new Set<AnonZapSignerTelemetryAction>([
+  "rate_limit",
+  "sign",
+])
+const ALLOWED_STATUSES = new Set<AnonZapSignerTelemetryStatus>([
+  "failure",
+  "invalid_request",
+  "rate_limited",
+  "success",
+  "unavailable",
+])
+const ALLOWED_LATENCY_BUCKETS = new Set<AnonZapSignerLatencyBucket>([
+  "lt_100ms",
+  "100_499ms",
+  "500_1999ms",
+  "2s_plus",
+])
 
 function getCaptureUrl(rawHost: string | undefined): string | null {
   const candidate = rawHost?.trim() || DEFAULT_POSTHOG_HOST
@@ -60,6 +77,33 @@ function isValidProjectKey(value: string): boolean {
   return /^phc_[A-Za-z0-9_-]{20,}$/.test(value)
 }
 
+function getCaptureProperties(properties: AnonZapSignerTelemetryProperties):
+  | (AnonZapSignerTelemetryProperties & {
+      $process_person_profile: false
+    })
+  | null {
+  if (
+    properties.event_name !== "anon_zap_signer_request_result" ||
+    properties.app !== "anon_zap_signer" ||
+    properties.surface !== "worker" ||
+    !ALLOWED_ACTIONS.has(properties.action) ||
+    !ALLOWED_STATUSES.has(properties.status) ||
+    !ALLOWED_LATENCY_BUCKETS.has(properties.latency_bucket)
+  ) {
+    return null
+  }
+
+  return {
+    $process_person_profile: false,
+    event_name: "anon_zap_signer_request_result",
+    app: "anon_zap_signer",
+    surface: "worker",
+    action: properties.action,
+    status: properties.status,
+    latency_bucket: properties.latency_bucket,
+  }
+}
+
 export function getAnonZapSignerLatencyBucket(
   latencyMs: number
 ): AnonZapSignerLatencyBucket {
@@ -75,9 +119,12 @@ export async function recordTelemetryEvent(
   env: AnonZapSignerTelemetryEnv,
   options: RecordTelemetryOptions = {}
 ): Promise<void> {
-  const projectKey = env.POSTHOG_API_KEY?.trim() ?? ""
+  const projectKey = env.POSTHOG_PROJECT_TOKEN?.trim() ?? ""
   const captureUrl = getCaptureUrl(env.POSTHOG_HOST)
-  if (!isValidProjectKey(projectKey) || !captureUrl) return
+  const captureProperties = getCaptureProperties(properties)
+  if (!isValidProjectKey(projectKey) || !captureUrl || !captureProperties) {
+    return
+  }
 
   const abortController = new AbortController()
   const timeout = setTimeout(
@@ -96,10 +143,7 @@ export async function recordTelemetryEvent(
         token: projectKey,
         distinct_id: SERVICE_DISTINCT_ID,
         event: eventName,
-        properties: {
-          $process_person_profile: false,
-          ...properties,
-        },
+        properties: captureProperties,
       }),
       signal: abortController.signal,
     })

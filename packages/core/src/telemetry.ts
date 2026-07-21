@@ -136,9 +136,12 @@ type PostHogModule = {
 export interface ConduitPostHogConfig {
   api_host: string
   autocapture: false
+  capture_exceptions: false
   capture_dead_clicks: false
+  capture_heatmaps: false
   capture_pageview: false
   capture_pageleave: false
+  capture_performance: false
   rageclick: false
   disable_session_recording: true
   disable_surveys: true
@@ -150,7 +153,6 @@ export interface ConduitPostHogConfig {
   advanced_disable_flags: true
   advanced_disable_feature_flags: true
   enable_recording_console_log: false
-  enable_heatmaps: false
   mask_all_text: true
   mask_all_element_attributes: true
   property_denylist: string[]
@@ -387,9 +389,12 @@ export function getConduitPostHogConfig(
   return {
     api_host: input.host,
     autocapture: false,
+    capture_exceptions: false,
     capture_dead_clicks: false,
+    capture_heatmaps: false,
     capture_pageview: false,
     capture_pageleave: false,
+    capture_performance: false,
     rageclick: false,
     disable_session_recording: true,
     disable_surveys: true,
@@ -401,7 +406,6 @@ export function getConduitPostHogConfig(
     advanced_disable_flags: true,
     advanced_disable_feature_flags: true,
     enable_recording_console_log: false,
-    enable_heatmaps: false,
     mask_all_text: true,
     mask_all_element_attributes: true,
     property_denylist: [...sensitiveTelemetryPropertyNames],
@@ -612,8 +616,22 @@ function parseAllowedTelemetryHosts(raw: string | undefined): string[] {
 function isTelemetryAllowedForCurrentHost(
   config: BrowserTelemetryConfig
 ): boolean {
-  if (config.allowedHosts.length === 0) return true
-  return config.allowedHosts.includes(window.location.hostname.toLowerCase())
+  if (config.allowedHosts.length === 0) return false
+  const hostname = window.location.hostname.toLowerCase()
+  return config.allowedHosts.some((pattern) =>
+    isTelemetryHostnameMatch(hostname, pattern)
+  )
+}
+
+function isTelemetryHostnameMatch(hostname: string, pattern: string): boolean {
+  if (!pattern.startsWith("*.")) return hostname === pattern
+
+  const suffix = pattern.slice(2)
+  if (!suffix || suffix.includes("*")) return false
+  if (!hostname.endsWith(`.${suffix}`)) return false
+
+  const prefix = hostname.slice(0, -(suffix.length + 1))
+  return !!prefix && !prefix.includes(".")
 }
 
 function isGlobalPrivacyControlEnabled(): boolean {

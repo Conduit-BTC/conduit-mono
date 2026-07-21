@@ -180,9 +180,10 @@ Signer Worker config:
   handler address for a strict NIP-89 `client` tag.
 - `ANON_CONDUIT_MARKET_NIP89_RELAY_HINT`: optional relay hint for that NIP-89
   `client` tag.
-- `POSTHOG_API_KEY`: optional PostHog project key secret. When configured, the
-  Worker emits only the content-free aggregate event documented in
-  `docs/analytics/events.md`; telemetry delivery is best effort and cannot
+- `POSTHOG_PROJECT_TOKEN`: optional PostHog `phc_` project token secret. It is
+  an ingestion credential, not a `phx_` personal management API key. When
+  configured, the Worker emits only the content-free aggregate event documented
+  in `docs/analytics/events.md`; telemetry delivery is best effort and cannot
   affect request handling.
 - `POSTHOG_HOST`: optional PostHog ingest origin. Only the US and EU PostHog
   ingest origins are accepted, and the default is `https://us.i.posthog.com`.

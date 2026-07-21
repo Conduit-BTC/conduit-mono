@@ -20,11 +20,16 @@ describe("anon zap signer telemetry", () => {
   it("captures only aggregate properties with a static service identity", async () => {
     let capturedUrl: string | null = null
     let capturedInit: RequestInit | null = null
+    const propertiesWithUntrustedFields = {
+      ...EVENT_PROPERTIES,
+      $process_person_profile: true,
+      order_id: "private-order",
+    } as AnonZapSignerTelemetryProperties
 
     await recordTelemetryEvent(
       "anon_zap_signer_request_result",
-      EVENT_PROPERTIES,
-      { POSTHOG_API_KEY: PROJECT_KEY },
+      propertiesWithUntrustedFields,
+      { POSTHOG_PROJECT_TOKEN: PROJECT_KEY },
       {
         async fetchImpl(input, init) {
           capturedUrl = input
@@ -59,14 +64,14 @@ describe("anon zap signer telemetry", () => {
     await recordTelemetryEvent(
       "anon_zap_signer_request_result",
       EVENT_PROPERTIES,
-      { POSTHOG_API_KEY: "invalid" },
+      { POSTHOG_PROJECT_TOKEN: "invalid" },
       { fetchImpl }
     )
     await recordTelemetryEvent(
       "anon_zap_signer_request_result",
       EVENT_PROPERTIES,
       {
-        POSTHOG_API_KEY: PROJECT_KEY,
+        POSTHOG_PROJECT_TOKEN: PROJECT_KEY,
         POSTHOG_HOST: "https://analytics.example.com",
       },
       { fetchImpl }
@@ -80,7 +85,7 @@ describe("anon zap signer telemetry", () => {
       recordTelemetryEvent(
         "anon_zap_signer_request_result",
         EVENT_PROPERTIES,
-        { POSTHOG_API_KEY: PROJECT_KEY },
+        { POSTHOG_PROJECT_TOKEN: PROJECT_KEY },
         {
           async fetchImpl() {
             throw new Error("provider unavailable")

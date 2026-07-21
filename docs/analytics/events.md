@@ -29,6 +29,25 @@ Runtime telemetry events may only use these fields:
 - `amount_bucket`
 - `product_type`
 
+## Retention and Redaction
+
+PostHog Cloud currently reports a plan-managed event retention window of 84
+months. The provider controls that field and does not expose it as a mutable
+project setting. This longer provider window is acceptable only while every
+event remains aggregate-only, uses a shared service identity, and passes the
+allowlist and redaction controls in this document. Maintainers must review the
+provider window at least quarterly and select a shorter plan or self-hosted
+retention policy when PostHog makes one available.
+
+Redaction happens before provider delivery. Events that fail the event-name or
+property allowlist must be dropped rather than repaired downstream. Browser
+events must remove raw paths, query strings, SDK-generated device/session
+properties, IP/fingerprint properties, and active-user identifiers. Worker
+events must construct a new payload from the documented property allowlist and
+must never spread request-derived properties into a provider payload. If an
+event outside this contract is ingested, delete it from the provider and treat
+the incident as a telemetry-policy failure.
+
 ## PostHog Dashboard Split
 
 PostHog dashboards should split Market and Merchant traffic with the shared
