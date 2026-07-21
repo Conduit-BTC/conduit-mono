@@ -2,9 +2,11 @@ import {
   EVENT_KINDS,
   appendConduitClientTag,
   appendOmfZapoutMarker,
+  buildAnonZapCheckoutContent,
   fetchLnurlInvoice,
   fetchZapInvoice,
   getPriceSats,
+  getShippingDestinationEligibility,
   getShippingCostSats,
   isBtcLikeCurrency,
   isMsatsLikeCurrency,
@@ -12,13 +14,16 @@ import {
   normalizeCommercePrice,
   resolveCartShippingCost,
   type AnonZapRequestDraft,
+  type AuthorizedAnonZapPricing,
   type FetchZapInvoiceResult,
   type SignedAnonZapRequest,
   type BtcUsdRateQuote,
   type NwcDiagnostic,
+  type OrderLifecycle,
   type PricingRateInput,
   type ResolvedCartShippingCostStatus,
   type ResolvedCartShippingCostSummary,
+  type ShippingDestinationEligibility,
   type SourcePriceQuote,
   type StoredPaymentAttempt,
 } from "@conduit/core"
@@ -289,6 +294,207 @@ export function buildCheckoutPricingIntent(
         }
       : undefined,
   }
+}
+
+export function applyAuthorizedAnonZapPricing(
+  local: Extract<CheckoutPricingIntent, { status: "ok" }>,
+  authorized: AuthorizedAnonZapPricing
+): Extract<CheckoutPricingIntent, { status: "ok" }> {
+  const lines = new Map(
+    authorized.items.map((item) => [item.productAddress, item])
+  )
+  if (lines.size !== local.items.length) {
+    throw new Error("Authorized zap pricing does not match the current cart.")
+  }
+
+  const items = local.items.map((item) => {
+    const line = lines.get(item.productId)
+    if (
+      !line ||
+      line.quantity !== item.quantity ||
+      line.format !== item.format ||
+      line.shippingOptionId !== item.shippingOptionId
+    ) {
+      throw new Error("Authorized zap pricing does not match the current cart.")
+    }
+    lines.delete(item.productId)
+    return {
+      ...item,
+      priceAtPurchase: line.unitPriceSats,
+      shippingCostSats: line.unitShippingSats,
+      shippingOptionId: line.shippingOptionId,
+      shippingOptionDTag: getShippingOptionDTag(line.shippingOptionId),
+      shippingCountries: line.shippingCountryRules.map((rule) => rule.code),
+      shippingCountryRules: line.shippingCountryRules.map((rule) => ({
+        ...rule,
+        name: rule.code,
+        restrictTo: [...rule.restrictTo],
+        exclude: [...rule.exclude],
+      })),
+    }
+  })
+  if (lines.size > 0) {
+    throw new Error("Authorized zap pricing does not match the current cart.")
+  }
+
+  return {
+    status: "ok",
+    itemSubtotalSats: authorized.itemSubtotalSats,
+    totalSats: authorized.totalSats,
+    totalMsats: authorized.totalMsats,
+    items,
+    shippingCost: {
+      ...local.shippingCost,
+      totalSats: authorized.shippingCostSats,
+    },
+    quote: authorized.quote,
+    approximate: !!authorized.quote,
+  }
+}
+
+function getShippingOptionDTag(
+  shippingOptionId: string | undefined
+): string | undefined {
+  if (!shippingOptionId) return undefined
+  const parts = shippingOptionId.split(":")
+  return parts.length >= 3 ? parts.slice(2).join(":") : undefined
+}
+
+function shippingCountryRulesMatch(
+  stored: OrderLifecycle["items"][number]["shippingCountryRules"],
+  authorized: AuthorizedAnonZapPricing["items"][number]["shippingCountryRules"]
+): boolean {
+  if (!stored) return authorized.length === 0
+  return JSON.stringify(stored) === JSON.stringify(authorized)
+}
+
+export function getAuthorizedAnonZapDestinationEligibility(
+  destination: { country: string; postalCode: string },
+  authorized: AuthorizedAnonZapPricing
+): ShippingDestinationEligibility {
+  const results = authorized.items
+    .filter((item) => item.format === "physical")
+    .map((item) =>
+      getShippingDestinationEligibility(destination, [
+        {
+          id: item.shippingOptionId ?? item.productAddress,
+          pubkey: item.productAddress.split(":")[1] ?? "",
+          dTag: item.shippingOptionId ?? item.productAddress,
+          title: "Signed listing shipping",
+          currency: "SATS",
+          price: item.unitShippingSats,
+          countries: item.shippingCountryRules.map((rule) => rule.code),
+          countryRules: item.shippingCountryRules.map((rule) => ({
+            ...rule,
+            name: rule.code,
+          })),
+          service: "standard",
+          createdAt: 0,
+        },
+      ])
+    )
+
+  if (results.length === 0) return { eligible: true }
+  if (
+    results.some(
+      (result) =>
+        result.eligible === false && result.reason === "country_unsupported"
+    )
+  ) {
+    return { eligible: false, reason: "country_unsupported" }
+  }
+  if (
+    results.some(
+      (result) =>
+        result.eligible === false && result.reason === "postal_restricted"
+    )
+  ) {
+    return { eligible: false, reason: "postal_restricted" }
+  }
+  if (results.some((result) => result.eligible === null)) {
+    return { eligible: null, reason: "unknown" }
+  }
+  return { eligible: true }
+}
+
+export function doesAuthorizedAnonZapPricingMatchOrder(
+  lifecycle: Pick<
+    OrderLifecycle,
+    | "items"
+    | "itemSubtotalSats"
+    | "shippingCostSats"
+    | "totalSats"
+    | "totalMsats"
+  >,
+  authorized: AuthorizedAnonZapPricing
+): boolean {
+  if (
+    authorized.itemSubtotalSats !== lifecycle.itemSubtotalSats ||
+    authorized.shippingCostSats !== lifecycle.shippingCostSats ||
+    authorized.totalSats !== lifecycle.totalSats ||
+    authorized.totalMsats !== lifecycle.totalMsats ||
+    authorized.items.length !== lifecycle.items.length
+  ) {
+    return false
+  }
+
+  const lines = new Map(
+    authorized.items.map((item) => [item.productAddress, item])
+  )
+  if (lines.size !== lifecycle.items.length) return false
+
+  for (const item of lifecycle.items) {
+    const line = lines.get(item.productId)
+    const format = item.format ?? "physical"
+    if (
+      !line ||
+      line.quantity !== item.quantity ||
+      line.format !== format ||
+      line.unitPriceSats !== item.priceAtPurchase ||
+      item.currency !== "SATS" ||
+      typeof item.shippingCostSats !== "number" ||
+      line.unitShippingSats !== item.shippingCostSats ||
+      line.shippingOptionId !== item.shippingOptionId ||
+      getShippingOptionDTag(line.shippingOptionId) !==
+        item.shippingOptionDTag ||
+      !shippingCountryRulesMatch(
+        item.shippingCountryRules,
+        line.shippingCountryRules
+      )
+    ) {
+      return false
+    }
+    lines.delete(item.productId)
+  }
+
+  return lines.size === 0
+}
+
+export function hasAuthorizedAnonZapPricingChanged(
+  local: Extract<CheckoutPricingIntent, { status: "ok" }>,
+  authorized: Extract<CheckoutPricingIntent, { status: "ok" }>
+): boolean {
+  if (
+    local.itemSubtotalSats !== authorized.itemSubtotalSats ||
+    local.shippingCost.totalSats !== authorized.shippingCost.totalSats ||
+    local.totalSats !== authorized.totalSats ||
+    local.items.length !== authorized.items.length
+  ) {
+    return true
+  }
+
+  return local.items.some((item, index) => {
+    const authorizedItem = authorized.items[index]
+    return (
+      !authorizedItem ||
+      item.productId !== authorizedItem.productId ||
+      item.format !== authorizedItem.format ||
+      item.quantity !== authorizedItem.quantity ||
+      item.priceAtPurchase !== authorizedItem.priceAtPurchase ||
+      (item.shippingCostSats ?? 0) !== (authorizedItem.shippingCostSats ?? 0) ||
+      item.shippingOptionId !== authorizedItem.shippingOptionId
+    )
+  })
 }
 
 export function getCheckoutPaymentStageLabel(
@@ -749,9 +955,14 @@ export function buildDefaultZapContent(params: {
   mode?: CheckoutZapMode
 }): string {
   const itemCount = params.items.reduce((sum, item) => sum + item.quantity, 0)
-  const countLabel =
-    itemCount === 1 ? "1 item" : `${Math.max(0, itemCount)} items`
-  return `Zapped out ${countLabel} on Conduit`
+  return buildAnonZapCheckoutContent(itemCount)
+}
+
+export function isPublicZapContentEditable(
+  mode: CheckoutZapMode,
+  policy: "generic_only" | "custom"
+): boolean {
+  return mode === "public_zap_as_shopper" && policy === "custom"
 }
 
 export function sanitizePublicZapContent(content: string): string {
@@ -863,6 +1074,7 @@ export async function requestCheckoutLnurlInvoice(
     lnurlCallback: string
     amountMsats: number
     lnurl: string
+    lnurlNostrPubkey?: string
     recipientPubkey: string
     zapContent: string
     explicitRelayUrls: readonly string[]
@@ -901,11 +1113,10 @@ export async function requestCheckoutLnurlInvoice(
     ),
   }
   const signed = await dependencies.signZapRequest(draft)
-  const signedCallback = signed.lnurlCallback ?? params.lnurlCallback
   const signedLnurl = signed.lnurl ?? params.lnurl
   const receiptRelayUrls = signed.relayUrls ?? zapRelayUrls
   const result: FetchZapInvoiceResult = await dependencies.fetchZapInvoice(
-    signedCallback,
+    params.lnurlCallback,
     params.amountMsats,
     JSON.stringify(signed.rawEvent),
     signedLnurl
@@ -919,8 +1130,8 @@ export async function requestCheckoutLnurlInvoice(
     ...(signed.requestCreatedAt !== undefined
       ? { zapRequestCreatedAt: signed.requestCreatedAt }
       : { zapRequestCreatedAt: draft.createdAt }),
-    ...(signed.lnurlNostrPubkey
-      ? { lnurlNostrPubkey: signed.lnurlNostrPubkey }
+    ...(params.lnurlNostrPubkey
+      ? { lnurlNostrPubkey: params.lnurlNostrPubkey }
       : {}),
     shouldWaitForZapReceipt: true,
   }

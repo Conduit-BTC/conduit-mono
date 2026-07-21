@@ -117,6 +117,150 @@ export async function getOrderLifecycle(
   return db.orderLifecycles.get(orderId)
 }
 
+export type OrderPaymentClaimInput = {
+  orderId: string
+  buyerPubkey: string
+  merchantPubkey: string
+  merchantLightningAddress: string | null
+  checkoutMode: OrderCheckoutMode
+  zapContent: string
+  totalSats: number
+  totalMsats: number
+  items: Array<{ productAddress: string; quantity: number }>
+}
+
+export type OrderPaymentClaimResult =
+  | { status: "claimed"; lifecycle: OrderLifecycle }
+  | { status: "missing"; lifecycle: null }
+  | {
+      status: "snapshot_mismatch" | "unsafe_state"
+      lifecycle: OrderLifecycle
+    }
+
+function canonicalPaymentItems(
+  items: Array<{ productAddress: string; quantity: number }>
+): string {
+  return JSON.stringify(
+    [...items].sort((left, right) =>
+      left.productAddress === right.productAddress
+        ? left.quantity - right.quantity
+        : left.productAddress.localeCompare(right.productAddress)
+    )
+  )
+}
+
+function checkoutModesMatchForPayment(
+  lifecycle: OrderLifecycle,
+  requestedMode: OrderCheckoutMode
+): boolean {
+  const storedSigner =
+    lifecycle.publicZapSigner ?? getOrderPublicZapSigner(lifecycle.checkoutMode)
+  const requestedSigner = getOrderPublicZapSigner(requestedMode)
+  if (storedSigner || requestedSigner) return storedSigner === requestedSigner
+  return (
+    requestedMode === "private_checkout" &&
+    (lifecycle.checkoutMode === "private_checkout" ||
+      lifecycle.checkoutMode === "external_wallet")
+  )
+}
+
+function paymentClaimMatchesLifecycle(
+  lifecycle: OrderLifecycle,
+  input: OrderPaymentClaimInput
+): boolean {
+  return (
+    lifecycle.orderId === input.orderId &&
+    lifecycle.buyerPubkey === input.buyerPubkey &&
+    lifecycle.merchantPubkey === input.merchantPubkey &&
+    (lifecycle.merchantLightningAddress ?? null) ===
+      input.merchantLightningAddress &&
+    checkoutModesMatchForPayment(lifecycle, input.checkoutMode) &&
+    (lifecycle.zapContent ?? "") === input.zapContent &&
+    lifecycle.totalSats === input.totalSats &&
+    lifecycle.totalMsats === input.totalMsats &&
+    canonicalPaymentItems(
+      lifecycle.items.map((item) => ({
+        productAddress: item.productId,
+        quantity: item.quantity,
+      }))
+    ) === canonicalPaymentItems(input.items)
+  )
+}
+
+export function getOrderLifecyclePaymentAdmission(
+  lifecycle: OrderLifecycle | undefined,
+  input: OrderPaymentClaimInput
+): "admissible" | "missing" | "snapshot_mismatch" | "unsafe_state" {
+  if (!lifecycle) return "missing"
+  if (!paymentClaimMatchesLifecycle(lifecycle, input)) {
+    return "snapshot_mismatch"
+  }
+  if (
+    lifecycle.orderDeliveryStatus !== "sent" ||
+    lifecycle.phase === "completed" ||
+    lifecycle.phase === "cancelled"
+  ) {
+    return "unsafe_state"
+  }
+  return (lifecycle.paymentStatus === "not_started" &&
+    lifecycle.invoiceStatus === "not_requested") ||
+    lifecycle.paymentStatus === "failed"
+    ? "admissible"
+    : "unsafe_state"
+}
+
+/**
+ * Atomically admits one payment attempt for a delivered order.
+ *
+ * The durable lifecycle is the payment authority. Snapshot disagreement and
+ * states where an invoice may already be payable or paid are rejected before
+ * signer, LNURL, or wallet work begins. The transaction serializes competing
+ * tabs against the same IndexedDB record.
+ */
+export async function claimOrderLifecyclePayment(
+  input: OrderPaymentClaimInput
+): Promise<OrderPaymentClaimResult> {
+  return db.transaction("rw", db.orderLifecycles, async () => {
+    const lifecycle = await db.orderLifecycles.get(input.orderId)
+    const admission = getOrderLifecyclePaymentAdmission(lifecycle, input)
+    if (!lifecycle || admission === "missing") {
+      return { status: "missing", lifecycle: null }
+    }
+    if (admission !== "admissible") {
+      return { status: admission, lifecycle }
+    }
+
+    const claimed: OrderLifecycle = {
+      ...lifecycle,
+      invoiceStatus: "requesting",
+      paymentStatus: "paying",
+      proofDeliveryStatus: "not_started",
+      zapReceiptStatus: "not_applicable",
+      invoice: undefined,
+      paymentHash: undefined,
+      preimage: undefined,
+      feeMsats: undefined,
+      zapRequestId: undefined,
+      zapRequestCreatedAt: undefined,
+      zapReceiptId: undefined,
+      zapReceiptRelayUrls: undefined,
+      zapLnurl: undefined,
+      zapReceiptPubkey: undefined,
+      invoiceExpiresAt: undefined,
+      zapReceiptObservationDeadline: undefined,
+      lastError: undefined,
+      phase: deriveOrderLifecyclePhase({
+        ...lifecycle,
+        invoiceStatus: "requesting",
+        paymentStatus: "paying",
+      }),
+      updatedAt: Date.now(),
+    }
+    await db.orderLifecycles.put(claimed)
+    return { status: "claimed", lifecycle: claimed }
+  })
+}
+
 /**
  * Patch an existing lifecycle record. Recomputes `phase` from the merged status
  * fields unless the caller pins it explicitly (e.g. a `cancelled` transition).

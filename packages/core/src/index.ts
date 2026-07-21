@@ -71,6 +71,7 @@ export {
   getPriceSats,
   getShippingCostSats,
   isBtcLikeCurrency,
+  isFiatCurrencyCode,
   isMsatsLikeCurrency,
   isSatsLikeCurrency,
   isUsdCurrencyCode,
@@ -88,6 +89,8 @@ export {
   isBtcUsdRateQuoteFresh,
   useBtcUsdRate,
 } from "./pricing/rates"
+export { fetchTrustedPricingRateQuote } from "./pricing/trusted-rate-provider"
+export type { TrustedPricingRateOptions } from "./pricing/trusted-rate-provider"
 export type {
   BtcUsdRateQuote,
   CommerceShippingCostLike,
@@ -129,6 +132,7 @@ export {
   type StoredOrder,
   type StoredMessage,
   type CachedProduct,
+  type CachedProductTombstone,
   type CachedProfile,
   type CachedOrderMessage,
   type CachedNip05Verification,
