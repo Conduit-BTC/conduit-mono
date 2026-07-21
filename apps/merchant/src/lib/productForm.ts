@@ -1,4 +1,5 @@
 import {
+  canonicalizeProductTags,
   CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG,
   getShippingOptionAddress,
   type ProductSchema,
@@ -109,23 +110,8 @@ export interface ProductTagEditResult {
   }
 }
 
-function normalizeProductTag(tag: string): string {
-  return tag.trim().toLowerCase()
-}
-
 export function parseProductTags(tagsCsv: string): string[] {
-  const seen = new Set<string>()
-
-  return tagsCsv
-    .split(",")
-    .map((tag) => tag.trim())
-    .filter(Boolean)
-    .filter((tag) => {
-      const normalized = normalizeProductTag(tag)
-      if (seen.has(normalized)) return false
-      seen.add(normalized)
-      return true
-    })
+  return canonicalizeProductTags(tagsCsv.split(","))
 }
 
 export function formatProductTags(tags: string[]): string {
@@ -137,7 +123,7 @@ export function addProductTags(
   input: string
 ): ProductTagEditResult {
   const tags = parseProductTags(currentTagsCsv)
-  const seen = new Set(tags.map(normalizeProductTag))
+  const seen = new Set(tags)
   const rejected: ProductTagEditResult["rejected"] = {
     duplicates: [],
     tooLong: [],
@@ -150,12 +136,13 @@ export function addProductTags(
     .filter(Boolean)
 
   for (const candidate of candidates) {
-    const normalized = normalizeProductTag(candidate)
-    if (seen.has(normalized)) {
+    const canonicalTag = canonicalizeProductTags([candidate])[0]
+    if (!canonicalTag) continue
+    if (seen.has(canonicalTag)) {
       rejected.duplicates.push(candidate)
       continue
     }
-    if (candidate.length > MAX_PRODUCT_TAG_LENGTH) {
+    if (canonicalTag.length > MAX_PRODUCT_TAG_LENGTH) {
       rejected.tooLong.push(candidate)
       continue
     }
@@ -164,8 +151,8 @@ export function addProductTags(
       continue
     }
 
-    tags.push(candidate)
-    seen.add(normalized)
+    tags.push(canonicalTag)
+    seen.add(canonicalTag)
   }
 
   return { tags, rejected }

@@ -30,6 +30,7 @@ import {
   type ListingSafetyEvaluation,
 } from "./listing-safety"
 import {
+  canonicalizeProductTags,
   normalizeProductSummaryForDisplay,
   parseProductEvent,
 } from "./products"
@@ -561,8 +562,10 @@ function productMatchesQuery(
   }
 
   if (query.tags && query.tags.length > 0) {
-    const tagSet = new Set(query.tags.map((tag) => tag.toLowerCase()))
-    if (!product.tags.some((tag) => tagSet.has(tag.toLowerCase()))) return false
+    const tagSet = new Set(canonicalizeProductTags(query.tags))
+    if (!canonicalizeProductTags(product.tags).some((tag) => tagSet.has(tag))) {
+      return false
+    }
   }
 
   return true
@@ -666,7 +669,7 @@ function toCachedProduct(record: CommerceProductRecord) {
     visibility: product.visibility,
     stock: product.stock,
     images: product.images,
-    tags: product.tags,
+    tags: canonicalizeProductTags(product.tags),
     publicZapEnabled: product.publicZapEnabled,
     zapMessagePolicy: product.zapMessagePolicy,
     publicZapPolicyKnown: product.publicZapPolicyKnown,
@@ -683,13 +686,14 @@ function toCachedProduct(record: CommerceProductRecord) {
 function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
   const zapMessagePolicy =
     row.zapMessagePolicy === "custom" ? row.zapMessagePolicy : "generic_only"
+  const tags = canonicalizeProductTags(row.tags)
   const summary = normalizeProductSummaryForDisplay(row.summary, {
     title: row.title,
     priceInfo: {
       price: row.sourcePrice?.amount ?? row.price,
       currency: row.sourcePrice?.currency ?? row.currency,
     },
-    tags: row.tags ?? [],
+    tags,
   })
   const product: Product = {
     id: row.id,
@@ -711,7 +715,7 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     visibility: row.visibility ?? "public",
     stock: row.stock,
     images: row.images ?? [],
-    tags: row.tags ?? [],
+    tags,
     publicZapEnabled: row.publicZapEnabled ?? true,
     zapMessagePolicy,
     publicZapPolicyKnown: row.publicZapPolicyKnown ?? false,
