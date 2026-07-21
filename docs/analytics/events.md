@@ -35,9 +35,11 @@ PostHog dashboards should split Market and Merchant traffic with the shared
 `app` property. Use `app = market` for Market client panels and
 `app = merchant` for Merchant Portal panels. Do not use PostHog identity,
 grouping, person profile, or session replay features to create this split.
-PostHog project settings must enable cookieless mode and discard IP data; the
-browser SDK is configured for cookieless capture and events will not ingest
-unless the project allows cookieless traffic.
+PostHog project settings must discard IP data. Browser capture uses memory-only
+SDK state, one static browser-service distinct ID, and disabled person-profile
+processing. Do not enable PostHog's server-hashed cookieless mode for Conduit
+events because it requires raw IP, host, and user-agent inputs that this
+telemetry policy excludes.
 
 Do not include active user, signer, buyer, wallet, or session pubkeys/npubs,
 invoices, order contents, product titles, addresses, message contents, IPs,
@@ -190,6 +192,17 @@ identifiers.
 
 Emitted for aggregate product detail actions. It must not include product,
 merchant, title, price, or profile identifiers.
+
+<!-- telemetry-event: anon_zap_signer_request_result properties=event_name,app,surface,action,status,latency_bucket -->
+
+### `anon_zap_signer_request_result`
+
+Emitted once for each authenticated signer Worker request as an aggregate
+operational outcome. It may record only the `sign` or `rate_limit` action, a
+bounded outcome status, and a latency bucket. It must not include request
+contents, origins, URLs, pubkeys, amounts, invoices, checkout/session keys,
+rate-limit keys, or any other request or user identifier. The Worker uses one
+static service-level distinct ID and disables PostHog person-profile processing.
 
 ## Agent Use
 

@@ -180,6 +180,12 @@ Signer Worker config:
   handler address for a strict NIP-89 `client` tag.
 - `ANON_CONDUIT_MARKET_NIP89_RELAY_HINT`: optional relay hint for that NIP-89
   `client` tag.
+- `POSTHOG_API_KEY`: optional PostHog project key secret. When configured, the
+  Worker emits only the content-free aggregate event documented in
+  `docs/analytics/events.md`; telemetry delivery is best effort and cannot
+  affect request handling.
+- `POSTHOG_HOST`: optional PostHog ingest origin. Only the US and EU PostHog
+  ingest origins are accepted, and the default is `https://us.i.posthog.com`.
 
 Local-only signer config:
 
@@ -329,6 +335,8 @@ Before enabling anonymous checkout integration:
 - dev/test throwaway identity strategy is documented for local and CI use
 - no production private key material appears in tracked files, issue text,
   comments, screenshots, logs, or test fixtures
+- signer Worker telemetry uses a static service identity and contains no
+  request, checkout, signer, merchant, buyer, invoice, or rate-limit identifiers
 
 ## Validation
 

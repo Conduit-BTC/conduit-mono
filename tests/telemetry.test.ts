@@ -139,7 +139,6 @@ describe("browser telemetry", () => {
       disable_external_dependency_loading: true,
       disable_persistence: true,
       persistence: "memory",
-      cookieless_mode: "always",
       person_profiles: "never",
       advanced_disable_flags: true,
       advanced_disable_feature_flags: true,
@@ -151,6 +150,7 @@ describe("browser telemetry", () => {
     expect(config.property_denylist).toEqual([
       ...sensitiveTelemetryPropertyNames,
     ])
+    expect(config).not.toHaveProperty("cookieless_mode")
     expect(typeof config.before_send).toBe("function")
   })
 
@@ -271,7 +271,7 @@ describe("browser telemetry", () => {
     })
   })
 
-  it("preserves only PostHog cookieless ingestion fields", () => {
+  it("preserves only the static anonymous PostHog ingestion fields", () => {
     expect(
       sanitizePostHogCaptureEvent({
         event: "checkout_result",
@@ -284,7 +284,7 @@ describe("browser telemetry", () => {
           $process_person_profile: false,
           $session_id: "session-id",
           app: "market",
-          distinct_id: "$posthog_cookieless",
+          distinct_id: "conduit-browser-telemetry",
           mode: "checkout",
           page_path: "/checkout",
           page_url: "https://shop.conduit.market/checkout",
@@ -295,12 +295,11 @@ describe("browser telemetry", () => {
     ).toEqual({
       event: "checkout_result",
       properties: {
-        $cookieless_mode: true,
         $current_url: "https://shop.conduit.market/checkout",
         $pathname: "/checkout",
         $process_person_profile: false,
         app: "market",
-        distinct_id: "$posthog_cookieless",
+        distinct_id: "conduit-browser-telemetry",
         mode: "checkout",
         page_path: "/checkout",
         page_url: "https://shop.conduit.market/checkout",
@@ -315,7 +314,9 @@ describe("browser telemetry", () => {
       sanitizePostHogCaptureEvent({
         event: "$pageview",
         properties: {
+          $process_person_profile: false,
           app: "merchant",
+          distinct_id: "conduit-browser-telemetry",
           page_path: "/products",
           page_url: "https://sell.conduit.market/products",
         },
@@ -325,7 +326,9 @@ describe("browser telemetry", () => {
       properties: {
         $current_url: "https://sell.conduit.market/products",
         $pathname: "/products",
+        $process_person_profile: false,
         app: "merchant",
+        distinct_id: "conduit-browser-telemetry",
         page_path: "/products",
         page_url: "https://sell.conduit.market/products",
       },
