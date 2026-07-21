@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   appendConduitClientTag,
-  cacheParsedOrderMessage,
   db,
   EVENT_KINDS,
   formatNpub,
@@ -13,8 +12,6 @@ import {
   getOrderPublicZapSigner,
   listOrderLifecycles,
   normalizeLightningInvoice,
-  parseOrderMessageRumorEvent,
-  publishWithPlanner,
   pruneExpiredGuestOrderData,
   pubkeyToNpub,
   useAuth,
@@ -22,7 +19,7 @@ import {
   useProfiles,
   type OrderLifecycle,
 } from "@conduit/core"
-import { giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   AlertDialog,
   AlertDialogContent,
@@ -31,6 +28,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   Button,
+  DecryptFailureNotice,
+  LiveReadNotice,
   OrderMessagesWidget,
   Sheet,
   SheetContent,
@@ -98,6 +97,7 @@ import {
   doesAuthorizedAnonZapPricingMatchOrder,
   type CheckoutZapMode,
 } from "../lib/checkout-payment"
+import { publishBuyerOrderMessage } from "../lib/order-publish"
 
 const ORDERS_SEARCH_DEFAULT: { order?: string } = {}
 
@@ -629,28 +629,6 @@ function ExternalWalletPanel({
   )
 }
 
-function prepareBuyerConversationRumor(
-  rumor: NDKEvent,
-  buyerPubkey: string
-): void {
-  rumor.pubkey = buyerPubkey
-  if (rumor.id) return
-  try {
-    rumor.id = rumor.getEventHash()
-  } catch (error) {
-    console.warn("Failed to derive buyer message rumor id", error)
-  }
-}
-
-async function cacheBuyerConversationRumor(rumor: NDKEvent): Promise<void> {
-  try {
-    if (!rumor.id) throw new Error("Missing buyer message rumor id")
-    await cacheParsedOrderMessage(parseOrderMessageRumorEvent(rumor))
-  } catch (error) {
-    console.warn("Failed to cache buyer message", error)
-  }
-}
-
 function OrderDetail({
   row,
   buyerPubkey,
@@ -807,41 +785,12 @@ function OrderDetail({
         buyerPubkey,
         createdAt: Date.now(),
       })
-      prepareBuyerConversationRumor(rumor, buyerPubkey)
-
-      const merchantUser = new NDKUser({ pubkey: row.merchantPubkey })
-      const buyerUser = new NDKUser({ pubkey: buyerPubkey })
-      const [wrappedToMerchant, wrappedToBuyer] = await Promise.all([
-        giftWrap(rumor, merchantUser, ndk.signer, {
-          rumorKind: EVENT_KINDS.ORDER,
-        }),
-        giftWrap(rumor, buyerUser, ndk.signer, {
-          rumorKind: EVENT_KINDS.ORDER,
-        }),
-      ])
-
-      await publishWithPlanner(wrappedToMerchant, {
-        intent: "recipient_event",
-        authorPubkey: buyerPubkey,
-        authenticatedPubkey: buyerPubkey,
-        recipientPubkeys: [row.merchantPubkey],
-        refreshRelayLists: true,
-        deliveryMode: "critical",
-      })
-      try {
-        await publishWithPlanner(wrappedToBuyer, {
-          intent: "recipient_event",
-          authorPubkey: buyerPubkey,
-          authenticatedPubkey: buyerPubkey,
-          recipientPubkeys: [buyerPubkey],
-          refreshRelayLists: true,
-          deliveryMode: "critical",
-        })
-      } catch (error) {
-        console.warn("Buyer message self-copy publish failed", error)
-      }
-
-      await cacheBuyerConversationRumor(rumor)
+      await publishBuyerOrderMessage(
+        rumor,
+        ndk,
+        row.merchantPubkey,
+        buyerPubkey
+      )
     },
     onSuccess: async () => {
       setReplyText("")
@@ -1350,6 +1299,7 @@ function OrdersPage() {
     () => messagesQuery.data?.data ?? cachedMessagesQuery.data?.data ?? [],
     [cachedMessagesQuery.data, messagesQuery.data]
   )
+  const messagesMeta = messagesQuery.data?.meta
   const lifecycles = useMemo(
     () => lifecyclesQuery.data ?? [],
     [lifecyclesQuery.data]
@@ -1567,23 +1517,49 @@ function OrdersPage() {
         />
       )}
 
-      {activeBuyerPubkey && !lifecyclesQuery.isLoading && !hasOrders && (
-        <EmptyState
-          title={signerConnected ? "No orders yet" : "Guest order not found"}
-          body={
-            signerConnected
-              ? "Place your first order and it will appear here with live status."
-              : "This guest order is not available in local order history on this device."
+      {signerConnected && (messagesQuery.error || messagesMeta?.degraded) && (
+        <LiveReadNotice
+          state={
+            messagesQuery.error
+              ? conversations.length > 0
+                ? "cached"
+                : "unavailable"
+              : "partial"
           }
-          action={
-            signerConnected ? (
-              <Button asChild className="h-11 px-4 text-sm">
-                <Link to="/products">Browse products</Link>
-              </Button>
-            ) : undefined
-          }
+          onRetry={() => void messagesQuery.refetch()}
+          retrying={messagesQuery.isRefetching}
         />
       )}
+
+      {signerConnected && (
+        <DecryptFailureNotice
+          count={messagesMeta?.decryptFailures?.length ?? 0}
+          onRetry={() => void messagesQuery.refetch()}
+          retrying={messagesQuery.isRefetching}
+        />
+      )}
+
+      {activeBuyerPubkey &&
+        !lifecyclesQuery.isLoading &&
+        !hasOrders &&
+        !messagesQuery.error &&
+        !messagesMeta?.degraded && (
+          <EmptyState
+            title={signerConnected ? "No orders yet" : "Guest order not found"}
+            body={
+              signerConnected
+                ? "Place your first order and it will appear here with live status."
+                : "This guest order is not available in local order history on this device."
+            }
+            action={
+              signerConnected ? (
+                <Button asChild className="h-11 px-4 text-sm">
+                  <Link to="/products">Browse products</Link>
+                </Button>
+              ) : undefined
+            }
+          />
+        )}
 
       {activeBuyerPubkey && hasOrders && (
         <div className="grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">

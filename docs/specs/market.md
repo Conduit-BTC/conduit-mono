@@ -128,9 +128,16 @@ guest inbox or durable order history. See `docs/specs/protocol.md`.
 
 ### Messaging
 
-1. Open `/messages` or an order-linked conversation
-2. Read NIP-17 encrypted buyer/merchant messages
-3. Receive payment requests, payment proof state, status updates, shipping updates, and receipts inline
+1. Open `/messages` for the buyer DM inbox or an order-linked conversation
+2. Hold general support conversations (NIP-17 kind-14 direct messages) with a
+   merchant, threaded by counterparty and kept distinct from order conversations
+3. Read order-linked NIP-17 (kind-16) messages: payment requests, payment proof
+   state, status updates, shipping updates, and receipts inline
+4. See explicit loading, stale/degraded, and decrypt-failed/retry states rather
+   than silently missing messages
+
+General direct messages and order-linked conversations stay separate, and an
+order-linked preview links back to its order flow. See `docs/specs/messaging.md`.
 
 This messaging flow requires a signed-in buyer identity. It does not apply to
 `guest_ephemeral` checkout.

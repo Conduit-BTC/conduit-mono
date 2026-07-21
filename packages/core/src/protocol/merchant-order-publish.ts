@@ -1,10 +1,10 @@
-import { giftWrap, NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { cacheParsedOrderMessage } from "./commerce"
 import { EVENT_KINDS } from "./kinds"
 import { getNdk } from "./ndk"
 import { appendConduitClientTag } from "./nip89"
 import { parseOrderMessageRumorEvent } from "./orders"
-import { publishWithPlanner } from "./relay-publish"
+import { publishPrivateMessage } from "./messaging"
 
 export type MerchantOrderDelivery = "buyer_and_self" | "self_only"
 
@@ -56,27 +56,6 @@ function prepareMerchantRumor(rumor: NDKEvent, merchantPubkey: string): void {
   if (!rumor.id) rumor.id = rumor.getEventHash()
 }
 
-async function publishWrappedRecipient(
-  rumor: NDKEvent,
-  recipientPubkey: string,
-  merchantPubkey: string
-): Promise<void> {
-  const ndk = getNdk()
-  if (!ndk.signer) throw new Error("Signer not connected")
-  const recipient = new NDKUser({ pubkey: recipientPubkey })
-  const wrapped = await giftWrap(rumor, recipient, ndk.signer, {
-    rumorKind: EVENT_KINDS.ORDER,
-  })
-  await publishWithPlanner(wrapped, {
-    intent: "recipient_event",
-    authorPubkey: merchantPubkey,
-    authenticatedPubkey: merchantPubkey,
-    recipientPubkeys: [recipientPubkey],
-    refreshRelayLists: true,
-    deliveryMode: "critical",
-  })
-}
-
 export async function publishMerchantOrderMessage(
   input: PublishMerchantOrderMessageInput
 ): Promise<void> {
@@ -96,12 +75,19 @@ export async function publishMerchantOrderMessage(
   })
   prepareMerchantRumor(rumor, input.merchantPubkey)
 
-  const recipients = getMerchantOrderDeliveryRecipients(input)
-  await Promise.all(
-    recipients.map((recipientPubkey) =>
-      publishWrappedRecipient(rumor, recipientPubkey, input.merchantPubkey)
-    )
-  )
+  const recipientPubkey =
+    input.delivery === "self_only" ? input.merchantPubkey : input.buyerPubkey
+  const { selfCopyError } = await publishPrivateMessage({
+    rumor,
+    senderPubkey: input.merchantPubkey,
+    recipientPubkey,
+    signer: ndk.signer,
+    rumorKind: EVENT_KINDS.ORDER,
+    selfCopy: input.delivery === "buyer_and_self",
+  })
+  if (selfCopyError) {
+    console.warn("Merchant order self-copy publish failed", selfCopyError)
+  }
 
   const parsed = parseOrderMessageRumorEvent(rumor)
   await cacheParsedOrderMessage(parsed)

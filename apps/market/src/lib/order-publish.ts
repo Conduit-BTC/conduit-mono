@@ -1,13 +1,11 @@
-import { NDKEvent, NDKUser, giftWrap, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
   EVENT_KINDS,
   appendConduitClientTag,
   cacheParsedOrderMessage,
   getNdk,
-  withTransientNip07Retry,
   parseOrderMessageRumorEvent,
-  publishWithPlanner,
-  type TransientNip07RetryOptions,
+  publishPrivateMessage,
 } from "@conduit/core"
 
 /**
@@ -41,6 +39,11 @@ export type BuyerOrderSigningIdentity =
     }
 
 type BuyerOrderIdentityInput = string | BuyerOrderSigningIdentity
+
+type BuyerOrderPublishDependencies = {
+  publishPrivateMessageFn?: typeof publishPrivateMessage
+  cacheBuyerOrderRumorFn?: typeof cacheBuyerOrderRumor
+}
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
@@ -105,47 +108,6 @@ async function cacheBuyerOrderRumor(rumor: NDKEvent): Promise<string | null> {
   }
 }
 
-type GiftWrapDependency = typeof giftWrap
-
-export async function createBuyerGiftWrapsForDelivery(
-  rumor: NDKEvent,
-  ndk: ReturnType<typeof getNdk>,
-  merchantPubkey: string,
-  buyer: BuyerOrderIdentityInput,
-  options: TransientNip07RetryOptions & {
-    giftWrapFn?: GiftWrapDependency
-  } = {}
-): Promise<{
-  wrappedToMerchant: NDKEvent
-  wrappedToSelf: NDKEvent | null
-}> {
-  const giftWrapFn = options.giftWrapFn ?? giftWrap
-  const buyerIdentity = resolveBuyerOrderSigningIdentity(ndk, buyer)
-  assertBuyerOrderScope(rumor, merchantPubkey, buyerIdentity)
-  const merchantUser = new NDKUser({ pubkey: merchantPubkey })
-  const wrapParams = { rumorKind: EVENT_KINDS.ORDER }
-
-  const wrappedToMerchant = await withTransientNip07Retry(
-    () => giftWrapFn(rumor, merchantUser, buyerIdentity.signer, wrapParams),
-    options
-  )
-  const wrappedToSelf =
-    buyerIdentity.kind === "guest_ephemeral"
-      ? null
-      : await withTransientNip07Retry(
-          () =>
-            giftWrapFn(
-              rumor,
-              new NDKUser({ pubkey: buyerIdentity.pubkey }),
-              buyerIdentity.signer,
-              wrapParams
-            ),
-          options
-        )
-
-  return { wrappedToMerchant, wrappedToSelf }
-}
-
 /**
  * Translate a delivery result into a buyer-facing notice when a non-critical
  * leg (local cache or buyer self-copy) needs retry. The merchant copy is always
@@ -171,53 +133,29 @@ export async function publishBuyerOrderMessage(
   rumor: NDKEvent,
   ndk: ReturnType<typeof getNdk>,
   merchantPubkey: string,
-  buyer: BuyerOrderIdentityInput
+  buyer: BuyerOrderIdentityInput,
+  dependencies: BuyerOrderPublishDependencies = {}
 ): Promise<BuyerMessageDeliveryResult> {
   const buyerIdentity = resolveBuyerOrderSigningIdentity(ndk, buyer)
   assertBuyerOrderScope(rumor, merchantPubkey, buyerIdentity)
   prepareBuyerRumor(rumor, buyerIdentity.pubkey)
 
-  const { wrappedToMerchant, wrappedToSelf } =
-    await createBuyerGiftWrapsForDelivery(
-      rumor,
-      ndk,
-      merchantPubkey,
-      buyerIdentity
-    )
-
-  await publishWithPlanner(wrappedToMerchant, {
-    intent: "recipient_event",
-    authorPubkey: buyerIdentity.pubkey,
-    authenticatedPubkey: buyerIdentity.pubkey,
-    recipientPubkeys: [merchantPubkey],
-    refreshRelayLists: true,
-    deliveryMode: "critical",
+  const publish = dependencies.publishPrivateMessageFn ?? publishPrivateMessage
+  const { selfCopyError: buyerSelfCopyError } = await publish({
+    rumor,
+    senderPubkey: buyerIdentity.pubkey,
+    recipientPubkey: merchantPubkey,
+    signer: buyerIdentity.signer,
+    rumorKind: EVENT_KINDS.ORDER,
+    selfCopy: buyerIdentity.kind !== "guest_ephemeral",
   })
-
-  let buyerSelfCopyError: string | null = null
-  if (wrappedToSelf) {
-    try {
-      await publishWithPlanner(wrappedToSelf, {
-        intent: "recipient_event",
-        authorPubkey: buyerIdentity.pubkey,
-        authenticatedPubkey: buyerIdentity.pubkey,
-        recipientPubkeys: [buyerIdentity.pubkey],
-        refreshRelayLists: true,
-        deliveryMode: "critical",
-      })
-    } catch (selfCopyError) {
-      console.warn("Buyer self-copy publish failed", selfCopyError)
-      buyerSelfCopyError = getErrorMessage(
-        selfCopyError,
-        "Buyer self-copy publish failed"
-      )
-    }
-  }
 
   const localCacheError =
     buyerIdentity.kind === "guest_ephemeral"
       ? null
-      : await cacheBuyerOrderRumor(rumor)
+      : await (dependencies.cacheBuyerOrderRumorFn ?? cacheBuyerOrderRumor)(
+          rumor
+        )
   return { buyerSelfCopyError, localCacheError }
 }
 

@@ -58,6 +58,7 @@ import {
   cn,
 } from "@conduit/ui"
 import { requireAuth } from "../lib/auth"
+import { OrderCardScroller } from "../components/OrderCardScroller"
 import { BuyerAvatar, OrderListItem } from "../components/OrderListItem"
 import {
   getMerchantConversationQueue,
@@ -256,18 +257,6 @@ function MobileOrdersScroller({
   buyerPicture: (pubkey: string) => string | undefined
   onSelect: (id: string) => void
 }) {
-  const cardRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
-
-  // Keep the natural order; just scroll the selected order into view.
-  useEffect(() => {
-    if (!selectedId) return
-    cardRefs.current.get(selectedId)?.scrollIntoView({
-      behavior: "smooth",
-      block: "nearest",
-      inline: "center",
-    })
-  }, [selectedId])
-
   return (
     <section className="min-w-0 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
       {conversations.length === 0 ? (
@@ -275,71 +264,13 @@ function MobileOrdersScroller({
           No orders match this filter.
         </div>
       ) : (
-        <div
-          className="min-w-0 touch-pan-x overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-          style={{
-            maskImage:
-              "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
-            WebkitMaskImage:
-              "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
-          }}
-        >
-          <div className="flex min-w-max snap-x snap-mandatory gap-3 pb-1 pr-14">
-            {conversations.map((conversation) => {
-              const active = conversation.id === selectedId
-              const statusDisplay =
-                getMerchantConversationStatusDisplay(conversation)
-              return (
-                <button
-                  key={conversation.id}
-                  type="button"
-                  ref={(el) => {
-                    if (el) cardRefs.current.set(conversation.id, el)
-                    else cardRefs.current.delete(conversation.id)
-                  }}
-                  onClick={() => onSelect(conversation.id)}
-                  className={`w-[16.5rem] shrink-0 snap-start rounded-[1.25rem] border p-4 text-left transition-[border-color,background-color,transform] ${
-                    active
-                      ? "border-[color-mix(in_srgb,var(--primary-500)_45%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_7%,transparent)]"
-                      : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--text-secondary)]"
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex min-w-0 items-start gap-3">
-                      <BuyerAvatar
-                        name={buyerName(conversation.buyerPubkey)}
-                        picture={buyerPicture(conversation.buyerPubkey)}
-                        size="sm"
-                      />
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-[var(--text-primary)]">
-                          {buyerName(conversation.buyerPubkey)}
-                        </div>
-                        <div className="mt-1 truncate text-sm text-[var(--text-secondary)]">
-                          {conversation.preview || "Order"}
-                        </div>
-                      </div>
-                    </div>
-                    <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
-                  </div>
-                  <div className="mt-3 flex items-center gap-2">
-                    <StatusPill
-                      variant={statusDisplay.tone}
-                      className="capitalize"
-                    >
-                      {statusDisplay.label}
-                    </StatusPill>
-                    {conversation.totalSummary && (
-                      <span className="text-xs font-medium text-secondary-300">
-                        {conversation.totalSummary}
-                      </span>
-                    )}
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-        </div>
+        <OrderCardScroller
+          conversations={conversations}
+          selectedId={selectedId}
+          buyerName={buyerName}
+          buyerPicture={buyerPicture}
+          onSelect={(conversation) => onSelect(conversation.id)}
+        />
       )}
     </section>
   )

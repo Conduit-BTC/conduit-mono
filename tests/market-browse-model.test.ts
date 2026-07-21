@@ -5,7 +5,10 @@ import {
   getStoreFacetOptions,
 } from "../apps/market/src/lib/facets"
 import {
+  allowsGlobalProductSearch,
+  getGlobalProductSearchQueryKey,
   getMerchantIdentityView,
+  mergeProductSearchResults,
   sortStoreFacetOptionsByRecentPublisher,
 } from "../apps/market/src/lib/marketBrowseModel"
 
@@ -39,6 +42,54 @@ const products = [
 ]
 
 describe("market browse model helpers", () => {
+  it("keeps global search out of explicit connected catalog scopes", () => {
+    expect(
+      allowsGlobalProductSearch({
+        catalogSource: "following",
+        anonymous: false,
+      })
+    ).toBe(false)
+    expect(
+      allowsGlobalProductSearch({ catalogSource: "conduit", anonymous: false })
+    ).toBe(false)
+    expect(
+      allowsGlobalProductSearch({ catalogSource: "combined", anonymous: false })
+    ).toBe(true)
+    expect(
+      allowsGlobalProductSearch({ catalogSource: "conduit", anonymous: true })
+    ).toBe(true)
+
+    const followingKey = getGlobalProductSearchQueryKey({
+      query: "soap",
+      pubkey: "viewer",
+      catalogSource: "following",
+      anonymous: false,
+    })
+    const combinedKey = getGlobalProductSearchQueryKey({
+      query: "soap",
+      pubkey: "viewer",
+      catalogSource: "combined",
+      anonymous: false,
+    })
+    expect(followingKey).not.toEqual(combinedKey)
+  })
+
+  it("merges relay search results into the perspective catalog by product id", () => {
+    const catalogProduct = product("catalog", "merchant-a", [], 100)
+    const searchProduct = product("search", "merchant-b", [], 200)
+    const updatedCatalogProduct = {
+      ...catalogProduct,
+      title: "Updated catalog product",
+    }
+
+    expect(
+      mergeProductSearchResults(
+        [catalogProduct],
+        [updatedCatalogProduct, searchProduct]
+      )
+    ).toEqual([updatedCatalogProduct, searchProduct])
+  })
+
   it("sorts store options by recent publisher while preserving counts", () => {
     const storeOptions = getStoreFacetOptions(products, {}, (pubkey) => pubkey)
 
