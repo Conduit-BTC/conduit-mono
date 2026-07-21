@@ -412,9 +412,11 @@ The canary never logs or persists the authorization token, signed event,
 provider pubkeys, invoice, or callback query parameters. It never publishes the
 request, pays the invoice, or claims a kind `9735` receipt.
 
-The `Anon Zap Provider Canary` workflow supports manual dispatch and a daily
-schedule. Configure these public repository variables with a team-controlled
-provider fixture before setting `ANON_ZAP_PROVIDER_CANARY_ENABLED=true`:
+The deterministic provider-canary tests run in normal pull-request CI. The live
+`Anon Zap Provider Canary` workflow is manual-only because it checks deployed
+signer and provider boundaries and can request an unpaid invoice. Configure
+these public repository variables with a team-controlled provider fixture
+before dispatching it:
 
 - `ANON_ZAP_PROVIDER_CANARY_LUD16`
 - `ANON_ZAP_PROVIDER_CANARY_EXPECTED_HOST`
@@ -424,10 +426,10 @@ in the no-funds deployment canary section. Configure them for a minimum-value
 product owned by the same merchant pubkey whose signed profile uses the fixture
 Lightning address. The authorized product price controls the invoice amount.
 
-Use a dedicated fixture address whose operator permits recurring unpaid invoice
-requests. Do not point the scheduled callback canary at an unrelated public
-wallet. Run metadata-only checks by setting
-`ANON_ZAP_PROVIDER_CANARY_REQUEST_INVOICE=false`.
+Use a dedicated fixture address whose operator permits unpaid invoice requests.
+Do not point the callback canary at an unrelated public wallet. For a
+metadata-only check, clear the `request_invoice` input when dispatching the
+workflow.
 
 This closes the provider compatibility gap through invoice generation, but it
 does not prove settlement or receipt publication. A funded smoke still needs a
