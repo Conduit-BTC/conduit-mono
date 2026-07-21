@@ -6,6 +6,7 @@ import {
 } from "../apps/market/src/lib/facets"
 import {
   getMerchantIdentityView,
+  mergeProductSearchResults,
   sortStoreFacetOptionsByRecentPublisher,
 } from "../apps/market/src/lib/marketBrowseModel"
 
@@ -39,6 +40,22 @@ const products = [
 ]
 
 describe("market browse model helpers", () => {
+  it("merges relay search results into the perspective catalog by product id", () => {
+    const catalogProduct = product("catalog", "merchant-a", [], 100)
+    const searchProduct = product("search", "merchant-b", [], 200)
+    const updatedCatalogProduct = {
+      ...catalogProduct,
+      title: "Updated catalog product",
+    }
+
+    expect(
+      mergeProductSearchResults(
+        [catalogProduct],
+        [updatedCatalogProduct, searchProduct]
+      )
+    ).toEqual([updatedCatalogProduct, searchProduct])
+  })
+
   it("sorts store options by recent publisher while preserving counts", () => {
     const storeOptions = getStoreFacetOptions(products, {}, (pubkey) => pubkey)
 

@@ -1,5 +1,11 @@
 import { useMemo } from "react"
-import { normalizePubkey, useAuth, type PricingRateInput } from "@conduit/core"
+import { useQuery } from "@tanstack/react-query"
+import {
+  getMarketplaceProducts,
+  normalizePubkey,
+  useAuth,
+  type PricingRateInput,
+} from "@conduit/core"
 import {
   filterProductsByFacets,
   getCategoryFacetOptions,
@@ -9,6 +15,7 @@ import {
   getBrowseSearchKey,
   getStoreTriggerLabel,
   hasUnavailablePriceForBrowseSort,
+  mergeProductSearchResults,
   sortBrowseProducts,
   sortStoreFacetOptionsByRecentPublisher,
   type MarketBrowseSearch,
@@ -63,7 +70,47 @@ export function useMarketBrowseModel({
     seedAuthorPubkeys: guestMarket.seedAuthorPubkeys,
     sort: "newest",
   })
-  const productData = productsQuery.products
+  const normalizedSearchQuery = search.q?.trim() ?? ""
+  const globalSearchQuery = useQuery({
+    queryKey: ["market-global-product-search", normalizedSearchQuery, pubkey],
+    queryFn: () =>
+      getMarketplaceProducts({
+        authenticatedPubkey: status === "connected" ? pubkey : null,
+        textQuery: normalizedSearchQuery,
+        sort: "newest",
+        readPolicy: {
+          maxRelays: 12,
+          connectTimeoutMs: 4_000,
+          fetchTimeoutMs: 8_000,
+        },
+      }),
+    enabled: normalizedSearchQuery.length > 0,
+    staleTime: 20_000,
+  })
+  const globalSearchProducts = useMemo(
+    () => globalSearchQuery.data?.data.map((record) => record.product) ?? [],
+    [globalSearchQuery.data]
+  )
+  const productData = useMemo(
+    () =>
+      normalizedSearchQuery
+        ? mergeProductSearchResults(
+            productsQuery.products,
+            globalSearchProducts
+          )
+        : productsQuery.products,
+    [globalSearchProducts, normalizedSearchQuery, productsQuery.products]
+  )
+  const preparedProductsQuery = {
+    ...productsQuery,
+    isInitialLoading:
+      productsQuery.isInitialLoading ||
+      (normalizedSearchQuery.length > 0 &&
+        productData.length === 0 &&
+        globalSearchQuery.isLoading),
+    isHydrating: productsQuery.isHydrating || globalSearchQuery.isFetching,
+    error: productsQuery.error ?? globalSearchQuery.error,
+  }
   const allMerchantPubkeys = useMemo(() => {
     if (productData.length === 0) return []
     const set = new Set<string>()
@@ -198,10 +245,11 @@ export function useMarketBrowseModel({
     hasMore: visibleCount < filtered.length,
     hasUnavailablePriceForSort,
     isUpdatingListings:
-      !productsQuery.isInitialLoading && productsQuery.isHydrating,
+      !preparedProductsQuery.isInitialLoading &&
+      preparedProductsQuery.isHydrating,
     productCards,
     productData,
-    productsQuery,
+    productsQuery: preparedProductsQuery,
     searchKey,
     selectedMerchants,
     selectedMerchantSet,

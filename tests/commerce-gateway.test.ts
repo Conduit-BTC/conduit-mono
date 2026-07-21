@@ -253,6 +253,43 @@ describe("commerce gateway", () => {
     ])
   })
 
+  it("searches products globally when no perspective authors are supplied", async () => {
+    const productEvents = [
+      makeProductEvent({
+        pubkey: "merchant-a",
+        dTag: "other-item",
+        id: "global-search-event-a",
+        createdAt: 101,
+        title: "Other item",
+      }),
+      makeProductEvent({
+        pubkey: "merchant-b",
+        dTag: "test-shirt",
+        id: "global-search-event-b",
+        createdAt: 102,
+        title: "Test t-shirt",
+      }),
+    ]
+    let seenAuthors: string[] | undefined
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          seenAuthors = filter.authors
+          return productEvents as never
+        }
+        return []
+      },
+    })
+
+    const result = await getMarketplaceProducts({ textQuery: "test t-shirt" })
+
+    expect(seenAuthors).toBeUndefined()
+    expect(result.data.map((record) => record.product.title)).toEqual([
+      "Test t-shirt",
+    ])
+  })
+
   it("keeps same d-tag listings from different merchants separate", async () => {
     const productEvents = [
       makeProductEvent({

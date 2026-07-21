@@ -34,6 +34,16 @@ export interface MarketProductCardView {
   merchant: MerchantIdentityView
 }
 
+export function mergeProductSearchResults(
+  catalogProducts: readonly Product[],
+  searchProducts: readonly Product[]
+): Product[] {
+  const byId = new Map<string, Product>()
+  for (const product of catalogProducts) byId.set(product.id, product)
+  for (const product of searchProducts) byId.set(product.id, product)
+  return Array.from(byId.values())
+}
+
 export function isPriceSort(sort: MarketBrowseSortOption | undefined): boolean {
   return sort === "price_asc" || sort === "price_desc"
 }
