@@ -30,6 +30,7 @@ type RecordTelemetryOptions = {
 const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com"
 const DEFAULT_TIMEOUT_MS = 1_500
 const SERVICE_DISTINCT_ID = "conduit-anon-zap-signer"
+const EVENT_NAME = "anon_zap_signer_request_result"
 const ALLOWED_POSTHOG_ORIGINS = new Set([
   "https://eu.i.posthog.com",
   "https://us.i.posthog.com",
@@ -122,7 +123,12 @@ export async function recordTelemetryEvent(
   const projectKey = env.POSTHOG_PROJECT_TOKEN?.trim() ?? ""
   const captureUrl = getCaptureUrl(env.POSTHOG_HOST)
   const captureProperties = getCaptureProperties(properties)
-  if (!isValidProjectKey(projectKey) || !captureUrl || !captureProperties) {
+  if (
+    eventName !== EVENT_NAME ||
+    !isValidProjectKey(projectKey) ||
+    !captureUrl ||
+    !captureProperties
+  ) {
     return
   }
 
@@ -142,7 +148,7 @@ export async function recordTelemetryEvent(
       body: JSON.stringify({
         token: projectKey,
         distinct_id: SERVICE_DISTINCT_ID,
-        event: eventName,
+        event: EVENT_NAME,
         properties: captureProperties,
       }),
       signal: abortController.signal,

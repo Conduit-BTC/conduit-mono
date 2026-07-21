@@ -76,6 +76,12 @@ describe("anon zap signer telemetry", () => {
       },
       { fetchImpl }
     )
+    await recordTelemetryEvent(
+      "unexpected_event" as "anon_zap_signer_request_result",
+      EVENT_PROPERTIES,
+      { POSTHOG_PROJECT_TOKEN: PROJECT_KEY },
+      { fetchImpl }
+    )
 
     expect(requests).toBe(0)
   })
