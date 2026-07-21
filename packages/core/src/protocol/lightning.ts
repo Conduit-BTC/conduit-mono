@@ -14,7 +14,7 @@ import { ANON_ZAP_PROVIDER_ATTESTATION_TAG } from "./anon-zap"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
-} from "./anon-zap-checkout"
+} from "./signed-event"
 import { EVENT_KINDS } from "./kinds"
 import { fetchEventsFanout, getEventSourceRelayUrls } from "./ndk"
 
