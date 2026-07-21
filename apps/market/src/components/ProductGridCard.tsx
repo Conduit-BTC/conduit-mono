@@ -48,6 +48,7 @@ export function ProductGridCard({
     product,
     btcUsdRate ?? null
   )
+  const soldOut = product.stock === 0
 
   return (
     <ProductCard
@@ -59,6 +60,7 @@ export function ProductGridCard({
       secondaryPrice={secondary}
       imageLoading={imageLoading}
       cartQuantity={cartQuantity}
+      soldOut={soldOut}
       onActivate={() =>
         navigate({
           to: "/products/$productId",
@@ -80,6 +82,7 @@ export function ProductGridCard({
             onAddToCart={onAddToCart}
             onIncrement={onIncrement}
             onDecrement={onDecrement}
+            soldOut={soldOut}
           />
         ) : undefined
       }

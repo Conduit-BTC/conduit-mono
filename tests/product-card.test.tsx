@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { getProductPriceDisplay } from "@conduit/core"
-import { ProductCard } from "@conduit/ui"
+import { ProductCard, ProductCartAction } from "@conduit/ui"
 
 describe("ProductCard", () => {
   it("renders a stable card when no product image is available", () => {
@@ -51,5 +51,29 @@ describe("ProductCard", () => {
 
     expect(html).toContain("40,000 sats")
     expect(html).toContain("about $32.28 USD")
+  })
+
+  it("keeps a sold-out product visible while disabling its cart action", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Sold Out Tee"
+        merchantName="Alice Store"
+        images={[]}
+        primaryPrice="25 sats"
+        soldOut
+        action={
+          <ProductCartAction
+            title="Sold Out Tee"
+            cartQuantity={0}
+            onAddToCart={() => undefined}
+            soldOut
+          />
+        }
+      />
+    )
+
+    expect(html).toContain("Sold Out Tee")
+    expect(html).toContain("Sold out")
+    expect(html).toContain('disabled=""')
   })
 })

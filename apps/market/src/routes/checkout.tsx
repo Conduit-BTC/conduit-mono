@@ -45,6 +45,7 @@ import {
   Avatar,
   AvatarFallback,
   AvatarImage,
+  Badge,
   Button,
   Combobox,
   Input,
@@ -60,6 +61,7 @@ import {
 import { SignerSwitch } from "../components/SignerSwitch"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
+import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
 import {
   useWallet,
@@ -72,7 +74,10 @@ import {
   hasPhysicalItemsMissingShippingSnapshot,
   hasPhysicalItemsMissingShippingZone,
 } from "../lib/cart-shipping-options"
-import { getCartPublicZapPolicy } from "../lib/cart-model"
+import {
+  getCartPublicZapPolicy,
+  type CartProductAvailability,
+} from "../lib/cart-model"
 import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
 import {
   isFastCheckoutEligible,
@@ -451,10 +456,12 @@ function OrderSummary({
   items,
   merchantPubkey,
   btcUsdRate,
+  availabilityByProductId,
 }: {
   items: CartItem[]
   merchantPubkey: string
   btcUsdRate: PricingRateInput
+  availabilityByProductId: ReadonlyMap<string, CartProductAvailability>
 }) {
   const { data: merchantProfile } = useProfile(merchantPubkey)
   const merchantName = getMerchantDisplayName(merchantProfile, merchantPubkey)
@@ -519,6 +526,8 @@ function OrderSummary({
 
       <div className="mt-4 space-y-4">
         {items.map((item) => {
+          const soldOut =
+            availabilityByProductId.get(item.productId)?.status === "sold_out"
           const linePrice = getProductPriceDisplay(
             {
               price: item.price * item.quantity,
@@ -539,13 +548,17 @@ function OrderSummary({
           return (
             <div
               key={item.productId}
-              className="grid grid-cols-[72px_minmax(0,1fr)_auto] gap-3 border-b border-[var(--border)] pb-4 last:border-b-0 last:pb-0"
+              className={`grid grid-cols-[72px_minmax(0,1fr)_auto] gap-3 border-b border-[var(--border)] pb-4 last:border-b-0 last:pb-0 ${
+                soldOut ? "opacity-80" : ""
+              }`}
             >
               <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--background)]">
                 <img
                   src={item.image ?? "/images/placeholders/product.png"}
                   alt={item.title}
-                  className="aspect-square h-full w-full object-cover"
+                  className={`aspect-square h-full w-full object-cover ${
+                    soldOut ? "grayscale opacity-60" : ""
+                  }`}
                   loading="lazy"
                   onError={(e) => {
                     ;(e.currentTarget as HTMLImageElement).src =
@@ -557,6 +570,11 @@ function OrderSummary({
                 <div className="line-clamp-2 text-base font-medium leading-7 text-[var(--text-primary)]">
                   {item.title}
                 </div>
+                {soldOut ? (
+                  <Badge variant="warning" className="mt-1.5">
+                    Sold out
+                  </Badge>
+                ) : null}
                 {item.tags && item.tags.length > 0 && (
                   <div className="mt-1 line-clamp-1 text-xs text-[var(--text-muted)]">
                     {item.tags.slice(0, 4).join(", ")}
@@ -693,6 +711,21 @@ function CheckoutPage() {
     if (!selectedMerchant) return []
     return cart.items.filter((item) => item.merchantPubkey === selectedMerchant)
   }, [cart.items, selectedMerchant])
+  const checkoutAvailability = useCartProductAvailability(checkoutItems)
+  const soldOutCheckoutItems = useMemo(
+    () =>
+      checkoutItems.filter(
+        (item) =>
+          checkoutAvailability.availabilityByProductId.get(item.productId)
+            ?.status === "sold_out"
+      ),
+    [checkoutAvailability.availabilityByProductId, checkoutItems]
+  )
+  const hasSoldOutCheckoutItems = soldOutCheckoutItems.length > 0
+  const soldOutCheckoutMessage =
+    soldOutCheckoutItems.length === 1
+      ? `${soldOutCheckoutItems[0]!.title} is sold out. Remove it from your cart before sending the order.`
+      : `${soldOutCheckoutItems.length} items are sold out. Remove them from your cart before sending the order.`
   const publicZapPolicy = useMemo(
     () => getCartPublicZapPolicy(checkoutItems),
     [checkoutItems]
@@ -1180,6 +1213,29 @@ function CheckoutPage() {
       : validateShippingFields(nextShipping)
   }
 
+  async function assertCheckoutItemsAvailable(): Promise<void> {
+    const refreshedAvailability = await checkoutAvailability.refresh()
+    const soldOutIds = new Set(
+      refreshedAvailability
+        .filter((entry) => entry.status === "sold_out")
+        .map((entry) => entry.productId)
+    )
+    const soldOutItems = checkoutItems.filter((item) =>
+      soldOutIds.has(item.productId)
+    )
+
+    if (soldOutItems.length === 1) {
+      throw new Error(
+        `${soldOutItems[0]!.title} is sold out. Remove it from your cart before sending the order.`
+      )
+    }
+    if (soldOutItems.length > 1) {
+      throw new Error(
+        `${soldOutItems.length} items are sold out. Remove them from your cart before sending the order.`
+      )
+    }
+  }
+
   function updateShipping<K extends keyof ShippingFormState>(
     field: K,
     value: ShippingFormState[K]
@@ -1198,6 +1254,14 @@ function CheckoutPage() {
   }
 
   function continueToPayment(): void {
+    if (checkoutAvailability.isChecking) {
+      setError("Wait while Conduit checks current product availability.")
+      return
+    }
+    if (hasSoldOutCheckoutItems) {
+      setError(soldOutCheckoutMessage)
+      return
+    }
     setShippingAttempted(true)
     setTouchedShippingFields(new Set(SHIPPING_VALIDATION_FIELDS))
     const errors = liveShippingErrors
@@ -1402,6 +1466,8 @@ function CheckoutPage() {
     })
 
     try {
+      await assertCheckoutItemsAvailable()
+
       if (hasUnpricedCheckoutItems) {
         throw new Error(
           "One or more items cannot be converted to sats right now. Refresh prices before ordering."
@@ -1657,6 +1723,8 @@ function CheckoutPage() {
     })
 
     try {
+      await assertCheckoutItemsAvailable()
+
       if (hasUnpricedCheckoutItems) {
         throw new Error(
           "One or more items cannot be converted to sats right now. Refresh prices before ordering."
@@ -2166,6 +2234,34 @@ function CheckoutPage() {
         }
       />
 
+      {hasSoldOutCheckoutItems ? (
+        <div
+          role="alert"
+          className="flex flex-col gap-4 rounded-2xl border border-warning/40 bg-warning/10 p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div className="flex items-start gap-3">
+            <AlertTriangle
+              className="mt-0.5 h-5 w-5 shrink-0 text-warning"
+              aria-hidden="true"
+            />
+            <div>
+              <div className="font-medium text-[var(--text-primary)]">
+                Checkout paused
+              </div>
+              <p className="mt-1 leading-6">{soldOutCheckoutMessage}</p>
+            </div>
+          </div>
+          <Button asChild variant="outline" className="shrink-0">
+            <Link
+              to="/cart"
+              search={{ merchant: pubkeyToNpub(selectedMerchant!) }}
+            >
+              Review cart
+            </Link>
+          </Button>
+        </div>
+      ) : null}
+
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,520px)]">
         <section className="space-y-5">
           {/* ── Shipping step ─────────────────────────────────────────────── */}
@@ -2541,9 +2637,16 @@ function CheckoutPage() {
 
                   <Button
                     className="mt-2 h-11 w-full text-sm"
+                    disabled={
+                      checkoutAvailability.isChecking || hasSoldOutCheckoutItems
+                    }
                     onClick={continueToPayment}
                   >
-                    Continue to Send Order
+                    {checkoutAvailability.isChecking
+                      ? "Checking availability"
+                      : hasSoldOutCheckoutItems
+                        ? "Remove sold-out items"
+                        : "Continue to Send Order"}
                   </Button>
 
                   <p
@@ -2862,6 +2965,10 @@ function CheckoutPage() {
                   {fastEligible && (
                     <Button
                       className="h-11 px-5 text-sm"
+                      disabled={
+                        checkoutAvailability.isChecking ||
+                        hasSoldOutCheckoutItems
+                      }
                       onClick={() => {
                         if (canAttemptLightningPayment) {
                           setOverlayPlaying(true)
@@ -2918,10 +3025,18 @@ function CheckoutPage() {
                           : "primary"
                       }
                       className="h-11 px-5 text-sm"
+                      disabled={
+                        checkoutAvailability.isChecking ||
+                        hasSoldOutCheckoutItems
+                      }
                       onClick={placeOrder}
                     >
                       <OrderIcon className="h-4 w-4" />
-                      Send order
+                      {checkoutAvailability.isChecking
+                        ? "Checking availability"
+                        : hasSoldOutCheckoutItems
+                          ? "Remove sold-out items"
+                          : "Send order"}
                     </Button>
                   )}
                 </div>
@@ -2934,6 +3049,7 @@ function CheckoutPage() {
           items={checkoutItems}
           merchantPubkey={selectedMerchant!}
           btcUsdRate={btcUsdRate}
+          availabilityByProductId={checkoutAvailability.availabilityByProductId}
         />
       </div>
 

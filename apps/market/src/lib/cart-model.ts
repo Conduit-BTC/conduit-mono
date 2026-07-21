@@ -4,6 +4,7 @@ import {
   resolveCartShippingCost,
   type ProductZapMessagePolicy,
   type PricingRateInput,
+  type Product,
 } from "@conduit/core"
 
 export type CartItem = {
@@ -42,6 +43,8 @@ export type CartItem = {
   publicZapEnabled?: boolean
   zapMessagePolicy?: ProductZapMessagePolicy
   publicZapPolicyKnown?: boolean
+  /** Last known GammaMarkets stock value. Zero means the item is sold out. */
+  stock?: number
   quantity: number
 }
 
@@ -76,6 +79,66 @@ export type CartPublicZapPolicy = {
   effectiveZapMessagePolicy: ProductZapMessagePolicy
   disabledProductIds: string[]
   missingPolicyProductIds: string[]
+}
+
+export type CartProductAvailability = {
+  productId: string
+  status: "available" | "sold_out" | "untracked"
+  stock?: number
+  refreshed: boolean
+}
+
+export function createCartItemFromProduct(
+  product: Product
+): Omit<CartItem, "quantity"> {
+  return {
+    productId: product.id,
+    merchantPubkey: product.pubkey,
+    title: product.title,
+    price: product.price,
+    currency: product.currency,
+    priceSats: product.priceSats,
+    sourcePrice: product.sourcePrice,
+    image: product.images[0]?.url,
+    tags: product.tags,
+    format: product.format,
+    shippingCostSats: product.shippingCostSats,
+    sourceShippingCost: product.sourceShippingCost,
+    shippingOptionId: product.shippingOptionId,
+    shippingOptionDTag: product.shippingOptionDTag,
+    shippingCountries: product.shippingCountries,
+    shippingCountryRules: product.shippingCountryRules,
+    publicZapEnabled: product.publicZapEnabled,
+    zapMessagePolicy: product.zapMessagePolicy,
+    publicZapPolicyKnown: product.publicZapPolicyKnown,
+    stock: product.stock,
+  }
+}
+
+export function getCartProductAvailability(
+  items: CartItem[],
+  refreshedProducts: Product[]
+): CartProductAvailability[] {
+  const productsById = new Map(
+    refreshedProducts.map((product) => [product.id, product])
+  )
+
+  return items.map((item) => {
+    const refreshedProduct = productsById.get(item.productId)
+    const stock = refreshedProduct ? refreshedProduct.stock : item.stock
+
+    return {
+      productId: item.productId,
+      status:
+        stock === 0
+          ? "sold_out"
+          : typeof stock === "number"
+            ? "available"
+            : "untracked",
+      stock,
+      refreshed: !!refreshedProduct,
+    }
+  })
 }
 
 const ZAP_MESSAGE_POLICY_RANK: Record<ProductZapMessagePolicy, number> = {
@@ -285,6 +348,8 @@ export function addCartItem(
   item: Omit<CartItem, "quantity">,
   quantity = 1
 ): CartItem[] {
+  if (item.stock === 0) return items
+
   const q = Math.max(1, Math.floor(quantity))
   const existing = items.find((current) => current.productId === item.productId)
   const merchantAddedAt =

@@ -62,6 +62,7 @@ import {
   getComparablePriceValue,
 } from "../../lib/pricing"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
+import { createCartItemFromProduct } from "../../lib/cart-model"
 import {
   filterProductsByFacets,
   getCategoryFacetOptions,
@@ -799,50 +800,10 @@ function StorefrontPage() {
                         ?.quantity ?? 0
                     }
                     onAddToCart={() =>
-                      cart.addItem({
-                        productId: product.id,
-                        merchantPubkey: product.pubkey,
-                        title: product.title,
-                        price: product.price,
-                        currency: product.currency,
-                        priceSats: product.priceSats,
-                        sourcePrice: product.sourcePrice,
-                        sourceShippingCost: product.sourceShippingCost,
-                        image: product.images[0]?.url,
-                        tags: product.tags,
-                        format: product.format,
-                        shippingCostSats: product.shippingCostSats,
-                        shippingOptionId: product.shippingOptionId,
-                        shippingOptionDTag: product.shippingOptionDTag,
-                        shippingCountries: product.shippingCountries,
-                        shippingCountryRules: product.shippingCountryRules,
-                        publicZapEnabled: product.publicZapEnabled,
-                        zapMessagePolicy: product.zapMessagePolicy,
-                        publicZapPolicyKnown: product.publicZapPolicyKnown,
-                      })
+                      cart.addItem(createCartItemFromProduct(product))
                     }
                     onIncrement={() =>
-                      cart.addItem({
-                        productId: product.id,
-                        merchantPubkey: product.pubkey,
-                        title: product.title,
-                        price: product.price,
-                        currency: product.currency,
-                        priceSats: product.priceSats,
-                        sourcePrice: product.sourcePrice,
-                        sourceShippingCost: product.sourceShippingCost,
-                        image: product.images[0]?.url,
-                        tags: product.tags,
-                        format: product.format,
-                        shippingCostSats: product.shippingCostSats,
-                        shippingOptionId: product.shippingOptionId,
-                        shippingOptionDTag: product.shippingOptionDTag,
-                        shippingCountries: product.shippingCountries,
-                        shippingCountryRules: product.shippingCountryRules,
-                        publicZapEnabled: product.publicZapEnabled,
-                        zapMessagePolicy: product.zapMessagePolicy,
-                        publicZapPolicyKnown: product.publicZapPolicyKnown,
-                      })
+                      cart.addItem(createCartItemFromProduct(product))
                     }
                     onDecrement={() => {
                       const existing = cart.items.find(

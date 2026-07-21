@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test"
 import {
   addCartItem,
   clearMerchantCart,
+  createCartItemFromProduct,
+  getCartProductAvailability,
   getCartCostSummary,
   getCartPublicZapPolicy,
   getCartTotals,
@@ -10,6 +12,7 @@ import {
   setCartItemQuantity,
   type CartItem,
 } from "../apps/market/src/lib/cart-model"
+import type { Product } from "@conduit/core"
 
 function item(overrides: Partial<CartItem> = {}): CartItem {
   return {
@@ -104,6 +107,101 @@ describe("cart model", () => {
         productId: "30402:merchant-a:product-a",
         title: "Notebook updated",
         quantity: 5,
+      },
+    ])
+  })
+
+  it("does not add a product whose stock snapshot is sold out", () => {
+    const items = addCartItem([], item({ stock: 0, quantity: 0 }), 1)
+
+    expect(items).toEqual([])
+  })
+
+  it("preserves product stock when creating a cart item snapshot", () => {
+    const product: Product = {
+      id: "30402:merchant-a:sold-out-tee",
+      pubkey: "merchant-a",
+      title: "Sold Out Tee",
+      price: 2_500,
+      currency: "SATS",
+      type: "simple",
+      format: "physical",
+      visibility: "public",
+      stock: 0,
+      images: [],
+      tags: ["apparel"],
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+
+    expect(createCartItemFromProduct(product)).toMatchObject({
+      productId: product.id,
+      merchantPubkey: product.pubkey,
+      title: product.title,
+      stock: 0,
+    })
+  })
+
+  it("flags an existing cart item when refreshed product stock reaches zero", () => {
+    const cartItems = [item({ stock: 4 })]
+    const refreshedProduct: Product = {
+      id: cartItems[0]!.productId,
+      pubkey: cartItems[0]!.merchantPubkey,
+      title: cartItems[0]!.title,
+      price: cartItems[0]!.price,
+      currency: cartItems[0]!.currency,
+      type: "simple",
+      format: "physical",
+      visibility: "public",
+      stock: 0,
+      images: [],
+      tags: [],
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+
+    expect(getCartProductAvailability(cartItems, [refreshedProduct])).toEqual([
+      {
+        productId: cartItems[0]!.productId,
+        status: "sold_out",
+        stock: 0,
+        refreshed: true,
+      },
+    ])
+  })
+
+  it("treats a refreshed listing without a stock tag as untracked", () => {
+    const cartItems = [item({ stock: 0 })]
+    const refreshedProduct: Product = {
+      id: cartItems[0]!.productId,
+      pubkey: cartItems[0]!.merchantPubkey,
+      title: cartItems[0]!.title,
+      price: cartItems[0]!.price,
+      currency: cartItems[0]!.currency,
+      type: "simple",
+      format: "physical",
+      visibility: "public",
+      images: [],
+      tags: [],
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+      createdAt: 1,
+      updatedAt: 3,
+    }
+
+    expect(getCartProductAvailability(cartItems, [refreshedProduct])).toEqual([
+      {
+        productId: cartItems[0]!.productId,
+        status: "untracked",
+        stock: undefined,
+        refreshed: true,
       },
     ])
   })
