@@ -52,6 +52,70 @@ async function seedCachedMerchantProduct(page: Page): Promise<void> {
   }, TEST_MERCHANT_PUBKEY)
 }
 
+async function seedCachedMerchantTagCatalog(page: Page): Promise<void> {
+  await page.evaluate((merchantPubkey) => {
+    return new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open("conduit")
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => {
+        const database = request.result
+        const transaction = database.transaction("products", "readwrite")
+        const timestamp = Date.now()
+        const products = [
+          {
+            dTag: "catalog-hardware-one",
+            title: "Catalog Hardware One",
+            tags: [" Hardware ", "HARDWARE", "relay"],
+          },
+          {
+            dTag: "catalog-hardware-two",
+            title: "Catalog Hardware Two",
+            tags: ["hardware", "handmade"],
+          },
+          {
+            dTag: "catalog-hardware-three",
+            title: "Catalog Hardware Three",
+            tags: ["hardware", "nostr"],
+          },
+        ]
+
+        for (const [index, product] of products.entries()) {
+          transaction.objectStore("products").put({
+            id: `30402:${merchantPubkey}:${product.dTag}`,
+            pubkey: merchantPubkey,
+            title: product.title,
+            summary: "Catalog tag suggestion fixture",
+            price: 1,
+            currency: "SATS",
+            priceSats: 1,
+            sourcePrice: {
+              amount: 1,
+              currency: "SATS",
+              normalizedCurrency: "SATS",
+            },
+            type: "simple",
+            format: "digital",
+            visibility: "public",
+            stock: 1,
+            images: [{ url: `https://example.com/catalog-${index}.png` }],
+            tags: product.tags,
+            publicZapEnabled: true,
+            zapMessagePolicy: "generic_only",
+            publicZapPolicyKnown: true,
+            createdAt: timestamp - index,
+            updatedAt: timestamp - index,
+            cachedAt: timestamp,
+          })
+        }
+
+        transaction.oncomplete = () => resolve()
+        transaction.onerror = () => reject(transaction.error)
+        transaction.onabort = () => reject(transaction.error)
+      }
+    })
+  }, TEST_MERCHANT_PUBKEY)
+}
+
 test("merchant shipping country combobox supports search and selection", async ({
   page,
 }) => {
@@ -96,6 +160,96 @@ test("merchant shipping country combobox supports search and selection", async (
     page.locator("span").filter({ hasText: /^Canada$/ })
   ).toBeVisible()
   await expect(countryPicker).toHaveValue("")
+})
+
+test("merchant product tags suggest the loaded catalog without blocking freeform entry", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    hasTouch: true,
+    viewport: { width: 375, height: 667 },
+  })
+  const page = await context.newPage()
+  await installTestSigner(page, TEST_MERCHANT_PUBKEY)
+  await page.goto(`${merchantUrl}/products`)
+  await expect(
+    page.getByRole("heading", { name: "Products", exact: true })
+  ).toBeVisible()
+
+  await seedCachedMerchantTagCatalog(page)
+  await page.reload()
+  await page.getByRole("button", { name: "Add product" }).first().click()
+
+  const title = page.locator("#product-title")
+  const tags = page.getByRole("combobox", { name: "Tags" })
+
+  await tags.fill("ha")
+  await expect(tags).toHaveAttribute("aria-expanded", "true")
+  await expect(
+    page.getByText("From your catalog", { exact: true })
+  ).toBeVisible()
+  await expect(page.getByRole("option").first()).toContainText(
+    "hardware3 listings"
+  )
+  const suggestionListId = await tags.getAttribute("aria-controls")
+  expect(suggestionListId).toBeTruthy()
+  await expect(page.locator(`[id="${suggestionListId}"]`)).toHaveAttribute(
+    "role",
+    "listbox"
+  )
+  const activeSuggestionId = await tags.getAttribute("aria-activedescendant")
+  expect(activeSuggestionId).toBeTruthy()
+  await expect(page.locator(`[id="${activeSuggestionId}"]`)).toHaveAttribute(
+    "aria-selected",
+    "true"
+  )
+
+  const popup = page.locator("[data-radix-popper-content-wrapper]:visible")
+  const popupBox = await popup.boundingBox()
+  if (!popupBox) throw new Error("Product tag suggestion popup was not visible")
+  expect(popupBox.x).toBeGreaterThanOrEqual(0)
+  expect(popupBox.x + popupBox.width).toBeLessThanOrEqual(375)
+
+  await tags.press("ArrowDown")
+  await tags.press("Enter")
+  await expect(
+    page.getByRole("button", { name: "Remove handmade tag" })
+  ).toBeVisible()
+  await expect(tags).toHaveValue("")
+
+  await tags.fill("hard")
+  await page.getByRole("option", { name: /hardware 3 listings/i }).tap()
+  await expect(
+    page.getByRole("button", { name: "Remove hardware tag" })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Remove hard tag" })
+  ).toHaveCount(0)
+
+  await tags.fill("hard")
+  await expect(tags).toHaveAttribute("aria-expanded", "false")
+  await tags.fill("custom tag")
+  await tags.press("Enter")
+  await expect(
+    page.getByRole("button", { name: "Remove custom tag tag" })
+  ).toBeVisible()
+
+  await tags.fill("rel")
+  await expect(tags).toHaveAttribute("aria-expanded", "true")
+  await tags.press("Escape")
+  await expect(tags).toHaveAttribute("aria-expanded", "false")
+  await expect(tags).toHaveValue("rel")
+  await tags.press("Enter")
+  await expect(
+    page.getByRole("button", { name: "Remove rel tag" })
+  ).toBeVisible()
+
+  await tags.fill("blur tag")
+  await title.focus()
+  await expect(
+    page.getByRole("button", { name: "Remove blur tag tag" })
+  ).toBeVisible()
+  await context.close()
 })
 
 test("merchant product drafts survive safe dialog dismissal", async ({

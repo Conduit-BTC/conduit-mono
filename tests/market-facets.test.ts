@@ -52,6 +52,32 @@ describe("Market facet helpers", () => {
     expect(filtered.map((item) => item.id)).toEqual(["a", "b", "c"])
   })
 
+  it("collapses mixed-case product tags into canonical facets", () => {
+    const mixedProducts = [
+      product("mixed", "merchant-a", [
+        " Bitcoin ",
+        "bitcoin",
+        "BITCOIN",
+        "Food",
+      ]),
+    ]
+
+    expect(
+      getCategoryFacetOptions(mixedProducts, {}).map((facet) => [
+        facet.value,
+        facet.count,
+      ])
+    ).toEqual([
+      ["bitcoin", 1],
+      ["food", 1],
+    ])
+    expect(
+      filterProductsByFacets(mixedProducts, { tags: [" BITCOIN "] }).map(
+        (item) => item.id
+      )
+    ).toEqual(["mixed"])
+  })
+
   it("sorts category counts by usage then label", () => {
     const facets = getCategoryFacetOptions(products, {})
 

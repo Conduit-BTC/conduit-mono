@@ -10,6 +10,7 @@ import {
   getMerchantDisplayName,
   getProfileNip05,
 } from "../../components/MerchantIdentity"
+import { ProfileBanner } from "../../components/ProfileBanner"
 import { RichProfileText } from "../../components/RichProfileText"
 import { resolveProfileReference } from "../../lib/profileRefs"
 import { fetchStoreProducts } from "../../lib/storeProducts"
@@ -64,57 +65,63 @@ function PublicProfilePage() {
         <span className="text-[var(--text-primary)]">Profile</span>
       </div>
 
-      <section className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] p-6 sm:p-7">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-          <div className="flex min-w-0 items-start gap-4">
-            <Avatar className="h-24 w-24 shrink-0 border border-[var(--border)] sm:h-28 sm:w-28">
-              <AvatarImage src={profile?.picture} alt={displayName} />
-              <AvatarFallback>
-                <MerchantAvatarFallback iconClassName="h-8 w-8 sm:h-10 sm:w-10" />
-              </AvatarFallback>
-            </Avatar>
+      <section className="overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)]">
+        <ProfileBanner src={profile?.banner} />
+        <div className="px-6 pb-6 sm:px-7 sm:pb-7">
+          <div className="relative -mt-10 flex flex-col gap-5 sm:-mt-14 lg:flex-row lg:items-start lg:justify-between">
+            <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-start">
+              <Avatar className="h-24 w-24 shrink-0 border-4 border-[var(--surface)] bg-[var(--surface)] sm:h-28 sm:w-28">
+                <AvatarImage src={profile?.picture} alt={displayName} />
+                <AvatarFallback>
+                  <MerchantAvatarFallback iconClassName="h-8 w-8 sm:h-10 sm:w-10" />
+                </AvatarFallback>
+              </Avatar>
 
-            <div className="min-w-0">
-              <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
-                Profile
-              </div>
-              <h1 className="mt-2 break-words text-3xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-[2.4rem]">
-                {displayName}
-              </h1>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                {profileNip05 ? (
+              <div className="min-w-0 sm:pt-16">
+                <div className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">
+                  Profile
+                </div>
+                <h1 className="mt-2 break-words text-3xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-[2.4rem]">
+                  {displayName}
+                </h1>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {profileNip05 ? (
+                    <Badge
+                      variant="outline"
+                      className="border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]"
+                    >
+                      <Nip05TrustIndicator
+                        pubkey={pubkey}
+                        nip05={profileNip05}
+                      />
+                    </Badge>
+                  ) : null}
                   <Badge
                     variant="outline"
                     className="border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]"
                   >
-                    <Nip05TrustIndicator pubkey={pubkey} nip05={profileNip05} />
+                    {formatNpub(pubkey, 8)}
                   </Badge>
-                ) : null}
-                <Badge
-                  variant="outline"
-                  className="border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]"
-                >
-                  {formatNpub(pubkey, 8)}
-                </Badge>
+                </div>
+                <RichProfileText
+                  text={
+                    profile?.about?.trim() ||
+                    "No public profile note has been added yet."
+                  }
+                  className="mt-4 max-w-3xl text-sm leading-7 text-[var(--text-secondary)]"
+                />
               </div>
-              <RichProfileText
-                text={
-                  profile?.about?.trim() ||
-                  "No public profile note has been added yet."
-                }
-                className="mt-4 max-w-3xl text-sm leading-7 text-[var(--text-secondary)]"
-              />
             </div>
-          </div>
 
-          {hasStorefront && (
-            <Button asChild className="h-11 px-4 text-sm">
-              <Link to="/store/$pubkey" params={{ pubkey: npub }}>
-                <Store className="h-4 w-4" />
-                View storefront
-              </Link>
-            </Button>
-          )}
+            {hasStorefront && (
+              <Button asChild className="h-11 px-4 text-sm lg:mt-16">
+                <Link to="/store/$pubkey" params={{ pubkey: npub }}>
+                  <Store className="h-4 w-4" />
+                  View storefront
+                </Link>
+              </Button>
+            )}
+          </div>
         </div>
       </section>
 
