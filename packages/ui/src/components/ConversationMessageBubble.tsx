@@ -1,4 +1,6 @@
+import { LoaderCircle, RefreshCw } from "lucide-react"
 import { cn } from "../utils"
+import type { OptimisticMessageDeliveryState } from "../hooks/useOptimisticConversationMessages"
 
 type LegacyOrderStatusMessage = {
   id: string
@@ -41,6 +43,8 @@ export interface ConversationMessageBubbleProps {
   mine: boolean
   timestampLabel?: string
   authorLabel?: string
+  deliveryState?: OptimisticMessageDeliveryState
+  onRetry?: () => void
   className?: string
 }
 
@@ -54,6 +58,8 @@ export function ConversationMessageBubble({
   mine,
   timestampLabel,
   authorLabel,
+  deliveryState = "published",
+  onRetry,
   className,
 }: ConversationMessageBubbleProps) {
   const displayContent = getConversationMessageDisplayContent(content)
@@ -67,11 +73,15 @@ export function ConversationMessageBubble({
       )}
     >
       <div
+        data-delivery-state={deliveryState}
+        aria-busy={deliveryState === "pending" || undefined}
         className={cn(
           "max-w-[80%] rounded-2xl px-3.5 py-2 text-sm break-words whitespace-pre-wrap",
           mine
             ? "rounded-br-sm bg-primary-500 text-white"
-            : "rounded-bl-sm border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]"
+            : "rounded-bl-sm border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)]",
+          deliveryState === "pending" && "opacity-80",
+          deliveryState === "failed" && "outline outline-1 outline-error/60"
         )}
       >
         {authorLabel && !mine ? (
@@ -80,14 +90,35 @@ export function ConversationMessageBubble({
           </span>
         ) : null}
         <span>{displayContent}</span>
-        {timestampLabel ? (
+        {timestampLabel || deliveryState !== "published" ? (
           <span
             className={cn(
-              "mt-1 block text-[10px]",
+              "mt-1 flex items-center justify-end gap-1.5 text-[10px]",
               mine ? "text-white/70" : "text-[var(--text-muted)]"
             )}
           >
-            {timestampLabel}
+            {timestampLabel ? <span>{timestampLabel}</span> : null}
+            {deliveryState === "pending" ? (
+              <span
+                role="status"
+                aria-label="Publishing message"
+                className="inline-flex items-center"
+              >
+                <LoaderCircle className="size-3 animate-spin motion-reduce:animate-none" />
+              </span>
+            ) : null}
+            {deliveryState === "failed" && onRetry ? (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="inline-flex items-center gap-1 font-medium text-white transition-opacity hover:opacity-80"
+                aria-label="Retry message"
+                title="Retry message"
+              >
+                <RefreshCw className="size-3" />
+                Retry
+              </button>
+            ) : null}
           </span>
         ) : null}
       </div>

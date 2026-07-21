@@ -45,6 +45,11 @@ export {
   type ConversationMessageBubbleProps,
 } from "./ConversationMessageBubble"
 export { MessageComposer, type MessageComposerProps } from "./MessageComposer"
+export { SearchInput, type SearchInputProps } from "./SearchInput"
+export {
+  ConversationCardScroller,
+  type ConversationCardScrollerProps,
+} from "./ConversationCardScroller"
 export {
   DecryptFailureNotice,
   type DecryptFailureNoticeProps,

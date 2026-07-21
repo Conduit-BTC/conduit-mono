@@ -4,16 +4,26 @@ import { useEffect, useMemo, useState } from "react"
 import {
   Badge,
   Button,
+  ConversationCardScroller,
   ConversationMessageBubble,
   DecryptFailureNotice,
   LegacyDirectMessageNotice,
   LiveReadNotice,
   MessagingReadinessNotice,
   MessageComposer,
+  matchesConversationSearch,
+  SearchInput,
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
   OrderConversationMessage,
   formatProductReference,
   getConversationPreview,
   getConversationMessageDisplayContent,
+  useOptimisticConversationMessages,
+  type OptimisticConversationMessage,
 } from "@conduit/ui"
 import { MessageCircleMore, Search, Store } from "lucide-react"
 import {
@@ -58,6 +68,12 @@ type MessagesSearch = {
   tab?: "dms" | "merchants"
   thread?: string
   merchant?: string
+}
+
+type OptimisticDirectMessageSend = {
+  message: OptimisticConversationMessage
+  counterpartyPubkey: string
+  rumor: NDKEvent
 }
 
 function prepareBuyerConversationRumor(
@@ -124,10 +140,10 @@ function MerchantThreadRow({
       onClick={onClick}
       data-thread-id={conversation.id}
       className={[
-        "w-full rounded-[1.05rem] border px-3 py-3 text-left transition-[border-color,background-color,box-shadow]",
+        "w-full rounded-[1.1rem] border px-3 py-3 text-left transition-[border-color,background-color]",
         active
-          ? "border-[var(--text-secondary)] bg-[var(--surface)]"
-          : "border-transparent hover:border-[var(--border)] hover:bg-[var(--surface-elevated)]",
+          ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)]"
+          : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--text-secondary)]",
       ].join(" ")}
     >
       <div className="flex items-start gap-3">
@@ -189,10 +205,10 @@ function DmThreadRow({
       onClick={onClick}
       data-dm-id={conversation.counterpartyPubkey}
       className={[
-        "w-full rounded-[1.05rem] border px-3 py-3 text-left transition-[border-color,background-color,box-shadow]",
+        "w-full rounded-[1.1rem] border px-3 py-3 text-left transition-[border-color,background-color]",
         active
-          ? "border-[var(--text-secondary)] bg-[var(--surface)]"
-          : "border-transparent hover:border-[var(--border)] hover:bg-[var(--surface-elevated)]",
+          ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)]"
+          : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--text-secondary)]",
       ].join(" ")}
     >
       <div className="flex items-start gap-3">
@@ -249,12 +265,26 @@ function MessagesPage() {
   const navigate = useNavigate({ from: Route.fullPath })
   const signerConnected = status === "connected" && !!pubkey
   const [query, setQuery] = useState("")
+  const [merchantSearchSheetOpen, setMerchantSearchSheetOpen] = useState(false)
   const [replyText, setReplyText] = useState("")
   const [dmText, setDmText] = useState("")
+  const [dmSearch, setDmSearch] = useState("")
+  const [dmSearchSheetOpen, setDmSearchSheetOpen] = useState(false)
   const [selectedDmPubkey, setSelectedDmPubkey] = useState<string | null>(null)
   const [selectedDmTransport, setSelectedDmTransport] = useState<
     "nip17" | "nip04"
   >("nip17")
+  const optimisticDmQueue = useOptimisticConversationMessages()
+  const optimisticDmMessages = optimisticDmQueue.messages
+  const clearOptimisticDmQueue = optimisticDmQueue.clear
+  const removeOptimisticDmMessage = optimisticDmQueue.remove
+
+  useEffect(() => {
+    clearOptimisticDmQueue()
+    setDmText("")
+    setSelectedDmPubkey(null)
+    setSelectedDmTransport("nip17")
+  }, [clearOptimisticDmQueue, pubkey])
 
   const activeTab = search.tab ?? "merchants"
 
@@ -475,6 +505,38 @@ function MessagesPage() {
     () => dmsLiveQuery.data?.data ?? dmsCacheQuery.data?.data ?? [],
     [dmsCacheQuery.data, dmsLiveQuery.data]
   )
+  const dmCounterpartyPubkeys = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          dmConversations
+            .map((conversation) => conversation.counterpartyPubkey)
+            .filter(Boolean)
+        )
+      ),
+    [dmConversations]
+  )
+  const dmProfilesQuery = useProfiles(dmCounterpartyPubkeys, {
+    enabled: signerConnected && dmCounterpartyPubkeys.length > 0,
+    priority: "background",
+    refetchUnresolvedMs: 12_000,
+    maxUnresolvedRefetches: 1,
+  })
+  const filteredDmConversations = useMemo(() => {
+    return dmConversations.filter((conversation) => {
+      const profile = dmProfilesQuery.data?.[conversation.counterpartyPubkey]
+      const name = getMerchantDisplayName(
+        profile,
+        conversation.counterpartyPubkey
+      )
+      return matchesConversationSearch(dmSearch, [
+        name,
+        conversation.counterpartyPubkey,
+        pubkeyToNpub(conversation.counterpartyPubkey),
+        getConversationMessageDisplayContent(conversation.preview),
+      ])
+    })
+  }, [dmConversations, dmProfilesQuery.data, dmSearch])
   const dmLiveMeta = dmsLiveQuery.data?.meta
   const dmDecryptFailures = dmLiveMeta?.decryptFailures?.length ?? 0
 
@@ -504,6 +566,31 @@ function MessagesPage() {
     ? getMerchantDisplayName(selectedDmProfile.data, selectedDmPubkey)
     : null
   const selectedDmMessages = selectedDm?.messages ?? []
+  const selectedOptimisticDmMessages = optimisticDmMessages.filter(
+    (message) =>
+      selectedDmTransport === "nip17" &&
+      message.conversationId === `nip17:${selectedDmPubkey}` &&
+      !selectedDmMessages.some(
+        (publishedMessage) => publishedMessage.id === message.eventId
+      )
+  )
+
+  useEffect(() => {
+    const publishedEventIds = new Set(
+      dmConversations.flatMap((conversation) =>
+        (conversation.messages ?? []).map((message) => message.id)
+      )
+    )
+    for (const message of optimisticDmMessages) {
+      if (
+        message.deliveryState === "published" &&
+        message.eventId &&
+        publishedEventIds.has(message.eventId)
+      ) {
+        removeOptimisticDmMessage(message.localId)
+      }
+    }
+  }, [dmConversations, optimisticDmMessages, removeOptimisticDmMessage])
 
   useEffect(() => {
     if (
@@ -549,37 +636,35 @@ function MessagesPage() {
   ])
 
   const sendDmMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async ({
+      message,
+      counterpartyPubkey,
+      rumor,
+    }: OptimisticDirectMessageSend) => {
       if (!messagingReady) throw new Error("Encrypted messaging is not enabled")
-      const counterparty = selectedDmPubkey
-      const text = dmText.trim()
-      if (!counterparty) throw new Error("No conversation selected")
-      if (!text) throw new Error("Message is required")
 
       const ndk = getNdk()
       if (!ndk.signer || !pubkey) throw new Error("Signer not connected")
 
-      const rumor = buildDirectMessageRumor({
-        senderPubkey: pubkey,
-        recipientPubkey: counterparty,
-        content: text,
-        appId: "market",
-      })
       const { selfCopyError } = await publishPrivateMessage({
         rumor,
         senderPubkey: pubkey,
-        recipientPubkey: counterparty,
+        recipientPubkey: counterpartyPubkey,
         signer: ndk.signer,
         rumorKind: EVENT_KINDS.DIRECT_MESSAGE,
       })
+      optimisticDmQueue.markPublished(message.localId)
       if (selfCopyError) {
         console.warn("DM self-copy publish failed", selfCopyError)
       }
-      await cacheParsedDirectMessage(parseDirectMessageRumor(rumor))
+      try {
+        await cacheParsedDirectMessage(parseDirectMessageRumor(rumor))
+      } catch {
+        console.warn("Failed to cache published direct message")
+      }
     },
     onSuccess: async () => {
-      setDmText("")
-      await Promise.all([
+      await Promise.allSettled([
         queryClient.invalidateQueries({
           queryKey: ["buyer-dms", pubkey ?? "none"],
         }),
@@ -588,7 +673,53 @@ function MessagesPage() {
         }),
       ])
     },
+    onError: (_error, { message }) => {
+      optimisticDmQueue.markFailed(message.localId)
+    },
   })
+
+  const sendDirectMessage = () => {
+    const content = dmText.trim()
+    if (!pubkey || !selectedDmPubkey || !content || !messagingReady) return
+
+    const createdAt = Date.now()
+    const rumor = buildDirectMessageRumor({
+      senderPubkey: pubkey,
+      recipientPubkey: selectedDmPubkey,
+      content,
+      appId: "market",
+      createdAt: Math.floor(createdAt / 1000),
+    })
+    const message = optimisticDmQueue.enqueue({
+      eventId: rumor.id,
+      conversationId: `nip17:${selectedDmPubkey}`,
+      content,
+      createdAt,
+    })
+    setDmText("")
+    sendDmMutation.mutate({
+      message,
+      counterpartyPubkey: selectedDmPubkey,
+      rumor,
+    })
+  }
+
+  const retryDirectMessage = (message: OptimisticConversationMessage) => {
+    if (!pubkey || !selectedDmPubkey || !messagingReady) return
+    const rumor = buildDirectMessageRumor({
+      senderPubkey: pubkey,
+      recipientPubkey: selectedDmPubkey,
+      content: message.content,
+      appId: "market",
+      createdAt: Math.floor(message.createdAt / 1000),
+    })
+    optimisticDmQueue.markPending(message.localId)
+    sendDmMutation.mutate({
+      message,
+      counterpartyPubkey: selectedDmPubkey,
+      rumor,
+    })
+  }
 
   return (
     <div className="space-y-6 xl:flex xl:h-[calc(100vh-8.5rem)] xl:flex-col xl:overflow-hidden">
@@ -763,11 +894,21 @@ function MessagesPage() {
                 </p>
               </section>
             ) : (
-              <div className="grid gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[340px_minmax(0,1fr)]">
-                <aside className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 xl:flex xl:min-h-0 xl:h-full xl:flex-col xl:overflow-hidden">
-                  <div className="mt-1 space-y-2 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
-                    {dmConversations.length > 0 ? (
-                      dmConversations.map((conversation) => (
+              <div className="grid min-w-0 max-w-full gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[340px_minmax(0,1fr)]">
+                <aside className="hidden min-w-0 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 xl:flex xl:min-h-0 xl:h-full xl:flex-col xl:overflow-hidden">
+                  <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)] xl:shrink-0">
+                    Conversations
+                  </div>
+                  <SearchInput
+                    aria-label="Search conversations"
+                    placeholder="Search conversations"
+                    value={dmSearch}
+                    onChange={(event) => setDmSearch(event.target.value)}
+                    containerClassName="mt-3 xl:shrink-0"
+                  />
+                  <div className="mt-4 space-y-2 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
+                    {filteredDmConversations.length > 0 ? (
+                      filteredDmConversations.map((conversation) => (
                         <DmThreadRow
                           key={conversation.id}
                           conversation={conversation}
@@ -784,13 +925,105 @@ function MessagesPage() {
                       ))
                     ) : (
                       <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
-                        No conversations yet.
+                        No conversations match your search.
                       </div>
                     )}
                   </div>
                 </aside>
 
-                <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] xl:flex xl:min-h-0 xl:h-full xl:flex-col xl:overflow-hidden">
+                <div className="min-w-0 max-w-full space-y-4 xl:hidden">
+                  <Sheet
+                    open={dmSearchSheetOpen}
+                    onOpenChange={setDmSearchSheetOpen}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+                        Conversations
+                      </div>
+                      <SheetTrigger asChild>
+                        <button
+                          type="button"
+                          className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
+                        >
+                          <Search className="h-4 w-4" />
+                          Search
+                        </button>
+                      </SheetTrigger>
+                    </div>
+                    <section className="min-w-0 max-w-full rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+                      {filteredDmConversations.length > 0 ? (
+                        <ConversationCardScroller>
+                          {filteredDmConversations.map((conversation) => (
+                            <div
+                              key={conversation.id}
+                              className="w-[18rem] shrink-0 snap-start [&>button]:h-full"
+                            >
+                              <DmThreadRow
+                                conversation={conversation}
+                                active={
+                                  conversation.counterpartyPubkey ===
+                                    selectedDmPubkey &&
+                                  conversation.transport === selectedDmTransport
+                                }
+                                onClick={() => {
+                                  setSelectedDmPubkey(
+                                    conversation.counterpartyPubkey
+                                  )
+                                  setSelectedDmTransport(conversation.transport)
+                                }}
+                              />
+                            </div>
+                          ))}
+                        </ConversationCardScroller>
+                      ) : (
+                        <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                          No conversations match your search.
+                        </div>
+                      )}
+                    </section>
+                    <SheetContent
+                      side="bottom"
+                      className="h-[100dvh] overflow-y-auto"
+                    >
+                      <SheetHeader>
+                        <SheetTitle>Your conversations</SheetTitle>
+                      </SheetHeader>
+                      <SearchInput
+                        aria-label="Search conversations"
+                        placeholder="Search conversations"
+                        value={dmSearch}
+                        onChange={(event) => setDmSearch(event.target.value)}
+                      />
+                      <div className="mt-4 space-y-2">
+                        {filteredDmConversations.length === 0 && (
+                          <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                            No conversations match your search.
+                          </div>
+                        )}
+                        {filteredDmConversations.map((conversation) => (
+                          <DmThreadRow
+                            key={conversation.id}
+                            conversation={conversation}
+                            active={
+                              conversation.counterpartyPubkey ===
+                                selectedDmPubkey &&
+                              conversation.transport === selectedDmTransport
+                            }
+                            onClick={() => {
+                              setSelectedDmPubkey(
+                                conversation.counterpartyPubkey
+                              )
+                              setSelectedDmTransport(conversation.transport)
+                              setDmSearchSheetOpen(false)
+                            }}
+                          />
+                        ))}
+                      </div>
+                    </SheetContent>
+                  </Sheet>
+                </div>
+
+                <section className="flex min-h-[36rem] min-w-0 flex-col overflow-hidden rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] xl:h-full xl:min-h-0">
                   {selectedDmPubkey ? (
                     <>
                       <div className="border-b border-[var(--border)] px-6 py-5">
@@ -831,18 +1064,37 @@ function MessagesPage() {
                         </div>
                       </div>
 
-                      <div className="space-y-3 overflow-auto px-6 py-5 xl:min-h-0 xl:flex-1">
-                        {selectedDmMessages.length > 0 ? (
-                          selectedDmMessages.map((message) => (
-                            <ConversationMessageBubble
-                              key={message.id}
-                              content={message.content}
-                              mine={message.senderPubkey === pubkey}
-                              timestampLabel={new Date(
-                                message.createdAt
-                              ).toLocaleString()}
-                            />
-                          ))
+                      <div className="min-h-0 flex-1 space-y-3 overflow-auto px-6 py-5">
+                        {selectedDmMessages.length > 0 ||
+                        selectedOptimisticDmMessages.length > 0 ? (
+                          <>
+                            {selectedDmMessages.map((message) => (
+                              <ConversationMessageBubble
+                                key={message.id}
+                                content={message.content}
+                                mine={message.senderPubkey === pubkey}
+                                timestampLabel={new Date(
+                                  message.createdAt
+                                ).toLocaleString()}
+                              />
+                            ))}
+                            {selectedOptimisticDmMessages.map((message) => (
+                              <ConversationMessageBubble
+                                key={message.localId}
+                                content={message.content}
+                                mine
+                                timestampLabel={new Date(
+                                  message.createdAt
+                                ).toLocaleString()}
+                                deliveryState={message.deliveryState}
+                                onRetry={
+                                  message.deliveryState === "failed"
+                                    ? () => retryDirectMessage(message)
+                                    : undefined
+                                }
+                              />
+                            ))}
+                          </>
                         ) : (
                           <div className="flex h-full min-h-[160px] items-center justify-center text-center text-sm text-[var(--text-secondary)]">
                             No messages yet. Say hello.
@@ -873,15 +1125,14 @@ function MessagesPage() {
                             <MessageComposer
                               value={dmText}
                               onChange={setDmText}
-                              onSend={() => sendDmMutation.mutate()}
+                              onSend={sendDirectMessage}
                               sending={sendDmMutation.isPending}
                               placeholder="Send a direct message"
                             />
                             {sendDmMutation.error && (
                               <div className="mt-2 text-xs text-error">
-                                {sendDmMutation.error instanceof Error
-                                  ? sendDmMutation.error.message
-                                  : "Failed to send message"}
+                                Message wasn't published. Retry from the message
+                                bubble.
                               </div>
                             )}
                           </>
@@ -997,17 +1248,18 @@ function MessagesPage() {
             )}
 
           {signerConnected && conversations.length > 0 && (
-            <div className="grid gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[340px_minmax(0,1fr)]">
-              <aside className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 xl:flex xl:min-h-0 xl:h-full xl:flex-col xl:overflow-hidden">
-                <div className="relative xl:shrink-0">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
-                  <input
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    placeholder="Search"
-                    className="h-11 w-full rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30"
-                  />
+            <div className="grid min-w-0 max-w-full gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[340px_minmax(0,1fr)]">
+              <aside className="hidden min-w-0 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 xl:flex xl:min-h-0 xl:h-full xl:flex-col xl:overflow-hidden">
+                <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)] xl:shrink-0">
+                  Conversations
                 </div>
+                <SearchInput
+                  aria-label="Search merchant conversations"
+                  placeholder="Search conversations"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  containerClassName="mt-3 xl:shrink-0"
+                />
                 <div className="mt-4 space-y-2 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
                   {filteredConversations.length > 0 ? (
                     filteredConversations.map((conversation) => (
@@ -1036,7 +1288,103 @@ function MessagesPage() {
                 </div>
               </aside>
 
-              <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] xl:flex xl:min-h-0 xl:h-full xl:flex-col xl:overflow-hidden">
+              <div className="min-w-0 max-w-full space-y-4 xl:hidden">
+                <Sheet
+                  open={merchantSearchSheetOpen}
+                  onOpenChange={setMerchantSearchSheetOpen}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)]">
+                      Conversations
+                    </div>
+                    <SheetTrigger asChild>
+                      <button
+                        type="button"
+                        className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
+                      >
+                        <Search className="h-4 w-4" />
+                        Search
+                      </button>
+                    </SheetTrigger>
+                  </div>
+                  <section className="min-w-0 max-w-full rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+                    {filteredConversations.length > 0 ? (
+                      <ConversationCardScroller>
+                        {filteredConversations.map((conversation) => (
+                          <div
+                            key={conversation.id}
+                            className="w-[18rem] shrink-0 snap-start [&>button]:h-full"
+                          >
+                            <MerchantThreadRow
+                              conversation={conversation}
+                              active={
+                                conversation.id === selectedConversation?.id
+                              }
+                              onClick={() =>
+                                navigate({
+                                  search: (prev) => ({
+                                    ...prev,
+                                    thread: conversation.id,
+                                  }),
+                                  replace: true,
+                                })
+                              }
+                            />
+                          </div>
+                        ))}
+                      </ConversationCardScroller>
+                    ) : (
+                      <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                        {search.merchant
+                          ? "No conversation with this merchant yet."
+                          : "No merchant threads match this search."}
+                      </div>
+                    )}
+                  </section>
+                  <SheetContent
+                    side="bottom"
+                    className="h-[100dvh] overflow-y-auto"
+                  >
+                    <SheetHeader>
+                      <SheetTitle>Your merchant conversations</SheetTitle>
+                    </SheetHeader>
+                    <SearchInput
+                      aria-label="Search merchant conversations"
+                      placeholder="Search conversations"
+                      value={query}
+                      onChange={(event) => setQuery(event.target.value)}
+                    />
+                    <div className="mt-4 space-y-2">
+                      {filteredConversations.length === 0 && (
+                        <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                          {search.merchant
+                            ? "No conversation with this merchant yet."
+                            : "No merchant threads match this search."}
+                        </div>
+                      )}
+                      {filteredConversations.map((conversation) => (
+                        <MerchantThreadRow
+                          key={conversation.id}
+                          conversation={conversation}
+                          active={conversation.id === selectedConversation?.id}
+                          onClick={() => {
+                            void navigate({
+                              search: (prev) => ({
+                                ...prev,
+                                thread: conversation.id,
+                              }),
+                              replace: true,
+                            })
+                            setMerchantSearchSheetOpen(false)
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </SheetContent>
+                </Sheet>
+              </div>
+
+              <section className="flex min-h-[36rem] min-w-0 flex-col overflow-hidden rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] xl:h-full xl:min-h-0">
                 {selectedConversation ? (
                   <>
                     <div className="border-b border-[var(--border)] px-6 py-5">
@@ -1095,7 +1443,7 @@ function MessagesPage() {
                       </div>
                     </div>
 
-                    <div className="space-y-3 overflow-auto px-6 py-5 xl:min-h-0 xl:flex-1">
+                    <div className="min-h-0 flex-1 space-y-3 overflow-auto px-6 py-5">
                       {(selectedConversation.messages ?? []).map((message) => (
                         <OrderConversationMessage
                           key={message.id}
