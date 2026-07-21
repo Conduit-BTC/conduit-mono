@@ -85,15 +85,14 @@ jobs:
           permission-secrets: write
 
       - name: Verify repository auth secret update access
-        if: env.AUTH_SECRET_NAME == 'CODEX_AUTH_JSON'
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
           set -euo pipefail
 
-          if ! gh api --silent "repos/${GITHUB_REPOSITORY}/actions/secrets/CODEX_AUTH_JSON"; then
-            echo "CODEX_AUTH_JSON must exist as a repository secret that the workflow GitHub App can update."
+          if ! gh api --silent "repos/${GITHUB_REPOSITORY}/actions/secrets/${AUTH_SECRET_NAME}"; then
+            echo "${AUTH_SECRET_NAME} must exist as a repository secret that the workflow GitHub App can update."
             exit 1
           fi
 
