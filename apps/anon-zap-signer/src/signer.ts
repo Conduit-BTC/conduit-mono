@@ -1,7 +1,9 @@
 import {
+  ANON_ZAP_PROVIDER_ATTESTATION_TAG,
   getAnonZapDraftTag,
   type AnonZapRequestDraft,
   validateAnonZapRequestDraft,
+  verifyAnonZapProviderAttestation,
 } from "@conduit/core/protocol/anon-zap"
 import {
   finalizeEvent,
@@ -14,12 +16,19 @@ export type AnonZapSignerEnv = {
   ANON_CONDUIT_SHOPPER_PRIVATE_KEY_HEX?: string
   ANON_CONDUIT_SHOPPER_PUBKEY?: string
   ANON_SIGNER_REQUEST_AUTH_SECRET?: string
+  ANON_ZAP_PROVIDER_ATTESTATION_PUBLIC_KEYS?: string
   ANON_SIGNER_ALLOWED_ORIGINS?: string
   ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS?: string
   ANON_SIGNER_PORT?: string
   ANON_CONDUIT_MARKET_NIP89_ADDRESS?: string
   ANON_CONDUIT_MARKET_NIP89_RELAY_HINT?: string
   ANON_SIGNER_RATE_LIMITER?: {
+    limit(input: { key: string }): Promise<{ success: boolean }>
+  }
+  ANON_AUTHORIZATION_RATE_LIMITER?: {
+    limit(input: { key: string }): Promise<{ success: boolean }>
+  }
+  ANON_AUTHORITY_RATE_LIMITER?: {
     limit(input: { key: string }): Promise<{ success: boolean }>
   }
 }
@@ -428,13 +437,90 @@ async function assertWorkerRateLimit(
       corsHeaders
     )
   }
-  const result = await env.ANON_SIGNER_RATE_LIMITER.limit({
-    key: `sign:${authorization.checkoutSessionId}`,
-  })
-  if (result.success) return null
-  const headers = new Headers(corsHeaders)
-  headers.set("retry-after", "60")
-  return errorResponse("Anon zap signing is rate limited.", 429, headers)
+  try {
+    const secret = env.ANON_SIGNER_REQUEST_AUTH_SECRET!.trim()
+    const keys = await Promise.all([
+      createRequestSignature(
+        secret,
+        "signer-session-rate-limit-v1",
+        authorization.checkoutSessionId
+      ),
+      createRequestSignature(
+        secret,
+        "signer-merchant-rate-limit-v1",
+        authorization.merchantPubkey
+      ),
+    ])
+    for (const key of keys) {
+      const result = await env.ANON_SIGNER_RATE_LIMITER.limit({ key })
+      if (!result.success) {
+        const headers = new Headers(corsHeaders)
+        headers.set("retry-after", "60")
+        return errorResponse("Anon zap signing is rate limited.", 429, headers)
+      }
+    }
+    return null
+  } catch {
+    return errorResponse(
+      "Anon signer rate limiter is unavailable.",
+      503,
+      corsHeaders
+    )
+  }
+}
+
+async function handleInternalRateLimitRequest(
+  bodyText: string,
+  env: AnonZapSignerEnv,
+  corsHeaders: HeadersInit
+): Promise<Response> {
+  const body = JSON.parse(bodyText) as unknown
+  if (
+    !isRecord(body) ||
+    (body.scope !== "authorization" && body.scope !== "authority") ||
+    !Array.isArray(body.keys) ||
+    body.keys.length === 0 ||
+    body.keys.length > 22
+  ) {
+    return errorResponse("Invalid rate-limit request.", 400, corsHeaders)
+  }
+  const keyPattern =
+    body.scope === "authorization"
+      ? /^authorization:(?:global|(?:source|merchant):[0-9a-f]{64})$/
+      : /^authority:(?:global|(?:source|source-recipient):[0-9a-f]{64})$/
+  if (
+    !body.keys.every((key) => typeof key === "string" && keyPattern.test(key))
+  ) {
+    return errorResponse("Invalid rate-limit request.", 400, corsHeaders)
+  }
+  const limiter =
+    body.scope === "authorization"
+      ? env.ANON_AUTHORIZATION_RATE_LIMITER
+      : env.ANON_AUTHORITY_RATE_LIMITER
+  if (!limiter) {
+    return errorResponse(
+      "Anon signer rate limiter is not configured.",
+      503,
+      corsHeaders
+    )
+  }
+  try {
+    for (const key of body.keys) {
+      const result = await limiter.limit({ key })
+      if (!result.success) {
+        const headers = new Headers(corsHeaders)
+        headers.set("retry-after", "60")
+        return errorResponse("Anon zap request is rate limited.", 429, headers)
+      }
+    }
+    return new Response(null, { status: 204, headers: corsHeaders })
+  } catch {
+    return errorResponse(
+      "Anon signer rate limiter is unavailable.",
+      503,
+      corsHeaders
+    )
+  }
 }
 
 export function getAnonZapSignerDevPort(env: AnonZapSignerEnv): number {
@@ -451,6 +537,19 @@ export async function signAnonZapRequestDraft(
     allowedClientTags: getAllowedClientTags(env),
   })
   if (!validation.ok) throw new Error(validation.reason)
+  if (getAnonZapDraftTag(draft, "omf")) {
+    if (!getAnonZapDraftTag(draft, ANON_ZAP_PROVIDER_ATTESTATION_TAG)) {
+      throw new Error("Zap request provider attestation is missing.")
+    }
+    if (
+      verifyAnonZapProviderAttestation(
+        draft,
+        env.ANON_ZAP_PROVIDER_ATTESTATION_PUBLIC_KEYS
+      ) !== "verified"
+    ) {
+      throw new Error("Zap request provider attestation is invalid.")
+    }
+  }
   assertFreshDraft(draft, env, options.nowSeconds)
 
   const secretBytes = normalizePrivateKeyBytes(
@@ -504,6 +603,9 @@ export async function handleAnonZapSignerRequest(
   try {
     const bodyText = await readRequestText(request)
     await assertAuthenticatedRequest(request, bodyText, env)
+    if (new URL(request.url).pathname === "/internal/rate-limit") {
+      return handleInternalRateLimitRequest(bodyText, env, corsHeaders)
+    }
     const body = JSON.parse(bodyText)
     if (!isRecord(body)) {
       return errorResponse("Invalid request body.", 400, corsHeaders)

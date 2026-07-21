@@ -9,6 +9,7 @@ import {
   db,
   type CachedOrderMessage,
   type CachedProduct,
+  type CachedProductTombstone,
   type CachedProfile,
 } from "../db"
 import { config } from "../config"
@@ -33,6 +34,10 @@ import {
   parseProductEvent,
 } from "./products"
 import { parseProfileEvent } from "./profiles"
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 import {
   getCommerceReadRelayUrls,
   getGeneralReadRelayUrls,
@@ -217,6 +222,11 @@ type CommerceTestOverrides = {
     authorPubkeys?: readonly string[]
   ) => Promise<CachedProduct[]>
   putCachedProducts?: (rows: CachedProduct[]) => Promise<void>
+  getCachedProductTombstones?: (
+    merchantPubkey?: string,
+    authorPubkeys?: readonly string[]
+  ) => Promise<CachedProductTombstone[]>
+  putCachedProductTombstones?: (rows: CachedProductTombstone[]) => Promise<void>
   getCachedProfiles?: (
     pubkeys: string[]
   ) => Promise<Array<CachedProfile | undefined>>
@@ -661,6 +671,8 @@ function toCachedProduct(record: CommerceProductRecord) {
     zapMessagePolicy: product.zapMessagePolicy,
     publicZapPolicyKnown: product.publicZapPolicyKnown,
     location: product.location,
+    eventId: record.eventId,
+    eventCreatedAt: record.eventCreatedAt,
     createdAt: product.createdAt,
     updatedAt: product.updatedAt,
     sourceRelayUrls: record.sourceRelayUrls,
@@ -713,10 +725,10 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     : null
   return withListingSafety({
     product,
-    eventId: product.id,
+    eventId: row.eventId ?? product.id,
     addressId: product.id,
     dTag,
-    eventCreatedAt: Math.floor(product.createdAt / 1000),
+    eventCreatedAt: row.eventCreatedAt ?? Math.floor(product.createdAt / 1000),
     sourceRelayUrls: row.sourceRelayUrls,
   })
 }
@@ -765,15 +777,320 @@ async function loadCachedProducts(
   return await db.products.toArray()
 }
 
+function cachedProductEventCreatedAt(row: CachedProduct): number {
+  return (
+    row.eventCreatedAt ??
+    Math.floor((row.updatedAt ?? row.createdAt ?? 0) / 1000)
+  )
+}
+
+function shouldReplaceCachedProduct(
+  existing: CachedProduct,
+  candidate: CachedProduct
+): boolean {
+  const existingCreatedAt = cachedProductEventCreatedAt(existing)
+  const candidateCreatedAt = cachedProductEventCreatedAt(candidate)
+  if (candidateCreatedAt !== existingCreatedAt) {
+    return candidateCreatedAt > existingCreatedAt
+  }
+
+  if (candidate.eventId && existing.eventId) {
+    return candidate.eventId <= existing.eventId
+  }
+  if (candidate.eventId) return true
+  if (existing.eventId) return false
+  return candidate.cachedAt >= existing.cachedAt
+}
+
+function selectCachedProductUpdates(
+  rows: CachedProduct[],
+  existingRows: CachedProduct[]
+): CachedProduct[] {
+  const ids = Array.from(new Set(rows.map((row) => row.id)))
+  const selected = new Map(
+    existingRows
+      .filter((row) => ids.includes(row.id))
+      .map((row) => [row.id, row])
+  )
+  const changed = new Map<string, CachedProduct>()
+
+  for (const row of rows) {
+    const existing = selected.get(row.id)
+    if (!existing || shouldReplaceCachedProduct(existing, row)) {
+      selected.set(row.id, row)
+      changed.set(row.id, row)
+    }
+  }
+
+  return Array.from(changed.values())
+}
+
 async function storeCachedProducts(rows: CachedProduct[]): Promise<void> {
   if (rows.length === 0) return
 
   if (testOverrides.putCachedProducts) {
-    await testOverrides.putCachedProducts(rows)
+    const existingRows = testOverrides.getCachedProducts
+      ? await testOverrides.getCachedProducts()
+      : []
+    const rowsToStore = selectCachedProductUpdates(rows, existingRows)
+    if (rowsToStore.length === 0) return
+    await testOverrides.putCachedProducts(rowsToStore)
     return
   }
 
-  await db.products.bulkPut(rows)
+  const ids = Array.from(new Set(rows.map((row) => row.id)))
+  await db.transaction("rw", db.products, async () => {
+    const existingRows = (await db.products.bulkGet(ids)).filter(
+      (row): row is CachedProduct => row !== undefined
+    )
+    const rowsToStore = selectCachedProductUpdates(rows, existingRows)
+    if (rowsToStore.length > 0) {
+      await db.products.bulkPut(rowsToStore)
+    }
+  })
+}
+
+function productTombstoneIdForAddress(addressId: string): string {
+  return `a:${addressId}`
+}
+
+function productTombstoneIdForEvent(pubkey: string, eventId: string): string {
+  return `e:${pubkey}:${eventId}`
+}
+
+function productDeletionEventKey(pubkey: string, eventId: string): string {
+  return `${pubkey}:${eventId}`
+}
+
+function parseProductAddressTag(
+  value: string,
+  authorPubkey: string
+): { addressId: string; pubkey: string } | null {
+  const [kind, pubkey, ...dParts] = value.split(":")
+  const dTag = dParts.join(":")
+  if (kind !== String(EVENT_KINDS.PRODUCT) || !pubkey || !dTag) return null
+  if (pubkey !== authorPubkey) return null
+  return {
+    addressId: `${EVENT_KINDS.PRODUCT}:${pubkey}:${dTag}`,
+    pubkey,
+  }
+}
+
+function tombstonesFromDeletionEvent(
+  event: NDKEvent
+): CachedProductTombstone[] {
+  if (!event.pubkey) throw new Error("Deletion event pubkey is required")
+  if (!event.id) throw new Error("Deletion event id is required")
+
+  const deletedAt = toEventCreatedAtSeconds(event)
+  const rows = new Map<string, CachedProductTombstone>()
+  const cachedAt = now()
+
+  for (const tag of event.tags ?? []) {
+    const [tagName, tagValue] = tag
+    if (!tagValue) continue
+
+    if (tagName === "a") {
+      const address = parseProductAddressTag(tagValue, event.pubkey)
+      if (!address) continue
+      rows.set(productTombstoneIdForAddress(address.addressId), {
+        id: productTombstoneIdForAddress(address.addressId),
+        pubkey: address.pubkey,
+        addressId: address.addressId,
+        deletedAt,
+        deletionEventId: event.id,
+        cachedAt,
+      })
+    }
+
+    if (tagName === "e") {
+      rows.set(productTombstoneIdForEvent(event.pubkey, tagValue), {
+        id: productTombstoneIdForEvent(event.pubkey, tagValue),
+        pubkey: event.pubkey,
+        eventId: tagValue,
+        deletedAt,
+        deletionEventId: event.id,
+        cachedAt,
+      })
+    }
+  }
+
+  return Array.from(rows.values())
+}
+
+async function loadCachedProductTombstones(
+  merchantPubkey?: string,
+  authorPubkeys?: readonly string[]
+): Promise<CachedProductTombstone[]> {
+  if (testOverrides.getCachedProductTombstones) {
+    return await testOverrides.getCachedProductTombstones(
+      merchantPubkey,
+      authorPubkeys
+    )
+  }
+
+  if (merchantPubkey) {
+    return await db.productTombstones
+      .where("pubkey")
+      .equals(merchantPubkey)
+      .toArray()
+  }
+
+  if (authorPubkeys && authorPubkeys.length > 0) {
+    return await db.productTombstones
+      .where("pubkey")
+      .anyOf(authorPubkeys as string[])
+      .toArray()
+  }
+
+  return await db.productTombstones.toArray()
+}
+
+function selectCachedProductTombstoneUpdates(
+  rows: CachedProductTombstone[],
+  existingRows: CachedProductTombstone[]
+): CachedProductTombstone[] {
+  const ids = Array.from(new Set(rows.map((row) => row.id)))
+  const selected = new Map(
+    existingRows
+      .filter((row) => ids.includes(row.id))
+      .map((row) => [row.id, row])
+  )
+  const changed = new Map<string, CachedProductTombstone>()
+
+  for (const row of rows) {
+    const existing = selected.get(row.id)
+    if (!existing || row.deletedAt >= existing.deletedAt) {
+      selected.set(row.id, row)
+      changed.set(row.id, row)
+    }
+  }
+
+  return Array.from(changed.values())
+}
+
+async function storeCachedProductTombstones(
+  rows: CachedProductTombstone[]
+): Promise<void> {
+  if (rows.length === 0) return
+
+  if (testOverrides.putCachedProductTombstones) {
+    const existingRows = testOverrides.getCachedProductTombstones
+      ? await testOverrides.getCachedProductTombstones()
+      : []
+    const rowsToStore = selectCachedProductTombstoneUpdates(rows, existingRows)
+    if (rowsToStore.length === 0) return
+    await testOverrides.putCachedProductTombstones(rowsToStore)
+    return
+  }
+
+  const ids = Array.from(new Set(rows.map((row) => row.id)))
+  await db.transaction("rw", db.productTombstones, async () => {
+    const existingRows = (await db.productTombstones.bulkGet(ids)).filter(
+      (row): row is CachedProductTombstone => row !== undefined
+    )
+    const rowsToStore = selectCachedProductTombstoneUpdates(rows, existingRows)
+    if (rowsToStore.length > 0) {
+      await db.productTombstones.bulkPut(rowsToStore)
+    }
+  })
+}
+
+function deletionTimestampsFromTombstones(
+  tombstones: readonly CachedProductTombstone[]
+): DeletionTimestamps {
+  const byEventId = new Map<string, number>()
+  const byAddressId = new Map<string, number>()
+
+  for (const tombstone of tombstones) {
+    if (tombstone.eventId) {
+      setLatestTimestamp(
+        byEventId,
+        productDeletionEventKey(tombstone.pubkey, tombstone.eventId),
+        tombstone.deletedAt
+      )
+    }
+    if (tombstone.addressId) {
+      setLatestTimestamp(byAddressId, tombstone.addressId, tombstone.deletedAt)
+    }
+  }
+
+  return { byEventId, byAddressId }
+}
+
+function mergeDeletionTimestamps(
+  ...inputs: readonly DeletionTimestamps[]
+): DeletionTimestamps {
+  const byEventId = new Map<string, number>()
+  const byAddressId = new Map<string, number>()
+
+  for (const input of inputs) {
+    for (const [eventId, deletedAt] of input.byEventId) {
+      setLatestTimestamp(byEventId, eventId, deletedAt)
+    }
+    for (const [addressId, deletedAt] of input.byAddressId) {
+      setLatestTimestamp(byAddressId, addressId, deletedAt)
+    }
+  }
+
+  return { byEventId, byAddressId }
+}
+
+async function getLocalProductDeletionTimestamps(
+  merchantPubkey?: string,
+  authorPubkeys?: readonly string[]
+): Promise<DeletionTimestamps> {
+  return deletionTimestampsFromTombstones(
+    await loadCachedProductTombstones(merchantPubkey, authorPubkeys)
+  )
+}
+
+function filterDeletedProductRecords(
+  records: CommerceProductRecord[],
+  deletionTimestamps: DeletionTimestamps
+): CommerceProductRecord[] {
+  return records.filter(
+    (record) => !isRecordDeletedByNip09(record, deletionTimestamps)
+  )
+}
+
+export async function cacheSignedProductListingEvent(
+  event: NDKEvent
+): Promise<CommerceProductRecord> {
+  if (
+    event.kind !== EVENT_KINDS.PRODUCT ||
+    !event.id ||
+    !event.sig ||
+    !isValidSignedPublicNostrEvent(event.rawEvent() as SignedPublicNostrEvent)
+  ) {
+    throw new Error("Expected a valid signed product listing event")
+  }
+
+  const [record] = dedupeProductEvents([event])
+  if (!record) throw new Error("Could not parse signed product listing event")
+
+  await cacheProductRecords([record])
+  return record
+}
+
+export async function cacheSignedProductDeletionEvent(
+  event: NDKEvent
+): Promise<CachedProductTombstone[]> {
+  if (
+    event.kind !== EVENT_KINDS.DELETION ||
+    !event.id ||
+    !event.sig ||
+    !isValidSignedPublicNostrEvent(event.rawEvent() as SignedPublicNostrEvent)
+  ) {
+    throw new Error("Expected a valid signed product deletion event")
+  }
+
+  const tombstones = tombstonesFromDeletionEvent(event)
+  if (tombstones.length === 0) {
+    throw new Error("Deletion event does not contain a valid product target")
+  }
+  await storeCachedProductTombstones(tombstones)
+  return tombstones
 }
 
 async function getCachedProductRecords(
@@ -782,12 +1099,19 @@ async function getCachedProductRecords(
   authorPubkeys?: readonly string[]
 ): Promise<CommerceProductRecord[]> {
   const rows = await loadCachedProducts(merchantPubkey, authorPubkeys)
+  const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
+    merchantPubkey,
+    authorPubkeys
+  )
   return rows
     .filter(
       (row) =>
         options.includeStale || now() - row.cachedAt < PRODUCT_CACHE_TTL_MS
     )
     .map(fromCachedProduct)
+    .filter(
+      (record) => !isRecordDeletedByNip09(record, localDeletionTimestamps)
+    )
     .filter(
       (record) =>
         options.includeMarketHidden || isMarketRenderableRecord(record)
@@ -1085,8 +1409,19 @@ async function fetchDeletionTimestamps(
       const tagName = tag[0]
       const tagValue = tag[1]
       if (!tagValue) continue
-      if (tagName === "e") setLatestTimestamp(byEventId, tagValue, deletedAt)
-      if (tagName === "a") setLatestTimestamp(byAddressId, tagValue, deletedAt)
+      if (tagName === "e") {
+        setLatestTimestamp(
+          byEventId,
+          productDeletionEventKey(deletion.pubkey, tagValue),
+          deletedAt
+        )
+      }
+      if (tagName === "a") {
+        const address = parseProductAddressTag(tagValue, deletion.pubkey)
+        if (address) {
+          setLatestTimestamp(byAddressId, address.addressId, deletedAt)
+        }
+      }
     }
   }
 
@@ -1094,13 +1429,16 @@ async function fetchDeletionTimestamps(
 }
 
 function isDeletedByNip09(
-  event: Pick<NDKEvent, "id" | "created_at">,
+  event: Pick<NDKEvent, "id" | "pubkey" | "created_at">,
   addressId: string,
   deletionTimestamps: DeletionTimestamps
 ): boolean {
   const createdAt = toEventCreatedAtSeconds(event)
   if (event.id) {
-    const deletedAt = deletionTimestamps.byEventId.get(event.id) ?? -1
+    const deletedAt =
+      deletionTimestamps.byEventId.get(
+        productDeletionEventKey(event.pubkey, event.id)
+      ) ?? -1
     if (deletedAt >= createdAt) return true
   }
 
@@ -1166,7 +1504,7 @@ function dedupeProductEvents(
       }
 
       const existing = byAddress.get(addressId)
-      if (!existing || candidate.eventCreatedAt >= existing.eventCreatedAt) {
+      if (!existing || shouldReplaceProductRecord(existing, candidate)) {
         byAddress.set(addressId, candidate)
       }
     } catch {
@@ -1181,12 +1519,30 @@ function isRecordDeletedByNip09(
   record: CommerceProductRecord,
   deletionTimestamps: DeletionTimestamps
 ): boolean {
-  const deletedByEvent = deletionTimestamps.byEventId.get(record.eventId) ?? -1
+  const deletedByEvent =
+    deletionTimestamps.byEventId.get(
+      productDeletionEventKey(record.product.pubkey, record.eventId)
+    ) ?? -1
   if (deletedByEvent >= record.eventCreatedAt) return true
 
   const deletedByAddress =
     deletionTimestamps.byAddressId.get(record.addressId) ?? -1
   return deletedByAddress >= record.eventCreatedAt
+}
+
+function shouldReplaceProductRecord(
+  existing: CommerceProductRecord,
+  candidate: CommerceProductRecord
+): boolean {
+  if (candidate.eventCreatedAt !== existing.eventCreatedAt) {
+    return candidate.eventCreatedAt > existing.eventCreatedAt
+  }
+  const existingHasSourceEventId = existing.eventId !== existing.addressId
+  const candidateHasSourceEventId = candidate.eventId !== candidate.addressId
+  if (candidateHasSourceEventId !== existingHasSourceEventId) {
+    return candidateHasSourceEventId
+  }
+  return candidate.eventId <= existing.eventId
 }
 
 function mergeCachedAndLiveProductRecords(input: {
@@ -1202,7 +1558,10 @@ function mergeCachedAndLiveProductRecords(input: {
   }
 
   for (const record of input.live) {
-    byAddress.set(record.addressId, record)
+    const existing = byAddress.get(record.addressId)
+    if (!existing || shouldReplaceProductRecord(existing, record)) {
+      byAddress.set(record.addressId, record)
+    }
   }
 
   return Array.from(byAddress.values())
@@ -1401,7 +1760,7 @@ export async function getMarketplaceProducts(
     const authorPubkeys = query.merchantPubkey
       ? [query.merchantPubkey]
       : query.authorPubkeys
-    const records = await fetchPublicProductRecords({
+    const fetchedRecords = await fetchPublicProductRecords({
       authors:
         authorPubkeys && authorPubkeys.length > 0
           ? uniqueStrings(authorPubkeys)
@@ -1410,6 +1769,14 @@ export async function getMarketplaceProducts(
       limit: query.limit,
       readPolicy: query.readPolicy,
     })
+    const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
+      query.merchantPubkey,
+      query.authorPubkeys
+    )
+    const records = filterDeletedProductRecords(
+      fetchedRecords,
+      localDeletionTimestamps
+    )
     await cacheProductRecords(records)
 
     const filtered = applyProductLimit(
@@ -1481,20 +1848,30 @@ export async function getMarketplaceProductsProgressive(
     ? [query.merchantPubkey]
     : query.authorPubkeys
   const limit = query.limit
-  const toResult = (records: CommerceProductRecord[]) => ({
-    data: applyProductLimit(
-      sortProducts(
-        filterProductRecordsForRead(records).filter((record) =>
-          productMatchesQuery(record, query)
+  const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
+    query.merchantPubkey,
+    query.authorPubkeys
+  )
+  const toResult = (records: CommerceProductRecord[]) => {
+    const filteredRecords = filterDeletedProductRecords(
+      records,
+      localDeletionTimestamps
+    )
+    return {
+      data: applyProductLimit(
+        sortProducts(
+          filterProductRecordsForRead(filteredRecords).filter((record) =>
+            productMatchesQuery(record, query)
+          ),
+          query.sort
         ),
-        query.sort
+        limit
       ),
-      limit
-    ),
-    meta: createMeta("marketplace_products", "public", PRODUCT_CAPABILITIES),
-  })
+      meta: createMeta("marketplace_products", "public", PRODUCT_CAPABILITIES),
+    }
+  }
 
-  const records = await fetchPublicProductRecordsProgressive(
+  const fetchedRecords = await fetchPublicProductRecordsProgressive(
     {
       authors:
         authorPubkeys && authorPubkeys.length > 0
@@ -1509,6 +1886,10 @@ export async function getMarketplaceProductsProgressive(
     }
   )
 
+  const records = filterDeletedProductRecords(
+    fetchedRecords,
+    localDeletionTimestamps
+  )
   const result = toResult(records)
   await cacheProductRecords(records)
   return result
@@ -1590,7 +1971,7 @@ export async function getMerchantStorefront(
       fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 10_000,
     })
 
-    const deletionTimestamps = await fetchDeletionTimestamps(
+    const relayDeletionTimestamps = await fetchDeletionTimestamps(
       query.merchantPubkey,
       rawEvents.map((event) => event.id).filter(Boolean) as string[],
       uniqueStrings([
@@ -1602,6 +1983,13 @@ export async function getMerchantStorefront(
         fallbackWhenEmpty: query.deletionFallbackWhenEmpty,
         authenticatedPubkey: query.authenticatedPubkey,
       }
+    )
+    const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
+      query.merchantPubkey
+    )
+    const deletionTimestamps = mergeDeletionTimestamps(
+      relayDeletionTimestamps,
+      localDeletionTimestamps
     )
 
     const liveRecords = dedupeProductEvents(rawEvents, deletionTimestamps)
@@ -1768,8 +2156,15 @@ export async function getProductDetail(
         limit: 10,
       })
       await cacheProductRecords(direct)
+      const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
+        address.pubkey
+      )
+      const visibleDirect = filterDeletedProductRecords(
+        direct,
+        localDeletionTimestamps
+      )
       const record =
-        filterProductRecordsForRead(direct, {
+        filterProductRecordsForRead(visibleDirect, {
           includeMarketHidden: query.includeMarketHidden,
         }).find((item) => item.addressId === addressId) ?? null
       if (record) {
@@ -1797,8 +2192,16 @@ export async function getProductDetail(
         limit: 1,
       })
       await cacheProductRecords(records)
+      const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
+        undefined,
+        uniqueStrings(records.map((record) => record.product.pubkey))
+      )
+      const visibleRecords = filterDeletedProductRecords(
+        records,
+        localDeletionTimestamps
+      )
       const record =
-        filterProductRecordsForRead(records, {
+        filterProductRecordsForRead(visibleRecords, {
           includeMarketHidden: query.includeMarketHidden,
         })[0] ?? null
       return {

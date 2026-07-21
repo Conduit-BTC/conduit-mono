@@ -46,8 +46,12 @@ Repository helpers: `createOrderLifecycle`, `getOrderLifecycle`,
 
 ## State flow
 
-1. Checkout publishes the order, then `createOrderLifecycle(...)` with
-   `orderDeliveryStatus: "sent"`, and navigates to `/orders?order=<orderId>`.
+1. Every checkout mode publishes the encrypted order first, then calls
+   `createOrderLifecycle(...)` with `orderDeliveryStatus: "sent"` and navigates
+   to `/orders?order=<orderId>`. Anonymous public-zap preparation begins only
+   after that durable checkpoint. Signer, authorization, pricing-attestation,
+   or public-invoice failure can suppress the public receipt but cannot prevent
+   order delivery or an ordinary private invoice.
 2. Fast-zap hands payment to a route-independent service
    (`order-payment-service`) that, outside React, requests the invoice, pays via
    NWC/WebLN, publishes the proof, and writes each transition to the lifecycle
@@ -199,6 +203,29 @@ protocol non-goals (`docs/specs/protocol.md`). Therefore:
 
 - Payment/order retries reuse the original `orderId`; the payment service never
   republishes the order, so a retry cannot create a duplicate merchant order.
+  Anonymous payment retry must also exact-match the stored signed fulfillment
+  snapshot, including format, shipping option identity/cost, and country/postal
+  rules. A changed or missing rule snapshot stops before signing or payment.
+- Anonymous authorization, signing, public-invoice issuance, or invoice-binding
+  failure before payment automatically transitions the same delivered order to
+  a private invoice. The lifecycle clears public-receipt context and records
+  `publicZapFallback: true`; it never claims a public zap occurred.
+- Anonymous payment retries require the newly authorized item prices,
+  quantities, fulfillment formats, shipping allocations, and shipping option
+  identities to match the delivered lifecycle snapshot; aggregate-total
+  equality alone is insufficient.
+- Before signer, LNURL, or wallet work, the payment service atomically claims
+  the durable lifecycle record and exact-matches buyer, merchant, Lightning
+  destination, public/private mode, public content, totals, and item quantities.
+  The durable delivered-order snapshot is authoritative; caller disagreement
+  performs no external work.
+- The durable claim rejects `paying`, `paid`, `manual_required`, and `ambiguous`
+  payment states. The in-memory lock is only a same-tab optimization; the
+  IndexedDB transaction is the cross-tab double-payment guard.
+- No automatic fallback is allowed after an invoice reaches a payment rail.
+  Ambiguous payment state retains the original invoice and requires the buyer
+  to check that payment before any retry. The explicit private transition is
+  retained only to recover legacy already-failed anonymous lifecycle records.
 - "Try payment again" is offered only when funds did not move
   (`paymentStatus: "failed"`).
 - "Resend receipt" is offered only after payment moved and proof delivery is

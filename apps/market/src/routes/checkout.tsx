@@ -109,6 +109,7 @@ import {
   getCheckoutShippingCost,
   getCheckoutZapVisibility,
   isCheckoutPublicZapMode,
+  isPublicZapContentEditable,
   type CheckoutZapMode,
 } from "../lib/checkout-payment"
 import { isAnonZapSignerConfigured } from "../lib/anon-zap-signer"
@@ -702,18 +703,6 @@ function CheckoutPage() {
       : publicZapPolicy.missingPolicyProductIds.length > 0
         ? "At least one product is missing public zap policy metadata, so checkout will use a private invoice."
         : null
-  const zapContentEditable =
-    publicZapPolicy.effectiveZapMessagePolicy === "custom"
-  const publicZapModeDescription = publicZapPolicyMessage
-    ? publicZapPolicyMessage
-    : !lnurlAllowsNostr
-      ? "This merchant wallet does not advertise public zap receipts."
-      : zapContentEditable
-        ? "Include an editable public zap comment."
-        : "Use the merchant's generic public zap comment."
-  const anonZapModeDescription = !anonZapSignerAvailable
-    ? "Anon Conduit Shopper signing is not configured yet."
-    : publicZapModeDescription
   const guestZapMode: CheckoutZapMode =
     anonZapSignerAvailable &&
     lnurlAllowsNostr &&
@@ -721,7 +710,24 @@ function CheckoutPage() {
       ? "anonymous_public_zap"
       : "private_checkout"
   const selectedZapMode = isGuestCheckout ? guestZapMode : zapMode
+
   const zapVisibility = getCheckoutZapVisibility(selectedZapMode)
+  const zapContentEditable = isPublicZapContentEditable(
+    selectedZapMode,
+    publicZapPolicy.effectiveZapMessagePolicy
+  )
+  const shopperZapContentEditable =
+    publicZapPolicy.effectiveZapMessagePolicy === "custom"
+  const publicZapModeDescription = publicZapPolicyMessage
+    ? publicZapPolicyMessage
+    : !lnurlAllowsNostr
+      ? "This merchant wallet does not advertise public zap receipts."
+      : shopperZapContentEditable
+        ? "Include an editable public zap comment."
+        : "Use the merchant's generic public zap comment."
+  const anonZapModeDescription = !anonZapSignerAvailable
+    ? "Anon Conduit Shopper signing is not configured yet."
+    : "Use a fixed item-count message without identifying the shopper."
 
   // True when every item in the cart is a digital product (no shipping needed)
   const isAllDigital = useMemo(
@@ -1337,6 +1343,11 @@ function CheckoutPage() {
       shippingCostSats?: number
       shippingOptionId?: string
       shippingOptionDTag?: string
+      shippingCountryRules?: Array<{
+        code: string
+        restrictTo: string[]
+        exclude: string[]
+      }>
       sourcePrice?: {
         amount: number
         currency: string
@@ -1354,6 +1365,11 @@ function CheckoutPage() {
       shippingCostSats: item.shippingCostSats,
       shippingOptionId: item.shippingOptionId,
       shippingOptionDTag: item.shippingOptionDTag,
+      shippingCountryRules: item.shippingCountryRules?.map((rule) => ({
+        code: rule.code,
+        restrictTo: [...rule.restrictTo],
+        exclude: [...rule.exclude],
+      })),
       sourcePrice: item.sourcePrice
         ? {
             amount: item.sourcePrice.amount,
@@ -1600,7 +1616,7 @@ function CheckoutPage() {
   async function payNow(): Promise<void> {
     if (!selectedMerchant || checkoutItems.length === 0) return
     if (!signedBuyerPubkey && !isGuestCheckout) return
-    const checkoutMode = selectedZapMode
+    const requestedCheckoutMode = selectedZapMode
     let publishedOrderId: string | null = null
     let publishedTotalSats: number | null = null
     let orderDelivered = false
@@ -1611,14 +1627,14 @@ function CheckoutPage() {
       setWeblnAvailable(webLnAvailableNow)
     if (!merchantLud16) {
       recordCheckoutStepResult({
-        checkoutMode,
+        checkoutMode: requestedCheckoutMode,
         rail: "lightning",
         status: "blocked",
         stepName: "direct_payment",
       })
       recordCheckoutResult({
         amountSats: total,
-        checkoutMode,
+        checkoutMode: requestedCheckoutMode,
         rail: "lightning",
         status: "blocked",
       })
@@ -1635,7 +1651,7 @@ function CheckoutPage() {
     setStep("sending")
     recordCheckoutStepResult({
       amountSats: total,
-      checkoutMode,
+      checkoutMode: requestedCheckoutMode,
       status: "started",
       stepName: "direct_payment",
     })
@@ -1679,8 +1695,13 @@ function CheckoutPage() {
       if (pricingIntent.status !== "ok") {
         throw new Error(pricingIntent.reason)
       }
+      const checkoutMode = requestedCheckoutMode
+      const checkoutPricing = pricingIntent
+      const effectiveZapContent =
+        checkoutMode === "private_checkout" ? "" : zapContent
+      const requiresPublicZap = isCheckoutPublicZapMode(checkoutMode)
       const finalWalletPaymentConstraint = getKnownWalletPaymentConstraint({
-        amountMsats: pricingIntent.totalMsats,
+        amountMsats: checkoutPricing.totalMsats,
         balance: wallet.balance,
         budget: wallet.budget,
         methods: wallet.info?.methods,
@@ -1694,7 +1715,7 @@ function CheckoutPage() {
 
       const orderId = crypto.randomUUID()
       publishedOrderId = orderId
-      publishedTotalSats = pricingIntent.totalSats
+      publishedTotalSats = checkoutPricing.totalSats
       const guestIdentity = signedBuyerPubkey
         ? null
         : createSessionGuestOrderSigningIdentity(orderId, selectedMerchant)
@@ -1716,16 +1737,16 @@ function CheckoutPage() {
         merchantPubkey: selectedMerchant,
         buyerPubkey,
         buyerIdentityKind,
-        items: pricingIntent.items,
-        subtotal: pricingIntent.totalSats,
+        items: checkoutPricing.items,
+        subtotal: checkoutPricing.totalSats,
         currency,
-        shippingCostSats: pricingIntent.shippingCost.totalSats,
-        shippingCostStatus: pricingIntent.shippingCost.status,
+        shippingCostSats: checkoutPricing.shippingCost.totalSats,
+        shippingCostStatus: checkoutPricing.shippingCost.status,
         shippingAddress,
         guestContact,
         note: guestIdentity ? buildBuyerNote() : buildContactNote(),
         createdAt: orderCreatedAt,
-        pricingQuote: pricingIntent.quote,
+        pricingQuote: checkoutPricing.quote,
       }
 
       const orderRumor = new NDKEvent(ndk)
@@ -1735,10 +1756,10 @@ function CheckoutPage() {
         ["p", selectedMerchant],
         ["type", "order"],
         ["order", orderId],
-        ["amount", String(pricingIntent.totalSats)],
+        ["amount", String(checkoutPricing.totalSats)],
         ["currency", currency],
       ]
-      for (const item of checkoutItems) {
+      for (const item of checkoutPricing.items) {
         orderRumor.tags.push(["item", item.productId, String(item.quantity)])
         if (item.shippingOptionId) {
           orderRumor.tags.push(["shipping", item.shippingOptionId])
@@ -1774,23 +1795,23 @@ function CheckoutPage() {
             : "external_wallet",
         publicZapSigner: getCheckoutPublicZapSigner(checkoutMode) ?? undefined,
         merchantLightningAddress: merchantLud16,
-        items: buildLifecycleItems(pricingIntent.items),
-        itemSubtotalSats: pricingIntent.itemSubtotalSats,
-        shippingCostSats: pricingIntent.shippingCost.totalSats,
-        totalSats: pricingIntent.totalSats,
-        totalMsats: pricingIntent.totalMsats,
+        items: buildLifecycleItems(checkoutPricing.items),
+        itemSubtotalSats: checkoutPricing.itemSubtotalSats,
+        shippingCostSats: checkoutPricing.shippingCost.totalSats,
+        totalSats: checkoutPricing.totalSats,
+        totalMsats: checkoutPricing.totalMsats,
         currency: "SATS",
-        pricingQuote: pricingIntent.quote
+        pricingQuote: checkoutPricing.quote
           ? {
-              rate: pricingIntent.quote.rate,
-              fetchedAt: pricingIntent.quote.fetchedAt,
-              source: String(pricingIntent.quote.source),
-              fiatSource: pricingIntent.quote.fiatSource
-                ? String(pricingIntent.quote.fiatSource)
+              rate: checkoutPricing.quote.rate,
+              fetchedAt: checkoutPricing.quote.fetchedAt,
+              source: String(checkoutPricing.quote.source),
+              fiatSource: checkoutPricing.quote.fiatSource
+                ? String(checkoutPricing.quote.fiatSource)
                 : undefined,
             }
           : undefined,
-        zapContent,
+        zapContent: effectiveZapContent,
         // The merchant receives guest fulfillment/contact data inside the
         // encrypted order. Do not retain another plaintext copy in IndexedDB.
         shippingAddress: guestIdentity
@@ -1804,19 +1825,19 @@ function CheckoutPage() {
         invoiceStatus: "not_requested",
         paymentStatus: "not_started",
         proofDeliveryStatus: "not_started",
-        zapReceiptStatus: requiresPublicZap ? "waiting" : "not_applicable",
+        zapReceiptStatus: "not_applicable",
         deliveryNotice: orderDeliveryNotice ?? undefined,
       })
 
       cart.clearMerchant(selectedMerchant, { emitTelemetry: false })
       recordCheckoutSuccess({
-        amountSats: pricingIntent.totalSats,
+        amountSats: checkoutPricing.totalSats,
         checkoutMode,
         rail: "lightning",
         status: "order_sent",
       })
       recordCheckoutResult({
-        amountSats: pricingIntent.totalSats,
+        amountSats: checkoutPricing.totalSats,
         checkoutMode,
         rail: "lightning",
         status: "success",
@@ -1832,24 +1853,30 @@ function CheckoutPage() {
         merchantPubkey: selectedMerchant,
         merchantLud16,
         zapMode: checkoutMode,
-        zapContent,
-        totalSats: pricingIntent.totalSats,
-        totalMsats: pricingIntent.totalMsats,
-        items: pricingIntent.items.map((item) => ({
+        zapContent: effectiveZapContent,
+        totalSats: checkoutPricing.totalSats,
+        totalMsats: checkoutPricing.totalMsats,
+        items: checkoutPricing.items.map((item) => ({
           productAddress: item.productId,
           quantity: item.quantity,
         })),
+        anonZapPreparation:
+          checkoutMode === "anonymous_public_zap"
+            ? {
+                localPricing: checkoutPricing,
+                destination: {
+                  country: shippingAddress?.country ?? shipping.country,
+                  postalCode:
+                    shippingAddress?.postalCode ?? shipping.postalCode,
+                },
+              }
+            : undefined,
         walletConnection: guestIdentity ? null : wallet.connection,
         tryNwc: !guestIdentity && shouldTrySavedNwcWallet,
         tryWebln: !guestIdentity,
       }
 
-      try {
-        void runOrderPayment(serviceCtx)
-      } catch {
-        // runOrderPayment is async and should not throw synchronously, but keep
-        // checkout navigation independent from payment service startup.
-      }
+      void runOrderPayment(serviceCtx)
 
       paymentInFlightRef.current = false
       void navigate({
@@ -1873,13 +1900,13 @@ function CheckoutPage() {
         paymentInFlightRef.current = false
         recordCheckoutSuccess({
           amountSats: deliveredAmountSats,
-          checkoutMode,
+          checkoutMode: requestedCheckoutMode,
           rail: "lightning",
           status: "order_sent_local_tracking_failed",
         })
         recordCheckoutResult({
           amountSats: deliveredAmountSats,
-          checkoutMode,
+          checkoutMode: requestedCheckoutMode,
           rail: "lightning",
           status: "success_local_tracking_failed",
         })
@@ -1895,13 +1922,13 @@ function CheckoutPage() {
       // so a full retry can't create a duplicate.
       recordCheckoutStepResult({
         amountSats: total,
-        checkoutMode,
+        checkoutMode: requestedCheckoutMode,
         status: "failed",
         stepName: "direct_payment",
       })
       recordCheckoutResult({
         amountSats: total,
-        checkoutMode,
+        checkoutMode: requestedCheckoutMode,
         rail: "lightning",
         status: "failed",
       })
@@ -2717,26 +2744,44 @@ function CheckoutPage() {
                     </div>
                     {requiresPublicZap && (
                       <div className="mt-4 grid gap-1.5">
-                        <Label htmlFor="zap-content">Public zap comment</Label>
-                        <Textarea
-                          id="zap-content"
-                          value={zapContent}
-                          onChange={(e) => {
-                            if (!zapContentEditable) return
-                            setZapContent(e.target.value)
-                            setZapContentEdited(true)
-                          }}
-                          disabled={!zapContentEditable}
-                          readOnly={!zapContentEditable}
-                          rows={1}
-                          maxLength={280}
-                          className="min-h-[2.75rem] rounded-xl bg-[var(--surface)] py-2.5 focus-visible:border-primary-500 focus-visible:ring-primary-500/30"
-                        />
-                        <p className="text-xs leading-6 text-[var(--text-muted)]">
-                          {zapContentEditable
-                            ? "Public zap receipts can expose this comment. Shipping address, contact details, private notes, wallet data, payment evidence, and order IDs are never added here."
-                            : "The merchant only allows a generic item-count public zap comment for this cart."}
-                        </p>
+                        {zapContentEditable ? (
+                          <>
+                            <Label htmlFor="zap-content">
+                              Public zap comment
+                            </Label>
+                            <Textarea
+                              id="zap-content"
+                              value={zapContent}
+                              onChange={(e) => {
+                                setZapContent(e.target.value)
+                                setZapContentEdited(true)
+                              }}
+                              rows={1}
+                              maxLength={280}
+                              className="min-h-[2.75rem] rounded-xl bg-[var(--surface)] py-2.5 focus-visible:border-primary-500 focus-visible:ring-primary-500/30"
+                            />
+                            <p className="text-xs leading-6 text-[var(--text-muted)]">
+                              Public zap receipts can expose this comment.
+                              Shipping address, contact details, private notes,
+                              wallet data, payment evidence, and order IDs are
+                              never added here.
+                            </p>
+                          </>
+                        ) : (
+                          <>
+                            <span className="text-sm font-medium text-[var(--text-primary)]">
+                              Public zap message
+                            </span>
+                            <p className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text-secondary)]">
+                              {zapContent}
+                            </p>
+                            <p className="text-xs leading-6 text-[var(--text-muted)]">
+                              {selectedZapMode === "anonymous_public_zap"
+                                ? "Anonymous zaps always use this fixed item-count message."
+                                : "The merchant requires the generic item-count message for this cart."}
+                            </p>
+                          </>
+                        )}
                       </div>
                     )}
                   </div>
@@ -2803,7 +2848,11 @@ function CheckoutPage() {
                 </div>
 
                 {error && (
-                  <div className="mt-5 rounded-xl border border-error/30 bg-error/10 p-3 text-sm text-error">
+                  <div
+                    role="alert"
+                    aria-live="polite"
+                    className="mt-5 rounded-xl border border-error/30 bg-error/10 p-3 text-sm text-error"
+                  >
                     {error}
                   </div>
                 )}

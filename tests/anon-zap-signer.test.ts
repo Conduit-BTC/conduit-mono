@@ -1,15 +1,21 @@
 import { describe, expect, it, mock } from "bun:test"
-import { EVENT_KINDS, OMF_ZAPOUT_MARKER_TAG } from "@conduit/core"
+import { EVENT_KINDS } from "@conduit/core"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
 
 import {
   AnonZapAuthorizationError,
+  authorizeCheckoutWithAnonSigner,
   isAnonZapSignerConfigured,
+  prepareAnonZapCheckout,
   signCheckoutZapRequestWithAnonSigner,
   validateAnonZapSignerDraft,
+  type AuthorizedAnonZapCheckoutClient,
   type AnonZapCheckoutAuthorizationContext,
 } from "../apps/market/src/lib/anon-zap-signer"
-import type { CheckoutZapRequestDraft } from "../apps/market/src/lib/checkout-payment"
+import type {
+  CheckoutPricingIntent,
+  CheckoutZapRequestDraft,
+} from "../apps/market/src/lib/checkout-payment"
 
 const MERCHANT_PUBKEY = "b".repeat(64)
 const RECEIPT_PUBKEY = "c".repeat(64)
@@ -24,12 +30,14 @@ function draft(
   return {
     kind: EVENT_KINDS.ZAP_REQUEST,
     createdAt: NOW_SECONDS,
-    content: "Zapped out 1 item on Conduit",
+    content: "Zapped out 1 item at https://shop.conduit.market/",
     tags: [
       ["p", MERCHANT_PUBKEY],
       ["amount", "50000"],
       ["lnurl", "lnurl1test"],
       ["relays", "wss://relay.example"],
+      ["omf", "zapout"],
+      ["omf_auth", "test-2026", "a".repeat(128)],
       ["client", "conduit-market"],
     ],
     ...overrides,
@@ -39,7 +47,6 @@ function draft(
 function context(): AnonZapCheckoutAuthorizationContext {
   return {
     merchantPubkey: MERCHANT_PUBKEY,
-    amountMsats: 50_000,
     items: [
       {
         productAddress: `30402:${MERCHANT_PUBKEY}:test-product`,
@@ -56,11 +63,85 @@ function signerConfig(pubkey = SHOPPER_PUBKEY) {
   }
 }
 
+function localPricing(
+  unitPriceSats = 50
+): Extract<CheckoutPricingIntent, { status: "ok" }> {
+  return {
+    status: "ok",
+    itemSubtotalSats: unitPriceSats,
+    totalSats: unitPriceSats,
+    totalMsats: unitPriceSats * 1_000,
+    items: [
+      {
+        productId: `30402:${MERCHANT_PUBKEY}:test-product`,
+        format: "digital",
+        quantity: 1,
+        priceAtPurchase: unitPriceSats,
+        currency: "SATS",
+        shippingCostSats: 0,
+      },
+    ],
+    shippingCost: {
+      status: "not_required",
+      totalSats: 0,
+      missingProductIds: [],
+    },
+    approximate: false,
+  }
+}
+
+function authorization(unitPriceSats = 50): AuthorizedAnonZapCheckoutClient {
+  return {
+    authorizationToken: "signed.checkout.token",
+    expiresAt: NOW_SECONDS + 120,
+    draft: draft({
+      tags: draft().tags.map((tag) =>
+        tag[0] === "amount" ? ["amount", String(unitPriceSats * 1_000)] : tag
+      ),
+    }),
+    relayUrls: ["wss://relay.example"],
+    pricing: {
+      itemSubtotalSats: unitPriceSats,
+      shippingCostSats: 0,
+      totalSats: unitPriceSats,
+      totalMsats: unitPriceSats * 1_000,
+      items: [
+        {
+          productAddress: `30402:${MERCHANT_PUBKEY}:test-product`,
+          productEventId: "d".repeat(64),
+          format: "digital",
+          quantity: 1,
+          unitPriceSats,
+          unitShippingSats: 0,
+          lineTotalSats: unitPriceSats,
+          shippingCountryRules: [],
+        },
+      ],
+    },
+  }
+}
+
+function lnurlMetadata(overrides: Record<string, unknown> = {}) {
+  return {
+    payRequestUrl: "https://wallet.example/.well-known/lnurlp/merchant",
+    lnurl: "lnurl1test",
+    callback: "https://wallet.example/lnurl/callback",
+    minSendable: 1_000,
+    maxSendable: 100_000_000,
+    tag: "payRequest",
+    allowsNostr: true,
+    nostrPubkey: RECEIPT_PUBKEY,
+    metadata: "[]",
+    ...overrides,
+  }
+}
+
 function createSignerFetch(
   options: {
     signerSecret?: Uint8Array
     signedContent?: string
     authorizeStatus?: number
+    shippingOptionId?: unknown
   } = {}
 ) {
   const calls: Array<{ url: string; body: Record<string, unknown> }> = []
@@ -80,9 +161,28 @@ function createSignerFetch(
           authorizationToken: "signed.checkout.token",
           expiresAt: NOW_SECONDS + 120,
           draft: draft(),
-          lnurlCallback: "https://wallet.example/lnurl/callback",
-          lnurlNostrPubkey: RECEIPT_PUBKEY,
           relayUrls: ["wss://relay.example"],
+          pricing: {
+            itemSubtotalSats: 50,
+            shippingCostSats: 0,
+            totalSats: 50,
+            totalMsats: 50_000,
+            items: [
+              {
+                productAddress: `30402:${MERCHANT_PUBKEY}:test-product`,
+                productEventId: "d".repeat(64),
+                format: "digital",
+                quantity: 1,
+                unitPriceSats: 50,
+                unitShippingSats: 0,
+                lineTotalSats: 50,
+                shippingCountryRules: [],
+                ...(options.shippingOptionId === undefined
+                  ? {}
+                  : { shippingOptionId: options.shippingOptionId }),
+              },
+            ],
+          },
         })
       }
 
@@ -100,9 +200,7 @@ function createSignerFetch(
         id: rawEvent.id,
         rawEvent,
         requestCreatedAt: zapRequest.createdAt,
-        lnurlCallback: "https://wallet.example/lnurl/callback",
         lnurl: "lnurl1test",
-        lnurlNostrPubkey: RECEIPT_PUBKEY,
         relayUrls: ["wss://relay.example"],
       })
     }
@@ -147,11 +245,7 @@ describe("Anon zap signer client", () => {
   })
 
   it("allows the canonical OMF zapout marker before authorization", () => {
-    expect(
-      validateAnonZapSignerDraft(
-        draft({ tags: [...draft().tags, [...OMF_ZAPOUT_MARKER_TAG]] })
-      )
-    ).toEqual({ ok: true })
+    expect(validateAnonZapSignerDraft(draft())).toEqual({ ok: true })
   })
 
   it("rejects expanded OMF marker payloads before authorization", () => {
@@ -191,9 +285,7 @@ describe("Anon zap signer client", () => {
     })
     expect(signed).toMatchObject({
       requestCreatedAt: NOW_SECONDS,
-      lnurlCallback: "https://wallet.example/lnurl/callback",
       lnurl: "lnurl1test",
-      lnurlNostrPubkey: RECEIPT_PUBKEY,
       relayUrls: ["wss://relay.example"],
     })
     expect(JSON.stringify(calls)).not.toContain("private-order-id")
@@ -244,6 +336,17 @@ describe("Anon zap signer client", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
+  it("rejects malformed server fulfillment identity before signing", async () => {
+    const { fetchImpl } = createSignerFetch({ shippingOptionId: 42 })
+    await expect(
+      authorizeCheckoutWithAnonSigner(context(), {
+        fetchImpl,
+        config: signerConfig(),
+      })
+    ).rejects.toThrow("Anon zap authorization pricing is invalid.")
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
   it("bounds a stalled authorization before invoice creation", async () => {
     const fetchImpl = mock(
       async (_input: RequestInfo | URL, init?: RequestInit) =>
@@ -264,5 +367,159 @@ describe("Anon zap signer client", () => {
       })
     ).rejects.toThrow("Anon zap authorization timed out.")
     expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it("degrades to private checkout when anon authorization is unavailable", async () => {
+    let signCalls = 0
+
+    const result = await prepareAnonZapCheckout({
+      context: context(),
+      localPricing: localPricing(),
+      lnurlMetadata: lnurlMetadata(),
+      destination: { country: "US", postalCode: "94107" },
+      dependencies: {
+        authorize: async () => {
+          throw new AnonZapAuthorizationError("authorization unavailable")
+        },
+        sign: async () => {
+          signCalls += 1
+          throw new Error("must not sign")
+        },
+      },
+    })
+
+    expect(result).toEqual({
+      status: "private_fallback",
+      failedStage: "authorization",
+      checkoutPricing: localPricing(),
+    })
+    expect(signCalls).toBe(0)
+  })
+
+  it("degrades to private checkout with authorized pricing when signing is unavailable", async () => {
+    const authorized = authorization(50)
+
+    const result = await prepareAnonZapCheckout({
+      context: context(),
+      localPricing: localPricing(),
+      lnurlMetadata: lnurlMetadata(),
+      destination: { country: "US", postalCode: "94107" },
+      dependencies: {
+        authorize: async () => authorized,
+        sign: async () => {
+          throw new AnonZapAuthorizationError("signer unavailable")
+        },
+      },
+    })
+
+    expect(result).toMatchObject({
+      status: "private_fallback",
+      failedStage: "signing",
+      checkoutPricing: {
+        totalSats: 50,
+        totalMsats: 50_000,
+        items: [
+          {
+            productId: `30402:${MERCHANT_PUBKEY}:test-product`,
+            priceAtPurchase: 50,
+            quantity: 1,
+          },
+        ],
+      },
+    })
+  })
+
+  it("degrades only the public zap when its signed destination check fails", async () => {
+    const authorized = authorization(50)
+    const pricing = localPricing()
+    let signCalls = 0
+    authorized.pricing.items[0]!.format = "physical"
+    authorized.pricing.items[0]!.shippingCountryRules = [
+      { code: "US", restrictTo: [], exclude: [] },
+    ]
+    pricing.items[0]!.format = "physical"
+
+    const result = await prepareAnonZapCheckout({
+      context: context(),
+      localPricing: pricing,
+      lnurlMetadata: lnurlMetadata(),
+      destination: { country: "CA", postalCode: "H2Y 1C6" },
+      dependencies: {
+        authorize: async () => authorized,
+        sign: async () => {
+          signCalls += 1
+          throw new Error("must not sign")
+        },
+      },
+    })
+
+    expect(result).toMatchObject({
+      status: "private_fallback",
+      failedStage: "authorization",
+    })
+    expect(signCalls).toBe(0)
+  })
+
+  it("requires pricing review before signing a newly authorized request", async () => {
+    let signCalls = 0
+
+    const result = await prepareAnonZapCheckout({
+      context: context(),
+      localPricing: localPricing(50),
+      lnurlMetadata: lnurlMetadata(),
+      destination: { country: "US", postalCode: "94107" },
+      dependencies: {
+        authorize: async () => authorization(51),
+        sign: async () => {
+          signCalls += 1
+          throw new Error("must not sign")
+        },
+      },
+    })
+
+    expect(result.status).toBe("review_required")
+    expect(result.checkoutPricing.totalSats).toBe(51)
+    expect(signCalls).toBe(0)
+  })
+
+  it("binds browser-fetched provider metadata before signing", async () => {
+    const prepared = await prepareAnonZapCheckout({
+      context: context(),
+      localPricing: localPricing(),
+      lnurlMetadata: lnurlMetadata(),
+      destination: { country: "US", postalCode: "94107" },
+      reusableAuthorization: authorization(),
+      dependencies: {
+        sign: async () => ({
+          id: "event-id",
+          rawEvent: {} as never,
+          requestCreatedAt: NOW_SECONDS,
+          lnurl: "lnurl1test",
+          relayUrls: ["wss://relay.example"],
+          pricing: authorization().pricing,
+          authorizationExpiresAt: NOW_SECONDS + 120,
+        }),
+      },
+    })
+
+    expect(prepared.status).toBe("prepared")
+    if (prepared.status !== "prepared") return
+    expect(prepared.prepared).toMatchObject({
+      lnurlCallback: "https://wallet.example/lnurl/callback",
+      lnurlNostrPubkey: RECEIPT_PUBKEY,
+      lnurl: "lnurl1test",
+    })
+
+    const mismatch = await prepareAnonZapCheckout({
+      context: context(),
+      localPricing: localPricing(),
+      lnurlMetadata: lnurlMetadata({ lnurl: "lnurl1attacker" }),
+      destination: { country: "US", postalCode: "94107" },
+      reusableAuthorization: authorization(),
+    })
+    expect(mismatch).toMatchObject({
+      status: "private_fallback",
+      failedStage: "authorization",
+    })
   })
 })

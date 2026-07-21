@@ -210,8 +210,42 @@ Product public-zap policy is cart-wide:
   restrictive item message policy across the cart:
   `generic_only` before `custom`.
 - `generic_only` locks the public comment to generic checkout copy with item
-  count only. `custom` allows shopper-edited public comment text, still subject
-  to the privacy boundary below.
+  count only. `custom` allows shopper-edited public comment text only when the
+  shopper signs the zap request, still subject to the privacy boundary below.
+- Anonymous public zaps always use server-owned copy such as
+  `Zapped out 1 item at https://shop.conduit.market/` or
+  `Zapped out 4 items at https://shop.conduit.market/`, using the actual summed
+  cart quantity and the singular noun only for one item.
+- Anonymous public-zap preparation is optional receipt infrastructure, not an
+  order or payment availability dependency. Checkout delivers and persists one
+  order first. If authorization, signing, public-invoice issuance, or
+  public-invoice validation fails before an invoice reaches a payment rail, the
+  same order continues through exactly one plain private LNURL invoice. The
+  lifecycle records the fallback and must not claim that a public zap occurred.
+- Once an invoice reaches a payment rail, timeout or ambiguous payment state
+  must not request a second invoice or switch payment modes. The buyer must
+  check the original payment state before retrying.
+- The public Zapouts feed accepts only valid signed embedded zap requests whose
+  recipient, sender, amount, and BOLT11 description binding agree with the
+  receipt. Anonymous requests include an `omf_auth` proof bound to the exact
+  server-authorized request, while the browser resolves the merchant's current
+  LNURL provider directly before signing and invoice creation. The provider
+  callback and receipt pubkey must match the authorized LNURL and amount, but
+  are not accepted from the server authorization response. The public feed
+  resolves provider authority server-side only during a bounded payment-time
+  window; older evidence, lookup failure, or provider rotation is
+  authority-unavailable, not invalid. Authority metadata egress is restricted
+  to exact operator-allowed LNURL hosts, and feed visitors never contact
+  receipt-selected wallet domains directly. Relay reads paginate independently,
+  preserve same-second boundaries, cap relays/candidates/time, and distinguish
+  empty results, invalid receipts, unavailable authority, and partial or total
+  relay failure.
+- Direct anonymous checkout may recheck the private destination locally against
+  the latest signed listing's public country/postal rules before signing. A
+  failed or unavailable optional recheck suppresses the public zap and falls
+  back to the already-eligible private checkout path; it does not suppress the
+  delivered order or ordinary invoice. The destination is not disclosed to the
+  authorization or signer service.
 
 Public zap comments are public protocol content. They must not include order
 contents, shipping/contact data, invoices, payment request strings, product

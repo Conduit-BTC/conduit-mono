@@ -1,14 +1,11 @@
 import { useQuery } from "@tanstack/react-query"
 import type { BtcUsdRateQuote } from "./index"
+import { fetchTrustedPricingRateQuote } from "./trusted-rate-provider"
 
 const STORAGE_KEY = "conduit:btc-usd-rate"
 export const BTC_USD_RATE_QUERY_KEY = ["btc-usd-rate"] as const
 export const BTC_USD_RATE_STALE_MS = 5 * 60_000
 export const BTC_USD_RATE_REFRESH_INTERVAL_MS = 4 * 60_000
-const MEMPOOL_PRICE_URL = "https://mempool.space/api/v1/prices"
-const COINBASE_SPOT_URL = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
-const FRANKFURTER_USD_URL = "https://api.frankfurter.dev/v1/latest?base=USD"
-const EXCHANGE_RATE_USD_URL = "https://open.er-api.com/v6/latest/USD"
 
 type FiatUsdRates = Record<string, number>
 
@@ -69,149 +66,10 @@ function parseEnvRate(): BtcUsdRateQuote | null {
   }
 }
 
-async function fetchMempoolRate(): Promise<BtcUsdRateQuote> {
-  const response = await fetch(MEMPOOL_PRICE_URL)
-  if (!response.ok) {
-    throw new Error(`Failed to fetch mempool BTC/USD rate (${response.status})`)
-  }
-
-  const json = (await response.json()) as Record<string, unknown>
-
-  const rate = typeof json.USD === "number" ? json.USD : null
-  if (!Number.isFinite(rate) || !rate || rate <= 0) {
-    throw new Error("Invalid mempool BTC/USD rate response")
-  }
-
-  const fiatUsdRates = normalizeFiatRates(
-    Object.entries(json).reduce<FiatUsdRates>(
-      (accumulator, [currency, value]) => {
-        if (currency === "USD" || typeof value !== "number" || value <= 0) {
-          return accumulator
-        }
-
-        // Mempool reports BTC priced in each fiat currency. Divide BTC/USD by
-        // BTC/fiat to get USD per one unit of that fiat.
-        accumulator[currency] = rate / value
-        return accumulator
-      },
-      {}
-    )
-  )
-
-  return {
-    rate,
-    fetchedAt: Date.now(),
-    source: "mempool",
-    fiatUsdRates,
-    fiatSource: fiatUsdRates ? "mempool" : undefined,
-  }
-}
-
-async function fetchCoinbaseRate(): Promise<BtcUsdRateQuote> {
-  const response = await fetch(COINBASE_SPOT_URL)
-  if (!response.ok) {
-    throw new Error(
-      `Failed to fetch Coinbase BTC/USD rate (${response.status})`
-    )
-  }
-
-  const json = (await response.json()) as {
-    data?: {
-      amount?: string
-    }
-  }
-
-  const rate = Number.parseFloat(json.data?.amount ?? "")
-  if (!Number.isFinite(rate) || rate <= 0) {
-    throw new Error("Invalid Coinbase BTC/USD rate response")
-  }
-
-  return {
-    rate,
-    fetchedAt: Date.now(),
-    source: "coinbase",
-  }
-}
-
-async function fetchFiatUsdRates(): Promise<{
-  rates: FiatUsdRates
-  source: BtcUsdRateQuote["fiatSource"]
-}> {
-  try {
-    const response = await fetch(FRANKFURTER_USD_URL)
-    if (!response.ok) {
-      throw new Error(
-        `Frankfurter fiat rate request failed (${response.status})`
-      )
-    }
-
-    const json = (await response.json()) as {
-      rates?: Record<string, number>
-    }
-    const normalized = normalizeFiatRates(
-      Object.entries(json.rates ?? {}).reduce<FiatUsdRates>(
-        (accumulator, [currency, unitsPerUsd]) => {
-          if (Number.isFinite(unitsPerUsd) && unitsPerUsd > 0) {
-            accumulator[currency] = 1 / unitsPerUsd
-          }
-          return accumulator
-        },
-        {}
-      )
-    )
-    if (normalized) return { rates: normalized, source: "frankfurter" }
-  } catch {
-    // Fall through to the secondary free-rate provider.
-  }
-
-  const response = await fetch(EXCHANGE_RATE_USD_URL)
-  if (!response.ok) {
-    throw new Error(
-      `ExchangeRate-API fiat rate request failed (${response.status})`
-    )
-  }
-
-  const json = (await response.json()) as {
-    rates?: Record<string, number>
-  }
-  const normalized = normalizeFiatRates(
-    Object.entries(json.rates ?? {}).reduce<FiatUsdRates>(
-      (accumulator, [currency, unitsPerUsd]) => {
-        if (Number.isFinite(unitsPerUsd) && unitsPerUsd > 0) {
-          accumulator[currency] = 1 / unitsPerUsd
-        }
-        return accumulator
-      },
-      {}
-    )
-  )
-
-  if (!normalized) {
-    throw new Error("Invalid fiat rate response")
-  }
-
-  return { rates: normalized, source: "exchange-rate-api" }
-}
-
 export async function fetchBtcUsdRate(): Promise<BtcUsdRateQuote> {
   const env = parseEnvRate()
   if (env) return env
-
-  try {
-    return await fetchMempoolRate()
-  } catch {
-    const btcUsd = await fetchCoinbaseRate()
-    try {
-      const fiat = await fetchFiatUsdRates()
-      return {
-        ...btcUsd,
-        fiatUsdRates: fiat.rates,
-        fiatSource: fiat.source,
-      }
-    } catch {
-      return btcUsd
-    }
-  }
+  return fetchTrustedPricingRateQuote({ includeFiatRates: true })
 }
 
 function writeStoredRate(next: BtcUsdRateQuote): void {

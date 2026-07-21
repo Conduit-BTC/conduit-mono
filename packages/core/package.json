@@ -11,6 +11,7 @@
     "./protocol": "./src/protocol/index.ts",
     "./protocol/*": "./src/protocol/*.ts",
     "./pricing": "./src/pricing/index.ts",
+    "./pricing/trusted-rate-provider": "./src/pricing/trusted-rate-provider.ts",
     "./schemas": "./src/schemas/index.ts",
     "./utils": "./src/utils/index.ts",
     "./config": "./src/config.ts",

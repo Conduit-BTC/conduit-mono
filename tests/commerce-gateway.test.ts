@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { nip19 } from "@nostr-dev-kit/ndk"
+import { NDKEvent, nip19 } from "@nostr-dev-kit/ndk"
+import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
@@ -7,7 +8,10 @@ import {
   getBuyerConversationList,
   getCachedBuyerConversationList,
   getCachedMerchantConversationList,
+  getCachedMerchantStorefront,
   getCachedMarketplaceProducts,
+  cacheSignedProductDeletionEvent,
+  cacheSignedProductListingEvent,
   getConversationDetail,
   getMarketplaceProducts,
   getMarketplaceProductsProgressive,
@@ -23,11 +27,16 @@ import { EVENT_KINDS } from "@conduit/core"
 import type {
   CachedOrderMessage,
   CachedProduct,
+  CachedProductTombstone,
   CachedProfile,
 } from "@conduit/core"
 
 const FIXED_NOW = 1_700_000_000_000
+const MERCHANT_A_SECRET = new Uint8Array(32).fill(1)
+const MERCHANT_B_SECRET = new Uint8Array(32).fill(2)
+const MERCHANT_A_PUBKEY = getPublicKey(MERCHANT_A_SECRET)
 let cachedProducts: CachedProduct[] = []
+let cachedProductTombstones: CachedProductTombstone[] = []
 let cachedProfiles = new Map<string, CachedProfile>()
 let cachedOrderMessages: CachedOrderMessage[] = []
 
@@ -39,13 +48,16 @@ function makeProductEvent(params: {
   title: string
 }): {
   id: string
+  kind: number
   pubkey: string
   created_at: number
   content: string
+  sig: string
   tags: string[][]
 } {
   return {
     id: params.id,
+    kind: EVENT_KINDS.PRODUCT,
     pubkey: params.pubkey,
     created_at: params.createdAt,
     content: JSON.stringify({
@@ -61,6 +73,7 @@ function makeProductEvent(params: {
       createdAt: params.createdAt * 1000,
       updatedAt: params.createdAt * 1000,
     }),
+    sig: "signed",
     tags: [
       ["d", params.dTag],
       ["title", params.title],
@@ -70,10 +83,65 @@ function makeProductEvent(params: {
   }
 }
 
+function makeSignedProductEvent(params: {
+  secretKey?: Uint8Array
+  dTag: string
+  createdAt: number
+  title: string
+}): NDKEvent {
+  const secretKey = params.secretKey ?? MERCHANT_A_SECRET
+  const pubkey = getPublicKey(secretKey)
+  const signed = finalizeEvent(
+    {
+      kind: EVENT_KINDS.PRODUCT,
+      created_at: params.createdAt,
+      content: JSON.stringify({
+        id: `30402:${pubkey}:${params.dTag}`,
+        pubkey,
+        title: params.title,
+        price: 25,
+        currency: "USD",
+        type: "simple",
+        visibility: "public",
+        images: [{ url: "https://example.com/product.png" }],
+        tags: ["test"],
+        createdAt: params.createdAt * 1000,
+        updatedAt: params.createdAt * 1000,
+      }),
+      tags: [
+        ["d", params.dTag],
+        ["title", params.title],
+        ["price", "25", "USD"],
+        ["t", "test"],
+      ],
+    },
+    secretKey
+  )
+  return new NDKEvent(undefined, signed)
+}
+
+function makeSignedDeletionEvent(params: {
+  secretKey?: Uint8Array
+  createdAt: number
+  tags: string[][]
+}): NDKEvent {
+  const signed = finalizeEvent(
+    {
+      kind: EVENT_KINDS.DELETION,
+      created_at: params.createdAt,
+      content: "",
+      tags: params.tags,
+    },
+    params.secretKey ?? MERCHANT_A_SECRET
+  )
+  return new NDKEvent(undefined, signed)
+}
+
 beforeEach(async () => {
   __resetCommerceTestOverrides()
   __resetRelayListTestOverrides()
   cachedProducts = []
+  cachedProductTombstones = []
   cachedProfiles = new Map()
   cachedOrderMessages = []
   __setCommerceTestOverrides({
@@ -88,6 +156,22 @@ beforeEach(async () => {
       for (const row of rows) {
         cachedProducts = [
           ...cachedProducts.filter((existing) => existing.id !== row.id),
+          row,
+        ]
+      }
+    },
+    getCachedProductTombstones: async (merchantPubkey, authorPubkeys) =>
+      cachedProductTombstones.filter(
+        (row) =>
+          (!merchantPubkey || row.pubkey === merchantPubkey) &&
+          (!authorPubkeys || authorPubkeys.includes(row.pubkey))
+      ),
+    putCachedProductTombstones: async (rows) => {
+      for (const row of rows) {
+        cachedProductTombstones = [
+          ...cachedProductTombstones.filter(
+            (existing) => existing.id !== row.id
+          ),
           row,
         ]
       }
@@ -120,6 +204,7 @@ afterEach(async () => {
   __resetCommerceTestOverrides()
   __resetRelayListTestOverrides()
   cachedProducts = []
+  cachedProductTombstones = []
   cachedProfiles = new Map()
   cachedOrderMessages = []
 })
@@ -454,6 +539,319 @@ describe("commerce gateway", () => {
     const result = await getMerchantStorefront({ merchantPubkey, limit: 10 })
 
     expect(result.data).toHaveLength(0)
+  })
+
+  it("materializes signed product publishes in the local cache before relay readback", async () => {
+    const signedProduct = makeSignedProductEvent({
+      dTag: "signed-local-item",
+      createdAt: 100,
+      title: "Signed Local Item",
+    })
+    const merchantPubkey = signedProduct.pubkey
+    await cacheSignedProductListingEvent(signedProduct)
+
+    const result = await getCachedMerchantStorefront({
+      merchantPubkey,
+      limit: 10,
+      includeMarketHidden: true,
+    })
+
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.addressId).toBe(
+      `30402:${merchantPubkey}:signed-local-item`
+    )
+    expect(result.data[0]?.product.title).toBe("Signed Local Item")
+  })
+
+  it("refuses to project an invalid product signature as local truth", async () => {
+    const invalid = makeSignedProductEvent({
+      dTag: "invalid-signature-item",
+      createdAt: 100,
+      title: "Invalid Signature Item",
+    })
+    invalid.sig = "00".repeat(64)
+
+    await expect(cacheSignedProductListingEvent(invalid)).rejects.toThrow(
+      "valid signed product listing"
+    )
+    expect(cachedProducts).toHaveLength(0)
+  })
+
+  it("refuses to persist an invalid deletion signature as a local tombstone", async () => {
+    const invalid = makeSignedDeletionEvent({
+      createdAt: 101,
+      tags: [["a", `30402:${MERCHANT_A_PUBKEY}:invalid-deletion`]],
+    })
+    invalid.sig = "00".repeat(64)
+
+    await expect(cacheSignedProductDeletionEvent(invalid)).rejects.toThrow(
+      "valid signed product deletion"
+    )
+    expect(cachedProductTombstones).toHaveLength(0)
+  })
+
+  it("keeps a newer signed local publish ahead of stale relay readback", async () => {
+    const dTag = "edited-item"
+    const localProduct = makeSignedProductEvent({
+      dTag,
+      createdAt: 102,
+      title: "Locally Edited Item",
+    })
+    const merchantPubkey = localProduct.pubkey
+    await cacheSignedProductListingEvent(localProduct)
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          return [
+            makeProductEvent({
+              pubkey: merchantPubkey,
+              dTag,
+              id: "event-relay-old",
+              createdAt: 100,
+              title: "Stale Relay Item",
+            }) as never,
+          ]
+        }
+        return []
+      },
+    })
+
+    const result = await getMerchantStorefront({ merchantPubkey, limit: 10 })
+
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.eventId).toBe(localProduct.id)
+    expect(result.data[0]?.product.title).toBe("Locally Edited Item")
+    expect(cachedProducts[0]?.eventId).toBe(localProduct.id)
+  })
+
+  it("uses the lower event id to resolve same-timestamp product versions", async () => {
+    const dTag = "same-second-edit"
+    const versions = [
+      makeSignedProductEvent({
+        dTag,
+        createdAt: 102,
+        title: "Same Timestamp Version A",
+      }),
+      makeSignedProductEvent({
+        dTag,
+        createdAt: 102,
+        title: "Same Timestamp Version B",
+      }),
+    ].sort((left, right) => left.id.localeCompare(right.id))
+    const winner = versions[0]!
+    const loser = versions[1]!
+    const merchantPubkey = winner.pubkey
+    await cacheSignedProductListingEvent(winner)
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          return [loser as never]
+        }
+        return []
+      },
+    })
+
+    const result = await getMerchantStorefront({ merchantPubkey, limit: 10 })
+
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.eventId).toBe(winner.id)
+    expect(result.data[0]?.product.title).toBe(JSON.parse(winner.content).title)
+  })
+
+  it("suppresses stale cached merchant products with local signed deletion tombstones", async () => {
+    const merchantPubkey = MERCHANT_A_PUBKEY
+    const addressId = `30402:${merchantPubkey}:locally-deleted-item`
+    cachedProducts.push({
+      id: addressId,
+      pubkey: merchantPubkey,
+      title: "Locally Deleted Item",
+      summary: "cached summary",
+      price: 25,
+      currency: "USD",
+      type: "simple",
+      visibility: "public",
+      images: [{ url: "https://example.com/locally-deleted-item.png" }],
+      tags: ["cached"],
+      createdAt: 100_000,
+      updatedAt: 100_000,
+      cachedAt: FIXED_NOW - 1_000,
+    })
+
+    await cacheSignedProductDeletionEvent(
+      makeSignedDeletionEvent({
+        createdAt: 101,
+        tags: [
+          ["e", "event-local-old"],
+          ["a", addressId],
+          ["k", String(EVENT_KINDS.PRODUCT)],
+        ],
+      })
+    )
+
+    const result = await getCachedMerchantStorefront({
+      merchantPubkey,
+      limit: 10,
+      includeMarketHidden: true,
+    })
+
+    expect(result.data).toHaveLength(0)
+  })
+
+  it("suppresses stale direct product detail with a local signed tombstone", async () => {
+    const dTag = "locally-deleted-detail"
+    const staleProduct = makeSignedProductEvent({
+      dTag,
+      createdAt: 100,
+      title: "Locally Deleted Detail",
+    })
+    const merchantPubkey = staleProduct.pubkey
+    const addressId = `30402:${merchantPubkey}:${dTag}`
+
+    await cacheSignedProductListingEvent(staleProduct)
+    await cacheSignedProductDeletionEvent(
+      makeSignedDeletionEvent({
+        createdAt: 101,
+        tags: [["a", addressId]],
+      })
+    )
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([staleProduct] as never)
+          : [],
+    })
+
+    const result = await getProductDetail({ productId: addressId })
+
+    expect(result.data).toBeNull()
+  })
+
+  it("suppresses stale event-id product detail across local signed tombstones", async () => {
+    const staleProduct = makeSignedProductEvent({
+      dTag: "locally-deleted-event-detail",
+      createdAt: 100,
+      title: "Locally Deleted Event Detail",
+    })
+    const eventId = staleProduct.id
+
+    await cacheSignedProductListingEvent(staleProduct)
+    await cacheSignedProductDeletionEvent(
+      makeSignedDeletionEvent({
+        createdAt: 101,
+        tags: [["e", eventId]],
+      })
+    )
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([staleProduct] as never)
+          : [],
+    })
+
+    const result = await getProductDetail({ productId: eventId })
+
+    expect(result.data).toBeNull()
+  })
+
+  it("allows a newer local product publish to supersede an older tombstone", async () => {
+    const merchantPubkey = MERCHANT_A_PUBKEY
+    const dTag = "republished-item"
+    const addressId = `30402:${merchantPubkey}:${dTag}`
+    await cacheSignedProductDeletionEvent(
+      makeSignedDeletionEvent({
+        createdAt: 101,
+        tags: [
+          ["a", addressId],
+          ["k", String(EVENT_KINDS.PRODUCT)],
+        ],
+      })
+    )
+    await cacheSignedProductListingEvent(
+      makeSignedProductEvent({
+        dTag,
+        createdAt: 102,
+        title: "Republished Item",
+      })
+    )
+
+    const result = await getCachedMerchantStorefront({
+      merchantPubkey,
+      limit: 10,
+      includeMarketHidden: true,
+    })
+
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.product.title).toBe("Republished Item")
+  })
+
+  it("does not let an older deletion request replace a newer local tombstone", async () => {
+    const merchantPubkey = MERCHANT_A_PUBKEY
+    const dTag = "deleted-twice"
+    const addressId = `30402:${merchantPubkey}:${dTag}`
+    await cacheSignedProductListingEvent(
+      makeSignedProductEvent({
+        dTag,
+        createdAt: 102,
+        title: "Deleted Twice",
+      })
+    )
+    await cacheSignedProductDeletionEvent(
+      makeSignedDeletionEvent({
+        createdAt: 103,
+        tags: [["a", addressId]],
+      })
+    )
+    await cacheSignedProductDeletionEvent(
+      makeSignedDeletionEvent({
+        createdAt: 101,
+        tags: [["a", addressId]],
+      })
+    )
+
+    const result = await getCachedMerchantStorefront({
+      merchantPubkey,
+      limit: 10,
+      includeMarketHidden: true,
+    })
+
+    expect(result.data).toHaveLength(0)
+    expect(cachedProductTombstones[0]?.deletedAt).toBe(103)
+  })
+
+  it("does not apply an event-id deletion request across authors", async () => {
+    const product = makeSignedProductEvent({
+      secretKey: MERCHANT_A_SECRET,
+      dTag: "shared-event-id-target",
+      createdAt: 100,
+      title: "Merchant A Item",
+    })
+    await cacheSignedProductListingEvent(product)
+    await cacheSignedProductDeletionEvent(
+      makeSignedDeletionEvent({
+        secretKey: MERCHANT_B_SECRET,
+        createdAt: 101,
+        tags: [["e", product.id]],
+      })
+    )
+
+    const result = await getCachedMarketplaceProducts()
+
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.product.pubkey).toBe(MERCHANT_A_PUBKEY)
+  })
+
+  it("rejects cross-author address tombstones without a valid product target", async () => {
+    await expect(
+      cacheSignedProductDeletionEvent(
+        makeSignedDeletionEvent({
+          secretKey: MERCHANT_B_SECRET,
+          createdAt: 101,
+          tags: [["a", `30402:${MERCHANT_A_PUBKEY}:item`]],
+        })
+      )
+    ).rejects.toThrow("valid product target")
   })
 
   it("keeps image-broken products manageable for Merchant but hidden from Market storefront reads", async () => {

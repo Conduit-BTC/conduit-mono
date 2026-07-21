@@ -147,6 +147,9 @@ tags: [
 ```
 
 New products default to public zaps enabled with `generic_only` comment policy.
+The `custom` setting permits shopper-written comments only for shopper-signed
+public zaps. Anonymous public zaps always use Conduit's fixed item-count message,
+so merchants cannot receive arbitrary anonymous comment text through that path.
 When editing an imported or legacy listing whose explicit policy tags are
 missing or malformed, Merchant Portal should show the policy as unknown and
 prefill the edit form with the private-safe choice. Saving the product writes

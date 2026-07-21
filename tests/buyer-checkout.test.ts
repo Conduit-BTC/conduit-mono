@@ -23,6 +23,7 @@ import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
 import { getKnownWalletPaymentConstraint } from "../apps/market/src/lib/wallet-readiness"
 import {
   buildCheckoutPricingIntent,
+  applyAuthorizedAnonZapPricing,
   buildDefaultZapContent,
   buildPendingCheckoutManualInvoice,
   buildZapRequestContent,
@@ -31,11 +32,15 @@ import {
   getCheckoutZapVisibility,
   getLnurlReadyForCheckoutPayment,
   getCheckoutShippingCost,
+  getAuthorizedAnonZapDestinationEligibility,
+  doesAuthorizedAnonZapPricingMatchOrder,
+  hasAuthorizedAnonZapPricingChanged,
   requestCheckoutLnurlInvoice,
   getCheckoutRecoveryPlan,
   getPaymentTrackerHeadline,
   getPaymentTrackerOutcome,
   getPaymentTrackerRows,
+  isPublicZapContentEditable,
   isCheckoutPublicZapMode,
   parseRelayFailureMessage,
   type PaymentTrackerInput,
@@ -62,6 +67,7 @@ import {
   orderSchema,
   paymentProofMessageSchema,
 } from "../packages/core/src/schemas"
+import { makeBoundBolt11Fixture } from "./support/bolt11-fixture"
 
 const FAKE_PUBKEY = "a".repeat(64)
 const FAKE_SECRET = "b".repeat(64)
@@ -1043,6 +1049,351 @@ describe("checkout payment helpers", () => {
     ).toBe(true)
   })
 
+  it("replaces browser display totals with the server-authorized anon pricing", () => {
+    const local = buildCheckoutPricingIntent(
+      [cartItem({ quantity: 2, price: 100, currency: "SATS" })],
+      null
+    )
+    expect(local.status).toBe("ok")
+    if (local.status !== "ok") return
+
+    const authorized = applyAuthorizedAnonZapPricing(local, {
+      itemSubtotalSats: 220,
+      shippingCostSats: 0,
+      totalSats: 220,
+      totalMsats: 220_000,
+      items: [
+        {
+          productAddress: local.items[0]!.productId,
+          productEventId: "f".repeat(64),
+          format: "physical",
+          quantity: 2,
+          unitPriceSats: 110,
+          unitShippingSats: 0,
+          lineTotalSats: 220,
+          shippingCountryRules: [{ code: "US", restrictTo: [], exclude: [] }],
+        },
+      ],
+      quote: {
+        rate: 100_000,
+        fetchedAt: 1_800_000_000_000,
+        source: "mempool",
+      },
+    })
+
+    expect(authorized).toMatchObject({
+      status: "ok",
+      itemSubtotalSats: 220,
+      totalSats: 220,
+      totalMsats: 220_000,
+      items: [{ priceAtPurchase: 110, quantity: 2 }],
+    })
+  })
+
+  it("rejects anon pricing that does not cover the exact cart coordinates", () => {
+    const local = buildCheckoutPricingIntent([cartItem()], null)
+    expect(local.status).toBe("ok")
+    if (local.status !== "ok") return
+
+    expect(() =>
+      applyAuthorizedAnonZapPricing(local, {
+        itemSubtotalSats: 100,
+        shippingCostSats: 0,
+        totalSats: 100,
+        totalMsats: 100_000,
+        items: [
+          {
+            productAddress: "30402:other:product",
+            productEventId: "f".repeat(64),
+            format: "physical",
+            quantity: 1,
+            unitPriceSats: 100,
+            unitShippingSats: 0,
+            lineTotalSats: 100,
+            shippingCountryRules: [{ code: "US", restrictTo: [], exclude: [] }],
+          },
+        ],
+      })
+    ).toThrow("does not match the current cart")
+  })
+
+  it("rejects server pricing when fulfillment identity changed", () => {
+    const local = buildCheckoutPricingIntent(
+      [cartItem({ shippingOptionId: "selected-shipping" })],
+      null
+    )
+    expect(local.status).toBe("ok")
+    if (local.status !== "ok") return
+
+    expect(() =>
+      applyAuthorizedAnonZapPricing(local, {
+        itemSubtotalSats: 1_000,
+        shippingCostSats: 0,
+        totalSats: 1_000,
+        totalMsats: 1_000_000,
+        items: [
+          {
+            productAddress: local.items[0]!.productId,
+            productEventId: "f".repeat(64),
+            format: "physical",
+            quantity: 1,
+            unitPriceSats: 1_000,
+            unitShippingSats: 0,
+            lineTotalSats: 1_000,
+            shippingOptionId: "different-shipping",
+            shippingCountryRules: [{ code: "US", restrictTo: [], exclude: [] }],
+          },
+        ],
+      })
+    ).toThrow("does not match the current cart")
+  })
+
+  it("requires review when signed line prices change but the total does not", () => {
+    const local = buildCheckoutPricingIntent(
+      [
+        cartItem({ productId: "product-a", format: "digital", price: 100 }),
+        cartItem({ productId: "product-b", format: "digital", price: 100 }),
+      ],
+      null
+    )
+    expect(local.status).toBe("ok")
+    if (local.status !== "ok") return
+
+    const authorized = applyAuthorizedAnonZapPricing(local, {
+      itemSubtotalSats: 200,
+      shippingCostSats: 0,
+      totalSats: 200,
+      totalMsats: 200_000,
+      items: [
+        {
+          productAddress: "product-a",
+          productEventId: "a".repeat(64),
+          format: "digital",
+          quantity: 1,
+          unitPriceSats: 90,
+          unitShippingSats: 0,
+          lineTotalSats: 90,
+          shippingCountryRules: [],
+        },
+        {
+          productAddress: "product-b",
+          productEventId: "b".repeat(64),
+          format: "digital",
+          quantity: 1,
+          unitPriceSats: 110,
+          unitShippingSats: 0,
+          lineTotalSats: 110,
+          shippingCountryRules: [],
+        },
+      ],
+    })
+
+    expect(local.totalSats).toBe(authorized.totalSats)
+    expect(hasAuthorizedAnonZapPricingChanged(local, authorized)).toBe(true)
+  })
+
+  it("evaluates the destination against the server-authorized shipping snapshot", () => {
+    const authorized = {
+      itemSubtotalSats: 1_000,
+      shippingCostSats: 100,
+      totalSats: 1_100,
+      totalMsats: 1_100_000,
+      items: [
+        {
+          productAddress: "product-1",
+          productEventId: "f".repeat(64),
+          format: "physical" as const,
+          quantity: 1,
+          unitPriceSats: 1_000,
+          unitShippingSats: 100,
+          lineTotalSats: 1_100,
+          shippingCountryRules: [
+            { code: "US", restrictTo: ["9**"], exclude: ["90210"] },
+          ],
+        },
+      ],
+    }
+
+    expect(
+      getAuthorizedAnonZapDestinationEligibility(
+        { country: "CA", postalCode: "V6B 1A1" },
+        authorized
+      )
+    ).toEqual({ eligible: false, reason: "country_unsupported" })
+    expect(
+      getAuthorizedAnonZapDestinationEligibility(
+        { country: "US", postalCode: "10001" },
+        authorized
+      )
+    ).toEqual({ eligible: false, reason: "postal_restricted" })
+    expect(
+      getAuthorizedAnonZapDestinationEligibility(
+        { country: "US", postalCode: "90210" },
+        authorized
+      )
+    ).toEqual({ eligible: false, reason: "postal_restricted" })
+    expect(
+      getAuthorizedAnonZapDestinationEligibility(
+        { country: "US", postalCode: "94107" },
+        authorized
+      )
+    ).toEqual({ eligible: true })
+  })
+
+  it("matches retry authorization against every stored lifecycle line field", () => {
+    const shippingOptionId = `30406:${FAKE_PUBKEY}:standard`
+    const authorized = {
+      itemSubtotalSats: 1_000,
+      shippingCostSats: 100,
+      totalSats: 1_100,
+      totalMsats: 1_100_000,
+      items: [
+        {
+          productAddress: "product-1",
+          productEventId: "f".repeat(64),
+          format: "physical" as const,
+          quantity: 1,
+          unitPriceSats: 1_000,
+          unitShippingSats: 100,
+          lineTotalSats: 1_100,
+          shippingOptionId,
+          shippingCountryRules: [{ code: "US", restrictTo: [], exclude: [] }],
+        },
+      ],
+    }
+    const lifecycle = {
+      itemSubtotalSats: 1_000,
+      shippingCostSats: 100,
+      totalSats: 1_100,
+      totalMsats: 1_100_000,
+      items: [
+        {
+          productId: "product-1",
+          quantity: 1,
+          priceAtPurchase: 1_000,
+          currency: "SATS",
+          shippingCostSats: 100,
+          shippingOptionId,
+          shippingOptionDTag: "standard",
+          shippingCountryRules: [{ code: "US", restrictTo: [], exclude: [] }],
+        },
+      ],
+    }
+
+    // A missing legacy format is physical, so this exact physical snapshot is safe.
+    expect(doesAuthorizedAnonZapPricingMatchOrder(lifecycle, authorized)).toBe(
+      true
+    )
+    expect(
+      doesAuthorizedAnonZapPricingMatchOrder(
+        {
+          ...lifecycle,
+          items: [{ ...lifecycle.items[0]!, format: "digital" }],
+        },
+        authorized
+      )
+    ).toBe(false)
+    expect(
+      doesAuthorizedAnonZapPricingMatchOrder(
+        {
+          ...lifecycle,
+          items: [
+            {
+              ...lifecycle.items[0]!,
+              shippingCountryRules: [
+                { code: "CA", restrictTo: [], exclude: [] },
+              ],
+            },
+          ],
+        },
+        authorized
+      )
+    ).toBe(false)
+    expect(
+      doesAuthorizedAnonZapPricingMatchOrder(
+        {
+          ...lifecycle,
+          items: [{ ...lifecycle.items[0]!, priceAtPurchase: 900 }],
+        },
+        authorized
+      )
+    ).toBe(false)
+    expect(
+      doesAuthorizedAnonZapPricingMatchOrder(
+        {
+          ...lifecycle,
+          items: [{ ...lifecycle.items[0]!, currency: "USD" }],
+        },
+        authorized
+      )
+    ).toBe(false)
+    expect(
+      doesAuthorizedAnonZapPricingMatchOrder(
+        {
+          ...lifecycle,
+          items: [{ ...lifecycle.items[0]!, shippingOptionId: undefined }],
+        },
+        authorized
+      )
+    ).toBe(false)
+    expect(
+      doesAuthorizedAnonZapPricingMatchOrder(
+        {
+          ...lifecycle,
+          items: [{ ...lifecycle.items[0]!, shippingOptionDTag: "stale" }],
+        },
+        authorized
+      )
+    ).toBe(false)
+    expect(
+      doesAuthorizedAnonZapPricingMatchOrder(
+        {
+          ...lifecycle,
+          items: [{ ...lifecycle.items[0]!, shippingCostSats: undefined }],
+        },
+        authorized
+      )
+    ).toBe(false)
+  })
+
+  it("replaces stale shipping option details with the authorized identity", () => {
+    const shippingOptionId = `30406:${FAKE_PUBKEY}:standard`
+    const local = buildCheckoutPricingIntent(
+      [
+        cartItem({
+          shippingCostSats: 100,
+          shippingOptionId,
+          shippingOptionDTag: "stale",
+        }),
+      ],
+      null
+    )
+    expect(local.status).toBe("ok")
+    if (local.status !== "ok") return
+
+    const result = applyAuthorizedAnonZapPricing(local, {
+      itemSubtotalSats: 1_000,
+      shippingCostSats: 100,
+      totalSats: 1_100,
+      totalMsats: 1_100_000,
+      items: [
+        {
+          productAddress: "product-1",
+          productEventId: "f".repeat(64),
+          format: "physical",
+          quantity: 1,
+          unitPriceSats: 1_000,
+          unitShippingSats: 100,
+          lineTotalSats: 1_100,
+          shippingOptionId,
+          shippingCountryRules: [{ code: "US", restrictTo: [], exclude: [] }],
+        },
+      ],
+    })
+
+    expect(result.items[0]?.shippingOptionDTag).toBe("standard")
+  })
+
   it("builds default public zap content with item count but no product details", () => {
     const content = buildDefaultZapContent({
       items: [
@@ -1052,7 +1403,7 @@ describe("checkout payment helpers", () => {
         }),
       ],
     })
-    expect(content).toBe("Zapped out 2 items on Conduit")
+    expect(content).toBe("Zapped out 2 items at https://shop.conduit.market/")
     expect(content).not.toContain("Notebook")
     expect(content).not.toContain("product-1")
     expect(content).not.toContain("Merchant")
@@ -1074,7 +1425,7 @@ describe("checkout payment helpers", () => {
       ],
     })
 
-    expect(content).toBe("Zapped out 1 item on Conduit")
+    expect(content).toBe("Zapped out 1 item at https://shop.conduit.market/")
     expect(content).not.toContain("Private Product Name")
   })
 
@@ -1090,7 +1441,7 @@ describe("checkout payment helpers", () => {
       mode: "anonymous_public_zap",
     })
 
-    expect(content).toBe("Zapped out 2 items on Conduit")
+    expect(content).toBe("Zapped out 2 items at https://shop.conduit.market/")
     expect(content).not.toContain("Private Product Name")
     expect(content).not.toContain("product-1")
     expect(content).not.toContain("Merchant")
@@ -1112,6 +1463,19 @@ describe("checkout payment helpers", () => {
     expect(getCheckoutPublicZapSigner("private_checkout")).toBeNull()
     expect(isCheckoutPublicZapMode("anonymous_public_zap")).toBe(true)
     expect(isCheckoutPublicZapMode("private_checkout")).toBe(false)
+  })
+
+  it("only allows shopper-signed custom zap comments to be edited", () => {
+    expect(isPublicZapContentEditable("public_zap_as_shopper", "custom")).toBe(
+      true
+    )
+    expect(isPublicZapContentEditable("anonymous_public_zap", "custom")).toBe(
+      false
+    )
+    expect(
+      isPublicZapContentEditable("public_zap_as_shopper", "generic_only")
+    ).toBe(false)
+    expect(isPublicZapContentEditable("private_checkout", "custom")).toBe(false)
   })
 
   it("uses empty zap content for private checkout", () => {
@@ -1170,6 +1534,8 @@ describe("checkout payment helpers", () => {
         content: draft.content,
         tags: draft.tags,
       },
+      lnurlCallback: "https://attacker.example/cb",
+      lnurlNostrPubkey: "c".repeat(64),
     }))
 
     const result = await requestCheckoutLnurlInvoice(
@@ -1178,6 +1544,7 @@ describe("checkout payment helpers", () => {
         lnurlCallback: "https://wallet.example/cb",
         amountMsats: 50_000,
         lnurl: "lnurl1test",
+        lnurlNostrPubkey: "d".repeat(64),
         recipientPubkey: FAKE_PUBKEY,
         zapContent: "hello\npublic",
         explicitRelayUrls: ["wss://relay.example", "wss://dup.example"],
@@ -1201,6 +1568,7 @@ describe("checkout payment helpers", () => {
       zapRequestId: "zap-request-id",
       zapRequestCreatedAt: 123,
       expectedLnurl: "lnurl1test",
+      lnurlNostrPubkey: "d".repeat(64),
       shouldWaitForZapReceipt: true,
     })
     expect(signZapRequest).toHaveBeenCalledTimes(1)
@@ -2006,8 +2374,8 @@ describe("fetchZapInvoice", () => {
     })) as unknown as typeof fetch
   }
 
-  const FAKE_INVOICE = "lnbc100n1pjtest..."
   const FAKE_ZAP_REQUEST = JSON.stringify({ kind: 9734, content: "" })
+  const FAKE_INVOICE = makeBoundBolt11Fixture(FAKE_ZAP_REQUEST)
 
   it("returns invoice on success", async () => {
     mockFetch({ pr: FAKE_INVOICE })
