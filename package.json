@@ -45,6 +45,7 @@
     "lint": "bun run --filter '*' lint",
     "telemetry:check": "bun scripts/ci/check_telemetry_policy.ts",
     "smoke:anon-zap": "bun scripts/smoke/anon_zap_authorization.ts",
+    "smoke:anon-zap-provider": "bun scripts/smoke/anon_zap_provider.ts",
     "smoke:guest-checkout-order": "bun scripts/smoke/guest_checkout_order.ts",
     "test": "bun test",
     "test:e2e": "playwright test",
@@ -60,16 +61,16 @@
     "@nostr-dev-kit/ndk": "^3.0.3",
     "@playwright/test": "^1.61.1",
     "@tanstack/router-generator": "^1.167.18",
-    "eslint": "^10.6.0",
+    "eslint": "^10.7.0",
     "eslint-plugin-react": "^7.37.4",
     "eslint-plugin-react-hooks": "^7.1.1",
     "fake-indexeddb": "^6.2.5",
     "husky": "^9.1.7",
-    "lint-staged": "^17.0.8",
-    "nostr-tools": "2.23.9",
+    "lint-staged": "^17.1.0",
+    "nostr-tools": "2.23.12",
     "prettier": "^3.9.5",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.63.0"
+    "typescript-eslint": "^8.64.0"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,cjs,mjs}": [

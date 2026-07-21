@@ -161,11 +161,11 @@ describe("merchant product form validation", () => {
     expect(validation.tags).toEqual(["gear", "hardware", "demo"])
   })
 
-  it("dedupes tags case-insensitively and preserves first-entered casing", () => {
+  it("canonicalizes and dedupes tags case-insensitively", () => {
     expect(parseProductTags("Gear, gear, , HARDWARE, Demo, hardware")).toEqual([
-      "Gear",
-      "HARDWARE",
-      "Demo",
+      "gear",
+      "hardware",
+      "demo",
     ])
 
     const validation = validate(form({ tags: "gear, Gear, hardware" }))
@@ -179,16 +179,16 @@ describe("merchant product form validation", () => {
   it("adds comma-separated tag chips while rejecting duplicates predictably", () => {
     const result = addProductTags("Gear, hardware", "Demo, gear, Field Kit")
 
-    expect(result.tags).toEqual(["Gear", "hardware", "Demo", "Field Kit"])
+    expect(result.tags).toEqual(["gear", "hardware", "demo", "field kit"])
     expect(result.rejected.duplicates).toEqual(["gear"])
     expect(getProductTagEditFeedback(result)).toBe("Tag already added.")
     expect(formatProductTags(result.tags)).toBe(
-      "Gear, hardware, Demo, Field Kit"
+      "gear, hardware, demo, field kit"
     )
     expect(removeProductTagAtIndex(formatProductTags(result.tags), 1)).toEqual([
-      "Gear",
-      "Demo",
-      "Field Kit",
+      "gear",
+      "demo",
+      "field kit",
     ])
   })
 

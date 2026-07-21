@@ -1,4 +1,4 @@
-import type { Product } from "@conduit/core"
+import { canonicalizeProductTags, type Product } from "@conduit/core"
 
 export interface FacetOption {
   value: string
@@ -26,10 +26,6 @@ export function normalizeFacetValues(raw: unknown): string[] {
   )
 }
 
-function normalizeTag(value: string): string {
-  return value.trim().toLowerCase()
-}
-
 function matchesText(product: Product, q: string | undefined): boolean {
   if (!q) return true
   const query = q.toLowerCase()
@@ -53,8 +49,8 @@ function matchesAnyTag(
   tags: readonly string[] | undefined
 ): boolean {
   if (!tags || tags.length === 0) return true
-  const selected = new Set(tags.map(normalizeTag))
-  return product.tags.some((tag) => selected.has(normalizeTag(tag)))
+  const selected = new Set(canonicalizeProductTags(tags))
+  return canonicalizeProductTags(product.tags).some((tag) => selected.has(tag))
 }
 
 function sortFacetOptions(options: FacetOption[]): FacetOption[] {
@@ -68,7 +64,7 @@ export function filterProductsByFacets(
   products: Product[],
   filters: ProductFacetFilters
 ): Product[] {
-  const tags = filters.tags?.map(normalizeTag)
+  const tags = canonicalizeProductTags(filters.tags)
 
   return products.filter(
     (product) =>
@@ -82,7 +78,7 @@ export function getCategoryFacetOptions(
   products: Product[],
   filters: ProductFacetFilters
 ): FacetOption[] {
-  const selectedTags = new Set((filters.tags ?? []).map(normalizeTag))
+  const selectedTags = new Set(canonicalizeProductTags(filters.tags))
   const counts = new Map<string, number>()
 
   for (const product of products) {
@@ -93,7 +89,7 @@ export function getCategoryFacetOptions(
       continue
     }
 
-    const uniqueTags = new Set(product.tags.map(normalizeTag).filter(Boolean))
+    const uniqueTags = canonicalizeProductTags(product.tags)
     for (const tag of uniqueTags) {
       counts.set(tag, (counts.get(tag) ?? 0) + 1)
     }

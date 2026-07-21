@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import {
   buildProductListingEventDraft,
   canonicalizeProductPrice,
+  canonicalizeProductTags,
   canonicalizeShippingCost,
   EVENT_KINDS,
   parseProductEvent,
@@ -49,6 +50,60 @@ function expectTag(tags: string[][], expected: string[]): void {
 }
 
 describe("product listing event drafts", () => {
+  it("canonicalizes product tags in first-seen order", () => {
+    expect(
+      canonicalizeProductTags([
+        " Bitcoin ",
+        "bitcoin",
+        "BITCOIN",
+        "Hardware",
+        " ",
+      ])
+    ).toEqual(["bitcoin", "hardware"])
+  })
+
+  it("uses signed t tags when legacy JSON has a malformed tag collection", () => {
+    const parsed = parseProductEvent({
+      id: "malformed-legacy-tags-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: JSON.stringify({
+        ...baseProduct(),
+        tags: "Bitcoin",
+      }),
+      tags: [
+        ["d", "malformed-legacy-tags"],
+        ["t", " Hardware "],
+      ],
+    })
+
+    expect(parsed.tags).toEqual(["hardware"])
+  })
+
+  it("emits and round-trips only canonical lowercase product tags", () => {
+    const draft = buildProductListingEventDraft({
+      product: baseProduct({
+        tags: [" Bitcoin ", "bitcoin", "BITCOIN", "Hardware"],
+      }),
+      dTag: "canonical-tags",
+    })
+
+    expect(draft.tags.filter((tag) => tag[0] === "t")).toEqual([
+      ["t", "bitcoin"],
+      ["t", "hardware"],
+    ])
+
+    const parsed = parseProductEvent({
+      id: "canonical-tags-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: draft.content,
+      tags: draft.tags,
+    })
+
+    expect(parsed.tags).toEqual(["bitcoin", "hardware"])
+  })
+
   it("emits product summary as kind 30402 Markdown content", () => {
     const draft = buildProductListingEventDraft({
       product: baseProduct(),
@@ -352,7 +407,9 @@ describe("product listing event drafts", () => {
 
 describe("product listing event parsing", () => {
   it("keeps parsing legacy Conduit JSON-content product listings", () => {
-    const product = baseProduct()
+    const product = baseProduct({
+      tags: [" Bitcoin ", "bitcoin", "BITCOIN", "Hardware"],
+    })
     const parsed = parseProductEvent({
       id: "legacy-event",
       pubkey: product.pubkey,
@@ -372,6 +429,27 @@ describe("product listing event parsing", () => {
     expect(parsed.publicZapEnabled).toBe(true)
     expect(parsed.zapMessagePolicy).toBe("generic_only")
     expect(parsed.publicZapPolicyKnown).toBe(false)
+    expect(parsed.tags).toEqual(["bitcoin", "hardware"])
+  })
+
+  it("canonicalizes mixed-case tags from external tag-based listings", () => {
+    const parsed = parseProductEvent({
+      id: "mixed-tag-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "A listing from another Nostr client.",
+      tags: [
+        ["d", "mixed-tags"],
+        ["title", "Mixed Tags"],
+        ["price", "10", "SATS"],
+        ["t", " Bitcoin "],
+        ["t", "bitcoin"],
+        ["t", "BITCOIN"],
+        ["t", "Hardware"],
+      ],
+    })
+
+    expect(parsed.tags).toEqual(["bitcoin", "hardware"])
   })
 
   it("uses signed event identity and time over legacy JSON fields", () => {
@@ -889,7 +967,7 @@ describe("product listing event parsing", () => {
     expect(parsed.price).toBe(0)
     expect(parsed.currency).toBe("SATS")
     expect(parsed.format).toBe("digital")
-    expect(parsed.tags).toEqual(["Ecard", "Ecash"])
+    expect(parsed.tags).toEqual(["ecard", "ecash"])
     expect(parsed.images).toEqual([])
   })
 

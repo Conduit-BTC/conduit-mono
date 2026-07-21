@@ -84,6 +84,18 @@ jobs:
           permission-contents: read
           permission-secrets: write
 
+      - name: Verify repository auth secret update access
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          if ! gh api --silent "repos/${GITHUB_REPOSITORY}/actions/secrets/${AUTH_SECRET_NAME}"; then
+            echo "${AUTH_SECRET_NAME} must exist as a repository secret that the workflow GitHub App can update."
+            exit 1
+          fi
+
       - name: Refresh CODEX_AUTH_JSON
         if: env.AUTH_SECRET_NAME == 'CODEX_AUTH_JSON'
         uses: sudden-network/agent@v1.14.0
