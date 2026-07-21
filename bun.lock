@@ -46,7 +46,7 @@
         "@nostr-dev-kit/ndk": "^3.0.3",
         "@tanstack/react-query": "^5.101.0",
         "@tanstack/react-router": "^1.170.16",
-        "lucide-react": "^1.24.0",
+        "lucide-react": "^1.25.0",
         "nostr-tools": "2.23.9",
         "qrcode.react": "^4.2.0",
         "react": "^19.2.7",
@@ -81,7 +81,7 @@
         "@tanstack/react-query": "^5.101.0",
         "@tanstack/react-router": "^1.170.16",
         "country-list": "^2.4.1",
-        "lucide-react": "^1.24.0",
+        "lucide-react": "^1.25.0",
         "react": "^19.2.7",
         "react-dom": "^19.2.7",
         "react-hook-form": "^7.81.0",
@@ -174,7 +174,7 @@
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "cmdk": "^1.1.1",
-        "lucide-react": "^1.24.0",
+        "lucide-react": "^1.25.0",
         "qrcode.react": "^4.2.0",
         "tailwind-merge": "^3.6.0",
       },
@@ -992,7 +992,7 @@
 
     "lru-cache": ["lru-cache@5.1.1", "", { "dependencies": { "yallist": "^3.0.2" } }, "sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w=="],
 
-    "lucide-react": ["lucide-react@1.24.0", "", { "peerDependencies": { "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0" } }, "sha512-YT6mBD8lGKkg4nM39enlm94/sfJIiW0YKUT60fBy4YK8tai31ylg1VhGNWxkpSKHo9UagfnZqwIff3HTDQwXeA=="],
+    "lucide-react": ["lucide-react@1.25.0", "", { "peerDependencies": { "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0" } }, "sha512-/mdJTRbiwcLOQ1NZZK1amZF9rIZyvO18D6r9TngE6TG1NmqHgFuT4eE7Xrkm9UsXMbBJD1NlfwHVltCDWHrOTw=="],
 
     "magic-string": ["magic-string@0.30.21", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.5" } }, "sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ=="],
 
