@@ -1,7 +1,3 @@
-import { schnorr } from "@noble/curves/secp256k1.js"
-import { hexToBytes } from "@noble/curves/utils.js"
-import { sha256 } from "@noble/hashes/sha2.js"
-
 import {
   getShippingCostSats,
   isFiatCurrencyCode,
@@ -13,16 +9,15 @@ import { encodeLnurl, isValidLud16Address } from "./lightning"
 import { evaluateListingSafety } from "./listing-safety"
 import { parseProductEvent } from "./products"
 import type { AnonZapRequestDraft } from "./anon-zap"
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 
-export type SignedPublicNostrEvent = {
-  id: string
-  pubkey: string
-  created_at: number
-  kind: number
-  tags: string[][]
-  content: string
-  sig: string
-}
+export {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 
 export type AnonZapCheckoutItem = {
   productAddress: string
@@ -92,57 +87,6 @@ export function buildAnonZapCheckoutContent(itemCount: number): string {
   return `Zapped out ${itemCount} ${
     itemCount === 1 ? "item" : "items"
   } at https://shop.conduit.market/`
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
-    ""
-  )
-}
-
-function computeEventId(event: SignedPublicNostrEvent): string {
-  const serialized = JSON.stringify([
-    0,
-    event.pubkey,
-    event.created_at,
-    event.kind,
-    event.tags,
-    event.content,
-  ])
-  return bytesToHex(sha256(new TextEncoder().encode(serialized)))
-}
-
-export function isValidSignedPublicNostrEvent(
-  event: SignedPublicNostrEvent
-): boolean {
-  try {
-    if (
-      !HEX_64.test(event.id) ||
-      !HEX_64.test(event.pubkey) ||
-      !/^[0-9a-f]{128}$/i.test(event.sig) ||
-      !Number.isSafeInteger(event.created_at) ||
-      event.created_at <= 0 ||
-      !Number.isSafeInteger(event.kind) ||
-      typeof event.content !== "string" ||
-      !Array.isArray(event.tags) ||
-      event.tags.some(
-        (tag) =>
-          !Array.isArray(tag) ||
-          tag.length === 0 ||
-          tag.some((value) => typeof value !== "string")
-      )
-    ) {
-      return false
-    }
-    if (computeEventId(event) !== event.id.toLowerCase()) return false
-    return schnorr.verify(
-      hexToBytes(event.sig),
-      hexToBytes(event.id),
-      hexToBytes(event.pubkey)
-    )
-  } catch {
-    return false
-  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

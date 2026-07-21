@@ -132,10 +132,33 @@ Merchant Portal publish validation requires a title, positive price, HTTPS image
 URL, and at least 3 distinct tags. Tags serve both as the merchant's store
 categories and as buyer search terms, so merchants should reuse a consistent
 organization strategy across listings and aim for 5 to 12 relevant tags. The
-hard limit is 24 tags, with 40 characters allowed per tag. Tags are trimmed and
-deduplicated case-insensitively. Summary remains optional. These are Merchant
-input constraints, not NIP-99 or GammaMarkets protocol limits; publishing
-preserves one `t` tag per accepted product tag.
+hard limit is 24 tags, with 40 characters allowed per tag. Summary remains
+optional. These are Merchant input constraints, not NIP-99 or GammaMarkets
+protocol limits.
+
+Product `t` tags follow the NIP-24 lowercase hashtag requirement. A shared Core
+normalizer trims values, lowercases them, removes blanks, and deduplicates them
+in first-seen canonical order. Merchant applies that same contract to imported
+legacy JSON, received `t` tags, locally cached product projections, form state,
+and publishing. Prepared product models and editor chips use the canonical
+lowercase values without display-only title casing. Raw event values may remain
+available only as raw/provenance data. Publishing emits one `t` tag per
+canonical product tag, so editing and republishing a legacy listing also
+migrates its public tags to the canonical form.
+
+Product tag entry is an editable multi-value combobox. While the merchant types
+a non-empty value, it may suggest canonical tags from the signed-in merchant's
+already-loaded product catalog without starting another relay query. Suggestions
+exclude selected tags and are labeled `From your catalog`. Matching prefix
+values rank first, followed by catalog usage count and then alphabetically.
+Selecting a suggestion adds it as a chip, but unmatched freeform values remain
+valid. A non-empty draft commits through the same normalization and validation
+path when the merchant presses Enter, submits the form, or leaves the field, so
+typed tags are not lost on blur. The combobox supports pointer and touch
+selection without premature blur commit, Arrow key navigation, Escape to close,
+IME-safe input, and the WAI-ARIA editable-combobox contract. Empty and no-match
+states do not render a popup, and the popup remains contained by the product
+dialog on narrow viewports.
 
 Conduit-generated product events also include checkout zap policy tags:
 

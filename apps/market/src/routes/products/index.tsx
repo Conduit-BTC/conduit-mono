@@ -473,7 +473,7 @@ function ProductsPage() {
                     >
                       <Badge
                         variant={option.selected ? "default" : "outline"}
-                        className="gap-1.5 cursor-pointer capitalize transition-colors hover:border-secondary-400 hover:text-[var(--text-primary)]"
+                        className="gap-1.5 cursor-pointer transition-colors hover:border-secondary-400 hover:text-[var(--text-primary)]"
                       >
                         <span>{option.label}</span>
                         <span
@@ -653,7 +653,7 @@ function ProductsPage() {
       {selectedTags.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">
           {selectedTags.map((tag) => (
-            <Badge key={tag} variant="secondary" className="gap-1.5 capitalize">
+            <Badge key={tag} variant="secondary" className="gap-1.5">
               {tag}
               <FilterRemoveButton
                 label={`Remove ${tag} filter`}

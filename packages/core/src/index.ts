@@ -132,6 +132,7 @@ export {
   type StoredOrder,
   type StoredMessage,
   type CachedProduct,
+  type CachedProductTombstone,
   type CachedProfile,
   type CachedOrderMessage,
   type CachedNip05Verification,

@@ -282,3 +282,4 @@ Pull request required for all changes.
 - Use `.github/pull_request_template.md` for all PRs
 - For non-trivial internal work, put the implementation plan on the Linear issue and keep private tracker context out of the public PR
 - Add public-safe `docs/knowledge/*.md` context in the implementation PR when it will help future agents or contributors; specs are not required by default
+- When an implementation PR completes an issue, include `Resolves CND-...`, relevant demo evidence for user-visible behavior, and a concise area where reviewer feedback is especially useful
