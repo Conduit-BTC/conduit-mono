@@ -53,6 +53,7 @@ import {
   getProfileNip05,
 } from "../../components/MerchantIdentity"
 import { MerchantTrustSummary } from "../../components/MerchantTrustSummary"
+import { ProfileBanner } from "../../components/ProfileBanner"
 import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
 import { useCart } from "../../hooks/useCart"
 import { useMerchantTrustContext } from "../../hooks/useMerchantTrustContext"
@@ -136,7 +137,7 @@ function CategoryFacetButton({
       onClick={onToggle}
       aria-pressed={option.selected}
       className={[
-        "inline-flex min-w-0 max-w-full items-center rounded-full border px-3 py-2 text-left text-sm font-medium capitalize transition-colors",
+        "inline-flex min-w-0 max-w-full items-center rounded-full border px-3 py-2 text-left text-sm font-medium transition-colors",
         option.selected
           ? "border-primary-500/70 bg-primary-500 font-semibold text-white shadow-[0_12px_28px_color-mix(in_srgb,var(--primary-500)_24%,transparent)]"
           : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
@@ -443,11 +444,12 @@ function StorefrontPage() {
       </div>
 
       <section className="max-w-full overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)]">
-        <div className="relative px-5 py-6 sm:px-6 sm:py-7">
-          <div className="relative space-y-5">
+        <ProfileBanner src={profile?.banner} />
+        <div className="relative px-5 pb-6 sm:px-6 sm:pb-7">
+          <div className="relative -mt-10 space-y-5 sm:-mt-14">
             <div className="flex min-w-0 flex-wrap items-start gap-x-6 gap-y-5">
               <div className="flex min-w-0 flex-1 basis-full items-start gap-3 sm:basis-[28rem] sm:gap-4 lg:basis-[34rem]">
-                <Avatar className="h-20 w-20 shrink-0 self-start border border-[var(--border)] shadow-[var(--shadow-lg)] sm:h-28 sm:w-28">
+                <Avatar className="h-20 w-20 shrink-0 self-start border-4 border-[var(--surface)] bg-[var(--surface)] shadow-[var(--shadow-lg)] sm:h-28 sm:w-28">
                   <AvatarImage
                     src={profile?.picture}
                     alt={merchantName}
@@ -458,7 +460,7 @@ function StorefrontPage() {
                   </AvatarFallback>
                 </Avatar>
 
-                <div className="min-w-0 flex-1">
+                <div className="min-w-0 flex-1 pt-11 sm:pt-16">
                   <div className="flex min-w-0 items-center gap-2">
                     {merchantIdentityPending ? (
                       <h1 className="min-w-0 max-w-full truncate pb-1 text-3xl font-semibold leading-[1.16] tracking-tight text-[var(--text-primary)] sm:text-[2.6rem]">
@@ -507,7 +509,7 @@ function StorefrontPage() {
                 </div>
               </div>
 
-              <div className="flex w-full min-w-0 max-w-full flex-wrap items-center justify-start gap-3 sm:ml-auto sm:w-auto sm:justify-end">
+              <div className="flex w-full min-w-0 max-w-full flex-wrap items-center justify-start gap-3 sm:ml-auto sm:w-auto sm:justify-end lg:pt-16">
                 <Button
                   variant="outline"
                   className="h-11 max-w-full shrink-0 border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]"

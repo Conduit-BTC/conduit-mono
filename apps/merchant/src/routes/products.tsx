@@ -9,6 +9,8 @@ import {
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
   appendConduitClientTag,
   buildProductListingEventDraft,
+  cacheSignedProductDeletionEvent,
+  cacheSignedProductListingEvent,
   canonicalizeProductPrice,
   evaluateListingSafety,
   getCachedMerchantStorefront,
@@ -18,10 +20,12 @@ import {
   getProductPriceDisplay,
   publishWithPlanner,
   requireNdkConnected,
+  RelayPublishDiagnosticsError,
   type CommerceResult,
   type ListingSafetyEvaluation,
   type ProductSchema,
   type ProductZapMessagePolicy,
+  type PublishWithPlannerResult,
   useAuth,
 } from "@conduit/core"
 import {
@@ -72,6 +76,16 @@ import {
   normalizePublishableProductPrice,
   parsePlainDecimalAmount,
 } from "../lib/productPriceForm"
+import { buildProductTagCatalog } from "../lib/productTagSuggestions"
+import {
+  buildLocalProductDeliveryNotice,
+  buildLocalProductRetryNotice,
+  buildProductDeliveryNotice,
+  formatProductRelayUrls,
+  getProductDeliveryNoticeVariant,
+  type ProductDeliveryNotice,
+  type ProductWriteAction,
+} from "../lib/product-delivery"
 import {
   isShippingComplete,
   loadShippingConfig,
@@ -95,6 +109,51 @@ type MerchantProduct = {
 }
 
 type ProductFormState = MerchantProductFormValues
+
+type ProductPublishMutationPayload = {
+  merchantPubkey: string
+  form: ProductFormState
+  dTag: string
+  existing?: MerchantProduct
+  signedEvent?: NDKEvent
+  previousNotice?: ProductDeliveryNotice
+}
+
+type ProductDeleteMutationPayload = {
+  product: MerchantProduct
+  signedEvent?: NDKEvent
+  previousNotice?: ProductDeliveryNotice
+}
+
+type ProductDeliveryRetryState =
+  | { action: "publish"; payload: ProductPublishMutationPayload }
+  | { action: "delete"; payload: ProductDeleteMutationPayload }
+
+class SignedProductDeliveryError extends Error {
+  readonly deliveryCause: unknown
+
+  constructor(deliveryCause: unknown) {
+    super("Signed product event could not be delivered")
+    this.name = "SignedProductDeliveryError"
+    this.deliveryCause = deliveryCause
+  }
+}
+
+function asSignedProductDeliveryError(
+  error: unknown
+): SignedProductDeliveryError {
+  return error instanceof SignedProductDeliveryError
+    ? error
+    : new SignedProductDeliveryError(error)
+}
+
+function getRelayPublishDiagnosticsError(
+  error: unknown
+): RelayPublishDiagnosticsError | null {
+  const cause =
+    error instanceof SignedProductDeliveryError ? error.deliveryCause : error
+  return cause instanceof RelayPublishDiagnosticsError ? cause : null
+}
 
 type ProductSort = "updated_desc" | "title_asc" | "price_asc" | "price_desc"
 
@@ -244,6 +303,11 @@ function getPublishErrorMessage(
     action === "delete"
       ? "Failed to delete listing"
       : "Failed to publish listing"
+  if (error instanceof SignedProductDeliveryError) {
+    return action === "delete"
+      ? "Delete saved locally. Relay delivery needs retry."
+      : "Publish saved locally. Relay delivery needs retry."
+  }
   if (!(error instanceof Error)) return fallback
 
   if (
@@ -257,6 +321,93 @@ function getPublishErrorMessage(
   }
 
   return error.message
+}
+
+function ProductDeliveryStatusNotice({
+  notice,
+  onDismiss,
+  onRetry,
+}: {
+  notice: ProductDeliveryNotice
+  onDismiss: () => void
+  onRetry?: () => void
+}) {
+  const showRelayDetails =
+    notice.attemptedRelayUrls.length > 0 ||
+    notice.successfulRelayUrls.length > 0 ||
+    notice.failedRelayUrls.length > 0
+
+  return (
+    <div className="rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0" role="status" aria-live="polite">
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusPill
+              variant={getProductDeliveryNoticeVariant(notice.state)}
+              className="text-[10px]"
+            >
+              {notice.state === "delivering"
+                ? "Delivering"
+                : notice.state === "delivered"
+                  ? "Delivered"
+                  : notice.state === "partial"
+                    ? "Partial"
+                    : "Retry needed"}
+            </StatusPill>
+            <div className="font-medium text-[var(--text-primary)]">
+              {notice.title}
+            </div>
+          </div>
+          <p className="mt-2 leading-6">{notice.detail}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {onRetry && (
+            <Button
+              type="button"
+              size="sm"
+              className="h-8 px-3 text-xs"
+              onClick={onRetry}
+            >
+              Retry delivery
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 px-3 text-xs"
+            onClick={onDismiss}
+          >
+            Dismiss
+          </Button>
+        </div>
+      </div>
+      {showRelayDetails && (
+        <div className="mt-3 grid gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 text-xs leading-5">
+          <div className="break-all">
+            <span className="font-medium text-[var(--text-primary)]">
+              Attempted:
+            </span>{" "}
+            {formatProductRelayUrls(notice.attemptedRelayUrls)}
+          </div>
+          <div className="break-all">
+            <span className="font-medium text-[var(--text-primary)]">
+              ACKed:
+            </span>{" "}
+            {formatProductRelayUrls(notice.successfulRelayUrls)}
+          </div>
+          {notice.failedRelayUrls.length > 0 && (
+            <div className="break-all">
+              <span className="font-medium text-[var(--text-primary)]">
+                Needs retry:
+              </span>{" "}
+              {formatProductRelayUrls(notice.failedRelayUrls)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function getStatusPillVariant(
@@ -405,11 +556,29 @@ async function fetchCachedMerchantProducts(
   }
 }
 
+async function deliverSignedProductEvent(
+  event: NDKEvent,
+  merchantPubkey: string
+): Promise<PublishWithPlannerResult> {
+  try {
+    return await publishWithPlanner(event, {
+      intent: "author_event",
+      authorPubkey: merchantPubkey,
+      authenticatedPubkey: merchantPubkey,
+      deliveryMode: "critical",
+    })
+  } catch (error) {
+    throw asSignedProductDeliveryError(error)
+  }
+}
+
 async function publishProduct(
   merchantPubkey: string,
   form: ProductFormState,
+  dTag: string,
+  onSignedLocal: (event: NDKEvent) => Promise<void>,
   existing?: MerchantProduct
-): Promise<void> {
+): Promise<PublishWithPlannerResult> {
   const formValidation = validateProductPublishForm(form, {
     hasPresetShippingZone: isShippingComplete(
       loadShippingConfig(merchantPubkey)
@@ -477,8 +646,6 @@ async function publishProduct(
     throw new Error("Image URL must start with https://")
   }
 
-  const dTag =
-    existing?.dTag ?? `${slugify(title) || "product"}-${randomSuffix()}`
   const now = Date.now()
   const tags = formValidation.tags
 
@@ -517,20 +684,26 @@ async function publishProduct(
   event.tags = draft.tags
 
   await event.sign(ndk.signer)
-  await publishWithPlanner(event, {
-    intent: "author_event",
-    authorPubkey: signerPubkey,
-    authenticatedPubkey: signerPubkey,
-    deliveryMode: "critical",
-  })
+  await cacheSignedProductListingEvent(event)
+  try {
+    await onSignedLocal(event)
+    return await deliverSignedProductEvent(event, signerPubkey)
+  } catch (error) {
+    throw asSignedProductDeliveryError(error)
+  }
 }
 
 async function deleteProduct(
   merchantPubkey: string,
-  product: MerchantProduct
-): Promise<void> {
+  product: MerchantProduct,
+  onSignedLocal: (event: NDKEvent) => Promise<void>
+): Promise<PublishWithPlannerResult> {
   const ndk = await requireNdkConnected()
   if (!ndk.signer) throw new Error("Signer not connected")
+  const signerPubkey = (await ndk.signer.user()).pubkey
+  if (signerPubkey !== merchantPubkey) {
+    throw new Error("Active signer does not match current merchant pubkey")
+  }
   if (product.product.pubkey !== merchantPubkey) {
     throw new Error(
       "Product pubkey mismatch; refusing to publish deletion event"
@@ -549,15 +722,16 @@ async function deleteProduct(
     tags.push(["a", `30402:${product.product.pubkey}:${product.dTag}`])
   }
   deletion.tags = appendConduitClientTag(tags, "merchant")
-  deletion.content = `Delete product ${product.addressId}`
+  deletion.content = ""
 
   await deletion.sign(ndk.signer)
-  await publishWithPlanner(deletion, {
-    intent: "author_event",
-    authorPubkey: merchantPubkey,
-    authenticatedPubkey: merchantPubkey,
-    deliveryMode: "critical",
-  })
+  await cacheSignedProductDeletionEvent(deletion)
+  try {
+    await onSignedLocal(deletion)
+    return await deliverSignedProductEvent(deletion, merchantPubkey)
+  } catch (error) {
+    throw asSignedProductDeliveryError(error)
+  }
 }
 
 function ProductsPage() {
@@ -575,6 +749,10 @@ function ProductsPage() {
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedTag, setSelectedTag] = useState("all")
   const [sortOrder, setSortOrder] = useState<ProductSort>("updated_desc")
+  const [productDeliveryNotice, setProductDeliveryNotice] =
+    useState<ProductDeliveryNotice | null>(null)
+  const [productDeliveryRetry, setProductDeliveryRetry] =
+    useState<ProductDeliveryRetryState | null>(null)
 
   const productsQuery = useQuery({
     queryKey: ["merchant-products-live", pubkey ?? "none"],
@@ -595,44 +773,133 @@ function ProductsPage() {
   const shippingConfig = loadShippingConfig(pubkey)
   const hasPresetShippingZone = isShippingComplete(shippingConfig)
 
+  async function refreshProductQueries(): Promise<void> {
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: ["merchant-products", pubkey ?? "none"],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["merchant-products-live", pubkey ?? "none"],
+      }),
+    ])
+  }
+
+  async function showLocalProductProjection(
+    action: ProductWriteAction,
+    merchantPubkey: string
+  ): Promise<void> {
+    const localResult = await fetchCachedMerchantProducts(merchantPubkey)
+    queryClient.setQueryData(["merchant-products", merchantPubkey], localResult)
+    queryClient.setQueryData(
+      ["merchant-products-live", merchantPubkey],
+      localResult
+    )
+    setProductDeliveryNotice(buildLocalProductDeliveryNotice(action))
+  }
+
+  function completeLocalProductSave(
+    variables: ProductPublishMutationPayload
+  ): void {
+    const draftCleared = productDraftStoreRef.current.clear(
+      getProductDraftTarget(
+        variables.merchantPubkey,
+        variables.existing ?? null
+      )
+    )
+    setEditing(null)
+    setActiveProductDraftTarget(null)
+    setForm(createEmptyProductForm(hasPresetShippingZone))
+    setProductDialogOpen(false)
+    setDraftStorageAvailable(draftCleared)
+  }
+
   const saveMutation = useMutation({
-    mutationFn: async (payload: {
-      merchantPubkey: string
-      form: ProductFormState
-      existing?: MerchantProduct
-    }) => {
-      await publishProduct(
+    mutationFn: async (payload: ProductPublishMutationPayload) => {
+      if (payload.signedEvent) {
+        return deliverSignedProductEvent(
+          payload.signedEvent,
+          payload.merchantPubkey
+        )
+      }
+
+      return publishProduct(
         payload.merchantPubkey,
         payload.form,
+        payload.dTag,
+        async (event) => {
+          setProductDeliveryRetry({
+            action: "publish",
+            payload: { ...payload, signedEvent: event },
+          })
+          completeLocalProductSave(payload)
+          await showLocalProductProjection("publish", payload.merchantPubkey)
+        },
         payload.existing
       )
     },
-    onSuccess: async (_data, variables) => {
-      const draftCleared = productDraftStoreRef.current.clear(
-        getProductDraftTarget(
-          variables.merchantPubkey,
-          variables.existing ?? null
-        )
+    onMutate: (payload) => {
+      if (!payload.signedEvent) setProductDeliveryRetry(null)
+      setProductDeliveryNotice(
+        payload.signedEvent ? buildLocalProductDeliveryNotice("publish") : null
       )
-      setEditing(null)
-      setActiveProductDraftTarget(null)
-      setForm(createEmptyProductForm(hasPresetShippingZone))
-      setProductDialogOpen(false)
-      setDraftStorageAvailable(draftCleared)
-      await queryClient.invalidateQueries({
-        queryKey: ["merchant-products", pubkey ?? "none"],
-      })
-      await queryClient.invalidateQueries({
-        queryKey: ["merchant-products-live", pubkey ?? "none"],
-      })
+    },
+    onSuccess: async (data, variables) => {
+      const notice = buildProductDeliveryNotice(
+        "publish",
+        data,
+        variables.previousNotice
+      )
+      setProductDeliveryNotice(notice)
+      if (notice.failedRelayUrls.length === 0) setProductDeliveryRetry(null)
+      await refreshProductQueries()
+    },
+    onError: async (error, variables) => {
+      const diagnosticsError = getRelayPublishDiagnosticsError(error)
+      if (diagnosticsError) {
+        setProductDeliveryNotice(
+          buildProductDeliveryNotice(
+            "publish",
+            diagnosticsError.diagnostics,
+            variables.previousNotice
+          )
+        )
+      } else if (error instanceof SignedProductDeliveryError) {
+        setProductDeliveryNotice(
+          variables.previousNotice ?? buildLocalProductRetryNotice("publish")
+        )
+      } else {
+        setProductDeliveryNotice((current) =>
+          current?.action === "publish" && current.state === "delivering"
+            ? buildLocalProductRetryNotice("publish")
+            : current
+        )
+      }
+      await refreshProductQueries()
     },
   })
 
   const deleteMutation = useMutation({
-    mutationFn: async (product: MerchantProduct) => {
-      await deleteProduct(pubkey!, product)
+    mutationFn: async (payload: ProductDeleteMutationPayload) => {
+      if (payload.signedEvent) {
+        return deliverSignedProductEvent(payload.signedEvent, pubkey!)
+      }
+
+      return deleteProduct(pubkey!, payload.product, async (event) => {
+        setProductDeliveryRetry({
+          action: "delete",
+          payload: { ...payload, signedEvent: event },
+        })
+        await showLocalProductProjection("delete", pubkey!)
+      })
     },
-    onSuccess: async (_data, product) => {
+    onMutate: (payload) => {
+      if (!payload.signedEvent) setProductDeliveryRetry(null)
+      setProductDeliveryNotice(
+        payload.signedEvent ? buildLocalProductDeliveryNotice("delete") : null
+      )
+    },
+    onSuccess: async (data, variables) => {
+      const { product } = variables
       const draftCleared = productDraftStoreRef.current.clear(
         getProductDraftTarget(product.product.pubkey, product)
       )
@@ -642,14 +909,66 @@ function ProductsPage() {
         setForm(createEmptyProductForm(hasPresetShippingZone))
         setDraftStorageAvailable(draftCleared)
       }
-      await queryClient.invalidateQueries({
-        queryKey: ["merchant-products", pubkey ?? "none"],
-      })
-      await queryClient.invalidateQueries({
-        queryKey: ["merchant-products-live", pubkey ?? "none"],
-      })
+      const notice = buildProductDeliveryNotice(
+        "delete",
+        data,
+        variables.previousNotice
+      )
+      setProductDeliveryNotice(notice)
+      if (notice.failedRelayUrls.length === 0) setProductDeliveryRetry(null)
+      await refreshProductQueries()
+    },
+    onError: async (error, variables) => {
+      const diagnosticsError = getRelayPublishDiagnosticsError(error)
+      if (diagnosticsError) {
+        setProductDeliveryNotice(
+          buildProductDeliveryNotice(
+            "delete",
+            diagnosticsError.diagnostics,
+            variables.previousNotice
+          )
+        )
+      } else if (error instanceof SignedProductDeliveryError) {
+        setProductDeliveryNotice(
+          variables.previousNotice ?? buildLocalProductRetryNotice("delete")
+        )
+      } else {
+        setProductDeliveryNotice((current) =>
+          current?.action === "delete" && current.state === "delivering"
+            ? buildLocalProductRetryNotice("delete")
+            : current
+        )
+      }
+      await refreshProductQueries()
     },
   })
+
+  const productDeliveryCanRetry =
+    (productDeliveryNotice?.state === "partial" ||
+      productDeliveryNotice?.state === "retry_needed") &&
+    productDeliveryRetry?.action === productDeliveryNotice.action
+
+  function retryProductDelivery(): void {
+    if (productDeliveryRetry?.action === "delete") {
+      if (productDeliveryRetry.payload.signedEvent) {
+        deleteMutation.mutate({
+          ...productDeliveryRetry.payload,
+          previousNotice: productDeliveryNotice ?? undefined,
+        })
+      }
+      return
+    }
+
+    if (
+      productDeliveryRetry?.action === "publish" &&
+      productDeliveryRetry.payload.signedEvent
+    ) {
+      saveMutation.mutate({
+        ...productDeliveryRetry.payload,
+        previousNotice: productDeliveryNotice ?? undefined,
+      })
+    }
+  }
 
   const isSaving = saveMutation.isPending
   const isDeleting = deleteMutation.isPending
@@ -702,20 +1021,10 @@ function ProductsPage() {
   const productsInitialLoading =
     productsQuery.isLoading && cachedProductsQuery.isLoading
 
-  const tagFilters = useMemo(() => {
-    const tagCounts = new Map<string, number>()
-    for (const item of merchantProducts) {
-      for (const tag of item.product.tags) {
-        const normalized = tag.trim()
-        if (!normalized) continue
-        tagCounts.set(normalized, (tagCounts.get(normalized) ?? 0) + 1)
-      }
-    }
-
-    return Array.from(tagCounts.entries())
-      .map(([tag, count]) => ({ tag, count }))
-      .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
-  }, [merchantProducts])
+  const tagFilters = useMemo(
+    () => buildProductTagCatalog(merchantProducts.map((item) => item.product)),
+    [merchantProducts]
+  )
 
   const visibleProducts = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -1006,15 +1315,32 @@ function ProductsPage() {
         <SignedActionStatus
           state={
             isDeleting
-              ? "awaiting_signature"
+              ? productDeliveryNotice?.action === "delete"
+                ? "publishing"
+                : "awaiting_signature"
               : deleteMutation.error
                 ? "error"
                 : "idle"
           }
-          awaitingSignatureMessage="Confirm the deletion event in your signer. The listing will disappear after relay publish finishes."
+          awaitingSignatureMessage="Confirm the deletion event in your signer. The listing will hide locally while relay delivery runs."
+          publishingMessage="The signed tombstone is active locally. Delivering it to relays."
           errorMessage={getPublishErrorMessage(deleteMutation.error, "delete")}
           className="mt-2"
         />
+        {productDeliveryNotice && (
+          <div className="mt-3">
+            <ProductDeliveryStatusNotice
+              notice={productDeliveryNotice}
+              onDismiss={() => {
+                setProductDeliveryNotice(null)
+                setProductDeliveryRetry(null)
+              }}
+              onRetry={
+                productDeliveryCanRetry ? retryProductDelivery : undefined
+              }
+            />
+          </div>
+        )}
       </section>
 
       <section className="space-y-4">
@@ -1139,7 +1465,7 @@ function ProductsPage() {
                           const ok = window.confirm(
                             `Delete "${item.product.title}"?`
                           )
-                          if (ok) deleteMutation.mutate(item)
+                          if (ok) deleteMutation.mutate({ product: item })
                         }}
                       >
                         {isDeleting ? "..." : "Delete"}
@@ -1195,6 +1521,9 @@ function ProductsPage() {
               saveMutation.mutate({
                 merchantPubkey: pubkey,
                 form,
+                dTag:
+                  editing?.dTag ??
+                  `${slugify(form.title.trim()) || "product"}-${randomSuffix()}`,
                 existing: editing ?? undefined,
               })
             }}
@@ -1569,6 +1898,7 @@ function ProductsPage() {
                 id="product-tags"
                 value={form.tags}
                 onChange={(tags) => setForm((prev) => ({ ...prev, tags }))}
+                catalogTags={tagFilters}
                 errorMessage={productTagFieldError}
                 placeholder="gear, hardware, demo"
               />
@@ -1577,7 +1907,9 @@ function ProductsPage() {
             <SignedActionStatus
               state={
                 isSaving
-                  ? "awaiting_signature"
+                  ? productDeliveryNotice?.action === "publish"
+                    ? "publishing"
+                    : "awaiting_signature"
                   : saveMutation.error
                     ? "error"
                     : !productFormValidation.canPublish || hasProductChanges
@@ -1585,7 +1917,8 @@ function ProductsPage() {
                       : "idle"
               }
               dirtyMessage={productStatusMessage}
-              awaitingSignatureMessage="Confirm the product listing in your signer. It will close after relay publish finishes."
+              awaitingSignatureMessage="Confirm the product listing in your signer. It will save locally while relay delivery runs."
+              publishingMessage="The signed listing is visible locally. Delivering it to relays."
               errorMessage={getPublishErrorMessage(
                 saveMutation.error,
                 "publish"

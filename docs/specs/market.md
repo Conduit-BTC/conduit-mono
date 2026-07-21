@@ -28,6 +28,20 @@ Use Figma MCP tools to extract design context for screen work. Do not rely on ol
 4. View merchant context on `/store/$pubkey`
 5. Add items to cart
 
+#### Product tag normalization
+
+Product `t` tags follow the NIP-24 lowercase hashtag requirement. Every product
+ingress path uses the shared Core normalizer to trim values, lowercase them,
+remove blanks, and deduplicate them in first-seen canonical order. This applies
+equally to legacy JSON content and GammaMarkets/NIP-99 kind `30402` `t` tags.
+
+Prepared product models, including projections read from an existing IndexedDB
+cache, expose only canonical lowercase tags. Raw event values may remain
+available only as raw/provenance data. Search, tag filters, facet counts, and
+shopper-facing tag chips consume the canonical values directly without
+display-only title casing, so legacy mixed-case variants resolve to one category
+without requiring shoppers to clear local storage.
+
 #### Discovery ordering
 
 The default Market catalog is a network-discovery surface, not a strictly
