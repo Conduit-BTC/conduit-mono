@@ -9,7 +9,6 @@ import {
   formatNpub,
   getCachedMerchantConversationList,
   getCurrencyAmountStep,
-  getProfileName,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
   getMerchantOrderActions,
@@ -23,6 +22,7 @@ import {
   normalizeSafeHttpUrl,
   nwcMakeInvoice,
   publishMerchantOrderMessage,
+  pubkeyToNpub,
   weblnMakeInvoice,
   type MerchantConversationSummary,
   type MerchantOrderAction,
@@ -61,12 +61,14 @@ import { requireAuth } from "../lib/auth"
 import { OrderCardScroller } from "../components/OrderCardScroller"
 import { BuyerAvatar, OrderListItem } from "../components/OrderListItem"
 import {
+  getMerchantBuyerDisplayName,
   getMerchantConversationQueue,
   getMerchantConversationCommunication,
   getMerchantConversationState,
   getMerchantConversationStatusDisplay,
   getMerchantOrderRequiresShipping,
   getMerchantOrderSummary,
+  isMerchantGuestOrder,
   isOrderQueueTab,
   isMerchantConversationActiveFulfillment,
   ORDER_PHASE_OPTIONS,
@@ -121,10 +123,6 @@ function normalizeInvoiceCurrencyChoice(
   if (normalized === "SAT" || normalized === "SATS") return "SATS"
   if (normalized === "USD") return "USD"
   return ""
-}
-
-function getDisplayName(profile: Profile | undefined, pubkey: string): string {
-  return getProfileName(profile) || formatNpub(pubkey, 8)
 }
 
 const panelCard =
@@ -247,14 +245,12 @@ function OrderPhaseFilter({
 function MobileOrdersScroller({
   conversations,
   selectedId,
-  buyerName,
-  buyerPicture,
+  buyerProfiles,
   onSelect,
 }: {
   conversations: MerchantConversationSummary[]
   selectedId: string | null
-  buyerName: (pubkey: string) => string
-  buyerPicture: (pubkey: string) => string | undefined
+  buyerProfiles: Record<string, Profile | undefined>
   onSelect: (id: string) => void
 }) {
   return (
@@ -267,8 +263,17 @@ function MobileOrdersScroller({
         <OrderCardScroller
           conversations={conversations}
           selectedId={selectedId}
-          buyerName={buyerName}
-          buyerPicture={buyerPicture}
+          buyerName={(_, conversation) =>
+            getMerchantBuyerDisplayName(
+              conversation,
+              buyerProfiles[conversation.buyerPubkey]
+            )
+          }
+          buyerPicture={(pubkey, conversation) =>
+            isMerchantGuestOrder(conversation)
+              ? undefined
+              : buyerProfiles[pubkey]?.picture
+          }
           onSelect={(conversation) => onSelect(conversation.id)}
         />
       )}
@@ -491,11 +496,7 @@ function OrdersPage() {
       Array.from(
         new Set(
           conversations
-            .filter(
-              (conversation) =>
-                getMerchantOrderSummary(conversation).buyerIdentityKind !==
-                "guest_ephemeral"
-            )
+            .filter((conversation) => !isMerchantGuestOrder(conversation))
             .map((conversation) => conversation.buyerPubkey)
             .filter(Boolean)
         )
@@ -587,9 +588,9 @@ function OrdersPage() {
         return false
       }
       if (!query) return true
-      const buyerName = getDisplayName(
-        buyerProfiles?.[conversation.buyerPubkey],
-        conversation.buyerPubkey
+      const buyerName = getMerchantBuyerDisplayName(
+        conversation,
+        buyerProfiles?.[conversation.buyerPubkey]
       )
       const orderMessage = (conversation.messages ?? []).find(
         (message) => message.type === "order"
@@ -604,6 +605,7 @@ function OrdersPage() {
         .join(" ")
       return [
         buyerName,
+        pubkeyToNpub(conversation.buyerPubkey),
         conversation.orderId,
         conversation.buyerPubkey,
         conversation.preview,
@@ -616,23 +618,6 @@ function OrdersPage() {
         .includes(query)
     })
   }, [conversations, orderSearch, phaseTab, buyerProfiles, productSearchIndex])
-
-  const buyerNameFor = useCallback(
-    (pubkey: string) => getDisplayName(buyerProfiles?.[pubkey], pubkey),
-    [buyerProfiles]
-  )
-  const buyerNameForConversation = useCallback(
-    (conversation: MerchantConversationSummary) =>
-      getMerchantOrderSummary(conversation).buyerIdentityKind ===
-      "guest_ephemeral"
-        ? "Guest shopper"
-        : buyerNameFor(conversation.buyerPubkey),
-    [buyerNameFor]
-  )
-  const buyerPictureFor = useCallback(
-    (pubkey: string) => buyerProfiles?.[pubkey]?.picture,
-    [buyerProfiles]
-  )
 
   const selectConversation = useCallback(
     (conversationId: string) => {
@@ -744,7 +729,7 @@ function OrdersPage() {
       selected ? getMerchantConversationStatusDisplay(selected) : undefined,
     [selected]
   )
-  const isGuestOrder = orderSummary?.buyerIdentityKind === "guest_ephemeral"
+  const isGuestOrder = selected ? isMerchantGuestOrder(selected) : false
   const communicationState = selected
     ? getMerchantConversationCommunication(selected)
     : "unknown"
@@ -829,11 +814,12 @@ function OrdersPage() {
       })
     : null
 
-  const selectedBuyerProfile = selected
-    ? buyerProfilesQuery.data?.[selected.buyerPubkey]
-    : undefined
+  const selectedBuyerProfile =
+    selected && !isGuestOrder
+      ? buyerProfilesQuery.data?.[selected.buyerPubkey]
+      : undefined
   const selectedBuyerName = selected
-    ? getDisplayName(selectedBuyerProfile, selected.buyerPubkey)
+    ? getMerchantBuyerDisplayName(selected, selectedBuyerProfile)
     : null
   const awaitingInvoiceCount = useMemo(
     () =>
@@ -1238,8 +1224,7 @@ function OrdersPage() {
                 <OrderListItem
                   key={conversation.id}
                   conversation={conversation}
-                  buyerName={buyerNameForConversation(conversation)}
-                  buyerPicture={buyerPictureFor(conversation.buyerPubkey)}
+                  buyerProfile={buyerProfiles?.[conversation.buyerPubkey]}
                   active={conversation.id === selectedConversationId}
                   onClick={() => selectConversation(conversation.id)}
                 />
@@ -1266,8 +1251,7 @@ function OrdersPage() {
               <MobileOrdersScroller
                 conversations={filteredConversations}
                 selectedId={selectedConversationId}
-                buyerName={buyerNameFor}
-                buyerPicture={buyerPictureFor}
+                buyerProfiles={buyerProfiles}
                 onSelect={selectConversation}
               />
               <SheetContent
@@ -1289,8 +1273,7 @@ function OrdersPage() {
                     <OrderListItem
                       key={conversation.id}
                       conversation={conversation}
-                      buyerName={buyerNameForConversation(conversation)}
-                      buyerPicture={buyerPictureFor(conversation.buyerPubkey)}
+                      buyerProfile={buyerProfiles?.[conversation.buyerPubkey]}
                       active={conversation.id === selectedConversationId}
                       onClick={() => {
                         selectConversation(conversation.id)
@@ -1908,14 +1891,20 @@ function OrdersPage() {
                           picture={selectedBuyerProfile?.picture}
                         />
                         <div className="min-w-0 flex-1">
-                          <a
-                            href={getProfileUrl(selected.buyerPubkey)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="block truncate font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
-                          >
-                            {isGuestOrder ? "Guest shopper" : selectedBuyerName}
-                          </a>
+                          {isGuestOrder ? (
+                            <div className="truncate font-semibold text-[var(--text-primary)]">
+                              {selectedBuyerName}
+                            </div>
+                          ) : (
+                            <a
+                              href={getProfileUrl(selected.buyerPubkey)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="block truncate font-semibold text-[var(--text-primary)] underline-offset-2 hover:underline"
+                            >
+                              {selectedBuyerName}
+                            </a>
+                          )}
                           <div className="truncate font-mono text-xs text-[var(--text-muted)]">
                             {formatNpub(selected.buyerPubkey, 8)}
                           </div>
