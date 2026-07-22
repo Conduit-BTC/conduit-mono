@@ -7,7 +7,7 @@ import { parseShippingConfig } from "./readiness"
 
 // Keep the storage key stable so version 1 drafts can be migrated in place.
 const PRODUCT_DRAFT_STORAGE_PREFIX = "conduit:merchant:product_draft:v1"
-const PRODUCT_DRAFT_VERSION = 2
+const PRODUCT_DRAFT_VERSION = 3
 const CLEARED_PRODUCT_DRAFT_MARKER = "conduit:product-draft-cleared:v1"
 const LEGACY_SCIENTIFIC_AMOUNT_PATTERN = /^\d+(?:\.\d+)?e[+-]?\d+$/i
 
@@ -78,6 +78,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
     }
     if (
       (candidate.version !== 1 &&
+        candidate.version !== 2 &&
         candidate.version !== PRODUCT_DRAFT_VERSION) ||
       typeof candidate.savedAt !== "number" ||
       !Number.isFinite(candidate.savedAt) ||
@@ -135,6 +136,12 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
     if (!isPlainDecimalInput(price) || !isPlainDecimalInput(shippingCost)) {
       return null
     }
+    const stock =
+      candidate.version === PRODUCT_DRAFT_VERSION &&
+      typeof form.stock === "string"
+        ? form.stock
+        : ""
+    if (!/^\d*$/.test(stock)) return null
 
     return {
       version: PRODUCT_DRAFT_VERSION,
@@ -144,6 +151,7 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
         title: form.title as string,
         summary: form.summary as string,
         price,
+        stock,
         currency: form.currency as string,
         format: form.format,
         shippingPricingMode,
