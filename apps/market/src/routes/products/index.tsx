@@ -716,6 +716,7 @@ function ProductsPage() {
 
       {/* Empty state - filters returned nothing */}
       {!productsQuery.isInitialLoading &&
+        !productsQuery.isHydrating &&
         productData.length > 0 &&
         filtered.length === 0 && (
           <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">

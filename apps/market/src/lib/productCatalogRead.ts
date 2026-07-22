@@ -17,12 +17,7 @@ export interface ProductCatalogReadInput {
 }
 
 export type PerspectiveAuthorSource =
-  | "refreshed"
-  | "seed"
-  | "cached"
-  | "fallback"
-  | "combined"
-  | "none"
+  "refreshed" | "seed" | "cached" | "fallback" | "combined" | "none"
 
 export interface PerspectiveAuthorResolution {
   authorPubkeys: string[] | undefined
@@ -44,6 +39,19 @@ function uniquePerspectiveAuthors(
   )
     .filter((pubkey) => pubkey !== perspectivePubkey)
     .sort()
+}
+
+function includePerspectiveAuthor(
+  pubkeys: readonly string[],
+  perspectivePubkey?: string | null
+): string[] {
+  const normalizedPerspective = normalizePubkey(perspectivePubkey)
+  return Array.from(
+    new Set([
+      ...pubkeys,
+      ...(normalizedPerspective ? [normalizedPerspective] : []),
+    ])
+  ).sort()
 }
 
 export function resolvePerspectiveAuthorPubkeys(input: {
@@ -82,8 +90,11 @@ export function resolvePerspectiveAuthorPubkeys(input: {
   if (input.usesPerspectiveGraph && sourceMode === "combined") {
     if (refreshed.length > 0) {
       return {
-        authorPubkeys: uniquePerspectiveAuthors(
-          [...refreshed, ...fallback],
+        authorPubkeys: includePerspectiveAuthor(
+          uniquePerspectiveAuthors(
+            [...refreshed, ...fallback],
+            input.perspectivePubkey
+          ),
           input.perspectivePubkey
         ),
         source: fallback.length > 0 ? "combined" : "refreshed",
@@ -96,8 +107,11 @@ export function resolvePerspectiveAuthorPubkeys(input: {
     )
     if (seeded.length > 0) {
       return {
-        authorPubkeys: uniquePerspectiveAuthors(
-          [...seeded, ...fallback],
+        authorPubkeys: includePerspectiveAuthor(
+          uniquePerspectiveAuthors(
+            [...seeded, ...fallback],
+            input.perspectivePubkey
+          ),
           input.perspectivePubkey
         ),
         source: fallback.length > 0 ? "combined" : "seed",
@@ -110,8 +124,11 @@ export function resolvePerspectiveAuthorPubkeys(input: {
     )
     if (cached.length > 0) {
       return {
-        authorPubkeys: uniquePerspectiveAuthors(
-          [...cached, ...fallback],
+        authorPubkeys: includePerspectiveAuthor(
+          uniquePerspectiveAuthors(
+            [...cached, ...fallback],
+            input.perspectivePubkey
+          ),
           input.perspectivePubkey
         ),
         source: fallback.length > 0 ? "combined" : "cached",
@@ -119,7 +136,18 @@ export function resolvePerspectiveAuthorPubkeys(input: {
     }
 
     if (fallback.length > 0) {
-      return { authorPubkeys: fallback, source: "fallback" }
+      return {
+        authorPubkeys: includePerspectiveAuthor(
+          fallback,
+          input.perspectivePubkey
+        ),
+        source: "fallback",
+      }
+    }
+
+    const normalizedPerspective = normalizePubkey(input.perspectivePubkey)
+    if (normalizedPerspective) {
+      return { authorPubkeys: [normalizedPerspective], source: "combined" }
     }
   }
 

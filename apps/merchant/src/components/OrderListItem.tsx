@@ -30,6 +30,14 @@ export function BuyerAvatar({
   )
 }
 
+export function merchantListCardClass(active: boolean): string {
+  return `w-full rounded-[1.1rem] border p-3 text-left transition-[border-color,background-color] ${
+    active
+      ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)]"
+      : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--text-secondary)]"
+  }`
+}
+
 export function OrderListItem({
   conversation,
   buyerProfile,
@@ -53,11 +61,7 @@ export function OrderListItem({
     <button
       type="button"
       onClick={onClick}
-      className={`w-full rounded-[1.1rem] border p-3 text-left transition-[border-color,background-color] ${
-        active
-          ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)]"
-          : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--text-secondary)]"
-      }`}
+      className={merchantListCardClass(active)}
     >
       <div className="flex items-start gap-3">
         <BuyerAvatar name={buyerName} picture={visibleBuyerProfile?.picture} />
