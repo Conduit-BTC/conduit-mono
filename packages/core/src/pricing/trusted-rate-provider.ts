@@ -228,12 +228,15 @@ export async function fetchTrustedPricingRateQuote(
   const needsFiatRates =
     options.includeFiatRates === true ||
     !hasRequiredRates(quote.fiatUsdRates, requiredCurrencies)
-  if (needsFiatRates && quote.fiatSource !== "mempool") {
+  if (
+    needsFiatRates &&
+    (options.includeFiatRates === true || quote.fiatSource !== "mempool")
+  ) {
     try {
       const fiat = await fetchFiatUsdRates(fetchImpl, timeoutMs)
       quote = {
         ...quote,
-        fiatUsdRates: fiat.rates,
+        fiatUsdRates: { ...quote.fiatUsdRates, ...fiat.rates },
         fiatSource: fiat.source,
       }
     } catch (error) {

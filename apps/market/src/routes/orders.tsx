@@ -8,7 +8,6 @@ import {
   formatNpub,
   formatPubkey,
   getNdk,
-  getProductPriceDisplay,
   getOrderPublicZapSigner,
   listOrderLifecycles,
   normalizeLightningInvoice,
@@ -17,7 +16,9 @@ import {
   useAuth,
   useProfile,
   useProfiles,
+  type CommercePriceLike,
   type OrderLifecycle,
+  type ShopperPriceDisplay,
 } from "@conduit/core"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
@@ -63,7 +64,7 @@ import {
   type BuyerConversation,
 } from "../lib/orderConversations"
 import { fetchStoreProducts } from "../lib/storeProducts"
-import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
+import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallet } from "../hooks/useWallet"
 import {
   buildOrderTimeline,
@@ -88,6 +89,8 @@ import {
   subscribeOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
+
+type PriceFormatter = (price: CommercePriceLike) => ShopperPriceDisplay
 import {
   clearSessionGuestOrderSigningIdentity,
   getSessionGuestOrderSigningIdentity,
@@ -227,12 +230,14 @@ function OrderListCard({
   merchantName,
   merchantPicture,
   active,
+  formatSats,
   onClick,
 }: {
   row: OrderRow
   merchantName: string
   merchantPicture?: string
   active: boolean
+  formatSats: (sats: number) => string
   onClick: () => void
 }) {
   const itemTitle = row.vm.items[0]?.displayTitle ?? "Order"
@@ -269,7 +274,7 @@ function OrderListCard({
           </div>
           {typeof row.vm.totalSats === "number" && (
             <div className="mt-0.5 text-sm font-medium text-secondary-300">
-              {row.vm.totalSats.toLocaleString()} sats
+              {formatSats(row.vm.totalSats)}
             </div>
           )}
           <div className="mt-2 flex items-center gap-2">
@@ -346,11 +351,13 @@ function MobileOrdersScroller({
   rows,
   selectedOrderId,
   merchantName,
+  formatSats,
   onSelect,
 }: {
   rows: OrderRow[]
   selectedOrderId: string | null
   merchantName: (pk: string) => string
+  formatSats: (sats: number) => string
   onSelect: (orderId: string) => void
 }) {
   const cardRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
@@ -424,7 +431,7 @@ function MobileOrdersScroller({
                     </StatusPill>
                     {typeof row.vm.totalSats === "number" && (
                       <span className="text-xs font-medium text-secondary-300">
-                        {row.vm.totalSats.toLocaleString()} sats
+                        {formatSats(row.vm.totalSats)}
                       </span>
                     )}
                     {row.headerStatus.actionNeeded ? (
@@ -444,14 +451,16 @@ function MobileOrdersScroller({
 function OrderItemsSection({
   vm,
   productsById,
-  btcUsdRate,
+  formatPrice,
+  formatSats,
 }: {
   vm: OrderViewModel
   productsById: Map<
     string,
     Awaited<ReturnType<typeof fetchStoreProducts>>["data"][number]
   >
-  btcUsdRate: ReturnType<typeof useBtcUsdRate>["data"] | null
+  formatPrice: PriceFormatter
+  formatSats: (sats: number) => string
 }) {
   return (
     <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
@@ -462,15 +471,13 @@ function OrderItemsSection({
         {vm.items.map((item, index) => {
           const product = productsById.get(item.productId)
           const image = product?.images[0]
-          const price = getProductPriceDisplay(
-            {
-              price: item.priceAtPurchase,
-              currency: item.currency,
-              priceSats:
-                item.currency === "SATS" ? item.priceAtPurchase : undefined,
-            },
-            btcUsdRate
-          )
+          const price = formatPrice({
+            price: item.priceAtPurchase,
+            currency: item.currency,
+            priceSats:
+              item.currency === "SATS" ? item.priceAtPurchase : undefined,
+            sourcePrice: item.sourcePrice,
+          })
           return (
             <div
               key={`${item.productId}-${index}`}
@@ -497,7 +504,12 @@ function OrderItemsSection({
                 </div>
               </div>
               <div className="shrink-0 text-right text-[var(--text-secondary)]">
-                {price.primary}
+                <div>{price.primary}</div>
+                {price.secondary && (
+                  <div className="mt-0.5 text-xs text-[var(--text-muted)]">
+                    {price.secondary}
+                  </div>
+                )}
               </div>
             </div>
           )
@@ -509,7 +521,7 @@ function OrderItemsSection({
             Total
           </span>
           <span className="text-base font-semibold text-[var(--text-primary)]">
-            {vm.totalSats.toLocaleString()} sats
+            {formatSats(vm.totalSats)}
           </span>
         </div>
       ) : null}
@@ -517,8 +529,17 @@ function OrderItemsSection({
   )
 }
 
-function OrderTimeline({ vm }: { vm: OrderViewModel }) {
-  const rows = useMemo(() => buildOrderTimeline(vm), [vm])
+function OrderTimeline({
+  vm,
+  formatSats,
+}: {
+  vm: OrderViewModel
+  formatSats: (sats: number) => string
+}) {
+  const rows = useMemo(
+    () => buildOrderTimeline(vm, formatSats),
+    [formatSats, vm]
+  )
   return (
     <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
       <h2 className="text-lg font-semibold text-[var(--text-primary)]">
@@ -640,7 +661,9 @@ function OrderDetail({
 }) {
   const { vm, headerStatus } = row
   const wallet = useWallet()
-  const btcUsdRateQuery = useBtcUsdRate()
+  const shopperPricing = useShopperPricing()
+  const formatSats = (sats: number) =>
+    shopperPricing.formatSatsAmount(sats).primary
   const { data: profile } = useProfile(row.merchantPubkey, {
     maxUnresolvedRefetches: 1,
   })
@@ -695,6 +718,7 @@ function OrderDetail({
       walletConnection: wallet.connection,
       tryNwc: canTryNwc,
       tryWebln: !guestIdentity,
+      formatSatsAmount: formatSats,
     }
   }
 
@@ -841,7 +865,7 @@ function OrderDetail({
                 </div>
                 {typeof vm.totalSats === "number" && (
                   <div className="text-sm font-medium text-secondary-300">
-                    {vm.totalSats.toLocaleString()} sats
+                    {formatSats(vm.totalSats)}
                   </div>
                 )}
                 <div className="mt-2">
@@ -859,7 +883,12 @@ function OrderDetail({
           <OrderItemsSection
             vm={vm}
             productsById={productsById}
-            btcUsdRate={btcUsdRateQuery.data ?? null}
+            formatPrice={(price) =>
+              shopperPricing.formatPrice(price, {
+                settledSatsAreAuthoritative: true,
+              })
+            }
+            formatSats={formatSats}
           />
         </section>
       </>
@@ -1014,14 +1043,19 @@ function OrderDetail({
       </AlertDialog>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-        <OrderTimeline vm={vm} />
+        <OrderTimeline vm={vm} formatSats={formatSats} />
 
         <div className="space-y-4">
           <div className="hidden xl:block">
             <OrderItemsSection
               vm={vm}
               productsById={productsById}
-              btcUsdRate={btcUsdRateQuery.data ?? null}
+              formatPrice={(price) =>
+                shopperPricing.formatPrice(price, {
+                  settledSatsAreAuthoritative: true,
+                })
+              }
+              formatSats={formatSats}
             />
           </div>
 
@@ -1094,7 +1128,7 @@ function OrderDetail({
                 </DetailRow>
                 {typeof vm.totalSats === "number" && (
                   <DetailRow label="Payment">
-                    <span>{vm.totalSats.toLocaleString()} sats</span>
+                    <span>{formatSats(vm.totalSats)}</span>
                   </DetailRow>
                 )}
                 <DetailRow label="Paid with">
@@ -1164,6 +1198,17 @@ function OrderDetail({
               ? { title: product.title, imageUrl: product.images[0]?.url }
               : undefined
           }}
+          formatAmount={(amount, currency, sourcePrice) =>
+            shopperPricing.formatPrice(
+              {
+                price: amount,
+                currency,
+                priceSats: currency === "SATS" ? amount : undefined,
+                sourcePrice,
+              },
+              { settledSatsAreAuthoritative: true }
+            )
+          }
         />
       )}
     </div>
@@ -1194,6 +1239,9 @@ function OrdersPage() {
   const signerConnected = status === "connected" && !!pubkey
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const shopperPricing = useShopperPricing()
+  const formatSats = (sats: number) =>
+    shopperPricing.formatSatsAmount(sats).primary
   const { order: selectedFromUrl } = Route.useSearch()
   const [searchValue, setSearchValue] = useState("")
   const [tab, setTab] = useState<PhaseTab>("all")
@@ -1578,6 +1626,7 @@ function OrdersPage() {
                 merchantPicture={(pk) =>
                   merchantProfilesQuery.data?.[pk]?.picture
                 }
+                formatSats={formatSats}
                 onSelect={selectOrder}
               />
             </section>
@@ -1604,6 +1653,7 @@ function OrdersPage() {
                 rows={filteredOrders}
                 selectedOrderId={selectedOrderId}
                 merchantName={merchantName}
+                formatSats={formatSats}
                 onSelect={selectOrder}
               />
               <SheetContent
@@ -1622,6 +1672,7 @@ function OrdersPage() {
                   merchantPicture={(pk) =>
                     merchantProfilesQuery.data?.[pk]?.picture
                   }
+                  formatSats={formatSats}
                   onSelect={selectOrder}
                 />
               </SheetContent>
@@ -1675,12 +1726,14 @@ function OrderList({
   selectedOrderId,
   merchantName,
   merchantPicture,
+  formatSats,
   onSelect,
 }: {
   rows: OrderRow[]
   selectedOrderId: string | null
   merchantName: (pk: string) => string
   merchantPicture: (pk: string) => string | undefined
+  formatSats: (sats: number) => string
   onSelect: (orderId: string) => void
 }) {
   if (rows.length === 0) {
@@ -1699,6 +1752,7 @@ function OrderList({
           merchantName={merchantName(row.merchantPubkey)}
           merchantPicture={merchantPicture(row.merchantPubkey)}
           active={row.orderId === selectedOrderId}
+          formatSats={formatSats}
           onClick={() => onSelect(row.orderId)}
         />
       ))}

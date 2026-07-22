@@ -84,6 +84,27 @@ describe("buildOrderViewModel", () => {
     expect(vm.paymentStatus).toBe("paid")
   })
 
+  it("retains the merchant source quote for historical item display", () => {
+    const sourcePrice = {
+      amount: 10,
+      currency: "EUR",
+      normalizedCurrency: "EUR",
+    }
+    const vm = vmFromLifecycle({
+      items: [
+        {
+          productId: "30402:merchant:tea",
+          quantity: 1,
+          priceAtPurchase: 12_000,
+          currency: "SATS",
+          sourcePrice,
+        },
+      ],
+    })
+
+    expect(vm.items[0]?.sourcePrice).toEqual(sourcePrice)
+  })
+
   it("skips fulfillment shipping for an explicitly digital-only order", () => {
     const vm = vmFromLifecycle({
       items: [
@@ -305,6 +326,17 @@ describe("buildOrderTimeline", () => {
     expect(rows).toHaveLength(7)
     const paymentRow = rows.find((r) => r.key === "payment")
     expect(paymentRow?.subtitle).toContain("111 sats")
+  })
+
+  it("uses the shopper's Bitcoin label in payment timeline copy", () => {
+    const rows = buildOrderTimeline(
+      vmFromLifecycle(),
+      (sats) => `₿${sats.toLocaleString("en-US")}`
+    )
+
+    expect(rows.find((row) => row.key === "payment")?.subtitle).toContain(
+      "₿111"
+    )
   })
 
   it("rewrites the payment row copy when the payment is ambiguous", () => {

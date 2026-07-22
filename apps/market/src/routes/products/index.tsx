@@ -25,7 +25,7 @@ import {
   ProductGridCard,
   ProductGridCardSkeleton,
 } from "../../components/ProductGridCard"
-import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
+import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import { useMarketBrowseModel } from "../../hooks/useMarketBrowseModel"
 import { normalizeFacetValues } from "../../lib/facets"
@@ -170,8 +170,8 @@ function ProductsPage() {
   const tagCloudRef = useRef<HTMLDivElement | null>(null)
   const hasMoreRef = useRef(false)
   const loadMoreObserverRef = useRef<IntersectionObserver | null>(null)
-  const btcUsdRateQuery = useBtcUsdRate()
-  const btcUsdRate = btcUsdRateQuery.data ?? null
+  const shopperPricing = useShopperPricing()
+  const btcUsdRate = shopperPricing.quote
   const updateSearch = useCallback(
     (updates: Partial<ProductSearch>) => {
       navigate({
@@ -761,6 +761,7 @@ function ProductsPage() {
                   merchantNamePending={merchant.status === "pending"}
                   imageLoading={index < 4 ? "eager" : "lazy"}
                   btcUsdRate={btcUsdRate}
+                  pricePreference={shopperPricing.preference}
                   cartQuantity={
                     cart.items.find((item) => item.productId === product.id)
                       ?.quantity ?? 0

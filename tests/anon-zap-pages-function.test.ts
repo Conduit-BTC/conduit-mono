@@ -340,6 +340,38 @@ describe("Anon zap Pages proxy", () => {
     })
   })
 
+  it("augments the primary quote when all shopper fiat rates are requested", async () => {
+    const calls: string[] = []
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      calls.push(url)
+      if (url.includes("mempool.space")) {
+        return Response.json({ USD: 100_000, EUR: 80_000 })
+      }
+      if (url.includes("frankfurter.dev")) {
+        return Response.json({ rates: { EUR: 0.8, JPY: 150 } })
+      }
+      throw new Error(`Unexpected provider ${url}`)
+    }) as unknown as typeof fetch
+
+    const quote = await fetchTrustedPricingRateQuote({
+      includeFiatRates: true,
+      fetchImpl,
+      nowMs: () => NOW_SECONDS * 1000,
+    })
+
+    expect(calls).toEqual([
+      "https://mempool.space/api/v1/prices",
+      "https://api.frankfurter.dev/v1/latest?base=USD",
+    ])
+    expect(quote).toMatchObject({
+      rate: 100_000,
+      source: "mempool",
+      fiatUsdRates: { EUR: 1.25, JPY: 1 / 150 },
+      fiatSource: "frankfurter",
+    })
+  })
+
   it("falls back to independent BTC and fiat providers", async () => {
     const calls: string[] = []
     const fetchImpl = (async (input: RequestInfo | URL) => {

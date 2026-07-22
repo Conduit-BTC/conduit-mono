@@ -30,13 +30,12 @@ import {
   ProductGridCard,
   ProductGridCardSkeleton,
 } from "../../components/ProductGridCard"
-import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
+import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import {
   useProgressiveProductDetail,
   useProgressiveProducts,
 } from "../../hooks/useProgressiveProducts"
-import { getProductPriceDisplay } from "../../lib/pricing"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
 
 export const Route = createFileRoute("/products/$productId")({
@@ -65,7 +64,7 @@ function ProductPage() {
       expandedHeight: 0,
     })
   const descriptionRef = useRef<HTMLDivElement>(null)
-  const btcUsdRateQuery = useBtcUsdRate()
+  const shopperPricing = useShopperPricing()
 
   const productQuery = useProgressiveProductDetail(productId)
   const product = productQuery.product
@@ -116,9 +115,7 @@ function ProductPage() {
     ? cart.items.find((item) => item.productId === product.id)
     : null
   const cartQuantity = cartItem?.quantity ?? 0
-  const priceDisplay = product
-    ? getProductPriceDisplay(product, btcUsdRateQuery.data ?? null)
-    : null
+  const priceDisplay = product ? shopperPricing.formatPrice(product) : null
   const updatedLabel = product
     ? new Intl.DateTimeFormat("en-US", {
         month: "short",
@@ -537,6 +534,11 @@ function ProductPage() {
                       {priceDisplay.secondary}
                     </div>
                   )}
+                  {priceDisplay?.approximateUsd && (
+                    <div className="mt-1 text-sm text-[var(--text-muted)]">
+                      {priceDisplay.approximateUsd}
+                    </div>
+                  )}
                   <div className="mt-3 text-xs text-[var(--text-secondary)]">
                     Payment and shipping are finalized with the merchant during
                     the order flow.
@@ -769,7 +771,8 @@ function ProductPage() {
                         merchantName={merchantName}
                         merchantNamePending={merchantIdentityPending}
                         imageLoading={index < 4 ? "eager" : "lazy"}
-                        btcUsdRate={btcUsdRateQuery.data ?? null}
+                        btcUsdRate={shopperPricing.quote}
+                        pricePreference={shopperPricing.preference}
                         cartQuantity={relatedCartQuantity}
                         onAddToCart={() =>
                           cart.addItem(

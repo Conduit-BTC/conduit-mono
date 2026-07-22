@@ -5,7 +5,10 @@ import { Button } from "./Button"
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "./Dialog"
 import { Input } from "./Input"
 import { Label } from "./Label"
-import { OrderConversationMessage } from "./OrderConversationMessage"
+import {
+  OrderConversationMessage,
+  type OrderAmountFormatter,
+} from "./OrderConversationMessage"
 
 export type OrderMessagesWidgetProps = {
   open: boolean
@@ -24,6 +27,7 @@ export type OrderMessagesWidgetProps = {
   resolveItem?: (
     productId: string
   ) => { title?: string; imageUrl?: string } | undefined
+  formatAmount?: OrderAmountFormatter
 }
 
 export function OrderMessagesWidget({
@@ -41,6 +45,7 @@ export function OrderMessagesWidget({
   placeholder = "Message, then press Enter",
   readOnly = false,
   resolveItem,
+  formatAmount,
 }: OrderMessagesWidgetProps) {
   const replyInputId = useId()
   const errorId = useId()
@@ -79,6 +84,7 @@ export function OrderMessagesWidget({
                   message={message}
                   mine={message.senderPubkey === selfPubkey}
                   resolveItem={resolveItem}
+                  formatAmount={formatAmount}
                 />
               ))
             )}
