@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const vaultModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/remote-signer-vault.ts`
+const remoteSignerModuleUrl = `/@fs${process.cwd()}/packages/core/src/protocol/remote-signer.ts`
 
 test("remote signer reconnect key is encrypted and restorable in browser storage", async ({
   page,
@@ -167,4 +168,36 @@ test("auth operations serialize across tabs without Web Locks", async ({
       firstPage.evaluate(() => localStorage.getItem("auth-lock-counter"))
     )
     .toBe("2")
+})
+
+test("remote signer storage works without crypto.randomUUID", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(crypto, "randomUUID", {
+      configurable: true,
+      value: undefined,
+    })
+    Object.defineProperty(navigator, "locks", {
+      configurable: true,
+      value: undefined,
+    })
+  })
+  await page.goto(`${marketUrl}/products`)
+
+  const result = await page.evaluate(
+    async ({ signerModuleUrl, vaultUrl }) => {
+      const [{ bumpAuthRevision }, { withBrowserAuthOperationLock }] =
+        await Promise.all([import(signerModuleUrl), import(vaultUrl)])
+      const revision = bumpAuthRevision()
+      const lockResult = await withBrowserAuthOperationLock(async () => "ready")
+      return { revision, lockResult }
+    },
+    { signerModuleUrl: remoteSignerModuleUrl, vaultUrl: vaultModuleUrl }
+  )
+
+  expect(result.revision).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+  )
+  expect(result.lockResult).toBe("ready")
 })

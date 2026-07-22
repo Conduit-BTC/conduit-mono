@@ -291,7 +291,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw new Error("Disconnect the current signer before connecting another.")
     }
     if (!requestedMethod) {
-      throw new Error("Choose a signer connection method and try again.")
+      const missingSessionError = new Error(
+        mode === "restore"
+          ? "The saved signer session is no longer available. Connect again."
+          : "Choose a signer connection method and try again."
+      )
+      setMethod(null)
+      setStatus("error")
+      setError(missingSessionError.message)
+      setAuthUrl(null)
+      throw missingSessionError
     }
     connecting.current = true
     const epoch = authEpoch.current + 1
@@ -482,8 +491,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const connect = useCallback(
-    (options: AuthConnectOptions = {}) =>
-      withBrowserAuthOperationLock(() => connectWithoutLock(options)),
+    async (options: AuthConnectOptions = {}) => {
+      if (connected.current) {
+        throw new Error("Disconnect the current signer before connecting another.")
+      }
+      const mode = options.mode ?? "interactive"
+      const requestedMethod =
+        options.method ??
+        (mode === "restore" ? readAuthSession()?.type ?? null : "nip07")
+      if (!requestedMethod) {
+        const missingSessionError = new Error(
+          "The saved signer session is no longer available. Connect again."
+        )
+        setMethod(null)
+        setStatus("error")
+        setError(missingSessionError.message)
+        setAuthUrl(null)
+        throw missingSessionError
+      }
+      setMethod(requestedMethod)
+      setStatus(mode === "restore" ? "restoring" : "connecting")
+      setError(null)
+      setAuthUrl(null)
+
+      let operationStarted = false
+      try {
+        await withBrowserAuthOperationLock(() => {
+          operationStarted = true
+          return connectWithoutLock(options)
+        })
+      } catch (cause) {
+        if (operationStarted) throw cause
+
+        const lockError = new Error(
+          cause instanceof Error &&
+          cause.message ===
+            "Another signer operation is still active in this browser. Try again shortly."
+            ? cause.message
+            : "This browser could not start the signer connection. Check site storage permissions, then try again."
+        )
+        setStatus("error")
+        setError(lockError.message)
+        setAuthUrl(null)
+        throw lockError
+      }
+    },
     [connectWithoutLock]
   )
 

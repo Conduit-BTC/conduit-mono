@@ -1,3 +1,5 @@
+import { generateId } from "../utils"
+
 const VAULT_DATABASE_NAME = "conduit-remote-signer"
 const VAULT_DATABASE_VERSION = 1
 const VAULT_STORE_NAME = "session-keys"
@@ -66,11 +68,12 @@ async function getOrCreateWrappingKey(
   database: IDBDatabase
 ): Promise<CryptoKey> {
   const readTransaction = database.transaction(VAULT_STORE_NAME, "readonly")
+  const readComplete = transactionComplete(readTransaction)
   const existing = await requestResult(
     readTransaction.objectStore(VAULT_STORE_NAME).get(WRAPPING_KEY_ID)
   )
-  await transactionComplete(readTransaction)
-  if (existing instanceof CryptoKey) return existing
+  await readComplete
+  if (isCryptoKey(existing)) return existing
 
   const key = await crypto.subtle.generateKey(
     { name: "AES-GCM", length: 256 },
@@ -78,21 +81,29 @@ async function getOrCreateWrappingKey(
     ["encrypt", "decrypt"]
   )
   const writeTransaction = database.transaction(VAULT_STORE_NAME, "readwrite")
+  const writeComplete = transactionComplete(writeTransaction)
   try {
     await requestResult(
       writeTransaction.objectStore(VAULT_STORE_NAME).add(key, WRAPPING_KEY_ID)
     )
-    await transactionComplete(writeTransaction)
+    await writeComplete
     return key
   } catch (error) {
+    await writeComplete.catch(() => undefined)
     const retryTransaction = database.transaction(VAULT_STORE_NAME, "readonly")
+    const retryComplete = transactionComplete(retryTransaction)
     const concurrentlyCreated = await requestResult(
       retryTransaction.objectStore(VAULT_STORE_NAME).get(WRAPPING_KEY_ID)
     )
-    await transactionComplete(retryTransaction)
-    if (concurrentlyCreated instanceof CryptoKey) return concurrentlyCreated
+    await retryComplete
+    if (isCryptoKey(concurrentlyCreated)) return concurrentlyCreated
     throw error
   }
+}
+
+function isCryptoKey(value: unknown): value is CryptoKey {
+  if (typeof CryptoKey !== "undefined") return value instanceof CryptoKey
+  return Object.prototype.toString.call(value) === "[object CryptoKey]"
 }
 
 async function withVaultLock<T>(task: () => Promise<T>): Promise<T> {
@@ -125,19 +136,42 @@ function isAuthOperationLease(value: unknown): value is AuthOperationLease {
 async function tryAcquireAuthOperationLease(token: string): Promise<boolean> {
   const database = await openVaultDatabase()
   try {
-    const transaction = database.transaction(VAULT_STORE_NAME, "readwrite")
-    const store = transaction.objectStore(VAULT_STORE_NAME)
-    const existing = await requestResult(store.get(AUTH_OPERATION_LOCK_ID))
-    if (isAuthOperationLease(existing) && existing.expiresAt > Date.now()) {
-      await transactionComplete(transaction)
-      return false
-    }
-    store.put(
-      { token, expiresAt: Date.now() + AUTH_OPERATION_LEASE_MS },
-      AUTH_OPERATION_LOCK_ID
-    )
-    await transactionComplete(transaction)
-    return true
+    return await new Promise<boolean>((resolve, reject) => {
+      const transaction = database.transaction(VAULT_STORE_NAME, "readwrite")
+      const store = transaction.objectStore(VAULT_STORE_NAME)
+      let acquired = false
+      const request = store.get(AUTH_OPERATION_LOCK_ID)
+      request.addEventListener(
+        "success",
+        () => {
+          const existing = request.result
+          if (
+            isAuthOperationLease(existing) &&
+            existing.expiresAt > Date.now()
+          ) {
+            return
+          }
+          store.put(
+            { token, expiresAt: Date.now() + AUTH_OPERATION_LEASE_MS },
+            AUTH_OPERATION_LOCK_ID
+          )
+          acquired = true
+        },
+        { once: true }
+      )
+      request.addEventListener("error", () => reject(request.error), {
+        once: true,
+      })
+      transaction.addEventListener("complete", () => resolve(acquired), {
+        once: true,
+      })
+      transaction.addEventListener("abort", () => reject(transaction.error), {
+        once: true,
+      })
+      transaction.addEventListener("error", () => reject(transaction.error), {
+        once: true,
+      })
+    })
   } finally {
     database.close()
   }
@@ -146,13 +180,31 @@ async function tryAcquireAuthOperationLease(token: string): Promise<boolean> {
 async function releaseAuthOperationLease(token: string): Promise<void> {
   const database = await openVaultDatabase()
   try {
-    const transaction = database.transaction(VAULT_STORE_NAME, "readwrite")
-    const store = transaction.objectStore(VAULT_STORE_NAME)
-    const existing = await requestResult(store.get(AUTH_OPERATION_LOCK_ID))
-    if (isAuthOperationLease(existing) && existing.token === token) {
-      store.delete(AUTH_OPERATION_LOCK_ID)
-    }
-    await transactionComplete(transaction)
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(VAULT_STORE_NAME, "readwrite")
+      const store = transaction.objectStore(VAULT_STORE_NAME)
+      const request = store.get(AUTH_OPERATION_LOCK_ID)
+      request.addEventListener(
+        "success",
+        () => {
+          const existing = request.result
+          if (isAuthOperationLease(existing) && existing.token === token) {
+            store.delete(AUTH_OPERATION_LOCK_ID)
+          }
+        },
+        { once: true }
+      )
+      request.addEventListener("error", () => reject(request.error), {
+        once: true,
+      })
+      transaction.addEventListener("complete", () => resolve(), { once: true })
+      transaction.addEventListener("abort", () => reject(transaction.error), {
+        once: true,
+      })
+      transaction.addEventListener("error", () => reject(transaction.error), {
+        once: true,
+      })
+    })
   } finally {
     database.close()
   }
@@ -161,7 +213,7 @@ async function releaseAuthOperationLease(token: string): Promise<void> {
 async function withIndexedDbAuthOperationLock<T>(
   task: () => Promise<T>
 ): Promise<T> {
-  const token = crypto.randomUUID()
+  const token = generateId()
   const deadline = Date.now() + AUTH_OPERATION_WAIT_MS
   while (!(await tryAcquireAuthOperationLease(token))) {
     if (Date.now() >= deadline) {
@@ -223,10 +275,11 @@ export function createBrowserRemoteSignerKeyVault(): RemoteSignerKeyVault {
         try {
           const wrappingKey = await getOrCreateWrappingKey(database)
           const transaction = database.transaction(VAULT_STORE_NAME, "readonly")
+          const complete = transactionComplete(transaction)
           const stored = await requestResult(
             transaction.objectStore(VAULT_STORE_NAME).get(id)
           )
-          await transactionComplete(transaction)
+          await complete
           if (
             typeof stored !== "object" ||
             stored === null ||

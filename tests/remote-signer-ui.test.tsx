@@ -86,6 +86,42 @@ describe("remote signer UI", () => {
     expect(submit.indexOf("await onConnect(uri)")).toBeLessThan(
       submit.indexOf('setBunkerUri("")')
     )
+    expect(source).toContain("Waiting for your remote signer")
+  })
+
+  it("keeps connection errors beside the remote signer controls", async () => {
+    const source = await readFile(
+      "packages/ui/src/components/SignerSwitch.tsx",
+      "utf8"
+    )
+    const disconnected = source.slice(
+      source.indexOf("function SignerDisconnectedContent"),
+      source.indexOf("export function SignerConnectPanel")
+    )
+
+    expect(disconnected.indexOf("{error && (")).toBeGreaterThan(
+      disconnected.indexOf("<RemoteSignerConnect")
+    )
+    expect(disconnected.indexOf("{error && (")).toBeLessThan(
+      disconnected.indexOf("<SignerUnlockCard")
+    )
+    expect(disconnected).toContain('role="alert"')
+  })
+
+  it("shows signer progress before waiting for the browser-wide lock", async () => {
+    const source = await readFile(
+      "packages/core/src/context/AuthContext.tsx",
+      "utf8"
+    )
+    const connectStart = source.indexOf("const connect = useCallback")
+    const connect = source.slice(
+      connectStart,
+      source.indexOf("const disconnectWithoutLock", connectStart)
+    )
+
+    expect(connect.indexOf("setStatus(")).toBeLessThan(
+      connect.indexOf("withBrowserAuthOperationLock")
+    )
   })
 
   it("waits beyond an abandoned browser auth lease", async () => {

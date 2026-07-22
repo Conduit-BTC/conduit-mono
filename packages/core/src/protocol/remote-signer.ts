@@ -13,6 +13,7 @@ import {
   type ClientMetadata,
 } from "nostr-tools/nip46"
 import type { EventTemplate, VerifiedEvent } from "nostr-tools"
+import { generateId } from "../utils"
 import {
   createBrowserRemoteSignerKeyVault,
   type RemoteSignerKeyVault,
@@ -405,7 +406,7 @@ export function bumpAuthRevision(
   storage: AuthStorage | undefined = getDefaultStorage()
 ): string {
   if (!storage) return ""
-  const revision = crypto.randomUUID()
+  const revision = generateId()
   try {
     storage.setItem(AUTH_REVISION_STORAGE_KEY, String(revision))
     return revision
@@ -562,7 +563,7 @@ export async function pairRemoteSigner(
     )
     const relayUrls = requireSignerRelayUrls(bunkerSigner, "relay migration")
     const now = (options.now ?? Date.now)()
-    const clientKeyId = crypto.randomUUID()
+    const clientKeyId = generateId()
     const session: Nip46AuthSession = {
       version: REMOTE_SIGNER_SESSION_VERSION,
       type: "nip46",

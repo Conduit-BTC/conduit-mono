@@ -219,6 +219,15 @@ function RemoteSignerConnect({
         <Link2 className="h-5 w-5" aria-hidden="true" />
         {connectPending ? "Connecting..." : "Connect Signer (NIP-46)"}
       </Button>
+      {connectPending && (
+        <div
+          role="status"
+          className="rounded-xl border border-primary-500/25 bg-primary-500/10 p-3 text-sm leading-5 text-[var(--text-secondary)]"
+        >
+          Waiting for your remote signer. Open Amber or Clave to approve the
+          connection, then return to this tab.
+        </div>
+      )}
     </div>
   )
 }
@@ -433,6 +442,28 @@ function SignerDisconnectedContent({
           onConnect={onConnectRemote}
         />
 
+        {error && (
+          <div
+            role="alert"
+            className="rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error"
+          >
+            {error}
+          </div>
+        )}
+
+        {authUrl && (
+          <div className="rounded-[1.25rem] border border-warning/30 bg-warning/10 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
+            Your remote signer needs approval. Open the authorization page, then
+            return here.
+            <Button asChild variant="outline" size="sm" className="mt-3 w-full">
+              <a href={authUrl} target="_blank" rel="noopener noreferrer">
+                Open signer approval
+                <ExternalLink className="h-4 w-4" aria-hidden="true" />
+              </a>
+            </Button>
+          </div>
+        )}
+
         <p className="px-4 pt-2 text-center text-[15px] italic leading-6 text-[var(--text-secondary)]">
           {helperText}
         </p>
@@ -461,35 +492,6 @@ function SignerDisconnectedContent({
         >
           Choose another extension account or paste a new remote signer URI,
           then reconnect here.
-        </div>
-      )}
-
-      {error && (
-        <div
-          className={cn(
-            "mx-auto mt-4 max-w-md rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error",
-            bodyClassName
-          )}
-        >
-          {error}
-        </div>
-      )}
-
-      {authUrl && (
-        <div
-          className={cn(
-            "mx-auto mt-4 max-w-md rounded-[1.25rem] border border-warning/30 bg-warning/10 p-4 text-[15px] leading-6 text-[var(--text-secondary)]",
-            bodyClassName
-          )}
-        >
-          Your remote signer needs approval. Open the authorization page, then
-          return here.
-          <Button asChild variant="outline" size="sm" className="mt-3 w-full">
-            <a href={authUrl} target="_blank" rel="noopener noreferrer">
-              Open signer approval
-              <ExternalLink className="h-4 w-4" aria-hidden="true" />
-            </a>
-          </Button>
         </div>
       )}
 
