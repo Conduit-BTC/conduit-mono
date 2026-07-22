@@ -10,6 +10,8 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import {
   buildBugReportUrl,
+  installBrowserClientErrorTelemetry,
+  recordBrowserClientError,
   recordBrowserTelemetryEvent,
   recordBrowserTelemetryPageView,
   useAuth,
@@ -78,6 +80,8 @@ function RootLayout() {
   const signerRestoring = !!pubkey && status === "restoring"
   const shouldDelayAuthFallback =
     !!pubkey && !signerConnected && !authFallbackReady
+
+  useEffect(() => installBrowserClientErrorTelemetry("merchant"), [])
 
   useEffect(() => {
     if (appLoadTelemetrySentRef.current) return
@@ -218,6 +222,15 @@ function AuthRestoring({ method }: { method: "nip07" | "nip46" | null }) {
 function RootErrorComponent({ error }: ErrorComponentProps) {
   const { pubkey, status } = useAuth()
   const signerConnected = status === "connected" && !!pubkey
+
+  useEffect(() => {
+    recordBrowserClientError({
+      app: "merchant",
+      error,
+      source: "react_error_boundary",
+    })
+  }, [error])
+
   const errorPage = (
     <ErrorPage
       title="Something went wrong"

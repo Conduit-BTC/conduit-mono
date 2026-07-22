@@ -9,6 +9,8 @@ import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { useEffect, useRef } from "react"
 import {
   buildBugReportUrl,
+  installBrowserClientErrorTelemetry,
+  recordBrowserClientError,
   recordBrowserTelemetryEvent,
   recordBrowserTelemetryPageView,
   useAuth,
@@ -86,6 +88,8 @@ function RootLayout() {
   const appLoadTelemetrySentRef = useRef(false)
   const previousAuthStatusRef = useRef(status)
   const previousAuthMethodRef = useRef(method)
+
+  useEffect(() => installBrowserClientErrorTelemetry("market"), [])
 
   useEffect(() => {
     if (appLoadTelemetrySentRef.current) return
@@ -202,6 +206,14 @@ function getPageTitle(pathname: string): string {
 }
 
 function RootErrorComponent({ error }: ErrorComponentProps) {
+  useEffect(() => {
+    recordBrowserClientError({
+      app: "market",
+      error,
+      source: "react_error_boundary",
+    })
+  }, [error])
+
   return (
     <RootShell>
       <ErrorPage

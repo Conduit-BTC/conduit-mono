@@ -50,6 +50,19 @@ export {
   type TelemetryPageViewInput,
 } from "./telemetry"
 export {
+  buildClientErrorTelemetryProperties,
+  clientErrorFamilies,
+  clientErrorSources,
+  createClientErrorRateLimiter,
+  getClientErrorFamily,
+  installBrowserClientErrorTelemetry,
+  recordBrowserClientError,
+  type BrowserClientErrorInput,
+  type ClientErrorFamily,
+  type ClientErrorRateLimiter,
+  type ClientErrorSource,
+} from "./client-error-telemetry"
+export {
   buildBugReportUrl,
   getBugReportAppLabel,
   type BugReportAppId,
