@@ -107,6 +107,9 @@ function ShippingPage() {
 
     try {
       await publishShippingOptions(config, "merchant")
+      saveShippingConfig(config, pubkey)
+      setLastSavedConfig(config)
+      setSaveState({ status: "saved" })
       recordBrowserTelemetryEvent({
         app: "merchant",
         eventName: "shipping_publish_result",
@@ -116,9 +119,6 @@ function ShippingPage() {
           status: "success",
         }),
       })
-      saveShippingConfig(config, pubkey)
-      setLastSavedConfig(config)
-      setSaveState({ status: "saved" })
     } catch (err: unknown) {
       recordBrowserTelemetryEvent({
         app: "merchant",
