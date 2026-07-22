@@ -122,10 +122,16 @@ export {
   SignerConnectPanel,
   SignerSwitch,
   SignerUnlockCard,
+  isMobileSignerEnvironment,
+  type SignerEnvironmentInput,
   type SignerConnectPanelProps,
   type SignerSwitchProps,
   type SignerSwitchStatus,
 } from "./SignerSwitch"
+export {
+  SignerAuthUrlNotice,
+  type SignerAuthUrlNoticeProps,
+} from "./SignerAuthUrlNotice"
 export { OrderDetailCard, type OrderDetailCardProps } from "./OrderDetailCard"
 export {
   DoubleSideStatusPill,
