@@ -23,9 +23,29 @@ interface AuthOperationLease {
 }
 
 export interface RemoteSignerKeyVault {
+  prepare(): Promise<void>
   store(id: string, clientPrivateKey: string): Promise<void>
   load(id: string): Promise<string | null>
   remove(id: string): Promise<void>
+}
+
+const SECURE_STORAGE_ERROR =
+  "Encrypted remote signer storage is unavailable. Open Conduit over HTTPS in an updated browser, then try again."
+
+function requireWebCrypto(): Crypto {
+  if (
+    (typeof globalThis.isSecureContext === "boolean" &&
+      !globalThis.isSecureContext) ||
+    typeof globalThis.crypto === "undefined" ||
+    typeof globalThis.crypto.getRandomValues !== "function" ||
+    !globalThis.crypto.subtle ||
+    typeof globalThis.crypto.subtle.generateKey !== "function" ||
+    typeof globalThis.crypto.subtle.encrypt !== "function" ||
+    typeof globalThis.crypto.subtle.decrypt !== "function"
+  ) {
+    throw new Error(SECURE_STORAGE_ERROR)
+  }
+  return globalThis.crypto
 }
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
@@ -75,7 +95,8 @@ async function getOrCreateWrappingKey(
   await readComplete
   if (isCryptoKey(existing)) return existing
 
-  const key = await crypto.subtle.generateKey(
+  const webCrypto = requireWebCrypto()
+  const key = await webCrypto.subtle.generateKey(
     { name: "AES-GCM", length: 256 },
     false,
     ["encrypt", "decrypt"]
@@ -244,13 +265,26 @@ export async function withBrowserAuthOperationLock<T>(
 
 export function createBrowserRemoteSignerKeyVault(): RemoteSignerKeyVault {
   return {
+    async prepare() {
+      requireWebCrypto()
+      await withVaultLock(async () => {
+        const database = await openVaultDatabase()
+        try {
+          await getOrCreateWrappingKey(database)
+        } finally {
+          database.close()
+        }
+      })
+    },
+
     async store(id, clientPrivateKey) {
       await withVaultLock(async () => {
         const database = await openVaultDatabase()
         try {
+          const webCrypto = requireWebCrypto()
           const wrappingKey = await getOrCreateWrappingKey(database)
-          const iv = crypto.getRandomValues(new Uint8Array(12))
-          const ciphertext = await crypto.subtle.encrypt(
+          const iv = webCrypto.getRandomValues(new Uint8Array(12))
+          const ciphertext = await webCrypto.subtle.encrypt(
             { name: "AES-GCM", iv },
             wrappingKey,
             new TextEncoder().encode(clientPrivateKey)
@@ -273,6 +307,7 @@ export function createBrowserRemoteSignerKeyVault(): RemoteSignerKeyVault {
       return withVaultLock(async () => {
         const database = await openVaultDatabase()
         try {
+          const webCrypto = requireWebCrypto()
           const wrappingKey = await getOrCreateWrappingKey(database)
           const transaction = database.transaction(VAULT_STORE_NAME, "readonly")
           const complete = transactionComplete(transaction)
@@ -288,7 +323,7 @@ export function createBrowserRemoteSignerKeyVault(): RemoteSignerKeyVault {
           ) {
             return null
           }
-          const plaintext = await crypto.subtle.decrypt(
+          const plaintext = await webCrypto.subtle.decrypt(
             { name: "AES-GCM", iv: stored.iv },
             wrappingKey,
             stored.ciphertext

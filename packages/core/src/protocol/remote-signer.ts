@@ -288,6 +288,20 @@ function getDefaultKeyVault(): RemoteSignerKeyVault {
   return createBrowserRemoteSignerKeyVault()
 }
 
+export async function prepareRemoteSignerSessionStorage(
+  keyVault: RemoteSignerKeyVault = getDefaultKeyVault()
+): Promise<void> {
+  try {
+    await keyVault.prepare()
+  } catch (error) {
+    throw new RemoteSignerError(
+      "unavailable",
+      "Encrypted remote signer storage is unavailable. Open Conduit over HTTPS in an updated browser, then try again.",
+      { cause: error, operation: "prepare session storage" }
+    )
+  }
+}
+
 export async function persistRemoteSignerSession(
   connection: Pick<
     RemoteSignerConnection,
@@ -327,7 +341,11 @@ export async function persistRemoteSignerSession(
       )
     } catch (error) {
       await rollbackNewClientKey()
-      throw error
+      throw new RemoteSignerError(
+        "unavailable",
+        "This browser could not securely save the remote signer connection, so Conduit disconnected it. Check site storage permissions and try again over HTTPS.",
+        { cause: error, operation: "persist session" }
+      )
     }
   }
   if (!shouldCommit()) {
@@ -512,6 +530,7 @@ export async function pairRemoteSigner(
   options: PairRemoteSignerOptions = {}
 ): Promise<RemoteSignerConnection> {
   const pointer = parseBunkerUri(uri)
+  await prepareRemoteSignerSessionStorage(options.keyVault)
   const clientPrivateKey = (
     options.generateClientPrivateKey ?? generateSecretKey
   )()

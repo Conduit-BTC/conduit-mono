@@ -124,6 +124,24 @@ describe("remote signer UI", () => {
     )
   })
 
+  it("checks encrypted storage before contacting the remote signer", async () => {
+    const source = await readFile(
+      "packages/core/src/protocol/remote-signer.ts",
+      "utf8"
+    )
+    const start = source.indexOf("export async function pairRemoteSigner")
+    const remoteConnect = source.slice(
+      start,
+      source.indexOf("export async function restoreRemoteSigner", start)
+    )
+
+    expect(
+      remoteConnect.indexOf(
+        "prepareRemoteSignerSessionStorage(options.keyVault)"
+      )
+    ).toBeLessThan(remoteConnect.indexOf('bunkerSigner.sendRequest("connect"'))
+  })
+
   it("waits beyond an abandoned browser auth lease", async () => {
     const source = await readFile(
       "packages/core/src/protocol/remote-signer-vault.ts",

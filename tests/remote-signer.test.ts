@@ -10,6 +10,7 @@ import {
   bumpAuthRevision,
   forgetAuthSession,
   logoutRemoteSigner,
+  prepareRemoteSignerSessionStorage,
   pairRemoteSigner,
   parseAuthSession,
   parseBunkerUri,
@@ -50,6 +51,8 @@ class MemoryStorage implements AuthStorage {
 
 class MemoryKeyVault implements RemoteSignerKeyVault {
   readonly values = new Map<string, string>()
+
+  async prepare(): Promise<void> {}
 
   async store(id: string, clientPrivateKey: string): Promise<void> {
     this.values.set(id, clientPrivateKey)
@@ -118,6 +121,36 @@ function session(overrides: Partial<Nip46AuthSession> = {}): Nip46AuthSession {
 }
 
 describe("remote signer parsing and storage", () => {
+  it("checks encrypted browser storage before remote pairing", async () => {
+    let prepared = false
+    await prepareRemoteSignerSessionStorage({
+      prepare: async () => {
+        prepared = true
+      },
+      store: async () => undefined,
+      load: async () => null,
+      remove: async () => undefined,
+    })
+    expect(prepared).toBe(true)
+
+    await expect(
+      prepareRemoteSignerSessionStorage({
+        prepare: async () => {
+          throw new TypeError(
+            "undefined is not an object (evaluating 'crypto.subtle.generateKey')"
+          )
+        },
+        store: async () => undefined,
+        load: async () => null,
+        remove: async () => undefined,
+      })
+    ).rejects.toMatchObject({
+      code: "unavailable",
+      operation: "prepare session storage",
+      message: expect.stringContaining("HTTPS"),
+    })
+  })
+
   it("accepts only valid signer-issued bunker URIs", () => {
     expect(parseBunkerUri(BUNKER_URI)).toEqual({
       pubkey: REMOTE_PUBKEY,
@@ -324,6 +357,30 @@ describe("remote signer parsing and storage", () => {
 })
 
 describe("remote signer lifecycle", () => {
+  it("does not contact the signer when encrypted storage is unavailable", async () => {
+    let signerCreated = false
+    await expect(
+      pairRemoteSigner(BUNKER_URI, {
+        keyVault: {
+          prepare: async () => {
+            throw new Error("SubtleCrypto unavailable")
+          },
+          store: async () => undefined,
+          load: async () => null,
+          remove: async () => undefined,
+        },
+        createBunkerSigner: () => {
+          signerCreated = true
+          return fakeSigner()
+        },
+      })
+    ).rejects.toMatchObject({
+      code: "unavailable",
+      operation: "prepare session storage",
+    })
+    expect(signerCreated).toBe(false)
+  })
+
   it("pairs with generated client key and never persists URI secrets", async () => {
     let factoryPointer:
       { pubkey: string; relays: string[]; secret: string | null } | undefined
@@ -331,6 +388,7 @@ describe("remote signer lifecycle", () => {
     let relaySwitches = 0
     const onAuthUrl = () => undefined
     const result = await pairRemoteSigner(BUNKER_URI, {
+      keyVault: new MemoryKeyVault(),
       generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
       createBunkerSigner: (_key, pointer, params) => {
         factoryPointer = pointer
@@ -373,6 +431,7 @@ describe("remote signer lifecycle", () => {
     const never = new Promise<void>(() => undefined)
     await expect(
       pairRemoteSigner(BUNKER_URI, {
+        keyVault: new MemoryKeyVault(),
         generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
         createBunkerSigner: () =>
           fakeSigner({ sendRequest: () => never as Promise<string> }),
@@ -382,6 +441,7 @@ describe("remote signer lifecycle", () => {
 
     await expect(
       pairRemoteSigner(BUNKER_URI, {
+        keyVault: new MemoryKeyVault(),
         generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
         createBunkerSigner: () =>
           fakeSigner({
@@ -396,6 +456,7 @@ describe("remote signer lifecycle", () => {
   it("requires an official or secret-echo connection acknowledgement", async () => {
     await expect(
       pairRemoteSigner(BUNKER_URI, {
+        keyVault: new MemoryKeyVault(),
         generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
         createBunkerSigner: () =>
           fakeSigner({ sendRequest: async () => "unexpected" }),
@@ -406,6 +467,7 @@ describe("remote signer lifecycle", () => {
     })
 
     const paired = await pairRemoteSigner(BUNKER_URI, {
+      keyVault: new MemoryKeyVault(),
       generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
       createBunkerSigner: () =>
         fakeSigner({ sendRequest: async () => "pair-secret" }),
@@ -416,6 +478,7 @@ describe("remote signer lifecycle", () => {
   it("rejects an insecure relay migration returned by the signer", async () => {
     await expect(
       pairRemoteSigner(BUNKER_URI, {
+        keyVault: new MemoryKeyVault(),
         generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
         createBunkerSigner: () => {
           const signer = fakeSigner()

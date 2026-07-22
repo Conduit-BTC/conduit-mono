@@ -201,3 +201,32 @@ test("remote signer storage works without crypto.randomUUID", async ({
   )
   expect(result.lockResult).toBe("ready")
 })
+
+test("remote signer storage fails before pairing on an insecure page context", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(globalThis, "isSecureContext", {
+      configurable: true,
+      value: false,
+    })
+  })
+  await page.goto(`${marketUrl}/products`)
+
+  const message = await page.evaluate(async (moduleUrl) => {
+    const { createBrowserRemoteSignerKeyVault } = (await import(moduleUrl)) as {
+      createBrowserRemoteSignerKeyVault: () => {
+        prepare(): Promise<void>
+      }
+    }
+    try {
+      await createBrowserRemoteSignerKeyVault().prepare()
+      return null
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+  }, vaultModuleUrl)
+
+  expect(message).toContain("HTTPS")
+  expect(message).not.toContain("crypto.subtle")
+})
