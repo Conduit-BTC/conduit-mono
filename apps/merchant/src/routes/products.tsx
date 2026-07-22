@@ -8,6 +8,7 @@ import {
   SHIPPING_COUNTRIES,
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
   appendConduitClientTag,
+  buildProductPublishResultTelemetryProperties,
   cacheSignedProductDeletionEvent,
   canonicalizeProductPrice,
   evaluateListingSafety,
@@ -16,6 +17,7 @@ import {
   getMerchantStorefront,
   getProductImageCandidates,
   getProductPriceDisplay,
+  recordBrowserTelemetryEvent,
   requireNdkConnected,
   type CommerceResult,
   type ListingSafetyEvaluation,
@@ -692,6 +694,7 @@ function ProductsPage() {
   const btcUsdRateQuery = useBtcUsdRate()
   const productDialogReturnFocusRef = useRef<HTMLElement | null>(null)
   const productDraftStoreRef = useRef(new ProductDraftStore())
+  const productPublishStartedAtRef = useRef<number | null>(null)
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM)
   const [editing, setEditing] = useState<MerchantProduct | null>(null)
   const [productDialogOpen, setProductDialogOpen] = useState(false)
@@ -790,6 +793,7 @@ function ProductsPage() {
       )
     },
     onMutate: (payload) => {
+      productPublishStartedAtRef.current = Date.now()
       if (!payload.signedEvent) setProductDeliveryRetry(null)
       setProductDeliveryNotice(
         payload.signedEvent ? buildLocalProductDeliveryNotice("publish") : null
@@ -801,11 +805,41 @@ function ProductsPage() {
         data,
         variables.previousNotice
       )
+      recordBrowserTelemetryEvent({
+        app: "merchant",
+        eventName: "product_publish_result",
+        properties: buildProductPublishResultTelemetryProperties({
+          eventFamily: variables.signedEvent
+            ? "delivery_retry"
+            : variables.existing
+              ? "update"
+              : "create",
+          latencyMs:
+            Date.now() - (productPublishStartedAtRef.current ?? Date.now()),
+          status: notice.failedRelayUrls.length === 0 ? "success" : "failure",
+        }),
+      })
+      productPublishStartedAtRef.current = null
       setProductDeliveryNotice(notice)
       if (notice.failedRelayUrls.length === 0) setProductDeliveryRetry(null)
       await refreshProductQueries()
     },
     onError: async (error, variables) => {
+      recordBrowserTelemetryEvent({
+        app: "merchant",
+        eventName: "product_publish_result",
+        properties: buildProductPublishResultTelemetryProperties({
+          eventFamily: variables.signedEvent
+            ? "delivery_retry"
+            : variables.existing
+              ? "update"
+              : "create",
+          latencyMs:
+            Date.now() - (productPublishStartedAtRef.current ?? Date.now()),
+          status: "failure",
+        }),
+      })
+      productPublishStartedAtRef.current = null
       const diagnosticsError = getRelayPublishDiagnosticsError(error)
       if (diagnosticsError) {
         setProductDeliveryNotice(

@@ -3,8 +3,10 @@ import { AlertCircle, Loader2 } from "lucide-react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
+  buildShippingPublishResultTelemetryProperties,
   getShippingOptions,
   publishShippingOptions,
+  recordBrowserTelemetryEvent,
   useAuth,
 } from "@conduit/core"
 import { Badge, Button, SignedActionStatus } from "@conduit/ui"
@@ -100,13 +102,33 @@ function ShippingPage() {
     if (!hasUnsavedChanges || isSaving) return
 
     setSaveState({ status: "saving" })
+    const startedAt = Date.now()
+    const eventFamily = config.countries.length === 0 ? "clear" : "publish"
 
     try {
       await publishShippingOptions(config, "merchant")
+      recordBrowserTelemetryEvent({
+        app: "merchant",
+        eventName: "shipping_publish_result",
+        properties: buildShippingPublishResultTelemetryProperties({
+          eventFamily,
+          latencyMs: Date.now() - startedAt,
+          status: "success",
+        }),
+      })
       saveShippingConfig(config, pubkey)
       setLastSavedConfig(config)
       setSaveState({ status: "saved" })
     } catch (err: unknown) {
+      recordBrowserTelemetryEvent({
+        app: "merchant",
+        eventName: "shipping_publish_result",
+        properties: buildShippingPublishResultTelemetryProperties({
+          eventFamily,
+          latencyMs: Date.now() - startedAt,
+          status: "failure",
+        }),
+      })
       console.warn("[shipping] Failed to publish kind-30406:", err)
       setSaveState({ status: "error", message: getErrorMessage(err) })
     }

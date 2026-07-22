@@ -494,6 +494,14 @@ function getPostHogIngestionProperties(
 }
 
 export function recordBrowserTelemetryEvent(input: TelemetryEventInput): void {
+  try {
+    recordBrowserTelemetryEventUnsafe(input)
+  } catch {
+    // Telemetry is best-effort and must never change the user-visible flow.
+  }
+}
+
+function recordBrowserTelemetryEventUnsafe(input: TelemetryEventInput): void {
   if (typeof window === "undefined" || typeof document === "undefined") return
   if (!isBrowserTelemetryEventName(input.eventName)) return
 
@@ -519,19 +527,31 @@ export function recordBrowserTelemetryEvent(input: TelemetryEventInput): void {
   }
 
   if (config.posthog) {
-    void ensurePostHog(config.posthog).then((client) => {
-      client?.capture(input.eventName, {
-        ...properties,
-        $current_url: properties.page_url,
-        $pathname: properties.page_path,
-        $process_person_profile: false,
-        distinct_id: POSTHOG_ANONYMOUS_DISTINCT_ID,
+    void ensurePostHog(config.posthog)
+      .then((client) => {
+        client?.capture(input.eventName, {
+          ...properties,
+          $current_url: properties.page_url,
+          $pathname: properties.page_path,
+          $process_person_profile: false,
+          distinct_id: POSTHOG_ANONYMOUS_DISTINCT_ID,
+        })
       })
-    })
+      .catch(() => undefined)
   }
 }
 
 export function recordBrowserTelemetryPageView(
+  input: TelemetryPageViewInput
+): void {
+  try {
+    recordBrowserTelemetryPageViewUnsafe(input)
+  } catch {
+    // Telemetry is best-effort and must never change the user-visible flow.
+  }
+}
+
+function recordBrowserTelemetryPageViewUnsafe(
   input: TelemetryPageViewInput
 ): void {
   if (typeof window === "undefined" || typeof document === "undefined") return
@@ -559,17 +579,19 @@ export function recordBrowserTelemetryPageView(
   }
 
   if (config.posthog) {
-    void ensurePostHog(config.posthog).then((client) => {
-      client?.capture("$pageview", {
-        $current_url: pageUrl,
-        $pathname: sanitizedPath,
-        $process_person_profile: false,
-        app: input.app,
-        distinct_id: POSTHOG_ANONYMOUS_DISTINCT_ID,
-        page_path: sanitizedPath,
-        page_url: pageUrl,
+    void ensurePostHog(config.posthog)
+      .then((client) => {
+        client?.capture("$pageview", {
+          $current_url: pageUrl,
+          $pathname: sanitizedPath,
+          $process_person_profile: false,
+          app: input.app,
+          distinct_id: POSTHOG_ANONYMOUS_DISTINCT_ID,
+          page_path: sanitizedPath,
+          page_url: pageUrl,
+        })
       })
-    })
+      .catch(() => undefined)
   }
 }
 

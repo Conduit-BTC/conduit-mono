@@ -1,6 +1,8 @@
 import {
+  buildPaymentAttemptResultTelemetryProperties,
   classifyNwcPaymentError,
   hasWebLN,
+  recordBrowserTelemetryEvent,
   weblnSendPayment,
   type ConduitAppId,
   type NwcDiagnostic,
@@ -31,12 +33,25 @@ type PaymentRailDependencies = {
   nwcSessionPayInvoice: typeof payInvoiceWithBuyerNwcSession
   hasWebLN: typeof hasWebLN
   weblnSendPayment: typeof weblnSendPayment
+  recordPaymentAttemptResult?: (
+    input: Parameters<typeof buildPaymentAttemptResultTelemetryProperties>[0]
+  ) => void
 }
 
 const defaultDependencies: PaymentRailDependencies = {
   nwcSessionPayInvoice: payInvoiceWithBuyerNwcSession,
   hasWebLN,
   weblnSendPayment,
+}
+
+function recordMarketPaymentAttemptResult(
+  input: Parameters<typeof buildPaymentAttemptResultTelemetryProperties>[0]
+): void {
+  recordBrowserTelemetryEvent({
+    app: "market",
+    eventName: "payment_attempt_result",
+    properties: buildPaymentAttemptResultTelemetryProperties(input),
+  })
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -56,6 +71,28 @@ function isNwcPrePublishFailure(
   return result.status === "pre_publish_failed"
 }
 
+function getNwcDiagnosticTelemetryStatus(
+  diagnostic: NwcDiagnostic
+): "blocked" | "unavailable" | "ambiguous" {
+  if (
+    diagnostic.code === "permission_or_budget" ||
+    diagnostic.code === "invoice_amount_mismatch" ||
+    diagnostic.code === "network_mismatch"
+  ) {
+    return "blocked"
+  }
+  if (
+    diagnostic.code === "invalid_uri" ||
+    diagnostic.code === "private_relay" ||
+    diagnostic.code === "non_wss_relay" ||
+    diagnostic.code === "relay_unreachable" ||
+    diagnostic.code === "unsupported_pay_invoice"
+  ) {
+    return "unavailable"
+  }
+  return "ambiguous"
+}
+
 export async function payCheckoutInvoice(
   input: {
     invoice: string
@@ -71,8 +108,14 @@ export async function payCheckoutInvoice(
 ): Promise<CheckoutInvoicePaymentResult> {
   const failures: string[] = []
   const diagnostics: NwcDiagnostic[] = []
+  const amountSats = input.amountMsats / 1_000
+  const recordPaymentAttemptResult =
+    dependencies.recordPaymentAttemptResult ?? recordMarketPaymentAttemptResult
+  let attemptedAutomaticRail = false
 
   if (input.walletConnection && input.tryNwc) {
+    attemptedAutomaticRail = true
+    const startedAt = Date.now()
     let result: NwcSessionPaymentResult | null = null
     try {
       result = await dependencies.nwcSessionPayInvoice(input.walletConnection, {
@@ -84,6 +127,12 @@ export async function payCheckoutInvoice(
       })
     } catch (error) {
       const diagnostic = classifyNwcPaymentError(error, input.walletConnection)
+      recordPaymentAttemptResult({
+        amountSats,
+        latencyMs: Date.now() - startedAt,
+        rail: "nwc",
+        status: getNwcDiagnosticTelemetryStatus(diagnostic),
+      })
       if (!diagnostic.safeManualFallback) {
         throw new Error(`${diagnostic.detail} ${diagnostic.action}`, {
           cause: error,
@@ -95,6 +144,12 @@ export async function payCheckoutInvoice(
 
     if (result) {
       if (result.status === "paid") {
+        recordPaymentAttemptResult({
+          amountSats,
+          latencyMs: Date.now() - startedAt,
+          rail: "nwc",
+          status: "success",
+        })
         return {
           status: "paid",
           rail: "nwc",
@@ -108,6 +163,17 @@ export async function payCheckoutInvoice(
         result.reason,
         input.walletConnection
       )
+      recordPaymentAttemptResult({
+        amountSats,
+        latencyMs: Date.now() - startedAt,
+        rail: "nwc",
+        status:
+          result.status === "pre_publish_failed"
+            ? "unavailable"
+            : result.status === "published_timeout"
+              ? "ambiguous"
+              : getNwcDiagnosticTelemetryStatus(diagnostic),
+      })
 
       if (!isNwcPrePublishFailure(result) && !diagnostic.safeManualFallback) {
         throw new Error(
@@ -121,9 +187,18 @@ export async function payCheckoutInvoice(
   }
 
   if (input.tryWebln !== false && dependencies.hasWebLN()) {
+    attemptedAutomaticRail = true
+    const startedAt = Date.now()
     try {
       const result = await dependencies.weblnSendPayment({
         invoice: input.invoice,
+      })
+
+      recordPaymentAttemptResult({
+        amountSats,
+        latencyMs: Date.now() - startedAt,
+        rail: "webln",
+        status: "success",
       })
 
       return {
@@ -134,6 +209,12 @@ export async function payCheckoutInvoice(
       }
     } catch (error) {
       const message = getErrorMessage(error, "Browser wallet payment failed")
+      recordPaymentAttemptResult({
+        amountSats,
+        latencyMs: Date.now() - startedAt,
+        rail: "webln",
+        status: isWeblnAmbiguousProofFailure(error) ? "ambiguous" : "failure",
+      })
       if (isWeblnAmbiguousProofFailure(error)) {
         throw new Error(
           `${message} Check your wallet before trying another payment path.`,
@@ -142,6 +223,14 @@ export async function payCheckoutInvoice(
       }
       failures.push(message)
     }
+  }
+
+  if (!attemptedAutomaticRail) {
+    recordPaymentAttemptResult({
+      amountSats,
+      rail: "none",
+      status: "unavailable",
+    })
   }
 
   return {
