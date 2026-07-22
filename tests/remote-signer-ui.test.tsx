@@ -124,6 +124,27 @@ describe("remote signer UI", () => {
     expect(source).toContain("onCancelConnect")
   })
 
+  it("closes the signer dialog after Nostr Connect pairing succeeds", async () => {
+    const source = await readFile(
+      "packages/ui/src/components/SignerSwitch.tsx",
+      "utf8"
+    )
+    const start = source.indexOf(
+      "async function handleConnectNostrConnect(): Promise<void>"
+    )
+    const handler = source.slice(
+      start,
+      source.indexOf("async function handleSwitchSigner", start)
+    )
+
+    expect(handler.indexOf("await onConnectNostrConnect()")).toBeLessThan(
+      handler.indexOf("setPendingSwitch(false)")
+    )
+    expect(handler.indexOf("setPendingSwitch(false)")).toBeLessThan(
+      handler.indexOf("setOpen(false)")
+    )
+  })
+
   it("allows an unavailable remembered remote session to be forgotten", () => {
     const markup = renderToStaticMarkup(
       <SignerConnectPanel

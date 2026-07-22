@@ -900,6 +900,8 @@ export function SignerSwitch({
     setIsWorking(true)
     try {
       await onConnectNostrConnect()
+      setPendingSwitch(false)
+      setOpen(false)
     } catch {
       // Keep the dialog open so the inline error remains visible.
     } finally {
