@@ -8,7 +8,16 @@ type SignerSwitchProps = {
 }
 
 export function SignerSwitch(props: SignerSwitchProps = {}) {
-  const { pubkey, status, error, connect, disconnect } = useAuth()
+  const {
+    pubkey,
+    method,
+    rememberedMethod,
+    status,
+    error,
+    authUrl,
+    connect,
+    disconnect,
+  } = useAuth()
   const extensionAvailable = useNip07Availability()
 
   return (
@@ -18,6 +27,9 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
       pubkeyLabel={pubkey ? formatNpub(pubkey) : null}
       pubkeyDetailLabel={pubkey ? formatNpub(pubkey, 12) : null}
       error={error}
+      authUrl={authUrl}
+      signerMethod={method}
+      rememberedMethod={rememberedMethod}
       extensionAvailable={extensionAvailable}
       connectedDescription="Your merchant workspace is ready."
       connectDescription="Use your Nostr signer to open your merchant workspace."
@@ -26,7 +38,9 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
         "Publish listings tied to your pubkey.",
         "Manage orders and buyer messages in one place.",
       ]}
-      onConnect={connect}
+      onConnectExtension={() => connect({ method: "nip07" })}
+      onConnectRemote={(bunkerUri) => connect({ method: "nip46", bunkerUri })}
+      onReconnect={() => connect({ mode: "restore" })}
       onDisconnect={disconnect}
     />
   )

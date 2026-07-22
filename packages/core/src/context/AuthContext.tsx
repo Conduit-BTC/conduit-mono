@@ -9,6 +9,25 @@ import {
 } from "react"
 import { NDKNip07Signer } from "@nostr-dev-kit/ndk"
 import { setSigner, removeSigner } from "../protocol/ndk"
+import {
+  forgetAuthSession,
+  forgetRemoteSignerKey,
+  bumpAuthRevision,
+  logoutRemoteSigner,
+  pairRemoteSigner,
+  persistRemoteSignerSession,
+  readAuthSession,
+  readAuthRevision,
+  restoreRemoteSigner,
+  rollbackNewRemoteSignerSession,
+  writeAuthSession,
+  type AuthSession,
+  type RemoteSignerConnection,
+  RemoteSignerError,
+  AUTH_REVISION_STORAGE_KEY,
+  AUTH_STORAGE_KEY,
+} from "../protocol/remote-signer"
+import { withBrowserAuthOperationLock } from "../protocol/remote-signer-vault"
 import { isTransientNip07BridgeError } from "../protocol/signing-retry"
 
 export type AuthStatus =
@@ -20,19 +39,31 @@ export type AuthStatus =
 
 export interface AuthContextValue {
   pubkey: string | null
+  method: AuthMethod | null
+  rememberedMethod: AuthMethod | null
   status: AuthStatus
   error: string | null
+  authUrl: string | null
+  dismissAuthUrl: () => void
+  capabilities: AuthSignerCapabilities
   connect: (options?: AuthConnectOptions) => Promise<void>
-  disconnect: () => void
+  disconnect: () => Promise<void>
 }
 
+export type AuthMethod = "nip07" | "nip46"
+export interface AuthSignerCapabilities {
+  signEvent: boolean
+  nip44: boolean
+  nip04: boolean
+}
 export type AuthConnectMode = "interactive" | "restore"
 
 export interface AuthConnectOptions {
   mode?: AuthConnectMode
+  method?: AuthMethod
+  bunkerUri?: string
 }
 
-const AUTH_STORAGE_KEY = "conduit:auth"
 const INTERACTIVE_INJECTION_WAIT_MS = 2_000
 const RESTORE_INJECTION_WAIT_MS = 1_000
 const INTERACTIVE_SIGNER_APPROVAL_TIMEOUT_MS = 30_000
@@ -41,35 +72,10 @@ const INTERACTIVE_TRANSIENT_CONNECT_RETRY_DELAYS_MS = [250, 750] as const
 const RESTORE_TRANSIENT_CONNECT_RETRY_DELAYS_MS = [250] as const
 
 const AuthContext = createContext<AuthContextValue | null>(null)
-
-function readStoredAuth(): string | null {
-  if (typeof window === "undefined") return null
-
-  try {
-    return window.localStorage.getItem(AUTH_STORAGE_KEY)
-  } catch {
-    return null
-  }
-}
-
-function rememberAuth(pubkey: string): void {
-  if (typeof window === "undefined") return
-
-  try {
-    window.localStorage.setItem(AUTH_STORAGE_KEY, pubkey)
-  } catch {
-    // Storage can fail in restricted browser contexts; active signer state still works.
-  }
-}
-
-function forgetAuth(): void {
-  if (typeof window === "undefined") return
-
-  try {
-    window.localStorage.removeItem(AUTH_STORAGE_KEY)
-  } catch {
-    // Best effort only; disconnect still clears in-memory signer state.
-  }
+const NO_SIGNER_CAPABILITIES: AuthSignerCapabilities = {
+  signEvent: false,
+  nip44: false,
+  nip04: false,
 }
 
 export function hasNip07(): boolean {
@@ -78,6 +84,20 @@ export function hasNip07(): boolean {
     typeof window.nostr?.getPublicKey === "function" &&
     typeof window.nostr?.signEvent === "function"
   )
+}
+
+export function getNip07Capabilities(): AuthSignerCapabilities {
+  return {
+    signEvent: hasNip07(),
+    nip44:
+      typeof window !== "undefined" &&
+      typeof window.nostr?.nip44?.encrypt === "function" &&
+      typeof window.nostr?.nip44?.decrypt === "function",
+    nip04:
+      typeof window !== "undefined" &&
+      typeof window.nostr?.nip04?.encrypt === "function" &&
+      typeof window.nostr?.nip04?.decrypt === "function",
+  }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -208,69 +228,306 @@ export async function connectNip07SignerForAuth(
   throw normalizeSignerConnectError(lastError, mode)
 }
 
+function abandonRemoteConnection(connection: RemoteSignerConnection): void {
+  connection.signer.invalidate()
+  if (connection.clientKeyAlreadyPersisted) {
+    void connection.bunkerSigner.close()
+    return
+  }
+  void logoutRemoteSigner(connection.bunkerSigner)
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [pubkey, setPubkey] = useState<string | null>(() => readStoredAuth())
+  const initialSessionRef = useRef<AuthSession | null>(readAuthSession())
+  const [pubkey, setPubkey] = useState<string | null>(
+    () => initialSessionRef.current?.userPubkey ?? null
+  )
+  const [method, setMethod] = useState<AuthMethod | null>(
+    () => initialSessionRef.current?.type ?? null
+  )
+  const [rememberedMethod, setRememberedMethod] = useState<AuthMethod | null>(
+    () => initialSessionRef.current?.type ?? null
+  )
   const [status, setStatus] = useState<AuthStatus>(() =>
-    readStoredAuth() ? "restoring" : "disconnected"
+    initialSessionRef.current ? "restoring" : "disconnected"
   )
   const [error, setError] = useState<string | null>(null)
+  const [authUrl, setAuthUrl] = useState<string | null>(null)
+  const [capabilities, setCapabilities] = useState<AuthSignerCapabilities>(
+    NO_SIGNER_CAPABILITIES
+  )
   const connecting = useRef(false)
+  const connected = useRef(false)
   const authEpoch = useRef(0)
+  const remoteConnection = useRef<RemoteSignerConnection | null>(null)
+  const activeSession = useRef<AuthSession | null>(null)
 
-  const connect = useCallback(async (options: AuthConnectOptions = {}) => {
+  const deactivateLocalSigner = useCallback(() => {
+    authEpoch.current += 1
+    connecting.current = false
+    connected.current = false
+    const connection = remoteConnection.current
+    remoteConnection.current = null
+    activeSession.current = null
+    connection?.signer.invalidate()
+    removeSigner()
+    setPubkey(null)
+    setMethod(null)
+    setRememberedMethod(null)
+    setStatus("disconnected")
+    setError(null)
+    setAuthUrl(null)
+    setCapabilities(NO_SIGNER_CAPABILITIES)
+    return connection
+  }, [])
+
+  const connectWithoutLock = useCallback(async (options: AuthConnectOptions = {}) => {
     const mode = options.mode ?? "interactive"
+    const storedSession = readAuthSession()
+    const requestedMethod =
+      options.method ?? (mode === "restore" ? storedSession?.type : "nip07")
     if (connecting.current) return
+    if (connected.current) {
+      throw new Error("Disconnect the current signer before connecting another.")
+    }
+    if (!requestedMethod) {
+      throw new Error("Choose a signer connection method and try again.")
+    }
     connecting.current = true
-    const epoch = authEpoch.current
+    const epoch = authEpoch.current + 1
+    authEpoch.current = epoch
+    let authRevision = readAuthRevision()
+    const attemptIsCurrent = () =>
+      epoch === authEpoch.current && authRevision === readAuthRevision()
+    let uncommittedRemote: RemoteSignerConnection | null = null
 
     setStatus(mode === "restore" ? "restoring" : "connecting")
+    setMethod(requestedMethod)
     setError(null)
-
-    const hasSigner = await waitForNip07(
-      mode === "restore"
-        ? RESTORE_INJECTION_WAIT_MS
-        : INTERACTIVE_INJECTION_WAIT_MS
-    )
-    if (!hasSigner) {
-      const msg = getMissingSignerMessage(mode)
-      setStatus("error")
-      setError(msg)
-      connecting.current = false
-      throw new Error(msg)
-    }
+    setAuthUrl(null)
 
     try {
-      const { signer, user } = await connectNip07SignerForAuth(mode)
-      const pk = user.pubkey
-      if (epoch !== authEpoch.current) return
+      let session: AuthSession
+      let signer: NDKNip07Signer | RemoteSignerConnection["signer"]
+      let connectedRemote: RemoteSignerConnection | null = null
 
+      if (requestedMethod === "nip07") {
+        const hasSigner = await waitForNip07(
+          mode === "restore"
+            ? RESTORE_INJECTION_WAIT_MS
+            : INTERACTIVE_INJECTION_WAIT_MS
+        )
+        if (!hasSigner) throw new Error(getMissingSignerMessage(mode))
+
+        const result = await connectNip07SignerForAuth(mode)
+        signer = result.signer
+        session = {
+          version: 1,
+          type: "nip07",
+          userPubkey: result.user.pubkey,
+        }
+      } else {
+        const onAuthUrl = (url: string) => {
+          if (!attemptIsCurrent()) return
+          try {
+            const parsed = new URL(url)
+            if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+              setAuthUrl(parsed.toString())
+            }
+          } catch {
+            // Invalid remote URLs are not exposed to the browser UI.
+          }
+        }
+        const connection =
+          mode === "restore"
+            ? storedSession?.type === "nip46"
+              ? await restoreRemoteSigner(storedSession, { onAuthUrl })
+              : null
+            : options.bunkerUri
+              ? await pairRemoteSigner(options.bunkerUri, {
+                   onAuthUrl,
+                  clientMetadata: {
+                    name: "Conduit",
+                    url:
+                      typeof window === "undefined"
+                        ? undefined
+                        : window.location.origin,
+                  },
+                })
+              : null
+        if (!connection) {
+          throw new Error(
+            mode === "restore"
+              ? "The saved remote signer session is unavailable. Connect it again."
+              : "Paste a bunker:// connection URI from your remote signer."
+          )
+        }
+        connectedRemote = connection
+        uncommittedRemote = connection
+        signer = connection.signer
+        session = connection.session
+      }
+
+      const pk = session.userPubkey
+      if (!attemptIsCurrent()) {
+        if (connectedRemote) {
+          abandonRemoteConnection(connectedRemote)
+          uncommittedRemote = null
+        }
+        return
+      }
+
+      if (
+        mode === "restore" &&
+        JSON.stringify(readAuthSession()) !== JSON.stringify(storedSession)
+      ) {
+        if (connectedRemote) {
+          abandonRemoteConnection(connectedRemote)
+          uncommittedRemote = null
+        }
+        return
+      }
+
+      authRevision = bumpAuthRevision()
+      if (!attemptIsCurrent()) {
+        if (connectedRemote) {
+          abandonRemoteConnection(connectedRemote)
+          uncommittedRemote = null
+        }
+        return
+      }
+      session = { ...session, authClaim: authRevision }
+      if (connectedRemote && session.type === "nip46") {
+        connectedRemote.session = session
+      }
+
+      if (session.type === "nip46") {
+        const persisted = connectedRemote
+          ? await persistRemoteSignerSession(
+              connectedRemote,
+              undefined,
+              undefined,
+              attemptIsCurrent
+            )
+          : false
+        if (!attemptIsCurrent()) {
+          if (connectedRemote) {
+            if (persisted) {
+              await rollbackNewRemoteSignerSession(connectedRemote)
+            }
+            abandonRemoteConnection(connectedRemote)
+            uncommittedRemote = null
+          }
+          return
+        }
+        if (!persisted || !connectedRemote) {
+          if (connectedRemote) {
+            abandonRemoteConnection(connectedRemote)
+            uncommittedRemote = null
+          }
+          throw new Error(
+            "This browser could not save the remote signer session. Check site storage permissions and try again."
+          )
+        }
+      } else if (!writeAuthSession(session)) {
+        // NIP-07 remains usable for the current tab when storage is restricted.
+      }
+
+      remoteConnection.current = connectedRemote
+      uncommittedRemote = null
+      activeSession.current = session
       setSigner(signer)
       setPubkey(pk)
+      setMethod(session.type)
+      setRememberedMethod(session.type)
       setStatus("connected")
-      rememberAuth(pk)
+      connected.current = true
+      setCapabilities(
+        session.type === "nip46"
+          ? { signEvent: true, nip44: true, nip04: true }
+          : getNip07Capabilities()
+      )
+      setAuthUrl(null)
     } catch (err) {
-      const normalizedError = normalizeSignerConnectError(err, mode)
+      if (uncommittedRemote) {
+        abandonRemoteConnection(uncommittedRemote)
+        uncommittedRemote = null
+      }
+      if (!attemptIsCurrent()) {
+        if (
+          err instanceof RemoteSignerError &&
+          (err.operation === "rollback session" ||
+            err.operation === "persist session")
+        ) {
+          setStatus("error")
+          setError(
+            "This browser could not erase a stale remote signer connection. Clear this site's storage before reconnecting."
+          )
+        }
+        return
+      }
+      const normalizedError =
+        requestedMethod === "nip07"
+          ? normalizeSignerConnectError(err, mode)
+          : err instanceof Error
+            ? err
+            : new Error("Failed to connect remote signer")
       const msg = normalizedError.message
       setStatus("error")
       setError(msg)
       throw normalizedError
     } finally {
-      connecting.current = false
+      if (attemptIsCurrent()) connecting.current = false
     }
   }, [])
 
-  const disconnect = useCallback(() => {
-    authEpoch.current += 1
-    connecting.current = false
-    removeSigner()
-    setPubkey(null)
-    setStatus("disconnected")
-    setError(null)
-    forgetAuth()
-  }, [])
+  const connect = useCallback(
+    (options: AuthConnectOptions = {}) =>
+      withBrowserAuthOperationLock(() => connectWithoutLock(options)),
+    [connectWithoutLock]
+  )
+
+  const disconnectWithoutLock = useCallback(async (broadcast = true) => {
+    if (broadcast) bumpAuthRevision()
+    const storedSession = readAuthSession()
+    const connection = deactivateLocalSigner()
+    let cleanupFailed = !forgetAuthSession()
+    const remoteSessions = [
+      storedSession?.type === "nip46" ? storedSession : null,
+      connection?.session ?? null,
+    ]
+      .filter((session): session is NonNullable<typeof session> => !!session)
+      .filter(
+      (session, index, sessions) =>
+        sessions.findIndex(
+          (candidate) => candidate.clientKeyId === session.clientKeyId
+        ) === index
+      )
+    for (const session of remoteSessions) {
+      try {
+        await forgetRemoteSignerKey(session)
+      } catch {
+        cleanupFailed = true
+      }
+    }
+    if (connection) await logoutRemoteSigner(connection.bunkerSigner)
+    if (cleanupFailed) {
+      setStatus("error")
+      setError(
+        "Disconnected, but this browser could not erase the saved remote signer connection. Clear this site's storage before reconnecting."
+      )
+    }
+  }, [deactivateLocalSigner])
+
+  const disconnect = useCallback(
+    () => withBrowserAuthOperationLock(() => disconnectWithoutLock(true)),
+    [disconnectWithoutLock]
+  )
+
+  const dismissAuthUrl = useCallback(() => setAuthUrl(null), [])
 
   useEffect(() => {
-    const stored = readStoredAuth()
+    const stored = initialSessionRef.current
     if (!stored) return
 
     let cancelled = false
@@ -292,8 +549,80 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [connect])
 
+  useEffect(
+    () => () => {
+      const connection = deactivateLocalSigner()
+      if (connection) {
+        void connection.bunkerSigner.close()
+      }
+    },
+    [deactivateLocalSigner]
+  )
+
+  useEffect(() => {
+    function handleStorage(event: StorageEvent): void {
+      if (
+        event.key === AUTH_REVISION_STORAGE_KEY &&
+        connecting.current
+      ) {
+        const connection = deactivateLocalSigner()
+        if (connection) void connection.bunkerSigner.close()
+        return
+      }
+      if (event.key !== AUTH_STORAGE_KEY) return
+      const replacement = readAuthSession()
+      const previous = activeSession.current
+      if (
+        JSON.stringify(replacement) === JSON.stringify(previous) ||
+        (!connected.current && !connecting.current)
+      ) {
+        return
+      }
+      const currentConnection = deactivateLocalSigner()
+      if (!currentConnection) return
+      if (
+        replacement?.type === "nip46" &&
+        replacement.clientKeyId === currentConnection.session.clientKeyId
+      ) {
+        void currentConnection.bunkerSigner.close()
+        return
+      }
+      void (async () => {
+        let cleanupFailed = false
+        try {
+          await forgetRemoteSignerKey(currentConnection.session)
+        } catch {
+          cleanupFailed = true
+        } finally {
+          await logoutRemoteSigner(currentConnection.bunkerSigner)
+        }
+        if (cleanupFailed) {
+          setStatus("error")
+          setError(
+            "This tab disconnected, but could not erase its previous remote signer connection. Clear this site's storage before reconnecting."
+          )
+        }
+      })()
+    }
+    window.addEventListener("storage", handleStorage)
+    return () => window.removeEventListener("storage", handleStorage)
+  }, [deactivateLocalSigner])
+
   return (
-    <AuthContext.Provider value={{ pubkey, status, error, connect, disconnect }}>
+    <AuthContext.Provider
+      value={{
+        pubkey,
+        method,
+        rememberedMethod,
+        status,
+        error,
+        authUrl,
+        dismissAuthUrl,
+        capabilities,
+        connect,
+        disconnect,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   )

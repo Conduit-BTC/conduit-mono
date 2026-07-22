@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import {
   connectNip07SignerForAuth,
+  getNip07Capabilities,
   hasNip07,
   isTransientNip07ConnectError,
 } from "../packages/core/src/context/AuthContext"
@@ -65,6 +66,11 @@ describe("NIP-07 availability", () => {
     })
 
     expect(hasNip07()).toBe(true)
+    expect(getNip07Capabilities()).toEqual({
+      signEvent: true,
+      nip44: false,
+      nip04: false,
+    })
   })
 
   it("recognizes transient extension bridge failures", () => {
