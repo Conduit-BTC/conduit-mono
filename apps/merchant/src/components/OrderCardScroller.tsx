@@ -14,8 +14,14 @@ export function OrderCardScroller({
 }: {
   conversations: MerchantConversationSummary[]
   selectedId?: string | null
-  buyerName: (pubkey: string) => string
-  buyerPicture: (pubkey: string) => string | undefined
+  buyerName: (
+    pubkey: string,
+    conversation: MerchantConversationSummary
+  ) => string
+  buyerPicture: (
+    pubkey: string,
+    conversation: MerchantConversationSummary
+  ) => string | undefined
   onSelect: (conversation: MerchantConversationSummary) => void
 }) {
   const cardRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
@@ -34,7 +40,7 @@ export function OrderCardScroller({
       {conversations.map((conversation) => {
         const active = conversation.id === selectedId
         const statusDisplay = getMerchantConversationStatusDisplay(conversation)
-        const name = buyerName(conversation.buyerPubkey)
+        const name = buyerName(conversation.buyerPubkey, conversation)
         return (
           <button
             key={conversation.id}
@@ -54,7 +60,7 @@ export function OrderCardScroller({
               <div className="flex min-w-0 items-start gap-3">
                 <BuyerAvatar
                   name={name}
-                  picture={buyerPicture(conversation.buyerPubkey)}
+                  picture={buyerPicture(conversation.buyerPubkey, conversation)}
                   size="sm"
                 />
                 <div className="min-w-0">

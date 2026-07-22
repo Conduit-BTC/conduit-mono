@@ -13,7 +13,12 @@ import {
   recordBrowserTelemetryPageView,
   useAuth,
 } from "@conduit/core"
-import { ErrorPage, LegalFooter, NotFoundPage } from "@conduit/ui"
+import {
+  ErrorPage,
+  LegalFooter,
+  NotFoundPage,
+  SignerAuthUrlNotice,
+} from "@conduit/ui"
 import { MarketHeader } from "../components/MarketHeader"
 
 export const Route = createRootRoute({
@@ -74,12 +79,13 @@ function useMarketBugReportUrl(): string {
 }
 
 function RootLayout() {
-  const { status } = useAuth()
+  const { authUrl, dismissAuthUrl, method, status } = useAuth()
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
   const appLoadTelemetrySentRef = useRef(false)
   const previousAuthStatusRef = useRef(status)
+  const previousAuthMethodRef = useRef(method)
 
   useEffect(() => {
     if (appLoadTelemetrySentRef.current) return
@@ -103,7 +109,7 @@ function RootLayout() {
         app: "market",
         eventName: "signer_connected",
         properties: {
-          method: "nip07",
+          method: method ?? "nip07",
           status: "success",
         },
       })
@@ -116,13 +122,14 @@ function RootLayout() {
         app: "market",
         eventName: "signer_disconnected",
         properties: {
-          method: "nip07",
+          method: previousAuthMethodRef.current ?? "nip07",
           status: "success",
         },
       })
     }
     previousAuthStatusRef.current = status
-  }, [status])
+    if (method) previousAuthMethodRef.current = method
+  }, [method, status])
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" })
@@ -140,6 +147,9 @@ function RootLayout() {
   return (
     <RootShell>
       <Outlet />
+      {authUrl && (
+        <SignerAuthUrlNotice authUrl={authUrl} onDismiss={dismissAuthUrl} />
+      )}
     </RootShell>
   )
 }
