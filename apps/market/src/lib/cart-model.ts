@@ -2,6 +2,7 @@ import {
   getPriceSats,
   getShippingCostSats,
   resolveCartShippingCost,
+  type CommerceQueryMeta,
   type ProductZapMessagePolicy,
   type PricingRateInput,
   type Product,
@@ -88,6 +89,11 @@ export type CartProductAvailability = {
   refreshed: boolean
 }
 
+type CartAvailabilityReadMeta = Pick<
+  CommerceQueryMeta,
+  "source" | "stale" | "degraded"
+>
+
 export function createCartItemFromProduct(
   product: Product
 ): Omit<CartItem, "quantity"> {
@@ -139,6 +145,27 @@ export function getCartProductAvailability(
       refreshed: !!refreshedProduct,
     }
   })
+}
+
+export function isCartAvailabilityReadFresh(
+  availability: CartProductAvailability[],
+  meta: CartAvailabilityReadMeta | undefined
+): boolean {
+  return (
+    availability.length > 0 &&
+    !!meta &&
+    meta.source !== "local_cache" &&
+    !meta.stale &&
+    !meta.degraded &&
+    availability.every((entry) => entry.refreshed)
+  )
+}
+
+export function getCartItemStockForAvailability(
+  item: Pick<CartItem, "stock">,
+  availability: Pick<CartProductAvailability, "stock" | "refreshed"> | undefined
+): number | undefined {
+  return availability?.refreshed ? availability.stock : item.stock
 }
 
 const ZAP_MESSAGE_POLICY_RANK: Record<ProductZapMessagePolicy, number> = {

@@ -56,6 +56,7 @@ import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
 import {
   createCartItemFromProduct,
   getCartCostSummary,
+  getCartItemStockForAvailability,
   groupCartItems,
   type CartProductAvailability,
   type MerchantCartGroup,
@@ -970,7 +971,12 @@ function CartPage() {
                       publicZapEnabled: item.publicZapEnabled,
                       zapMessagePolicy: item.zapMessagePolicy,
                       publicZapPolicyKnown: item.publicZapPolicyKnown,
-                      stock: item.stock,
+                      stock: getCartItemStockForAvailability(
+                        item,
+                        cartAvailability.availabilityByProductId.get(
+                          item.productId
+                        )
+                      ),
                     },
                     1
                   )

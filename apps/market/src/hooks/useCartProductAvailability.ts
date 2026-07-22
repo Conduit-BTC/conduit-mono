@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query"
 import { getProductsByIds } from "@conduit/core"
 import {
   getCartProductAvailability,
+  isCartAvailabilityReadFresh,
   type CartItem,
   type CartProductAvailability,
 } from "../lib/cart-model"
@@ -40,9 +41,24 @@ export function useCartProductAvailability(items: CartItem[]) {
   const hasSoldOutItems = availability.some(
     (entry) => entry.status === "sold_out"
   )
-  async function refresh(): Promise<CartProductAvailability[]> {
+  async function refresh(): Promise<{
+    availability: CartProductAvailability[]
+    fresh: boolean
+  }> {
     const result = await query.refetch()
-    return getRefreshedAvailability(items, result.data?.data)
+    const commerceResult = result.isSuccess ? result.data : undefined
+    const refreshedAvailability = getRefreshedAvailability(
+      items,
+      commerceResult?.data
+    )
+
+    return {
+      availability: refreshedAvailability,
+      fresh: isCartAvailabilityReadFresh(
+        refreshedAvailability,
+        commerceResult?.meta
+      ),
+    }
   }
 
   return {

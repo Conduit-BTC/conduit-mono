@@ -3,11 +3,13 @@ import {
   addCartItem,
   clearMerchantCart,
   createCartItemFromProduct,
+  getCartItemStockForAvailability,
   getCartProductAvailability,
   getCartCostSummary,
   getCartPublicZapPolicy,
   getCartTotals,
   groupCartItems,
+  isCartAvailabilityReadFresh,
   removeCartItem,
   setCartItemQuantity,
   type CartItem,
@@ -196,7 +198,11 @@ describe("cart model", () => {
       updatedAt: 3,
     }
 
-    expect(getCartProductAvailability(cartItems, [refreshedProduct])).toEqual([
+    const availability = getCartProductAvailability(cartItems, [
+      refreshedProduct,
+    ])
+
+    expect(availability).toEqual([
       {
         productId: cartItems[0]!.productId,
         status: "untracked",
@@ -204,6 +210,77 @@ describe("cart model", () => {
         refreshed: true,
       },
     ])
+
+    const incrementedItems = addCartItem(
+      cartItems,
+      {
+        productId: cartItems[0]!.productId,
+        merchantPubkey: cartItems[0]!.merchantPubkey,
+        title: cartItems[0]!.title,
+        price: cartItems[0]!.price,
+        currency: cartItems[0]!.currency,
+        stock: getCartItemStockForAvailability(cartItems[0]!, availability[0]),
+      },
+      1
+    )
+
+    expect(incrementedItems[0]).toMatchObject({
+      quantity: 2,
+      stock: undefined,
+    })
+  })
+
+  it("requires a fresh complete commerce read before checkout can proceed", () => {
+    const cartItems = [item({ stock: 2 })]
+    const refreshedProduct: Product = {
+      id: cartItems[0]!.productId,
+      pubkey: cartItems[0]!.merchantPubkey,
+      title: cartItems[0]!.title,
+      price: cartItems[0]!.price,
+      currency: cartItems[0]!.currency,
+      type: "simple",
+      format: "physical",
+      visibility: "public",
+      stock: 2,
+      images: [],
+      tags: [],
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+      createdAt: 1,
+      updatedAt: 3,
+    }
+    const refreshedAvailability = getCartProductAvailability(cartItems, [
+      refreshedProduct,
+    ])
+    const freshMeta = {
+      source: "commerce" as const,
+      stale: false,
+      degraded: false,
+    }
+
+    expect(isCartAvailabilityReadFresh(refreshedAvailability, freshMeta)).toBe(
+      true
+    )
+    expect(
+      isCartAvailabilityReadFresh(refreshedAvailability, {
+        source: "local_cache",
+        stale: true,
+        degraded: true,
+      })
+    ).toBe(false)
+    expect(
+      isCartAvailabilityReadFresh(refreshedAvailability, {
+        ...freshMeta,
+        degraded: true,
+      })
+    ).toBe(false)
+    expect(
+      isCartAvailabilityReadFresh(
+        getCartProductAvailability(cartItems, []),
+        freshMeta
+      )
+    ).toBe(false)
   })
 
   it("sets quantities, removes products, and clears one merchant", () => {

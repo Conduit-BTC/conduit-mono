@@ -1214,9 +1214,15 @@ function CheckoutPage() {
   }
 
   async function assertCheckoutItemsAvailable(): Promise<void> {
-    const refreshedAvailability = await checkoutAvailability.refresh()
+    const refreshResult = await checkoutAvailability.refresh()
+    if (!refreshResult.fresh) {
+      throw new Error(
+        "Current product availability could not be verified. Check your connection and try again."
+      )
+    }
+
     const soldOutIds = new Set(
-      refreshedAvailability
+      refreshResult.availability
         .filter((entry) => entry.status === "sold_out")
         .map((entry) => entry.productId)
     )
