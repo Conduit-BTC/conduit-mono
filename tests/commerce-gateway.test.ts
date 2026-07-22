@@ -18,6 +18,7 @@ import {
   getMerchantConversationList,
   getMerchantStorefront,
   getProductDetail,
+  getProductsByIds,
   getProfiles,
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
@@ -45,6 +46,7 @@ function makeProductEvent(params: {
   id: string
   createdAt: number
   title: string
+  stock?: number
 }): {
   id: string
   kind: number
@@ -69,6 +71,7 @@ function makeProductEvent(params: {
       visibility: "public",
       images: [{ url: "https://example.com/product.png" }],
       tags: ["test"],
+      stock: params.stock,
       createdAt: params.createdAt * 1000,
       updatedAt: params.createdAt * 1000,
     }),
@@ -78,6 +81,9 @@ function makeProductEvent(params: {
       ["title", params.title],
       ["price", "25", "USD"],
       ["t", "test"],
+      ...(typeof params.stock === "number"
+        ? [["stock", String(params.stock)]]
+        : []),
     ],
   }
 }
@@ -87,6 +93,7 @@ function makeSignedProductEvent(params: {
   dTag: string
   createdAt: number
   title: string
+  stock?: number
 }): NDKEvent {
   const secretKey = params.secretKey ?? MERCHANT_A_SECRET
   const pubkey = getPublicKey(secretKey)
@@ -104,6 +111,7 @@ function makeSignedProductEvent(params: {
         visibility: "public",
         images: [{ url: "https://example.com/product.png" }],
         tags: ["test"],
+        stock: params.stock,
         createdAt: params.createdAt * 1000,
         updatedAt: params.createdAt * 1000,
       }),
@@ -112,6 +120,9 @@ function makeSignedProductEvent(params: {
         ["title", params.title],
         ["price", "25", "USD"],
         ["t", "test"],
+        ...(typeof params.stock === "number"
+          ? [["stock", String(params.stock)]]
+          : []),
       ],
     },
     secretKey
@@ -669,6 +680,51 @@ describe("commerce gateway", () => {
     expect(result.data).toHaveLength(1)
     expect(result.data[0]?.eventId).toBe(localProduct.id)
     expect(result.data[0]?.product.title).toBe("Locally Edited Item")
+    expect(cachedProducts[0]?.eventId).toBe(localProduct.id)
+  })
+
+  it("keeps newer local stock ahead of stale relay detail and batch reads", async () => {
+    const dTag = "consecutive-stock-update"
+    const localProduct = makeSignedProductEvent({
+      dTag,
+      createdAt: 102,
+      title: "Locally Updated Stock",
+      stock: 11,
+    })
+    const merchantPubkey = localProduct.pubkey
+    const addressId = `30402:${merchantPubkey}:${dTag}`
+    await cacheSignedProductListingEvent(localProduct)
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          return [
+            makeProductEvent({
+              pubkey: merchantPubkey,
+              dTag,
+              id: "event-relay-stock-12",
+              createdAt: 100,
+              title: "Stale Relay Stock",
+              stock: 12,
+            }) as never,
+          ]
+        }
+        return []
+      },
+    })
+
+    const detail = await getProductDetail({
+      productId: addressId,
+      includeMarketHidden: true,
+    })
+    const batch = await getProductsByIds([addressId])
+
+    expect(detail.data?.eventId).toBe(localProduct.id)
+    expect(detail.data?.product.stock).toBe(11)
+    expect(detail.meta.stale).toBe(false)
+    expect(detail.meta.degraded).toBe(false)
+    expect(batch.data[0]?.eventId).toBe(localProduct.id)
+    expect(batch.data[0]?.product.stock).toBe(11)
     expect(cachedProducts[0]?.eventId).toBe(localProduct.id)
   })
 

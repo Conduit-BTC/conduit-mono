@@ -8,9 +8,7 @@ import {
   SHIPPING_COUNTRIES,
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
   appendConduitClientTag,
-  buildProductListingEventDraft,
   cacheSignedProductDeletionEvent,
-  cacheSignedProductListingEvent,
   canonicalizeProductPrice,
   evaluateListingSafety,
   getCachedMerchantStorefront,
@@ -18,9 +16,7 @@ import {
   getMerchantStorefront,
   getProductImageCandidates,
   getProductPriceDisplay,
-  publishWithPlanner,
   requireNdkConnected,
-  RelayPublishDiagnosticsError,
   type CommerceResult,
   type ListingSafetyEvaluation,
   type ProductSchema,
@@ -91,6 +87,17 @@ import {
   loadShippingConfig,
   type ShippingConfig,
 } from "../lib/readiness"
+import {
+  deliverSignedProductEvent,
+  getRelayPublishDiagnosticsError,
+  signAndPublishProductListing,
+  SignedProductDeliveryError,
+} from "../lib/product-publishing"
+import {
+  getProductStockDisplay,
+  isPlainStockInput,
+  parseProductStockInput,
+} from "../lib/productStock"
 
 export const Route = createFileRoute("/products")({
   beforeLoad: () => {
@@ -129,32 +136,6 @@ type ProductDeliveryRetryState =
   | { action: "publish"; payload: ProductPublishMutationPayload }
   | { action: "delete"; payload: ProductDeleteMutationPayload }
 
-class SignedProductDeliveryError extends Error {
-  readonly deliveryCause: unknown
-
-  constructor(deliveryCause: unknown) {
-    super("Signed product event could not be delivered")
-    this.name = "SignedProductDeliveryError"
-    this.deliveryCause = deliveryCause
-  }
-}
-
-function asSignedProductDeliveryError(
-  error: unknown
-): SignedProductDeliveryError {
-  return error instanceof SignedProductDeliveryError
-    ? error
-    : new SignedProductDeliveryError(error)
-}
-
-function getRelayPublishDiagnosticsError(
-  error: unknown
-): RelayPublishDiagnosticsError | null {
-  const cause =
-    error instanceof SignedProductDeliveryError ? error.deliveryCause : error
-  return cause instanceof RelayPublishDiagnosticsError ? cause : null
-}
-
 type ProductSort = "updated_desc" | "title_asc" | "price_asc" | "price_desc"
 
 function createEmptyProductForm(
@@ -164,6 +145,7 @@ function createEmptyProductForm(
     title: "",
     summary: "",
     price: "0",
+    stock: "",
     currency: "USD",
     format: "physical",
     shippingPricingMode: "fixed",
@@ -246,6 +228,7 @@ function productToForm(
     title: product.title,
     summary: product.summary ?? "",
     price: formatProductAmountInput(source?.amount ?? product.price),
+    stock: typeof product.stock === "number" ? String(product.stock) : "",
     currency,
     format: product.format,
     shippingPricingMode:
@@ -556,22 +539,6 @@ async function fetchCachedMerchantProducts(
   }
 }
 
-async function deliverSignedProductEvent(
-  event: NDKEvent,
-  merchantPubkey: string
-): Promise<PublishWithPlannerResult> {
-  try {
-    return await publishWithPlanner(event, {
-      intent: "author_event",
-      authorPubkey: merchantPubkey,
-      authenticatedPubkey: merchantPubkey,
-      deliveryMode: "critical",
-    })
-  } catch (error) {
-    throw asSignedProductDeliveryError(error)
-  }
-}
-
 async function publishProduct(
   merchantPubkey: string,
   form: ProductFormState,
@@ -590,12 +557,7 @@ async function publishProduct(
     )
   }
 
-  const ndk = await requireNdkConnected()
-  if (!ndk.signer) throw new Error("Signer not connected")
-  const signerPubkey = (await ndk.signer.user()).pubkey
-  if (signerPubkey !== merchantPubkey) {
-    throw new Error("Active signer does not match current merchant pubkey")
-  }
+  const signerPubkey = merchantPubkey
 
   const title = form.title.trim()
   if (!title) throw new Error("Title is required")
@@ -661,7 +623,7 @@ async function publishProduct(
     ...shippingCost,
     ...shippingMetadata,
     visibility: "public",
-    stock: undefined,
+    stock: parseProductStockInput(form.stock),
     images: [{ url: imageUrl }],
     tags,
     publicZapEnabled: form.publicZapEnabled,
@@ -672,25 +634,13 @@ async function publishProduct(
     updatedAt: now,
   })
 
-  const event = new NDKEvent(ndk)
-  const draft = buildProductListingEventDraft({
+  return signAndPublishProductListing({
+    merchantPubkey,
     product,
     dTag,
-    clientAppId: "merchant",
+    previousEventCreatedAt: existing?.eventCreatedAt,
+    onSignedLocal,
   })
-  event.kind = draft.kind
-  event.created_at = Math.floor(now / 1000)
-  event.content = draft.content
-  event.tags = draft.tags
-
-  await event.sign(ndk.signer)
-  await cacheSignedProductListingEvent(event)
-  try {
-    await onSignedLocal(event)
-    return await deliverSignedProductEvent(event, signerPubkey)
-  } catch (error) {
-    throw asSignedProductDeliveryError(error)
-  }
 }
 
 async function deleteProduct(
@@ -730,7 +680,9 @@ async function deleteProduct(
     await onSignedLocal(deletion)
     return await deliverSignedProductEvent(deletion, merchantPubkey)
   } catch (error) {
-    throw asSignedProductDeliveryError(error)
+    throw error instanceof SignedProductDeliveryError
+      ? error
+      : new SignedProductDeliveryError(error)
   }
 }
 
@@ -1411,6 +1363,7 @@ function ProductsPage() {
 
             const isActive = item.safety.state === "active"
             const zapBadge = getZapPolicyBadge(item.product)
+            const stockDisplay = getProductStockDisplay(item.product.stock)
 
             return (
               <div key={item.addressId} className="grid gap-2">
@@ -1429,6 +1382,13 @@ function ProductsPage() {
                           Active
                         </StatusPill>
                       )}
+                      <StatusPill
+                        variant={stockDisplay.variant}
+                        className="text-[10px]"
+                        noIcon={stockDisplay.variant === "neutral"}
+                      >
+                        {stockDisplay.label}
+                      </StatusPill>
                       <DoubleSideStatusPill
                         left={zapBadge.left}
                         right={zapBadge.right}
@@ -1664,6 +1624,39 @@ function ProductsPage() {
                         : "0 or fixed amount"
                   }
                 />
+              </div>
+              <div className="grid gap-1.5 sm:col-span-2">
+                <Label htmlFor="product-stock">Stock quantity</Label>
+                <Input
+                  id="product-stock"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  className="tabular-nums"
+                  value={form.stock}
+                  aria-invalid={!!productFormValidation.errors.stock}
+                  aria-describedby="product-stock-help"
+                  onChange={(event) => {
+                    if (!isPlainStockInput(event.target.value)) return
+                    setForm((prev) => ({
+                      ...prev,
+                      stock: event.target.value,
+                    }))
+                  }}
+                  placeholder="Not tracked"
+                />
+              </div>
+              <div
+                id="product-stock-help"
+                className={cn(
+                  "self-end text-pretty text-xs leading-5 sm:col-span-2 sm:pb-2",
+                  productFormValidation.errors.stock
+                    ? "text-error"
+                    : "text-[var(--text-muted)]"
+                )}
+              >
+                {productFormValidation.errors.stock ??
+                  "Leave blank to publish without stock tracking. Enter 0 to mark the listing sold out."}
               </div>
               {productFormValidation.errors.price && (
                 <p
