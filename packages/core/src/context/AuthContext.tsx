@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react"
 import { NDKNip07Signer } from "@nostr-dev-kit/ndk"
+import { CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS } from "../config"
 import { setSigner, removeSigner } from "../protocol/ndk"
 import {
   forgetAuthSession,
@@ -15,6 +16,7 @@ import {
   bumpAuthRevision,
   logoutRemoteSigner,
   pairRemoteSigner,
+  pairRemoteSignerFromNostrConnect,
   persistRemoteSignerSession,
   readAuthSession,
   readAuthRevision,
@@ -44,7 +46,9 @@ export interface AuthContextValue {
   status: AuthStatus
   error: string | null
   authUrl: string | null
+  nostrConnectUri: string | null
   dismissAuthUrl: () => void
+  cancelConnect: () => void
   capabilities: AuthSignerCapabilities
   connect: (options?: AuthConnectOptions) => Promise<void>
   disconnect: () => Promise<void>
@@ -61,7 +65,12 @@ export type AuthConnectMode = "interactive" | "restore"
 export interface AuthConnectOptions {
   mode?: AuthConnectMode
   method?: AuthMethod
+  nip46Flow?: "bunker" | "nostrconnect"
   bunkerUri?: string
+}
+
+type AuthConnectAttemptOptions = AuthConnectOptions & {
+  pairingSignal?: AbortSignal
 }
 
 const INTERACTIVE_INJECTION_WAIT_MS = 2_000
@@ -72,6 +81,7 @@ const INTERACTIVE_TRANSIENT_CONNECT_RETRY_DELAYS_MS = [250, 750] as const
 const RESTORE_TRANSIENT_CONNECT_RETRY_DELAYS_MS = [250] as const
 
 const AuthContext = createContext<AuthContextValue | null>(null)
+const NOSTR_CONNECT_RELAYS = CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS.slice(0, 3)
 const NO_SIGNER_CAPABILITIES: AuthSignerCapabilities = {
   signEvent: false,
   nip44: false,
@@ -253,6 +263,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
   const [error, setError] = useState<string | null>(null)
   const [authUrl, setAuthUrl] = useState<string | null>(null)
+  const [nostrConnectUri, setNostrConnectUri] = useState<string | null>(null)
   const [capabilities, setCapabilities] = useState<AuthSignerCapabilities>(
     NO_SIGNER_CAPABILITIES
   )
@@ -261,8 +272,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const authEpoch = useRef(0)
   const remoteConnection = useRef<RemoteSignerConnection | null>(null)
   const activeSession = useRef<AuthSession | null>(null)
+  const activePairing = useRef<AbortController | null>(null)
 
   const deactivateLocalSigner = useCallback(() => {
+    activePairing.current?.abort()
+    activePairing.current = null
     authEpoch.current += 1
     connecting.current = false
     connected.current = false
@@ -277,11 +291,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus("disconnected")
     setError(null)
     setAuthUrl(null)
+    setNostrConnectUri(null)
     setCapabilities(NO_SIGNER_CAPABILITIES)
     return connection
   }, [])
 
-  const connectWithoutLock = useCallback(async (options: AuthConnectOptions = {}) => {
+  const connectWithoutLock = useCallback(async (options: AuthConnectAttemptOptions = {}) => {
     const mode = options.mode ?? "interactive"
     const storedSession = readAuthSession()
     const requestedMethod =
@@ -314,6 +329,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setMethod(requestedMethod)
     setError(null)
     setAuthUrl(null)
+    setNostrConnectUri(null)
 
     try {
       let session: AuthSession
@@ -347,14 +363,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             // Invalid remote URLs are not exposed to the browser UI.
           }
         }
+        const nip46Flow = options.nip46Flow ?? "bunker"
         const connection =
           mode === "restore"
             ? storedSession?.type === "nip46"
               ? await restoreRemoteSigner(storedSession, { onAuthUrl })
               : null
-            : options.bunkerUri
-              ? await pairRemoteSigner(options.bunkerUri, {
-                   onAuthUrl,
+            : nip46Flow === "nostrconnect"
+              ? await pairRemoteSignerFromNostrConnect(NOSTR_CONNECT_RELAYS, {
+                  signal: options.pairingSignal,
+                  onNostrConnectUri: (uri) => {
+                    if (attemptIsCurrent()) setNostrConnectUri(uri)
+                  },
+                  onAuthUrl,
                   clientMetadata: {
                     name: "Conduit",
                     url:
@@ -363,12 +384,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                         : window.location.origin,
                   },
                 })
-              : null
+              : options.bunkerUri
+                ? await pairRemoteSigner(options.bunkerUri, {
+                    signal: options.pairingSignal,
+                    onAuthUrl,
+                    clientMetadata: {
+                      name: "Conduit",
+                      url:
+                        typeof window === "undefined"
+                          ? undefined
+                          : window.location.origin,
+                    },
+                  })
+                : null
         if (!connection) {
           throw new Error(
             mode === "restore"
               ? "The saved remote signer session is unavailable. Connect it again."
-              : "Paste a bunker:// connection URI from your remote signer."
+              : nip46Flow === "nostrconnect"
+                ? "Start a new Nostr Connect pairing attempt."
+                : "Paste a bunker:// connection URI from your remote signer."
           )
         }
         connectedRemote = connection
@@ -457,6 +492,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           : getNip07Capabilities()
       )
       setAuthUrl(null)
+      setNostrConnectUri(null)
     } catch (err) {
       if (uncommittedRemote) {
         abandonRemoteConnection(uncommittedRemote)
@@ -484,14 +520,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const msg = normalizedError.message
       setStatus("error")
       setError(msg)
+      setNostrConnectUri(null)
       throw normalizedError
     } finally {
-      if (attemptIsCurrent()) connecting.current = false
+      if (attemptIsCurrent()) {
+        activePairing.current = null
+        setNostrConnectUri(null)
+        connecting.current = false
+      }
     }
   }, [])
 
   const connect = useCallback(
     async (options: AuthConnectOptions = {}) => {
+      activePairing.current?.abort()
+      activePairing.current = null
+      setNostrConnectUri(null)
       if (connected.current) {
         throw new Error("Disconnect the current signer before connecting another.")
       }
@@ -507,20 +551,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setStatus("error")
         setError(missingSessionError.message)
         setAuthUrl(null)
+        setNostrConnectUri(null)
         throw missingSessionError
       }
       setMethod(requestedMethod)
       setStatus(mode === "restore" ? "restoring" : "connecting")
       setError(null)
       setAuthUrl(null)
+      setNostrConnectUri(null)
+
+      const pairingController =
+        mode === "interactive" && requestedMethod === "nip46"
+          ? new AbortController()
+          : null
+      activePairing.current = pairingController
+      const attemptOptions: AuthConnectAttemptOptions = pairingController
+        ? { ...options, pairingSignal: pairingController.signal }
+        : options
 
       let operationStarted = false
       try {
-        await withBrowserAuthOperationLock(() => {
-          operationStarted = true
-          return connectWithoutLock(options)
-        })
+        await withBrowserAuthOperationLock(
+          () => {
+            operationStarted = true
+            return connectWithoutLock(attemptOptions)
+          },
+          pairingController?.signal
+        )
       } catch (cause) {
+        if (pairingController?.signal.aborted) return
         if (operationStarted) throw cause
 
         const lockError = new Error(
@@ -533,11 +592,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setStatus("error")
         setError(lockError.message)
         setAuthUrl(null)
+        setNostrConnectUri(null)
         throw lockError
+      } finally {
+        if (activePairing.current === pairingController) {
+          activePairing.current = null
+        }
       }
     },
     [connectWithoutLock]
   )
+
+  const cancelConnect = useCallback(() => {
+    if (!activePairing.current) return
+    authEpoch.current += 1
+    activePairing.current.abort()
+    activePairing.current = null
+    connecting.current = false
+    setMethod(null)
+    setStatus("disconnected")
+    setError(null)
+    setAuthUrl(null)
+    setNostrConnectUri(null)
+  }, [])
 
   const disconnectWithoutLock = useCallback(async (broadcast = true) => {
     if (broadcast) bumpAuthRevision()
@@ -572,7 +649,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [deactivateLocalSigner])
 
   const disconnect = useCallback(
-    () => withBrowserAuthOperationLock(() => disconnectWithoutLock(true)),
+    () => {
+      activePairing.current?.abort()
+      activePairing.current = null
+      setNostrConnectUri(null)
+      return withBrowserAuthOperationLock(() => disconnectWithoutLock(true))
+    },
     [disconnectWithoutLock]
   )
 
@@ -669,7 +751,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         status,
         error,
         authUrl,
+        nostrConnectUri,
         dismissAuthUrl,
+        cancelConnect,
         capabilities,
         connect,
         disconnect,

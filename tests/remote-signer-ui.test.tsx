@@ -14,7 +14,9 @@ const commonProps = {
   unlockItems: ["Sign events without sharing keys."],
   extensionAvailable: true,
   onConnectExtension: () => undefined,
+  onConnectNostrConnect: () => undefined,
   onConnectRemote: () => undefined,
+  onCancelConnect: () => undefined,
 }
 
 describe("remote signer UI", () => {
@@ -44,8 +46,10 @@ describe("remote signer UI", () => {
     )
 
     expect(markup).toContain("Connect Extension (NIP-07)")
-    expect(markup).toContain("Connect Signer (NIP-46)")
-    expect(markup).toContain("bunker://...")
+    expect(markup).toContain("QR code")
+    expect(markup).toContain("Connection URL")
+    expect(markup).toContain("Bunker URL")
+    expect(markup).toContain("Create connection")
     expect(markup).toContain("Conduit never stores or recovers your keys.")
   })
 
@@ -55,10 +59,69 @@ describe("remote signer UI", () => {
     )
 
     expect(markup).not.toContain("Connect Extension (NIP-07)")
-    expect(markup).toContain("Connect Signer (NIP-46)")
+    expect(markup).toContain("QR code")
+    expect(markup).toContain("Connection URL")
+    expect(markup).toContain("Bunker URL")
     expect(markup).toContain("Need a remote signer?")
     expect(markup).toContain("Amber")
     expect(markup).toContain("Clave")
+  })
+
+  it("renders the supplied ephemeral connection as an accessible QR code", () => {
+    const markup = renderToStaticMarkup(
+      <SignerConnectPanel
+        {...commonProps}
+        nostrConnectUri="nostrconnect://client-pubkey?relay=wss%3A%2F%2Frelay.example&secret=temporary"
+      />
+    )
+
+    expect(markup).toContain('aria-label="Remote signer connection method"')
+    expect(markup).toContain('aria-label="Nostr Connect connection QR code"')
+    expect(markup).toContain("<svg")
+    expect(markup).not.toContain("Create connection")
+  })
+
+  it("provides readonly URL copy semantics without persisting pairing data", async () => {
+    const source = await readFile(
+      "packages/ui/src/components/SignerSwitch.tsx",
+      "utf8"
+    )
+
+    expect(source).toContain('aria-label="Nostr Connect connection URL"')
+    expect(source).toContain("readOnly")
+    expect(source).toContain("navigator.clipboard.writeText(nostrConnectUri)")
+    expect(source).toContain('document.execCommand("copy")')
+    expect(source).toContain('"Copy connection URL"')
+    expect(source).toContain("Open in signer")
+    expect(source).toContain('aria-live="polite"')
+    expect(source).not.toContain("localStorage")
+    expect(source).not.toContain("sessionStorage")
+    expect(source).not.toContain("indexedDB")
+  })
+
+  it("wires the same Nostr Connect flow through both apps", async () => {
+    const [market, merchant, merchantRoot] = await Promise.all([
+      readFile("apps/market/src/components/SignerSwitch.tsx", "utf8"),
+      readFile("apps/merchant/src/components/SignerSwitch.tsx", "utf8"),
+      readFile("apps/merchant/src/routes/__root.tsx", "utf8"),
+    ])
+
+    for (const source of [market, merchant, merchantRoot]) {
+      expect(source).toContain("nostrConnectUri")
+      expect(source).toContain('nip46Flow: "nostrconnect"')
+      expect(source).toContain("onConnectNostrConnect")
+      expect(source).toContain("onCancelConnect")
+    }
+  })
+
+  it("offers an explicit pairing cancellation action", async () => {
+    const source = await readFile(
+      "packages/ui/src/components/SignerSwitch.tsx",
+      "utf8"
+    )
+
+    expect(source).toContain("Cancel pairing")
+    expect(source).toContain("onCancelConnect")
   })
 
   it("allows an unavailable remembered remote session to be forgotten", () => {
@@ -80,13 +143,13 @@ describe("remote signer UI", () => {
       "packages/ui/src/components/SignerSwitch.tsx",
       "utf8"
     )
-    const start = source.indexOf("async function submit(): Promise<void>")
+    const start = source.indexOf("async function submitBunker(): Promise<void>")
     const submit = source.slice(start, source.indexOf("return (", start))
 
-    expect(submit.indexOf("await onConnect(uri)")).toBeLessThan(
+    expect(submit.indexOf("await onConnectBunker(uri)")).toBeLessThan(
       submit.indexOf('setBunkerUri("")')
     )
-    expect(source).toContain("Waiting for your remote signer")
+    expect(source).toContain("Waiting for approval from your remote signer")
   })
 
   it("keeps connection errors beside the remote signer controls", async () => {

@@ -4,6 +4,8 @@ import {
   getNip07Capabilities,
   hasNip07,
   isTransientNip07ConnectError,
+  type AuthConnectOptions,
+  type AuthContextValue,
 } from "../packages/core/src/context/AuthContext"
 
 const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
@@ -145,5 +147,18 @@ describe("NIP-07 availability", () => {
         retryDelaysMs: [0],
       })
     ).rejects.toThrow("Your signer extension was not ready yet")
+  })
+})
+
+describe("NIP-46 AuthContext API", () => {
+  it("exposes the client-initiated flow discriminator and ephemeral URI", () => {
+    const options = {
+      method: "nip46",
+      nip46Flow: "nostrconnect",
+    } satisfies AuthConnectOptions
+    const uri: AuthContextValue["nostrConnectUri"] = null
+
+    expect(options.nip46Flow).toBe("nostrconnect")
+    expect(uri).toBeNull()
   })
 })

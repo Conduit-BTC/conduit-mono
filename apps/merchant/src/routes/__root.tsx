@@ -271,9 +271,11 @@ function ConnectGate() {
     status,
     method,
     connect,
+    cancelConnect,
     disconnect,
     error,
     authUrl,
+    nostrConnectUri,
     rememberedMethod,
   } = useAuth()
   const [isWorking, setIsWorking] = useState(false)
@@ -299,7 +301,17 @@ function ConnectGate() {
     if (authPending) return
     setIsWorking(true)
     try {
-      await connect({ method: "nip46", bunkerUri })
+      await connect({ method: "nip46", nip46Flow: "bunker", bunkerUri })
+    } finally {
+      setIsWorking(false)
+    }
+  }
+
+  async function handleConnectNostrConnect(): Promise<void> {
+    if (authPending) return
+    setIsWorking(true)
+    try {
+      await connect({ method: "nip46", nip46Flow: "nostrconnect" })
     } finally {
       setIsWorking(false)
     }
@@ -324,6 +336,7 @@ function ConnectGate() {
           ]}
           error={error}
           authUrl={authUrl}
+          nostrConnectUri={nostrConnectUri}
           rememberedMethod={rememberedMethod}
           connectingMethod={method}
           extensionNotice={extensionNotice}
@@ -333,7 +346,9 @@ function ConnectGate() {
           connectDisabled={isWorking || authPending}
           className="w-full max-w-xl"
           onConnectExtension={handleConnectExtension}
+          onConnectNostrConnect={handleConnectNostrConnect}
           onConnectRemote={handleConnectRemote}
+          onCancelConnect={cancelConnect}
           onReconnect={() => connect({ mode: "restore" })}
           onForget={disconnect}
         />

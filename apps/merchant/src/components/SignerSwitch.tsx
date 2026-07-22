@@ -15,7 +15,9 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
     status,
     error,
     authUrl,
+    nostrConnectUri,
     connect,
+    cancelConnect,
     disconnect,
   } = useAuth()
   const extensionAvailable = useNip07Availability()
@@ -28,6 +30,7 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
       pubkeyDetailLabel={pubkey ? formatNpub(pubkey, 12) : null}
       error={error}
       authUrl={authUrl}
+      nostrConnectUri={nostrConnectUri}
       signerMethod={method}
       rememberedMethod={rememberedMethod}
       extensionAvailable={extensionAvailable}
@@ -39,7 +42,13 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
         "Manage orders and buyer messages in one place.",
       ]}
       onConnectExtension={() => connect({ method: "nip07" })}
-      onConnectRemote={(bunkerUri) => connect({ method: "nip46", bunkerUri })}
+      onConnectNostrConnect={() =>
+        connect({ method: "nip46", nip46Flow: "nostrconnect" })
+      }
+      onConnectRemote={(bunkerUri) =>
+        connect({ method: "nip46", nip46Flow: "bunker", bunkerUri })
+      }
+      onCancelConnect={cancelConnect}
       onReconnect={() => connect({ mode: "restore" })}
       onDisconnect={disconnect}
     />

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { NDKUser } from "@nostr-dev-kit/ndk"
-import type { VerifiedEvent } from "nostr-tools"
+import { getPublicKey, type VerifiedEvent } from "nostr-tools"
 
 import {
   AUTH_REVISION_STORAGE_KEY,
@@ -12,6 +12,7 @@ import {
   logoutRemoteSigner,
   prepareRemoteSignerSessionStorage,
   pairRemoteSigner,
+  pairRemoteSignerFromNostrConnect,
   parseAuthSession,
   parseBunkerUri,
   persistRemoteSignerSession,
@@ -425,6 +426,275 @@ describe("remote signer lifecycle", () => {
     expect(result.session.remoteSignerPubkey).not.toBe(
       result.session.userPubkey
     )
+  })
+
+  it("creates an official one-use nostrconnect URI before listening", async () => {
+    const calls: string[] = []
+    let emittedUri = ""
+    const result = await pairRemoteSignerFromNostrConnect(
+      ["wss://one.example", "wss://two.example"],
+      {
+        keyVault: {
+          prepare: async () => {
+            calls.push("prepare")
+          },
+          store: async () => undefined,
+          load: async () => null,
+          remove: async () => undefined,
+        },
+        generateClientPrivateKey: () => {
+          calls.push("key")
+          return CLIENT_PRIVATE_KEY
+        },
+        generatePairingSecret: () => {
+          calls.push("secret")
+          return "one-use-secret"
+        },
+        onNostrConnectUri: (uri) => {
+          calls.push("callback")
+          emittedUri = uri
+        },
+        createNostrConnectSigner: async (_key, uri, params) => {
+          calls.push("listen")
+          expect(uri).toBe(emittedUri)
+          expect(params.skipSwitchRelays).toBe(true)
+          return fakeSigner({
+            bp: {
+              pubkey: REMOTE_PUBKEY,
+              relays: ["wss://one.example", "wss://two.example"],
+              secret: "one-use-secret",
+            },
+          })
+        },
+        clientMetadata: {
+          name: "Conduit",
+          url: "https://conduit.market",
+        },
+        now: () => 40,
+      }
+    )
+
+    expect(calls).toEqual(["prepare", "key", "secret", "callback", "listen"])
+    const parsed = new URL(emittedUri)
+    expect(parsed.protocol).toBe("nostrconnect:")
+    expect(parsed.hostname).toBe(getPublicKey(CLIENT_PRIVATE_KEY))
+    expect(parsed.searchParams.getAll("relay")).toEqual([
+      "wss://one.example",
+      "wss://two.example",
+    ])
+    expect(parsed.searchParams.get("secret")).toBe("one-use-secret")
+    expect(parsed.searchParams.get("perms")?.split(",")).toEqual([
+      "sign_event",
+      "get_public_key",
+      "nip44_encrypt",
+      "nip44_decrypt",
+      "nip04_decrypt",
+    ])
+    expect(parsed.searchParams.get("name")).toBe("Conduit")
+    expect(result.session).toMatchObject({
+      remoteSignerPubkey: REMOTE_PUBKEY,
+      userPubkey: USER_PUBKEY,
+      relayUrls: ["wss://one.example", "wss://two.example"],
+    })
+    expect(result.bunkerSigner.bp.secret).toBeNull()
+    expect(JSON.stringify(result.session)).not.toContain("one-use-secret")
+    expect(JSON.stringify(result.session)).not.toContain("nostrconnect://")
+    const storage = new MemoryStorage()
+    expect(
+      await persistRemoteSignerSession(result, storage, new MemoryKeyVault())
+    ).toBe(true)
+    expect(storage.getItem(AUTH_STORAGE_KEY)).not.toContain("one-use-secret")
+    expect(storage.getItem(AUTH_STORAGE_KEY)).not.toContain("nostrconnect://")
+  })
+
+  it("closes a bunker pairing when the caller cancels", async () => {
+    const controller = new AbortController()
+    let closed = false
+    let started: (() => void) | undefined
+    const requestStarted = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const pairing = pairRemoteSigner(BUNKER_URI, {
+      keyVault: new MemoryKeyVault(),
+      generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+      signal: controller.signal,
+      createBunkerSigner: () =>
+        fakeSigner({
+          sendRequest: () => {
+            started?.()
+            return new Promise(() => undefined)
+          },
+          close: async () => {
+            closed = true
+          },
+        }),
+    })
+
+    await requestStarted
+    controller.abort()
+
+    await expect(pairing).rejects.toMatchObject({
+      code: "rejected",
+      operation: "connect",
+    })
+    expect(closed).toBe(true)
+  })
+
+  it("prepares the vault before nostrconnect key generation or listening", async () => {
+    let generated = false
+    let listened = false
+    await expect(
+      pairRemoteSignerFromNostrConnect(
+        ["wss://one.example", "wss://two.example"],
+        {
+          keyVault: {
+            prepare: async () => {
+              throw new Error("vault unavailable")
+            },
+            store: async () => undefined,
+            load: async () => null,
+            remove: async () => undefined,
+          },
+          generateClientPrivateKey: () => {
+            generated = true
+            return CLIENT_PRIVATE_KEY
+          },
+          createNostrConnectSigner: async () => {
+            listened = true
+            return fakeSigner()
+          },
+        }
+      )
+    ).rejects.toMatchObject({ operation: "prepare session storage" })
+    expect(generated).toBe(false)
+    expect(listened).toBe(false)
+  })
+
+  it("aborts and closes timed-out nostrconnect listeners", async () => {
+    let listenerAborted = false
+    await expect(
+      pairRemoteSignerFromNostrConnect(
+        ["wss://one.example", "wss://two.example"],
+        {
+          keyVault: new MemoryKeyVault(),
+          generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+          generatePairingSecret: () => "timeout-secret",
+          createNostrConnectSigner: (_key, _uri, _params, signal) =>
+            new Promise((_resolve, reject) => {
+              signal.addEventListener(
+                "abort",
+                () => {
+                  listenerAborted = true
+                  reject(new Error("aborted"))
+                },
+                { once: true }
+              )
+            }),
+          timeoutMs: 1,
+        }
+      )
+    ).rejects.toMatchObject({
+      code: "timeout",
+      operation: "nostrconnect pairing",
+    })
+    expect(listenerAborted).toBe(true)
+  })
+
+  it("does not leave a listener open after caller abort", async () => {
+    const controller = new AbortController()
+    let listenerAborted = false
+    let markListenerStarted: (() => void) | undefined
+    const listenerStarted = new Promise<void>((resolve) => {
+      markListenerStarted = resolve
+    })
+    const pairing = pairRemoteSignerFromNostrConnect(
+      ["wss://one.example", "wss://two.example"],
+      {
+        keyVault: new MemoryKeyVault(),
+        generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+        generatePairingSecret: () => "abort-secret",
+        signal: controller.signal,
+        createNostrConnectSigner: (_key, _uri, _params, signal) =>
+          new Promise((_resolve, reject) => {
+            markListenerStarted?.()
+            signal.addEventListener(
+              "abort",
+              () => {
+                listenerAborted = true
+                reject(new Error("aborted"))
+              },
+              { once: true }
+            )
+          }),
+      }
+    )
+
+    await listenerStarted
+    controller.abort()
+    await expect(pairing).rejects.toMatchObject({
+      code: "rejected",
+      operation: "nostrconnect pairing",
+    })
+    expect(listenerAborted).toBe(true)
+  })
+
+  it("rejects invalid response identity and insecure switched relays", async () => {
+    await expect(
+      pairRemoteSignerFromNostrConnect(
+        ["wss://one.example", "wss://two.example"],
+        {
+          keyVault: new MemoryKeyVault(),
+          generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+          generatePairingSecret: () => "identity-secret",
+          createNostrConnectSigner: async () =>
+            fakeSigner({
+              bp: {
+                pubkey: "bad",
+                relays: ["wss://one.example"],
+                secret: null,
+              },
+            }),
+        }
+      )
+    ).rejects.toMatchObject({ code: "invalid_response" })
+
+    await expect(
+      pairRemoteSignerFromNostrConnect(
+        ["wss://one.example", "wss://two.example"],
+        {
+          keyVault: new MemoryKeyVault(),
+          generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+          generatePairingSecret: () => "user-secret",
+          createNostrConnectSigner: async () =>
+            fakeSigner({ getPublicKey: async () => "bad" }),
+        }
+      )
+    ).rejects.toMatchObject({
+      code: "unavailable",
+      operation: "get public key",
+    })
+
+    await expect(
+      pairRemoteSignerFromNostrConnect(
+        ["wss://one.example", "wss://two.example"],
+        {
+          keyVault: new MemoryKeyVault(),
+          generateClientPrivateKey: () => CLIENT_PRIVATE_KEY,
+          generatePairingSecret: () => "relay-secret",
+          createNostrConnectSigner: async () => {
+            const signer = fakeSigner()
+            signer.switchRelays = async () => {
+              signer.bp.relays = ["ws://insecure.example"]
+              return true
+            }
+            return signer
+          },
+        }
+      )
+    ).rejects.toMatchObject({
+      code: "invalid_response",
+      operation: "relay migration",
+    })
   })
 
   it("returns typed timeout and rejection errors", async () => {

@@ -5,9 +5,10 @@ import {
   type NostrEvent,
 } from "@nostr-dev-kit/ndk"
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js"
-import { generateSecretKey } from "nostr-tools"
+import { generateSecretKey, getPublicKey } from "nostr-tools"
 import {
   BunkerSigner,
+  createNostrConnectURI,
   type BunkerPointer,
   type BunkerSignerParams,
   type ClientMetadata,
@@ -26,6 +27,13 @@ export const AUTH_REVISION_STORAGE_KEY = "conduit:auth:revision"
 export const REMOTE_SIGNER_SESSION_VERSION = 1 as const
 export const DEFAULT_REMOTE_SIGNER_TIMEOUT_MS = 30_000
 export const DEFAULT_REMOTE_SIGNER_PAIR_TIMEOUT_MS = 120_000
+export const CONDUIT_NIP46_PERMISSIONS = [
+  "sign_event",
+  "get_public_key",
+  "nip44_encrypt",
+  "nip44_decrypt",
+  "nip04_decrypt",
+] as const
 
 const HEX_KEY_PATTERN = /^[0-9a-f]{64}$/
 
@@ -101,6 +109,13 @@ export type BunkerSignerFactory = (
   params: BunkerSignerParams
 ) => RemoteBunkerSigner
 
+export type NostrConnectSignerFactory = (
+  clientPrivateKey: Uint8Array,
+  uri: string,
+  params: BunkerSignerParams,
+  signal: AbortSignal
+) => Promise<RemoteBunkerSigner>
+
 export interface RemoteSignerTimers {
   setTimeout(callback: () => void, delayMs: number): unknown
   clearTimeout(handle: unknown): void
@@ -117,10 +132,17 @@ export interface RemoteSignerOptions extends RemoteSignerDependencies {
   timeoutMs?: number
   onAuthUrl?: (url: string) => void
   keyVault?: RemoteSignerKeyVault
+  signal?: AbortSignal
 }
 
 export interface PairRemoteSignerOptions extends RemoteSignerOptions {
   clientMetadata?: ClientMetadata
+}
+
+export interface PairNostrConnectSignerOptions extends PairRemoteSignerOptions {
+  generatePairingSecret?: () => string
+  createNostrConnectSigner?: NostrConnectSignerFactory
+  onNostrConnectUri?: (uri: string) => void
 }
 
 export interface RemoteSignerConnection {
@@ -461,6 +483,19 @@ async function withRemoteSignerTimeout<T>(
   const timeoutMs = options.timeoutMs ?? DEFAULT_REMOTE_SIGNER_TIMEOUT_MS
   const timers = options.timers ?? defaultTimers
   let handle: unknown
+  let rejectAborted: ((error: RemoteSignerError) => void) | null = null
+  const abort = () =>
+    rejectAborted?.(
+      new RemoteSignerError("rejected", "Remote signer pairing was canceled.", {
+        operation,
+      })
+    )
+  if (options.signal?.aborted) abort()
+  const aborted = new Promise<never>((_, reject) => {
+    rejectAborted = reject
+    if (options.signal?.aborted) abort()
+    else options.signal?.addEventListener("abort", abort, { once: true })
+  })
   const timeout = new Promise<never>((_, reject) => {
     handle = timers.setTimeout(() => {
       reject(
@@ -474,11 +509,13 @@ async function withRemoteSignerTimeout<T>(
   })
 
   try {
-    return await Promise.race([task(), timeout])
+    return await Promise.race([task(), timeout, aborted])
   } catch (error) {
     throw classifyRemoteSignerError(error, operation)
   } finally {
     if (handle !== undefined) timers.clearTimeout(handle)
+    options.signal?.removeEventListener("abort", abort)
+    rejectAborted = null
   }
 }
 
@@ -510,6 +547,18 @@ function requireUserPubkey(pubkey: string, operation: string): string {
   return normalized
 }
 
+function requireRemoteSignerPubkey(pubkey: string, operation: string): string {
+  const normalized = pubkey.toLowerCase()
+  if (!isHexKey(normalized)) {
+    throw new RemoteSignerError(
+      "invalid_response",
+      "The remote signer returned an invalid signer pubkey.",
+      { operation }
+    )
+  }
+  return normalized
+}
+
 function requireSignerRelayUrls(
   bunkerSigner: RemoteBunkerSigner,
   operation: string
@@ -523,6 +572,34 @@ function requireSignerRelayUrls(
     )
   }
   return [...new Set(relayUrls)]
+}
+
+function createRemoteSignerConnection(
+  bunkerSigner: RemoteBunkerSigner,
+  clientPrivateKey: Uint8Array,
+  remoteSignerPubkey: string,
+  relayUrls: string[],
+  userPubkey: string,
+  options: RemoteSignerOptions
+): RemoteSignerConnection {
+  const now = (options.now ?? Date.now)()
+  const session: Nip46AuthSession = {
+    version: REMOTE_SIGNER_SESSION_VERSION,
+    type: "nip46",
+    clientKeyId: generateId(),
+    remoteSignerPubkey,
+    relayUrls,
+    userPubkey,
+    createdAt: now,
+    updatedAt: now,
+  }
+  return {
+    session,
+    bunkerSigner,
+    signer: new NdkBunkerSignerAdapter(bunkerSigner, userPubkey, options),
+    clientPrivateKey: bytesToHex(clientPrivateKey),
+    clientKeyAlreadyPersisted: false,
+  }
 }
 
 export async function pairRemoteSigner(
@@ -581,31 +658,176 @@ export async function pairRemoteSigner(
       options
     )
     const relayUrls = requireSignerRelayUrls(bunkerSigner, "relay migration")
-    const now = (options.now ?? Date.now)()
-    const clientKeyId = generateId()
-    const session: Nip46AuthSession = {
-      version: REMOTE_SIGNER_SESSION_VERSION,
-      type: "nip46",
-      clientKeyId,
-      remoteSignerPubkey: pointer.pubkey,
+    return createRemoteSignerConnection(
+      bunkerSigner,
+      clientPrivateKey,
+      pointer.pubkey,
       relayUrls,
       userPubkey,
-      createdAt: now,
-      updatedAt: now,
-    }
-    return {
-      session,
-      bunkerSigner,
-      signer: new NdkBunkerSignerAdapter(bunkerSigner, userPubkey, options),
-      clientPrivateKey: bytesToHex(clientPrivateKey),
-      clientKeyAlreadyPersisted: false,
-    }
+      options
+    )
   } catch (error) {
     if (connected) {
       await logoutRemoteSigner(bunkerSigner, options)
     } else {
       await closeRemoteSigner(bunkerSigner, options)
     }
+    throw error
+  }
+}
+
+async function listenForNostrConnectSigner(
+  clientPrivateKey: Uint8Array,
+  uri: string,
+  options: PairNostrConnectSignerOptions
+): Promise<RemoteBunkerSigner> {
+  const operation = "nostrconnect pairing"
+  const controller = new AbortController()
+  const timers = options.timers ?? defaultTimers
+  const timeoutMs = options.timeoutMs ?? DEFAULT_REMOTE_SIGNER_PAIR_TIMEOUT_MS
+  let timedOut = false
+  let completed = false
+  const abortFromCaller = () => controller.abort()
+  const aborted = new Promise<never>((_, reject) => {
+    controller.signal.addEventListener(
+      "abort",
+      () =>
+        reject(
+          new RemoteSignerError(
+            timedOut ? "timeout" : "rejected",
+            timedOut
+              ? "Remote signer pairing timed out. Start a new pairing attempt."
+              : "Remote signer pairing was canceled.",
+            { operation }
+          )
+        ),
+      { once: true }
+    )
+  })
+  options.signal?.addEventListener("abort", abortFromCaller, { once: true })
+  if (options.signal?.aborted) controller.abort()
+  const timeoutHandle = timers.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+  const factory =
+    options.createNostrConnectSigner ??
+    ((key, connectionUri, params, signal) =>
+      BunkerSigner.fromURI(key, connectionUri, params, signal))
+
+  try {
+    const signer = await Promise.race([
+      controller.signal.aborted
+        ? aborted
+        : factory(
+            clientPrivateKey,
+            uri,
+            { onauth: options.onAuthUrl, skipSwitchRelays: true },
+            controller.signal
+          ),
+      aborted,
+    ])
+    completed = true
+    return signer
+  } catch (error) {
+    throw classifyRemoteSignerError(error, operation)
+  } finally {
+    timers.clearTimeout(timeoutHandle)
+    options.signal?.removeEventListener("abort", abortFromCaller)
+    if (!completed) controller.abort()
+  }
+}
+
+export async function pairRemoteSignerFromNostrConnect(
+  relayUrls: readonly string[],
+  options: PairNostrConnectSignerOptions = {}
+): Promise<RemoteSignerConnection> {
+  const pairingRelayUrls = [...new Set(relayUrls)]
+  if (
+    pairingRelayUrls.length < 2 ||
+    pairingRelayUrls.length > 3 ||
+    !pairingRelayUrls.every(isRelayUrl)
+  ) {
+    throw new RemoteSignerError(
+      "invalid_uri",
+      "Nostr Connect pairing requires two to three secure relay URLs."
+    )
+  }
+
+  await prepareRemoteSignerSessionStorage(options.keyVault)
+  if (options.signal?.aborted) {
+    throw new RemoteSignerError(
+      "rejected",
+      "Remote signer pairing was canceled.",
+      { operation: "nostrconnect pairing" }
+    )
+  }
+  const clientPrivateKey = (
+    options.generateClientPrivateKey ?? generateSecretKey
+  )()
+  if (clientPrivateKey.length !== 32) {
+    throw new RemoteSignerError(
+      "unavailable",
+      "Unable to generate a valid local NIP-46 client key."
+    )
+  }
+  const secret =
+    options.generatePairingSecret?.() ?? bytesToHex(generateSecretKey())
+  if (!secret) {
+    throw new RemoteSignerError(
+      "unavailable",
+      "Unable to generate a valid one-use NIP-46 pairing secret."
+    )
+  }
+  const uri = createNostrConnectURI({
+    clientPubkey: getPublicKey(clientPrivateKey),
+    relays: pairingRelayUrls,
+    secret,
+    perms: [...CONDUIT_NIP46_PERMISSIONS],
+    ...options.clientMetadata,
+  })
+  options.onNostrConnectUri?.(uri)
+
+  let bunkerSigner: RemoteBunkerSigner | null = null
+  try {
+    bunkerSigner = await listenForNostrConnectSigner(
+      clientPrivateKey,
+      uri,
+      options
+    )
+    const remoteSignerPubkey = requireRemoteSignerPubkey(
+      bunkerSigner.bp.pubkey,
+      "nostrconnect pairing"
+    )
+    requireSignerRelayUrls(bunkerSigner, "nostrconnect pairing")
+    bunkerSigner.bp.secret = null
+    const userPubkey = requireUserPubkey(
+      await withRemoteSignerTimeout(
+        "get public key",
+        () => bunkerSigner!.getPublicKey(),
+        options
+      ),
+      "get public key"
+    )
+    await withRemoteSignerTimeout(
+      "relay migration",
+      () => bunkerSigner!.switchRelays(),
+      options
+    )
+    const relayUrlsAfterSwitch = requireSignerRelayUrls(
+      bunkerSigner,
+      "relay migration"
+    )
+    return createRemoteSignerConnection(
+      bunkerSigner,
+      clientPrivateKey,
+      remoteSignerPubkey,
+      relayUrlsAfterSwitch,
+      userPubkey,
+      options
+    )
+  } catch (error) {
+    if (bunkerSigner) await logoutRemoteSigner(bunkerSigner, options)
     throw error
   }
 }

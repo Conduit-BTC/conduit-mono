@@ -1,5 +1,14 @@
-import { Check, ExternalLink, KeyRound, Link2, ShieldCheck } from "lucide-react"
-import { useId, useMemo, useRef, useState, type Ref } from "react"
+import {
+  Check,
+  Copy,
+  ExternalLink,
+  KeyRound,
+  Link2,
+  QrCode,
+  ShieldCheck,
+} from "lucide-react"
+import { QRCodeSVG } from "qrcode.react"
+import { useEffect, useId, useMemo, useRef, useState, type Ref } from "react"
 import { Badge } from "./Badge"
 import { Button } from "./Button"
 import {
@@ -11,6 +20,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "./Dialog"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./Tabs"
 import { Textarea } from "./Textarea"
 import { cn } from "../utils"
 
@@ -33,8 +43,11 @@ export interface SignerSwitchProps {
   open?: boolean
   onOpenChange?: (open: boolean) => void
   hideTrigger?: boolean
+  nostrConnectUri?: string | null
   onConnectExtension: () => Promise<void> | void
+  onConnectNostrConnect: () => Promise<void> | void
   onConnectRemote: (bunkerUri: string) => Promise<void> | void
+  onCancelConnect: () => Promise<void> | void
   onReconnect?: () => Promise<void> | void
   onDisconnect: () => Promise<void> | void
 }
@@ -57,8 +70,11 @@ export interface SignerConnectPanelProps {
   connectDisabled?: boolean
   className?: string
   bodyClassName?: string
+  nostrConnectUri?: string | null
   onConnectExtension: () => Promise<void> | void
+  onConnectNostrConnect: () => Promise<void> | void
   onConnectRemote: (bunkerUri: string) => Promise<void> | void
+  onCancelConnect: () => Promise<void> | void
   onReconnect?: () => Promise<void> | void
   onForget?: () => Promise<void> | void
 }
@@ -164,24 +180,77 @@ function ExtensionConnectButton({
 function RemoteSignerConnect({
   connectPending,
   connectDisabled,
-  onConnect,
+  nostrConnectUri,
+  onConnectNostrConnect,
+  onConnectBunker,
+  onCancelConnect,
 }: {
   connectPending: boolean
   connectDisabled: boolean
-  onConnect: (bunkerUri: string) => Promise<void> | void
+  nostrConnectUri?: string | null
+  onConnectNostrConnect: () => Promise<void> | void
+  onConnectBunker: (bunkerUri: string) => Promise<void> | void
+  onCancelConnect: () => Promise<void> | void
 }) {
   const [bunkerUri, setBunkerUri] = useState("")
+  const [activeTab, setActiveTab] = useState("qr")
+  const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState(false)
+  const connectionUrlRef = useRef<HTMLTextAreaElement>(null)
+  const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  async function submit(): Promise<void> {
+  useEffect(() => {
+    setCopied(false)
+    setCopyError(false)
+    if (copyResetTimer.current) {
+      clearTimeout(copyResetTimer.current)
+      copyResetTimer.current = null
+    }
+    return () => {
+      if (copyResetTimer.current) clearTimeout(copyResetTimer.current)
+    }
+  }, [nostrConnectUri])
+
+  async function submitBunker(): Promise<void> {
     const uri = bunkerUri.trim()
     if (!uri || connectDisabled) return
     try {
-      await onConnect(uri)
+      await onConnectBunker(uri)
       setBunkerUri("")
     } catch {
       // Auth state owns the actionable inline error.
     }
   }
+
+  async function copyConnectionUrl(): Promise<void> {
+    if (!nostrConnectUri) return
+    let copySucceeded = false
+    try {
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(nostrConnectUri)
+        copySucceeded = true
+      }
+    } catch {
+      // Fall back to selection-based copying for older mobile browsers.
+    }
+    if (!copySucceeded && connectionUrlRef.current) {
+      connectionUrlRef.current.focus()
+      connectionUrlRef.current.select()
+      connectionUrlRef.current.setSelectionRange(0, nostrConnectUri.length)
+      try {
+        copySucceeded = document.execCommand("copy")
+      } catch {
+        copySucceeded = false
+      }
+    }
+    setCopied(copySucceeded)
+    setCopyError(!copySucceeded)
+    if (copyResetTimer.current) clearTimeout(copyResetTimer.current)
+    copyResetTimer.current = window.setTimeout(() => setCopied(false), 1_500)
+  }
+
+  const waitingForScan =
+    !!nostrConnectUri || activeTab === "qr" || activeTab === "url"
 
   return (
     <div className="space-y-3 rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
@@ -195,39 +264,192 @@ function RemoteSignerConnect({
             Connect Signer (NIP-46)
           </div>
           <p className="mt-1 text-sm leading-5 text-[var(--text-secondary)]">
-            Paste a bunker URI from Amber, Clave, or another remote signer.
+            Pair by QR code, connection URL, or a bunker URL from your remote
+            signer.
           </p>
         </div>
       </div>
-      <Textarea
-        value={bunkerUri}
-        onChange={(event) => setBunkerUri(event.target.value)}
-        placeholder="bunker://..."
-        aria-label="Remote signer bunker URI"
-        autoCapitalize="none"
-        autoCorrect="off"
-        spellCheck={false}
-        disabled={connectDisabled}
-        className="min-h-20 resize-none font-mono text-xs"
-      />
-      <Button
-        type="button"
-        onClick={() => void submit()}
-        disabled={connectDisabled || !bunkerUri.trim()}
-        className={signerConnectButtonClassName}
-      >
-        <Link2 className="h-5 w-5" aria-hidden="true" />
-        {connectPending ? "Connecting..." : "Connect Signer (NIP-46)"}
-      </Button>
       {connectPending && (
-        <div
-          role="status"
-          className="rounded-xl border border-primary-500/25 bg-primary-500/10 p-3 text-sm leading-5 text-[var(--text-secondary)]"
-        >
-          Waiting for your remote signer. Open Amber or Clave to approve the
-          connection, then return to this tab.
+        <div className="space-y-2">
+          <div
+            role="status"
+            className="rounded-xl border border-primary-500/25 bg-primary-500/10 p-3 text-sm leading-5 text-[var(--text-secondary)]"
+          >
+            {waitingForScan
+              ? "Waiting for your remote signer to scan the QR code or open the connection URL."
+              : "Waiting for approval from your remote signer. Approve the bunker connection, then return here."}
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full"
+            onClick={() =>
+              void Promise.resolve(onCancelConnect()).catch(() => undefined)
+            }
+          >
+            Cancel pairing
+          </Button>
         </div>
       )}
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList
+          className="grid h-auto w-full grid-cols-3"
+          aria-label="Remote signer connection method"
+        >
+          <TabsTrigger
+            value="qr"
+            className="min-h-10 min-w-0 gap-1 px-1 text-xs whitespace-normal sm:text-sm"
+          >
+            <QrCode className="h-4 w-4 shrink-0" aria-hidden="true" />
+            QR code
+          </TabsTrigger>
+          <TabsTrigger
+            value="url"
+            className="min-h-10 min-w-0 gap-1 px-1 text-xs leading-tight whitespace-normal sm:text-sm"
+          >
+            <Link2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+            Connection URL
+          </TabsTrigger>
+          <TabsTrigger
+            value="bunker"
+            className="min-h-10 min-w-0 gap-1 px-1 text-xs whitespace-normal sm:text-sm"
+          >
+            <KeyRound className="h-4 w-4 shrink-0" aria-hidden="true" />
+            Bunker URL
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="qr" className="min-w-0">
+          {nostrConnectUri ? (
+            <div className="flex flex-col items-center gap-3 text-center">
+              <div
+                role="img"
+                aria-label="Nostr Connect connection QR code"
+                className="rounded-lg bg-white p-3"
+              >
+                <QRCodeSVG
+                  value={nostrConnectUri}
+                  size={200}
+                  level="M"
+                  className="h-auto w-[min(200px,65vw)] max-w-full"
+                />
+              </div>
+              <p className="text-sm leading-5 text-[var(--text-secondary)]">
+                Scan with your remote signer to connect.
+              </p>
+            </div>
+          ) : (
+            <NostrConnectStartButton
+              connectDisabled={connectDisabled}
+              connectPending={connectPending}
+              onConnect={onConnectNostrConnect}
+            />
+          )}
+        </TabsContent>
+
+        <TabsContent value="url" className="min-w-0">
+          {nostrConnectUri ? (
+            <div className="space-y-3">
+              <Textarea
+                ref={connectionUrlRef}
+                value={nostrConnectUri}
+                readOnly
+                aria-label="Nostr Connect connection URL"
+                spellCheck={false}
+                className="min-h-24 resize-none break-all font-mono text-xs"
+              />
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Button asChild className="w-full">
+                  <a href={nostrConnectUri}>
+                    <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                    Open in signer
+                  </a>
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void copyConnectionUrl()}
+                  aria-label={
+                    copied ? "Connection URL copied" : "Copy connection URL"
+                  }
+                  className="w-full"
+                >
+                  {copied ? (
+                    <Check className="h-4 w-4" aria-hidden="true" />
+                  ) : (
+                    <Copy className="h-4 w-4" aria-hidden="true" />
+                  )}
+                  {copied ? "Copied" : "Copy connection URL"}
+                </Button>
+              </div>
+              <p aria-live="polite" className="sr-only">
+                {copied ? "Connection URL copied to clipboard." : ""}
+              </p>
+              {copyError && (
+                <p role="alert" className="text-sm leading-5 text-error">
+                  Copy was blocked. Select the URL above and copy it manually.
+                </p>
+              )}
+            </div>
+          ) : (
+            <NostrConnectStartButton
+              connectDisabled={connectDisabled}
+              connectPending={connectPending}
+              onConnect={onConnectNostrConnect}
+            />
+          )}
+        </TabsContent>
+
+        <TabsContent value="bunker" className="min-w-0 space-y-3">
+          <Textarea
+            value={bunkerUri}
+            onChange={(event) => setBunkerUri(event.target.value)}
+            placeholder="bunker://..."
+            aria-label="Remote signer bunker URL"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            disabled={connectDisabled}
+            className="min-h-20 resize-none break-all font-mono text-xs"
+          />
+          <Button
+            type="button"
+            onClick={() => void submitBunker()}
+            disabled={connectDisabled || !bunkerUri.trim()}
+            className={signerConnectButtonClassName}
+          >
+            <Link2 className="h-5 w-5" aria-hidden="true" />
+            {connectPending ? "Connecting..." : "Connect Signer (NIP-46)"}
+          </Button>
+        </TabsContent>
+      </Tabs>
+    </div>
+  )
+}
+
+function NostrConnectStartButton({
+  connectDisabled,
+  connectPending,
+  onConnect,
+}: {
+  connectDisabled: boolean
+  connectPending: boolean
+  onConnect: () => Promise<void> | void
+}) {
+  return (
+    <div className="space-y-3 text-center">
+      <p className="text-sm leading-5 text-[var(--text-secondary)]">
+        Create a temporary connection to pair with your remote signer.
+      </p>
+      <Button
+        type="button"
+        onClick={() => void Promise.resolve(onConnect()).catch(() => undefined)}
+        disabled={connectDisabled}
+        className={signerConnectButtonClassName}
+      >
+        <QrCode className="h-5 w-5" aria-hidden="true" />
+        {connectPending ? "Starting connection..." : "Create connection"}
+      </Button>
     </div>
   )
 }
@@ -315,7 +537,7 @@ function RemoteSignerSetupGuide() {
       </div>
       <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
         Create a bunker connection in a compatible signer such as Amber or
-        Clave, then paste the URI above.
+        Clave, then paste it in the Bunker URL tab.
       </p>
       <div className="mt-4 flex flex-wrap gap-2">
         <Button asChild variant="outline" size="sm">
@@ -385,8 +607,11 @@ function SignerDisconnectedContent({
   connectPending = false,
   connectDisabled = false,
   bodyClassName,
+  nostrConnectUri,
   onConnectExtension,
+  onConnectNostrConnect,
   onConnectRemote,
+  onCancelConnect,
   onReconnect,
   onForget,
 }: Omit<SignerConnectPanelProps, "title" | "description" | "className">) {
@@ -439,7 +664,10 @@ function SignerDisconnectedContent({
         <RemoteSignerConnect
           connectPending={connectPending && connectingMethod === "nip46"}
           connectDisabled={connectDisabled}
-          onConnect={onConnectRemote}
+          nostrConnectUri={nostrConnectUri}
+          onConnectNostrConnect={onConnectNostrConnect}
+          onConnectBunker={onConnectRemote}
+          onCancelConnect={onCancelConnect}
         />
 
         {error && (
@@ -527,8 +755,11 @@ export function SignerConnectPanel({
   connectDisabled,
   className,
   bodyClassName,
+  nostrConnectUri,
   onConnectExtension,
+  onConnectNostrConnect,
   onConnectRemote,
+  onCancelConnect,
   onReconnect,
   onForget,
 }: SignerConnectPanelProps) {
@@ -571,8 +802,11 @@ export function SignerConnectPanel({
           connectPending={connectPending}
           connectDisabled={connectDisabled}
           bodyClassName={bodyClassName}
+          nostrConnectUri={nostrConnectUri}
           onConnectExtension={onConnectExtension}
+          onConnectNostrConnect={onConnectNostrConnect}
           onConnectRemote={onConnectRemote}
+          onCancelConnect={onCancelConnect}
           onReconnect={onReconnect}
           onForget={onForget}
         />
@@ -597,8 +831,11 @@ export function SignerSwitch({
   open,
   onOpenChange,
   hideTrigger = false,
+  nostrConnectUri,
   onConnectExtension,
+  onConnectNostrConnect,
   onConnectRemote,
+  onCancelConnect,
   onReconnect,
   onDisconnect,
 }: SignerSwitchProps) {
@@ -651,6 +888,18 @@ export function SignerSwitch({
       await onConnectRemote(bunkerUri)
       setPendingSwitch(false)
       setOpen(false)
+    } catch {
+      // Keep the dialog open so the inline error remains visible.
+    } finally {
+      setIsWorking(false)
+    }
+  }
+
+  async function handleConnectNostrConnect(): Promise<void> {
+    if (authPending) return
+    setIsWorking(true)
+    try {
+      await onConnectNostrConnect()
     } catch {
       // Keep the dialog open so the inline error remains visible.
     } finally {
@@ -816,8 +1065,11 @@ export function SignerSwitch({
                   extensionAvailable={extensionAvailable}
                   connectPending={authPending || isWorking}
                   connectDisabled={isWorking || authPending}
+                  nostrConnectUri={nostrConnectUri}
                   onConnectExtension={handleConnectExtension}
+                  onConnectNostrConnect={handleConnectNostrConnect}
                   onConnectRemote={handleConnectRemote}
+                  onCancelConnect={onCancelConnect}
                   onReconnect={onReconnect}
                   onForget={onDisconnect}
                 />

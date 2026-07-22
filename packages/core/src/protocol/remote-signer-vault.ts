@@ -232,11 +232,13 @@ async function releaseAuthOperationLease(token: string): Promise<void> {
 }
 
 async function withIndexedDbAuthOperationLock<T>(
-  task: () => Promise<T>
+  task: () => Promise<T>,
+  signal?: AbortSignal
 ): Promise<T> {
   const token = generateId()
   const deadline = Date.now() + AUTH_OPERATION_WAIT_MS
   while (!(await tryAcquireAuthOperationLease(token))) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError")
     if (Date.now() >= deadline) {
       throw new Error(
         "Another signer operation is still active in this browser. Try again shortly."
@@ -245,6 +247,7 @@ async function withIndexedDbAuthOperationLock<T>(
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
   try {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError")
     return await task()
   } finally {
     await releaseAuthOperationLease(token)
@@ -252,15 +255,21 @@ async function withIndexedDbAuthOperationLock<T>(
 }
 
 export async function withBrowserAuthOperationLock<T>(
-  task: () => Promise<T>
+  task: () => Promise<T>,
+  signal?: AbortSignal
 ): Promise<T> {
   if (typeof navigator !== "undefined" && navigator.locks) {
-    return navigator.locks.request(AUTH_OPERATION_LOCK_NAME, task)
+    return signal
+      ? navigator.locks.request(AUTH_OPERATION_LOCK_NAME, { signal }, task)
+      : navigator.locks.request(AUTH_OPERATION_LOCK_NAME, task)
   }
   if (typeof indexedDB !== "undefined") {
-    return withIndexedDbAuthOperationLock(task)
+    return withIndexedDbAuthOperationLock(task, signal)
   }
-  return withVaultLock(task)
+  return withVaultLock(async () => {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError")
+    return task()
+  })
 }
 
 export function createBrowserRemoteSignerKeyVault(): RemoteSignerKeyVault {
