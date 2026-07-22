@@ -137,7 +137,7 @@ describe("remote signer UI", () => {
       "shadow-[0_8px_20px_color-mix(in_srgb,var(--primary-500)_24%,transparent)]"
     )
     expect(source).toContain(
-      "data-[state=inactive]:hover:bg-[color-mix(in_srgb,var(--primary-500)_1%,var(--surface))]"
+      "data-[state=inactive]:hover:bg-[color-mix(in_srgb,var(--primary-500)_2%,var(--surface))]"
     )
     expect(source).not.toContain("shadow-[0_18px_38px")
   })
