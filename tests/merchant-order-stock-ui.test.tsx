@@ -102,6 +102,6 @@ describe("merchant order stock UI", () => {
 
     expect(markup).toContain("Retry needed")
     expect(markup).toContain("Retry delivery")
-    expect(markup).toContain("Dismiss")
+    expect(markup).toContain("Hide for now")
   })
 })

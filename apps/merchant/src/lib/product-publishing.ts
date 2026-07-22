@@ -2,11 +2,14 @@ import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   buildProductListingEventDraft,
   cacheSignedProductListingEvent,
+  EVENT_KINDS,
+  isValidSignedPublicNostrEvent,
   publishWithPlanner,
   requireNdkConnected,
   RelayPublishDiagnosticsError,
   type ProductSchema,
   type PublishWithPlannerResult,
+  type SignedPublicNostrEvent,
 } from "@conduit/core"
 
 export class SignedProductDeliveryError extends Error {
@@ -36,11 +39,30 @@ export function getRelayPublishDiagnosticsError(
 }
 
 export async function deliverSignedProductEvent(
-  event: NDKEvent,
+  event: NDKEvent | SignedPublicNostrEvent,
   merchantPubkey: string
 ): Promise<PublishWithPlannerResult> {
   try {
-    return await publishWithPlanner(event, {
+    const rawEvent =
+      event instanceof NDKEvent
+        ? (event.rawEvent() as SignedPublicNostrEvent)
+        : event
+    if (
+      !isValidSignedPublicNostrEvent(rawEvent) ||
+      rawEvent.kind !== EVENT_KINDS.PRODUCT ||
+      rawEvent.pubkey !== merchantPubkey
+    ) {
+      throw new Error("Expected a valid signed merchant product event")
+    }
+
+    let publishableEvent: NDKEvent
+    if (event instanceof NDKEvent) {
+      publishableEvent = event
+    } else {
+      publishableEvent = new NDKEvent(await requireNdkConnected(), event)
+    }
+
+    return await publishWithPlanner(publishableEvent, {
       intent: "author_event",
       authorPubkey: merchantPubkey,
       authenticatedPubkey: merchantPubkey,

@@ -1,7 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   buildOrderStatusTimeline,
   canMockInvoice,
@@ -31,6 +30,7 @@ import {
   type MerchantOrderState,
   type KnownOrderStatus,
   type Profile,
+  type SignedPublicNostrEvent,
   useAuth,
   useProfiles,
 } from "@conduit/core"
@@ -96,6 +96,7 @@ import {
 } from "../lib/product-publishing"
 import {
   buildOrderStockAdjustments,
+  PendingProductStockDeliveryStore,
   ProductStockDecisionStore,
   type OrderStockAdjustment,
 } from "../lib/productStock"
@@ -119,7 +120,7 @@ type StockDeliveryState = {
   orderId: string
   adjustment: OrderStockAdjustment
   notice: ProductDeliveryNotice
-  signedEvent: NDKEvent
+  signedEvent: SignedPublicNostrEvent
 }
 
 type StockUpdateMutationPayload =
@@ -132,7 +133,7 @@ type StockUpdateMutationPayload =
       action: "retry"
       orderId: string
       adjustment: OrderStockAdjustment
-      signedEvent: NDKEvent
+      signedEvent: SignedPublicNostrEvent
       previousNotice: ProductDeliveryNotice
     }
 
@@ -430,6 +431,9 @@ function OrdersPage() {
     useState(false)
   const orderActionLockRef = useRef(false)
   const stockDecisionStoreRef = useRef(new ProductStockDecisionStore())
+  const pendingStockDeliveryStoreRef = useRef(
+    new PendingProductStockDeliveryStore()
+  )
   const [weblnAvailable, setWeblnAvailable] = useState(false)
   const [refreshButtonState, setRefreshButtonState] = useState<
     "idle" | "refreshing" | "done"
@@ -757,12 +761,38 @@ function OrdersPage() {
     normalizeInvoiceCurrencyChoice(selectedOrderCurrency) === ""
 
   useEffect(() => {
-    const selectedId = selected?.id ?? null
+    const selectedId = selected ? `${pubkey ?? "none"}:${selected.id}` : null
     if (selectedOrderResetRef.current === selectedId) return
     selectedOrderResetRef.current = selectedId
 
     setSuccessFlash(null)
-    setStockDelivery(null)
+    const pendingStockDeliveries =
+      pubkey && selected
+        ? pendingStockDeliveryStoreRef.current.getForOrder(
+            pubkey,
+            selected.orderId
+          )
+        : []
+    const pendingStockDelivery = pendingStockDeliveries[0]
+    setStockDelivery(
+      pendingStockDelivery
+        ? {
+            orderId: pendingStockDelivery.orderId,
+            adjustment: pendingStockDelivery.adjustment,
+            notice: buildLocalProductRetryNotice("publish"),
+            signedEvent: pendingStockDelivery.signedEvent,
+          }
+        : null
+    )
+    if (pubkey && pendingStockDeliveries.length > 0) {
+      setSessionStockDecisionKeys((current) => {
+        const next = new Set(current)
+        for (const delivery of pendingStockDeliveries) {
+          next.add(`${pubkey}:${delivery.adjustment.key}`)
+        }
+        return next
+      })
+    }
     setOrderDetailsOpen(false)
     setMessagesOpen(false)
     setInvoice("")
@@ -782,7 +812,7 @@ function OrdersPage() {
     setInvoiceCurrency(
       normalizeInvoiceCurrencyChoice(firstOrder.payload.currency)
     )
-  }, [selected])
+  }, [pubkey, selected])
 
   const orderSummary = useMemo(
     () => (selected ? getMerchantOrderSummary(selected) : null),
@@ -958,13 +988,17 @@ function OrdersPage() {
       if (!pubkey) throw new Error("Merchant signer is not connected")
 
       if (payload.action === "retry") {
+        pendingStockDeliveryStoreRef.current.set(pubkey, {
+          orderId: payload.orderId,
+          adjustment: payload.adjustment,
+          signedEvent: payload.signedEvent,
+        })
         const delivery = await deliverSignedProductEvent(
           payload.signedEvent,
           pubkey
         )
         return {
           delivery,
-          decisionPersisted: true,
           signedEvent: payload.signedEvent,
         }
       }
@@ -1019,8 +1053,7 @@ function OrdersPage() {
         throw new Error("The listing stock is already zero.")
       }
 
-      let signedEvent: NDKEvent | null = null
-      let decisionPersisted = true
+      let signedEvent: SignedPublicNostrEvent | null = null
       const delivery = await signAndPublishProductListing({
         merchantPubkey: pubkey,
         product: {
@@ -1031,13 +1064,13 @@ function OrdersPage() {
         dTag: record.dTag,
         previousEventCreatedAt: record.eventCreatedAt,
         onSignedLocal: async (event) => {
-          signedEvent = event
-          decisionPersisted = stockDecisionStoreRef.current.set(
-            pubkey,
-            payload.orderId,
-            payload.adjustment.addressId,
-            "applied"
-          )
+          const rawEvent = event.rawEvent() as SignedPublicNostrEvent
+          signedEvent = rawEvent
+          pendingStockDeliveryStoreRef.current.set(pubkey, {
+            orderId: payload.orderId,
+            adjustment: payload.adjustment,
+            signedEvent: rawEvent,
+          })
           setSessionStockDecisionKeys((current) => {
             const next = new Set(current)
             next.add(`${pubkey}:${payload.adjustment.key}`)
@@ -1047,7 +1080,7 @@ function OrdersPage() {
             orderId: payload.orderId,
             adjustment: payload.adjustment,
             notice: buildLocalProductDeliveryNotice("publish"),
-            signedEvent: event,
+            signedEvent: rawEvent,
           })
         },
       })
@@ -1055,7 +1088,7 @@ function OrdersPage() {
       if (!signedEvent) {
         throw new Error("The signed stock update was not saved locally")
       }
-      return { delivery, decisionPersisted, signedEvent }
+      return { delivery, signedEvent }
     },
     onMutate: (payload) => {
       if (payload.action === "update") setStockDelivery(null)
@@ -1068,17 +1101,58 @@ function OrdersPage() {
         result.delivery,
         previousNotice
       )
+      const merchantPubkey = result.signedEvent.pubkey
       setStockDelivery({
         orderId: payload.orderId,
         adjustment: payload.adjustment,
         notice,
         signedEvent: result.signedEvent,
       })
-      flash(
-        result.decisionPersisted
-          ? `Stock updated for ${payload.adjustment.title}`
-          : `Stock updated for ${payload.adjustment.title}, but this device could not remember the order decision after reload.`
-      )
+      if (notice.state === "delivered") {
+        const decisionPersisted = stockDecisionStoreRef.current.set(
+          merchantPubkey,
+          payload.orderId,
+          payload.adjustment.addressId,
+          "applied"
+        )
+        pendingStockDeliveryStoreRef.current.delete(
+          merchantPubkey,
+          payload.orderId,
+          payload.adjustment.addressId
+        )
+        const nextPendingDelivery =
+          pendingStockDeliveryStoreRef.current.getForOrder(
+            merchantPubkey,
+            payload.orderId
+          )[0]
+        if (nextPendingDelivery) {
+          setStockDelivery({
+            orderId: nextPendingDelivery.orderId,
+            adjustment: nextPendingDelivery.adjustment,
+            notice: buildLocalProductRetryNotice("publish"),
+            signedEvent: nextPendingDelivery.signedEvent,
+          })
+        }
+        flash(
+          decisionPersisted
+            ? `Stock updated for ${payload.adjustment.title}`
+            : `Stock updated for ${payload.adjustment.title}, but this device could not remember the order decision after reload.`
+        )
+      } else {
+        const retryPersisted = pendingStockDeliveryStoreRef.current.set(
+          merchantPubkey,
+          {
+            orderId: payload.orderId,
+            adjustment: payload.adjustment,
+            signedEvent: result.signedEvent,
+          }
+        )
+        flash(
+          retryPersisted
+            ? `Stock update saved locally for ${payload.adjustment.title}; relay delivery still needs attention.`
+            : `Stock update saved locally for ${payload.adjustment.title}, but this device could not remember the relay retry after reload.`
+        )
+      }
       await invalidateProductQueries()
     },
     onError: async (error, payload) => {
@@ -1395,6 +1469,13 @@ function OrdersPage() {
     })
   }
 
+  function dismissStockDelivery(): void {
+    if (stockDeliveryCanRetry) {
+      flash("Relay retry hidden for now. Reopen this order to resume delivery.")
+    }
+    setStockDelivery(null)
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4 xl:shrink-0">
@@ -1666,7 +1747,7 @@ function OrdersPage() {
                             onUpdate={updateStock}
                             onDecline={keepCurrentStock}
                             onRetry={retryStockDelivery}
-                            onDismissDelivery={() => setStockDelivery(null)}
+                            onDismissDelivery={dismissStockDelivery}
                           />
 
                           {hasNextStep && (

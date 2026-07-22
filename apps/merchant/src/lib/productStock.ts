@@ -1,10 +1,18 @@
-import type { CommerceProductRecord } from "@conduit/core"
+import {
+  EVENT_KINDS,
+  isValidSignedPublicNostrEvent,
+  type CommerceProductRecord,
+  type SignedPublicNostrEvent,
+} from "@conduit/core"
 
 export const LOW_STOCK_THRESHOLD = 5
 
 const STOCK_DECISION_STORAGE_PREFIX =
   "conduit:merchant:order-stock-decisions:v1"
+const STOCK_DELIVERY_STORAGE_PREFIX =
+  "conduit:merchant:pending-stock-deliveries:v1"
 const MAX_STORED_STOCK_DECISIONS = 500
+const MAX_STORED_STOCK_DELIVERIES = 100
 
 export type ProductStockDecisionKind = "applied" | "declined"
 
@@ -16,6 +24,18 @@ export interface ProductStockDecision {
 interface StoredProductStockDecisions {
   version: 1
   decisions: Record<string, ProductStockDecision>
+}
+
+export interface PendingProductStockDelivery {
+  orderId: string
+  adjustment: OrderStockAdjustment
+  signedEvent: SignedPublicNostrEvent
+  savedAt: number
+}
+
+interface StoredProductStockDeliveries {
+  version: 1
+  deliveries: Record<string, PendingProductStockDelivery>
 }
 
 export interface OrderStockItem {
@@ -62,6 +82,13 @@ function getDecisionStorageKey(merchantPubkey: string): string | null {
     : null
 }
 
+function getDeliveryStorageKey(merchantPubkey: string): string | null {
+  const normalized = merchantPubkey.trim()
+  return normalized
+    ? `${STOCK_DELIVERY_STORAGE_PREFIX}:${encodeURIComponent(normalized)}`
+    : null
+}
+
 function parseStoredDecisions(raw: string | null): StoredProductStockDecisions {
   if (!raw) return { version: 1, decisions: {} }
 
@@ -103,6 +130,94 @@ function parseStoredDecisions(raw: string | null): StoredProductStockDecisions {
     return { version: 1, decisions }
   } catch {
     return { version: 1, decisions: {} }
+  }
+}
+
+function isOrderStockAdjustment(value: unknown): value is OrderStockAdjustment {
+  if (!value || typeof value !== "object") return false
+  const adjustment = value as Partial<OrderStockAdjustment>
+  return (
+    typeof adjustment.key === "string" &&
+    typeof adjustment.addressId === "string" &&
+    typeof adjustment.sourceEventId === "string" &&
+    typeof adjustment.title === "string" &&
+    typeof adjustment.quantity === "number" &&
+    Number.isSafeInteger(adjustment.quantity) &&
+    adjustment.quantity > 0 &&
+    typeof adjustment.currentStock === "number" &&
+    Number.isSafeInteger(adjustment.currentStock) &&
+    adjustment.currentStock >= 0 &&
+    typeof adjustment.nextStock === "number" &&
+    Number.isSafeInteger(adjustment.nextStock) &&
+    adjustment.nextStock >= 0 &&
+    typeof adjustment.shortfall === "number" &&
+    Number.isSafeInteger(adjustment.shortfall) &&
+    adjustment.shortfall >= 0
+  )
+}
+
+function getSignedProductAddressId(
+  event: SignedPublicNostrEvent
+): string | null {
+  if (event.kind !== EVENT_KINDS.PRODUCT) return null
+  const dTag = event.tags.find(
+    (tag) => tag[0] === "d" && typeof tag[1] === "string" && tag[1].length > 0
+  )?.[1]
+  return dTag ? `${event.kind}:${event.pubkey}:${dTag}` : null
+}
+
+function isPendingProductStockDelivery(
+  value: unknown,
+  merchantPubkey: string
+): value is PendingProductStockDelivery {
+  if (!value || typeof value !== "object") return false
+  const delivery = value as Partial<PendingProductStockDelivery>
+  if (
+    typeof delivery.orderId !== "string" ||
+    !delivery.orderId.trim() ||
+    !isOrderStockAdjustment(delivery.adjustment) ||
+    !delivery.signedEvent ||
+    !isValidSignedPublicNostrEvent(delivery.signedEvent) ||
+    delivery.signedEvent.pubkey !== merchantPubkey ||
+    getSignedProductAddressId(delivery.signedEvent) !==
+      delivery.adjustment.addressId ||
+    typeof delivery.savedAt !== "number" ||
+    !Number.isFinite(delivery.savedAt)
+  ) {
+    return false
+  }
+  return true
+}
+
+function parseStoredDeliveries(
+  raw: string | null,
+  merchantPubkey: string
+): StoredProductStockDeliveries {
+  if (!raw) return { version: 1, deliveries: {} }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== "object") {
+      return { version: 1, deliveries: {} }
+    }
+    const candidate = parsed as { version?: unknown; deliveries?: unknown }
+    if (
+      candidate.version !== 1 ||
+      !candidate.deliveries ||
+      typeof candidate.deliveries !== "object"
+    ) {
+      return { version: 1, deliveries: {} }
+    }
+
+    const deliveries: Record<string, PendingProductStockDelivery> = {}
+    for (const [key, value] of Object.entries(candidate.deliveries)) {
+      if (isPendingProductStockDelivery(value, merchantPubkey)) {
+        deliveries[key] = value
+      }
+    }
+    return { version: 1, deliveries }
+  } catch {
+    return { version: 1, deliveries: {} }
   }
 }
 
@@ -265,6 +380,113 @@ export class ProductStockDecisionStore {
       stored.decisions = Object.fromEntries(
         entries.slice(0, MAX_STORED_STOCK_DECISIONS)
       )
+      this.storage.setItem(storageKey, JSON.stringify(stored))
+      return true
+    } catch {
+      return false
+    }
+  }
+}
+
+export class PendingProductStockDeliveryStore {
+  private readonly memoryDeliveries = new Map<
+    string,
+    PendingProductStockDelivery
+  >()
+
+  constructor(private readonly storage: Storage | null = getBrowserStorage()) {}
+
+  getForOrder(
+    merchantPubkey: string,
+    orderId: string
+  ): PendingProductStockDelivery[] {
+    const normalizedMerchant = merchantPubkey.trim()
+    const normalizedOrder = orderId.trim()
+    if (!normalizedMerchant || !normalizedOrder) return []
+
+    const storageKey = getDeliveryStorageKey(normalizedMerchant)
+    if (storageKey && this.storage) {
+      try {
+        const stored = parseStoredDeliveries(
+          this.storage.getItem(storageKey),
+          normalizedMerchant
+        )
+        for (const [key, delivery] of Object.entries(stored.deliveries)) {
+          this.memoryDeliveries.set(`${normalizedMerchant}:${key}`, delivery)
+        }
+      } catch {
+        // Keep any in-memory retry state when browser storage is unavailable.
+      }
+    }
+
+    return Array.from(this.memoryDeliveries.entries())
+      .filter(
+        ([key, delivery]) =>
+          key.startsWith(`${normalizedMerchant}:`) &&
+          delivery.orderId === normalizedOrder
+      )
+      .map(([, delivery]) => delivery)
+      .sort((left, right) => right.savedAt - left.savedAt)
+  }
+
+  set(
+    merchantPubkey: string,
+    delivery: Omit<PendingProductStockDelivery, "savedAt">
+  ): boolean {
+    const normalizedMerchant = merchantPubkey.trim()
+    const pending: PendingProductStockDelivery = {
+      ...delivery,
+      orderId: delivery.orderId.trim(),
+      savedAt: Date.now(),
+    }
+    if (!isPendingProductStockDelivery(pending, normalizedMerchant)) {
+      throw new Error("Expected a valid signed product stock delivery")
+    }
+
+    const deliveryKey = getOrderStockDecisionKey(
+      pending.orderId,
+      pending.adjustment.addressId
+    )
+    this.memoryDeliveries.set(`${normalizedMerchant}:${deliveryKey}`, pending)
+
+    const storageKey = getDeliveryStorageKey(normalizedMerchant)
+    if (!storageKey || !this.storage) return false
+    try {
+      const stored = parseStoredDeliveries(
+        this.storage.getItem(storageKey),
+        normalizedMerchant
+      )
+      stored.deliveries[deliveryKey] = pending
+      const entries = Object.entries(stored.deliveries).sort(
+        ([, left], [, right]) => right.savedAt - left.savedAt
+      )
+      stored.deliveries = Object.fromEntries(
+        entries.slice(0, MAX_STORED_STOCK_DELIVERIES)
+      )
+      this.storage.setItem(storageKey, JSON.stringify(stored))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  delete(
+    merchantPubkey: string,
+    orderId: string,
+    productAddressId: string
+  ): boolean {
+    const normalizedMerchant = merchantPubkey.trim()
+    const deliveryKey = getOrderStockDecisionKey(orderId, productAddressId)
+    this.memoryDeliveries.delete(`${normalizedMerchant}:${deliveryKey}`)
+
+    const storageKey = getDeliveryStorageKey(normalizedMerchant)
+    if (!storageKey || !this.storage) return false
+    try {
+      const stored = parseStoredDeliveries(
+        this.storage.getItem(storageKey),
+        normalizedMerchant
+      )
+      delete stored.deliveries[deliveryKey]
       this.storage.setItem(storageKey, JSON.stringify(stored))
       return true
     } catch {

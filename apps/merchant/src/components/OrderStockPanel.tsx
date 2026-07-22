@@ -99,7 +99,7 @@ export function OrderStockPanel({
               className="min-h-10 px-3 text-xs"
               onClick={onDismissDelivery}
             >
-              Dismiss
+              {deliveryNeedsAttention ? "Hide for now" : "Dismiss"}
             </Button>
           </div>
         </div>

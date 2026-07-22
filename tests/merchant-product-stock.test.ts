@@ -1,11 +1,13 @@
 import { describe, expect, it } from "bun:test"
-import type { CommerceProductRecord } from "@conduit/core"
+import { EVENT_KINDS, type CommerceProductRecord } from "@conduit/core"
+import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   buildOrderStockAdjustments,
   getProductStockDisplay,
   getProductStockInputError,
   isPlainStockInput,
   parseProductStockInput,
+  PendingProductStockDeliveryStore,
   ProductStockDecisionStore,
 } from "../apps/merchant/src/lib/productStock"
 
@@ -169,5 +171,62 @@ describe("merchant product stock", () => {
 
     expect(store.set(merchant, "order-1", address, "declined")).toBe(false)
     expect(store.get(merchant, "order-1", address)?.kind).toBe("declined")
+  })
+
+  it("restores a pending signed stock delivery after reload", () => {
+    const storage = new MemoryStorage()
+    const secretKey = new Uint8Array(32).fill(3)
+    const merchant = getPublicKey(secretKey)
+    const dTag = "pending-stock-delivery"
+    const addressId = `${EVENT_KINDS.PRODUCT}:${merchant}:${dTag}`
+    const signedEvent = finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRODUCT,
+        created_at: 1_700_000_001,
+        content: "Pending stock update",
+        tags: [
+          ["d", dTag],
+          ["title", "Pocket Relay"],
+          ["price", "25", "USD"],
+          ["stock", "11"],
+        ],
+      },
+      secretKey
+    )
+    const adjustment = {
+      key: `order-1:${addressId}`,
+      addressId,
+      sourceEventId: "source-event",
+      title: "Pocket Relay",
+      quantity: 1,
+      currentStock: 12,
+      nextStock: 11,
+      shortfall: 0,
+    }
+
+    const first = new PendingProductStockDeliveryStore(storage)
+    expect(
+      first.set(merchant, {
+        orderId: "order-1",
+        adjustment,
+        signedEvent,
+      })
+    ).toBe(true)
+
+    const afterReload = new PendingProductStockDeliveryStore(storage)
+    const restored = afterReload.getForOrder(merchant, "order-1")
+    expect(restored).toHaveLength(1)
+    expect(restored[0]?.orderId).toBe("order-1")
+    expect(restored[0]?.adjustment).toEqual(adjustment)
+    expect(restored[0]?.signedEvent.id).toBe(signedEvent.id)
+    expect(restored[0]?.signedEvent.pubkey).toBe(signedEvent.pubkey)
+
+    expect(afterReload.delete(merchant, "order-1", addressId)).toBe(true)
+    expect(
+      new PendingProductStockDeliveryStore(storage).getForOrder(
+        merchant,
+        "order-1"
+      )
+    ).toEqual([])
   })
 })
