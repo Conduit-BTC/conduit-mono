@@ -739,16 +739,19 @@ export function getShopperPriceDisplay(
   const needsRate = sourceNeedsRate || displayNeedsRate
 
   if (displaysExactSourceQuote && source) {
-    const cachedSats = getPriceSats(
-      price,
-      isPricingRateQuoteFresh(
-        quote,
-        options.nowMs,
-        options.maxRateAgeMs ?? DEFAULT_PRICING_RATE_MAX_AGE_MS
-      )
-        ? quote
-        : null
+    const freshQuote = isPricingRateQuoteFresh(
+      quote,
+      options.nowMs,
+      options.maxRateAgeMs ?? DEFAULT_PRICING_RATE_MAX_AGE_MS
     )
+    const converted = freshQuote
+      ? normalizeCommercePrice(source.amount, source.normalizedCurrency, quote)
+      : null
+    const displaySats =
+      authoritativeSats ??
+      (converted?.status === "ok"
+        ? { sats: converted.sats, approximate: converted.approximate }
+        : null)
     return {
       state: "ready",
       primary: formatFiatPrice(
@@ -756,15 +759,15 @@ export function getShopperPriceDisplay(
         normalizedPreference.currency,
         locale
       ),
-      secondary: cachedSats
+      secondary: displaySats
         ? formatBitcoinBaseUnits(
-            cachedSats.sats,
+            displaySats.sats,
             normalizedPreference.bitcoinUnit,
             locale
           )
         : null,
       displayCurrency: normalizedPreference.currency,
-      sats: cachedSats?.sats ?? null,
+      sats: displaySats?.sats ?? null,
       approximate: false,
       source,
     }
@@ -901,12 +904,27 @@ export function getShopperSatsDisplay(
     maxRateAgeMs?: number
   } = {}
 ): ShopperPriceDisplay {
-  return getShopperPriceDisplay(
+  const display = getShopperPriceDisplay(
     { price: sats, currency: "SATS", priceSats: sats },
     preference,
     quote,
     options
   )
+  if (display.state !== "rate_required" && display.state !== "rate_stale") {
+    return display
+  }
+
+  const normalizedPreference = normalizeShopperPricePreference(preference)
+  return {
+    ...display,
+    primary: formatBitcoinBaseUnits(
+      sats,
+      normalizedPreference.bitcoinUnit,
+      options.locale ?? "en-US"
+    ),
+    secondary: display.primary,
+    sats,
+  }
 }
 
 export function getProductPriceDisplay(

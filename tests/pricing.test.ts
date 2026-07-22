@@ -11,6 +11,7 @@ import {
   getProductPriceDisplay,
   getShippingCostSats,
   getShopperPriceDisplay,
+  getShopperSatsDisplay,
   isBtcUsdRateQuoteFresh,
   normalizeCommercePrice,
   normalizeCurrencyAmount,
@@ -135,6 +136,70 @@ describe("commerce pricing", () => {
       secondary: null,
       sats: null,
       approximate: false,
+    })
+  })
+
+  it("does not reuse cached listing sats for a stale source-fiat conversion", () => {
+    const price = {
+      price: 10,
+      currency: "EUR",
+      priceSats: 8_000,
+      sourcePrice: {
+        amount: 10,
+        currency: "EUR",
+        normalizedCurrency: "EUR",
+      },
+    }
+    const preference = { currency: "EUR", bitcoinUnit: "bitcoin" } as const
+
+    expect(
+      getShopperPriceDisplay(
+        price,
+        preference,
+        { ...testRates, source: "mempool", fetchedAt: 1_000 },
+        { nowMs: 1_000 + BTC_USD_RATE_STALE_MS + 1 }
+      )
+    ).toMatchObject({
+      state: "ready",
+      primary: "€10.00",
+      secondary: null,
+      sats: null,
+    })
+    expect(getShopperPriceDisplay(price, preference, testRates)).toMatchObject({
+      secondary: "₿12,000",
+      sats: 12_000,
+    })
+    expect(
+      getShopperPriceDisplay(price, preference, null, {
+        settledSatsAreAuthoritative: true,
+      })
+    ).toMatchObject({
+      secondary: "₿8,000",
+      sats: 8_000,
+    })
+  })
+
+  it("keeps exact sats visible when a preferred-fiat conversion is unavailable", () => {
+    const preference = { currency: "EUR", bitcoinUnit: "bitcoin" } as const
+
+    expect(getShopperSatsDisplay(10_000, preference)).toMatchObject({
+      state: "rate_required",
+      primary: "₿10,000",
+      secondary: "Price conversion unavailable",
+      sats: 10_000,
+    })
+    expect(
+      getShopperSatsDisplay(
+        10_000,
+        preference,
+        { ...testRates, source: "mempool", fetchedAt: 1_000 },
+        { nowMs: 1_000 + BTC_USD_RATE_STALE_MS + 1 }
+      )
+    ).toMatchObject({
+      state: "rate_stale",
+      primary: "₿10,000",
+      secondary: "Price conversion is stale",
+      sats: 10_000,
     })
   })
 
