@@ -63,6 +63,20 @@ export {
   type ClientErrorSource,
 } from "./client-error-telemetry"
 export {
+  buildMerchantSetupStepResultTelemetryProperties,
+  buildPaymentAttemptResultTelemetryProperties,
+  buildProductDetailActionTelemetryProperties,
+  buildProductPublishResultTelemetryProperties,
+  buildShippingPublishResultTelemetryProperties,
+  getTelemetryLatencyBucket,
+  type MerchantSetupTelemetryStep,
+  type PaymentAttemptTelemetryRail,
+  type ProductDetailTelemetryAction,
+  type ProductPublishTelemetryFamily,
+  type ShippingPublishTelemetryFamily,
+  type TelemetryResultStatus,
+} from "./telemetry-event-properties"
+export {
   buildBugReportUrl,
   getBugReportAppLabel,
   type BugReportAppId,

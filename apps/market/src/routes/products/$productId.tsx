@@ -7,11 +7,14 @@ import {
 } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import {
+  buildProductDetailActionTelemetryProperties,
   formatNpub,
   getListingSafetyDisplay,
   getProfileName,
   pubkeyToNpub,
+  recordBrowserTelemetryEvent,
   useProfile,
+  type ProductDetailTelemetryAction,
 } from "@conduit/core"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
@@ -205,6 +208,49 @@ function ProductPage() {
       ? descriptionMetrics.expandedHeight
       : descriptionMetrics.collapsedHeight
     : undefined
+
+  function recordProductDetailAction(
+    action: ProductDetailTelemetryAction
+  ): void {
+    if (!product) return
+    recordBrowserTelemetryEvent({
+      app: "market",
+      eventName: "product_detail_action",
+      properties: buildProductDetailActionTelemetryProperties({
+        action,
+        productType: product.format === "digital" ? "digital" : "physical",
+      }),
+    })
+  }
+
+  function addProductToCart(): void {
+    if (!product) return
+    recordProductDetailAction("add_to_cart")
+    cart.addItem(
+      {
+        productId: product.id,
+        merchantPubkey: product.pubkey,
+        title: product.title,
+        price: product.price,
+        currency: product.currency,
+        priceSats: product.priceSats,
+        sourcePrice: product.sourcePrice,
+        sourceShippingCost: product.sourceShippingCost,
+        image: product.images[0]?.url,
+        tags: product.tags,
+        format: product.format,
+        shippingCostSats: product.shippingCostSats,
+        shippingOptionId: product.shippingOptionId,
+        shippingOptionDTag: product.shippingOptionDTag,
+        shippingCountries: product.shippingCountries,
+        shippingCountryRules: product.shippingCountryRules,
+        publicZapEnabled: product.publicZapEnabled,
+        zapMessagePolicy: product.zapMessagePolicy,
+        publicZapPolicyKnown: product.publicZapPolicyKnown,
+      },
+      quantity
+    )
+  }
 
   return (
     <div className="min-w-0 max-w-full space-y-8 overflow-x-hidden">
@@ -530,32 +576,7 @@ function ProductPage() {
 
                   <Button
                     className="min-w-[12rem] flex-1"
-                    onClick={() =>
-                      cart.addItem(
-                        {
-                          productId: product.id,
-                          merchantPubkey: product.pubkey,
-                          title: product.title,
-                          price: product.price,
-                          currency: product.currency,
-                          priceSats: product.priceSats,
-                          sourcePrice: product.sourcePrice,
-                          sourceShippingCost: product.sourceShippingCost,
-                          image: product.images[0]?.url,
-                          tags: product.tags,
-                          format: product.format,
-                          shippingCostSats: product.shippingCostSats,
-                          shippingOptionId: product.shippingOptionId,
-                          shippingOptionDTag: product.shippingOptionDTag,
-                          shippingCountries: product.shippingCountries,
-                          shippingCountryRules: product.shippingCountryRules,
-                          publicZapEnabled: product.publicZapEnabled,
-                          zapMessagePolicy: product.zapMessagePolicy,
-                          publicZapPolicyKnown: product.publicZapPolicyKnown,
-                        },
-                        quantity
-                      )
-                    }
+                    onClick={addProductToCart}
                   >
                     {cartQuantity > 0
                       ? `Add more (${cartQuantity} in cart)`
@@ -567,6 +588,7 @@ function ProductPage() {
                   <Link
                     to="/cart"
                     search={{ merchant: pubkeyToNpub(product.pubkey) }}
+                    onClick={() => recordProductDetailAction("view_cart")}
                   >
                     <ShoppingCart className="h-4 w-4" />
                     View cart

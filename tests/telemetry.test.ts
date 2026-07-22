@@ -2,12 +2,19 @@ import { describe, expect, it } from "bun:test"
 
 import {
   applyPlausibleInitOptions,
+  buildMerchantSetupStepResultTelemetryProperties,
+  buildPaymentAttemptResultTelemetryProperties,
+  buildProductDetailActionTelemetryProperties,
+  buildProductPublishResultTelemetryProperties,
+  buildShippingPublishResultTelemetryProperties,
   buildTelemetryEventPageContext,
   buildTelemetryPageUrl,
   getConduitPostHogConfig,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
+  getTelemetryLatencyBucket,
   pubkeyToNpub,
+  recordBrowserTelemetryEvent,
   recordBrowserTelemetryPageView,
   resolveBrowserTelemetryConfig,
   sanitizeTelemetryEventProperties,
@@ -235,6 +242,69 @@ describe("browser telemetry", () => {
         previousAllowedHosts
       )
       restoreProcessEnvValue("VITE_PLAUSIBLE_SRC", previousPlausibleSrc)
+      restoreGlobalProperty("document", previousDocument)
+      restoreGlobalProperty("navigator", previousNavigator)
+      restoreGlobalProperty("window", previousWindow)
+    }
+  })
+
+  it("keeps provider failures out of user-visible flows", () => {
+    const previousDocument = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "document"
+    )
+    const previousNavigator = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "navigator"
+    )
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+    const previousEnableTelemetry = process.env.VITE_ENABLE_TELEMETRY
+    const previousAllowedHosts = process.env.VITE_TELEMETRY_ALLOWED_HOSTS
+    const previousPlausibleSrc = process.env.VITE_PLAUSIBLE_SRC
+    const previousPostHogKey = process.env.VITE_POSTHOG_KEY
+
+    const fakeDocument = {
+      querySelector: () => ({}) as HTMLScriptElement,
+    } as unknown as Document
+    const fakeWindow = {
+      location: {
+        hostname: "shop.conduit.market",
+        origin: "https://shop.conduit.market",
+        pathname: "/checkout",
+      },
+      plausible: () => {
+        throw new Error("provider unavailable")
+      },
+    } as unknown as Window
+
+    try {
+      process.env.VITE_ENABLE_TELEMETRY = "true"
+      process.env.VITE_TELEMETRY_ALLOWED_HOSTS = "shop.conduit.market"
+      process.env.VITE_PLAUSIBLE_SRC = "https://plausible.io/js/test.js"
+      delete process.env.VITE_POSTHOG_KEY
+      replaceGlobalProperty("document", fakeDocument)
+      replaceGlobalProperty("navigator", {} as Navigator)
+      replaceGlobalProperty("window", fakeWindow)
+
+      expect(() =>
+        recordBrowserTelemetryEvent({
+          app: "market",
+          eventName: "payment_attempt_result",
+          properties: {
+            amount_bucket: "1k_10k_sats",
+            rail: "nwc",
+            status: "success",
+          },
+        })
+      ).not.toThrow()
+    } finally {
+      restoreProcessEnvValue("VITE_ENABLE_TELEMETRY", previousEnableTelemetry)
+      restoreProcessEnvValue(
+        "VITE_TELEMETRY_ALLOWED_HOSTS",
+        previousAllowedHosts
+      )
+      restoreProcessEnvValue("VITE_PLAUSIBLE_SRC", previousPlausibleSrc)
+      restoreProcessEnvValue("VITE_POSTHOG_KEY", previousPostHogKey)
       restoreGlobalProperty("document", previousDocument)
       restoreGlobalProperty("navigator", previousNavigator)
       restoreGlobalProperty("window", previousWindow)
@@ -517,6 +587,72 @@ describe("browser telemetry", () => {
     expect(getTelemetryAmountBucket(999)).toBe("lt_1k_sats")
     expect(getTelemetryAmountBucket(10_000)).toBe("10k_100k_sats")
     expect(getTelemetryAmountBucket(1_000_000)).toBe("1m_plus_sats")
+
+    expect(getTelemetryLatencyBucket(undefined)).toBe("unknown")
+    expect(getTelemetryLatencyBucket(249)).toBe("lt_250ms")
+    expect(getTelemetryLatencyBucket(250)).toBe("250ms_1s")
+    expect(getTelemetryLatencyBucket(1_000)).toBe("1s_3s")
+    expect(getTelemetryLatencyBucket(3_000)).toBe("3s_10s")
+    expect(getTelemetryLatencyBucket(10_000)).toBe("10s_plus")
+  })
+
+  it("builds enum-and-bucket-only product and payment event properties", () => {
+    expect(
+      buildPaymentAttemptResultTelemetryProperties({
+        amountSats: 25_000,
+        latencyMs: 1_200,
+        rail: "nwc",
+        status: "blocked",
+      })
+    ).toEqual({
+      amount_bucket: "10k_100k_sats",
+      latency_bucket: "1s_3s",
+      mode: "automatic",
+      rail: "nwc",
+      status: "blocked",
+    })
+    expect(
+      buildProductPublishResultTelemetryProperties({
+        eventFamily: "delivery_retry",
+        latencyMs: 12_000,
+        status: "failure",
+      })
+    ).toEqual({
+      event_family: "delivery_retry",
+      latency_bucket: "10s_plus",
+      status: "failure",
+    })
+    expect(
+      buildShippingPublishResultTelemetryProperties({
+        eventFamily: "publish",
+        latencyMs: 800,
+        status: "success",
+      })
+    ).toEqual({
+      event_family: "publish",
+      latency_bucket: "250ms_1s",
+      status: "success",
+    })
+    expect(
+      buildMerchantSetupStepResultTelemetryProperties({
+        status: "blocked",
+        step: "shipping",
+      })
+    ).toEqual({
+      status: "blocked",
+      step: "shipping",
+      surface: "merchant_readiness",
+    })
+    expect(
+      buildProductDetailActionTelemetryProperties({
+        action: "add_to_cart",
+        productType: "physical",
+      })
+    ).toEqual({
+      action: "add_to_cart",
+      product_type: "physical",
+      surface: "product_detail",
+    })
   })
 
   it("drops telemetry properties that are sensitive, high-cardinality, or free text", () => {
