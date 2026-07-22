@@ -38,6 +38,18 @@ export function getRelayPublishDiagnosticsError(
   return cause instanceof RelayPublishDiagnosticsError ? cause : null
 }
 
+export function isDeliverableMerchantProductEvent(
+  event: SignedPublicNostrEvent,
+  merchantPubkey: string
+): boolean {
+  return (
+    isValidSignedPublicNostrEvent(event) &&
+    (event.kind === EVENT_KINDS.PRODUCT ||
+      event.kind === EVENT_KINDS.DELETION) &&
+    event.pubkey === merchantPubkey
+  )
+}
+
 export async function deliverSignedProductEvent(
   event: NDKEvent | SignedPublicNostrEvent,
   merchantPubkey: string
@@ -47,12 +59,10 @@ export async function deliverSignedProductEvent(
       event instanceof NDKEvent
         ? (event.rawEvent() as SignedPublicNostrEvent)
         : event
-    if (
-      !isValidSignedPublicNostrEvent(rawEvent) ||
-      rawEvent.kind !== EVENT_KINDS.PRODUCT ||
-      rawEvent.pubkey !== merchantPubkey
-    ) {
-      throw new Error("Expected a valid signed merchant product event")
+    if (!isDeliverableMerchantProductEvent(rawEvent, merchantPubkey)) {
+      throw new Error(
+        "Expected a valid signed merchant product or deletion event"
+      )
     }
 
     let publishableEvent: NDKEvent
