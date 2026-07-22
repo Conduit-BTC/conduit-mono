@@ -102,7 +102,9 @@ const NOSTR_GET_STARTED_URL = "https://grownostr.org/get-started"
 const AMBER_URL = "https://github.com/greenart7c3/Amber"
 const CLAVE_URL = "https://github.com/DocNR/clave"
 const signerConnectButtonClassName =
-  "h-14 w-full justify-center gap-3 rounded-xl bg-[linear-gradient(90deg,var(--primary-500),var(--primary-600))] text-base font-semibold text-[var(--on-primary)] shadow-[0_18px_38px_color-mix(in_srgb,var(--primary-500)_32%,transparent)] hover:brightness-110 focus-visible:ring-primary-400 disabled:brightness-75"
+  "h-14 w-full justify-center gap-3 rounded-xl bg-[linear-gradient(90deg,var(--primary-500),var(--primary-600))] text-base font-semibold text-[var(--on-primary)] shadow-[0_6px_14px_color-mix(in_srgb,var(--primary-500)_18%,transparent)] hover:brightness-110 focus-visible:ring-primary-400 disabled:brightness-75"
+const remoteSignerTabClassName =
+  "min-h-11 min-w-0 gap-1 rounded-lg border border-transparent px-1 text-xs whitespace-normal data-[state=active]:border-primary-600 data-[state=active]:bg-primary-500 data-[state=active]:font-semibold data-[state=active]:text-white data-[state=active]:shadow-none data-[state=inactive]:hover:border-[var(--border)] data-[state=inactive]:hover:bg-[var(--surface-elevated)] sm:text-sm"
 
 export interface SignerEnvironmentInput {
   userAgent: string
@@ -293,27 +295,21 @@ function RemoteSignerConnect({
       )}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList
-          className="grid h-auto w-full grid-cols-3"
+          className="grid h-auto w-full grid-cols-3 rounded-xl p-1"
           aria-label="Remote signer connection method"
         >
-          <TabsTrigger
-            value="qr"
-            className="min-h-10 min-w-0 gap-1 px-1 text-xs whitespace-normal sm:text-sm"
-          >
+          <TabsTrigger value="qr" className={remoteSignerTabClassName}>
             <QrCode className="h-4 w-4 shrink-0" aria-hidden="true" />
             QR code
           </TabsTrigger>
           <TabsTrigger
             value="url"
-            className="min-h-10 min-w-0 gap-1 px-1 text-xs leading-tight whitespace-normal sm:text-sm"
+            className={`${remoteSignerTabClassName} leading-tight`}
           >
             <Link2 className="h-4 w-4 shrink-0" aria-hidden="true" />
             Connection URL
           </TabsTrigger>
-          <TabsTrigger
-            value="bunker"
-            className="min-h-10 min-w-0 gap-1 px-1 text-xs whitespace-normal sm:text-sm"
-          >
+          <TabsTrigger value="bunker" className={remoteSignerTabClassName}>
             <KeyRound className="h-4 w-4 shrink-0" aria-hidden="true" />
             Bunker URL
           </TabsTrigger>

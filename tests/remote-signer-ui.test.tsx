@@ -124,6 +124,21 @@ describe("remote signer UI", () => {
     expect(source).toContain("onCancelConnect")
   })
 
+  it("uses a clear selected state with a contained button glow", async () => {
+    const source = await readFile(
+      "packages/ui/src/components/SignerSwitch.tsx",
+      "utf8"
+    )
+
+    expect(source).toContain("data-[state=active]:bg-primary-500")
+    expect(source).toContain("data-[state=active]:text-white")
+    expect(source).toContain("data-[state=active]:border-primary-600")
+    expect(source).toContain(
+      "shadow-[0_6px_14px_color-mix(in_srgb,var(--primary-500)_18%,transparent)]"
+    )
+    expect(source).not.toContain("shadow-[0_18px_38px")
+  })
+
   it("closes the signer dialog after Nostr Connect pairing succeeds", async () => {
     const source = await readFile(
       "packages/ui/src/components/SignerSwitch.tsx",
