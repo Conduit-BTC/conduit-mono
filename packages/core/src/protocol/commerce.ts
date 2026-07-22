@@ -2361,7 +2361,8 @@ export async function getProductDetail(
 // of one read per id). Used to hydrate order-item name/image without hammering
 // relays with N separate reads.
 export async function getProductsByIds(
-  productIds: string[]
+  productIds: string[],
+  options: { includeMarketHidden?: boolean } = {}
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
   const addresses = productIds
     .map((id) => getProductLookupIds(id).address)
@@ -2390,14 +2391,30 @@ export async function getProductsByIds(
       limit: Math.max(addresses.length * 2, 20),
     })
     await cacheProductRecords(records)
+    const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
+      undefined,
+      authors
+    )
+    const visibleRecords = filterDeletedProductRecords(
+      records,
+      localDeletionTimestamps
+    )
+    const readableRecords = filterProductRecordsForRead(visibleRecords, {
+      includeMarketHidden: options.includeMarketHidden,
+    })
     return {
-      data: records.filter((record) => wanted.has(record.addressId)),
+      data: readableRecords.filter((record) => wanted.has(record.addressId)),
       meta: createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES),
     }
   } catch {
-    const cached = await getCachedProductRecords(undefined, {
-      includeStale: true,
-    })
+    const cached = await getCachedProductRecords(
+      undefined,
+      {
+        includeStale: true,
+        includeMarketHidden: options.includeMarketHidden,
+      },
+      authors
+    )
     return {
       data: cached.filter((record) => wanted.has(record.addressId)),
       meta: createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {

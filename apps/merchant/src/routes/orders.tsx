@@ -532,7 +532,8 @@ function OrdersPage() {
   const orderProductsQuery = useQuery({
     queryKey: ["order-products", allOrderProductIds],
     enabled: signerConnected && allOrderProductIds.length > 0,
-    queryFn: () => getProductsByIds(allOrderProductIds),
+    queryFn: () =>
+      getProductsByIds(allOrderProductIds, { includeMarketHidden: true }),
     staleTime: 5 * 60_000,
   })
 

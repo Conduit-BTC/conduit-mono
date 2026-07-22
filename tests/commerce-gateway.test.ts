@@ -18,6 +18,7 @@ import {
   getMerchantConversationList,
   getMerchantStorefront,
   getProductDetail,
+  getProductsByIds,
   getProfiles,
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
@@ -773,6 +774,63 @@ describe("commerce gateway", () => {
     const result = await getProductDetail({ productId: addressId })
 
     expect(result.data).toBeNull()
+  })
+
+  it("suppresses deleted products from batched live reads", async () => {
+    const dTag = "locally-deleted-batch"
+    const staleProduct = makeSignedProductEvent({
+      dTag,
+      createdAt: 100,
+      title: "Locally Deleted Batch Item",
+    })
+    const addressId = `30402:${staleProduct.pubkey}:${dTag}`
+
+    await cacheSignedProductDeletionEvent(
+      makeSignedDeletionEvent({
+        createdAt: 101,
+        tags: [["a", addressId]],
+      })
+    )
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([staleProduct] as never)
+          : [],
+    })
+
+    const result = await getProductsByIds([addressId], {
+      includeMarketHidden: true,
+    })
+
+    expect(result.meta.source).toBe("commerce")
+    expect(result.data).toHaveLength(0)
+  })
+
+  it("keeps market-hidden products out of batched Market reads", async () => {
+    const productEvent = makeProductEvent({
+      pubkey: "merchant",
+      dTag: "blocked-batch-item",
+      id: "event-blocked-batch",
+      createdAt: 100,
+      title: "Counterfeit goods display sample",
+    })
+    const addressId = "30402:merchant:blocked-batch-item"
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([productEvent] as never)
+          : [],
+    })
+
+    const marketResult = await getProductsByIds([addressId])
+    const merchantResult = await getProductsByIds([addressId], {
+      includeMarketHidden: true,
+    })
+
+    expect(marketResult.data).toHaveLength(0)
+    expect(merchantResult.data).toHaveLength(1)
+    expect(merchantResult.data[0]?.safety?.state).toBe("blocked")
   })
 
   it("suppresses stale event-id product detail across local signed tombstones", async () => {
