@@ -261,14 +261,8 @@ function RemoteSignerConnect({
           className="mt-0.5 h-5 w-5 shrink-0 text-primary-400"
           aria-hidden="true"
         />
-        <div>
-          <div className="text-sm font-semibold text-[var(--text-primary)]">
-            Connect Signer (NIP-46)
-          </div>
-          <p className="mt-1 text-sm leading-5 text-[var(--text-secondary)]">
-            Pair by QR code, connection URL, or a bunker URL from your remote
-            signer.
-          </p>
+        <div className="text-sm font-semibold text-[var(--text-primary)]">
+          Connect Signer (NIP-46)
         </div>
       </div>
       {connectPending && (
@@ -284,7 +278,7 @@ function RemoteSignerConnect({
           <Button
             type="button"
             variant="outline"
-            className="w-full"
+            className="w-full border-error/30 text-error hover:border-error/50 hover:bg-error/15"
             onClick={() =>
               void Promise.resolve(onCancelConnect()).catch(() => undefined)
             }
@@ -298,20 +292,32 @@ function RemoteSignerConnect({
           className="grid h-auto w-full grid-cols-3 rounded-xl p-1"
           aria-label="Remote signer connection method"
         >
-          <TabsTrigger value="qr" className={remoteSignerTabClassName}>
-            <QrCode className="h-4 w-4 shrink-0" aria-hidden="true" />
-            QR code
+          <TabsTrigger
+            value="qr"
+            aria-label="QR code"
+            title="QR code"
+            className={remoteSignerTabClassName}
+          >
+            <QrCode className="h-5 w-5 shrink-0" aria-hidden="true" />
+            QR
           </TabsTrigger>
           <TabsTrigger
             value="url"
-            className={`${remoteSignerTabClassName} leading-tight`}
+            aria-label="Connection URL"
+            title="Connection URL"
+            className={remoteSignerTabClassName}
           >
-            <Link2 className="h-4 w-4 shrink-0" aria-hidden="true" />
-            Connection URL
+            <Link2 className="h-5 w-5 shrink-0" aria-hidden="true" />
+            URL
           </TabsTrigger>
-          <TabsTrigger value="bunker" className={remoteSignerTabClassName}>
-            <KeyRound className="h-4 w-4 shrink-0" aria-hidden="true" />
-            Bunker URL
+          <TabsTrigger
+            value="bunker"
+            aria-label="Bunker URL"
+            title="Bunker URL"
+            className={remoteSignerTabClassName}
+          >
+            <KeyRound className="h-5 w-5 shrink-0" aria-hidden="true" />
+            Bunker
           </TabsTrigger>
         </TabsList>
 
@@ -433,10 +439,7 @@ function NostrConnectStartButton({
   onConnect: () => Promise<void> | void
 }) {
   return (
-    <div className="space-y-3 text-center">
-      <p className="text-sm leading-5 text-[var(--text-secondary)]">
-        Create a temporary connection to pair with your remote signer.
-      </p>
+    <div className="text-center">
       <Button
         type="button"
         onClick={() => void Promise.resolve(onConnect()).catch(() => undefined)}

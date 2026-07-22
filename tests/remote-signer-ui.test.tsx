@@ -122,6 +122,14 @@ describe("remote signer UI", () => {
 
     expect(source).toContain("Cancel pairing")
     expect(source).toContain("onCancelConnect")
+    expect(source).toContain("border-error/30 text-error")
+    expect(source).toContain("hover:bg-error/15")
+    expect(source).not.toContain(
+      "Pair by QR code, connection URL, or a bunker URL from your remote signer."
+    )
+    expect(source).not.toContain(
+      "Create a temporary connection to pair with your remote signer."
+    )
   })
 
   it("uses a clear selected state with a contained button glow", async () => {
@@ -140,6 +148,23 @@ describe("remote signer UI", () => {
       "data-[state=inactive]:hover:bg-[color-mix(in_srgb,var(--primary-500)_2%,var(--surface))]"
     )
     expect(source).not.toContain("shadow-[0_18px_38px")
+  })
+
+  it("uses accessible icons with concise remote pairing labels", async () => {
+    const source = await readFile(
+      "packages/ui/src/components/SignerSwitch.tsx",
+      "utf8"
+    )
+
+    expect(source).toContain('aria-label="QR code"')
+    expect(source).toContain('title="QR code"')
+    expect(source).toContain('aria-label="Connection URL"')
+    expect(source).toContain('title="Connection URL"')
+    expect(source).toContain('aria-label="Bunker URL"')
+    expect(source).toContain('title="Bunker URL"')
+    expect(source).toContain("            QR\n")
+    expect(source).toContain("            URL\n")
+    expect(source).toContain("            Bunker\n")
   })
 
   it("closes the signer dialog after Nostr Connect pairing succeeds", async () => {
