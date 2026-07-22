@@ -345,7 +345,7 @@ function StorefrontPage() {
     navigate({
       to: "/messages",
       search: {
-        tab: "merchants",
+        tab: "dms",
         merchant: pubkey,
       },
     })

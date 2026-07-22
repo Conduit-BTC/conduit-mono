@@ -13,7 +13,7 @@ import {
   type NDKRelay,
 } from "@nostr-dev-kit/ndk"
 import { getNdk } from "./ndk"
-import { getRelayLists } from "./relay-list"
+import { getRelayLists, isInsecureRelayUrl } from "./relay-list"
 import { recordRelayFailure, recordRelaySuccess } from "./relay-health"
 import {
   planRelayWrites,
@@ -41,6 +41,17 @@ export interface PublishWithPlannerInput {
   /** Authenticated pubkey whose own NIP-65 local relays may be used. */
   authenticatedPubkey?: string | null
   recipientPubkeys?: readonly string[]
+  /**
+   * Extra recipient relay hints (e.g. NIP-17 kind-10050 private-message inbox
+   * relays) added as delivery targets alongside the planned NIP-65 set. Secure
+   * URLs only; insecure hints are dropped.
+   */
+  extraRelayUrls?: readonly string[]
+  /**
+   * Publish only to these relays. This bypasses NIP-65 planning and fallback
+   * fanout for protocols such as NIP-17 that define an exclusive relay set.
+   */
+  exclusiveRelayUrls?: readonly string[]
   /** Fetch missing NIP-65 hints before planning instead of cache-only lookup. */
   refreshRelayLists?: boolean
   /**
@@ -340,6 +351,11 @@ async function publishToRelayUrls(input: {
   relayFailureMessages: Record<string, string>
   thrown: unknown
 }> {
+  // NDKEvent.publish() reads the instance from the event itself even when the
+  // relay set was built with an NDK instance. Gift-wrap helpers can return an
+  // unattached event, so bind it at the shared publish boundary.
+  input.event.ndk ??= input.ndk
+
   if (input.relayUrls.length === 0) {
     return {
       successfulRelayUrls: [],
@@ -411,6 +427,24 @@ async function publishToRelayUrls(input: {
 export async function planPublishRelays(
   input: PublishWithPlannerInput
 ): Promise<RelayWritePlan> {
+  if (input.exclusiveRelayUrls) {
+    const primaryRelayUrls = Array.from(
+      new Set(
+        input.exclusiveRelayUrls
+          .map((url) => tryNormalizeRelayUrl(url))
+          .flatMap((result) =>
+            result.ok && !isInsecureRelayUrl(result.url) ? [result.url] : []
+          )
+      )
+    )
+    return {
+      intent: input.intent,
+      primaryRelayUrls,
+      broadcastRelayUrls: [],
+      parkedRelayUrls: [],
+    }
+  }
+
   const hintPubkeys = Array.from(
     new Set(
       [
@@ -463,15 +497,35 @@ export async function publishWithPlanner(
   }
   assertSafeReplaceablePublish(event, input.replaceableSafety)
 
-  const plan = testOverrides.planPublishRelays
-    ? await testOverrides.planPublishRelays(input)
-    : await planPublishRelays(input)
+  const basePlan = input.exclusiveRelayUrls
+    ? await planPublishRelays(input)
+    : testOverrides.planPublishRelays
+      ? await testOverrides.planPublishRelays(input)
+      : await planPublishRelays(input)
+  const extraPrimaryRelayUrls = input.exclusiveRelayUrls
+    ? []
+    : (input.extraRelayUrls ?? []).filter((url) => !isInsecureRelayUrl(url))
+  const plan =
+    extraPrimaryRelayUrls.length > 0
+      ? {
+          ...basePlan,
+          primaryRelayUrls: mergeUnique([
+            basePlan.primaryRelayUrls,
+            extraPrimaryRelayUrls,
+          ]),
+        }
+      : basePlan
   const plannedRelayUrls = Array.from(
     new Set([...plan.primaryRelayUrls, ...plan.broadcastRelayUrls])
   )
   let attemptedRelayUrls = [...plannedRelayUrls]
 
   if (plannedRelayUrls.length === 0) {
+    if (input.exclusiveRelayUrls) {
+      throw new Error(
+        "Refusing to publish without a valid exclusive relay target."
+      )
+    }
     const fallbackRelayUrls = getAuthorEventFallbackRelayUrls({
       eventKind: event.kind,
       intent: input.intent,
@@ -589,6 +643,22 @@ export async function publishWithPlanner(
     const retrySuccessfulRelayUrls = mergeUnique(
       retryResults.map((result) => result.successfulRelayUrls)
     )
+
+    if (input.exclusiveRelayUrls) {
+      const merged = mergePublishResults(retryResults)
+      throw createPublishDiagnosticsError({
+        message: "Could not publish to the required exclusive relay set.",
+        plan,
+        attemptedRelayUrls: mergeUnique([
+          attemptedRelayUrls,
+          retryFailedRelayUrls,
+        ]),
+        successfulRelayUrls: merged.successfulRelayUrls,
+        failedRelayUrls: merged.failedRelayUrls,
+        relayFailureMessages: merged.relayFailureMessages,
+        thrown: retry?.thrown ?? primary.thrown,
+      })
+    }
 
     if (
       fallbackRelayUrls.length > 0 ||

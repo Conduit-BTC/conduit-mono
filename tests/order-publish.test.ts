@@ -1,12 +1,14 @@
 import { describe, expect, it } from "bun:test"
 
+import { EVENT_KINDS } from "@conduit/core"
+
 import {
   buildPaymentProofRumor,
-  createBuyerGiftWrapsForDelivery,
   prepareBuyerRumor,
+  publishBuyerOrderMessage,
 } from "../apps/market/src/lib/order-publish"
 
-describe("buyer order gift wrapping", () => {
+describe("buyer order rumor preparation", () => {
   it("recreates the same payment-proof rumor id for receipt retries", () => {
     const params = {
       merchantPubkey: "merchant-pubkey",
@@ -25,156 +27,145 @@ describe("buyer order gift wrapping", () => {
     expect(first.created_at).toBe(params.createdAt)
     expect(retry.id).toBe(first.id)
   })
+})
 
-  it("serializes recipient wraps and retries transient signer bridge failures", async () => {
-    const recipients: string[] = []
-    const giftWrapFn = async (
-      _rumor: unknown,
-      recipient: { pubkey: string }
-    ) => {
-      recipients.push(recipient.pubkey)
-      if (recipients.length === 1) {
-        throw new Error(
-          "Could not establish connection. Receiving end does not exist."
-        )
-      }
-      return { id: `wrapped-${recipient.pubkey}` }
-    }
+function orderRumor(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "order-rumor",
+    kind: EVENT_KINDS.ORDER,
+    pubkey: "",
+    created_at: 100,
+    content: "{}",
+    tags: [
+      ["p", "merchant-pubkey"],
+      ["type", "order"],
+      ["order", "guest-order"],
+    ],
+    ...overrides,
+  } as never
+}
 
-    const result = await createBuyerGiftWrapsForDelivery(
-      {
-        kind: 16,
-        tags: [
-          ["p", "merchant-pubkey"],
-          ["type", "order"],
-          ["order", "guest-order"],
-        ],
-      } as never,
-      { signer: { id: "connected-signer" } } as never,
+describe("buyer order publishing", () => {
+  it("delegates signed-in delivery and self-copy to the shared boundary", async () => {
+    const signer = { id: "connected-signer" }
+    let captured: Record<string, unknown> | undefined
+    let cached = false
+
+    const result = await publishBuyerOrderMessage(
+      orderRumor(),
+      { signer } as never,
       "merchant-pubkey",
       "buyer-pubkey",
-      { giftWrapFn: giftWrapFn as never, retryDelaysMs: [0] }
+      {
+        publishPrivateMessageFn: async (input) => {
+          captured = input as unknown as Record<string, unknown>
+          return {
+            wrappedToRecipient: { id: "recipient-wrap" } as never,
+            wrappedToSelf: { id: "self-wrap" } as never,
+            selfCopyError: null,
+          }
+        },
+        cacheBuyerOrderRumorFn: async () => {
+          cached = true
+          return null
+        },
+      }
     )
 
-    expect(recipients).toEqual([
-      "merchant-pubkey",
-      "merchant-pubkey",
-      "buyer-pubkey",
-    ])
-    expect(result.wrappedToMerchant.id).toBe("wrapped-merchant-pubkey")
-    expect(result.wrappedToSelf?.id).toBe("wrapped-buyer-pubkey")
+    expect(captured?.senderPubkey).toBe("buyer-pubkey")
+    expect(captured?.recipientPubkey).toBe("merchant-pubkey")
+    expect(captured?.signer).toBe(signer)
+    expect(captured?.rumorKind).toBe(EVENT_KINDS.ORDER)
+    expect(captured?.selfCopy).toBe(true)
+    expect(cached).toBe(true)
+    expect(result).toEqual({ buyerSelfCopyError: null, localCacheError: null })
   })
 
-  it("does not retry non-transient signer failures", async () => {
-    const recipients: string[] = []
-    const giftWrapFn = async (
-      _rumor: unknown,
-      recipient: { pubkey: string }
-    ) => {
-      recipients.push(recipient.pubkey)
-      throw new Error("User rejected access")
-    }
+  it("uses the scoped guest signer without a self-copy or durable cache", async () => {
+    const guestSigner = { id: "guest-signer" }
+    let captured: Record<string, unknown> | undefined
+    let cacheAttempts = 0
 
-    await expect(
-      createBuyerGiftWrapsForDelivery(
-        {} as never,
-        { signer: { id: "connected-signer" } } as never,
-        "merchant-pubkey",
-        "buyer-pubkey",
-        { giftWrapFn: giftWrapFn as never, retryDelaysMs: [0] }
-      )
-    ).rejects.toThrow("User rejected access")
-
-    expect(recipients).toEqual(["merchant-pubkey"])
-  })
-
-  it("uses an explicit guest signer without creating a buyer self-copy", async () => {
-    const explicitSigner = { id: "guest-ephemeral-signer" }
-    const connectedSigner = { id: "connected-signer" }
-    const signers: unknown[] = []
-    const recipients: string[] = []
-    const giftWrapFn = async (
-      _rumor: unknown,
-      recipient: { pubkey: string },
-      signer: unknown
-    ) => {
-      recipients.push(recipient.pubkey)
-      signers.push(signer)
-      return { id: `wrapped-${recipient.pubkey}` }
-    }
-
-    const result = await createBuyerGiftWrapsForDelivery(
-      {
-        kind: 16,
-        tags: [
-          ["p", "merchant-pubkey"],
-          ["type", "order"],
-          ["order", "guest-order"],
-        ],
-      } as never,
-      { signer: connectedSigner } as never,
+    await publishBuyerOrderMessage(
+      orderRumor(),
+      { signer: { id: "connected-signer" } } as never,
       "merchant-pubkey",
       {
         kind: "guest_ephemeral",
         pubkey: "guest-pubkey",
-        signer: explicitSigner as never,
+        signer: guestSigner as never,
         orderId: "guest-order",
         merchantPubkey: "merchant-pubkey",
       },
-      { giftWrapFn: giftWrapFn as never, retryDelaysMs: [0] }
+      {
+        publishPrivateMessageFn: async (input) => {
+          captured = input as unknown as Record<string, unknown>
+          return {
+            wrappedToRecipient: { id: "recipient-wrap" } as never,
+            wrappedToSelf: null,
+            selfCopyError: null,
+          }
+        },
+        cacheBuyerOrderRumorFn: async () => {
+          cacheAttempts += 1
+          return null
+        },
+      }
     )
 
-    expect(recipients).toEqual(["merchant-pubkey"])
-    expect(signers).toEqual([explicitSigner])
-    expect(result.wrappedToMerchant.id).toBe("wrapped-merchant-pubkey")
-    expect(result.wrappedToSelf).toBeNull()
+    expect(captured?.senderPubkey).toBe("guest-pubkey")
+    expect(captured?.signer).toBe(guestSigner)
+    expect(captured?.selfCopy).toBe(false)
+    expect(cacheAttempts).toBe(0)
   })
 
-  it("rejects guest messages outside the bound order and merchant", async () => {
-    const giftWrapFn = async () => ({ id: "wrapped" })
-    const rumor = {
-      kind: 16,
-      tags: [
-        ["p", "merchant-pubkey"],
-        ["type", "payment_proof"],
-        ["order", "other-order"],
-      ],
-    }
-
+  it("rejects guest messages outside the bound order", async () => {
+    let publishAttempts = 0
     await expect(
-      createBuyerGiftWrapsForDelivery(
-        rumor as never,
+      publishBuyerOrderMessage(
+        orderRumor({
+          tags: [
+            ["p", "merchant-pubkey"],
+            ["type", "payment_proof"],
+            ["order", "other-order"],
+          ],
+        }),
         {} as never,
         "merchant-pubkey",
         {
           kind: "guest_ephemeral",
           pubkey: "guest-pubkey",
-          signer: { id: "guest-signer" } as never,
+          signer: {} as never,
           orderId: "expected-order",
           merchantPubkey: "merchant-pubkey",
         },
-        { giftWrapFn: giftWrapFn as never }
+        {
+          publishPrivateMessageFn: async () => {
+            publishAttempts += 1
+            throw new Error("unexpected publish")
+          },
+        }
       )
     ).rejects.toThrow("Guest order message is outside its signer scope.")
+    expect(publishAttempts).toBe(0)
   })
 
-  it("fails before wrapping when no buyer signer is available", async () => {
-    let wrapAttempts = 0
-    const giftWrapFn = async () => {
-      wrapAttempts += 1
-      return { id: "wrapped" }
-    }
-
+  it("fails before publishing when no buyer signer is available", async () => {
+    let publishAttempts = 0
     await expect(
-      createBuyerGiftWrapsForDelivery(
-        {} as never,
+      publishBuyerOrderMessage(
+        orderRumor(),
         {} as never,
         "merchant-pubkey",
         "buyer-pubkey",
-        { giftWrapFn: giftWrapFn as never, retryDelaysMs: [0] }
+        {
+          publishPrivateMessageFn: async () => {
+            publishAttempts += 1
+            throw new Error("unexpected publish")
+          },
+        }
       )
     ).rejects.toThrow("Buyer order signer is not connected.")
-
-    expect(wrapAttempts).toBe(0)
+    expect(publishAttempts).toBe(0)
   })
 })

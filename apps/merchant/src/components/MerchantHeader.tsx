@@ -9,6 +9,7 @@ import {
   Info,
   LogOut,
   Menu,
+  MessageCircle,
   Package,
   ShoppingBag,
   Store,
@@ -56,6 +57,7 @@ import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
 type NavRoute =
   | "/"
   | "/orders"
+  | "/messages"
   | "/products"
   | "/profile"
   | "/payments"
@@ -74,6 +76,7 @@ type NavItem = {
 const mainNavItems: NavItem[] = [
   { to: "/", label: "Home", icon: Store },
   { to: "/orders", label: "Orders", icon: ShoppingBag },
+  { to: "/messages", label: "Messages", icon: MessageCircle },
   { to: "/products", label: "Products", icon: Package },
   { to: "/about", label: "About", icon: Info },
 ]
@@ -210,6 +213,7 @@ function MerchantNavLinks({
     "/about": false,
     "/": false,
     "/orders": false,
+    "/messages": false,
     "/products": false,
   }
 

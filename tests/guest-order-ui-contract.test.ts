@@ -57,7 +57,23 @@ describe("guest order UI contracts", () => {
     expect(publisher).toContain(
       'export type MerchantOrderDelivery = "buyer_and_self" | "self_only"'
     )
-    expect(publisher).toContain("? [input.merchantPubkey]")
+    expect(publisher).toContain("publishPrivateMessage({")
+    expect(publisher).toContain('selfCopy: input.delivery === "buyer_and_self"')
+    expect(publisher).not.toContain("giftWrap(")
+  })
+
+  it("keeps all kind-16 publishers on the shared private-message boundary", async () => {
+    const buyerPublisher = await Bun.file(
+      "apps/market/src/lib/order-publish.ts"
+    ).text()
+    const ordersRoute = await Bun.file(
+      "apps/market/src/routes/orders.tsx"
+    ).text()
+
+    expect(buyerPublisher).toContain("publishPrivateMessage")
+    expect(buyerPublisher).not.toContain("giftWrap(")
+    expect(ordersRoute).toContain("publishBuyerOrderMessage(")
+    expect(ordersRoute).not.toContain("giftWrap(")
   })
 
   it("omits guest contact and shipping details from durable buyer history", async () => {

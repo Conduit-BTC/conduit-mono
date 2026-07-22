@@ -46,6 +46,8 @@ export type RelayReadIntent =
   | "relay_lists"
   /** Encrypted DMs for a recipient (NIP-17 inbox). */
   | "dm_inbox"
+  /** Deprecated NIP-04 history, read-only. */
+  | "legacy_dm"
   /** Aggregate social signals (reactions, zaps, comments) for a product. */
   | "product_card_social_summary"
   /** Top-N comments preview for a product card. */
@@ -269,6 +271,7 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
           })
         )
       case "dm_inbox":
+      case "legacy_dm":
         return getGeneralReadRelayUrls(
           settingsPlanOptions({
             settings: input.settings,
