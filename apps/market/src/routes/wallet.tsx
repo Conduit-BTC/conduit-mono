@@ -388,7 +388,7 @@ function WalletPage() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 sm:min-w-[16rem]">
+                  <div className="flex h-11 items-center justify-between gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 sm:min-w-[16rem]">
                     <Label
                       htmlFor="sats-standard"
                       className="cursor-pointer text-sm font-medium"
