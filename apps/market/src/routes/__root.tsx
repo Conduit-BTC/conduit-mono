@@ -148,6 +148,8 @@ function RootLayout() {
     recordBrowserTelemetryPageView({ app: "market", pathname })
   }, [pathname])
 
+  throwSyntheticClientErrorForTelemetryTest()
+
   return (
     <RootShell>
       <Outlet />
@@ -156,6 +158,19 @@ function RootLayout() {
       )}
     </RootShell>
   )
+}
+
+function throwSyntheticClientErrorForTelemetryTest(): void {
+  if (
+    import.meta.env.MODE === "mock" &&
+    import.meta.env.VITE_ENABLE_TELEMETRY_TEST_HOOKS === "true" &&
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get(
+      "__conduit_telemetry_test"
+    ) === "react_error_boundary"
+  ) {
+    throw new TypeError("Synthetic client error telemetry test")
+  }
 }
 
 function getPageTitle(pathname: string): string {

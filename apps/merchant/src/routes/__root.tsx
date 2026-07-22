@@ -157,6 +157,8 @@ function RootLayout() {
     recordBrowserTelemetryPageView({ app: "merchant", pathname })
   }, [pathname])
 
+  throwSyntheticClientErrorForTelemetryTest()
+
   if (shouldDelayAuthFallback) {
     return (
       <>
@@ -191,6 +193,19 @@ function RootLayout() {
       )}
     </RootShell>
   )
+}
+
+function throwSyntheticClientErrorForTelemetryTest(): void {
+  if (
+    import.meta.env.MODE === "mock" &&
+    import.meta.env.VITE_ENABLE_TELEMETRY_TEST_HOOKS === "true" &&
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get(
+      "__conduit_telemetry_test"
+    ) === "react_error_boundary"
+  ) {
+    throw new TypeError("Synthetic client error telemetry test")
+  }
 }
 
 function AuthGateGrace() {
