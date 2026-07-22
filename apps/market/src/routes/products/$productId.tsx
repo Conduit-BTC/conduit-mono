@@ -488,6 +488,11 @@ function ProductPage() {
                       {priceDisplay.secondary}
                     </div>
                   )}
+                  {priceDisplay?.approximateUsd && (
+                    <div className="mt-1 text-sm text-[var(--text-muted)]">
+                      {priceDisplay.approximateUsd}
+                    </div>
+                  )}
                   <div className="mt-3 text-xs text-[var(--text-secondary)]">
                     Payment and shipping are finalized with the merchant during
                     the order flow.

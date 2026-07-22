@@ -70,4 +70,14 @@ describe("Market shopper price display contract", () => {
     expect(widget).toContain("formatAmount=")
     expect(widget).toContain("settledSatsAreAuthoritative: true")
   })
+
+  it("keeps the USD reference on product cards and product detail", async () => {
+    const [card, detail] = await Promise.all([
+      readFile("apps/market/src/components/ProductGridCard.tsx", "utf8"),
+      readFile("apps/market/src/routes/products/$productId.tsx", "utf8"),
+    ])
+
+    expect(card).toContain("approximateUsdPrice={approximateUsd}")
+    expect(detail).toContain("priceDisplay?.approximateUsd")
+  })
 })

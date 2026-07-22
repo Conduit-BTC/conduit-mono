@@ -17,6 +17,7 @@ export interface ProductCardProps {
   images: readonly ProductCardImage[]
   primaryPrice: string
   secondaryPrice?: string | null
+  approximateUsdPrice?: string | null
   imageLoading?: "eager" | "lazy"
   cartQuantity?: number
   action?: ReactNode
@@ -34,6 +35,7 @@ export function ProductCard({
   images,
   primaryPrice,
   secondaryPrice,
+  approximateUsdPrice,
   imageLoading = "lazy",
   cartQuantity = 0,
   action,
@@ -159,6 +161,11 @@ export function ProductCard({
             <div className="min-h-[1rem] truncate text-xs text-[var(--text-muted)]">
               {secondaryPrice ?? "\u00a0"}
             </div>
+            {approximateUsdPrice ? (
+              <div className="min-h-[1rem] truncate text-xs text-[var(--text-muted)]">
+                {approximateUsdPrice}
+              </div>
+            ) : null}
           </div>
           {action ? (
             <div className="relative shrink-0">{action}</div>

@@ -47,7 +47,7 @@ export function ProductGridCard({
   const merchantName =
     merchantNameOverride ||
     getPendingMerchantDisplayName(product.pubkey, { chars: 6 })
-  const { primary, secondary } = getShopperPriceDisplay(
+  const { primary, secondary, approximateUsd } = getShopperPriceDisplay(
     product,
     pricePreference,
     typeof btcUsdRate === "object" ? btcUsdRate : null
@@ -61,6 +61,7 @@ export function ProductGridCard({
       images={getProductImageCandidates(product)}
       primaryPrice={primary}
       secondaryPrice={secondary}
+      approximateUsdPrice={approximateUsd}
       imageLoading={imageLoading}
       cartQuantity={cartQuantity}
       onActivate={() =>

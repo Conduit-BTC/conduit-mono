@@ -80,8 +80,9 @@ describe("commerce pricing", () => {
 
     expect(getShopperPriceDisplay(euroProduct, undefined, testRates)).toEqual({
       state: "ready",
-      primary: "~= ₿12,000",
+      primary: "~ ₿12,000",
       secondary: "€10.00 EUR source quote",
+      approximateUsd: "about $12.00 USD",
       displayCurrency: "BITCOIN",
       sats: 12_000,
       approximate: true,
@@ -109,8 +110,9 @@ describe("commerce pricing", () => {
       )
     ).toMatchObject({
       state: "ready",
-      primary: "~= $250.00",
+      primary: "~ $250.00",
       secondary: "₿250,000 Bitcoin amount",
+      approximateUsd: null,
       displayCurrency: "USD",
       sats: 250_000,
     })
@@ -134,8 +136,43 @@ describe("commerce pricing", () => {
       state: "ready",
       primary: "€10.00",
       secondary: null,
+      approximateUsd: null,
       sats: null,
       approximate: false,
+    })
+  })
+
+  it("keeps USD context useful without duplicating a USD source quote", () => {
+    expect(
+      getShopperPriceDisplay(
+        { price: 40_000, currency: "SATS", priceSats: 40_000 },
+        DEFAULT_SHOPPER_PRICE_PREFERENCE,
+        testRates
+      )
+    ).toMatchObject({
+      primary: "₿40,000",
+      secondary: null,
+      approximateUsd: "about $40.00 USD",
+    })
+
+    expect(
+      getShopperPriceDisplay(
+        {
+          price: 20,
+          currency: "USD",
+          sourcePrice: {
+            amount: 20,
+            currency: "USD",
+            normalizedCurrency: "USD",
+          },
+        },
+        DEFAULT_SHOPPER_PRICE_PREFERENCE,
+        testRates
+      )
+    ).toMatchObject({
+      primary: "~ ₿20,000",
+      secondary: "$20.00 USD source quote",
+      approximateUsd: null,
     })
   })
 
@@ -163,6 +200,7 @@ describe("commerce pricing", () => {
       state: "ready",
       primary: "€10.00",
       secondary: null,
+      approximateUsd: null,
       sats: null,
     })
     expect(getShopperPriceDisplay(price, preference, testRates)).toMatchObject({

@@ -130,6 +130,7 @@ export type ShopperPriceDisplay = {
   state: ShopperPriceDisplayState
   primary: string
   secondary: string | null
+  approximateUsd: string | null
   displayCurrency: ShopperDisplayCurrency
   sats: number | null
   approximate: boolean
@@ -698,6 +699,7 @@ function unavailableShopperDisplay(
     state,
     primary,
     secondary: source ? formatSourceContext(source, preference, locale) : null,
+    approximateUsd: null,
     displayCurrency: preference.currency,
     sats: null,
     approximate: false,
@@ -710,6 +712,28 @@ export interface ShopperPriceDisplayOptions {
   nowMs?: number
   maxRateAgeMs?: number
   settledSatsAreAuthoritative?: boolean
+}
+
+function getApproximateUsdReference(
+  sats: number,
+  preference: ShopperPricePreference,
+  source: SourcePriceQuote | null,
+  quote: BtcUsdRateQuote | null,
+  options: ShopperPriceDisplayOptions
+): string | null {
+  if (
+    preference.currency === "USD" ||
+    source?.normalizedCurrency === "USD" ||
+    !isPricingRateQuoteFresh(
+      quote,
+      options.nowMs,
+      options.maxRateAgeMs ?? DEFAULT_PRICING_RATE_MAX_AGE_MS
+    )
+  ) {
+    return null
+  }
+
+  return formatApproxUsdFromSats(sats, quote)
 }
 
 export function getShopperPriceDisplay(
@@ -764,6 +788,15 @@ export function getShopperPriceDisplay(
             displaySats.sats,
             normalizedPreference.bitcoinUnit,
             locale
+          )
+        : null,
+      approximateUsd: displaySats
+        ? getApproximateUsdReference(
+            displaySats.sats,
+            normalizedPreference,
+            source,
+            quote,
+            options
           )
         : null,
       displayCurrency: normalizedPreference.currency,
@@ -832,7 +865,7 @@ export function getShopperPriceDisplay(
         isMsatsLikeCurrency(source.normalizedCurrency))
     return {
       state: "ready",
-      primary: `${sats.approximate ? "~= " : ""}${formatBitcoinBaseUnits(
+      primary: `${sats.approximate ? "~ " : ""}${formatBitcoinBaseUnits(
         sats.sats,
         normalizedPreference.bitcoinUnit,
         locale
@@ -841,6 +874,13 @@ export function getShopperPriceDisplay(
         source && !sourceIsNative
           ? formatSourceContext(source, normalizedPreference, locale)
           : null,
+      approximateUsd: getApproximateUsdReference(
+        sats.sats,
+        normalizedPreference,
+        source,
+        quote,
+        options
+      ),
       displayCurrency: normalizedPreference.currency,
       sats: sats.sats,
       approximate: sats.approximate,
@@ -875,7 +915,7 @@ export function getShopperPriceDisplay(
 
   return {
     state: "ready",
-    primary: `~= ${formatFiatPrice(
+    primary: `~ ${formatFiatPrice(
       displayAmount,
       normalizedPreference.currency,
       locale
@@ -887,6 +927,13 @@ export function getShopperPriceDisplay(
           normalizedPreference.bitcoinUnit,
           locale
         ),
+    approximateUsd: getApproximateUsdReference(
+      sats.sats,
+      normalizedPreference,
+      source,
+      quote,
+      options
+    ),
     displayCurrency: normalizedPreference.currency,
     sats: sats.sats,
     approximate: true,

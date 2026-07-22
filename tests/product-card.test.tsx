@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
-import { getProductPriceDisplay } from "@conduit/core"
+import { getProductPriceDisplay, getShopperPriceDisplay } from "@conduit/core"
 import { ProductCard } from "@conduit/ui"
 
 describe("ProductCard", () => {
@@ -51,5 +51,42 @@ describe("ProductCard", () => {
 
     expect(html).toContain("40,000 sats")
     expect(html).toContain("about $32.28 USD")
+  })
+
+  it("renders converted Bitcoin, source quote, and USD reference separately", () => {
+    const price = getShopperPriceDisplay(
+      {
+        price: 10,
+        currency: "EUR",
+        sourcePrice: {
+          amount: 10,
+          currency: "EUR",
+          normalizedCurrency: "EUR",
+        },
+      },
+      undefined,
+      {
+        rate: 100_000,
+        fetchedAt: 1_700_000_000_000,
+        source: "env",
+        fiatUsdRates: { EUR: 1.2 },
+        fiatSource: "env",
+      }
+    )
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Euro Product"
+        merchantName="Alice Store"
+        images={[]}
+        primaryPrice={price.primary}
+        secondaryPrice={price.secondary}
+        approximateUsdPrice={price.approximateUsd}
+      />
+    )
+
+    expect(html).toContain("~ ₿12,000")
+    expect(html).not.toContain("~=")
+    expect(html).toContain("€10.00 EUR source quote")
+    expect(html).toContain("about $12.00 USD")
   })
 })
