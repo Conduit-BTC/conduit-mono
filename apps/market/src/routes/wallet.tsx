@@ -361,7 +361,7 @@ function WalletPage() {
                 invoices, and payment calculations keep their original values.
               </p>
               <div className="mt-3 rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
-                <div className="grid gap-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                <div className="grid gap-5 sm:grid-cols-2 sm:items-end">
                   <div className="grid gap-2">
                     <Label htmlFor="display-currency">Preferred currency</Label>
                     <Select
@@ -372,7 +372,10 @@ function WalletPage() {
                         )
                       }
                     >
-                      <SelectTrigger id="display-currency" className="h-11">
+                      <SelectTrigger
+                        id="display-currency"
+                        className="h-11 rounded-xl"
+                      >
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -388,7 +391,7 @@ function WalletPage() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="flex h-11 items-center justify-between gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 sm:min-w-[16rem]">
+                  <div className="flex h-11 items-center justify-between gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4">
                     <Label
                       htmlFor="sats-standard"
                       className="cursor-pointer text-sm font-medium"
