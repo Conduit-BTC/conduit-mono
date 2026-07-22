@@ -9,6 +9,8 @@ import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { useEffect, useRef } from "react"
 import {
   buildBugReportUrl,
+  installBrowserClientErrorTelemetry,
+  recordBrowserClientError,
   recordBrowserTelemetryEvent,
   recordBrowserTelemetryPageView,
   useAuth,
@@ -87,6 +89,8 @@ function RootLayout() {
   const previousAuthStatusRef = useRef(status)
   const previousAuthMethodRef = useRef(method)
 
+  useEffect(() => installBrowserClientErrorTelemetry("market"), [])
+
   useEffect(() => {
     if (appLoadTelemetrySentRef.current) return
     appLoadTelemetrySentRef.current = true
@@ -144,6 +148,8 @@ function RootLayout() {
     recordBrowserTelemetryPageView({ app: "market", pathname })
   }, [pathname])
 
+  throwSyntheticClientErrorForTelemetryTest()
+
   return (
     <RootShell>
       <Outlet />
@@ -152,6 +158,19 @@ function RootLayout() {
       )}
     </RootShell>
   )
+}
+
+function throwSyntheticClientErrorForTelemetryTest(): void {
+  if (
+    import.meta.env.MODE === "mock" &&
+    import.meta.env.VITE_ENABLE_TELEMETRY_TEST_HOOKS === "true" &&
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get(
+      "__conduit_telemetry_test"
+    ) === "react_error_boundary"
+  ) {
+    throw new TypeError("Synthetic client error telemetry test")
+  }
 }
 
 function getPageTitle(pathname: string): string {
@@ -202,6 +221,14 @@ function getPageTitle(pathname: string): string {
 }
 
 function RootErrorComponent({ error }: ErrorComponentProps) {
+  useEffect(() => {
+    recordBrowserClientError({
+      app: "market",
+      error,
+      source: "react_error_boundary",
+    })
+  }, [error])
+
   return (
     <RootShell>
       <ErrorPage

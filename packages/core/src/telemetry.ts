@@ -4,6 +4,7 @@ export type ConduitTelemetryApp = "market" | "merchant"
 
 export const browserTelemetryEventNames = [
   "app_load_result",
+  "client_error_result",
   "signer_connected",
   "signer_disconnected",
   "cart_add",

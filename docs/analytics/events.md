@@ -78,6 +78,22 @@ properties or joined to viewer identity.
 
 Emitted as an aggregate operational counter when an app load succeeds or fails.
 
+<!-- telemetry-event: client_error_result properties=event_name,app,page_url,page_path,surface,action,event_family,mode,status -->
+
+### `client_error_result`
+
+Emitted for aggregate browser runtime errors, unhandled promise rejections, and
+React error-boundary failures. It records only bounded source, error-family,
+handled-state, and outcome enums plus the shared sanitized route context. It
+must never include exception messages, stacks, code locations, console output,
+breadcrumbs, query strings, user-agent data, user or signer identity, product
+or order data, payment or wallet data, shipping or contact data, or any other
+free text. Identical source/family/route combinations are deduplicated for ten
+seconds, and each app emits at most five client-error events per minute.
+
+PostHog's built-in exception capture and console-log recording remain disabled;
+this bounded event is the only approved client-error capture path.
+
 <!-- telemetry-event: signer_connected properties=event_name,app,page_url,page_path,method,status,count,time_bucket -->
 
 ### `signer_connected`
