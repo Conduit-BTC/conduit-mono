@@ -191,27 +191,46 @@ Emitted as an aggregate operational counter for wallet connection outcomes.
 
 ### `payment_attempt_result`
 
-Emitted as an aggregate operational counter for payment attempt outcomes.
+Emitted once for each automatic NWC or WebLN payment attempt, plus an
+`unavailable` result with `rail=none` when no automatic rail can run. It records
+only the automatic mode, rail enum, bounded outcome (`success`, `failure`,
+`blocked`, `unavailable`, or `ambiguous`), latency bucket, and amount bucket.
+`ambiguous` means a request may have moved funds without returning sufficient
+proof and must not be collapsed into a safe retry. It must not include invoices,
+payment hashes, preimages, wallet connection data, provider errors, order data,
+or exact amounts.
 
 <!-- telemetry-event: merchant_setup_step_result properties=event_name,app,page_url,page_path,surface,step,status,count,time_bucket -->
 
 ### `merchant_setup_step_result`
 
-Emitted when a merchant setup surface reaches an aggregate success, blocked, or
-failure state.
+Emitted once per resolved Merchant readiness step and outcome while the
+readiness provider is mounted. It records only the `profile`, `payments`,
+`shipping`, or `network` step and a `success` or `blocked` outcome. Pending
+checks are not emitted. It must not include merchant identity, profile content,
+Lightning addresses, wallet configuration, shipping destinations, or relay
+URLs.
 
 <!-- telemetry-event: product_publish_result properties=event_name,app,page_url,page_path,event_family,status,latency_bucket,count,time_bucket -->
 
 ### `product_publish_result`
 
-Emitted as an aggregate operational counter for product publish outcomes.
+Emitted after a product create, update, or signed-delivery retry reaches a
+user-visible publish outcome. It records only the operation family, bounded
+latency, and `success` or `failure`; partial relay delivery is conservatively
+counted as failure because the UI still requires retry. It must not include
+product or merchant identifiers, event coordinates, titles, descriptions,
+tags, prices, stock, shipping data, signer data, relay URLs, or provider errors.
 
 <!-- telemetry-event: shipping_publish_result properties=event_name,app,page_url,page_path,event_family,status,latency_bucket,count,time_bucket -->
 
 ### `shipping_publish_result`
 
-Emitted as an aggregate operational counter for shipping settings publish
-outcomes.
+Emitted after a shipping settings publish or clear attempt reaches a
+user-visible outcome. It records only the operation family, bounded latency,
+and `success` or `failure`. It must not include merchant identity, countries,
+postal rules, prices, event coordinates, signer data, relay URLs, or provider
+errors.
 
 <!-- telemetry-event: market_browse_action properties=event_name,app,page_url,page_path,surface,action,status,result_count_bucket,product_type,time_bucket -->
 
@@ -225,8 +244,11 @@ identifiers.
 
 ### `product_detail_action`
 
-Emitted for aggregate product detail actions. It must not include product,
-merchant, title, price, or profile identifiers.
+Emitted for the bounded `add_to_cart` and `view_cart` actions on a product
+detail page. It records only the action, product-format class, and the shared
+sanitized route class. It must not include product or merchant identifiers,
+event coordinates, titles, descriptions, tags, prices, quantities, stock,
+images, profile data, or cart contents.
 
 <!-- telemetry-event: anon_zap_signer_request_result properties=event_name,app,surface,action,status,latency_bucket -->
 

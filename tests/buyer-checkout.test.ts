@@ -1892,6 +1892,7 @@ describe("payCheckoutInvoice", () => {
   })
 
   it("falls back to WebLN when NWC fails before payment moves", async () => {
+    const telemetryResults: Array<Record<string, unknown>> = []
     const nwcPay = mock(async () => ({
       status: "pre_publish_failed" as const,
       phase: "before_publish" as const,
@@ -1915,6 +1916,7 @@ describe("payCheckoutInvoice", () => {
         nwcSessionPayInvoice: nwcPay as never,
         hasWebLN: () => true,
         weblnSendPayment: weblnPay as never,
+        recordPaymentAttemptResult: (input) => telemetryResults.push(input),
       }
     )
 
@@ -1926,6 +1928,20 @@ describe("payCheckoutInvoice", () => {
     })
     expect(nwcPay).toHaveBeenCalledTimes(1)
     expect(weblnPay).toHaveBeenCalledTimes(1)
+    expect(telemetryResults).toEqual([
+      {
+        amountSats: 1,
+        latencyMs: expect.any(Number),
+        rail: "nwc",
+        status: "unavailable",
+      },
+      {
+        amountSats: 1,
+        latencyMs: expect.any(Number),
+        rail: "webln",
+        status: "success",
+      },
+    ])
   })
 
   it("returns manual fallback when automatic rails are unavailable", async () => {
