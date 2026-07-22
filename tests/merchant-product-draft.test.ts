@@ -68,6 +68,7 @@ function form(
     title: "Pocket Relay",
     summary: "A local-first relay appliance",
     price: "25",
+    stock: "12",
     currency: "USD",
     format: "physical",
     shippingPricingMode: "fixed",
@@ -171,8 +172,33 @@ describe("merchant product drafts", () => {
 
     expect(loadProductDraft(draftTarget, storage).draft).toMatchObject({
       price: "1000",
+      stock: "",
       shippingPricingMode: "fixed",
       shippingCost: "0.5",
+    })
+  })
+
+  it("adds untracked stock to version 2 drafts without discarding them", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const storageKey = getProductDraftStorageKey(draftTarget)
+    if (!storageKey) throw new Error("Expected a product draft storage key")
+    const storedForm: Record<string, unknown> = { ...form() }
+    delete storedForm.stock
+
+    storage.setItem(
+      storageKey,
+      JSON.stringify({
+        version: 2,
+        baseEventId: null,
+        savedAt: Date.now(),
+        form: storedForm,
+      })
+    )
+
+    expect(loadProductDraft(draftTarget, storage).draft).toMatchObject({
+      title: "Pocket Relay",
+      stock: "",
     })
   })
 
