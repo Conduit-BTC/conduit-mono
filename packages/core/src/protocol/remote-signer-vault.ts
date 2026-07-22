@@ -6,7 +6,7 @@ const VAULT_LOCK_NAME = "conduit-remote-signer-vault"
 const AUTH_OPERATION_LOCK_NAME = "conduit-auth-operation"
 const AUTH_OPERATION_LOCK_ID = "auth-operation-lock"
 const AUTH_OPERATION_LEASE_MS = 240_000
-const AUTH_OPERATION_WAIT_MS = 210_000
+const AUTH_OPERATION_WAIT_MS = AUTH_OPERATION_LEASE_MS + 5_000
 
 let vaultQueue: Promise<void> = Promise.resolve()
 

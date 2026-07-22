@@ -75,6 +75,30 @@ describe("remote signer UI", () => {
     expect(markup).toContain("Forget remote signer")
   })
 
+  it("retains the bunker URI until remote pairing succeeds", async () => {
+    const source = await readFile(
+      "packages/ui/src/components/SignerSwitch.tsx",
+      "utf8"
+    )
+    const start = source.indexOf("async function submit(): Promise<void>")
+    const submit = source.slice(start, source.indexOf("return (", start))
+
+    expect(submit.indexOf("await onConnect(uri)")).toBeLessThan(
+      submit.indexOf('setBunkerUri("")')
+    )
+  })
+
+  it("waits beyond an abandoned browser auth lease", async () => {
+    const source = await readFile(
+      "packages/core/src/protocol/remote-signer-vault.ts",
+      "utf8"
+    )
+
+    expect(source).toContain(
+      "const AUTH_OPERATION_WAIT_MS = AUTH_OPERATION_LEASE_MS + 5_000"
+    )
+  })
+
   it("renders signer approval as a globally actionable notice", async () => {
     const markup = renderToStaticMarkup(
       <SignerAuthUrlNotice

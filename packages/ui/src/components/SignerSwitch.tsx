@@ -175,9 +175,9 @@ function RemoteSignerConnect({
   async function submit(): Promise<void> {
     const uri = bunkerUri.trim()
     if (!uri || connectDisabled) return
-    setBunkerUri("")
     try {
       await onConnect(uri)
+      setBunkerUri("")
     } catch {
       // Auth state owns the actionable inline error.
     }
