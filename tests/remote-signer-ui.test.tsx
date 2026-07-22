@@ -167,6 +167,20 @@ describe("remote signer UI", () => {
     expect(source).toContain("            Bunker\n")
   })
 
+  it("uses one explicit momentum scroll surface for the signer dialog", async () => {
+    const source = await readFile(
+      "packages/ui/src/components/SignerSwitch.tsx",
+      "utf8"
+    )
+
+    expect(source).toContain("overflow-y-auto overscroll-contain")
+    expect(source).toContain("[-webkit-overflow-scrolling:touch]")
+    expect(source).toContain('<div className="relative rounded-[inherit]">')
+    expect(source).not.toContain(
+      '<div className="relative rounded-[inherit] border border-[var(--border)] bg-[var(--surface-dialog)]">'
+    )
+  })
+
   it("closes the signer dialog after Nostr Connect pairing succeeds", async () => {
     const source = await readFile(
       "packages/ui/src/components/SignerSwitch.tsx",

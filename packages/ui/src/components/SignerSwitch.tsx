@@ -946,13 +946,13 @@ export function SignerSwitch({
       )}
 
       <DialogContent
-        className="max-h-[calc(100dvh-1.5rem)] max-w-xl overflow-y-auto border-[var(--border)] bg-[var(--surface-dialog)] p-0 text-[var(--text-primary)] shadow-[var(--shadow-dialog)]"
+        className="max-h-[calc(100dvh-1.5rem)] max-w-xl touch-pan-y overflow-y-auto overscroll-contain border-[var(--border)] bg-[var(--surface-dialog)] p-0 text-[var(--text-primary)] shadow-[var(--shadow-dialog)] [-webkit-overflow-scrolling:touch]"
         onOpenAutoFocus={(event) => {
           event.preventDefault()
           titleRef.current?.focus({ preventScroll: true })
         }}
       >
-        <div className="relative rounded-[inherit] border border-[var(--border)] bg-[var(--surface-dialog)]">
+        <div className="relative rounded-[inherit]">
           <div className="relative px-5 py-5 sm:px-6 sm:py-6">
             {connected ? (
               <>
