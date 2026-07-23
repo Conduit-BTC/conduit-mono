@@ -1,12 +1,19 @@
 import { describe, expect, it } from "bun:test"
 import {
   addCartItem,
+  cartItemInputFromProduct,
   clearMerchantCart,
+  getCartAvailabilityBlockingMessage,
   getCartItemKey,
+  getCartItemStockForAvailability,
+  getCartProductAvailability,
   getCartCostSummary,
   getCartPublicZapPolicy,
   getCartTotals,
+  getProductAddAvailability,
   groupCartItems,
+  isCartAvailabilityReadFresh,
+  isCartProductAvailabilityBlocking,
   parsePersistedCart,
   removeCartItem,
   selectCartItem,
@@ -14,6 +21,7 @@ import {
   setCartItemQuantity,
   type CartItem,
 } from "../apps/market/src/lib/cart-model"
+import type { Product } from "@conduit/core"
 
 function item(overrides: Partial<CartItem> = {}): CartItem {
   return {
@@ -28,6 +36,34 @@ function item(overrides: Partial<CartItem> = {}): CartItem {
 }
 
 describe("cart model", () => {
+  it("caps product additions at the remaining tracked stock", () => {
+    expect(getProductAddAvailability(undefined, 4, 2)).toEqual({
+      remainingStock: undefined,
+      canAdd: true,
+      canIncrement: true,
+    })
+    expect(getProductAddAvailability(1, 0, 1)).toEqual({
+      remainingStock: 1,
+      canAdd: true,
+      canIncrement: false,
+    })
+    expect(getProductAddAvailability(1, 1, 1)).toEqual({
+      remainingStock: 0,
+      canAdd: false,
+      canIncrement: false,
+    })
+    expect(getProductAddAvailability(10, 3, 7)).toEqual({
+      remainingStock: 7,
+      canAdd: true,
+      canIncrement: false,
+    })
+    expect(getProductAddAvailability(10, 3, 8)).toEqual({
+      remainingStock: 7,
+      canAdd: false,
+      canIncrement: false,
+    })
+  })
+
   it("groups items by merchant with newest merchant first, independent of quantity", () => {
     let items = addCartItem(
       [],
@@ -257,6 +293,288 @@ describe("cart model", () => {
       supported: false,
       writable: false,
     })
+  })
+
+  it("does not add a product whose stock snapshot is sold out", () => {
+    const items = addCartItem([], item({ stock: 0, quantity: 0 }), 1)
+
+    expect(items).toEqual([])
+  })
+
+  it("preserves product stock when creating a cart item snapshot", () => {
+    const product: Product = {
+      id: "30402:merchant-a:sold-out-tee",
+      pubkey: "merchant-a",
+      title: "Sold Out Tee",
+      price: 2_500,
+      currency: "SATS",
+      type: "simple",
+      format: "physical",
+      visibility: "public",
+      stock: 0,
+      images: [],
+      tags: ["apparel"],
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+
+    expect(cartItemInputFromProduct(product)).toMatchObject({
+      productId: product.id,
+      merchantPubkey: product.pubkey,
+      title: product.title,
+      stock: 0,
+    })
+  })
+
+  it("flags an existing cart item when refreshed product stock reaches zero", () => {
+    const cartItems = [item({ stock: 4 })]
+    const refreshedProduct: Product = {
+      id: cartItems[0]!.productId,
+      pubkey: cartItems[0]!.merchantPubkey,
+      title: cartItems[0]!.title,
+      price: cartItems[0]!.price,
+      currency: cartItems[0]!.currency,
+      type: "simple",
+      format: "physical",
+      visibility: "public",
+      stock: 0,
+      images: [],
+      tags: [],
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+
+    expect(getCartProductAvailability(cartItems, [refreshedProduct])).toEqual([
+      {
+        productId: cartItems[0]!.productId,
+        merchantPubkey: cartItems[0]!.merchantPubkey,
+        status: "sold_out",
+        stock: 0,
+        refreshed: true,
+      },
+    ])
+    expect(
+      isCartProductAvailabilityBlocking(
+        getCartProductAvailability(cartItems, [refreshedProduct])[0]
+      )
+    ).toBe(true)
+  })
+
+  it("flags a cart quantity above refreshed product stock", () => {
+    const cartItems = [item({ quantity: 10, stock: 10 })]
+    const refreshedProduct: Product = {
+      id: cartItems[0]!.productId,
+      pubkey: cartItems[0]!.merchantPubkey,
+      title: cartItems[0]!.title,
+      price: cartItems[0]!.price,
+      currency: cartItems[0]!.currency,
+      type: "simple",
+      format: "physical",
+      visibility: "public",
+      stock: 1,
+      images: [],
+      tags: [],
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+
+    expect(getCartProductAvailability(cartItems, [refreshedProduct])).toEqual([
+      {
+        productId: cartItems[0]!.productId,
+        merchantPubkey: cartItems[0]!.merchantPubkey,
+        status: "insufficient_stock",
+        stock: 1,
+        refreshed: true,
+      },
+    ])
+    expect(
+      isCartProductAvailabilityBlocking(
+        getCartProductAvailability(cartItems, [refreshedProduct])[0]
+      )
+    ).toBe(true)
+    expect(
+      getCartProductAvailability(cartItems, [
+        { ...refreshedProduct, stock: cartItems[0]!.quantity },
+      ])
+    ).toMatchObject([
+      {
+        status: "available",
+        stock: 10,
+      },
+    ])
+    expect(
+      getCartAvailabilityBlockingMessage(
+        cartItems,
+        new Map(
+          getCartProductAvailability(cartItems, [refreshedProduct]).map(
+            (entry) => [getCartItemKey(entry), entry]
+          )
+        )
+      )
+    ).toBe(
+      "Notebook has only 1 available, but your cart contains 10. Reduce the quantity before sending the order."
+    )
+  })
+
+  it("treats a refreshed listing without a stock tag as untracked", () => {
+    const cartItems = [item({ stock: 0 })]
+    const refreshedProduct: Product = {
+      id: cartItems[0]!.productId,
+      pubkey: cartItems[0]!.merchantPubkey,
+      title: cartItems[0]!.title,
+      price: cartItems[0]!.price,
+      currency: cartItems[0]!.currency,
+      type: "simple",
+      format: "physical",
+      visibility: "public",
+      images: [],
+      tags: [],
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+      createdAt: 1,
+      updatedAt: 3,
+    }
+
+    const availability = getCartProductAvailability(cartItems, [
+      refreshedProduct,
+    ])
+
+    expect(availability).toEqual([
+      {
+        productId: cartItems[0]!.productId,
+        merchantPubkey: cartItems[0]!.merchantPubkey,
+        status: "untracked",
+        stock: undefined,
+        refreshed: true,
+      },
+    ])
+
+    const incrementedItems = addCartItem(
+      cartItems,
+      {
+        productId: cartItems[0]!.productId,
+        merchantPubkey: cartItems[0]!.merchantPubkey,
+        title: cartItems[0]!.title,
+        price: cartItems[0]!.price,
+        currency: cartItems[0]!.currency,
+        stock: getCartItemStockForAvailability(cartItems[0]!, availability[0]),
+      },
+      1
+    )
+
+    expect(incrementedItems[0]).toMatchObject({
+      quantity: 2,
+      stock: undefined,
+    })
+  })
+
+  it("requires a fresh complete commerce read before checkout can proceed", () => {
+    const cartItems = [item({ stock: 2 })]
+    const refreshedProduct: Product = {
+      id: cartItems[0]!.productId,
+      pubkey: cartItems[0]!.merchantPubkey,
+      title: cartItems[0]!.title,
+      price: cartItems[0]!.price,
+      currency: cartItems[0]!.currency,
+      type: "simple",
+      format: "physical",
+      visibility: "public",
+      stock: 2,
+      images: [],
+      tags: [],
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+      createdAt: 1,
+      updatedAt: 3,
+    }
+    const refreshedAvailability = getCartProductAvailability(cartItems, [
+      refreshedProduct,
+    ])
+    const freshMeta = {
+      source: "commerce" as const,
+      stale: false,
+      degraded: false,
+    }
+
+    expect(isCartAvailabilityReadFresh(refreshedAvailability, freshMeta)).toBe(
+      true
+    )
+    expect(
+      isCartAvailabilityReadFresh(refreshedAvailability, {
+        source: "local_cache",
+        stale: true,
+        degraded: true,
+      })
+    ).toBe(false)
+    expect(
+      isCartAvailabilityReadFresh(refreshedAvailability, {
+        ...freshMeta,
+        degraded: true,
+      })
+    ).toBe(false)
+    expect(
+      isCartAvailabilityReadFresh(
+        getCartProductAvailability(cartItems, []),
+        freshMeta
+      )
+    ).toBe(false)
+  })
+
+  it("keeps refreshed availability merchant-scoped for legacy identifiers", () => {
+    const cartItems = [
+      item({ productId: "shared", merchantPubkey: "merchant-a", stock: 1 }),
+      item({ productId: "shared", merchantPubkey: "merchant-b", stock: 1 }),
+    ]
+    const refreshedProduct: Product = {
+      id: "shared",
+      pubkey: "merchant-b",
+      title: "Merchant B item",
+      price: 1_000,
+      currency: "SATS",
+      type: "simple",
+      format: "physical",
+      visibility: "public",
+      stock: 0,
+      images: [],
+      tags: [],
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+
+    const availability = getCartProductAvailability(cartItems, [
+      refreshedProduct,
+    ])
+    expect(availability).toMatchObject([
+      { merchantPubkey: "merchant-a", status: "available", refreshed: false },
+      { merchantPubkey: "merchant-b", status: "sold_out", refreshed: true },
+    ])
+  })
+
+  it("preserves stock through persisted cart parsing", () => {
+    expect(
+      parsePersistedCart({ version: 2, items: [item({ stock: 7 })] }).state
+        .items[0]
+    ).toMatchObject({ stock: 7 })
+  })
+
+  it("does not add beyond finite tracked stock", () => {
+    const current = [item({ stock: 2, quantity: 2 })]
+    expect(addCartItem(current, item({ stock: 2 }), 1)).toBe(current)
+    expect(addCartItem([], item({ stock: 2 }), 3)).toEqual([])
   })
 
   it("sets quantities, removes products, and clears one merchant", () => {

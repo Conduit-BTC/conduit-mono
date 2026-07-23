@@ -2377,7 +2377,8 @@ export async function getProductDetail(
 // of one read per id). Used to hydrate order-item name/image without hammering
 // relays with N separate reads.
 export async function getProductsByIds(
-  productIds: string[]
+  productIds: string[],
+  options: { includeMarketHidden?: boolean } = {}
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
   const addresses = productIds
     .map((id) => getProductLookupIds(id).address)
@@ -2399,7 +2400,11 @@ export async function getProductsByIds(
     addresses.map((address) => `${address.kind}:${address.pubkey}:${address.d}`)
   )
   const cached = (
-    await getCachedProductRecords(undefined, { includeStale: true }, authors)
+    await getCachedProductRecords(
+      undefined,
+      { includeStale: true, includeMarketHidden: true },
+      authors
+    )
   ).filter((record) => wanted.has(record.addressId))
   const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
     undefined,
@@ -2412,22 +2417,31 @@ export async function getProductsByIds(
       dTags,
       limit: Math.max(addresses.length * 2, 20),
     })
+    const liveAddressIds = new Set(
+      records
+        .map((record) => record.addressId)
+        .filter((addressId) => wanted.has(addressId))
+    )
+    const hasCompleteLiveCoverage = Array.from(wanted).every((addressId) =>
+      liveAddressIds.has(addressId)
+    )
     const merged = mergeCachedAndLiveProductRecords({
       cached,
       live: records,
       deletionTimestamps: localDeletionTimestamps,
     })
     await cacheProductRecords(merged)
-    const filtered = merged.filter((record) => wanted.has(record.addressId))
+    const filtered = filterProductRecordsForRead(merged, {
+      includeMarketHidden: options.includeMarketHidden,
+    }).filter((record) => wanted.has(record.addressId))
     return {
       data: filtered,
-      meta:
-        records.length > 0
-          ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES)
-          : createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
-              stale: filtered.length > 0,
-              degraded: filtered.length > 0,
-            }),
+      meta: hasCompleteLiveCoverage
+        ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES)
+        : createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
+            stale: filtered.length > 0,
+            degraded: filtered.length > 0,
+          }),
     }
   } catch {
     const fallback = mergeCachedAndLiveProductRecords({
@@ -2435,11 +2449,14 @@ export async function getProductsByIds(
       live: [],
       deletionTimestamps: localDeletionTimestamps,
     })
+    const filtered = filterProductRecordsForRead(fallback, {
+      includeMarketHidden: options.includeMarketHidden,
+    })
     return {
-      data: fallback,
+      data: filtered,
       meta: createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
-        stale: fallback.length > 0,
-        degraded: fallback.length > 0,
+        stale: filtered.length > 0,
+        degraded: filtered.length > 0,
       }),
     }
   }

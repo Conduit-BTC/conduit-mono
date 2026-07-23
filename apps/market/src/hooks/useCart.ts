@@ -133,7 +133,9 @@ export function useCart() {
 
   const addItem = useCallback((item: CartItemInput, quantity = 1) => {
     const curr = readSnapshot()
-    writeState({ items: addCartItem(curr.items, item, quantity) })
+    const nextItems = addCartItem(curr.items, item, quantity)
+    if (nextItems === curr.items) return
+    writeState({ items: nextItems })
     recordBrowserTelemetryEvent({
       app: "market",
       eventName: "cart_add",

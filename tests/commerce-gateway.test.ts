@@ -683,13 +683,13 @@ describe("commerce gateway", () => {
     expect(cachedProducts[0]?.eventId).toBe(localProduct.id)
   })
 
-  it("keeps newer local stock ahead of stale relay detail and batch reads", async () => {
+  it("keeps newer local sold-out stock ahead of stale relay detail and batch reads", async () => {
     const dTag = "consecutive-stock-update"
     const localProduct = makeSignedProductEvent({
       dTag,
       createdAt: 102,
-      title: "Locally Updated Stock",
-      stock: 11,
+      title: "Locally Sold Out",
+      stock: 0,
     })
     const merchantPubkey = localProduct.pubkey
     const addressId = `30402:${merchantPubkey}:${dTag}`
@@ -704,7 +704,7 @@ describe("commerce gateway", () => {
               dTag,
               id: "event-relay-stock-12",
               createdAt: 100,
-              title: "Stale Relay Stock",
+              title: "Stale Relay In Stock",
               stock: 12,
             }) as never,
           ]
@@ -720,12 +720,48 @@ describe("commerce gateway", () => {
     const batch = await getProductsByIds([addressId])
 
     expect(detail.data?.eventId).toBe(localProduct.id)
-    expect(detail.data?.product.stock).toBe(11)
+    expect(detail.data?.product.stock).toBe(0)
     expect(detail.meta.stale).toBe(false)
     expect(detail.meta.degraded).toBe(false)
     expect(batch.data[0]?.eventId).toBe(localProduct.id)
-    expect(batch.data[0]?.product.stock).toBe(11)
+    expect(batch.data[0]?.product.stock).toBe(0)
     expect(cachedProducts[0]?.eventId).toBe(localProduct.id)
+  })
+
+  it("marks a mixed live and cached product batch as stale", async () => {
+    const liveProduct = makeSignedProductEvent({
+      secretKey: MERCHANT_A_SECRET,
+      dTag: "live-batch-item",
+      createdAt: 102,
+      title: "Live Batch Item",
+      stock: 4,
+    })
+    const cachedProduct = makeSignedProductEvent({
+      secretKey: MERCHANT_B_SECRET,
+      dTag: "cached-batch-item",
+      createdAt: 101,
+      title: "Cached Batch Item",
+      stock: 3,
+    })
+    await cacheSignedProductListingEvent(liveProduct)
+    await cacheSignedProductListingEvent(cachedProduct)
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([liveProduct.rawEvent()] as never)
+          : [],
+    })
+
+    const result = await getProductsByIds([
+      `30402:${liveProduct.pubkey}:live-batch-item`,
+      `30402:${cachedProduct.pubkey}:cached-batch-item`,
+    ])
+
+    expect(result.data).toHaveLength(2)
+    expect(result.meta.source).toBe("local_cache")
+    expect(result.meta.stale).toBe(true)
+    expect(result.meta.degraded).toBe(true)
   })
 
   it("uses the lower event id to resolve same-timestamp product versions", async () => {
@@ -829,6 +865,63 @@ describe("commerce gateway", () => {
     const result = await getProductDetail({ productId: addressId })
 
     expect(result.data).toBeNull()
+  })
+
+  it("suppresses deleted products from batched live reads", async () => {
+    const dTag = "locally-deleted-batch"
+    const staleProduct = makeSignedProductEvent({
+      dTag,
+      createdAt: 100,
+      title: "Locally Deleted Batch Item",
+    })
+    const addressId = `30402:${staleProduct.pubkey}:${dTag}`
+
+    await cacheSignedProductDeletionEvent(
+      makeSignedDeletionEvent({
+        createdAt: 101,
+        tags: [["a", addressId]],
+      })
+    )
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([staleProduct] as never)
+          : [],
+    })
+
+    const result = await getProductsByIds([addressId], {
+      includeMarketHidden: true,
+    })
+
+    expect(result.meta.source).toBe("commerce")
+    expect(result.data).toHaveLength(0)
+  })
+
+  it("keeps market-hidden products out of batched Market reads", async () => {
+    const productEvent = makeProductEvent({
+      pubkey: "merchant",
+      dTag: "blocked-batch-item",
+      id: "event-blocked-batch",
+      createdAt: 100,
+      title: "Counterfeit goods display sample",
+    })
+    const addressId = "30402:merchant:blocked-batch-item"
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([productEvent] as never)
+          : [],
+    })
+
+    const marketResult = await getProductsByIds([addressId])
+    const merchantResult = await getProductsByIds([addressId], {
+      includeMarketHidden: true,
+    })
+
+    expect(marketResult.data).toHaveLength(0)
+    expect(merchantResult.data).toHaveLength(1)
+    expect(merchantResult.data[0]?.safety?.state).toBe("blocked")
   })
 
   it("suppresses stale event-id product detail across local signed tombstones", async () => {

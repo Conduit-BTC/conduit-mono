@@ -36,6 +36,7 @@ import {
   useProgressiveProductDetail,
   useProgressiveProducts,
 } from "../../hooks/useProgressiveProducts"
+import { getProductAddAvailability } from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
 import { cartItemInputFromProduct, selectCartItem } from "../../lib/cart-model"
 
@@ -75,6 +76,7 @@ function ProductPage() {
     : null
   const productUnavailable =
     !!product && !!listingSafety && !productQuery.isMarketVisible
+  const productSoldOut = product?.stock === 0
 
   const merchantProfile = useProfile(product?.pubkey, {
     relayHints: product
@@ -119,6 +121,11 @@ function ProductPage() {
       })
     : null
   const cartQuantity = cartItem?.quantity ?? 0
+  const productAddAvailability = getProductAddAvailability(
+    product?.stock,
+    cartQuantity,
+    quantity
+  )
   const priceDisplay = product ? shopperPricing.formatPrice(product) : null
   const updatedLabel = product
     ? new Intl.DateTimeFormat("en-US", {
@@ -143,6 +150,12 @@ function ProductPage() {
     setShowAllTags(false)
     setShowFullDescription(false)
   }, [product?.id])
+
+  useEffect(() => {
+    const remainingStock = productAddAvailability.remainingStock
+    if (remainingStock === undefined || remainingStock === 0) return
+    setQuantity((current) => Math.min(current, remainingStock))
+  }, [productAddAvailability.remainingStock])
 
   useLayoutEffect(() => {
     const descriptionElement = descriptionRef.current
@@ -225,7 +238,7 @@ function ProductPage() {
   }
 
   function addProductToCart(): void {
-    if (!product) return
+    if (!product || !productAddAvailability.canAdd) return
     recordProductDetailAction("add_to_cart")
     cart.addItem(cartItemInputFromProduct(product), quantity)
   }
@@ -392,7 +405,9 @@ function ProductPage() {
                     <img
                       src={image.url}
                       alt={image.alt ?? product.title}
-                      className="h-full w-full object-cover"
+                      className={`h-full w-full object-cover ${
+                        productSoldOut ? "grayscale opacity-55" : ""
+                      }`}
                     />
                   </button>
                 ))}
@@ -404,7 +419,9 @@ function ProductPage() {
                 <img
                   src={selectedImage?.url}
                   alt={selectedImage?.alt ?? product.title}
-                  className="block h-full max-h-full w-full min-w-0 max-w-full object-contain"
+                  className={`block h-full max-h-full w-full min-w-0 max-w-full object-contain ${
+                    productSoldOut ? "grayscale opacity-55" : ""
+                  }`}
                 />
               </div>
               {hasMultipleImages && (
@@ -424,7 +441,9 @@ function ProductPage() {
                       <img
                         src={image.url}
                         alt={image.alt ?? product.title}
-                        className="h-full w-full object-cover"
+                        className={`h-full w-full object-cover ${
+                          productSoldOut ? "grayscale opacity-55" : ""
+                        }`}
                       />
                     </button>
                   ))}
@@ -502,9 +521,16 @@ function ProductPage() {
               </div>
 
               <div className="mt-5 space-y-5 border-t border-[var(--border)] pt-5">
-                <h1 className="line-clamp-3 text-2xl font-semibold leading-tight text-[var(--text-primary)] sm:text-3xl">
-                  {product.title}
-                </h1>
+                <div className="flex flex-wrap items-start gap-3">
+                  <h1 className="min-w-0 flex-1 text-2xl font-semibold leading-tight text-[var(--text-primary)] sm:text-3xl">
+                    {product.title}
+                  </h1>
+                  {productSoldOut ? (
+                    <Badge variant="warning" className="shrink-0">
+                      Sold out
+                    </Badge>
+                  ) : null}
+                </div>
 
                 <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                   <div className="text-2xl font-bold text-secondary-400">
@@ -527,16 +553,30 @@ function ProductPage() {
                 </div>
 
                 {typeof product.stock === "number" && (
-                  <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm text-[var(--text-primary)]">
-                    {product.stock} available
+                  <div
+                    role="status"
+                    className={`rounded-xl border px-4 py-3 text-sm ${
+                      productSoldOut
+                        ? "border-warning/40 bg-warning/10 text-warning"
+                        : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]"
+                    }`}
+                  >
+                    {productSoldOut
+                      ? "Sold out. This listing remains visible, but it cannot be added to your cart."
+                      : `${product.stock} available`}
                   </div>
                 )}
 
                 <div className="flex flex-wrap items-center gap-3">
-                  <div className="inline-flex h-10 items-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-elevated)]">
+                  <div
+                    className={`inline-flex h-10 items-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] ${
+                      productSoldOut ? "opacity-50" : ""
+                    }`}
+                  >
                     <button
                       type="button"
-                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)]"
+                      disabled={productSoldOut}
+                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)] disabled:cursor-not-allowed"
                       aria-label="Decrease quantity"
                       onClick={() =>
                         setQuantity((current) => Math.max(1, current - 1))
@@ -549,9 +589,19 @@ function ProductPage() {
                     </div>
                     <button
                       type="button"
-                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)]"
-                      aria-label="Increase quantity"
-                      onClick={() => setQuantity((current) => current + 1)}
+                      disabled={
+                        productSoldOut || !productAddAvailability.canIncrement
+                      }
+                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-40"
+                      aria-label={
+                        !productSoldOut && !productAddAvailability.canIncrement
+                          ? "Maximum available quantity selected"
+                          : "Increase quantity"
+                      }
+                      onClick={() => {
+                        if (!productAddAvailability.canIncrement) return
+                        setQuantity((current) => current + 1)
+                      }}
                     >
                       +
                     </button>
@@ -559,11 +609,16 @@ function ProductPage() {
 
                   <Button
                     className="min-w-[12rem] flex-1"
+                    disabled={!productAddAvailability.canAdd}
                     onClick={addProductToCart}
                   >
-                    {cartQuantity > 0
-                      ? `Add more (${cartQuantity} in cart)`
-                      : `Add ${quantity} to cart`}
+                    {productSoldOut
+                      ? "Sold out"
+                      : productAddAvailability.remainingStock === 0
+                        ? "Stock limit reached"
+                        : cartQuantity > 0
+                          ? `Add more (${cartQuantity} in cart)`
+                          : `Add ${quantity} to cart`}
                   </Button>
                 </div>
 

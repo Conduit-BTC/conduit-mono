@@ -2,6 +2,7 @@ import {
   getPriceSats,
   getShippingCostSats,
   resolveCartShippingCost,
+  type CommerceQueryMeta,
   type Product,
   type ProductZapMessagePolicy,
   type PricingRateInput,
@@ -45,6 +46,8 @@ export type CartItem = {
   publicZapEnabled?: boolean
   zapMessagePolicy?: ProductZapMessagePolicy
   publicZapPolicyKnown?: boolean
+  /** Last known GammaMarkets stock value. Zero means the item is sold out. */
+  stock?: number
   quantity: number
 }
 
@@ -95,6 +98,151 @@ export type CartPublicZapPolicy = {
   effectiveZapMessagePolicy: ProductZapMessagePolicy
   disabledProductIds: string[]
   missingPolicyProductIds: string[]
+}
+
+export type CartProductAvailability = {
+  productId: string
+  merchantPubkey: string
+  status: "available" | "sold_out" | "insufficient_stock" | "untracked"
+  stock?: number
+  refreshed: boolean
+}
+
+type CartAvailabilityReadMeta = Pick<
+  CommerceQueryMeta,
+  "source" | "stale" | "degraded"
+>
+
+export type ProductAddAvailability = {
+  remainingStock?: number
+  canAdd: boolean
+  canIncrement: boolean
+}
+
+export function getProductAddAvailability(
+  stock: number | undefined,
+  cartQuantity: number,
+  requestedQuantity: number
+): ProductAddAvailability {
+  if (typeof stock !== "number") {
+    return {
+      remainingStock: undefined,
+      canAdd: true,
+      canIncrement: true,
+    }
+  }
+
+  const remainingStock = Math.max(0, stock - Math.max(0, cartQuantity))
+  return {
+    remainingStock,
+    canAdd: remainingStock > 0 && requestedQuantity <= remainingStock,
+    canIncrement: requestedQuantity < remainingStock,
+  }
+}
+
+export function getCartProductAvailability(
+  items: CartItem[],
+  refreshedProducts: Product[]
+): CartProductAvailability[] {
+  const productsByItemKey = new Map(
+    refreshedProducts.map((product) => [
+      getCartItemKey({
+        merchantPubkey: product.pubkey,
+        productId: product.id,
+      }),
+      product,
+    ])
+  )
+
+  return items.map((item) => {
+    const refreshedProduct = productsByItemKey.get(getCartItemKey(item))
+    const stock = refreshedProduct ? refreshedProduct.stock : item.stock
+
+    return {
+      productId: item.productId,
+      merchantPubkey: item.merchantPubkey,
+      status:
+        stock === 0
+          ? "sold_out"
+          : typeof stock === "number" && item.quantity > stock
+            ? "insufficient_stock"
+            : typeof stock === "number"
+              ? "available"
+              : "untracked",
+      stock,
+      refreshed: !!refreshedProduct,
+    }
+  })
+}
+
+export function isCartProductAvailabilityBlocking(
+  availability: Pick<CartProductAvailability, "status"> | undefined
+): boolean {
+  return (
+    availability?.status === "sold_out" ||
+    availability?.status === "insufficient_stock"
+  )
+}
+
+export function getCartAvailabilityBlockingMessage(
+  items: CartItem[],
+  availabilityByItemKey: ReadonlyMap<string, CartProductAvailability>
+): string | null {
+  const unavailableItems: Array<{
+    item: CartItem
+    availability: CartProductAvailability
+  }> = []
+
+  for (const item of items) {
+    const availability = availabilityByItemKey.get(getCartItemKey(item))
+    if (availability && isCartProductAvailabilityBlocking(availability)) {
+      unavailableItems.push({ item, availability })
+    }
+  }
+
+  if (unavailableItems.length === 0) return null
+
+  if (unavailableItems.length === 1) {
+    const { item, availability } = unavailableItems[0]!
+    if (availability.status === "sold_out") {
+      return `${item.title} is sold out. Remove it from your cart before sending the order.`
+    }
+
+    return `${item.title} has only ${availability.stock ?? 0} available, but your cart contains ${item.quantity}. Reduce the quantity before sending the order.`
+  }
+
+  const soldOutCount = unavailableItems.filter(
+    ({ availability }) => availability.status === "sold_out"
+  ).length
+  if (soldOutCount === unavailableItems.length) {
+    return `${soldOutCount} items are sold out. Remove them from your cart before sending the order.`
+  }
+  if (soldOutCount === 0) {
+    return `${unavailableItems.length} cart quantities exceed current stock. Reduce them before sending the order.`
+  }
+
+  return "Some items are sold out or exceed current stock. Update your cart before sending the order."
+}
+
+export function isCartAvailabilityReadFresh(
+  availability: CartProductAvailability[],
+  meta: CartAvailabilityReadMeta | undefined
+): boolean {
+  return (
+    availability.length > 0 &&
+    !!meta &&
+    meta.source !== "local_cache" &&
+    !meta.stale &&
+    !meta.degraded &&
+    availability.every((entry) => entry.refreshed)
+  )
+}
+
+export function getCartItemStockForAvailability(
+  item: Pick<CartItem, "stock">,
+  availability: Pick<CartProductAvailability, "stock" | "refreshed"> | undefined
+): number | undefined {
+  return availability?.refreshed ? availability.stock : item.stock
 }
 
 const ZAP_MESSAGE_POLICY_RANK: Record<ProductZapMessagePolicy, number> = {
@@ -182,6 +330,7 @@ function parseCartItem(value: unknown): CartItem | null {
   const merchantAddedAt = finiteNonnegativeNumber(value.merchantAddedAt)
   const priceSats = finiteNonnegativeNumber(value.priceSats)
   const shippingCostSats = finiteNonnegativeNumber(value.shippingCostSats)
+  const stock = finiteNonnegativeNumber(value.stock)
   const format =
     value.format === "digital" || value.format === "physical"
       ? value.format
@@ -228,6 +377,7 @@ function parseCartItem(value: unknown): CartItem | null {
     ...(typeof value.publicZapPolicyKnown === "boolean"
       ? { publicZapPolicyKnown: value.publicZapPolicyKnown }
       : {}),
+    ...(stock !== undefined ? { stock } : {}),
   }
 }
 
@@ -294,6 +444,7 @@ export function cartItemInputFromProduct(product: Product): CartItemInput {
     publicZapEnabled: product.publicZapEnabled,
     zapMessagePolicy: product.zapMessagePolicy,
     publicZapPolicyKnown: product.publicZapPolicyKnown,
+    stock: product.stock,
   }
 }
 
@@ -558,6 +709,8 @@ export function addCartItem(
   item: CartItemInput & { merchantAddedAt?: number },
   quantity = 1
 ): CartItem[] {
+  if (item.stock === 0) return items
+
   const q = Math.max(1, Math.floor(quantity))
   const existing = selectCartItem(items, item)
   const merchantAddedAt =
@@ -566,6 +719,10 @@ export function addCartItem(
     nextMerchantAddedAt(items)
 
   if (existing) {
+    const nextQuantity = currentCartQuantity(existing) + q
+    if (typeof item.stock === "number" && nextQuantity > item.stock) {
+      return items
+    }
     return items.map((current) =>
       isSameCartItem(current, item)
         ? {
@@ -578,7 +735,12 @@ export function addCartItem(
     )
   }
 
+  if (typeof item.stock === "number" && q > item.stock) return items
   return [...items, { ...item, merchantAddedAt, quantity: q }]
+}
+
+function currentCartQuantity(item: CartItem): number {
+  return Math.max(1, Math.floor(item.quantity))
 }
 
 export function setCartItemQuantity(

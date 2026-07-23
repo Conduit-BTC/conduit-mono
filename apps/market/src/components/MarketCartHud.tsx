@@ -19,12 +19,16 @@ import {
 } from "@conduit/ui"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useCart } from "../hooks/useCart"
+import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import {
+  getCartAvailabilityBlockingMessage,
   getCartCostSummary,
   getCartItemIdentity,
   getCartItemKey,
+  getCartItemStockForAvailability,
   groupCartItems,
+  isCartProductAvailabilityBlocking,
 } from "../lib/cart-model"
 import { getCartHudRouteMode, reconcileCartHudMerchant } from "../lib/cart-hud"
 import { MerchantAvatarFallback } from "./MerchantIdentity"
@@ -35,6 +39,7 @@ export type MarketCartHudProps = {
 
 export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const cart = useCart()
+  const cartAvailability = useCartProductAvailability(cart.items)
   const shopperPricing = useShopperPricing()
   const groups = useMemo(() => groupCartItems(cart.items), [cart.items])
   const merchantPubkeys = useMemo(
@@ -71,6 +76,13 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const activeTotal = activeSummary
     ? shopperPricing.formatSatsAmount(activeSummary.totalSats)
     : null
+  const activeAvailabilityMessage = activeGroup
+    ? getCartAvailabilityBlockingMessage(
+        activeGroup.items,
+        cartAvailability.availabilityByItemKey
+      )
+    : null
+  const checkoutDisabled = !!activeAvailabilityMessage
   useEffect(() => {
     setExpanded(routeMode === "expanded")
   }, [pathname, routeMode])
@@ -295,16 +307,27 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               aria-hidden="true"
             />
           </button>
-          {!expanded && (
-            <Button asChild size="sm">
-              <Link
-                to="/checkout"
-                search={{ merchant: pubkeyToNpub(selectedMerchant) }}
+          {!expanded &&
+            (checkoutDisabled ? (
+              <Button
+                size="sm"
+                disabled
+                title={
+                  activeAvailabilityMessage ?? "Checking current product stock"
+                }
               >
                 Checkout
-              </Link>
-            </Button>
-          )}
+              </Button>
+            ) : (
+              <Button asChild size="sm">
+                <Link
+                  to="/checkout"
+                  search={{ merchant: pubkeyToNpub(selectedMerchant) }}
+                >
+                  Checkout
+                </Link>
+              </Button>
+            ))}
         </div>
 
         <div
@@ -333,6 +356,16 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                 {activeGroup.items.map((item) => {
                   const display = shopperPricing.formatPrice(item)
                   const identity = getCartItemIdentity(item)
+                  const availability =
+                    cartAvailability.availabilityByItemKey.get(
+                      getCartItemKey(item)
+                    )
+                  const currentStock = getCartItemStockForAvailability(
+                    item,
+                    availability
+                  )
+                  const itemUnavailable =
+                    isCartProductAvailabilityBlocking(availability)
                   return (
                     <article
                       key={getCartItemKey(item)}
@@ -370,6 +403,13 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         <div className="truncate text-xs text-[var(--text-muted)]">
                           {display.primary}
                         </div>
+                        {itemUnavailable ? (
+                          <div className="mt-1 text-xs font-medium text-[var(--error)]">
+                            {availability?.status === "sold_out"
+                              ? "Sold out"
+                              : `Only ${currentStock ?? 0} available`}
+                          </div>
+                        ) : null}
                         <div className="mt-1 flex justify-end">
                           <div className="flex shrink-0 items-center gap-1">
                             <button
@@ -395,6 +435,12 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                               type="button"
                               className="flex h-9 w-9 items-center justify-center rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_4%,var(--surface))] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_8%,var(--surface))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                               aria-label={`Increase ${item.title} quantity`}
+                              disabled={
+                                cartAvailability.isChecking ||
+                                itemUnavailable ||
+                                (typeof currentStock === "number" &&
+                                  item.quantity >= currentStock)
+                              }
                               onClick={() =>
                                 cart.addItem(
                                   {
@@ -419,6 +465,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                                     zapMessagePolicy: item.zapMessagePolicy,
                                     publicZapPolicyKnown:
                                       item.publicZapPolicyKnown,
+                                    stock: currentStock,
                                   },
                                   1
                                 )
@@ -444,15 +491,29 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                       View cart
                     </Link>
                   </Button>
-                  <Button asChild size="sm">
-                    <Link
-                      to="/checkout"
-                      search={{ merchant: pubkeyToNpub(selectedMerchant) }}
+                  {checkoutDisabled ? (
+                    <Button
+                      size="sm"
+                      disabled
+                      title={
+                        activeAvailabilityMessage ??
+                        "Checking current product stock"
+                      }
                     >
                       <Zap className="h-4 w-4" aria-hidden="true" />
                       Continue to checkout
-                    </Link>
-                  </Button>
+                    </Button>
+                  ) : (
+                    <Button asChild size="sm">
+                      <Link
+                        to="/checkout"
+                        search={{ merchant: pubkeyToNpub(selectedMerchant) }}
+                      >
+                        <Zap className="h-4 w-4" aria-hidden="true" />
+                        Continue to checkout
+                      </Link>
+                    </Button>
+                  )}
                 </div>
               </div>
             </div>
