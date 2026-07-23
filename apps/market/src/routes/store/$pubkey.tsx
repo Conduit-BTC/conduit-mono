@@ -62,6 +62,7 @@ import {
   getComparablePriceValue,
 } from "../../lib/pricing"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
+import { cartItemInputFromProduct, selectCartItem } from "../../lib/cart-model"
 import {
   filterProductsByFacets,
   getCategoryFacetOptions,
@@ -796,65 +797,29 @@ function StorefrontPage() {
                     btcUsdRate={btcUsdRate}
                     pricePreference={shopperPricing.preference}
                     cartQuantity={
-                      cart.items.find((item) => item.productId === product.id)
-                        ?.quantity ?? 0
+                      selectCartItem(cart.items, {
+                        merchantPubkey: product.pubkey,
+                        productId: product.id,
+                      })?.quantity ?? 0
                     }
                     onAddToCart={() =>
-                      cart.addItem({
-                        productId: product.id,
-                        merchantPubkey: product.pubkey,
-                        title: product.title,
-                        price: product.price,
-                        currency: product.currency,
-                        priceSats: product.priceSats,
-                        sourcePrice: product.sourcePrice,
-                        sourceShippingCost: product.sourceShippingCost,
-                        image: product.images[0]?.url,
-                        tags: product.tags,
-                        format: product.format,
-                        shippingCostSats: product.shippingCostSats,
-                        shippingOptionId: product.shippingOptionId,
-                        shippingOptionDTag: product.shippingOptionDTag,
-                        shippingCountries: product.shippingCountries,
-                        shippingCountryRules: product.shippingCountryRules,
-                        publicZapEnabled: product.publicZapEnabled,
-                        zapMessagePolicy: product.zapMessagePolicy,
-                        publicZapPolicyKnown: product.publicZapPolicyKnown,
-                      })
+                      cart.addItem(cartItemInputFromProduct(product))
                     }
                     onIncrement={() =>
-                      cart.addItem({
-                        productId: product.id,
-                        merchantPubkey: product.pubkey,
-                        title: product.title,
-                        price: product.price,
-                        currency: product.currency,
-                        priceSats: product.priceSats,
-                        sourcePrice: product.sourcePrice,
-                        sourceShippingCost: product.sourceShippingCost,
-                        image: product.images[0]?.url,
-                        tags: product.tags,
-                        format: product.format,
-                        shippingCostSats: product.shippingCostSats,
-                        shippingOptionId: product.shippingOptionId,
-                        shippingOptionDTag: product.shippingOptionDTag,
-                        shippingCountries: product.shippingCountries,
-                        shippingCountryRules: product.shippingCountryRules,
-                        publicZapEnabled: product.publicZapEnabled,
-                        zapMessagePolicy: product.zapMessagePolicy,
-                        publicZapPolicyKnown: product.publicZapPolicyKnown,
-                      })
+                      cart.addItem(cartItemInputFromProduct(product))
                     }
                     onDecrement={() => {
-                      const existing = cart.items.find(
-                        (item) => item.productId === product.id
-                      )
+                      const identity = {
+                        merchantPubkey: product.pubkey,
+                        productId: product.id,
+                      }
+                      const existing = selectCartItem(cart.items, identity)
                       if (!existing) return
                       if (existing.quantity <= 1) {
-                        cart.removeItem(product.id)
+                        cart.removeItem(identity)
                         return
                       }
-                      cart.setQuantity(product.id, existing.quantity - 1)
+                      cart.setQuantity(identity, existing.quantity - 1)
                     }}
                   />
                 </li>

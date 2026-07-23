@@ -2,11 +2,15 @@ import { describe, expect, it } from "bun:test"
 import {
   addCartItem,
   clearMerchantCart,
+  getCartItemKey,
   getCartCostSummary,
   getCartPublicZapPolicy,
   getCartTotals,
   groupCartItems,
+  parsePersistedCart,
   removeCartItem,
+  selectCartItem,
+  selectCartItemQuantity,
   setCartItemQuantity,
   type CartItem,
 } from "../apps/market/src/lib/cart-model"
@@ -108,6 +112,153 @@ describe("cart model", () => {
     ])
   })
 
+  it("keeps equal product identifiers from different merchants separate", () => {
+    const merchantA = item({
+      productId: "shared-product",
+      merchantPubkey: "merchant-a",
+      title: "Merchant A",
+    })
+    const merchantB = item({
+      productId: "shared-product",
+      merchantPubkey: "merchant-b",
+      title: "Merchant B",
+    })
+
+    const items = addCartItem(addCartItem([], merchantA, 1), merchantB, 2)
+    expect(items).toHaveLength(2)
+    expect(
+      selectCartItemQuantity(items, {
+        merchantPubkey: "merchant-a",
+        productId: "shared-product",
+      })
+    ).toBe(1)
+    expect(
+      selectCartItemQuantity(items, {
+        merchantPubkey: "merchant-b",
+        productId: "shared-product",
+      })
+    ).toBe(2)
+    expect(getCartItemKey(merchantA)).not.toBe(getCartItemKey(merchantB))
+  })
+
+  it("mutates only the selected merchant-scoped line", () => {
+    const items = [
+      item({ productId: "shared", merchantPubkey: "merchant-a" }),
+      item({ productId: "shared", merchantPubkey: "merchant-b", quantity: 2 }),
+    ]
+    const merchantB = { merchantPubkey: "merchant-b", productId: "shared" }
+    const updated = setCartItemQuantity(items, merchantB, 5)
+
+    expect(selectCartItem(updated, merchantB)?.quantity).toBe(5)
+    expect(
+      selectCartItem(updated, {
+        merchantPubkey: "merchant-a",
+        productId: "shared",
+      })?.quantity
+    ).toBe(1)
+    expect(removeCartItem(updated, merchantB)).toMatchObject([
+      { merchantPubkey: "merchant-a", productId: "shared" },
+    ])
+  })
+
+  it("migrates legacy storage and preserves cross-merchant collisions", () => {
+    const parsed = parsePersistedCart({
+      items: [
+        item({
+          productId: "legacy-d-tag",
+          merchantPubkey: "merchant-a",
+          priceSats: 1_000,
+          sourcePrice: {
+            amount: 10,
+            currency: "USD",
+            normalizedCurrency: "USD",
+          },
+        }),
+        item({
+          productId: "legacy-d-tag",
+          merchantPubkey: "merchant-b",
+          quantity: 2,
+        }),
+      ],
+    })
+
+    expect(parsed.supported).toBe(true)
+    expect(parsed.writable).toBe(true)
+    expect(parsed.shouldPersist).toBe(true)
+    expect(parsed.state.items).toHaveLength(2)
+    expect(parsed.state.items[0]?.sourcePrice).toEqual({
+      amount: 10,
+      currency: "USD",
+      normalizedCurrency: "USD",
+    })
+  })
+
+  it("deduplicates only exact identities using the latest snapshot", () => {
+    const parsed = parsePersistedCart({
+      version: 2,
+      items: [
+        item({
+          productId: "shared",
+          merchantPubkey: "merchant-a",
+          merchantAddedAt: 20,
+          title: "Old title",
+          quantity: 2,
+        }),
+        item({
+          productId: "shared",
+          merchantPubkey: "merchant-a",
+          merchantAddedAt: 10,
+          title: "Current title",
+          quantity: 3,
+        }),
+      ],
+    })
+
+    expect(parsed.shouldPersist).toBe(false)
+    expect(parsed.state.items).toMatchObject([
+      { title: "Current title", quantity: 5, merchantAddedAt: 10 },
+    ])
+  })
+
+  it("drops malformed and merchant-mismatched coordinate rows", () => {
+    const parsed = parsePersistedCart({
+      version: 2,
+      items: [
+        item({
+          productId: "30402:merchant-a:product-a",
+          merchantPubkey: "merchant-b",
+        }),
+        item({ quantity: Number.NaN }),
+        item({ productId: "valid-legacy", quantity: 2.8 }),
+      ],
+    })
+
+    expect(parsed.state.items).toMatchObject([
+      { productId: "valid-legacy", quantity: 2 },
+    ])
+  })
+
+  it("fails closed for malformed and unknown future storage versions", () => {
+    expect(parsePersistedCart(null)).toEqual({
+      state: { items: [] },
+      shouldPersist: false,
+      supported: false,
+      writable: true,
+    })
+    expect(parsePersistedCart({ version: 3, items: [item()] })).toEqual({
+      state: { items: [] },
+      shouldPersist: false,
+      supported: false,
+      writable: false,
+    })
+    expect(parsePersistedCart({ version: 3, entries: [item()] })).toEqual({
+      state: { items: [] },
+      shouldPersist: false,
+      supported: false,
+      writable: false,
+    })
+  })
+
   it("sets quantities, removes products, and clears one merchant", () => {
     const items = [
       item({ productId: "30402:merchant-a:product-a", merchantPubkey: "a" }),
@@ -115,9 +266,18 @@ describe("cart model", () => {
     ]
 
     expect(
-      setCartItemQuantity(items, "30402:merchant-a:product-a", 4)[0]?.quantity
+      setCartItemQuantity(
+        items,
+        { merchantPubkey: "a", productId: "30402:merchant-a:product-a" },
+        4
+      )[0]?.quantity
     ).toBe(4)
-    expect(removeCartItem(items, "30402:merchant-a:product-a")).toHaveLength(1)
+    expect(
+      removeCartItem(items, {
+        merchantPubkey: "a",
+        productId: "30402:merchant-a:product-a",
+      })
+    ).toHaveLength(1)
     expect(clearMerchantCart(items, "a")).toMatchObject([
       { productId: "30402:merchant-b:product-b" },
     ])

@@ -48,6 +48,7 @@ import {
   AvatarImage,
   Button,
   Combobox,
+  HoldToReleaseButton,
   Input,
   Label,
   Textarea,
@@ -73,7 +74,11 @@ import {
   hasPhysicalItemsMissingShippingSnapshot,
   hasPhysicalItemsMissingShippingZone,
 } from "../lib/cart-shipping-options"
-import { getCartPublicZapPolicy } from "../lib/cart-model"
+import {
+  getCartItemKey,
+  getCartPublicZapPolicy,
+  selectMerchantCartItems,
+} from "../lib/cart-model"
 import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
 import {
   isFastCheckoutEligible,
@@ -550,7 +555,7 @@ function OrderSummary({
           })
           return (
             <div
-              key={item.productId}
+              key={getCartItemKey(item)}
               className="grid grid-cols-[72px_minmax(0,1fr)_auto] gap-3 border-b border-[var(--border)] pb-4 last:border-b-0 last:pb-0"
             >
               <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--background)]">
@@ -709,7 +714,7 @@ function CheckoutPage() {
 
   const checkoutItems = useMemo(() => {
     if (!selectedMerchant) return []
-    return cart.items.filter((item) => item.merchantPubkey === selectedMerchant)
+    return selectMerchantCartItems(cart.items, selectedMerchant)
   }, [cart.items, selectedMerchant])
   const publicZapPolicy = useMemo(
     () => getCartPublicZapPolicy(checkoutItems),
@@ -2874,22 +2879,26 @@ function CheckoutPage() {
                 {/* Action buttons */}
                 <div className="mt-6 flex flex-wrap gap-3">
                   {fastEligible && (
-                    <Button
+                    <HoldToReleaseButton
                       className="h-11 px-5 text-sm"
-                      onClick={() => {
+                      canComplete={() =>
+                        fastEligible && !paymentInFlightRef.current
+                      }
+                      onHoldComplete={() => {
                         if (canAttemptLightningPayment) {
                           setOverlayPlaying(true)
                         }
                         void payNow()
                       }}
+                      chargedLabel="Release to zap out"
                     >
                       <LightningIcon className="h-4 w-4" />
                       {isGuestCheckout
-                        ? "Send order and show invoice"
+                        ? "Hold to send order and show invoice"
                         : walletPaymentConstraint && !weblnAvailable
-                          ? "Send order and show invoice"
-                          : "Zap out"}
-                    </Button>
+                          ? "Hold to send order and show invoice"
+                          : "Hold to zap out"}
+                    </HoldToReleaseButton>
                   )}
                   {pricingOnlyFastCheckoutBlocker && !fastEligible && (
                     <Button
