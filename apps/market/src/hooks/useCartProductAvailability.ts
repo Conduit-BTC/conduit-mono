@@ -4,6 +4,7 @@ import { getProductsByIds } from "@conduit/core"
 import {
   getCartProductAvailability,
   isCartAvailabilityReadFresh,
+  isCartProductAvailabilityBlocking,
   type CartItem,
   type CartProductAvailability,
 } from "../lib/cart-model"
@@ -38,8 +39,11 @@ export function useCartProductAvailability(items: CartItem[]) {
     () => new Map(availability.map((entry) => [entry.productId, entry])),
     [availability]
   )
-  const hasSoldOutItems = availability.some(
-    (entry) => entry.status === "sold_out"
+  const hasInsufficientStockItems = availability.some(
+    (entry) => entry.status === "insufficient_stock"
+  )
+  const hasUnavailableItems = availability.some(
+    isCartProductAvailabilityBlocking
   )
   async function refresh(): Promise<{
     availability: CartProductAvailability[]
@@ -63,7 +67,8 @@ export function useCartProductAvailability(items: CartItem[]) {
 
   return {
     availabilityByProductId,
-    hasSoldOutItems,
+    hasInsufficientStockItems,
+    hasUnavailableItems,
     isChecking: query.isLoading || query.isFetching,
     refresh,
   }

@@ -3,6 +3,7 @@ import {
   addCartItem,
   clearMerchantCart,
   createCartItemFromProduct,
+  getCartAvailabilityBlockingMessage,
   getCartItemStockForAvailability,
   getCartProductAvailability,
   getCartCostSummary,
@@ -10,6 +11,7 @@ import {
   getCartTotals,
   groupCartItems,
   isCartAvailabilityReadFresh,
+  isCartProductAvailabilityBlocking,
   removeCartItem,
   setCartItemQuantity,
   type CartItem,
@@ -176,6 +178,69 @@ describe("cart model", () => {
         refreshed: true,
       },
     ])
+    expect(
+      isCartProductAvailabilityBlocking(
+        getCartProductAvailability(cartItems, [refreshedProduct])[0]
+      )
+    ).toBe(true)
+  })
+
+  it("flags a cart quantity above refreshed product stock", () => {
+    const cartItems = [item({ quantity: 10, stock: 10 })]
+    const refreshedProduct: Product = {
+      id: cartItems[0]!.productId,
+      pubkey: cartItems[0]!.merchantPubkey,
+      title: cartItems[0]!.title,
+      price: cartItems[0]!.price,
+      currency: cartItems[0]!.currency,
+      type: "simple",
+      format: "physical",
+      visibility: "public",
+      stock: 1,
+      images: [],
+      tags: [],
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+
+    expect(getCartProductAvailability(cartItems, [refreshedProduct])).toEqual([
+      {
+        productId: cartItems[0]!.productId,
+        status: "insufficient_stock",
+        stock: 1,
+        refreshed: true,
+      },
+    ])
+    expect(
+      isCartProductAvailabilityBlocking(
+        getCartProductAvailability(cartItems, [refreshedProduct])[0]
+      )
+    ).toBe(true)
+    expect(
+      getCartProductAvailability(cartItems, [
+        { ...refreshedProduct, stock: cartItems[0]!.quantity },
+      ])
+    ).toMatchObject([
+      {
+        status: "available",
+        stock: 10,
+      },
+    ])
+    expect(
+      getCartAvailabilityBlockingMessage(
+        cartItems,
+        new Map(
+          getCartProductAvailability(cartItems, [refreshedProduct]).map(
+            (entry) => [entry.productId, entry]
+          )
+        )
+      )
+    ).toBe(
+      "Notebook has only 1 available, but your cart contains 10. Reduce the quantity before sending the order."
+    )
   })
 
   it("treats a refreshed listing without a stock tag as untracked", () => {

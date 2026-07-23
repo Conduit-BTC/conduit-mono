@@ -76,7 +76,9 @@ import {
   hasPhysicalItemsMissingShippingZone,
 } from "../lib/cart-shipping-options"
 import {
+  getCartAvailabilityBlockingMessage,
   getCartPublicZapPolicy,
+  isCartProductAvailabilityBlocking,
   type CartProductAvailability,
 } from "../lib/cart-model"
 import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
@@ -541,8 +543,11 @@ function OrderSummary({
 
       <div className="mt-4 space-y-4">
         {items.map((item) => {
-          const soldOut =
-            availabilityByProductId.get(item.productId)?.status === "sold_out"
+          const availability = availabilityByProductId.get(item.productId)
+          const soldOut = availability?.status === "sold_out"
+          const insufficientStock =
+            availability?.status === "insufficient_stock"
+          const unavailable = isCartProductAvailabilityBlocking(availability)
           const linePrice = formatPrice({
             price: item.price * item.quantity,
             currency: item.currency,
@@ -561,7 +566,7 @@ function OrderSummary({
             <div
               key={item.productId}
               className={`grid grid-cols-[72px_minmax(0,1fr)_auto] gap-3 border-b border-[var(--border)] pb-4 last:border-b-0 last:pb-0 ${
-                soldOut ? "opacity-80" : ""
+                unavailable ? "opacity-80" : ""
               }`}
             >
               <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--background)]">
@@ -582,9 +587,11 @@ function OrderSummary({
                 <div className="line-clamp-2 text-base font-medium leading-7 text-[var(--text-primary)]">
                   {item.title}
                 </div>
-                {soldOut ? (
+                {soldOut || insufficientStock ? (
                   <Badge variant="warning" className="mt-1.5">
-                    Sold out
+                    {soldOut
+                      ? "Sold out"
+                      : `Only ${availability?.stock ?? 0} available`}
                   </Badge>
                 ) : null}
                 {item.tags && item.tags.length > 0 && (
@@ -730,20 +737,15 @@ function CheckoutPage() {
     return cart.items.filter((item) => item.merchantPubkey === selectedMerchant)
   }, [cart.items, selectedMerchant])
   const checkoutAvailability = useCartProductAvailability(checkoutItems)
-  const soldOutCheckoutItems = useMemo(
+  const checkoutAvailabilityMessage = useMemo(
     () =>
-      checkoutItems.filter(
-        (item) =>
-          checkoutAvailability.availabilityByProductId.get(item.productId)
-            ?.status === "sold_out"
+      getCartAvailabilityBlockingMessage(
+        checkoutItems,
+        checkoutAvailability.availabilityByProductId
       ),
     [checkoutAvailability.availabilityByProductId, checkoutItems]
   )
-  const hasSoldOutCheckoutItems = soldOutCheckoutItems.length > 0
-  const soldOutCheckoutMessage =
-    soldOutCheckoutItems.length === 1
-      ? `${soldOutCheckoutItems[0]!.title} is sold out. Remove it from your cart before sending the order.`
-      : `${soldOutCheckoutItems.length} items are sold out. Remove them from your cart before sending the order.`
+  const hasUnavailableCheckoutItems = checkoutAvailabilityMessage !== null
   const publicZapPolicy = useMemo(
     () => getCartPublicZapPolicy(checkoutItems),
     [checkoutItems]
@@ -1240,24 +1242,16 @@ function CheckoutPage() {
       )
     }
 
-    const soldOutIds = new Set(
-      refreshResult.availability
-        .filter((entry) => entry.status === "sold_out")
-        .map((entry) => entry.productId)
+    const refreshedAvailabilityByProductId = new Map(
+      refreshResult.availability.map((entry) => [entry.productId, entry])
     )
-    const soldOutItems = checkoutItems.filter((item) =>
-      soldOutIds.has(item.productId)
+    const refreshedAvailabilityMessage = getCartAvailabilityBlockingMessage(
+      checkoutItems,
+      refreshedAvailabilityByProductId
     )
 
-    if (soldOutItems.length === 1) {
-      throw new Error(
-        `${soldOutItems[0]!.title} is sold out. Remove it from your cart before sending the order.`
-      )
-    }
-    if (soldOutItems.length > 1) {
-      throw new Error(
-        `${soldOutItems.length} items are sold out. Remove them from your cart before sending the order.`
-      )
+    if (refreshedAvailabilityMessage) {
+      throw new Error(refreshedAvailabilityMessage)
     }
   }
 
@@ -1283,8 +1277,8 @@ function CheckoutPage() {
       setError("Wait while Conduit checks current product availability.")
       return
     }
-    if (hasSoldOutCheckoutItems) {
-      setError(soldOutCheckoutMessage)
+    if (checkoutAvailabilityMessage) {
+      setError(checkoutAvailabilityMessage)
       return
     }
     setShippingAttempted(true)
@@ -2250,7 +2244,7 @@ function CheckoutPage() {
         }
       />
 
-      {hasSoldOutCheckoutItems ? (
+      {hasUnavailableCheckoutItems ? (
         <div
           role="alert"
           className="flex flex-col gap-4 rounded-2xl border border-warning/40 bg-warning/10 p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
@@ -2264,7 +2258,7 @@ function CheckoutPage() {
               <div className="font-medium text-[var(--text-primary)]">
                 Checkout paused
               </div>
-              <p className="mt-1 leading-6">{soldOutCheckoutMessage}</p>
+              <p className="mt-1 leading-6">{checkoutAvailabilityMessage}</p>
             </div>
           </div>
           <Button asChild variant="outline" className="shrink-0">
@@ -2654,14 +2648,15 @@ function CheckoutPage() {
                   <Button
                     className="mt-2 h-11 w-full text-sm"
                     disabled={
-                      checkoutAvailability.isChecking || hasSoldOutCheckoutItems
+                      checkoutAvailability.isChecking ||
+                      hasUnavailableCheckoutItems
                     }
                     onClick={continueToPayment}
                   >
                     {checkoutAvailability.isChecking
                       ? "Checking availability"
-                      : hasSoldOutCheckoutItems
-                        ? "Remove sold-out items"
+                      : hasUnavailableCheckoutItems
+                        ? "Update cart quantities"
                         : "Continue to Send Order"}
                   </Button>
 
@@ -2986,7 +2981,7 @@ function CheckoutPage() {
                       className="h-11 px-5 text-sm"
                       disabled={
                         checkoutAvailability.isChecking ||
-                        hasSoldOutCheckoutItems
+                        hasUnavailableCheckoutItems
                       }
                       onClick={() => {
                         if (canAttemptLightningPayment) {
@@ -3046,15 +3041,15 @@ function CheckoutPage() {
                       className="h-11 px-5 text-sm"
                       disabled={
                         checkoutAvailability.isChecking ||
-                        hasSoldOutCheckoutItems
+                        hasUnavailableCheckoutItems
                       }
                       onClick={placeOrder}
                     >
                       <OrderIcon className="h-4 w-4" />
                       {checkoutAvailability.isChecking
                         ? "Checking availability"
-                        : hasSoldOutCheckoutItems
-                          ? "Remove sold-out items"
+                        : hasUnavailableCheckoutItems
+                          ? "Update cart quantities"
                           : "Send order"}
                     </Button>
                   )}

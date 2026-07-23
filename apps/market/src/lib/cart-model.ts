@@ -84,7 +84,7 @@ export type CartPublicZapPolicy = {
 
 export type CartProductAvailability = {
   productId: string
-  status: "available" | "sold_out" | "untracked"
+  status: "available" | "sold_out" | "insufficient_stock" | "untracked"
   stock?: number
   refreshed: boolean
 }
@@ -138,13 +138,64 @@ export function getCartProductAvailability(
       status:
         stock === 0
           ? "sold_out"
-          : typeof stock === "number"
-            ? "available"
-            : "untracked",
+          : typeof stock === "number" && item.quantity > stock
+            ? "insufficient_stock"
+            : typeof stock === "number"
+              ? "available"
+              : "untracked",
       stock,
       refreshed: !!refreshedProduct,
     }
   })
+}
+
+export function isCartProductAvailabilityBlocking(
+  availability: Pick<CartProductAvailability, "status"> | undefined
+): boolean {
+  return (
+    availability?.status === "sold_out" ||
+    availability?.status === "insufficient_stock"
+  )
+}
+
+export function getCartAvailabilityBlockingMessage(
+  items: CartItem[],
+  availabilityByProductId: ReadonlyMap<string, CartProductAvailability>
+): string | null {
+  const unavailableItems: Array<{
+    item: CartItem
+    availability: CartProductAvailability
+  }> = []
+
+  for (const item of items) {
+    const availability = availabilityByProductId.get(item.productId)
+    if (availability && isCartProductAvailabilityBlocking(availability)) {
+      unavailableItems.push({ item, availability })
+    }
+  }
+
+  if (unavailableItems.length === 0) return null
+
+  if (unavailableItems.length === 1) {
+    const { item, availability } = unavailableItems[0]!
+    if (availability.status === "sold_out") {
+      return `${item.title} is sold out. Remove it from your cart before sending the order.`
+    }
+
+    return `${item.title} has only ${availability.stock ?? 0} available, but your cart contains ${item.quantity}. Reduce the quantity before sending the order.`
+  }
+
+  const soldOutCount = unavailableItems.filter(
+    ({ availability }) => availability.status === "sold_out"
+  ).length
+  if (soldOutCount === unavailableItems.length) {
+    return `${soldOutCount} items are sold out. Remove them from your cart before sending the order.`
+  }
+  if (soldOutCount === 0) {
+    return `${unavailableItems.length} cart quantities exceed current stock. Reduce them before sending the order.`
+  }
+
+  return "Some items are sold out or exceed current stock. Update your cart before sending the order."
 }
 
 export function isCartAvailabilityReadFresh(

@@ -61,6 +61,7 @@ import {
   getCartCostSummary,
   getCartItemStockForAvailability,
   groupCartItems,
+  isCartProductAvailabilityBlocking,
   type CartProductAvailability,
   type MerchantCartGroup,
 } from "../lib/cart-model"
@@ -393,6 +394,11 @@ function CartLineItem({
   onRemove: () => void
 }) {
   const soldOut = availability?.status === "sold_out"
+  const insufficientStock = availability?.status === "insufficient_stock"
+  const incrementDisabled =
+    isCartProductAvailabilityBlocking(availability) ||
+    (typeof availability?.stock === "number" &&
+      item.quantity >= availability.stock)
   const linePrice = formatPrice({
     price: item.price * item.quantity,
     currency: item.currency,
@@ -439,7 +445,7 @@ function CartLineItem({
         >
           {item.title}
         </Link>
-        {soldOut ? (
+        {soldOut || insufficientStock ? (
           <div
             role="alert"
             className="mt-2 flex items-start gap-2 text-sm text-warning"
@@ -448,7 +454,11 @@ function CartLineItem({
               className="mt-0.5 h-4 w-4 shrink-0"
               aria-hidden="true"
             />
-            <span>Sold out. Remove this item before checkout.</span>
+            <span>
+              {soldOut
+                ? "Sold out. Remove this item before checkout."
+                : `Only ${availability?.stock ?? 0} available. Reduce quantity before checkout.`}
+            </span>
           </div>
         ) : null}
         <div className="mt-2 text-sm text-[var(--text-secondary)]">
@@ -479,7 +489,7 @@ function CartLineItem({
             </div>
             <button
               type="button"
-              disabled={soldOut}
+              disabled={incrementDisabled}
               className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-40"
               aria-label={`Increase quantity for ${item.title}`}
               onClick={onIncrement}
@@ -538,15 +548,25 @@ function MerchantCartCard({
   const hasSoldOutItems = group.items.some(
     (item) => availabilityByProductId.get(item.productId)?.status === "sold_out"
   )
+  const hasInsufficientStockItems = group.items.some(
+    (item) =>
+      availabilityByProductId.get(item.productId)?.status ===
+      "insufficient_stock"
+  )
+  const hasUnavailableItems = hasSoldOutItems || hasInsufficientStockItems
   const canZapOut =
-    !hasSoldOutItems && Boolean(profile?.lud16) && summary.canZapOut
+    !hasUnavailableItems && Boolean(profile?.lud16) && summary.canZapOut
   const primaryActionLabel = availabilityChecking
     ? "Checking stock"
-    : hasSoldOutItems
-      ? "Remove sold-out items"
-      : canZapOut
-        ? "Zap out"
-        : "Order"
+    : hasSoldOutItems && hasInsufficientStockItems
+      ? "Update cart items"
+      : hasSoldOutItems
+        ? "Remove sold-out items"
+        : hasInsufficientStockItems
+          ? "Reduce item quantity"
+          : canZapOut
+            ? "Zap out"
+            : "Order"
   const reviewItemsLabel = `${expanded ? "Hide" : "Review"} ${group.totalItems} item${group.totalItems === 1 ? "" : "s"}`
   const detailsId = `cart-group-${group.merchantPubkey}`
 
@@ -585,7 +605,7 @@ function MerchantCartCard({
           <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap lg:w-auto lg:justify-end">
             <Button
               className="h-11 px-5 text-sm"
-              disabled={availabilityChecking || hasSoldOutItems}
+              disabled={availabilityChecking || hasUnavailableItems}
               onClick={onCheckout}
             >
               {canZapOut ? (
@@ -687,10 +707,10 @@ function CartPage() {
       (entry) => entry.merchantPubkey === merchant
     )
     if (
-      group?.items.some(
-        (item) =>
+      group?.items.some((item) =>
+        isCartProductAvailabilityBlocking(
           cartAvailability.availabilityByProductId.get(item.productId)
-            ?.status === "sold_out"
+        )
       )
     ) {
       return
@@ -886,7 +906,7 @@ function CartPage() {
             </div>
           </div>
 
-          {cartAvailability.hasSoldOutItems ? (
+          {cartAvailability.hasUnavailableItems ? (
             <div
               role="alert"
               className="flex flex-col gap-4 rounded-2xl border border-warning/40 bg-warning/10 p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
@@ -898,11 +918,14 @@ function CartPage() {
                 />
                 <div>
                   <div className="font-medium text-[var(--text-primary)]">
-                    Your cart contains a sold-out item
+                    {cartAvailability.hasInsufficientStockItems
+                      ? "Some cart quantities exceed available stock"
+                      : "Your cart contains a sold-out item"}
                   </div>
                   <p className="mt-1 leading-6">
-                    Remove sold-out items before sending this order. Other store
-                    carts remain available.
+                    {cartAvailability.hasInsufficientStockItems
+                      ? "Reduce affected quantities to the current available stock, and remove any sold-out items before sending this order."
+                      : "Remove sold-out items before sending this order. Other store carts remain available."}
                   </p>
                 </div>
               </div>
