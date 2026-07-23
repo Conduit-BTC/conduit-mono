@@ -193,7 +193,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
             <Tabs
               value={selectedMerchant}
               onValueChange={setActiveMerchant}
-              className="min-w-0 flex-1"
+              className="mr-auto min-w-0 flex-1"
             >
               <TabsList
                 aria-label="Store carts"
@@ -219,7 +219,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                     <TabsTrigger
                       key={group.merchantPubkey}
                       value={group.merchantPubkey}
-                      className="market-cart-hud-item min-h-11 shrink-0 gap-2 rounded-lg border border-transparent px-3 data-[state=active]:border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] data-[state=active]:bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-[var(--shadow-glass-inset)] data-[state=inactive]:hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] data-[state=inactive]:hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] data-[state=inactive]:hover:text-[var(--text-primary)]"
+                      className="market-cart-hud-item min-h-11 max-w-60 shrink-0 gap-2 rounded-lg border border-transparent px-3 data-[state=active]:border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] data-[state=active]:bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-[var(--shadow-glass-inset)] data-[state=inactive]:hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] data-[state=inactive]:hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] data-[state=inactive]:hover:text-[var(--text-primary)]"
                     >
                       <Avatar className="h-7 w-7">
                         <AvatarImage src={profile?.picture} alt="" />
@@ -253,7 +253,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               </TabsList>
             </Tabs>
           ) : (
-            <div className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-3 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]">
+            <div className="mr-auto flex min-h-11 min-w-0 max-w-60 flex-1 items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-3 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]">
               <Avatar className="h-7 w-7">
                 <AvatarImage src={activeProfile?.picture} alt="" />
                 <AvatarFallback>
@@ -370,59 +370,63 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         <div className="truncate text-xs text-[var(--text-muted)]">
                           {display.primary}
                         </div>
-                        <div className="mt-1 flex items-center gap-1">
-                          <button
-                            type="button"
-                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_4%,var(--surface))] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_8%,var(--surface))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-                            aria-label={`Decrease ${item.title} quantity`}
-                            onClick={() => {
-                              if (item.quantity <= 1) cart.removeItem(identity)
-                              else cart.setQuantity(identity, item.quantity - 1)
-                            }}
-                          >
-                            <Minus className="h-4 w-4" aria-hidden="true" />
-                          </button>
-                          <span
-                            key={item.quantity}
-                            className="market-cart-hud-value w-8 text-center text-sm font-semibold tabular-nums"
-                          >
-                            {item.quantity}
-                          </span>
-                          <button
-                            type="button"
-                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_4%,var(--surface))] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_8%,var(--surface))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-                            aria-label={`Increase ${item.title} quantity`}
-                            onClick={() =>
-                              cart.addItem(
-                                {
-                                  productId: item.productId,
-                                  merchantPubkey: item.merchantPubkey,
-                                  title: item.title,
-                                  price: item.price,
-                                  currency: item.currency,
-                                  priceSats: item.priceSats,
-                                  sourcePrice: item.sourcePrice,
-                                  image: item.image,
-                                  tags: item.tags,
-                                  format: item.format,
-                                  shippingCostSats: item.shippingCostSats,
-                                  sourceShippingCost: item.sourceShippingCost,
-                                  shippingOptionId: item.shippingOptionId,
-                                  shippingOptionDTag: item.shippingOptionDTag,
-                                  shippingCountries: item.shippingCountries,
-                                  shippingCountryRules:
-                                    item.shippingCountryRules,
-                                  publicZapEnabled: item.publicZapEnabled,
-                                  zapMessagePolicy: item.zapMessagePolicy,
-                                  publicZapPolicyKnown:
-                                    item.publicZapPolicyKnown,
-                                },
-                                1
-                              )
-                            }
-                          >
-                            <Plus className="h-4 w-4" aria-hidden="true" />
-                          </button>
+                        <div className="mt-1 flex justify-end">
+                          <div className="flex shrink-0 items-center gap-1">
+                            <button
+                              type="button"
+                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_4%,var(--surface))] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_8%,var(--surface))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                              aria-label={`Decrease ${item.title} quantity`}
+                              onClick={() => {
+                                if (item.quantity <= 1)
+                                  cart.removeItem(identity)
+                                else
+                                  cart.setQuantity(identity, item.quantity - 1)
+                              }}
+                            >
+                              <Minus className="h-4 w-4" aria-hidden="true" />
+                            </button>
+                            <span
+                              key={item.quantity}
+                              className="market-cart-hud-value w-8 text-center text-sm font-semibold tabular-nums"
+                            >
+                              {item.quantity}
+                            </span>
+                            <button
+                              type="button"
+                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_4%,var(--surface))] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_8%,var(--surface))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                              aria-label={`Increase ${item.title} quantity`}
+                              onClick={() =>
+                                cart.addItem(
+                                  {
+                                    productId: item.productId,
+                                    merchantPubkey: item.merchantPubkey,
+                                    title: item.title,
+                                    price: item.price,
+                                    currency: item.currency,
+                                    priceSats: item.priceSats,
+                                    sourcePrice: item.sourcePrice,
+                                    image: item.image,
+                                    tags: item.tags,
+                                    format: item.format,
+                                    shippingCostSats: item.shippingCostSats,
+                                    sourceShippingCost: item.sourceShippingCost,
+                                    shippingOptionId: item.shippingOptionId,
+                                    shippingOptionDTag: item.shippingOptionDTag,
+                                    shippingCountries: item.shippingCountries,
+                                    shippingCountryRules:
+                                      item.shippingCountryRules,
+                                    publicZapEnabled: item.publicZapEnabled,
+                                    zapMessagePolicy: item.zapMessagePolicy,
+                                    publicZapPolicyKnown:
+                                      item.publicZapPolicyKnown,
+                                  },
+                                  1
+                                )
+                              }
+                            >
+                              <Plus className="h-4 w-4" aria-hidden="true" />
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </article>
