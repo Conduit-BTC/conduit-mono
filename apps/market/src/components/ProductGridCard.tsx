@@ -12,6 +12,7 @@ import {
   ProductCardSkeleton,
   ProductCartAction,
 } from "@conduit/ui"
+import { getProductAddAvailability } from "../lib/cart-model"
 import { getPendingMerchantDisplayName } from "./MerchantIdentity"
 
 type ProductGridCardProps = {
@@ -53,6 +54,9 @@ export function ProductGridCard({
     typeof btcUsdRate === "object" ? btcUsdRate : null
   )
   const soldOut = product.stock === 0
+  const atStockLimit =
+    !soldOut &&
+    getProductAddAvailability(product.stock, cartQuantity, 1).canAdd === false
 
   return (
     <ProductCard
@@ -88,6 +92,7 @@ export function ProductGridCard({
             onIncrement={onIncrement}
             onDecrement={onDecrement}
             soldOut={soldOut}
+            atStockLimit={atStockLimit}
           />
         ) : undefined
       }

@@ -94,6 +94,33 @@ type CartAvailabilityReadMeta = Pick<
   "source" | "stale" | "degraded"
 >
 
+export type ProductAddAvailability = {
+  remainingStock?: number
+  canAdd: boolean
+  canIncrement: boolean
+}
+
+export function getProductAddAvailability(
+  stock: number | undefined,
+  cartQuantity: number,
+  requestedQuantity: number
+): ProductAddAvailability {
+  if (typeof stock !== "number") {
+    return {
+      remainingStock: undefined,
+      canAdd: true,
+      canIncrement: true,
+    }
+  }
+
+  const remainingStock = Math.max(0, stock - Math.max(0, cartQuantity))
+  return {
+    remainingStock,
+    canAdd: remainingStock > 0 && requestedQuantity <= remainingStock,
+    canIncrement: requestedQuantity < remainingStock,
+  }
+}
+
 export function createCartItemFromProduct(
   product: Product
 ): Omit<CartItem, "quantity"> {

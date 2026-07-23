@@ -9,6 +9,7 @@ import {
   getCartCostSummary,
   getCartPublicZapPolicy,
   getCartTotals,
+  getProductAddAvailability,
   groupCartItems,
   isCartAvailabilityReadFresh,
   isCartProductAvailabilityBlocking,
@@ -31,6 +32,34 @@ function item(overrides: Partial<CartItem> = {}): CartItem {
 }
 
 describe("cart model", () => {
+  it("caps product additions at the remaining tracked stock", () => {
+    expect(getProductAddAvailability(undefined, 4, 2)).toEqual({
+      remainingStock: undefined,
+      canAdd: true,
+      canIncrement: true,
+    })
+    expect(getProductAddAvailability(1, 0, 1)).toEqual({
+      remainingStock: 1,
+      canAdd: true,
+      canIncrement: false,
+    })
+    expect(getProductAddAvailability(1, 1, 1)).toEqual({
+      remainingStock: 0,
+      canAdd: false,
+      canIncrement: false,
+    })
+    expect(getProductAddAvailability(10, 3, 7)).toEqual({
+      remainingStock: 7,
+      canAdd: true,
+      canIncrement: false,
+    })
+    expect(getProductAddAvailability(10, 3, 8)).toEqual({
+      remainingStock: 7,
+      canAdd: false,
+      canIncrement: false,
+    })
+  })
+
   it("groups items by merchant with newest merchant first, independent of quantity", () => {
     let items = addCartItem(
       [],

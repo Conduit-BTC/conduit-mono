@@ -36,7 +36,10 @@ import {
   useProgressiveProductDetail,
   useProgressiveProducts,
 } from "../../hooks/useProgressiveProducts"
-import { createCartItemFromProduct } from "../../lib/cart-model"
+import {
+  createCartItemFromProduct,
+  getProductAddAvailability,
+} from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
 
 export const Route = createFileRoute("/products/$productId")({
@@ -117,6 +120,11 @@ function ProductPage() {
     ? cart.items.find((item) => item.productId === product.id)
     : null
   const cartQuantity = cartItem?.quantity ?? 0
+  const productAddAvailability = getProductAddAvailability(
+    product?.stock,
+    cartQuantity,
+    quantity
+  )
   const priceDisplay = product ? shopperPricing.formatPrice(product) : null
   const updatedLabel = product
     ? new Intl.DateTimeFormat("en-US", {
@@ -141,6 +149,12 @@ function ProductPage() {
     setShowAllTags(false)
     setShowFullDescription(false)
   }, [product?.id])
+
+  useEffect(() => {
+    const remainingStock = productAddAvailability.remainingStock
+    if (remainingStock === undefined || remainingStock === 0) return
+    setQuantity((current) => Math.min(current, remainingStock))
+  }, [productAddAvailability.remainingStock])
 
   useLayoutEffect(() => {
     const descriptionElement = descriptionRef.current
@@ -223,7 +237,7 @@ function ProductPage() {
   }
 
   function addProductToCart(): void {
-    if (!product || productSoldOut) return
+    if (!product || !productAddAvailability.canAdd) return
     recordProductDetailAction("add_to_cart")
     cart.addItem(createCartItemFromProduct(product), quantity)
   }
@@ -574,10 +588,19 @@ function ProductPage() {
                     </div>
                     <button
                       type="button"
-                      disabled={productSoldOut}
-                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)] disabled:cursor-not-allowed"
-                      aria-label="Increase quantity"
-                      onClick={() => setQuantity((current) => current + 1)}
+                      disabled={
+                        productSoldOut || !productAddAvailability.canIncrement
+                      }
+                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-40"
+                      aria-label={
+                        !productSoldOut && !productAddAvailability.canIncrement
+                          ? "Maximum available quantity selected"
+                          : "Increase quantity"
+                      }
+                      onClick={() => {
+                        if (!productAddAvailability.canIncrement) return
+                        setQuantity((current) => current + 1)
+                      }}
                     >
                       +
                     </button>
@@ -585,14 +608,16 @@ function ProductPage() {
 
                   <Button
                     className="min-w-[12rem] flex-1"
-                    disabled={productSoldOut}
+                    disabled={!productAddAvailability.canAdd}
                     onClick={addProductToCart}
                   >
                     {productSoldOut
                       ? "Sold out"
-                      : cartQuantity > 0
-                        ? `Add more (${cartQuantity} in cart)`
-                        : `Add ${quantity} to cart`}
+                      : productAddAvailability.remainingStock === 0
+                        ? "Stock limit reached"
+                        : cartQuantity > 0
+                          ? `Add more (${cartQuantity} in cart)`
+                          : `Add ${quantity} to cart`}
                   </Button>
                 </div>
 

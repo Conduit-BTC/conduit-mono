@@ -77,6 +77,26 @@ describe("ProductCard", () => {
     expect(html).toContain('disabled=""')
   })
 
+  it("disables product-card increments at the known stock limit", () => {
+    const html = renderToStaticMarkup(
+      <ProductCartAction
+        title="Limited Tee"
+        cartQuantity={1}
+        onAddToCart={() => undefined}
+        onIncrement={() => undefined}
+        onDecrement={() => undefined}
+        atStockLimit
+      />
+    )
+
+    expect(html).toMatch(
+      /<button(?=[^>]*disabled="")(?=[^>]*aria-label="Stock limit reached for Limited Tee")[^>]*>/
+    )
+    expect(html).toMatch(
+      /<button(?![^>]*disabled="")(?=[^>]*aria-label="Remove one Limited Tee from cart")[^>]*>/
+    )
+  })
+
   it("renders converted Bitcoin, source quote, and USD reference separately", () => {
     const price = getShopperPriceDisplay(
       {

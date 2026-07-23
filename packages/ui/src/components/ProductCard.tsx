@@ -210,6 +210,7 @@ export interface ProductCartActionProps {
   onIncrement?: () => void
   onDecrement?: () => void
   soldOut?: boolean
+  atStockLimit?: boolean
 }
 
 export function ProductCartAction({
@@ -219,6 +220,7 @@ export function ProductCartAction({
   onIncrement,
   onDecrement,
   soldOut = false,
+  atStockLimit = false,
 }: ProductCartActionProps) {
   const [didJustAdd, setDidJustAdd] = useState(false)
   const previousQuantityRef = useRef(cartQuantity)
@@ -240,7 +242,7 @@ export function ProductCartAction({
       <Button
         variant={soldOut || cartQuantity > 0 ? "muted" : "primary"}
         size="sm"
-        disabled={soldOut}
+        disabled={soldOut || atStockLimit}
         className={cn(
           "h-7 shrink-0 gap-1 rounded-md px-2.5 text-xs font-medium transition-all duration-200",
           cartQuantity > 0 && !soldOut
@@ -254,7 +256,7 @@ export function ProductCartAction({
         onClick={(event) => {
           event.preventDefault()
           event.stopPropagation()
-          if (soldOut) return
+          if (soldOut || atStockLimit) return
           onAddToCart()
         }}
       >
@@ -290,11 +292,17 @@ export function ProductCartAction({
             </div>
             <button
               type="button"
-              className="flex h-full w-7 items-center justify-center text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)]"
-              aria-label={`Add one more ${title} to cart`}
+              disabled={atStockLimit}
+              className="flex h-full w-7 items-center justify-center text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)] disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label={
+                atStockLimit
+                  ? `Stock limit reached for ${title}`
+                  : `Add one more ${title} to cart`
+              }
               onClick={(event) => {
                 event.preventDefault()
                 event.stopPropagation()
+                if (atStockLimit) return
                 onIncrement()
               }}
             >
