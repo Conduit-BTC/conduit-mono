@@ -576,7 +576,17 @@ function StorefrontPage() {
               </div>
               {followError && (
                 <p className="max-w-sm text-left text-xs leading-5 text-[var(--warning)] sm:ml-auto sm:text-right">
-                  {followError}
+                  {followError}{" "}
+                  {followError.startsWith(
+                    "Could not load the complete follow list"
+                  ) ? (
+                    <Link
+                      to="/network"
+                      className="font-semibold underline underline-offset-2 hover:text-[var(--text-primary)]"
+                    >
+                      Open Network settings
+                    </Link>
+                  ) : null}
                 </p>
               )}
             </div>

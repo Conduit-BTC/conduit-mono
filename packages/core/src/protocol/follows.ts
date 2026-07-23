@@ -571,7 +571,7 @@ export async function publishContactListUpdate({
   const { snapshot } = loaded
   if (snapshot.state === "unavailable") {
     throw new ReplaceablePublishSafetyError(
-      `Could not load the complete follow list from its relays. ${loaded.unavailableStage ?? "Relay reads"} completed on ${snapshot.successfulRelays} of ${snapshot.attemptedRelays} relays${snapshot.requiredRelays > 0 ? ` (${snapshot.successfulRequiredRelays} of ${snapshot.requiredRelays} declared write relays)` : ""}. Check your connection and try again.`
+      `Could not load the complete follow list from its relays. ${loaded.unavailableStage ?? "Relay reads"} completed on ${snapshot.successfulRelays} of ${snapshot.attemptedRelays} relays${snapshot.requiredRelays > 0 ? ` (${snapshot.successfulRequiredRelays} of ${snapshot.requiredRelays} declared write relays)` : ""}. Restore the unavailable relays or update your write relay list in Network settings, then try again.`
     )
   }
   if (snapshot.state === "confirmed_absent" && !shouldFollow) return

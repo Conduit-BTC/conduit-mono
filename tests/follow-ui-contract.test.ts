@@ -14,4 +14,15 @@ describe("Market follow session lifecycle", () => {
     ).toHaveLength(2)
     expect(source).toContain('setFollowState("idle")')
   })
+
+  it("links incomplete contact-list reads to write relay settings", () => {
+    const source = readFileSync(
+      new URL("../apps/market/src/routes/store/$pubkey.tsx", import.meta.url),
+      "utf8"
+    )
+
+    expect(source).toContain('to="/network"')
+    expect(source).toContain("Open Network settings")
+    expect(source).toContain("Could not load the complete follow list")
+  })
 })
