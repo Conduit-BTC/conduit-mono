@@ -18,4 +18,15 @@ describe("Market follow session lifecycle", () => {
     expect(source).toContain("isSessionCurrent: () =>")
     expect(source).not.toContain("setFollowState")
   })
+
+  it("links incomplete contact-list reads to write relay settings", () => {
+    const source = readFileSync(
+      new URL("../apps/market/src/routes/store/$pubkey.tsx", import.meta.url),
+      "utf8"
+    )
+
+    expect(source).toContain('to="/network"')
+    expect(source).toContain("Open Network settings")
+    expect(source).toContain("Refusing to publish a follow-list replacement")
+  })
 })

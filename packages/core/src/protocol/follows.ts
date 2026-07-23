@@ -945,6 +945,7 @@ export async function publishContactListUpdate({
   if (!ndk.signer) throw new Error("Signer not connected")
   const signer = ndk.signer
 
+
   const assertCurrentSignerSession = () => {
     if (ndk.signer !== signer || isSessionCurrent?.() === false) {
       throw new Error("Signer session changed while updating the follow list")

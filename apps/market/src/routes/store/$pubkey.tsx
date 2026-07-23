@@ -628,7 +628,17 @@ function StorefrontPage() {
               )}
               {followError && (
                 <p className="max-w-sm text-left text-xs leading-5 text-[var(--warning)] sm:ml-auto sm:text-right">
-                  {followError}
+                  {followError}{" "}
+                  {followError.startsWith(
+                    "Refusing to publish a follow-list replacement"
+                  ) ? (
+                    <Link
+                      to="/network"
+                      className="font-semibold underline underline-offset-2 hover:text-[var(--text-primary)]"
+                    >
+                      Open Network settings
+                    </Link>
+                  ) : null}
                 </p>
               )}
             </div>
