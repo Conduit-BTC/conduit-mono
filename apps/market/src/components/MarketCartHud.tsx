@@ -186,7 +186,10 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     getProfileName(activeProfile) ?? `Store ${formatNpub(selectedMerchant, 6)}`
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-4">
+    <div
+      className="pointer-events-none fixed inset-x-0 z-30 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-4"
+      style={{ bottom: "var(--market-fixed-footer-height, 0px)" }}
+    >
       <section
         ref={hudRef}
         aria-label="Cart inventory"
