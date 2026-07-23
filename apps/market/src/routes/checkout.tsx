@@ -109,6 +109,7 @@ import {
   readCheckoutShippingSession,
   writeCheckoutShippingSession,
 } from "../lib/checkout-session"
+import { buildCheckoutOrderRumor } from "../lib/checkout-order"
 import {
   buildCheckoutPricingIntent,
   buildDefaultZapContent,
@@ -1806,43 +1807,20 @@ function CheckoutPage() {
         throw new Error("Phone and email are required for guest checkout.")
       }
       const orderCreatedAt = guestIdentity?.createdAt ?? Date.now()
-      const currency = "SATS"
       const ndk = getNdk()
-      const orderPayload = {
-        id: orderId,
+      const orderRumor = buildCheckoutOrderRumor({
+        orderId,
         merchantPubkey: selectedMerchant,
         buyerPubkey,
         buyerIdentityKind,
-        items: checkoutPricing.items,
-        subtotal: checkoutPricing.totalSats,
-        currency,
-        shippingCostSats: checkoutPricing.shippingCost.totalSats,
-        shippingCostStatus: checkoutPricing.shippingCost.status,
+        pricing: checkoutPricing,
         shippingAddress,
         guestContact,
         note: guestIdentity ? buildBuyerNote() : buildContactNote(),
         createdAt: orderCreatedAt,
-        pricingQuote: checkoutPricing.quote,
-      }
-
-      const orderRumor = new NDKEvent(ndk)
-      orderRumor.kind = EVENT_KINDS.ORDER
-      orderRumor.created_at = Math.floor(Date.now() / 1000)
-      orderRumor.tags = [
-        ["p", selectedMerchant],
-        ["type", "order"],
-        ["order", orderId],
-        ["amount", String(checkoutPricing.totalSats)],
-        ["currency", currency],
-      ]
-      for (const item of checkoutPricing.items) {
-        orderRumor.tags.push(["item", item.productId, String(item.quantity)])
-        if (item.shippingOptionId) {
-          orderRumor.tags.push(["shipping", item.shippingOptionId])
-        }
-      }
-      orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
-      orderRumor.content = JSON.stringify(orderPayload)
+        ndk,
+        rumorCreatedAt: Date.now(),
+      })
 
       const orderDelivery = await publishBuyerOrderMessage(
         orderRumor,
