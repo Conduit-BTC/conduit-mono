@@ -7,7 +7,7 @@ import {
 } from "../apps/market/src/lib/cart-hud"
 
 describe("Market cart HUD policy", () => {
-  it("uses restrained selected and hover tints for merchant carts", () => {
+  it("matches the Merchant navigation selected and hover palette", () => {
     const source = readFileSync(
       new URL(
         "../apps/market/src/components/MarketCartHud.tsx",
@@ -16,8 +16,23 @@ describe("Market cart HUD policy", () => {
       "utf8"
     )
 
+    expect(source).toContain("var(--primary-500)_15%,transparent")
+    expect(source).toContain("var(--primary-500)_9%,transparent")
+    expect(source).toContain("var(--primary-500)_10%,transparent")
+    expect(source).toContain("var(--primary-500)_5%,transparent")
+    expect(source).toContain("shadow-[var(--shadow-glass-inset)]")
+    expect(source).toContain("var(--warning)_1%,var(--surface)")
     expect(source).toContain("var(--primary-500)_4%,var(--surface)")
-    expect(source).toContain("var(--primary-500)_1%,var(--surface)")
+    expect(source).toContain("var(--primary-500)_8%,var(--surface)")
+    expect(
+      source.match(/var\(--primary-500\)_15%,transparent/g)?.length
+    ).toBeGreaterThanOrEqual(3)
+    expect(source).toContain('aria-label="Cart products"')
+    expect(source).toContain("linear-gradient(to right")
+    expect(source).toContain("rounded-xl border-0 p-1 pr-8")
+    expect(source.match(/<StatusPill/g)?.length).toBe(2)
+    expect(source).toContain('variant="neutral"')
+    expect(source).toContain("selected && expanded")
   })
 
   it("expands on browse surfaces, compacts product detail, and suppresses workflows", () => {

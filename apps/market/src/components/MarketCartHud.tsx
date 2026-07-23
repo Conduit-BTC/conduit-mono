@@ -11,6 +11,7 @@ import {
   AvatarFallback,
   AvatarImage,
   Button,
+  StatusPill,
   Tabs,
   TabsList,
   TabsTrigger,
@@ -25,11 +26,7 @@ import {
   getCartItemKey,
   groupCartItems,
 } from "../lib/cart-model"
-import {
-  getCartHudCheckoutCapability,
-  getCartHudRouteMode,
-  reconcileCartHudMerchant,
-} from "../lib/cart-hud"
+import { getCartHudRouteMode, reconcileCartHudMerchant } from "../lib/cart-hud"
 import { MerchantAvatarFallback } from "./MerchantIdentity"
 
 export type MarketCartHudProps = {
@@ -74,14 +71,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const activeTotal = activeSummary
     ? shopperPricing.formatSatsAmount(activeSummary.totalSats)
     : null
-  const capability = activeSummary
-    ? getCartHudCheckoutCapability({
-        itemPricesAvailable: activeSummary.itemPricesAvailable,
-        shippingReady: activeSummary.shippingReadyForZap,
-        merchantLightningReady: !!activeProfile?.lud16,
-      })
-    : null
-
   useEffect(() => {
     setExpanded(routeMode === "expanded")
   }, [pathname, routeMode])
@@ -193,39 +182,114 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
       <section
         ref={hudRef}
         aria-label="Cart inventory"
-        className="pointer-events-auto mx-auto w-full max-w-4xl overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[0_12px_34px_color-mix(in_srgb,var(--shadow)_22%,transparent)] backdrop-blur"
+        className="pointer-events-auto mx-auto w-full max-w-4xl overflow-hidden rounded-2xl border border-[var(--border)] bg-[color-mix(in_srgb,var(--warning)_1%,var(--surface))] shadow-[0_12px_34px_color-mix(in_srgb,var(--shadow)_22%,transparent)] backdrop-blur"
       >
-        <div className="flex min-h-14 items-center gap-3 px-3 py-2 sm:px-4">
-          <button
-            type="button"
-            aria-expanded={expanded}
-            className="flex min-h-11 min-w-0 flex-1 items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-            onClick={() => setExpanded((current) => !current)}
-          >
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-500 text-white">
-              <ShoppingCart className="h-5 w-5" aria-hidden="true" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-semibold text-[var(--text-primary)]">
-                {merchantName}
-              </span>
-              <span className="block truncate text-xs text-[var(--text-muted)]">
-                {activeGroup.totalItems} item
-                {activeGroup.totalItems === 1 ? "" : "s"}
-                {activeTotal ? " . " : ""}
-                {activeTotal ? (
-                  <span
-                    key={activeTotal.primary}
-                    className="market-cart-hud-value inline-block"
+        <div className="flex min-h-14 items-center gap-2 px-3 py-2 sm:gap-3 sm:px-4">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-500 text-white">
+            <ShoppingCart className="h-5 w-5" aria-hidden="true" />
+          </span>
+
+          {groups.length > 1 ? (
+            <Tabs
+              value={selectedMerchant}
+              onValueChange={setActiveMerchant}
+              className="min-w-0 flex-1"
+            >
+              <TabsList
+                aria-label="Store carts"
+                className="flex h-auto max-w-full justify-start gap-1 overflow-x-auto rounded-xl border-0 p-1 pr-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                style={{
+                  maskImage:
+                    "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
+                  WebkitMaskImage:
+                    "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
+                }}
+              >
+                {groups.map((group) => {
+                  const profile = profiles.data[group.merchantPubkey]
+                  const groupSummary = getCartCostSummary(
+                    group.items,
+                    shopperPricing.quote
+                  )
+                  const groupTotal = shopperPricing.formatSatsAmount(
+                    groupSummary.totalSats
+                  )
+                  const selected = group.merchantPubkey === selectedMerchant
+                  return (
+                    <TabsTrigger
+                      key={group.merchantPubkey}
+                      value={group.merchantPubkey}
+                      className="market-cart-hud-item min-h-11 shrink-0 gap-2 rounded-lg border border-transparent px-3 data-[state=active]:border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] data-[state=active]:bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] data-[state=active]:text-[var(--text-primary)] data-[state=active]:shadow-[var(--shadow-glass-inset)] data-[state=inactive]:hover:border-[color-mix(in_srgb,var(--primary-500)_10%,transparent)] data-[state=inactive]:hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] data-[state=inactive]:hover:text-[var(--text-primary)]"
+                    >
+                      <Avatar className="h-7 w-7">
+                        <AvatarImage src={profile?.picture} alt="" />
+                        <AvatarFallback>
+                          <MerchantAvatarFallback iconClassName="h-4 w-4" />
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className="min-w-0 text-left leading-tight">
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span className="block max-w-32 truncate">
+                            {getProfileName(profile) ??
+                              formatNpub(group.merchantPubkey, 6)}
+                          </span>
+                          <StatusPill
+                            variant="neutral"
+                            aria-label={`${group.totalItems} cart ${group.totalItems === 1 ? "item" : "items"}`}
+                            className="border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 py-0.5 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)]"
+                          >
+                            {group.totalItems}
+                          </StatusPill>
+                        </span>
+                        {selected && expanded ? (
+                          <span className="block max-w-44 truncate text-xs font-normal text-[var(--text-muted)]">
+                            {groupTotal.primary}
+                          </span>
+                        ) : null}
+                      </span>
+                    </TabsTrigger>
+                  )
+                })}
+              </TabsList>
+            </Tabs>
+          ) : (
+            <div className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-3 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]">
+              <Avatar className="h-7 w-7">
+                <AvatarImage src={activeProfile?.picture} alt="" />
+                <AvatarFallback>
+                  <MerchantAvatarFallback iconClassName="h-4 w-4" />
+                </AvatarFallback>
+              </Avatar>
+              <span className="min-w-0 text-left text-sm font-medium leading-tight">
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="block truncate">{merchantName}</span>
+                  <StatusPill
+                    variant="neutral"
+                    aria-label={`${activeGroup.totalItems} cart ${activeGroup.totalItems === 1 ? "item" : "items"}`}
+                    className="border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-2 py-0.5 text-[0.68rem] font-semibold tabular-nums text-[var(--text-primary)]"
                   >
+                    {activeGroup.totalItems}
+                  </StatusPill>
+                </span>
+                {expanded && activeTotal ? (
+                  <span className="block truncate text-xs font-normal text-[var(--text-muted)]">
                     {activeTotal.primary}
                   </span>
                 ) : null}
               </span>
-            </span>
+            </div>
+          )}
+
+          <button
+            type="button"
+            aria-label={expanded ? "Collapse cart" : "Expand cart"}
+            aria-expanded={expanded}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_5%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+            onClick={() => setExpanded((current) => !current)}
+          >
             <ChevronDown
               className={cn(
-                "h-5 w-5 shrink-0 text-[var(--text-muted)] transition-transform motion-reduce:transition-none",
+                "h-5 w-5 transition-transform motion-reduce:transition-none",
                 expanded && "rotate-180"
               )}
               aria-hidden="true"
@@ -255,44 +319,17 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
         >
           <div className="min-h-0 overflow-hidden">
             <div className="space-y-3 p-3 sm:p-4">
-              {groups.length > 1 && (
-                <Tabs
-                  value={selectedMerchant}
-                  onValueChange={setActiveMerchant}
-                >
-                  <TabsList
-                    aria-label="Store carts"
-                    className="flex h-auto max-w-full justify-start gap-1 overflow-x-auto rounded-xl p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-                  >
-                    {groups.map((group) => {
-                      const profile = profiles.data[group.merchantPubkey]
-                      return (
-                        <TabsTrigger
-                          key={group.merchantPubkey}
-                          value={group.merchantPubkey}
-                          className="market-cart-hud-item min-h-10 shrink-0 gap-2 rounded-lg px-3 data-[state=active]:bg-[color-mix(in_srgb,var(--primary-500)_4%,var(--surface))] data-[state=active]:shadow-none data-[state=inactive]:hover:bg-[color-mix(in_srgb,var(--primary-500)_1%,var(--surface))]"
-                        >
-                          <Avatar className="h-6 w-6">
-                            <AvatarImage src={profile?.picture} alt="" />
-                            <AvatarFallback>
-                              <MerchantAvatarFallback iconClassName="h-3.5 w-3.5" />
-                            </AvatarFallback>
-                          </Avatar>
-                          <span className="max-w-32 truncate">
-                            {getProfileName(profile) ??
-                              formatNpub(group.merchantPubkey, 6)}
-                          </span>
-                          <span className="tabular-nums text-xs">
-                            {group.totalItems}
-                          </span>
-                        </TabsTrigger>
-                      )
-                    })}
-                  </TabsList>
-                </Tabs>
-              )}
-
-              <div className="flex max-w-full snap-x snap-mandatory gap-2 overflow-x-auto overscroll-x-contain pb-1 pr-10 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div
+                role="region"
+                aria-label="Cart products"
+                className="flex max-w-full snap-x snap-mandatory gap-2 overflow-x-auto overscroll-x-contain pb-1 pr-10 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                style={{
+                  maskImage:
+                    "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
+                  WebkitMaskImage:
+                    "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
+                }}
+              >
                 {activeGroup.items.map((item) => {
                   const display = shopperPricing.formatPrice(item)
                   const identity = getCartItemIdentity(item)
@@ -336,7 +373,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         <div className="mt-1 flex items-center gap-1">
                           <button
                             type="button"
-                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border)] hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_4%,var(--surface))] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_8%,var(--surface))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                             aria-label={`Decrease ${item.title} quantity`}
                             onClick={() => {
                               if (item.quantity <= 1) cart.removeItem(identity)
@@ -353,7 +390,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                           </span>
                           <button
                             type="button"
-                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border)] hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_4%,var(--surface))] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_8%,var(--surface))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                             aria-label={`Increase ${item.title} quantity`}
                             onClick={() =>
                               cart.addItem(
@@ -393,16 +430,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                 })}
               </div>
 
-              <div className="flex flex-col gap-2 border-t border-[var(--border)] pt-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="min-w-0 text-xs leading-5 text-[var(--text-muted)]">
-                  Checkout confirms delivery, current listings, and wallet
-                  readiness before payment.
-                  {capability && capability.blockers.length > 0 ? (
-                    <span className="sr-only">
-                      {` ${capability.blockers.length} checks remain.`}
-                    </span>
-                  ) : null}
-                </div>
+              <div className="flex justify-end gap-2 border-t border-[var(--border)] pt-3">
                 <div className="flex shrink-0 gap-2">
                   <Button asChild variant="outline" size="sm">
                     <Link
