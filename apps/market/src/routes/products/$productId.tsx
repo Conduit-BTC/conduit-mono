@@ -37,6 +37,7 @@ import {
   useProgressiveProducts,
 } from "../../hooks/useProgressiveProducts"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
+import { cartItemInputFromProduct, selectCartItem } from "../../lib/cart-model"
 
 export const Route = createFileRoute("/products/$productId")({
   component: ProductPage,
@@ -112,7 +113,10 @@ function ProductPage() {
     : ""
   const merchantNip05 = getProfileNip05(merchantProfile.data)
   const cartItem = product
-    ? cart.items.find((item) => item.productId === product.id)
+    ? selectCartItem(cart.items, {
+        merchantPubkey: product.pubkey,
+        productId: product.id,
+      })
     : null
   const cartQuantity = cartItem?.quantity ?? 0
   const priceDisplay = product ? shopperPricing.formatPrice(product) : null
@@ -223,30 +227,7 @@ function ProductPage() {
   function addProductToCart(): void {
     if (!product) return
     recordProductDetailAction("add_to_cart")
-    cart.addItem(
-      {
-        productId: product.id,
-        merchantPubkey: product.pubkey,
-        title: product.title,
-        price: product.price,
-        currency: product.currency,
-        priceSats: product.priceSats,
-        sourcePrice: product.sourcePrice,
-        sourceShippingCost: product.sourceShippingCost,
-        image: product.images[0]?.url,
-        tags: product.tags,
-        format: product.format,
-        shippingCostSats: product.shippingCostSats,
-        shippingOptionId: product.shippingOptionId,
-        shippingOptionDTag: product.shippingOptionDTag,
-        shippingCountries: product.shippingCountries,
-        shippingCountryRules: product.shippingCountryRules,
-        publicZapEnabled: product.publicZapEnabled,
-        zapMessagePolicy: product.zapMessagePolicy,
-        publicZapPolicyKnown: product.publicZapPolicyKnown,
-      },
-      quantity
-    )
+    cart.addItem(cartItemInputFromProduct(product), quantity)
   }
 
   return (
@@ -759,8 +740,13 @@ function ProductPage() {
             {relatedProducts.length > 0 && (
               <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 md:grid-cols-3 lg:grid-cols-4">
                 {relatedProducts.map((relatedProduct, index) => {
-                  const relatedCartItem = cart.items.find(
-                    (item) => item.productId === relatedProduct.id
+                  const relatedIdentity = {
+                    merchantPubkey: relatedProduct.pubkey,
+                    productId: relatedProduct.id,
+                  }
+                  const relatedCartItem = selectCartItem(
+                    cart.items,
+                    relatedIdentity
                   )
                   const relatedCartQuantity = relatedCartItem?.quantity ?? 0
 
@@ -776,74 +762,24 @@ function ProductPage() {
                         cartQuantity={relatedCartQuantity}
                         onAddToCart={() =>
                           cart.addItem(
-                            {
-                              productId: relatedProduct.id,
-                              merchantPubkey: relatedProduct.pubkey,
-                              title: relatedProduct.title,
-                              price: relatedProduct.price,
-                              currency: relatedProduct.currency,
-                              priceSats: relatedProduct.priceSats,
-                              sourcePrice: relatedProduct.sourcePrice,
-                              sourceShippingCost:
-                                relatedProduct.sourceShippingCost,
-                              image: relatedProduct.images[0]?.url,
-                              tags: relatedProduct.tags,
-                              format: relatedProduct.format,
-                              shippingCostSats: relatedProduct.shippingCostSats,
-                              shippingOptionId: relatedProduct.shippingOptionId,
-                              shippingOptionDTag:
-                                relatedProduct.shippingOptionDTag,
-                              shippingCountries:
-                                relatedProduct.shippingCountries,
-                              shippingCountryRules:
-                                relatedProduct.shippingCountryRules,
-                              publicZapEnabled: relatedProduct.publicZapEnabled,
-                              zapMessagePolicy: relatedProduct.zapMessagePolicy,
-                              publicZapPolicyKnown:
-                                relatedProduct.publicZapPolicyKnown,
-                            },
+                            cartItemInputFromProduct(relatedProduct),
                             1
                           )
                         }
                         onIncrement={() =>
                           cart.addItem(
-                            {
-                              productId: relatedProduct.id,
-                              merchantPubkey: relatedProduct.pubkey,
-                              title: relatedProduct.title,
-                              price: relatedProduct.price,
-                              currency: relatedProduct.currency,
-                              priceSats: relatedProduct.priceSats,
-                              sourcePrice: relatedProduct.sourcePrice,
-                              sourceShippingCost:
-                                relatedProduct.sourceShippingCost,
-                              image: relatedProduct.images[0]?.url,
-                              tags: relatedProduct.tags,
-                              format: relatedProduct.format,
-                              shippingCostSats: relatedProduct.shippingCostSats,
-                              shippingOptionId: relatedProduct.shippingOptionId,
-                              shippingOptionDTag:
-                                relatedProduct.shippingOptionDTag,
-                              shippingCountries:
-                                relatedProduct.shippingCountries,
-                              shippingCountryRules:
-                                relatedProduct.shippingCountryRules,
-                              publicZapEnabled: relatedProduct.publicZapEnabled,
-                              zapMessagePolicy: relatedProduct.zapMessagePolicy,
-                              publicZapPolicyKnown:
-                                relatedProduct.publicZapPolicyKnown,
-                            },
+                            cartItemInputFromProduct(relatedProduct),
                             1
                           )
                         }
                         onDecrement={() => {
                           if (!relatedCartItem) return
                           if (relatedCartItem.quantity <= 1) {
-                            cart.removeItem(relatedProduct.id)
+                            cart.removeItem(relatedIdentity)
                             return
                           }
                           cart.setQuantity(
-                            relatedProduct.id,
+                            relatedIdentity,
                             relatedCartItem.quantity - 1
                           )
                         }}

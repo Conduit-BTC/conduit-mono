@@ -48,8 +48,12 @@ import { type CartItem, useCart } from "../hooks/useCart"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
+  cartItemInputFromProduct,
   getCartCostSummary,
+  getCartItemIdentity,
+  getCartItemKey,
   groupCartItems,
+  selectCartItemQuantity,
   type MerchantCartGroup,
 } from "../lib/cart-model"
 
@@ -553,7 +557,7 @@ function MerchantCartCard({
             <div className="divide-y divide-[var(--border)]">
               {group.items.map((item) => (
                 <CartLineItem
-                  key={item.productId}
+                  key={getCartItemKey(item)}
                   item={item}
                   formatPrice={formatPrice}
                   onIncrement={() => onIncrement(item)}
@@ -861,13 +865,14 @@ function CartPage() {
                   )
                 }
                 onDecrement={(item) => {
+                  const identity = getCartItemIdentity(item)
                   if (item.quantity <= 1) {
-                    cart.removeItem(item.productId)
+                    cart.removeItem(identity)
                     return
                   }
-                  cart.setQuantity(item.productId, item.quantity - 1)
+                  cart.setQuantity(identity, item.quantity - 1)
                 }}
-                onRemove={(item) => cart.removeItem(item.productId)}
+                onRemove={(item) => cart.removeItem(getCartItemIdentity(item))}
               />
             )
           })}
@@ -928,9 +933,10 @@ function CartPage() {
               )}
 
               {relatedProducts.map((product) => {
-                const cartQuantity =
-                  cart.items.find((item) => item.productId === product.id)
-                    ?.quantity ?? 0
+                const cartQuantity = selectCartItemQuantity(cart.items, {
+                  merchantPubkey: product.pubkey,
+                  productId: product.id,
+                })
 
                 return (
                   <RelatedProductRow
@@ -939,27 +945,7 @@ function CartPage() {
                     formatPrice={shopperPricing.formatPrice}
                     cartQuantity={cartQuantity}
                     onAdd={() =>
-                      cart.addItem({
-                        productId: product.id,
-                        merchantPubkey: product.pubkey,
-                        title: product.title,
-                        price: product.price,
-                        currency: product.currency,
-                        priceSats: product.priceSats,
-                        sourcePrice: product.sourcePrice,
-                        sourceShippingCost: product.sourceShippingCost,
-                        image: product.images[0]?.url,
-                        tags: product.tags,
-                        format: product.format,
-                        shippingCostSats: product.shippingCostSats,
-                        shippingOptionId: product.shippingOptionId,
-                        shippingOptionDTag: product.shippingOptionDTag,
-                        shippingCountries: product.shippingCountries,
-                        shippingCountryRules: product.shippingCountryRules,
-                        publicZapEnabled: product.publicZapEnabled,
-                        zapMessagePolicy: product.zapMessagePolicy,
-                        publicZapPolicyKnown: product.publicZapPolicyKnown,
-                      })
+                      cart.addItem(cartItemInputFromProduct(product))
                     }
                   />
                 )
