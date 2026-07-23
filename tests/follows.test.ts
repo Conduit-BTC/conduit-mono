@@ -363,7 +363,7 @@ describe("NIP-02 follow helpers", () => {
     expect(signed).toBe(0)
   })
 
-  it("requires a quorum when an identity declares multiple write relays", async () => {
+  it("requires every declared identity write relay to complete", async () => {
     const signer = {
       user: async () => ({ pubkey: ALICE_PUBKEY }),
     } as unknown as NDKSigner
@@ -381,6 +381,7 @@ describe("NIP-02 follow helpers", () => {
             tags: [
               ["r", "wss://identity-write-one.example", "write"],
               ["r", "wss://identity-write-two.example", "write"],
+              ["r", "wss://identity-write-three.example", "write"],
             ],
           })
           relayList.kind = 10_002
@@ -398,7 +399,7 @@ describe("NIP-02 follow helpers", () => {
           relays: relayUrls.map((relayUrl) => ({
             relayUrl,
             status:
-              relayUrl === "wss://identity-write-two.example"
+              relayUrl === "wss://identity-write-three.example"
                 ? ("failed" as const)
                 : ("success" as const),
             eventCount: 0,

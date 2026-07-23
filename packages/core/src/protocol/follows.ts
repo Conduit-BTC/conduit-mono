@@ -454,10 +454,7 @@ async function loadContactListSnapshot(
     ownerPubkey,
     {
       requiredRelayUrls: requiredWriteRelayUrls,
-      minimumSuccessfulRequiredRelays: Math.min(
-        2,
-        requiredWriteRelayUrls.length
-      ),
+      minimumSuccessfulRequiredRelays: requiredWriteRelayUrls.length,
       minimumSuccessfulRelays: 1,
     }
   )
