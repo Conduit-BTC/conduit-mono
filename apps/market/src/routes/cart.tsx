@@ -60,6 +60,7 @@ import {
   createCartItemFromProduct,
   getCartCostSummary,
   getCartItemStockForAvailability,
+  getProductAddAvailability,
   groupCartItems,
   isCartProductAvailabilityBlocking,
   type CartProductAvailability,
@@ -302,6 +303,12 @@ function RelatedProductRow({
   const merchantName = getProfileName(profile)
   const merchantLabel = merchantName ?? formatNpub(product.pubkey, 6)
   const soldOut = product.stock === 0
+  const addAvailability = getProductAddAvailability(
+    product.stock,
+    cartQuantity,
+    1
+  )
+  const atStockLimit = !soldOut && !addAvailability.canAdd
 
   if (!imageUrl || imageFailed) return null
 
@@ -363,15 +370,20 @@ function RelatedProductRow({
           size="sm"
           variant={cartQuantity > 0 ? "muted" : "outline"}
           className="mt-3 h-9 px-3 text-sm"
-          disabled={soldOut}
-          onClick={onAdd}
+          disabled={soldOut || atStockLimit}
+          onClick={() => {
+            if (!addAvailability.canAdd) return
+            onAdd()
+          }}
         >
           <CartIcon className="h-4 w-4" />
           {soldOut
             ? "Sold out"
-            : cartQuantity > 0
-              ? `In cart (${cartQuantity})`
-              : "Add"}
+            : atStockLimit
+              ? "Stock limit reached"
+              : cartQuantity > 0
+                ? `In cart (${cartQuantity})`
+                : "Add"}
         </Button>
       </div>
     </div>
