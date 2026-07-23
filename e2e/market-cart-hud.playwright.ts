@@ -73,6 +73,33 @@ for (const viewport of [
       hudHeight: expect.stringMatching(/^[1-9]\d*px$/),
     })
 
+    const legalFooter = page.locator("footer").filter({
+      has: page.getByRole("navigation", { name: "Legal links" }),
+    })
+    const footerLayout = await legalFooter.evaluate((footer) => ({
+      height: Math.ceil(footer.getBoundingClientRect().height),
+      offset: getComputedStyle(document.documentElement).getPropertyValue(
+        "--market-fixed-footer-height"
+      ),
+      position: getComputedStyle(footer).position,
+      scrollPaddingBottom: getComputedStyle(document.documentElement)
+        .scrollPaddingBottom,
+    }))
+    expect(footerLayout.scrollPaddingBottom).not.toBe("auto")
+
+    if (viewport.name === "desktop") {
+      const hudBox = await hud.boundingBox()
+      const footerBox = await legalFooter.boundingBox()
+      expect(footerLayout.position).toBe("fixed")
+      expect(footerLayout.offset).toBe(`${footerLayout.height}px`)
+      expect(hudBox).not.toBeNull()
+      expect(footerBox).not.toBeNull()
+      expect(hudBox!.y + hudBox!.height).toBeLessThanOrEqual(footerBox!.y)
+    } else {
+      expect(footerLayout.position).not.toBe("fixed")
+      expect(footerLayout.offset).toBe("0px")
+    }
+
     const toggle = hud.locator("button[aria-expanded]")
     await toggle.click()
     await expect(toggle).toHaveAttribute("aria-expanded", "false")

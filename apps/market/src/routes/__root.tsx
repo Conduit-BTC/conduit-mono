@@ -40,12 +40,56 @@ function RootShell({
   children: React.ReactNode
   cartHud?: React.ReactNode
 }) {
+  const footerRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    const footer = footerRef.current
+    if (!footer) return
+
+    const documentRoot = document.documentElement
+    const desktopFooter = window.matchMedia("(min-width: 640px)")
+    const updateFooterHeight = () => {
+      const height = desktopFooter.matches
+        ? Math.ceil(footer.getBoundingClientRect().height)
+        : 0
+      documentRoot.style.setProperty(
+        "--market-fixed-footer-height",
+        `${height}px`
+      )
+    }
+
+    updateFooterHeight()
+    documentRoot.style.scrollPaddingBottom =
+      "calc(var(--market-hud-height, 0px) + var(--market-fixed-footer-height, 0px) + 1.5rem)"
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(updateFooterHeight)
+    observer?.observe(footer)
+    if (typeof desktopFooter.addEventListener === "function") {
+      desktopFooter.addEventListener("change", updateFooterHeight)
+    } else {
+      desktopFooter.addListener(updateFooterHeight)
+    }
+
+    return () => {
+      observer?.disconnect()
+      if (typeof desktopFooter.removeEventListener === "function") {
+        desktopFooter.removeEventListener("change", updateFooterHeight)
+      } else {
+        desktopFooter.removeListener(updateFooterHeight)
+      }
+      documentRoot.style.removeProperty("--market-fixed-footer-height")
+      documentRoot.style.removeProperty("scroll-padding-bottom")
+    }
+  }, [])
+
   return (
     <div
-      className="flex min-h-screen min-w-0 flex-col overflow-x-hidden [scroll-padding-bottom:calc(var(--market-hud-height,0px)+1.5rem)]"
+      className="flex min-h-screen min-w-0 flex-col overflow-x-hidden"
       style={{
         paddingBottom:
-          "calc(var(--market-hud-height, 0px) + max(1.5rem, env(safe-area-inset-bottom)))",
+          "calc(var(--market-hud-height, 0px) + var(--market-fixed-footer-height, 0px) + max(1.5rem, env(safe-area-inset-bottom)))",
       }}
     >
       <MarketHeader />
@@ -53,6 +97,7 @@ function RootShell({
         {children}
       </main>
       <LegalFooter
+        footerRef={footerRef}
         aboutLink={
           <Link
             to="/about"

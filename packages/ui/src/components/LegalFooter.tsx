@@ -1,4 +1,4 @@
-import type { ReactNode } from "react"
+import type { ReactNode, Ref } from "react"
 import { CircleHelp, GitFork, type LucideIcon } from "lucide-react"
 import { cn } from "../utils"
 
@@ -18,11 +18,11 @@ export interface LegalFooterImageIconLink extends LegalFooterBaseIconLink {
 }
 
 export type LegalFooterIconLink =
-  | LegalFooterLucideIconLink
-  | LegalFooterImageIconLink
+  LegalFooterLucideIconLink | LegalFooterImageIconLink
 
 export interface LegalFooterProps {
   className?: string
+  footerRef?: Ref<HTMLElement>
   logoHref?: string
   logoSrc?: string
   aboutLink?: ReactNode
@@ -52,6 +52,7 @@ const DEFAULT_ICON_LINKS: LegalFooterIconLink[] = [
 
 export function LegalFooter({
   className,
+  footerRef,
   logoHref = "https://conduit.market/",
   logoSrc = "/images/logo/logo-full.svg",
   aboutLink,
@@ -64,6 +65,7 @@ export function LegalFooter({
 
   return (
     <footer
+      ref={footerRef}
       className={cn(
         "border-t border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-[var(--text-secondary)] shadow-[0_-1px_0_color-mix(in_srgb,var(--foreground)_8%,transparent)] sm:fixed sm:bottom-0 sm:left-0 sm:right-0 sm:z-40",
         className
