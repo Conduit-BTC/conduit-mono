@@ -20,7 +20,6 @@ import {
   createOrderLifecycle,
   fetchLnurlPayMetadata,
   getPriceSats,
-  getShippingCostSats,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
   hasWebLN,
@@ -33,12 +32,14 @@ import {
   useAuth,
   useProfile,
   type AddressValidityResult,
+  type CommercePriceLike,
   type OrderAddressValidity,
   type OrderGuestContact,
   type OrderLifecycleItem,
   type OrderShippingZoneEligibility,
   type Profile,
   type PricingRateInput,
+  type ShopperPriceDisplay,
   type ShippingAddressSchema,
 } from "@conduit/core"
 import {
@@ -59,10 +60,10 @@ import {
   getProfileNip05,
 } from "../components/MerchantIdentity"
 import { SignerSwitch } from "../components/SignerSwitch"
-import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
 import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
+import { useShopperPricing } from "../hooks/useShopperPricing"
 import {
   useWallet,
   type WalletBalanceState,
@@ -130,13 +131,14 @@ import {
   runOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
-import { getProductPriceDisplay } from "../lib/pricing"
+
 import {
   formatBalanceFreshness,
-  formatWalletMsatsAsSats,
   getKnownWalletPaymentConstraint,
   type WalletPaymentConstraint,
 } from "../lib/wallet-readiness"
+
+type PriceFormatter = (price: CommercePriceLike) => ShopperPriceDisplay
 
 type CheckoutStep =
   "shipping" | "payment" | "signing" | "sending" | "sent" | "paying" | "paid"
@@ -219,14 +221,16 @@ function CheckoutWalletReadiness({
   balance,
   budget,
   constraint,
+  formatSats,
 }: {
   balance: WalletBalanceState
   budget: WalletBudgetState
   constraint: WalletPaymentConstraint | null
+  formatSats: (sats: number) => string
 }) {
   const balanceValue =
     balance.status === "available" && balance.balanceMsats !== null
-      ? `${formatWalletMsatsAsSats(balance.balanceMsats)} sats`
+      ? formatSats(Math.floor(balance.balanceMsats / 1_000))
       : balance.status === "checking"
         ? "Checking..."
         : balance.status === "error"
@@ -237,7 +241,7 @@ function CheckoutWalletReadiness({
   const balanceFreshness = formatBalanceFreshness(balance.fetchedAt)
   const budgetValue =
     budget.status === "available" && budget.remainingMsats !== null
-      ? `${formatWalletMsatsAsSats(budget.remainingMsats)} sats remaining`
+      ? `${formatSats(Math.floor(budget.remainingMsats / 1_000))} remaining`
       : budget.status === "checking"
         ? "Checking..."
         : budget.status === "error"
@@ -457,38 +461,50 @@ function OrderSummary({
   merchantPubkey,
   btcUsdRate,
   availabilityByProductId,
+  formatPrice,
 }: {
   items: CartItem[]
   merchantPubkey: string
   btcUsdRate: PricingRateInput
   availabilityByProductId: ReadonlyMap<string, CartProductAvailability>
+  formatPrice: PriceFormatter
 }) {
   const { data: merchantProfile } = useProfile(merchantPubkey)
   const merchantName = getMerchantDisplayName(merchantProfile, merchantPubkey)
   const totalItems = items.reduce((sum, item) => sum + item.quantity, 0)
-  const shippingCost = getCheckoutShippingCost(items, btcUsdRate)
-  const itemSubtotalSats = items.reduce((sum, item) => {
-    const sats = getPriceSats(item, btcUsdRate)
-    return sats ? sum + sats.sats * item.quantity : sum
-  }, 0)
-  const totalSats = itemSubtotalSats + shippingCost.totalSats
-  const allItemsPriced = items.every((item) => getPriceSats(item, btcUsdRate))
-  const itemSubtotalPrice = getProductPriceDisplay(
-    allItemsPriced
-      ? {
-          price: itemSubtotalSats,
+  const pricing = buildCheckoutPricingIntent(items, btcUsdRate)
+  const pricingUnavailable = {
+    state: "invalid" as const,
+    primary:
+      pricing.status === "error" && pricing.code === "stale_quote"
+        ? "Price conversion is stale"
+        : "Price conversion unavailable",
+    secondary: null,
+    displayCurrency: "BITCOIN" as const,
+    sats: null,
+    approximate: false,
+    source: null,
+  }
+  const itemSubtotalPrice =
+    pricing.status === "ok"
+      ? formatPrice({
+          price: pricing.itemSubtotalSats,
           currency: "SATS",
-          priceSats: itemSubtotalSats,
-        }
-      : { price: 0, currency: "UNSUPPORTED" },
-    btcUsdRate
-  )
-  const totalPrice = getProductPriceDisplay(
-    allItemsPriced
-      ? { price: totalSats, currency: "SATS", priceSats: totalSats }
-      : { price: 0, currency: "UNSUPPORTED" },
-    btcUsdRate
-  )
+          priceSats: pricing.itemSubtotalSats,
+        })
+      : pricingUnavailable
+  const totalPrice =
+    pricing.status === "ok"
+      ? formatPrice({
+          price: pricing.totalSats,
+          currency: "SATS",
+          priceSats: pricing.totalSats,
+        })
+      : pricingUnavailable
+  const shippingCost =
+    pricing.status === "ok"
+      ? pricing.shippingCost
+      : getCheckoutShippingCost(items, btcUsdRate)
   const shippingLabel =
     shippingCost.status === "not_required"
       ? "Not required (digital)"
@@ -496,14 +512,13 @@ function OrderSummary({
         ? "Included"
         : shippingCost.status === "manual"
           ? "Coordinated with merchant"
-          : getProductPriceDisplay(
-              {
+          : pricing.status !== "ok"
+            ? pricingUnavailable.primary
+            : formatPrice({
                 price: shippingCost.totalSats,
                 currency: "SATS",
                 priceSats: shippingCost.totalSats,
-              },
-              btcUsdRate
-            ).primary
+              }).primary
 
   return (
     <aside className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-6">
@@ -528,23 +543,20 @@ function OrderSummary({
         {items.map((item) => {
           const soldOut =
             availabilityByProductId.get(item.productId)?.status === "sold_out"
-          const linePrice = getProductPriceDisplay(
-            {
-              price: item.price * item.quantity,
-              currency: item.currency,
-              priceSats:
-                typeof item.priceSats === "number"
-                  ? item.priceSats * item.quantity
-                  : undefined,
-              sourcePrice: item.sourcePrice
-                ? {
-                    ...item.sourcePrice,
-                    amount: item.sourcePrice.amount * item.quantity,
-                  }
+          const linePrice = formatPrice({
+            price: item.price * item.quantity,
+            currency: item.currency,
+            priceSats:
+              typeof item.priceSats === "number"
+                ? item.priceSats * item.quantity
                 : undefined,
-            },
-            btcUsdRate
-          )
+            sourcePrice: item.sourcePrice
+              ? {
+                  ...item.sourcePrice,
+                  amount: item.sourcePrice.amount * item.quantity,
+                }
+              : undefined,
+          })
           return (
             <div
               key={item.productId}
@@ -585,6 +597,11 @@ function OrderSummary({
                 <div className="text-lg font-semibold text-[var(--text-primary)]">
                   {linePrice.primary}
                 </div>
+                {linePrice.secondary && (
+                  <div className="mt-0.5 text-xs text-[var(--text-muted)]">
+                    {linePrice.secondary}
+                  </div>
+                )}
                 <div className="mt-2 text-sm text-[var(--text-secondary)]">
                   Qty {item.quantity}
                 </div>
@@ -646,7 +663,8 @@ function CheckoutPage() {
   const cart = useCart()
   const search = Route.useSearch()
   const navigate = useNavigate()
-  const btcUsdRateQuery = useBtcUsdRate()
+  const shopperPricing = useShopperPricing()
+  const btcUsdRateQuery = shopperPricing.rateQuery
   const wallet = useWallet({ refreshBalance: true })
 
   const [step, setStep] = useState<CheckoutStep>("shipping")
@@ -1043,6 +1061,7 @@ function CheckoutPage() {
     balance: wallet.balance,
     budget: wallet.budget,
     methods: wallet.info?.methods,
+    formatSatsAmount: (sats) => shopperPricing.formatSatsAmount(sats).primary,
   })
   const canTrySavedNwcWallet =
     !!wallet.connection &&
@@ -1460,43 +1479,30 @@ function CheckoutPage() {
 
     let publishedOrderId: string | null = null
     let orderDelivered = false
+    let orderTotalSats = total
 
     setError(null)
     setPaidNotice(null)
     setStep("signing")
-    recordCheckoutStepResult({
-      checkoutMode: "order_first",
-      status: "started",
-      stepName: "order_submit",
-      amountSats: total,
-    })
 
     try {
       await assertCheckoutItemsAvailable()
-
-      if (hasUnpricedCheckoutItems) {
-        throw new Error(
-          "One or more items cannot be converted to sats right now. Refresh prices before ordering."
-        )
+      const checkoutPricing = await getFreshPricingIntent()
+      if (checkoutPricing.status !== "ok") {
+        throw new Error(checkoutPricing.reason)
       }
+      orderTotalSats = checkoutPricing.totalSats
+      recordCheckoutStepResult({
+        checkoutMode: "order_first",
+        status: "started",
+        stepName: "order_submit",
+        amountSats: orderTotalSats,
+      })
 
       const orderId = crypto.randomUUID()
       publishedOrderId = orderId
       const currency = "SATS"
-      const items = checkoutItems.map((item) => ({
-        productId: item.productId,
-        format: item.format ?? "physical",
-        quantity: item.quantity,
-        priceAtPurchase: getPriceSats(item, btcUsdRate)?.sats ?? 0,
-        currency,
-        shippingCostSats: getShippingCostSats(item, btcUsdRate)?.sats,
-        sourceShippingCost: item.sourceShippingCost,
-        shippingOptionId: item.shippingOptionId,
-        shippingOptionDTag: item.shippingOptionDTag,
-        shippingCountries: item.shippingCountries,
-        shippingCountryRules: item.shippingCountryRules,
-        sourcePrice: item.sourcePrice,
-      }))
+      const items = checkoutPricing.items
 
       const payload = {
         id: orderId,
@@ -1504,13 +1510,13 @@ function CheckoutPage() {
         buyerPubkey: signedBuyerPubkey,
         buyerIdentityKind: "signed_in" as const,
         items,
-        subtotal: total,
+        subtotal: orderTotalSats,
         currency,
         shippingCostSats:
-          checkoutShippingCost.status === "manual"
+          checkoutPricing.shippingCost.status === "manual"
             ? undefined
-            : checkoutShippingCost.totalSats,
-        shippingCostStatus: checkoutShippingCost.status,
+            : checkoutPricing.shippingCost.totalSats,
+        shippingCostStatus: checkoutPricing.shippingCost.status,
         shippingAddress: buildShippingAddress(),
         note: buildContactNote(),
         createdAt: Date.now(),
@@ -1524,7 +1530,7 @@ function CheckoutPage() {
         ["p", selectedMerchant],
         ["type", "order"],
         ["order", orderId],
-        ["amount", String(total)],
+        ["amount", String(orderTotalSats)],
         ["currency", currency],
       ]
       for (const item of checkoutItems) {
@@ -1565,13 +1571,13 @@ function CheckoutPage() {
         checkoutMode: "pay_later",
         merchantLightningAddress: merchantLud16 ?? undefined,
         items: buildLifecycleItems(items),
-        itemSubtotalSats: total - checkoutShippingCost.totalSats,
+        itemSubtotalSats: checkoutPricing.itemSubtotalSats,
         shippingCostSats:
-          checkoutShippingCost.status === "manual"
+          checkoutPricing.shippingCost.status === "manual"
             ? 0
-            : checkoutShippingCost.totalSats,
-        totalSats: total,
-        totalMsats: total * 1000,
+            : checkoutPricing.shippingCost.totalSats,
+        totalSats: orderTotalSats,
+        totalMsats: orderTotalSats * 1000,
         currency: "SATS",
         shippingAddress: shippingAddress ?? undefined,
         contactNote: buildContactNote(),
@@ -1591,12 +1597,12 @@ function CheckoutPage() {
       setStep("sent")
       paymentInFlightRef.current = false
       recordCheckoutSuccess({
-        amountSats: total,
+        amountSats: orderTotalSats,
         checkoutMode: "order_first",
         status: "order_sent",
       })
       recordCheckoutResult({
-        amountSats: total,
+        amountSats: orderTotalSats,
         checkoutMode: "order_first",
         status: "success",
       })
@@ -1616,12 +1622,12 @@ function CheckoutPage() {
         setStep("sent")
         paymentInFlightRef.current = false
         recordCheckoutSuccess({
-          amountSats: total,
+          amountSats: orderTotalSats,
           checkoutMode: "order_first",
           status: "order_sent_local_tracking_failed",
         })
         recordCheckoutResult({
-          amountSats: total,
+          amountSats: orderTotalSats,
           checkoutMode: "order_first",
           status: "success_local_tracking_failed",
         })
@@ -1634,13 +1640,13 @@ function CheckoutPage() {
       }
 
       recordCheckoutStepResult({
-        amountSats: total,
+        amountSats: orderTotalSats,
         checkoutMode: "order_first",
         status: "failed",
         stepName: "order_submit",
       })
       recordCheckoutResult({
-        amountSats: total,
+        amountSats: orderTotalSats,
         checkoutMode: "order_first",
         status: "failed",
       })
@@ -1779,6 +1785,8 @@ function CheckoutPage() {
         balance: wallet.balance,
         budget: wallet.budget,
         methods: wallet.info?.methods,
+        formatSatsAmount: (sats) =>
+          shopperPricing.formatSatsAmount(sats).primary,
       })
       const shouldTrySavedNwcWallet =
         !isGuestCheckout &&
@@ -1948,6 +1956,8 @@ function CheckoutPage() {
         walletConnection: guestIdentity ? null : wallet.connection,
         tryNwc: !guestIdentity && shouldTrySavedNwcWallet,
         tryWebln: !guestIdentity,
+        formatSatsAmount: (sats) =>
+          shopperPricing.formatSatsAmount(sats).primary,
       }
 
       void runOrderPayment(serviceCtx)
@@ -2768,6 +2778,9 @@ function CheckoutPage() {
                           balance={wallet.balance}
                           budget={wallet.budget}
                           constraint={walletPaymentConstraint}
+                          formatSats={(sats) =>
+                            shopperPricing.formatSatsAmount(sats).primary
+                          }
                         />
                       )}
                   </div>
@@ -3056,6 +3069,7 @@ function CheckoutPage() {
           merchantPubkey={selectedMerchant!}
           btcUsdRate={btcUsdRate}
           availabilityByProductId={checkoutAvailability.availabilityByProductId}
+          formatPrice={shopperPricing.formatPrice}
         />
       </div>
 

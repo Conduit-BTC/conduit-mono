@@ -14,6 +14,7 @@ import {
   type ProductFulfillmentFormat,
   type ProductShippingPricingMode,
 } from "./productPriceForm"
+import { getProductStockInputError } from "./productStock"
 
 export const MIN_PRODUCT_TAG_COUNT = 3
 export const RECOMMENDED_MIN_PRODUCT_TAG_COUNT = 5
@@ -24,6 +25,7 @@ export const MAX_PRODUCT_TAG_LENGTH = 40
 export interface ProductPublishFormValues {
   title: string
   price: string
+  stock: string
   currency: string
   format: ProductFulfillmentFormat
   shippingPricingMode: ProductShippingPricingMode
@@ -92,7 +94,13 @@ export function reconcileProductFormShippingPreset(
 }
 
 export type ProductPublishFormField =
-  "title" | "price" | "imageUrl" | "tags" | "shippingCost" | "shippingZone"
+  | "title"
+  | "price"
+  | "stock"
+  | "imageUrl"
+  | "tags"
+  | "shippingCost"
+  | "shippingZone"
 
 export interface ProductPublishFormValidation {
   canPublish: boolean
@@ -197,6 +205,7 @@ function firstError(
   return (
     errors.title ??
     errors.price ??
+    errors.stock ??
     errors.imageUrl ??
     errors.tags ??
     errors.shippingCost ??
@@ -234,6 +243,9 @@ export function validateProductPublishForm(
       error instanceof Error ? error.message : "Price must be greater than zero"
     )
   }
+
+  const stockError = getProductStockInputError(form.stock)
+  if (stockError) addError(errors, "stock", stockError)
 
   if (!imageUrl) {
     addError(

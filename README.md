@@ -113,7 +113,7 @@ bun run dev:merchant:mainnet
 | `VITE_BLOSSOM_SERVER_URL`      | —                          | Blossom media server for product images                  |
 | `VITE_CACHE_API_URL`           | —                          | Optional cache/acceleration API endpoint                 |
 | `VITE_ENABLE_TELEMETRY`        | `false`                    | Enables privacy-filtered Plausible/PostHog telemetry     |
-| `VITE_TELEMETRY_ALLOWED_HOSTS` | —                          | Optional comma-separated host allowlist for telemetry    |
+| `VITE_TELEMETRY_ALLOWED_HOSTS` | —                          | Required comma-separated telemetry host allowlist        |
 | `VITE_PLAUSIBLE_DOMAIN`        | —                          | Optional legacy Plausible site domain                    |
 | `VITE_PLAUSIBLE_SRC`           | —                          | Optional deploy-time Plausible script URL                |
 | `VITE_POSTHOG_KEY`             | —                          | Optional deploy-time PostHog browser project key         |
@@ -128,6 +128,10 @@ bun run dev:merchant:mainnet
 | `VITE_SOURCE_URL`              | GitHub repository URL      | Source repository link surfaced on About pages           |
 | `VITE_RELEASE_CHANNEL`         | local/preview/prod         | Release channel surfaced on About pages                  |
 
+When telemetry is enabled, `VITE_TELEMETRY_ALLOWED_HOSTS` must list every
+permitted hostname. A `*.` prefix allows exactly one preview subdomain label;
+it does not match nested or lookalike domains.
+
 The canonical fallback/reset relay list is code-owned in `packages/core/src/config.ts` and currently starts from:
 
 ```text
@@ -139,10 +143,11 @@ wss://relay.nostr.net
 
 Browser builds print a relay map in DevTools showing the code defaults, raw/normalized relay env vars, and the final resolved relay lists. Conduit-hosted deploys should leave relay env vars empty so reviewers can compare the open-source code defaults with the deployed behavior.
 
-PostHog telemetry is configured for cookieless capture. The PostHog project
-must also have cookieless mode enabled and IP data discarded, otherwise
-PostHog will ignore cookieless browser events even when the deploy env vars are
-correct.
+PostHog telemetry uses memory-only SDK state, one static browser-service
+distinct ID, and disabled person-profile processing. The project must discard
+IP data. Do not enable PostHog's server-hashed cookieless mode for these events:
+it requires raw IP, host, and user-agent inputs that Conduit's privacy filter
+intentionally does not send.
 
 **Modes:**
 

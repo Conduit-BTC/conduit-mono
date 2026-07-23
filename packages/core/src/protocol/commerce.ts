@@ -1658,6 +1658,7 @@ function mergeCachedAndLiveProductRecords(input: {
   }
 
   for (const record of input.live) {
+    if (isRecordDeletedByNip09(record, input.deletionTimestamps)) continue
     const existing = byAddress.get(record.addressId)
     if (!existing || shouldReplaceProductRecord(existing, record)) {
       byAddress.set(record.addressId, record)
@@ -2250,27 +2251,42 @@ export async function getProductDetail(
 
   try {
     if (address && addressId && address.kind === EVENT_KINDS.PRODUCT) {
+      const cached = (
+        await getCachedProductRecords(address.pubkey, {
+          includeStale: true,
+          includeMarketHidden: query.includeMarketHidden,
+        })
+      ).filter((item) => item.addressId === addressId)
       const direct = await fetchPublicProductRecords({
         authors: [address.pubkey],
         dTags: [address.d],
         limit: 10,
       })
-      await cacheProductRecords(direct)
       const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
         address.pubkey
       )
-      const visibleDirect = filterDeletedProductRecords(
-        direct,
-        localDeletionTimestamps
-      )
+      const merged = mergeCachedAndLiveProductRecords({
+        cached,
+        live: direct,
+        deletionTimestamps: localDeletionTimestamps,
+      })
+      await cacheProductRecords(merged)
       const record =
-        filterProductRecordsForRead(visibleDirect, {
+        filterProductRecordsForRead(merged, {
           includeMarketHidden: query.includeMarketHidden,
         }).find((item) => item.addressId === addressId) ?? null
       if (record) {
         return {
           data: record,
-          meta: createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES),
+          meta:
+            direct.length > 0
+              ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES)
+              : createMeta(
+                  "product_detail",
+                  "local_cache",
+                  PRODUCT_CAPABILITIES,
+                  { stale: true, degraded: true }
+                ),
         }
       }
 
@@ -2383,6 +2399,17 @@ export async function getProductsByIds(
   const wanted = new Set(
     addresses.map((address) => `${address.kind}:${address.pubkey}:${address.d}`)
   )
+  const cached = (
+    await getCachedProductRecords(
+      undefined,
+      { includeStale: true, includeMarketHidden: true },
+      authors
+    )
+  ).filter((record) => wanted.has(record.addressId))
+  const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
+    undefined,
+    authors
+  )
 
   try {
     const records = await fetchPublicProductRecords({
@@ -2390,36 +2417,39 @@ export async function getProductsByIds(
       dTags,
       limit: Math.max(addresses.length * 2, 20),
     })
-    await cacheProductRecords(records)
-    const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
-      undefined,
-      authors
-    )
-    const visibleRecords = filterDeletedProductRecords(
-      records,
-      localDeletionTimestamps
-    )
-    const readableRecords = filterProductRecordsForRead(visibleRecords, {
+    const merged = mergeCachedAndLiveProductRecords({
+      cached,
+      live: records,
+      deletionTimestamps: localDeletionTimestamps,
+    })
+    await cacheProductRecords(merged)
+    const filtered = filterProductRecordsForRead(merged, {
+      includeMarketHidden: options.includeMarketHidden,
+    }).filter((record) => wanted.has(record.addressId))
+    return {
+      data: filtered,
+      meta:
+        records.length > 0
+          ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES)
+          : createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
+              stale: filtered.length > 0,
+              degraded: filtered.length > 0,
+            }),
+    }
+  } catch {
+    const fallback = mergeCachedAndLiveProductRecords({
+      cached,
+      live: [],
+      deletionTimestamps: localDeletionTimestamps,
+    })
+    const filtered = filterProductRecordsForRead(fallback, {
       includeMarketHidden: options.includeMarketHidden,
     })
     return {
-      data: readableRecords.filter((record) => wanted.has(record.addressId)),
-      meta: createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES),
-    }
-  } catch {
-    const cached = await getCachedProductRecords(
-      undefined,
-      {
-        includeStale: true,
-        includeMarketHidden: options.includeMarketHidden,
-      },
-      authors
-    )
-    return {
-      data: cached.filter((record) => wanted.has(record.addressId)),
+      data: filtered,
       meta: createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
-        stale: true,
-        degraded: true,
+        stale: filtered.length > 0,
+        degraded: filtered.length > 0,
       }),
     }
   }
@@ -2616,8 +2646,7 @@ function unwrapOptions(): UnwrapGiftWrapOptions {
 }
 
 async function fetchParsedOrderMessages(
-  principalPubkey: string,
-  _limit: number
+  principalPubkey: string
 ): Promise<RawMessageFetchResult> {
   const cached = await loadCachedOrderMessages(principalPubkey)
 
@@ -3077,8 +3106,7 @@ async function syncPrivateMessageInbox(
 }
 
 async function fetchParsedDirectMessages(
-  principalPubkey: string,
-  _limit: number
+  principalPubkey: string
 ): Promise<RawDirectMessageFetchResult> {
   const cached = await loadCachedDirectMessages(principalPubkey)
   const cachedById = new Map<string, ParsedDirectMessage>()
@@ -3359,7 +3387,7 @@ function buildMerchantConversationSummaries(
 export async function getBuyerConversationList(
   query: ConversationListQuery
 ): Promise<CommerceResult<BuyerConversationSummary[]>> {
-  const result = await fetchParsedOrderMessages(query.principalPubkey, 400)
+  const result = await fetchParsedOrderMessages(query.principalPubkey)
   return {
     data: buildBuyerConversationSummaries(
       result.messages,
@@ -3418,7 +3446,7 @@ export async function getCachedBuyerConversationList(
 export async function getMerchantConversationList(
   query: ConversationListQuery
 ): Promise<CommerceResult<MerchantConversationSummary[]>> {
-  const result = await fetchParsedOrderMessages(query.principalPubkey, 400)
+  const result = await fetchParsedOrderMessages(query.principalPubkey)
   return {
     data: buildMerchantConversationSummaries(
       result.messages,
@@ -3477,7 +3505,7 @@ export async function getCachedMerchantConversationList(
 export async function getConversationDetail(
   query: ConversationDetailQuery
 ): Promise<CommerceResult<ConversationDetail | null>> {
-  const result = await fetchParsedOrderMessages(query.principalPubkey, 200)
+  const result = await fetchParsedOrderMessages(query.principalPubkey)
   const messages = result.messages.filter(
     (message) => message.orderId === query.orderId
   )
@@ -3574,10 +3602,7 @@ function buildDirectConversationSummaries(
 export async function getDirectMessageConversationList(
   query: ConversationListQuery
 ): Promise<CommerceResult<DirectConversationSummary[]>> {
-  const result = await fetchParsedDirectMessages(
-    query.principalPubkey,
-    query.limit ?? 400
-  )
+  const result = await fetchParsedDirectMessages(query.principalPubkey)
   return {
     data: buildDirectConversationSummaries(
       result.messages,
@@ -3627,10 +3652,7 @@ export async function getCachedDirectMessageConversationList(
 export async function getDirectMessageThread(
   query: DirectMessageThreadQuery
 ): Promise<CommerceResult<DirectMessageThread | null>> {
-  const result = await fetchParsedDirectMessages(
-    query.principalPubkey,
-    query.limit ?? 400
-  )
+  const result = await fetchParsedDirectMessages(query.principalPubkey)
   const messages = result.messages.filter(
     (message) =>
       counterpartyOf(message, query.principalPubkey) ===

@@ -10,12 +10,20 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import {
   buildBugReportUrl,
+  installBrowserClientErrorTelemetry,
+  recordBrowserClientError,
   recordBrowserTelemetryEvent,
   recordBrowserTelemetryPageView,
   useAuth,
   useNip07Availability,
 } from "@conduit/core"
-import { ErrorPage, NotFoundPage, SignerConnectPanel } from "@conduit/ui"
+import {
+  ErrorPage,
+  NotFoundPage,
+  SignerAuthUrlNotice,
+  SignerConnectPanel,
+  isMobileSignerEnvironment,
+} from "@conduit/ui"
 import {
   MerchantMobileNav,
   MerchantSidebar,
@@ -60,17 +68,20 @@ function RootShell({ children }: { children: ReactNode }) {
 }
 
 function RootLayout() {
-  const { pubkey, status } = useAuth()
+  const { authUrl, dismissAuthUrl, pubkey, method, status } = useAuth()
   const [authFallbackReady, setAuthFallbackReady] = useState(false)
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
   const appLoadTelemetrySentRef = useRef(false)
   const previousAuthStatusRef = useRef(status)
+  const previousAuthMethodRef = useRef(method)
   const signerConnected = status === "connected" && !!pubkey
   const signerRestoring = !!pubkey && status === "restoring"
   const shouldDelayAuthFallback =
     !!pubkey && !signerConnected && !authFallbackReady
+
+  useEffect(() => installBrowserClientErrorTelemetry("merchant"), [])
 
   useEffect(() => {
     if (appLoadTelemetrySentRef.current) return
@@ -94,7 +105,7 @@ function RootLayout() {
         app: "merchant",
         eventName: "signer_connected",
         properties: {
-          method: "nip07",
+          method: method ?? "nip07",
           status: "success",
         },
       })
@@ -107,13 +118,14 @@ function RootLayout() {
         app: "merchant",
         eventName: "signer_disconnected",
         properties: {
-          method: "nip07",
+          method: previousAuthMethodRef.current ?? "nip07",
           status: "success",
         },
       })
     }
     previousAuthStatusRef.current = status
-  }, [status])
+    if (method) previousAuthMethodRef.current = method
+  }, [method, status])
 
   useEffect(() => {
     if (!pubkey || signerConnected) {
@@ -145,14 +157,26 @@ function RootLayout() {
     recordBrowserTelemetryPageView({ app: "merchant", pathname })
   }, [pathname])
 
+  throwSyntheticClientErrorForTelemetryTest()
+
   if (shouldDelayAuthFallback) {
-    return <AuthGateGrace />
+    return (
+      <>
+        <AuthGateGrace />
+        {authUrl && (
+          <SignerAuthUrlNotice authUrl={authUrl} onDismiss={dismissAuthUrl} />
+        )}
+      </>
+    )
   }
 
   if (signerRestoring) {
     return (
       <RootShell>
-        <AuthRestoring />
+        <AuthRestoring method={method} />
+        {authUrl && (
+          <SignerAuthUrlNotice authUrl={authUrl} onDismiss={dismissAuthUrl} />
+        )}
       </RootShell>
     )
   }
@@ -164,8 +188,24 @@ function RootLayout() {
   return (
     <RootShell>
       <Outlet />
+      {authUrl && (
+        <SignerAuthUrlNotice authUrl={authUrl} onDismiss={dismissAuthUrl} />
+      )}
     </RootShell>
   )
+}
+
+function throwSyntheticClientErrorForTelemetryTest(): void {
+  if (
+    import.meta.env.MODE === "mock" &&
+    import.meta.env.VITE_ENABLE_TELEMETRY_TEST_HOOKS === "true" &&
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get(
+      "__conduit_telemetry_test"
+    ) === "react_error_boundary"
+  ) {
+    throw new TypeError("Synthetic client error telemetry test")
+  }
 }
 
 function AuthGateGrace() {
@@ -176,7 +216,7 @@ function AuthGateGrace() {
   )
 }
 
-function AuthRestoring() {
+function AuthRestoring({ method }: { method: "nip07" | "nip46" | null }) {
   return (
     <div className="flex min-h-[50vh] items-center justify-center">
       <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] px-5 py-4 text-center shadow-sm">
@@ -185,7 +225,9 @@ function AuthRestoring() {
           Restoring signer
         </div>
         <div className="mt-1 text-sm text-[var(--text-secondary)]">
-          Waiting for your browser extension.
+          {method === "nip46"
+            ? "Reconnecting to your remote signer."
+            : "Waiting for your browser extension."}
         </div>
       </div>
     </div>
@@ -195,6 +237,15 @@ function AuthRestoring() {
 function RootErrorComponent({ error }: ErrorComponentProps) {
   const { pubkey, status } = useAuth()
   const signerConnected = status === "connected" && !!pubkey
+
+  useEffect(() => {
+    recordBrowserClientError({
+      app: "merchant",
+      error,
+      source: "react_error_boundary",
+    })
+  }, [error])
+
   const errorPage = (
     <ErrorPage
       title="Something went wrong"
@@ -244,26 +295,51 @@ function useMerchantBugReportUrl(): string {
 }
 
 function ConnectGate() {
-  const { status, connect, error } = useAuth()
+  const {
+    status,
+    method,
+    connect,
+    cancelConnect,
+    disconnect,
+    error,
+    authUrl,
+    nostrConnectUri,
+    rememberedMethod,
+  } = useAuth()
   const [isWorking, setIsWorking] = useState(false)
   const extensionAvailable = useNip07Availability()
   const authPending = status === "connecting" || status === "restoring"
-  const isProbablyMobileBrowser = useMemo(() => {
-    if (typeof navigator === "undefined") return false
-    return /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent)
-  }, [])
-  const mobileSignerUnavailable =
-    isProbablyMobileBrowser && !extensionAvailable && status !== "connected"
+  const isProbablyMobileBrowser = useMemo(isMobileSignerEnvironment, [])
   const extensionNotice =
-    !extensionAvailable && !mobileSignerUnavailable
+    !extensionAvailable && !isProbablyMobileBrowser
       ? "No complete NIP-07 signer detected yet. Install or unlock a signer such as Alby or nos2x, then try Connect signer again."
       : null
 
-  async function handleConnect(): Promise<void> {
+  async function handleConnectExtension(): Promise<void> {
     if (authPending) return
     setIsWorking(true)
     try {
-      await connect()
+      await connect({ method: "nip07" })
+    } finally {
+      setIsWorking(false)
+    }
+  }
+
+  async function handleConnectRemote(bunkerUri: string): Promise<void> {
+    if (authPending) return
+    setIsWorking(true)
+    try {
+      await connect({ method: "nip46", nip46Flow: "bunker", bunkerUri })
+    } finally {
+      setIsWorking(false)
+    }
+  }
+
+  async function handleConnectNostrConnect(): Promise<void> {
+    if (authPending) return
+    setIsWorking(true)
+    try {
+      await connect({ method: "nip46", nip46Flow: "nostrconnect" })
     } finally {
       setIsWorking(false)
     }
@@ -273,20 +349,12 @@ function ConnectGate() {
     <div className="min-h-dvh bg-[var(--background)] pb-24 text-[var(--text-primary)] sm:pb-16">
       <main className="mx-auto flex min-h-dvh w-full max-w-4xl items-center justify-center px-4 pb-20 pt-8 sm:px-6 lg:px-8">
         <SignerConnectPanel
-          title={
-            mobileSignerUnavailable
-              ? "Signer unavailable here"
-              : "Connect a signer"
-          }
-          description={
-            mobileSignerUnavailable
-              ? "This browser does not expose a supported Nostr signer."
-              : "Use your Nostr signer to open your merchant workspace."
-          }
+          title="Connect a signer"
+          description="Use your Nostr signer to open your merchant workspace."
           helperText={
-            mobileSignerUnavailable
-              ? "Try a desktop browser with a signer extension, or a mobile browser that already exposes one."
-              : "Conduit currently supports external signers only."
+            isProbablyMobileBrowser
+              ? "Connect a remote signer to continue securely on mobile."
+              : "Choose a browser extension or remote signer."
           }
           unlockLabel="UNLOCK YOUR COMMAND CENTER"
           unlockItems={[
@@ -295,12 +363,22 @@ function ConnectGate() {
             "Sell through Conduit, your own storefront, and the wider Nostr network.",
           ]}
           error={error}
+          authUrl={authUrl}
+          nostrConnectUri={nostrConnectUri}
+          rememberedMethod={rememberedMethod}
+          connectingMethod={method}
           extensionNotice={extensionNotice}
-          mobileSignerUnavailable={mobileSignerUnavailable}
+          mobile={isProbablyMobileBrowser}
+          extensionAvailable={extensionAvailable}
           connectPending={authPending || isWorking}
           connectDisabled={isWorking || authPending}
           className="w-full max-w-xl"
-          onConnect={handleConnect}
+          onConnectExtension={handleConnectExtension}
+          onConnectNostrConnect={handleConnectNostrConnect}
+          onConnectRemote={handleConnectRemote}
+          onCancelConnect={cancelConnect}
+          onReconnect={() => connect({ mode: "restore" })}
+          onForget={disconnect}
         />
       </main>
       {SHOW_DEVTOOLS && <TanStackRouterDevtools />}

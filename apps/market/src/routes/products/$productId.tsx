@@ -7,11 +7,14 @@ import {
 } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import {
+  buildProductDetailActionTelemetryProperties,
   formatNpub,
   getListingSafetyDisplay,
   getProfileName,
   pubkeyToNpub,
+  recordBrowserTelemetryEvent,
   useProfile,
+  type ProductDetailTelemetryAction,
 } from "@conduit/core"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
@@ -27,14 +30,13 @@ import {
   ProductGridCard,
   ProductGridCardSkeleton,
 } from "../../components/ProductGridCard"
-import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
+import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import {
   useProgressiveProductDetail,
   useProgressiveProducts,
 } from "../../hooks/useProgressiveProducts"
 import { createCartItemFromProduct } from "../../lib/cart-model"
-import { getProductPriceDisplay } from "../../lib/pricing"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
 
 export const Route = createFileRoute("/products/$productId")({
@@ -63,7 +65,7 @@ function ProductPage() {
       expandedHeight: 0,
     })
   const descriptionRef = useRef<HTMLDivElement>(null)
-  const btcUsdRateQuery = useBtcUsdRate()
+  const shopperPricing = useShopperPricing()
 
   const productQuery = useProgressiveProductDetail(productId)
   const product = productQuery.product
@@ -115,9 +117,7 @@ function ProductPage() {
     ? cart.items.find((item) => item.productId === product.id)
     : null
   const cartQuantity = cartItem?.quantity ?? 0
-  const priceDisplay = product
-    ? getProductPriceDisplay(product, btcUsdRateQuery.data ?? null)
-    : null
+  const priceDisplay = product ? shopperPricing.formatPrice(product) : null
   const updatedLabel = product
     ? new Intl.DateTimeFormat("en-US", {
         month: "short",
@@ -207,6 +207,26 @@ function ProductPage() {
       ? descriptionMetrics.expandedHeight
       : descriptionMetrics.collapsedHeight
     : undefined
+
+  function recordProductDetailAction(
+    action: ProductDetailTelemetryAction
+  ): void {
+    if (!product) return
+    recordBrowserTelemetryEvent({
+      app: "market",
+      eventName: "product_detail_action",
+      properties: buildProductDetailActionTelemetryProperties({
+        action,
+        productType: product.format === "digital" ? "digital" : "physical",
+      }),
+    })
+  }
+
+  function addProductToCart(): void {
+    if (!product || productSoldOut) return
+    recordProductDetailAction("add_to_cart")
+    cart.addItem(createCartItemFromProduct(product), quantity)
+  }
 
   return (
     <div className="min-w-0 max-w-full space-y-8 overflow-x-hidden">
@@ -506,6 +526,11 @@ function ProductPage() {
                       {priceDisplay.secondary}
                     </div>
                   )}
+                  {priceDisplay?.approximateUsd && (
+                    <div className="mt-1 text-sm text-[var(--text-muted)]">
+                      {priceDisplay.approximateUsd}
+                    </div>
+                  )}
                   <div className="mt-3 text-xs text-[var(--text-secondary)]">
                     Payment and shipping are finalized with the merchant during
                     the order flow.
@@ -561,9 +586,7 @@ function ProductPage() {
                   <Button
                     className="min-w-[12rem] flex-1"
                     disabled={productSoldOut}
-                    onClick={() =>
-                      cart.addItem(createCartItemFromProduct(product), quantity)
-                    }
+                    onClick={addProductToCart}
                   >
                     {productSoldOut
                       ? "Sold out"
@@ -577,6 +600,7 @@ function ProductPage() {
                   <Link
                     to="/cart"
                     search={{ merchant: pubkeyToNpub(product.pubkey) }}
+                    onClick={() => recordProductDetailAction("view_cart")}
                   >
                     <ShoppingCart className="h-4 w-4" />
                     View cart
@@ -757,7 +781,8 @@ function ProductPage() {
                         merchantName={merchantName}
                         merchantNamePending={merchantIdentityPending}
                         imageLoading={index < 4 ? "eager" : "lazy"}
-                        btcUsdRate={btcUsdRateQuery.data ?? null}
+                        btcUsdRate={shopperPricing.quote}
+                        pricePreference={shopperPricing.preference}
                         cartQuantity={relatedCartQuantity}
                         onAddToCart={() =>
                           cart.addItem(

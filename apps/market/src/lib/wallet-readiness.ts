@@ -47,11 +47,13 @@ export function getKnownWalletPaymentConstraint({
   balance,
   budget,
   methods,
+  formatSatsAmount = (sats) => `${sats.toLocaleString()} sats`,
 }: {
   amountMsats: number | null
   balance: NwcSessionBalanceState
   budget: NwcSessionBudgetState
   methods: readonly string[] | null | undefined
+  formatSatsAmount?: (sats: number) => string
 }): WalletPaymentConstraint | null {
   if (methods && !methods.includes("pay_invoice")) {
     return {
@@ -72,9 +74,11 @@ export function getKnownWalletPaymentConstraint({
     return {
       code: "insufficient_balance",
       reason: "Connected wallet balance is below this invoice total.",
-      detail: `${formatWalletMsatsAsSats(
-        balance.balanceMsats
-      )} sats available for a ${formatWalletMsatsAsSats(amountMsats)} sat order.`,
+      detail: `${formatSatsAmount(
+        Math.floor(balance.balanceMsats / 1_000)
+      )} available for a ${formatSatsAmount(
+        Math.floor(amountMsats / 1_000)
+      )} order.`,
     }
   }
 
@@ -86,9 +90,11 @@ export function getKnownWalletPaymentConstraint({
     return {
       code: "budget_exhausted",
       reason: "Connected wallet budget is below this invoice total.",
-      detail: `${formatWalletMsatsAsSats(
-        budget.remainingMsats
-      )} sats remain for a ${formatWalletMsatsAsSats(amountMsats)} sat order.`,
+      detail: `${formatSatsAmount(
+        Math.floor(budget.remainingMsats / 1_000)
+      )} remain for a ${formatSatsAmount(
+        Math.floor(amountMsats / 1_000)
+      )} order.`,
     }
   }
 

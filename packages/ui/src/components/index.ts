@@ -102,6 +102,7 @@ export {
   SelectSeparator,
 } from "./Select"
 export { Skeleton } from "./Skeleton"
+export { Switch } from "./Switch"
 export { Tabs, TabsList, TabsTrigger, TabsContent } from "./Tabs"
 export {
   RelaySettingsPanel,
@@ -122,10 +123,16 @@ export {
   SignerConnectPanel,
   SignerSwitch,
   SignerUnlockCard,
+  isMobileSignerEnvironment,
+  type SignerEnvironmentInput,
   type SignerConnectPanelProps,
   type SignerSwitchProps,
   type SignerSwitchStatus,
 } from "./SignerSwitch"
+export {
+  SignerAuthUrlNotice,
+  type SignerAuthUrlNoticeProps,
+} from "./SignerAuthUrlNotice"
 export { OrderDetailCard, type OrderDetailCardProps } from "./OrderDetailCard"
 export {
   DoubleSideStatusPill,
@@ -135,6 +142,8 @@ export {
   OrderConversationMessage,
   formatProductReference,
   getConversationPreview,
+  type OrderAmountDisplay,
+  type OrderAmountFormatter,
 } from "./OrderConversationMessage"
 export {
   OrderMessagesWidget,

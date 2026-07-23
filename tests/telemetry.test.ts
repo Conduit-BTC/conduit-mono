@@ -2,12 +2,19 @@ import { describe, expect, it } from "bun:test"
 
 import {
   applyPlausibleInitOptions,
+  buildMerchantSetupStepResultTelemetryProperties,
+  buildPaymentAttemptResultTelemetryProperties,
+  buildProductDetailActionTelemetryProperties,
+  buildProductPublishResultTelemetryProperties,
+  buildShippingPublishResultTelemetryProperties,
   buildTelemetryEventPageContext,
   buildTelemetryPageUrl,
   getConduitPostHogConfig,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
+  getTelemetryLatencyBucket,
   pubkeyToNpub,
+  recordBrowserTelemetryEvent,
   recordBrowserTelemetryPageView,
   resolveBrowserTelemetryConfig,
   sanitizeTelemetryEventProperties,
@@ -129,9 +136,12 @@ describe("browser telemetry", () => {
     expect(config).toMatchObject({
       api_host: "https://us.i.posthog.com",
       autocapture: false,
+      capture_exceptions: false,
       capture_dead_clicks: false,
+      capture_heatmaps: false,
       capture_pageview: false,
       capture_pageleave: false,
+      capture_performance: false,
       rageclick: false,
       disable_session_recording: true,
       disable_surveys: true,
@@ -139,18 +149,17 @@ describe("browser telemetry", () => {
       disable_external_dependency_loading: true,
       disable_persistence: true,
       persistence: "memory",
-      cookieless_mode: "always",
       person_profiles: "never",
       advanced_disable_flags: true,
       advanced_disable_feature_flags: true,
       enable_recording_console_log: false,
-      enable_heatmaps: false,
       mask_all_text: true,
       mask_all_element_attributes: true,
     })
     expect(config.property_denylist).toEqual([
       ...sensitiveTelemetryPropertyNames,
     ])
+    expect(config).not.toHaveProperty("cookieless_mode")
     expect(typeof config.before_send).toBe("function")
   })
 
@@ -239,6 +248,238 @@ describe("browser telemetry", () => {
     }
   })
 
+  it("keeps provider failures out of user-visible flows", () => {
+    const previousDocument = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "document"
+    )
+    const previousNavigator = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "navigator"
+    )
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+    const previousEnableTelemetry = process.env.VITE_ENABLE_TELEMETRY
+    const previousAllowedHosts = process.env.VITE_TELEMETRY_ALLOWED_HOSTS
+    const previousPlausibleSrc = process.env.VITE_PLAUSIBLE_SRC
+    const previousPostHogKey = process.env.VITE_POSTHOG_KEY
+
+    const fakeDocument = {
+      querySelector: () => ({}) as HTMLScriptElement,
+    } as unknown as Document
+    const fakeWindow = {
+      location: {
+        hostname: "shop.conduit.market",
+        origin: "https://shop.conduit.market",
+        pathname: "/checkout",
+      },
+      plausible: () => {
+        throw new Error("provider unavailable")
+      },
+    } as unknown as Window
+
+    try {
+      process.env.VITE_ENABLE_TELEMETRY = "true"
+      process.env.VITE_TELEMETRY_ALLOWED_HOSTS = "shop.conduit.market"
+      process.env.VITE_PLAUSIBLE_SRC = "https://plausible.io/js/test.js"
+      delete process.env.VITE_POSTHOG_KEY
+      replaceGlobalProperty("document", fakeDocument)
+      replaceGlobalProperty("navigator", {} as Navigator)
+      replaceGlobalProperty("window", fakeWindow)
+
+      expect(() =>
+        recordBrowserTelemetryEvent({
+          app: "market",
+          eventName: "payment_attempt_result",
+          properties: {
+            amount_bucket: "1k_10k_sats",
+            rail: "nwc",
+            status: "success",
+          },
+        })
+      ).not.toThrow()
+    } finally {
+      restoreProcessEnvValue("VITE_ENABLE_TELEMETRY", previousEnableTelemetry)
+      restoreProcessEnvValue(
+        "VITE_TELEMETRY_ALLOWED_HOSTS",
+        previousAllowedHosts
+      )
+      restoreProcessEnvValue("VITE_PLAUSIBLE_SRC", previousPlausibleSrc)
+      restoreProcessEnvValue("VITE_POSTHOG_KEY", previousPostHogKey)
+      restoreGlobalProperty("document", previousDocument)
+      restoreGlobalProperty("navigator", previousNavigator)
+      restoreGlobalProperty("window", previousWindow)
+    }
+  })
+
+  it("fails closed without a host allowlist and limits wildcards to one label", () => {
+    const previousDocument = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "document"
+    )
+    const previousNavigator = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "navigator"
+    )
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+    const previousEnableTelemetry = process.env.VITE_ENABLE_TELEMETRY
+    const previousAllowedHosts = process.env.VITE_TELEMETRY_ALLOWED_HOSTS
+    const previousPlausibleSrc = process.env.VITE_PLAUSIBLE_SRC
+    const previousPostHogKey = process.env.VITE_POSTHOG_KEY
+
+    const pageUrls: string[] = []
+    const location = {
+      hostname: "preview.conduit-market-coo.pages.dev",
+      origin: "https://preview.conduit-market-coo.pages.dev",
+      pathname: "/about",
+    }
+    const plausible = ((
+      eventName: "pageview" | string,
+      options?: { url?: string }
+    ) => {
+      if (eventName === "pageview" && options?.url) {
+        pageUrls.push(options.url)
+      }
+    }) as PlausibleFunction
+    const fakeDocument = {
+      createElement: () => ({
+        addEventListener: () => undefined,
+        async: false,
+        dataset: {} as Record<string, string>,
+        src: "",
+      }),
+      head: { appendChild: () => undefined },
+      querySelector: () => ({}) as HTMLScriptElement,
+    } as unknown as Document
+    const fakeWindow = { location, plausible } as unknown as Window
+
+    try {
+      process.env.VITE_ENABLE_TELEMETRY = "true"
+      delete process.env.VITE_TELEMETRY_ALLOWED_HOSTS
+      process.env.VITE_PLAUSIBLE_SRC =
+        "https://plausible.io/js/test-host-allowlist.js"
+      delete process.env.VITE_POSTHOG_KEY
+      replaceGlobalProperty("document", fakeDocument)
+      replaceGlobalProperty("navigator", {} as Navigator)
+      replaceGlobalProperty("window", fakeWindow)
+
+      recordBrowserTelemetryPageView({ app: "market", pathname: "/about" })
+
+      process.env.VITE_TELEMETRY_ALLOWED_HOSTS =
+        "*.conduit-market-coo.pages.dev"
+      location.pathname = "/cart"
+      recordBrowserTelemetryPageView({ app: "market", pathname: "/cart" })
+
+      location.hostname = "nested.preview.conduit-market-coo.pages.dev"
+      location.origin = "https://nested.preview.conduit-market-coo.pages.dev"
+      location.pathname = "/checkout"
+      recordBrowserTelemetryPageView({ app: "market", pathname: "/checkout" })
+
+      location.hostname = "preview.conduit-market-coo.pages.dev.evil.example"
+      location.origin =
+        "https://preview.conduit-market-coo.pages.dev.evil.example"
+      location.pathname = "/profile"
+      recordBrowserTelemetryPageView({ app: "market", pathname: "/profile" })
+
+      expect(pageUrls).toEqual([
+        "https://preview.conduit-market-coo.pages.dev/cart",
+      ])
+    } finally {
+      restoreProcessEnvValue("VITE_ENABLE_TELEMETRY", previousEnableTelemetry)
+      restoreProcessEnvValue(
+        "VITE_TELEMETRY_ALLOWED_HOSTS",
+        previousAllowedHosts
+      )
+      restoreProcessEnvValue("VITE_PLAUSIBLE_SRC", previousPlausibleSrc)
+      restoreProcessEnvValue("VITE_POSTHOG_KEY", previousPostHogKey)
+      restoreGlobalProperty("document", previousDocument)
+      restoreGlobalProperty("navigator", previousNavigator)
+      restoreGlobalProperty("window", previousWindow)
+    }
+  })
+
+  it("deduplicates only exact routes before sanitizing dynamic pageviews", () => {
+    const previousDocument = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "document"
+    )
+    const previousNavigator = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "navigator"
+    )
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+    const previousEnableTelemetry = process.env.VITE_ENABLE_TELEMETRY
+    const previousAllowedHosts = process.env.VITE_TELEMETRY_ALLOWED_HOSTS
+    const previousPlausibleSrc = process.env.VITE_PLAUSIBLE_SRC
+    const previousPostHogKey = process.env.VITE_POSTHOG_KEY
+
+    const pageUrls: string[] = []
+    const plausible = ((
+      eventName: "pageview" | string,
+      options?: { url?: string }
+    ) => {
+      if (eventName === "pageview" && options?.url) {
+        pageUrls.push(options.url)
+      }
+    }) as PlausibleFunction
+    const fakeDocument = {
+      createElement: () => ({
+        addEventListener: () => undefined,
+        async: false,
+        dataset: {} as Record<string, string>,
+        src: "",
+      }),
+      head: { appendChild: () => undefined },
+      querySelector: () => null,
+    } as unknown as Document
+    const fakeWindow = {
+      location: {
+        hostname: "shop.conduit.market",
+        origin: "https://shop.conduit.market",
+        pathname: "/products/first",
+      },
+      plausible,
+    } as unknown as Window
+
+    try {
+      process.env.VITE_ENABLE_TELEMETRY = "true"
+      process.env.VITE_TELEMETRY_ALLOWED_HOSTS = "shop.conduit.market"
+      process.env.VITE_PLAUSIBLE_SRC = "https://plausible.io/js/test.js"
+      delete process.env.VITE_POSTHOG_KEY
+      replaceGlobalProperty("document", fakeDocument)
+      replaceGlobalProperty("navigator", {} as Navigator)
+      replaceGlobalProperty("window", fakeWindow)
+
+      recordBrowserTelemetryPageView({
+        app: "market",
+        pathname: "/products/first",
+      })
+      recordBrowserTelemetryPageView({
+        app: "market",
+        pathname: "/products/first",
+      })
+      recordBrowserTelemetryPageView({
+        app: "market",
+        pathname: "/products/second",
+      })
+
+      expect(pageUrls).toEqual([
+        "https://shop.conduit.market/products/:productId",
+        "https://shop.conduit.market/products/:productId",
+      ])
+    } finally {
+      restoreProcessEnvValue("VITE_ENABLE_TELEMETRY", previousEnableTelemetry)
+      restoreProcessEnvValue(
+        "VITE_TELEMETRY_ALLOWED_HOSTS",
+        previousAllowedHosts
+      )
+      restoreProcessEnvValue("VITE_PLAUSIBLE_SRC", previousPlausibleSrc)
+      restoreProcessEnvValue("VITE_POSTHOG_KEY", previousPostHogKey)
+      restoreGlobalProperty("document", previousDocument)
+      restoreGlobalProperty("navigator", previousNavigator)
+      restoreGlobalProperty("window", previousWindow)
+    }
+  })
+
   it("strips PostHog SDK defaults from outgoing events", () => {
     expect(
       sanitizePostHogCaptureEvent({
@@ -271,7 +512,7 @@ describe("browser telemetry", () => {
     })
   })
 
-  it("preserves only PostHog cookieless ingestion fields", () => {
+  it("preserves only the static anonymous PostHog ingestion fields", () => {
     expect(
       sanitizePostHogCaptureEvent({
         event: "checkout_result",
@@ -284,7 +525,7 @@ describe("browser telemetry", () => {
           $process_person_profile: false,
           $session_id: "session-id",
           app: "market",
-          distinct_id: "$posthog_cookieless",
+          distinct_id: "conduit-browser-telemetry",
           mode: "checkout",
           page_path: "/checkout",
           page_url: "https://shop.conduit.market/checkout",
@@ -295,12 +536,11 @@ describe("browser telemetry", () => {
     ).toEqual({
       event: "checkout_result",
       properties: {
-        $cookieless_mode: true,
         $current_url: "https://shop.conduit.market/checkout",
         $pathname: "/checkout",
         $process_person_profile: false,
         app: "market",
-        distinct_id: "$posthog_cookieless",
+        distinct_id: "conduit-browser-telemetry",
         mode: "checkout",
         page_path: "/checkout",
         page_url: "https://shop.conduit.market/checkout",
@@ -315,7 +555,9 @@ describe("browser telemetry", () => {
       sanitizePostHogCaptureEvent({
         event: "$pageview",
         properties: {
+          $process_person_profile: false,
           app: "merchant",
+          distinct_id: "conduit-browser-telemetry",
           page_path: "/products",
           page_url: "https://sell.conduit.market/products",
         },
@@ -325,7 +567,9 @@ describe("browser telemetry", () => {
       properties: {
         $current_url: "https://sell.conduit.market/products",
         $pathname: "/products",
+        $process_person_profile: false,
         app: "merchant",
+        distinct_id: "conduit-browser-telemetry",
         page_path: "/products",
         page_url: "https://sell.conduit.market/products",
       },
@@ -343,6 +587,72 @@ describe("browser telemetry", () => {
     expect(getTelemetryAmountBucket(999)).toBe("lt_1k_sats")
     expect(getTelemetryAmountBucket(10_000)).toBe("10k_100k_sats")
     expect(getTelemetryAmountBucket(1_000_000)).toBe("1m_plus_sats")
+
+    expect(getTelemetryLatencyBucket(undefined)).toBe("unknown")
+    expect(getTelemetryLatencyBucket(249)).toBe("lt_250ms")
+    expect(getTelemetryLatencyBucket(250)).toBe("250ms_1s")
+    expect(getTelemetryLatencyBucket(1_000)).toBe("1s_3s")
+    expect(getTelemetryLatencyBucket(3_000)).toBe("3s_10s")
+    expect(getTelemetryLatencyBucket(10_000)).toBe("10s_plus")
+  })
+
+  it("builds enum-and-bucket-only product and payment event properties", () => {
+    expect(
+      buildPaymentAttemptResultTelemetryProperties({
+        amountSats: 25_000,
+        latencyMs: 1_200,
+        rail: "nwc",
+        status: "blocked",
+      })
+    ).toEqual({
+      amount_bucket: "10k_100k_sats",
+      latency_bucket: "1s_3s",
+      mode: "automatic",
+      rail: "nwc",
+      status: "blocked",
+    })
+    expect(
+      buildProductPublishResultTelemetryProperties({
+        eventFamily: "delivery_retry",
+        latencyMs: 12_000,
+        status: "failure",
+      })
+    ).toEqual({
+      event_family: "delivery_retry",
+      latency_bucket: "10s_plus",
+      status: "failure",
+    })
+    expect(
+      buildShippingPublishResultTelemetryProperties({
+        eventFamily: "publish",
+        latencyMs: 800,
+        status: "success",
+      })
+    ).toEqual({
+      event_family: "publish",
+      latency_bucket: "250ms_1s",
+      status: "success",
+    })
+    expect(
+      buildMerchantSetupStepResultTelemetryProperties({
+        status: "blocked",
+        step: "shipping",
+      })
+    ).toEqual({
+      status: "blocked",
+      step: "shipping",
+      surface: "merchant_readiness",
+    })
+    expect(
+      buildProductDetailActionTelemetryProperties({
+        action: "add_to_cart",
+        productType: "physical",
+      })
+    ).toEqual({
+      action: "add_to_cart",
+      product_type: "physical",
+      surface: "product_detail",
+    })
   })
 
   it("drops telemetry properties that are sensitive, high-cardinality, or free text", () => {

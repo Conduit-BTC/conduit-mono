@@ -131,7 +131,7 @@ jobs:
         id: review_codex_auth_json
         if: steps.sudden_auth.outputs.has_codex_auth_json == 'true'
         continue-on-error: ${{ steps.sudden_auth.outputs.has_auth_file == 'true' || steps.sudden_auth.outputs.has_api_key == 'true' }}
-        uses: sudden-network/agent@v1.14.0
+        uses: sudden-network/agent@v1.14.1
         with:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
           github_token: ${{ steps.app_token.outputs.token }}
@@ -186,7 +186,7 @@ jobs:
           (steps.sudden_auth.outputs.has_codex_auth_json != 'true' ||
             steps.review_codex_auth_json.outcome == 'failure')
         continue-on-error: ${{ steps.sudden_auth.outputs.has_api_key == 'true' }}
-        uses: sudden-network/agent@v1.14.0
+        uses: sudden-network/agent@v1.14.1
         with:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
           github_token: ${{ steps.app_token.outputs.token }}
@@ -241,7 +241,7 @@ jobs:
             steps.review_codex_auth_json.outcome == 'failure') &&
           (steps.sudden_auth.outputs.has_auth_file != 'true' ||
             steps.review_auth_file.outcome == 'failure')
-        uses: sudden-network/agent@v1.14.0
+        uses: sudden-network/agent@v1.14.1
         with:
           agent_api_key: ${{ secrets.SUDDEN_AGENT_API_KEY }}
           github_token: ${{ steps.app_token.outputs.token }}

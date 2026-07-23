@@ -12,6 +12,28 @@ import {
 import { Badge } from "./Badge"
 import { Button } from "./Button"
 
+export type OrderAmountDisplay = {
+  primary: string
+  secondary?: string | null
+}
+
+export type OrderAmountFormatter = (
+  amount: number,
+  currency: string,
+  sourcePrice?: {
+    amount: number
+    currency: string
+    normalizedCurrency: string
+  }
+) => OrderAmountDisplay
+
+function defaultOrderAmountDisplay(
+  amount: number,
+  currency: string
+): OrderAmountDisplay {
+  return { primary: `${amount} ${currency}` }
+}
+
 export function formatProductReference(productId: string): {
   title: string
   detail: string
@@ -40,11 +62,13 @@ function InvoiceCard({
   amount,
   currency,
   note,
+  formatAmount,
 }: {
   invoice: string
   amount?: number
   currency?: string
   note?: string
+  formatAmount: OrderAmountFormatter
 }) {
   const [copied, setCopied] = useState(false)
 
@@ -68,6 +92,15 @@ function InvoiceCard({
   const displayAmount =
     decodedAmount.sats ?? decodedAmount.msats ?? amount ?? null
   const displayCurrency = decodedAmount.currency ?? currency ?? null
+  const formattedAmount =
+    displayAmount != null && displayCurrency
+      ? displayCurrency === "MSATS"
+        ? {
+            primary: `${displayAmount.toLocaleString("en-US")} msats`,
+            secondary: null,
+          }
+        : formatAmount(displayAmount, displayCurrency)
+      : null
 
   return (
     <div className="space-y-2">
@@ -76,9 +109,13 @@ function InvoiceCard({
           Lightning invoice
         </div>
         {displayAmount != null && (
-          <div className="text-sm font-medium text-[var(--text-primary)]">
-            {displayAmount}
-            {displayCurrency ? ` ${displayCurrency}` : " sats"}
+          <div className="text-right text-sm font-medium text-[var(--text-primary)]">
+            <div>{formattedAmount?.primary ?? `${displayAmount} sats`}</div>
+            {formattedAmount?.secondary && (
+              <div className="text-xs font-normal text-[var(--text-muted)]">
+                {formattedAmount.secondary}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -133,10 +170,15 @@ function InvoiceCard({
   )
 }
 
-export function getConversationPreview(message: ParsedOrderMessage): string {
+export function getConversationPreview(
+  message: ParsedOrderMessage,
+  formatAmount: OrderAmountFormatter = defaultOrderAmountDisplay
+): string {
   switch (message.type) {
     case "order":
-      return `Order for ${message.payload.subtotal} ${message.payload.currency}`
+      return `Order for ${
+        formatAmount(message.payload.subtotal, message.payload.currency).primary
+      }`
     case "payment_request":
       return message.payload.note ?? "Invoice sent"
     case "status_update":
@@ -175,6 +217,7 @@ export function OrderConversationMessage({
   message,
   mine,
   resolveItem,
+  formatAmount = defaultOrderAmountDisplay,
 }: {
   message: ParsedOrderMessage
   mine: boolean
@@ -182,6 +225,7 @@ export function OrderConversationMessage({
   resolveItem?: (
     productId: string
   ) => { title?: string; imageUrl?: string } | undefined
+  formatAmount?: OrderAmountFormatter
 }) {
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
@@ -203,9 +247,22 @@ export function OrderConversationMessage({
 
         {message.type === "order" && (
           <div className="space-y-1.5">
-            <div className="text-[var(--text-primary)]">
-              Total: {message.payload.subtotal} {message.payload.currency}
-            </div>
+            {(() => {
+              const total = formatAmount(
+                message.payload.subtotal,
+                message.payload.currency
+              )
+              return (
+                <div className="text-[var(--text-primary)]">
+                  <div>Total: {total.primary}</div>
+                  {total.secondary && (
+                    <div className="text-xs text-[var(--text-muted)]">
+                      {total.secondary}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
             {message.payload.items.map((item) => {
               const resolved = resolveItem?.(item.productId)
               const title =
@@ -213,6 +270,11 @@ export function OrderConversationMessage({
                 resolved?.title ||
                 formatProductReference(item.productId).title
               const image = resolved?.imageUrl
+              const itemPrice = formatAmount(
+                item.priceAtPurchase,
+                item.currency,
+                item.sourcePrice
+              )
               return (
                 <div
                   key={`${message.id}-${item.productId}`}
@@ -236,8 +298,13 @@ export function OrderConversationMessage({
                       Qty {item.quantity}
                     </div>
                   </div>
-                  <span className="shrink-0 text-xs text-[var(--text-secondary)]">
-                    {item.priceAtPurchase} {item.currency}
+                  <span className="shrink-0 text-right text-xs text-[var(--text-secondary)]">
+                    <span className="block">{itemPrice.primary}</span>
+                    {itemPrice.secondary && (
+                      <span className="block text-[var(--text-muted)]">
+                        {itemPrice.secondary}
+                      </span>
+                    )}
                   </span>
                 </div>
               )
@@ -273,6 +340,7 @@ export function OrderConversationMessage({
             amount={message.payload.amount}
             currency={message.payload.currency}
             note={message.payload.note}
+            formatAmount={formatAmount}
           />
         )}
 

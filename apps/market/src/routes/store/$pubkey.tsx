@@ -54,7 +54,7 @@ import {
 } from "../../components/MerchantIdentity"
 import { MerchantTrustSummary } from "../../components/MerchantTrustSummary"
 import { ProfileBanner } from "../../components/ProfileBanner"
-import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
+import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import { useMerchantTrustContext } from "../../hooks/useMerchantTrustContext"
 import {
@@ -166,8 +166,8 @@ function StorefrontPage() {
   const queryClient = useQueryClient()
   const cart = useCart()
   const { pubkey: viewerPubkey, status } = useAuth()
-  const btcUsdRateQuery = useBtcUsdRate()
-  const btcUsdRate = btcUsdRateQuery.data ?? null
+  const shopperPricing = useShopperPricing()
+  const btcUsdRate = shopperPricing.quote
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
   const [searchDirty, setSearchDirty] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
@@ -795,6 +795,7 @@ function StorefrontPage() {
                     merchantNamePending={merchantIdentityPending}
                     imageLoading={index < 4 ? "eager" : "lazy"}
                     btcUsdRate={btcUsdRate}
+                    pricePreference={shopperPricing.preference}
                     cartQuantity={
                       cart.items.find((item) => item.productId === product.id)
                         ?.quantity ?? 0

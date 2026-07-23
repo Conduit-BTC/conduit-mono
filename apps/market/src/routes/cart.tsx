@@ -24,8 +24,10 @@ import {
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
   useProfile,
-  type PricingRateInput,
+  type BtcUsdRateQuote,
+  type CommercePriceLike,
   type Product,
+  type ShopperPriceDisplay,
 } from "@conduit/core"
 import {
   Avatar,
@@ -50,9 +52,10 @@ import {
   getMerchantDisplayName,
   getProfileNip05,
 } from "../components/MerchantIdentity"
-import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { type CartItem, useCart } from "../hooks/useCart"
 import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
+import { useShopperPricing } from "../hooks/useShopperPricing"
+import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
   createCartItemFromProduct,
   getCartCostSummary,
@@ -61,7 +64,8 @@ import {
   type CartProductAvailability,
   type MerchantCartGroup,
 } from "../lib/cart-model"
-import { getProductPriceDisplay } from "../lib/pricing"
+
+type PriceFormatter = (price: CommercePriceLike) => ShopperPriceDisplay
 
 type CartSearch = {
   merchant?: string
@@ -105,26 +109,28 @@ function RefreshIcon({ className = "h-4 w-4" }: { className?: string }) {
 
 function getCartSummaryPrice(
   items: CartItem[],
-  btcUsdRate: PricingRateInput
+  btcUsdRate: BtcUsdRateQuote | null,
+  formatPrice: PriceFormatter
 ): CartSummaryPrice {
   const summary = getCartCostSummary(items, btcUsdRate)
+  const pricing = buildCheckoutPricingIntent(items, btcUsdRate)
 
-  if (!summary.itemPricesAvailable) {
+  if (!summary.itemPricesAvailable || pricing.status !== "ok") {
     return {
-      primary: `${summary.count} item${summary.count === 1 ? "" : "s"}`,
-      secondary: "Price conversion unavailable",
+      primary:
+        pricing.status === "error" && pricing.code === "stale_quote"
+          ? "Price conversion is stale"
+          : "Price conversion unavailable",
+      secondary: `${summary.count} item${summary.count === 1 ? "" : "s"}`,
       canZapOut: false,
     }
   }
 
-  const display = getProductPriceDisplay(
-    {
-      price: summary.totalSats,
-      currency: "SATS",
-      priceSats: summary.totalSats,
-    },
-    btcUsdRate
-  )
+  const display = formatPrice({
+    price: pricing.totalSats,
+    currency: "SATS",
+    priceSats: pricing.totalSats,
+  })
 
   return {
     ...display,
@@ -279,18 +285,18 @@ function MerchantIdentity({
 
 function RelatedProductRow({
   product,
-  btcUsdRate,
+  formatPrice,
   cartQuantity,
   onAdd,
 }: {
   product: Product
-  btcUsdRate: PricingRateInput
+  formatPrice: PriceFormatter
   cartQuantity: number
   onAdd: () => void
 }) {
   const [imageFailed, setImageFailed] = useState(false)
   const imageUrl = product.images[0]?.url
-  const price = getProductPriceDisplay(product, btcUsdRate)
+  const price = formatPrice(product)
   const { data: profile } = useProfile(product.pubkey)
   const merchantName = getProfileName(profile)
   const merchantLabel = merchantName ?? formatNpub(product.pubkey, 6)
@@ -374,37 +380,34 @@ function RelatedProductRow({
 function CartLineItem({
   item,
   availability,
-  btcUsdRate,
+  formatPrice,
   onIncrement,
   onDecrement,
   onRemove,
 }: {
   item: CartItem
   availability?: CartProductAvailability
-  btcUsdRate: PricingRateInput
+  formatPrice: PriceFormatter
   onIncrement: () => void
   onDecrement: () => void
   onRemove: () => void
 }) {
   const soldOut = availability?.status === "sold_out"
-  const linePrice = getProductPriceDisplay(
-    {
-      price: item.price * item.quantity,
-      currency: item.currency,
-      priceSats:
-        typeof item.priceSats === "number"
-          ? item.priceSats * item.quantity
-          : undefined,
-      sourcePrice: item.sourcePrice
-        ? {
-            ...item.sourcePrice,
-            amount: item.sourcePrice.amount * item.quantity,
-          }
+  const linePrice = formatPrice({
+    price: item.price * item.quantity,
+    currency: item.currency,
+    priceSats:
+      typeof item.priceSats === "number"
+        ? item.priceSats * item.quantity
         : undefined,
-    },
-    btcUsdRate
-  )
-  const unitPrice = getProductPriceDisplay(item, btcUsdRate)
+    sourcePrice: item.sourcePrice
+      ? {
+          ...item.sourcePrice,
+          amount: item.sourcePrice.amount * item.quantity,
+        }
+      : undefined,
+  })
+  const unitPrice = formatPrice(item)
 
   return (
     <div
@@ -508,6 +511,7 @@ function MerchantCartCard({
   expanded,
   forceExpanded,
   btcUsdRate,
+  formatPrice,
   onToggle,
   onCheckout,
   onClear,
@@ -520,7 +524,8 @@ function MerchantCartCard({
   availabilityChecking: boolean
   expanded: boolean
   forceExpanded: boolean
-  btcUsdRate: PricingRateInput
+  btcUsdRate: BtcUsdRateQuote | null
+  formatPrice: PriceFormatter
   onToggle: () => void
   onCheckout: () => void
   onClear: () => void
@@ -529,7 +534,7 @@ function MerchantCartCard({
   onRemove: (item: CartItem) => void
 }) {
   const { data: profile } = useProfile(group.merchantPubkey)
-  const summary = getCartSummaryPrice(group.items, btcUsdRate)
+  const summary = getCartSummaryPrice(group.items, btcUsdRate, formatPrice)
   const hasSoldOutItems = group.items.some(
     (item) => availabilityByProductId.get(item.productId)?.status === "sold_out"
   )
@@ -620,7 +625,7 @@ function MerchantCartCard({
                   key={item.productId}
                   item={item}
                   availability={availabilityByProductId.get(item.productId)}
-                  btcUsdRate={btcUsdRate}
+                  formatPrice={formatPrice}
                   onIncrement={() => onIncrement(item)}
                   onDecrement={() => onDecrement(item)}
                   onRemove={() => onRemove(item)}
@@ -639,7 +644,7 @@ function CartPage() {
   const cartAvailability = useCartProductAvailability(cart.items)
   const search = Route.useSearch()
   const navigate = useNavigate()
-  const btcUsdRateQuery = useBtcUsdRate()
+  const shopperPricing = useShopperPricing()
   const [confirmClearTarget, setConfirmClearTarget] = useState<
     "all" | string | null
   >(null)
@@ -777,7 +782,8 @@ function CartPage() {
 
   const allCartsSummary = getCartSummaryPrice(
     cart.items,
-    btcUsdRateQuery.data ?? null
+    shopperPricing.quote,
+    shopperPricing.formatPrice
   )
   const clearCartDialog = (
     <Dialog
@@ -939,7 +945,8 @@ function CartPage() {
                 availabilityChecking={cartAvailability.isChecking}
                 expanded={expanded}
                 forceExpanded={forceExpanded}
-                btcUsdRate={btcUsdRateQuery.data ?? null}
+                btcUsdRate={shopperPricing.quote}
+                formatPrice={shopperPricing.formatPrice}
                 onToggle={() =>
                   setExpandedMerchant(
                     expandedMerchant === group.merchantPubkey
@@ -1057,7 +1064,7 @@ function CartPage() {
                   <RelatedProductRow
                     key={product.id}
                     product={product}
-                    btcUsdRate={btcUsdRateQuery.data ?? null}
+                    formatPrice={shopperPricing.formatPrice}
                     cartQuantity={cartQuantity}
                     onAdd={() =>
                       cart.addItem(createCartItemFromProduct(product))

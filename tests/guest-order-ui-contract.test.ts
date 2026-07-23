@@ -41,6 +41,9 @@ describe("guest order UI contracts", () => {
 
   it("records guest fulfillment without claiming a guest relay inbox", async () => {
     const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
+    const orderIdentity = await Bun.file(
+      "apps/merchant/src/lib/order-phase.ts"
+    ).text()
     const publisher = await Bun.file(
       "packages/core/src/protocol/merchant-order-publish.ts"
     ).text()
@@ -49,7 +52,8 @@ describe("guest order UI contracts", () => {
     expect(source).toContain("delivery: operationalDelivery")
     expect(source).toContain("readOnly={!buyerInboxKnown}")
     expect(source).toContain('"Record shipping update"')
-    expect(source).toContain('"guest_ephemeral"')
+    expect(source).toContain("isMerchantGuestOrder")
+    expect(orderIdentity).toContain('"guest_ephemeral"')
     expect(source).toContain("return false")
     expect(source).toContain("This guest has no Nostr reply inbox")
     expect(source).toContain("assertPaidForFulfillment()")

@@ -15,6 +15,7 @@ import {
   type OmfZapoutReceipt,
 } from "@conduit/core"
 import { Badge, Button, StatusPill } from "@conduit/ui"
+import { useShopperPricing } from "../hooks/useShopperPricing"
 
 export const Route = createFileRoute("/zapouts")({
   component: ZapoutsPage,
@@ -375,10 +376,13 @@ async function fetchOmfZapoutFeed(): Promise<OmfZapoutFeed> {
   }
 }
 
-function formatZapoutAmount(amountMsats: number | null): string {
+function formatZapoutAmount(
+  amountMsats: number | null,
+  formatSats: (sats: number) => string
+): string {
   if (amountMsats === null) return "Amount unavailable"
   if (amountMsats % 1000 === 0) {
-    return `${(amountMsats / 1000).toLocaleString()} sats`
+    return formatSats(amountMsats / 1000)
   }
   return `${amountMsats.toLocaleString()} msats`
 }
@@ -442,7 +446,13 @@ function ZapoutStatePanel({
   )
 }
 
-function ZapoutReceiptCard({ zapout }: { zapout: OmfZapoutReceipt }) {
+function ZapoutReceiptCard({
+  zapout,
+  formatSats,
+}: {
+  zapout: OmfZapoutReceipt
+  formatSats: (sats: number) => string
+}) {
   const relayLabel = zapout.sourceRelayUrls[0]
     ? relayHost(zapout.sourceRelayUrls[0])
     : "Relay unknown"
@@ -458,7 +468,7 @@ function ZapoutReceiptCard({ zapout }: { zapout: OmfZapoutReceipt }) {
             </Badge>
           </div>
           <div className="mt-3 text-2xl font-semibold text-[var(--text-primary)]">
-            {formatZapoutAmount(zapout.amountMsats)}
+            {formatZapoutAmount(zapout.amountMsats, formatSats)}
           </div>
           {zapout.comment ? (
             <p className="mt-2 max-w-2xl break-words text-sm leading-6 text-[var(--text-secondary)]">
@@ -519,6 +529,7 @@ function ZapoutReceiptCard({ zapout }: { zapout: OmfZapoutReceipt }) {
 }
 
 function ZapoutsPage() {
+  const shopperPricing = useShopperPricing()
   const zapoutsQuery = useQuery({
     queryKey: ["omf-zapouts", config.zapRelayUrls.join("|")],
     queryFn: fetchOmfZapoutFeed,
@@ -632,7 +643,13 @@ function ZapoutsPage() {
       ) : (
         <section className="space-y-3">
           {zapouts.map((zapout) => (
-            <ZapoutReceiptCard key={zapout.id} zapout={zapout} />
+            <ZapoutReceiptCard
+              key={zapout.id}
+              zapout={zapout}
+              formatSats={(sats) =>
+                shopperPricing.formatSatsAmount(sats).primary
+              }
+            />
           ))}
         </section>
       )}

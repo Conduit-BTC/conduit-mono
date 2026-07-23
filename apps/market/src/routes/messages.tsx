@@ -23,6 +23,7 @@ import {
   getConversationPreview,
   getConversationMessageDisplayContent,
   useOptimisticConversationMessages,
+  type OrderAmountFormatter,
   type OptimisticConversationMessage,
 } from "@conduit/ui"
 import { MessageCircleMore, Search, Store } from "lucide-react"
@@ -62,6 +63,7 @@ import {
   type BuyerConversation,
 } from "../lib/orderConversations"
 import { getAutomaticMerchantThreadId } from "../lib/message-route-state"
+import { useShopperPricing } from "../hooks/useShopperPricing"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 
 type MessagesSearch = {
@@ -119,10 +121,12 @@ function MerchantThreadRow({
   conversation,
   active,
   onClick,
+  formatAmount,
 }: {
   conversation: BuyerConversation
   active: boolean
   onClick: () => void
+  formatAmount: OrderAmountFormatter
 }) {
   const { data: profile } = useProfile(conversation.merchantPubkey, {
     maxUnresolvedRefetches: 1,
@@ -176,7 +180,7 @@ function MerchantThreadRow({
           </div>
           <div className="mt-1.5 line-clamp-2 text-sm text-[var(--text-secondary)]">
             {latestMessage
-              ? getConversationPreview(latestMessage)
+              ? getConversationPreview(latestMessage, formatAmount)
               : "No messages yet"}
           </div>
         </div>
@@ -259,6 +263,21 @@ function DmThreadRow({
 }
 
 function MessagesPage() {
+  const shopperPricing = useShopperPricing()
+  const formatOrderAmount: OrderAmountFormatter = (
+    amount,
+    currency,
+    sourcePrice
+  ) =>
+    shopperPricing.formatPrice(
+      {
+        price: amount,
+        currency,
+        priceSats: currency === "SATS" ? amount : undefined,
+        sourcePrice,
+      },
+      { settledSatsAreAuthoritative: true }
+    )
   const { pubkey, status } = useAuth()
   const queryClient = useQueryClient()
   const search = Route.useSearch()
@@ -1276,6 +1295,7 @@ function MessagesPage() {
                             replace: true,
                           })
                         }
+                        formatAmount={formatOrderAmount}
                       />
                     ))
                   ) : (
@@ -1329,6 +1349,7 @@ function MessagesPage() {
                                   replace: true,
                                 })
                               }
+                              formatAmount={formatOrderAmount}
                             />
                           </div>
                         ))}
@@ -1377,6 +1398,7 @@ function MessagesPage() {
                             })
                             setMerchantSearchSheetOpen(false)
                           }}
+                          formatAmount={formatOrderAmount}
                         />
                       ))}
                     </div>
@@ -1449,6 +1471,7 @@ function MessagesPage() {
                           key={message.id}
                           message={message}
                           mine={message.senderPubkey === pubkey}
+                          formatAmount={formatOrderAmount}
                         />
                       ))}
                     </div>
