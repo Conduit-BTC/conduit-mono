@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { readFileSync } from "node:fs"
 import {
   getCartHudCheckoutCapability,
   getCartHudRouteMode,
@@ -6,6 +7,19 @@ import {
 } from "../apps/market/src/lib/cart-hud"
 
 describe("Market cart HUD policy", () => {
+  it("uses restrained selected and hover tints for merchant carts", () => {
+    const source = readFileSync(
+      new URL(
+        "../apps/market/src/components/MarketCartHud.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    )
+
+    expect(source).toContain("var(--primary-500)_4%,var(--surface)")
+    expect(source).toContain("var(--primary-500)_1%,var(--surface)")
+  })
+
   it("expands on browse surfaces, compacts product detail, and suppresses workflows", () => {
     expect(getCartHudRouteMode("/products")).toBe("expanded")
     expect(getCartHudRouteMode("/store/merchant")).toBe("expanded")

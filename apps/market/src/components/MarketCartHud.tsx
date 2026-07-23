@@ -270,7 +270,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         <TabsTrigger
                           key={group.merchantPubkey}
                           value={group.merchantPubkey}
-                          className="market-cart-hud-item min-h-10 shrink-0 gap-2 rounded-lg px-3"
+                          className="market-cart-hud-item min-h-10 shrink-0 gap-2 rounded-lg px-3 data-[state=active]:bg-[color-mix(in_srgb,var(--primary-500)_4%,var(--surface))] data-[state=active]:shadow-none data-[state=inactive]:hover:bg-[color-mix(in_srgb,var(--primary-500)_1%,var(--surface))]"
                         >
                           <Avatar className="h-6 w-6">
                             <AvatarImage src={profile?.picture} alt="" />
