@@ -17,6 +17,43 @@ body {
   background-color: var(--background);
 }
 
+@keyframes market-cart-hud-item-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.35rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes market-cart-hud-value-in {
+  from {
+    opacity: 0.55;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.market-cart-hud-item {
+  animation: market-cart-hud-item-in 180ms ease-out;
+}
+
+.market-cart-hud-value {
+  animation: market-cart-hud-value-in 160ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .market-cart-hud-item,
+  .market-cart-hud-value {
+    animation: none;
+  }
+}
+
 .market-header-layout {
   align-items: center;
   column-gap: 0.75rem;

@@ -50,7 +50,7 @@ import {
   getCartShippingOptionsAvailable,
   hasPhysicalItemsMissingShippingZone,
 } from "../apps/market/src/lib/cart-shipping-options"
-import type { CartItem } from "../apps/market/src/hooks/useCart"
+import type { CartItem } from "../apps/market/src/lib/cart-model"
 import {
   fetchLnurlPayMetadata,
   fetchLnurlInvoice,

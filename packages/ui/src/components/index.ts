@@ -3,6 +3,11 @@ export { AccountMenu, type AccountMenuProps } from "./AccountMenu"
 export { Badge, badgeVariants, type BadgeProps } from "./Badge"
 export { Button, buttonVariants, type ButtonProps } from "./Button"
 export {
+  HoldToReleaseButton,
+  type HoldToReleaseButtonProps,
+  type HoldToReleaseState,
+} from "./HoldToReleaseButton"
+export {
   Card,
   CardHeader,
   CardTitle,

@@ -59,11 +59,15 @@ import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
+  cartItemInputFromProduct,
   getCartCostSummary,
   getCartItemStockForAvailability,
+  getCartItemIdentity,
+  getCartItemKey,
   getProductAddAvailability,
   groupCartItems,
   isCartProductAvailabilityBlocking,
+  selectCartItemQuantity,
   type CartProductAvailability,
   type MerchantCartGroup,
 } from "../lib/cart-model"
@@ -708,7 +712,7 @@ function MerchantCartCard({
             <div className="divide-y divide-[var(--border)]">
               {group.items.map((item) => (
                 <CartLineItem
-                  key={item.productId}
+                  key={getCartItemKey(item)}
                   item={item}
                   availability={availabilityByProductId.get(item.productId)}
                   formatPrice={formatPrice}
@@ -1088,13 +1092,14 @@ function CartPage() {
                   )
                 }
                 onDecrement={(item) => {
+                  const identity = getCartItemIdentity(item)
                   if (item.quantity <= 1) {
-                    cart.removeItem(item.productId)
+                    cart.removeItem(identity)
                     return
                   }
-                  cart.setQuantity(item.productId, item.quantity - 1)
+                  cart.setQuantity(identity, item.quantity - 1)
                 }}
-                onRemove={(item) => cart.removeItem(item.productId)}
+                onRemove={(item) => cart.removeItem(getCartItemIdentity(item))}
               />
             )
           })}
@@ -1162,16 +1167,20 @@ function CartPage() {
                     suggestion={suggestion}
                     formatPrice={shopperPricing.formatPrice}
                     getCartQuantity={(selectedProduct) =>
-                      cart.items.find(
-                        (item) => item.productId === selectedProduct.id
-                      )?.quantity ?? 0
+                      selectCartItemQuantity(cart.items, {
+                        merchantPubkey: selectedProduct.pubkey,
+                        productId: selectedProduct.id,
+                      })
                     }
                     onAdd={(selectedProduct) =>
                       cart.addItem(
-                        cartItemInputFromProductSelection(
-                          product,
-                          selectedProduct
-                        )
+                        {
+                          ...cartItemInputFromProduct(selectedProduct),
+                          ...cartItemInputFromProductSelection(
+                            product,
+                            selectedProduct
+                          ),
+                        }
                       )
                     }
                   />

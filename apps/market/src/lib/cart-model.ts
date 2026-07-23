@@ -12,6 +12,8 @@ import {
   type ProductSpecification,
 } from "@conduit/core"
 
+export const CART_STORAGE_VERSION = 2
+
 export type CartItem = {
   productId: string
   /** Variable parent coordinate when productId identifies a variation child. */
@@ -59,6 +61,22 @@ export type CartItem = {
 
 export type CartState = {
   items: CartItem[]
+}
+
+export type CartItemIdentity = Pick<CartItem, "merchantPubkey" | "productId">
+
+export type CartItemInput = Omit<CartItem, "merchantAddedAt" | "quantity">
+
+export type PersistedCartState = {
+  version: typeof CART_STORAGE_VERSION
+  items: CartItem[]
+}
+
+export type ParsedPersistedCart = {
+  state: CartState
+  shouldPersist: boolean
+  supported: boolean
+  writable: boolean
 }
 
 export type MerchantCartGroup = {
@@ -348,6 +366,283 @@ const ZAP_MESSAGE_POLICY_RANK: Record<ProductZapMessagePolicy, number> = {
   custom: 1,
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function nonemptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined
+}
+
+function finiteNonnegativeNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined
+}
+
+function optionalStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const strings = value.filter(
+    (entry): entry is string => typeof entry === "string" && entry.length > 0
+  )
+  return strings.length === value.length ? strings : undefined
+}
+
+function parseSourcePrice(value: unknown): CartItem["sourcePrice"] {
+  if (!isRecord(value)) return undefined
+  const amount = finiteNonnegativeNumber(value.amount)
+  const currency = nonemptyString(value.currency)
+  const normalizedCurrency = nonemptyString(value.normalizedCurrency)
+  if (amount === undefined || !currency || !normalizedCurrency) return undefined
+  return { amount, currency, normalizedCurrency }
+}
+
+function parseShippingRules(value: unknown): CartItem["shippingCountryRules"] {
+  if (!Array.isArray(value)) return undefined
+  const rules: NonNullable<CartItem["shippingCountryRules"]> = []
+  for (const candidate of value) {
+    if (!isRecord(candidate)) return undefined
+    const code = nonemptyString(candidate.code)
+    const name = nonemptyString(candidate.name)
+    const restrictTo = optionalStringArray(candidate.restrictTo)
+    const exclude = optionalStringArray(candidate.exclude)
+    if (!code || !name || !restrictTo || !exclude) return undefined
+    rules.push({ code, name, restrictTo, exclude })
+  }
+  return rules
+}
+
+function parseSpecifications(
+  value: unknown
+): CartItem["selectedSpecifications"] {
+  if (!Array.isArray(value)) return undefined
+  const specifications: NonNullable<CartItem["selectedSpecifications"]> = []
+  for (const candidate of value) {
+    if (!isRecord(candidate)) return undefined
+    const key = nonemptyString(candidate.key)
+    const specificationValue = nonemptyString(candidate.value)
+    if (!key || !specificationValue) return undefined
+    specifications.push({ key, value: specificationValue })
+  }
+  return specifications
+}
+
+function coordinateMatchesMerchant(
+  productId: string,
+  merchantPubkey: string
+): boolean {
+  if (!productId.startsWith("30402:")) return true
+  const [, coordinatePubkey, ...identifier] = productId.split(":")
+  return coordinatePubkey === merchantPubkey && identifier.join(":").length > 0
+}
+
+function parseCartItem(value: unknown): CartItem | null {
+  if (!isRecord(value)) return null
+  const productId = nonemptyString(value.productId)
+  const merchantPubkey = nonemptyString(value.merchantPubkey)
+  const title = nonemptyString(value.title)
+  const currency = nonemptyString(value.currency)
+  const price = finiteNonnegativeNumber(value.price)
+  const quantityValue = finiteNonnegativeNumber(value.quantity)
+  if (
+    !productId ||
+    !merchantPubkey ||
+    !title ||
+    !currency ||
+    price === undefined ||
+    quantityValue === undefined ||
+    quantityValue <= 0 ||
+    !coordinateMatchesMerchant(productId, merchantPubkey)
+  ) {
+    return null
+  }
+
+  const quantity = Math.max(1, Math.floor(quantityValue))
+  const merchantAddedAt = finiteNonnegativeNumber(value.merchantAddedAt)
+  const priceSats = finiteNonnegativeNumber(value.priceSats)
+  const shippingCostSats = finiteNonnegativeNumber(value.shippingCostSats)
+  const stock = finiteNonnegativeNumber(value.stock)
+  const selectedSpecifications = parseSpecifications(value.selectedSpecifications)
+  const format =
+    value.format === "digital" || value.format === "physical"
+      ? value.format
+      : undefined
+  const zapMessagePolicy = normalizeCartZapMessagePolicy(value.zapMessagePolicy)
+
+  return {
+    productId,
+    merchantPubkey,
+    title,
+    price,
+    currency,
+    quantity,
+    ...(merchantAddedAt !== undefined ? { merchantAddedAt } : {}),
+    ...(nonemptyString(value.familyProductId)
+      ? { familyProductId: String(value.familyProductId) }
+      : {}),
+    ...(selectedSpecifications ? { selectedSpecifications } : {}),
+    ...(priceSats !== undefined ? { priceSats } : {}),
+    ...(parseSourcePrice(value.sourcePrice)
+      ? { sourcePrice: parseSourcePrice(value.sourcePrice) }
+      : {}),
+    ...(nonemptyString(value.image) ? { image: String(value.image) } : {}),
+    ...(optionalStringArray(value.tags)
+      ? { tags: optionalStringArray(value.tags) }
+      : {}),
+    ...(format ? { format } : {}),
+    ...(shippingCostSats !== undefined ? { shippingCostSats } : {}),
+    ...(stock !== undefined ? { stock } : {}),
+    ...(parseSourcePrice(value.sourceShippingCost)
+      ? { sourceShippingCost: parseSourcePrice(value.sourceShippingCost) }
+      : {}),
+    ...(nonemptyString(value.shippingOptionId)
+      ? { shippingOptionId: String(value.shippingOptionId) }
+      : {}),
+    ...(nonemptyString(value.shippingOptionDTag)
+      ? { shippingOptionDTag: String(value.shippingOptionDTag) }
+      : {}),
+    ...(optionalStringArray(value.shippingCountries)
+      ? { shippingCountries: optionalStringArray(value.shippingCountries) }
+      : {}),
+    ...(parseShippingRules(value.shippingCountryRules)
+      ? { shippingCountryRules: parseShippingRules(value.shippingCountryRules) }
+      : {}),
+    ...(typeof value.publicZapEnabled === "boolean"
+      ? { publicZapEnabled: value.publicZapEnabled }
+      : {}),
+    ...(zapMessagePolicy ? { zapMessagePolicy } : {}),
+    ...(typeof value.publicZapPolicyKnown === "boolean"
+      ? { publicZapPolicyKnown: value.publicZapPolicyKnown }
+      : {}),
+  }
+}
+
+export function getCartItemKey(identity: CartItemIdentity): string {
+  return JSON.stringify([identity.merchantPubkey, identity.productId])
+}
+
+export function getCartItemIdentity(item: CartItemIdentity): CartItemIdentity {
+  return {
+    merchantPubkey: item.merchantPubkey,
+    productId: item.productId,
+  }
+}
+
+export function isSameCartItem(
+  item: CartItemIdentity,
+  identity: CartItemIdentity
+): boolean {
+  return (
+    item.merchantPubkey === identity.merchantPubkey &&
+    item.productId === identity.productId
+  )
+}
+
+export function selectCartItem(
+  items: readonly CartItem[],
+  identity: CartItemIdentity
+): CartItem | undefined {
+  return items.find((item) => isSameCartItem(item, identity))
+}
+
+export function selectCartItemQuantity(
+  items: readonly CartItem[],
+  identity: CartItemIdentity
+): number {
+  return selectCartItem(items, identity)?.quantity ?? 0
+}
+
+export function selectMerchantCartItems(
+  items: readonly CartItem[],
+  merchantPubkey: string
+): CartItem[] {
+  return items.filter((item) => item.merchantPubkey === merchantPubkey)
+}
+
+export function cartItemInputFromProduct(product: Product): CartItemInput {
+  return {
+    productId: product.id,
+    merchantPubkey: product.pubkey,
+    title: product.title,
+    price: product.price,
+    currency: product.currency,
+    priceSats: product.priceSats,
+    sourcePrice: product.sourcePrice,
+    sourceShippingCost: product.sourceShippingCost,
+    image: getProductImageCandidates(product)[0]?.url,
+    tags: product.tags,
+    format: product.format,
+    shippingCostSats: product.shippingCostSats,
+    shippingOptionId: product.shippingOptionId,
+    shippingOptionDTag: product.shippingOptionDTag,
+    shippingCountries: product.shippingCountries,
+    shippingCountryRules: product.shippingCountryRules,
+    publicZapEnabled: product.publicZapEnabled,
+    zapMessagePolicy: product.zapMessagePolicy,
+    publicZapPolicyKnown: product.publicZapPolicyKnown,
+    stock: product.stock,
+  }
+}
+
+export function parsePersistedCart(value: unknown): ParsedPersistedCart {
+  if (
+    isRecord(value) &&
+    "version" in value &&
+    value.version !== CART_STORAGE_VERSION
+  ) {
+    return {
+      state: { items: [] },
+      shouldPersist: false,
+      supported: false,
+      writable: false,
+    }
+  }
+  if (!isRecord(value) || !Array.isArray(value.items)) {
+    return {
+      state: { items: [] },
+      shouldPersist: false,
+      supported: false,
+      writable: true,
+    }
+  }
+
+  const parsedItems = value.items
+    .map(parseCartItem)
+    .filter((item): item is CartItem => item !== null)
+  const deduplicated = new Map<string, CartItem>()
+  for (const parsedItem of parsedItems) {
+    const key = getCartItemKey(parsedItem)
+    const current = deduplicated.get(key)
+    if (!current) {
+      deduplicated.set(key, parsedItem)
+      continue
+    }
+    const merchantAddedAt = [
+      current.merchantAddedAt,
+      parsedItem.merchantAddedAt,
+    ].filter((entry): entry is number => entry !== undefined)
+    deduplicated.set(key, {
+      ...current,
+      ...parsedItem,
+      ...(merchantAddedAt.length > 0
+        ? { merchantAddedAt: Math.min(...merchantAddedAt) }
+        : {}),
+      quantity: current.quantity + parsedItem.quantity,
+    })
+  }
+
+  return {
+    state: { items: Array.from(deduplicated.values()) },
+    shouldPersist: value.version !== CART_STORAGE_VERSION,
+    supported: true,
+    writable: true,
+  }
+}
+
+export function serializeCartState(state: CartState): PersistedCartState {
+  return { version: CART_STORAGE_VERSION, items: state.items }
+}
+
 function normalizeCartZapMessagePolicy(
   value: unknown
 ): ProductZapMessagePolicy | null {
@@ -547,13 +842,18 @@ export function getCartCostSummary(
 
 export function addCartItem(
   items: CartItem[],
-  item: Omit<CartItem, "quantity">,
+  item: CartItemInput & { merchantAddedAt?: number },
   quantity = 1
 ): CartItem[] {
   if (item.stock === 0) return items
 
   const q = Math.max(1, Math.floor(quantity))
-  const existing = items.find((current) => current.productId === item.productId)
+  const existing = selectCartItem(items, item)
+  const quantityToAdd =
+    typeof item.stock === "number"
+      ? Math.max(0, Math.min(q, item.stock - (existing?.quantity ?? 0)))
+      : q
+  if (quantityToAdd === 0) return items
   const merchantAddedAt =
     getMerchantAddedAt(items, item.merchantPubkey) ??
     item.merchantAddedAt ??
@@ -561,36 +861,36 @@ export function addCartItem(
 
   if (existing) {
     return items.map((current) =>
-      current.productId === item.productId
+      isSameCartItem(current, item)
         ? {
             ...current,
             ...item,
             merchantAddedAt: current.merchantAddedAt ?? merchantAddedAt,
-            quantity: current.quantity + q,
+            quantity: current.quantity + quantityToAdd,
           }
         : current
     )
   }
 
-  return [...items, { ...item, merchantAddedAt, quantity: q }]
+  return [...items, { ...item, merchantAddedAt, quantity: quantityToAdd }]
 }
 
 export function setCartItemQuantity(
   items: CartItem[],
-  productId: string,
+  identity: CartItemIdentity,
   quantity: number
 ): CartItem[] {
   const q = Math.max(1, Math.floor(quantity))
   return items.map((item) =>
-    item.productId === productId ? { ...item, quantity: q } : item
+    isSameCartItem(item, identity) ? { ...item, quantity: q } : item
   )
 }
 
 export function removeCartItem(
   items: CartItem[],
-  productId: string
+  identity: CartItemIdentity
 ): CartItem[] {
-  return items.filter((item) => item.productId !== productId)
+  return items.filter((item) => !isSameCartItem(item, identity))
 }
 
 export function clearMerchantCart(

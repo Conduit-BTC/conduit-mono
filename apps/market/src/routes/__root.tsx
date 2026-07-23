@@ -23,6 +23,7 @@ import {
   isProductLegalPath,
 } from "@conduit/ui"
 import { MarketHeader } from "../components/MarketHeader"
+import { MarketCartHud } from "../components/MarketCartHud"
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -33,9 +34,21 @@ export const Route = createRootRoute({
 const SHOW_DEVTOOLS =
   import.meta.env.DEV && import.meta.env.VITE_DISABLE_DEVTOOLS !== "true"
 
-function RootShell({ children }: { children: React.ReactNode }) {
+function RootShell({
+  children,
+  cartHud,
+}: {
+  children: React.ReactNode
+  cartHud?: React.ReactNode
+}) {
   return (
-    <div className="flex min-h-screen min-w-0 flex-col overflow-x-hidden pb-24 sm:pb-16">
+    <div
+      className="flex min-h-screen min-w-0 flex-col overflow-x-hidden [scroll-padding-bottom:calc(var(--market-hud-height,0px)+1.5rem)]"
+      style={{
+        paddingBottom:
+          "calc(var(--market-hud-height, 0px) + max(1.5rem, env(safe-area-inset-bottom)))",
+      }}
+    >
       <MarketHeader />
       <main className="mx-auto min-w-0 w-full max-w-7xl flex-1 px-4 pb-12 pt-6">
         {children}
@@ -50,6 +63,7 @@ function RootShell({ children }: { children: React.ReactNode }) {
           </Link>
         }
       />
+      {cartHud}
       {SHOW_DEVTOOLS && <TanStackRouterDevtools />}
     </div>
   )
@@ -160,7 +174,7 @@ function MarketProductRoot({ pathname }: { pathname: string }) {
   throwSyntheticClientErrorForTelemetryTest()
 
   return (
-    <RootShell>
+    <RootShell cartHud={<MarketCartHud pathname={pathname} />}>
       <Outlet />
       {authUrl && (
         <SignerAuthUrlNotice authUrl={authUrl} onDismiss={dismissAuthUrl} />
