@@ -30,6 +30,8 @@ describe("Market cart HUD policy", () => {
     expect(source).toContain('aria-label="Cart products"')
     expect(source).toContain("linear-gradient(to right")
     expect(source).toContain("rounded-xl border-0 p-1 pr-8")
+    expect(source.match(/max-w-60/g)?.length).toBe(2)
+    expect(source).toContain('className="mr-auto min-w-0 flex-1"')
     expect(source.match(/<StatusPill/g)?.length).toBe(2)
     expect(source).toContain('variant="neutral"')
     expect(source).toContain("selected && expanded")
