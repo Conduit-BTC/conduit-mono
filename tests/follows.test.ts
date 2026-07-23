@@ -59,9 +59,16 @@ function configurePublisher(result: {
   __setFollowTestOverrides({
     requireNdkConnected: async () => ({ signer }) as unknown as NDK,
     getRelayLists: async () => new Map(),
-    fetchEventsFanoutDetailed: (async () => {
+    fetchEventsFanoutDetailed: (async (_filter, options) => {
       reads += 1
-      return result
+      const relayUrls = options.relayUrls ?? []
+      return {
+        events: result.events,
+        relays: result.relays.map((relay, index) => ({
+          ...relay,
+          relayUrl: relayUrls[index] ?? relay.relayUrl,
+        })),
+      }
     }) as never,
     createEvent: () => new NDKEvent(),
     signEvent: async () => {
@@ -228,7 +235,7 @@ describe("NIP-02 follow helpers", () => {
     ).toEqual({ state: "found", event })
   })
 
-  it("publishes a first follow only after all relays confirm no prior list", async () => {
+  it("publishes a first follow after an identity write relay confirms no prior list", async () => {
     const publisher = configurePublisher({
       events: [],
       relays: successfulRelays(),
@@ -293,6 +300,244 @@ describe("NIP-02 follow helpers", () => {
 
     expect(publisher.signed).toBe(1)
     expect(publisher.published?.tags).toContainEqual(["p", BOB_PUBKEY, ""])
+  })
+
+  it("does not trust an arbitrary read relay when every identity write relay fails", async () => {
+    const signer = {
+      user: async () => ({ pubkey: ALICE_PUBKEY }),
+    } as unknown as NDKSigner
+    let call = 0
+    let signed = 0
+    __setFollowTestOverrides({
+      requireNdkConnected: async () => ({ signer }) as unknown as NDK,
+      getRelayLists: async () => new Map(),
+      fetchEventsFanoutDetailed: (async (_filter, options) => {
+        call += 1
+        const relayUrls = options.relayUrls ?? []
+        if (call === 1) {
+          return {
+            events: [
+              contactListEvent({
+                id: "e".repeat(64),
+                tags: [["r", "wss://identity-write.example", "write"]],
+              }),
+            ].map((event) => {
+              event.kind = 10_002
+              return event
+            }),
+            relays: relayUrls.map((relayUrl) => ({
+              relayUrl,
+              status: "success" as const,
+              eventCount: 0,
+            })),
+          }
+        }
+        return {
+          events: [],
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status:
+              relayUrl === "wss://identity-write.example"
+                ? ("failed" as const)
+                : ("success" as const),
+            eventCount: 0,
+          })),
+        }
+      }) as never,
+      createEvent: () => new NDKEvent(),
+      signEvent: async () => {
+        signed += 1
+      },
+      publishWithPlanner: (async () => ({})) as never,
+      now: () => 200_000,
+    })
+
+    await expect(
+      publishContactListUpdate({
+        ownerPubkey: ALICE_PUBKEY,
+        targetPubkey: BOB_PUBKEY,
+        shouldFollow: true,
+        appId: "market",
+      })
+    ).rejects.toThrow("Could not load the complete follow list")
+    expect(signed).toBe(0)
+  })
+
+  it("fails closed when an existing NIP-65 declaration has no write relays", async () => {
+    const signer = {
+      user: async () => ({ pubkey: ALICE_PUBKEY }),
+    } as unknown as NDKSigner
+    let reads = 0
+    let signed = 0
+    __setFollowTestOverrides({
+      requireNdkConnected: async () => ({ signer }) as unknown as NDK,
+      getRelayLists: async () =>
+        new Map([
+          [
+            ALICE_PUBKEY,
+            {
+              pubkey: ALICE_PUBKEY,
+              readRelayUrls: ["wss://read-only.example"],
+              writeRelayUrls: [],
+              eventCreatedAt: 200,
+              cachedAt: 200_000,
+            },
+          ],
+        ]),
+      fetchEventsFanoutDetailed: (async (_filter, options) => {
+        reads += 1
+        return {
+          events: [],
+          relays: (options.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 0,
+          })),
+        }
+      }) as never,
+      signEvent: async () => {
+        signed += 1
+      },
+    })
+
+    await expect(
+      publishContactListUpdate({
+        ownerPubkey: ALICE_PUBKEY,
+        targetPubkey: BOB_PUBKEY,
+        shouldFollow: true,
+        appId: "market",
+      })
+    ).rejects.toThrow("Could not load the complete follow list")
+    expect(reads).toBe(1)
+    expect(signed).toBe(0)
+  })
+
+  it("does not replace a newer cached NIP-65 list with an older network copy", async () => {
+    const signer = {
+      user: async () => ({ pubkey: ALICE_PUBKEY }),
+    } as unknown as NDKSigner
+    let call = 0
+    let contactRelayUrls: readonly string[] = []
+    let publishRelayUrls: readonly string[] = []
+    __setFollowTestOverrides({
+      requireNdkConnected: async () => ({ signer }) as unknown as NDK,
+      getRelayLists: async () =>
+        new Map([
+          [
+            ALICE_PUBKEY,
+            {
+              pubkey: ALICE_PUBKEY,
+              readRelayUrls: [],
+              writeRelayUrls: ["wss://new-write.example"],
+              eventCreatedAt: 200,
+              cachedAt: 200_000,
+            },
+          ],
+        ]),
+      fetchEventsFanoutDetailed: (async (_filter, options) => {
+        call += 1
+        const relayUrls = options.relayUrls ?? []
+        if (call === 1) {
+          const older = contactListEvent({
+            id: "f".repeat(64),
+            createdAt: 100,
+            tags: [["r", "wss://old-write.example", "write"]],
+          })
+          older.kind = 10_002
+          return {
+            events: [older],
+            relays: relayUrls.map((relayUrl) => ({
+              relayUrl,
+              status: "success" as const,
+              eventCount: 1,
+            })),
+          }
+        }
+        contactRelayUrls = relayUrls
+        return {
+          events: [],
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 0,
+          })),
+        }
+      }) as never,
+      createEvent: () => new NDKEvent(),
+      signEvent: async () => {},
+      publishWithPlanner: (async (_event, input) => {
+        publishRelayUrls = input.extraRelayUrls ?? []
+        return {}
+      }) as never,
+      now: () => 200_000,
+    })
+
+    await publishContactListUpdate({
+      ownerPubkey: ALICE_PUBKEY,
+      targetPubkey: BOB_PUBKEY,
+      shouldFollow: true,
+      appId: "market",
+    })
+
+    expect(contactRelayUrls).toContain("wss://new-write.example")
+    expect(contactRelayUrls).not.toContain("wss://old-write.example")
+    expect(publishRelayUrls).toContain("wss://new-write.example")
+    expect(publishRelayUrls).not.toContain("wss://old-write.example")
+  })
+
+  it("fails closed for conflicting equal-timestamp NIP-65 snapshots", async () => {
+    const signer = {
+      user: async () => ({ pubkey: ALICE_PUBKEY }),
+    } as unknown as NDKSigner
+    let reads = 0
+    let signed = 0
+    __setFollowTestOverrides({
+      requireNdkConnected: async () => ({ signer }) as unknown as NDK,
+      getRelayLists: async () =>
+        new Map([
+          [
+            ALICE_PUBKEY,
+            {
+              pubkey: ALICE_PUBKEY,
+              readRelayUrls: [],
+              writeRelayUrls: ["wss://cached-write.example"],
+              eventCreatedAt: 200,
+              cachedAt: 200_000,
+            },
+          ],
+        ]),
+      fetchEventsFanoutDetailed: (async (_filter, options) => {
+        reads += 1
+        const conflict = contactListEvent({
+          id: "0".repeat(64),
+          createdAt: 200,
+          tags: [["r", "wss://network-write.example", "write"]],
+        })
+        conflict.kind = 10_002
+        return {
+          events: [conflict],
+          relays: (options.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 1,
+          })),
+        }
+      }) as never,
+      signEvent: async () => {
+        signed += 1
+      },
+    })
+
+    await expect(
+      publishContactListUpdate({
+        ownerPubkey: ALICE_PUBKEY,
+        targetPubkey: BOB_PUBKEY,
+        shouldFollow: true,
+        appId: "market",
+      })
+    ).rejects.toThrow("Could not load the complete follow list")
+    expect(reads).toBe(1)
+    expect(signed).toBe(0)
   })
 
   it("treats first-ever unfollow as an idempotent no-op", async () => {
@@ -434,10 +679,17 @@ describe("NIP-02 follow helpers", () => {
     __setFollowTestOverrides({
       requireNdkConnected: async () => ndk,
       getRelayLists: async () => new Map(),
-      fetchEventsFanoutDetailed: (async () => {
+      fetchEventsFanoutDetailed: (async (_filter, options) => {
         reads += 1
         if (reads === 2) ndk.signer = replacementSigner
-        return { events: [], relays: successfulRelays() }
+        return {
+          events: [],
+          relays: (options.relayUrls ?? []).map((relayUrl) => ({
+            relayUrl,
+            status: "success" as const,
+            eventCount: 0,
+          })),
+        }
       }) as never,
       createEvent: () => new NDKEvent(),
       signEvent: async () => {

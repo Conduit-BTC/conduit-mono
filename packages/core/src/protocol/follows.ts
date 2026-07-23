@@ -7,6 +7,7 @@
  */
 
 import NDK, { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { config } from "../config"
 import { EVENT_KINDS } from "./kinds"
 import { buildConduitClientTag, type ConduitAppId } from "./nip89"
 import {
@@ -21,6 +22,7 @@ import {
 } from "./relay-list"
 import { planRelayReads, planRelayWrites } from "./relay-planner"
 import { publishWithPlanner } from "./relay-publish"
+import { tryNormalizeRelayUrl } from "./relay-settings"
 import {
   ReplaceablePublishSafetyError,
   assertSafeReplaceablePublish,
@@ -81,6 +83,33 @@ function normalizeHexPubkey(value: string | undefined): string | null {
   return trimmed
 }
 
+function normalizeRelayUrl(value: string): string | null {
+  const result = tryNormalizeRelayUrl(value)
+  return result.ok ? result.url : null
+}
+
+function relayUrlSetsEqual(
+  left: readonly string[],
+  right: readonly string[]
+): boolean {
+  const normalize = (values: readonly string[]) =>
+    Array.from(
+      new Set(
+        values
+          .map(normalizeRelayUrl)
+          .filter((relayUrl): relayUrl is string => Boolean(relayUrl))
+      )
+    ).sort()
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right))
+}
+
+function relayListsHaveSameRouting(left: RelayList, right: RelayList): boolean {
+  return (
+    relayUrlSetsEqual(left.readRelayUrls, right.readRelayUrls) &&
+    relayUrlSetsEqual(left.writeRelayUrls, right.writeRelayUrls)
+  )
+}
+
 export function extractFollowPubkeys(
   tags: readonly (readonly string[])[] | undefined
 ): string[] {
@@ -117,9 +146,16 @@ export function classifyContactListSnapshot(
   const successfulRelayUrls = new Set(
     result.relays
       .filter((relay) => relay.status === "success")
-      .map((relay) => relay.relayUrl)
+      .map((relay) => normalizeRelayUrl(relay.relayUrl))
+      .filter((relayUrl): relayUrl is string => Boolean(relayUrl))
   )
-  const requiredRelayUrls = confidence.requiredRelayUrls ?? []
+  const requiredRelayUrls = Array.from(
+    new Set(
+      (confidence.requiredRelayUrls ?? [])
+        .map((relayUrl) => normalizeRelayUrl(relayUrl))
+        .filter((relayUrl): relayUrl is string => Boolean(relayUrl))
+    )
+  )
   const successfulRequiredRelays = requiredRelayUrls.filter((relayUrl) =>
     successfulRelayUrls.has(relayUrl)
   ).length
@@ -313,11 +349,50 @@ async function loadContactListSnapshot(
   }
 
   const relayLists = new Map<string, RelayList>(cachedRelayLists)
+  let relayListConflict = false
   if (relayListResult.state === "found") {
-    relayLists.set(
-      ownerPubkey,
-      parseRelayListEvent(relayListResult.event as NDKEvent)
+    const networkRelayList = parseRelayListEvent(
+      relayListResult.event as NDKEvent
     )
+    const cachedRelayList = relayLists.get(ownerPubkey)
+    if (
+      !cachedRelayList ||
+      networkRelayList.eventCreatedAt > cachedRelayList.eventCreatedAt
+    ) {
+      relayLists.set(ownerPubkey, networkRelayList)
+    } else if (
+      networkRelayList.eventCreatedAt === cachedRelayList.eventCreatedAt &&
+      !relayListsHaveSameRouting(networkRelayList, cachedRelayList)
+    ) {
+      relayListConflict = true
+    }
+  }
+  if (relayListConflict) {
+    return {
+      snapshot: {
+        state: "unavailable",
+        attemptedRelays: 0,
+        successfulRelays: 0,
+        requiredRelays: 1,
+        successfulRequiredRelays: 0,
+      },
+      publishRelayUrls: [],
+      unavailableStage: "relay discovery",
+    }
+  }
+  const ownerRelayList = relayLists.get(ownerPubkey)
+  if (ownerRelayList && ownerRelayList.writeRelayUrls.length === 0) {
+    return {
+      snapshot: {
+        state: "unavailable",
+        attemptedRelays: 0,
+        successfulRelays: 0,
+        requiredRelays: 1,
+        successfulRequiredRelays: 0,
+      },
+      publishRelayUrls: [],
+      unavailableStage: "contact list",
+    }
   }
   const readPlan = planRelayReads({
     intent: "profile_social_feed",
@@ -335,14 +410,18 @@ async function loadContactListSnapshot(
     maxPrimaryRelays: 0,
     skipHealthFilter: true,
   })
+  const configuredWriteRelayUrls =
+    writePlan.primaryRelayUrls.length > 0
+      ? writePlan.primaryRelayUrls
+      : config.appWriteRelayUrls
   const relayUrls = Array.from(
     new Set([
+      ...(ownerRelayList?.writeRelayUrls ?? []),
+      ...configuredWriteRelayUrls,
       ...readPlan.relayUrls,
       ...readPlan.parkedRelayUrls,
-      ...writePlan.primaryRelayUrls,
       ...writePlan.parkedRelayUrls,
-      ...(relayLists.get(ownerPubkey)?.writeRelayUrls ?? []),
-      ...(relayLists.get(ownerPubkey)?.sourceRelayUrls ?? []),
+      ...(ownerRelayList?.sourceRelayUrls ?? []),
     ])
   )
   if (relayUrls.length === 0) {
@@ -359,8 +438,11 @@ async function loadContactListSnapshot(
     }
   }
 
-  const declaredWriteRelayUrls =
-    relayLists.get(ownerPubkey)?.writeRelayUrls ?? []
+  const declaredWriteRelayUrls = ownerRelayList?.writeRelayUrls ?? []
+  const requiredWriteRelayUrls =
+    declaredWriteRelayUrls.length > 0
+      ? declaredWriteRelayUrls
+      : configuredWriteRelayUrls
   const snapshot = await fetchCompleteSnapshot(
     fetchDetailed,
     {
@@ -370,20 +452,18 @@ async function loadContactListSnapshot(
     },
     relayUrls,
     ownerPubkey,
-    declaredWriteRelayUrls.length
-      ? {
-          requiredRelayUrls: declaredWriteRelayUrls,
-          minimumSuccessfulRequiredRelays: 1,
-          minimumSuccessfulRelays: 1,
-        }
-      : { minimumSuccessfulRelays: 1 }
+    {
+      requiredRelayUrls: requiredWriteRelayUrls,
+      minimumSuccessfulRequiredRelays: 1,
+      minimumSuccessfulRelays: 1,
+    }
   )
   return {
     snapshot,
     publishRelayUrls: Array.from(
       new Set([
-        ...(relayLists.get(ownerPubkey)?.writeRelayUrls ?? []),
-        ...writePlan.primaryRelayUrls,
+        ...(ownerRelayList?.writeRelayUrls ?? []),
+        ...configuredWriteRelayUrls,
       ])
     ),
     unavailableStage:
