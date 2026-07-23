@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   ChevronDown,
   Check,
   Copy,
@@ -28,7 +29,14 @@ import {
   type Product,
   type ShopperPriceDisplay,
 } from "@conduit/core"
-import { Avatar, AvatarFallback, AvatarImage, Button, cn } from "@conduit/ui"
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+  Badge,
+  Button,
+  cn,
+} from "@conduit/ui"
 import {
   Dialog,
   DialogContent,
@@ -45,11 +53,17 @@ import {
   getProfileNip05,
 } from "../components/MerchantIdentity"
 import { type CartItem, useCart } from "../hooks/useCart"
+import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
+  createCartItemFromProduct,
   getCartCostSummary,
+  getCartItemStockForAvailability,
+  getProductAddAvailability,
   groupCartItems,
+  isCartProductAvailabilityBlocking,
+  type CartProductAvailability,
   type MerchantCartGroup,
 } from "../lib/cart-model"
 
@@ -288,11 +302,22 @@ function RelatedProductRow({
   const { data: profile } = useProfile(product.pubkey)
   const merchantName = getProfileName(profile)
   const merchantLabel = merchantName ?? formatNpub(product.pubkey, 6)
+  const soldOut = product.stock === 0
+  const addAvailability = getProductAddAvailability(
+    product.stock,
+    cartQuantity,
+    1
+  )
+  const atStockLimit = !soldOut && !addAvailability.canAdd
 
   if (!imageUrl || imageFailed) return null
 
   return (
-    <div className="grid min-h-[9.5rem] grid-cols-[80px_minmax(0,1fr)] items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+    <div
+      className={`grid min-h-[9.5rem] grid-cols-[80px_minmax(0,1fr)] items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 ${
+        soldOut ? "opacity-75" : ""
+      }`}
+    >
       <Link
         to="/products/$productId"
         params={{ productId: product.id }}
@@ -301,7 +326,9 @@ function RelatedProductRow({
         <img
           src={imageUrl}
           alt={product.images[0]?.alt ?? product.title}
-          className="h-20 w-20 object-cover"
+          className={`h-20 w-20 object-cover ${
+            soldOut ? "grayscale opacity-60" : ""
+          }`}
           width={80}
           height={80}
           loading="lazy"
@@ -317,6 +344,11 @@ function RelatedProductRow({
         >
           {product.title}
         </Link>
+        {soldOut ? (
+          <Badge variant="warning" className="mt-1.5">
+            Sold out
+          </Badge>
+        ) : null}
         <Link
           to="/store/$pubkey"
           params={{ pubkey: pubkeyToNpub(product.pubkey) }}
@@ -338,10 +370,20 @@ function RelatedProductRow({
           size="sm"
           variant={cartQuantity > 0 ? "muted" : "outline"}
           className="mt-3 h-9 px-3 text-sm"
-          onClick={onAdd}
+          disabled={soldOut || atStockLimit}
+          onClick={() => {
+            if (!addAvailability.canAdd) return
+            onAdd()
+          }}
         >
           <CartIcon className="h-4 w-4" />
-          {cartQuantity > 0 ? `In cart (${cartQuantity})` : "Add"}
+          {soldOut
+            ? "Sold out"
+            : atStockLimit
+              ? "Stock limit reached"
+              : cartQuantity > 0
+                ? `In cart (${cartQuantity})`
+                : "Add"}
         </Button>
       </div>
     </div>
@@ -350,17 +392,25 @@ function RelatedProductRow({
 
 function CartLineItem({
   item,
+  availability,
   formatPrice,
   onIncrement,
   onDecrement,
   onRemove,
 }: {
   item: CartItem
+  availability?: CartProductAvailability
   formatPrice: PriceFormatter
   onIncrement: () => void
   onDecrement: () => void
   onRemove: () => void
 }) {
+  const soldOut = availability?.status === "sold_out"
+  const insufficientStock = availability?.status === "insufficient_stock"
+  const incrementDisabled =
+    isCartProductAvailabilityBlocking(availability) ||
+    (typeof availability?.stock === "number" &&
+      item.quantity >= availability.stock)
   const linePrice = formatPrice({
     price: item.price * item.quantity,
     currency: item.currency,
@@ -378,13 +428,19 @@ function CartLineItem({
   const unitPrice = formatPrice(item)
 
   return (
-    <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-4 py-5 sm:grid-cols-[112px_minmax(0,1fr)] lg:grid-cols-[112px_minmax(0,1fr)_minmax(8rem,auto)] lg:items-start">
+    <div
+      className={`grid grid-cols-[88px_minmax(0,1fr)] gap-4 py-5 sm:grid-cols-[112px_minmax(0,1fr)] lg:grid-cols-[112px_minmax(0,1fr)_minmax(8rem,auto)] lg:items-start ${
+        soldOut ? "opacity-80" : ""
+      }`}
+    >
       <div className="size-[88px] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--background)] sm:size-28">
         {item.image && (
           <img
             src={item.image}
             alt={item.title}
-            className="h-full w-full object-cover"
+            className={`h-full w-full object-cover ${
+              soldOut ? "grayscale opacity-60" : ""
+            }`}
             loading="lazy"
             onError={(event) => {
               event.currentTarget.style.display = "none"
@@ -401,6 +457,22 @@ function CartLineItem({
         >
           {item.title}
         </Link>
+        {soldOut || insufficientStock ? (
+          <div
+            role="alert"
+            className="mt-2 flex items-start gap-2 text-sm text-warning"
+          >
+            <AlertTriangle
+              className="mt-0.5 h-4 w-4 shrink-0"
+              aria-hidden="true"
+            />
+            <span>
+              {soldOut
+                ? "Sold out. Remove this item before checkout."
+                : `Only ${availability?.stock ?? 0} available. Reduce quantity before checkout.`}
+            </span>
+          </div>
+        ) : null}
         <div className="mt-2 text-sm text-[var(--text-secondary)]">
           Qty {item.quantity}
         </div>
@@ -429,7 +501,8 @@ function CartLineItem({
             </div>
             <button
               type="button"
-              className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)]"
+              disabled={incrementDisabled}
+              className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-40"
               aria-label={`Increase quantity for ${item.title}`}
               onClick={onIncrement}
             >
@@ -455,6 +528,8 @@ function CartLineItem({
 
 function MerchantCartCard({
   group,
+  availabilityByProductId,
+  availabilityChecking,
   expanded,
   forceExpanded,
   btcUsdRate,
@@ -467,6 +542,8 @@ function MerchantCartCard({
   onRemove,
 }: {
   group: MerchantCartGroup
+  availabilityByProductId: ReadonlyMap<string, CartProductAvailability>
+  availabilityChecking: boolean
   expanded: boolean
   forceExpanded: boolean
   btcUsdRate: BtcUsdRateQuote | null
@@ -480,8 +557,28 @@ function MerchantCartCard({
 }) {
   const { data: profile } = useProfile(group.merchantPubkey)
   const summary = getCartSummaryPrice(group.items, btcUsdRate, formatPrice)
-  const canZapOut = Boolean(profile?.lud16) && summary.canZapOut
-  const primaryActionLabel = canZapOut ? "Zap out" : "Order"
+  const hasSoldOutItems = group.items.some(
+    (item) => availabilityByProductId.get(item.productId)?.status === "sold_out"
+  )
+  const hasInsufficientStockItems = group.items.some(
+    (item) =>
+      availabilityByProductId.get(item.productId)?.status ===
+      "insufficient_stock"
+  )
+  const hasUnavailableItems = hasSoldOutItems || hasInsufficientStockItems
+  const canZapOut =
+    !hasUnavailableItems && Boolean(profile?.lud16) && summary.canZapOut
+  const primaryActionLabel = availabilityChecking
+    ? "Checking stock"
+    : hasSoldOutItems && hasInsufficientStockItems
+      ? "Update cart items"
+      : hasSoldOutItems
+        ? "Remove sold-out items"
+        : hasInsufficientStockItems
+          ? "Reduce item quantity"
+          : canZapOut
+            ? "Zap out"
+            : "Order"
   const reviewItemsLabel = `${expanded ? "Hide" : "Review"} ${group.totalItems} item${group.totalItems === 1 ? "" : "s"}`
   const detailsId = `cart-group-${group.merchantPubkey}`
 
@@ -518,7 +615,11 @@ function MerchantCartCard({
           </div>
 
           <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap lg:w-auto lg:justify-end">
-            <Button className="h-11 px-5 text-sm" onClick={onCheckout}>
+            <Button
+              className="h-11 px-5 text-sm"
+              disabled={availabilityChecking || hasUnavailableItems}
+              onClick={onCheckout}
+            >
               {canZapOut ? (
                 <LightningIcon className="h-4 w-4" />
               ) : (
@@ -555,6 +656,7 @@ function MerchantCartCard({
                 <CartLineItem
                   key={item.productId}
                   item={item}
+                  availability={availabilityByProductId.get(item.productId)}
                   formatPrice={formatPrice}
                   onIncrement={() => onIncrement(item)}
                   onDecrement={() => onDecrement(item)}
@@ -571,6 +673,7 @@ function MerchantCartCard({
 
 function CartPage() {
   const cart = useCart()
+  const cartAvailability = useCartProductAvailability(cart.items)
   const search = Route.useSearch()
   const navigate = useNavigate()
   const shopperPricing = useShopperPricing()
@@ -615,6 +718,15 @@ function CartPage() {
     const group = merchantGroups.find(
       (entry) => entry.merchantPubkey === merchant
     )
+    if (
+      group?.items.some((item) =>
+        isCartProductAvailabilityBlocking(
+          cartAvailability.availabilityByProductId.get(item.productId)
+        )
+      )
+    ) {
+      return
+    }
     recordBrowserTelemetryEvent({
       app: "market",
       eventName: "checkout_initiated",
@@ -806,6 +918,47 @@ function CartPage() {
             </div>
           </div>
 
+          {cartAvailability.hasUnavailableItems ? (
+            <div
+              role="alert"
+              className="flex flex-col gap-4 rounded-2xl border border-warning/40 bg-warning/10 p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="flex items-start gap-3">
+                <AlertTriangle
+                  className="mt-0.5 h-5 w-5 shrink-0 text-warning"
+                  aria-hidden="true"
+                />
+                <div>
+                  <div className="font-medium text-[var(--text-primary)]">
+                    {cartAvailability.hasInsufficientStockItems
+                      ? "Some cart quantities exceed available stock"
+                      : "Your cart contains a sold-out item"}
+                  </div>
+                  <p className="mt-1 leading-6">
+                    {cartAvailability.hasInsufficientStockItems
+                      ? "Reduce affected quantities to the current available stock, and remove any sold-out items before sending this order."
+                      : "Remove sold-out items before sending this order. Other store carts remain available."}
+                  </p>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                className="shrink-0"
+                disabled={cartAvailability.isChecking}
+                onClick={() => void cartAvailability.refresh()}
+              >
+                <RefreshIcon
+                  className={`h-4 w-4 ${
+                    cartAvailability.isChecking ? "animate-spin" : ""
+                  }`}
+                />
+                {cartAvailability.isChecking
+                  ? "Checking availability"
+                  : "Check again"}
+              </Button>
+            </div>
+          ) : null}
+
           {search.merchant && !expandedGroup && (
             <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
               That store cart is not in your cart anymore.
@@ -821,6 +974,10 @@ function CartPage() {
               <MerchantCartCard
                 key={group.merchantPubkey}
                 group={group}
+                availabilityByProductId={
+                  cartAvailability.availabilityByProductId
+                }
+                availabilityChecking={cartAvailability.isChecking}
                 expanded={expanded}
                 forceExpanded={forceExpanded}
                 btcUsdRate={shopperPricing.quote}
@@ -856,6 +1013,12 @@ function CartPage() {
                       publicZapEnabled: item.publicZapEnabled,
                       zapMessagePolicy: item.zapMessagePolicy,
                       publicZapPolicyKnown: item.publicZapPolicyKnown,
+                      stock: getCartItemStockForAvailability(
+                        item,
+                        cartAvailability.availabilityByProductId.get(
+                          item.productId
+                        )
+                      ),
                     },
                     1
                   )
@@ -939,27 +1102,7 @@ function CartPage() {
                     formatPrice={shopperPricing.formatPrice}
                     cartQuantity={cartQuantity}
                     onAdd={() =>
-                      cart.addItem({
-                        productId: product.id,
-                        merchantPubkey: product.pubkey,
-                        title: product.title,
-                        price: product.price,
-                        currency: product.currency,
-                        priceSats: product.priceSats,
-                        sourcePrice: product.sourcePrice,
-                        sourceShippingCost: product.sourceShippingCost,
-                        image: product.images[0]?.url,
-                        tags: product.tags,
-                        format: product.format,
-                        shippingCostSats: product.shippingCostSats,
-                        shippingOptionId: product.shippingOptionId,
-                        shippingOptionDTag: product.shippingOptionDTag,
-                        shippingCountries: product.shippingCountries,
-                        shippingCountryRules: product.shippingCountryRules,
-                        publicZapEnabled: product.publicZapEnabled,
-                        zapMessagePolicy: product.zapMessagePolicy,
-                        publicZapPolicyKnown: product.publicZapPolicyKnown,
-                      })
+                      cart.addItem(createCartItemFromProduct(product))
                     }
                   />
                 )

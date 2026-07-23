@@ -1,5 +1,6 @@
 import { Check, ImageOff, ShoppingCart } from "lucide-react"
 import { type ReactNode, useEffect, useRef, useState } from "react"
+import { Badge } from "./Badge"
 import { Button } from "./Button"
 import { cn } from "../utils"
 
@@ -20,6 +21,7 @@ export interface ProductCardProps {
   approximateUsdPrice?: string | null
   imageLoading?: "eager" | "lazy"
   cartQuantity?: number
+  soldOut?: boolean
   action?: ReactNode
   onActivate?: () => void
   onMerchantActivate?: () => void
@@ -38,6 +40,7 @@ export function ProductCard({
   approximateUsdPrice,
   imageLoading = "lazy",
   cartQuantity = 0,
+  soldOut = false,
   action,
   onActivate,
   onMerchantActivate,
@@ -72,6 +75,7 @@ export function ProductCard({
     <div
       role={onActivate ? "link" : undefined}
       tabIndex={onActivate ? 0 : undefined}
+      data-availability={soldOut ? "sold-out" : "available"}
       className={cn(
         "group flex h-full flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] shadow-[var(--shadow-md)] transition-[border-color,box-shadow,transform,background-color] duration-200 hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)] hover:shadow-[var(--shadow-lg)]",
         onActivate && "cursor-pointer",
@@ -102,7 +106,9 @@ export function ProductCard({
               height={480}
               className={cn(
                 "h-full w-full object-cover transition-[opacity,transform] duration-300 group-hover:scale-105",
-                imageLoaded ? "opacity-100" : "opacity-0"
+                imageLoaded ? "opacity-100" : "opacity-0",
+                soldOut && "grayscale group-hover:scale-100",
+                soldOut && imageLoaded && "opacity-55"
               )}
               decoding="async"
               loading={imageLoading}
@@ -118,7 +124,12 @@ export function ProductCard({
             />
           </>
         ) : (
-          <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-[var(--surface-elevated)] text-[var(--text-muted)]">
+          <div
+            className={cn(
+              "flex h-full w-full flex-col items-center justify-center gap-2 bg-[var(--surface-elevated)] text-[var(--text-muted)]",
+              soldOut && "opacity-60"
+            )}
+          >
             <ImageOff className="h-6 w-6" aria-hidden="true" />
             <span className="px-4 text-center text-xs">Image unavailable</span>
           </div>
@@ -131,7 +142,12 @@ export function ProductCard({
             <h3 className="line-clamp-2 min-h-[2.5rem] flex-1 text-sm font-semibold leading-snug text-[var(--text-primary)]">
               {title}
             </h3>
-            {titleAside ? <div className="shrink-0">{titleAside}</div> : null}
+            {titleAside || soldOut ? (
+              <div className="flex shrink-0 items-center gap-1.5">
+                {titleAside}
+                {soldOut ? <Badge variant="warning">Sold out</Badge> : null}
+              </div>
+            ) : null}
           </div>
           {onMerchantActivate ? (
             <button
@@ -193,6 +209,8 @@ export interface ProductCartActionProps {
   onAddToCart: () => void
   onIncrement?: () => void
   onDecrement?: () => void
+  soldOut?: boolean
+  atStockLimit?: boolean
 }
 
 export function ProductCartAction({
@@ -201,6 +219,8 @@ export function ProductCartAction({
   onAddToCart,
   onIncrement,
   onDecrement,
+  soldOut = false,
+  atStockLimit = false,
 }: ProductCartActionProps) {
   const [didJustAdd, setDidJustAdd] = useState(false)
   const previousQuantityRef = useRef(cartQuantity)
@@ -220,14 +240,15 @@ export function ProductCartAction({
   return (
     <>
       <Button
-        variant={cartQuantity > 0 ? "muted" : "primary"}
+        variant={soldOut || cartQuantity > 0 ? "muted" : "primary"}
         size="sm"
+        disabled={soldOut || atStockLimit}
         className={cn(
           "h-7 shrink-0 gap-1 rounded-md px-2.5 text-xs font-medium transition-all duration-200",
-          cartQuantity > 0
+          cartQuantity > 0 && !soldOut
             ? "border border-secondary-400/40 bg-secondary-500/10 text-secondary-300 hover:bg-secondary-500/16 [@media(hover:none)]:pointer-events-none [@media(hover:none)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-0 group-focus-within:opacity-0"
             : "",
-          cartQuantity > 0
+          cartQuantity > 0 && !soldOut
             ? "[@media(hover:hover)]:group-hover:pointer-events-none group-focus-within:pointer-events-none"
             : "",
           didJustAdd ? "scale-[1.06]" : "scale-100"
@@ -235,18 +256,23 @@ export function ProductCartAction({
         onClick={(event) => {
           event.preventDefault()
           event.stopPropagation()
+          if (soldOut || atStockLimit) return
           onAddToCart()
         }}
       >
-        {cartQuantity > 0 ? (
+        {cartQuantity > 0 && !soldOut ? (
           <Check className="h-3.5 w-3.5 shrink-0" />
         ) : (
           <ShoppingCart className="h-3.5 w-3.5 shrink-0" />
         )}
-        {cartQuantity > 0 ? `In cart (${cartQuantity})` : "Add"}
+        {soldOut
+          ? "Sold out"
+          : cartQuantity > 0
+            ? `In cart (${cartQuantity})`
+            : "Add"}
       </Button>
 
-      {cartQuantity > 0 && onIncrement && onDecrement && (
+      {!soldOut && cartQuantity > 0 && onIncrement && onDecrement && (
         <div className="pointer-events-auto absolute inset-0 flex items-center justify-center opacity-100 transition-all duration-200 [@media(hover:hover)]:pointer-events-none [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:pointer-events-auto [@media(hover:hover)]:group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
           <div className="flex h-7 items-center overflow-hidden rounded-md border border-secondary-400/40 bg-[var(--surface)] shadow-md">
             <button
@@ -266,11 +292,17 @@ export function ProductCartAction({
             </div>
             <button
               type="button"
-              className="flex h-full w-7 items-center justify-center text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)]"
-              aria-label={`Add one more ${title} to cart`}
+              disabled={atStockLimit}
+              className="flex h-full w-7 items-center justify-center text-sm text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)] disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label={
+                atStockLimit
+                  ? `Stock limit reached for ${title}`
+                  : `Add one more ${title} to cart`
+              }
               onClick={(event) => {
                 event.preventDefault()
                 event.stopPropagation()
+                if (atStockLimit) return
                 onIncrement()
               }}
             >
