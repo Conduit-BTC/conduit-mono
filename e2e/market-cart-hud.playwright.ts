@@ -54,7 +54,28 @@ for (const viewport of [
     const hud = page.getByRole("region", { name: "Cart inventory" })
     await expect(hud).toBeVisible()
     await expect(hud.getByRole("tab")).toHaveCount(2)
+    const cartSelector = hud.getByRole("tablist", { name: "Store carts" })
+    expect(
+      await cartSelector.evaluate((element) => ({
+        borderWidth: getComputedStyle(element).borderWidth,
+        maskImage: getComputedStyle(element).maskImage.toString(),
+      }))
+    ).toEqual({
+      borderWidth: "0px",
+      maskImage: expect.stringContaining("linear-gradient"),
+    })
+    const selectedCart = hud.getByRole("tab", { selected: true })
+    const selectedItemCount = selectedCart.getByLabel("1 cart item")
+    await expect(selectedItemCount).toHaveText("1")
+    await expect(selectedCart).toContainText("3,400")
     await expect(hud.getByText("Reading Lamp")).toBeVisible()
+    const productRail = hud.getByRole("region", { name: "Cart products" })
+    await expect(productRail).toBeVisible()
+    expect(
+      await productRail.evaluate((element) =>
+        getComputedStyle(element).maskImage.toString()
+      )
+    ).toContain("linear-gradient")
     await expect(
       hud.getByRole("link", { name: /Continue to checkout/ })
     ).toBeVisible()
@@ -104,6 +125,11 @@ for (const viewport of [
     await toggle.click()
     await expect(toggle).toHaveAttribute("aria-expanded", "false")
     await expect(hud.locator("[inert]")).toHaveAttribute("aria-hidden", "true")
+    await expect(selectedItemCount).toHaveText("1")
+    await expect(selectedCart).not.toContainText("3,400")
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth)
+    ).toBe(viewport.width)
 
     await page.goto(`${marketUrl}/cart`)
     await expect(
