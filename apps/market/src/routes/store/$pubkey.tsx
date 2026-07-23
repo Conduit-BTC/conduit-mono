@@ -148,7 +148,9 @@ function StorefrontPage() {
   const navigate = Route.useNavigate()
   const queryClient = useQueryClient()
   const cart = useCart()
-  const { pubkey: viewerPubkey, status } = useAuth()
+  const { pubkey: viewerPubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  authGenerationRef.current = authGeneration
   const activeViewerPubkey = status === "connected" ? viewerPubkey : null
   const shopperPricing = useShopperPricing()
   const btcUsdRate = shopperPricing.quote
@@ -382,6 +384,7 @@ function StorefrontPage() {
 
     const nextShouldFollow = followControl.shouldFollowOnClick
     const operationId = ++followOperationIdRef.current
+    const followAuthGeneration = authGeneration
     dispatchFollow({
       type: "operation_started",
       scope: followScope,
@@ -394,7 +397,10 @@ function StorefrontPage() {
         targetPubkey: pubkey,
         shouldFollow: nextShouldFollow,
         appId: "market",
+        isSessionCurrent: () =>
+          authGenerationRef.current === followAuthGeneration,
       })
+      if (authGenerationRef.current !== followAuthGeneration) return
 
       dispatchFollow({
         type: "publish_succeeded",
@@ -411,6 +417,7 @@ function StorefrontPage() {
         operationId,
       })
     } catch (error) {
+      if (authGenerationRef.current !== followAuthGeneration) return
       dispatchFollow({
         type: "operation_failed",
         scope: followScope,

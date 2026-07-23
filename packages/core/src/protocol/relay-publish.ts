@@ -75,6 +75,8 @@ export interface PublishWithPlannerInput {
   skipHealthFilter?: boolean
   /** Context for non-destructive replaceable-event publishes. */
   replaceableSafety?: ReplaceablePublishSafetyOptions
+  /** Abort before a relay attempt when the caller's authenticated session changed. */
+  shouldContinue?: () => boolean
 }
 
 function hasAuthenticatedAuthorRelayContext(
@@ -646,11 +648,18 @@ export async function publishWithPlanner(
   assertSafeReplaceablePublish(event, input.replaceableSafety)
   assertValidSignedPublish(event, input)
 
+  const assertShouldContinue = () => {
+    if (input.shouldContinue?.() === false) {
+      throw new Error("Publish cancelled because the signer session changed.")
+    }
+  }
+
   const basePlan = input.exclusiveRelayUrls
     ? await planPublishRelays(input)
     : testOverrides.planPublishRelays
       ? await testOverrides.planPublishRelays(input)
       : await planPublishRelays(input)
+  assertShouldContinue()
   const extraPrimaryRelayUrls = input.exclusiveRelayUrls
     ? []
     : normalizeUntrustedRelayHintsForContext({
@@ -688,6 +697,7 @@ export async function publishWithPlanner(
       attemptedRelayUrls,
     })
     if (fallbackRelayUrls.length > 0) {
+      assertShouldContinue()
       attemptedRelayUrls = fallbackRelayUrls
       const fallback = await publishToRelayUrls({
         event,
@@ -734,6 +744,7 @@ export async function publishWithPlanner(
     input.deliveryMode === "critical"
       ? CRITICAL_PUBLISH_TIMEOUT_MS
       : STANDARD_PUBLISH_TIMEOUT_MS
+  assertShouldContinue()
   const primary = await publishToRelayUrls({
     event,
     ndk,
@@ -746,6 +757,7 @@ export async function publishWithPlanner(
     let retry: Awaited<ReturnType<typeof publishToRelayUrls>> | null = null
 
     if (input.deliveryMode === "critical" && primary.failedRelayUrls.length) {
+      assertShouldContinue()
       retry = await publishToRelayUrls({
         event,
         ndk,
@@ -812,6 +824,7 @@ export async function publishWithPlanner(
       fallbackRelayUrls.length > 0 ||
       criticalRecipientFallbackRelayUrls.length > 0
     ) {
+      assertShouldContinue()
       const fallbackAttemptRelayUrls = mergeUnique([
         fallbackRelayUrls,
         criticalRecipientFallbackRelayUrls,
@@ -878,6 +891,7 @@ export async function publishWithPlanner(
     })
   }
 
+  assertShouldContinue()
   const broadcast = await publishToRelayUrls({
     event,
     ndk,
