@@ -363,6 +363,64 @@ describe("NIP-02 follow helpers", () => {
     expect(signed).toBe(0)
   })
 
+  it("requires a quorum when an identity declares multiple write relays", async () => {
+    const signer = {
+      user: async () => ({ pubkey: ALICE_PUBKEY }),
+    } as unknown as NDKSigner
+    let call = 0
+    let signed = 0
+    __setFollowTestOverrides({
+      requireNdkConnected: async () => ({ signer }) as unknown as NDK,
+      getRelayLists: async () => new Map(),
+      fetchEventsFanoutDetailed: (async (_filter, options) => {
+        call += 1
+        const relayUrls = options.relayUrls ?? []
+        if (call === 1) {
+          const relayList = contactListEvent({
+            id: "e".repeat(64),
+            tags: [
+              ["r", "wss://identity-write-one.example", "write"],
+              ["r", "wss://identity-write-two.example", "write"],
+            ],
+          })
+          relayList.kind = 10_002
+          return {
+            events: [relayList],
+            relays: relayUrls.map((relayUrl) => ({
+              relayUrl,
+              status: "success" as const,
+              eventCount: 1,
+            })),
+          }
+        }
+        return {
+          events: [],
+          relays: relayUrls.map((relayUrl) => ({
+            relayUrl,
+            status:
+              relayUrl === "wss://identity-write-two.example"
+                ? ("failed" as const)
+                : ("success" as const),
+            eventCount: 0,
+          })),
+        }
+      }) as never,
+      signEvent: async () => {
+        signed += 1
+      },
+    })
+
+    await expect(
+      publishContactListUpdate({
+        ownerPubkey: ALICE_PUBKEY,
+        targetPubkey: BOB_PUBKEY,
+        shouldFollow: true,
+        appId: "market",
+      })
+    ).rejects.toThrow("Could not load the complete follow list")
+    expect(signed).toBe(0)
+  })
+
   it("fails closed when an existing NIP-65 declaration has no write relays", async () => {
     const signer = {
       user: async () => ({ pubkey: ALICE_PUBKEY }),
