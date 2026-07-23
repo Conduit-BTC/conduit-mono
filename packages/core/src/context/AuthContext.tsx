@@ -41,6 +41,7 @@ export type AuthStatus =
 
 export interface AuthContextValue {
   pubkey: string | null
+  authGeneration: number
   method: AuthMethod | null
   rememberedMethod: AuthMethod | null
   status: AuthStatus
@@ -267,6 +268,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [capabilities, setCapabilities] = useState<AuthSignerCapabilities>(
     NO_SIGNER_CAPABILITIES
   )
+  const [authGeneration, setAuthGeneration] = useState(0)
   const connecting = useRef(false)
   const connected = useRef(false)
   const authEpoch = useRef(0)
@@ -278,6 +280,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     activePairing.current?.abort()
     activePairing.current = null
     authEpoch.current += 1
+    setAuthGeneration(authEpoch.current)
     connecting.current = false
     connected.current = false
     const connection = remoteConnection.current
@@ -320,6 +323,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     connecting.current = true
     const epoch = authEpoch.current + 1
     authEpoch.current = epoch
+    setAuthGeneration(epoch)
     let authRevision = readAuthRevision()
     const attemptIsCurrent = () =>
       epoch === authEpoch.current && authRevision === readAuthRevision()
@@ -606,6 +610,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const cancelConnect = useCallback(() => {
     if (!activePairing.current) return
     authEpoch.current += 1
+    setAuthGeneration(authEpoch.current)
     activePairing.current.abort()
     activePairing.current = null
     connecting.current = false
@@ -746,6 +751,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     <AuthContext.Provider
       value={{
         pubkey,
+        authGeneration,
         method,
         rememberedMethod,
         status,

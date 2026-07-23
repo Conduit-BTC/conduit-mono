@@ -157,8 +157,10 @@ describe("NIP-46 AuthContext API", () => {
       nip46Flow: "nostrconnect",
     } satisfies AuthConnectOptions
     const uri: AuthContextValue["nostrConnectUri"] = null
+    const authGeneration: AuthContextValue["authGeneration"] = 0
 
     expect(options.nip46Flow).toBe("nostrconnect")
     expect(uri).toBeNull()
+    expect(authGeneration).toBe(0)
   })
 })

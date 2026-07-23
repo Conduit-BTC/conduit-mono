@@ -6,10 +6,20 @@
  * events, but do not attempt expensive reverse follower discovery.
  */
 
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import NDK, { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { EVENT_KINDS } from "./kinds"
-import { appendConduitClientTag, type ConduitAppId } from "./nip89"
-import { requireNdkConnected } from "./ndk"
+import { buildConduitClientTag, type ConduitAppId } from "./nip89"
+import {
+  fetchEventsFanoutDetailed,
+  requireNdkConnected,
+  type FetchEventsFanoutResult,
+} from "./ndk"
+import {
+  getRelayLists,
+  parseRelayListEvent,
+  type RelayList,
+} from "./relay-list"
+import { planRelayReads, planRelayWrites } from "./relay-planner"
 import { publishWithPlanner } from "./relay-publish"
 import {
   ReplaceablePublishSafetyError,
@@ -17,10 +27,39 @@ import {
 } from "./replaceable-safety"
 
 export type FollowListEventLike = {
+  id?: string
+  kind?: number
   pubkey?: string
   created_at?: number
   content?: string
   tags?: readonly (readonly string[])[]
+}
+
+export type ContactListSnapshot =
+  | { state: "found"; event: FollowListEventLike }
+  | { state: "confirmed_absent" }
+  | { state: "unavailable" }
+
+interface FollowTestOverrides {
+  requireNdkConnected?: typeof requireNdkConnected
+  getRelayLists?: typeof getRelayLists
+  fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
+  createEvent?: (ndk: NDK) => NDKEvent
+  signEvent?: (event: NDKEvent, signer: NDKSigner) => Promise<void>
+  publishWithPlanner?: typeof publishWithPlanner
+  now?: () => number
+}
+
+let testOverrides: FollowTestOverrides = {}
+
+export function __setFollowTestOverrides(
+  overrides: Partial<FollowTestOverrides>
+): void {
+  testOverrides = { ...testOverrides, ...overrides }
+}
+
+export function __resetFollowTestOverrides(): void {
+  testOverrides = {}
 }
 
 export interface MerchantTrustSocialSummary {
@@ -53,9 +92,32 @@ export function extractFollowPubkeys(
 export function selectLatestFollowListEvent<T extends FollowListEventLike>(
   events: Iterable<T>
 ): T | undefined {
-  return Array.from(events).sort(
-    (a, b) => (b.created_at ?? 0) - (a.created_at ?? 0)
-  )[0]
+  return Array.from(events).sort((a, b) => {
+    const timestampDifference = (b.created_at ?? 0) - (a.created_at ?? 0)
+    if (timestampDifference !== 0) return timestampDifference
+    return (a.id ?? "").localeCompare(b.id ?? "")
+  })[0]
+}
+
+export function classifyContactListSnapshot(
+  result: FetchEventsFanoutResult,
+  ownerPubkey: string
+): ContactListSnapshot {
+  if (
+    result.relays.length === 0 ||
+    result.relays.some((relay) => relay.status !== "success")
+  ) {
+    return { state: "unavailable" }
+  }
+
+  const event = selectLatestFollowListEvent(
+    result.events.filter(
+      (candidate) =>
+        candidate.kind === EVENT_KINDS.CONTACT_LIST &&
+        normalizeHexPubkey(candidate.pubkey) === ownerPubkey
+    )
+  )
+  return event ? { state: "found", event } : { state: "confirmed_absent" }
 }
 
 export function getFollowListPubkeySet(
@@ -135,7 +197,7 @@ export function buildContactListUpdateTags({
   const alreadyFollowing = currentFollowPubkeys.has(normalizedTargetPubkey)
 
   if (shouldFollow && !alreadyFollowing) {
-    nextTags.push(["p", normalizedTargetPubkey])
+    nextTags.push(["p", normalizedTargetPubkey, ""])
   }
   if (!shouldFollow && alreadyFollowing) {
     for (let index = nextTags.length - 1; index >= 0; index -= 1) {
@@ -152,16 +214,167 @@ export function buildContactListUpdateTags({
   return nextTags
 }
 
+function appendClientTagWithoutReplacingExisting(
+  tags: string[][],
+  appId: ConduitAppId
+): string[][] {
+  const clientTag = buildConduitClientTag(appId)
+  if (!clientTag) return tags
+  if (tags.some((tag) => JSON.stringify(tag) === JSON.stringify(clientTag))) {
+    return tags
+  }
+  return [...tags, clientTag]
+}
+
+type LoadedContactListSnapshot = {
+  snapshot: ContactListSnapshot
+  publishRelayUrls: string[]
+}
+
+async function loadContactListSnapshot(
+  ownerPubkey: string
+): Promise<LoadedContactListSnapshot> {
+  const resolveRelayLists = testOverrides.getRelayLists ?? getRelayLists
+  const cachedRelayLists = await resolveRelayLists([ownerPubkey], {
+    cacheOnly: true,
+    allowInsecureRelayUrlsForPubkey: ownerPubkey,
+  })
+  const discoveryPlan = planRelayReads({
+    intent: "relay_lists",
+    authenticatedPubkey: ownerPubkey,
+    maxRelays: 0,
+    skipHealthFilter: true,
+  })
+  if (discoveryPlan.relayUrls.length === 0) {
+    return { snapshot: { state: "unavailable" }, publishRelayUrls: [] }
+  }
+
+  const fetchDetailed =
+    testOverrides.fetchEventsFanoutDetailed ?? fetchEventsFanoutDetailed
+  const relayListResult = await fetchCompleteSnapshot(
+    fetchDetailed,
+    {
+      kinds: [EVENT_KINDS.RELAY_LIST],
+      authors: [ownerPubkey],
+      limit: 5,
+    },
+    discoveryPlan.relayUrls
+  )
+  if (relayListResult.state === "unavailable") {
+    return { snapshot: relayListResult, publishRelayUrls: [] }
+  }
+
+  const relayLists = new Map<string, RelayList>(cachedRelayLists)
+  if (relayListResult.state === "found") {
+    relayLists.set(
+      ownerPubkey,
+      parseRelayListEvent(relayListResult.event as NDKEvent)
+    )
+  }
+  const readPlan = planRelayReads({
+    intent: "profile_social_feed",
+    authors: [ownerPubkey],
+    relayLists,
+    authenticatedPubkey: ownerPubkey,
+    maxRelays: 0,
+    skipHealthFilter: true,
+  })
+  const writePlan = planRelayWrites({
+    intent: "author_event",
+    authorPubkey: ownerPubkey,
+    relayLists,
+    authenticatedPubkey: ownerPubkey,
+    maxPrimaryRelays: 0,
+    skipHealthFilter: true,
+  })
+  const relayUrls = Array.from(
+    new Set([
+      ...readPlan.relayUrls,
+      ...readPlan.parkedRelayUrls,
+      ...writePlan.primaryRelayUrls,
+      ...writePlan.parkedRelayUrls,
+      ...(relayLists.get(ownerPubkey)?.writeRelayUrls ?? []),
+      ...(relayLists.get(ownerPubkey)?.sourceRelayUrls ?? []),
+    ])
+  )
+  if (relayUrls.length === 0) {
+    return { snapshot: { state: "unavailable" }, publishRelayUrls: [] }
+  }
+
+  return {
+    snapshot: await fetchCompleteSnapshot(
+      fetchDetailed,
+      {
+        kinds: [EVENT_KINDS.CONTACT_LIST],
+        authors: [ownerPubkey],
+        limit: 10,
+      },
+      relayUrls,
+      ownerPubkey
+    ),
+    publishRelayUrls: Array.from(
+      new Set([
+        ...(relayLists.get(ownerPubkey)?.writeRelayUrls ?? []),
+        ...writePlan.primaryRelayUrls,
+      ])
+    ),
+  }
+}
+
+async function fetchCompleteSnapshot(
+  fetchDetailed: typeof fetchEventsFanoutDetailed,
+  filter: Parameters<typeof fetchEventsFanoutDetailed>[0],
+  relayUrls: string[],
+  ownerPubkey?: string
+): Promise<ContactListSnapshot> {
+  const classify = (result: FetchEventsFanoutResult): ContactListSnapshot => {
+    if (ownerPubkey) return classifyContactListSnapshot(result, ownerPubkey)
+    if (
+      result.relays.length === 0 ||
+      result.relays.some((relay) => relay.status !== "success")
+    ) {
+      return { state: "unavailable" }
+    }
+    const event = selectLatestFollowListEvent(
+      result.events.filter(
+        (candidate) =>
+          candidate.kind === EVENT_KINDS.RELAY_LIST &&
+          normalizeHexPubkey(candidate.pubkey) === filter.authors?.[0]
+      )
+    )
+    return event ? { state: "found", event } : { state: "confirmed_absent" }
+  }
+  const first = classify(
+    await fetchDetailed(filter, {
+      relayUrls,
+      connectTimeoutMs: 3_000,
+      fetchTimeoutMs: 6_000,
+      skipHealthFilter: true,
+    })
+  )
+  if (first.state !== "unavailable") return first
+  return classify(
+    await fetchDetailed(filter, {
+      relayUrls,
+      connectTimeoutMs: 5_000,
+      fetchTimeoutMs: 10_000,
+      skipHealthFilter: true,
+    })
+  )
+}
+
 export async function publishContactListUpdate({
   ownerPubkey,
   targetPubkey,
   shouldFollow,
   appId,
+  isSessionCurrent,
 }: {
   ownerPubkey: string
   targetPubkey: string
   shouldFollow: boolean
   appId: ConduitAppId
+  isSessionCurrent?: () => boolean
 }): Promise<void> {
   const normalizedOwnerPubkey = normalizeHexPubkey(ownerPubkey)
   const normalizedTargetPubkey = normalizeHexPubkey(targetPubkey)
@@ -170,38 +383,53 @@ export async function publishContactListUpdate({
     throw new Error("Cannot update a follow list with an invalid pubkey")
   }
 
-  const ndk = await requireNdkConnected()
+  const connectNdk = testOverrides.requireNdkConnected ?? requireNdkConnected
+  const ndk = await connectNdk()
   if (!ndk.signer) throw new Error("Signer not connected")
+  const signer = ndk.signer
 
-  const signerPubkey = normalizeHexPubkey((await ndk.signer.user()).pubkey)
+  const signerPubkey = normalizeHexPubkey((await signer.user()).pubkey)
   if (signerPubkey !== normalizedOwnerPubkey) {
     throw new Error("Active signer does not match this follow list")
   }
 
-  const existingEvents = await ndk.fetchEvents({
-    kinds: [EVENT_KINDS.CONTACT_LIST],
-    authors: [normalizedOwnerPubkey],
-    limit: 10,
-  })
-  const latest = selectLatestFollowListEvent(existingEvents)
-
-  if (!latest) {
+  const loaded = await loadContactListSnapshot(normalizedOwnerPubkey)
+  const { snapshot } = loaded
+  if (snapshot.state === "unavailable") {
     throw new ReplaceablePublishSafetyError(
-      "Refusing to publish a new tiny follow list without loading an existing contact-list snapshot."
+      "Could not load the complete follow list from its relays. Check your connection and try again."
     )
   }
+  if (snapshot.state === "confirmed_absent" && !shouldFollow) return
+
+  const assertCurrentSignerSession = () => {
+    if (ndk.signer !== signer || isSessionCurrent?.() === false) {
+      throw new Error("Signer session changed while updating the follow list")
+    }
+  }
+  assertCurrentSignerSession()
+
+  const latest = snapshot.state === "found" ? snapshot.event : undefined
 
   const nextTags = buildContactListUpdateTags({
-    currentTags: latest.tags,
+    currentTags: latest?.tags,
     targetPubkey: normalizedTargetPubkey,
     shouldFollow,
   })
 
-  const event = new NDKEvent(ndk)
+  const nowSeconds = Math.floor((testOverrides.now?.() ?? Date.now()) / 1_000)
+  const latestCreatedAt = latest?.created_at ?? 0
+  if (latestCreatedAt >= nowSeconds + 5 * 60) {
+    throw new ReplaceablePublishSafetyError(
+      "The loaded follow list is dated too far in the future to update safely."
+    )
+  }
+
+  const event = testOverrides.createEvent?.(ndk) ?? new NDKEvent(ndk)
   event.kind = EVENT_KINDS.CONTACT_LIST
-  event.created_at = Math.floor(Date.now() / 1000)
-  event.content = latest.content ?? ""
-  event.tags = appendConduitClientTag(nextTags, appId)
+  event.created_at = Math.max(nowSeconds, latestCreatedAt + 1)
+  event.content = latest?.content ?? ""
+  event.tags = appendClientTagWithoutReplacingExisting(nextTags, appId)
 
   const replaceableSafety = {
     contactList: {
@@ -210,11 +438,27 @@ export async function publishContactListUpdate({
   }
 
   assertSafeReplaceablePublish(event, replaceableSafety)
-  await event.sign(ndk.signer)
-  await publishWithPlanner(event, {
+  assertCurrentSignerSession()
+  if (testOverrides.signEvent) {
+    await testOverrides.signEvent(event, signer)
+  } else {
+    await event.sign(signer)
+  }
+  assertCurrentSignerSession()
+  const publish = testOverrides.publishWithPlanner ?? publishWithPlanner
+  await publish(event, {
     intent: "author_event",
     authorPubkey: normalizedOwnerPubkey,
     authenticatedPubkey: normalizedOwnerPubkey,
+    extraRelayUrls: loaded.publishRelayUrls,
+    shouldContinue: () => {
+      try {
+        assertCurrentSignerSession()
+        return true
+      } catch {
+        return false
+      }
+    },
     replaceableSafety,
   })
 }

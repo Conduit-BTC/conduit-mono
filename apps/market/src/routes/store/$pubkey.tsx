@@ -12,6 +12,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
 } from "react"
@@ -165,7 +166,9 @@ function StorefrontPage() {
   const navigate = Route.useNavigate()
   const queryClient = useQueryClient()
   const cart = useCart()
-  const { pubkey: viewerPubkey, status } = useAuth()
+  const { pubkey: viewerPubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  authGenerationRef.current = authGeneration
   const shopperPricing = useShopperPricing()
   const btcUsdRate = shopperPricing.quote
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
@@ -204,6 +207,12 @@ function StorefrontPage() {
   >("idle")
   const [followOverride, setFollowOverride] = useState<boolean | null>(null)
   const [followError, setFollowError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setFollowState("idle")
+    setFollowOverride(null)
+    setFollowError(null)
+  }, [authGeneration])
 
   const merchantIdentityPending = merchantTrust.merchantNamePending
   const merchantName = merchantTrust.merchantName
@@ -360,6 +369,7 @@ function StorefrontPage() {
     if (isFollowBusy) return
 
     const nextShouldFollow = !isFollowing
+    const followAuthGeneration = authGeneration
     setFollowState(nextShouldFollow ? "saving_follow" : "saving_unfollow")
     setFollowError(null)
     try {
@@ -368,7 +378,10 @@ function StorefrontPage() {
         targetPubkey: pubkey,
         shouldFollow: nextShouldFollow,
         appId: "market",
+        isSessionCurrent: () =>
+          authGenerationRef.current === followAuthGeneration,
       })
+      if (authGenerationRef.current !== followAuthGeneration) return
 
       setFollowOverride(nextShouldFollow)
       await queryClient.invalidateQueries({
@@ -376,6 +389,7 @@ function StorefrontPage() {
       })
       setFollowState("idle")
     } catch (error) {
+      if (authGenerationRef.current !== followAuthGeneration) return
       setFollowOverride(null)
       setFollowError(
         error instanceof Error

@@ -226,6 +226,41 @@ describe("planPublishRelays", () => {
     expect(planned).toBe(false)
   })
 
+  it("cancels before relay publication when the signer session changes", async () => {
+    let current = true
+    let publishes = 0
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => {
+        current = false
+        return {
+          intent: "author_event",
+          primaryRelayUrls: ["wss://relay.example"],
+          broadcastRelayUrls: [],
+          parkedRelayUrls: [],
+        }
+      },
+    })
+
+    await expect(
+      publishWithPlanner(
+        {
+          kind: 1,
+          tags: [],
+          publish: async () => {
+            publishes += 1
+            return new Set()
+          },
+        } as never,
+        {
+          intent: "author_event",
+          authorPubkey: "alice",
+          shouldContinue: () => current,
+        }
+      )
+    ).rejects.toThrow("signer session changed")
+    expect(publishes).toBe(0)
+  })
+
   it("does not let broadcast success mask recipient primary failure", async () => {
     const primaryRelay = "wss://recipient.example"
     const broadcastRelay = "wss://sender.example"
