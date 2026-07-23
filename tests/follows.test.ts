@@ -186,7 +186,46 @@ describe("NIP-02 follow helpers", () => {
         },
         ALICE_PUBKEY
       )
-    ).toEqual({ state: "unavailable" })
+    ).toMatchObject({ state: "unavailable" })
+  })
+
+  it("accepts a healthy quorum while still requiring declared author relays", () => {
+    const event = contactListEvent()
+    const result = {
+      events: [event],
+      relays: [
+        ...successfulRelays(),
+        {
+          relayUrl: "wss://offline.example",
+          status: "failed" as const,
+          eventCount: 0,
+        },
+      ],
+    }
+
+    expect(
+      classifyContactListSnapshot(result, ALICE_PUBKEY, {
+        minimumSuccessfulRelays: 2,
+      })
+    ).toEqual({ state: "found", event })
+    expect(
+      classifyContactListSnapshot(result, ALICE_PUBKEY, {
+        minimumSuccessfulRelays: 1,
+        requiredRelayUrls: ["wss://offline.example"],
+      })
+    ).toMatchObject({ state: "unavailable" })
+
+    expect(
+      classifyContactListSnapshot(result, ALICE_PUBKEY, {
+        minimumSuccessfulRelays: 2,
+        requiredRelayUrls: [
+          "wss://relay-0.example",
+          "wss://relay-1.example",
+          "wss://offline.example",
+        ],
+        minimumSuccessfulRequiredRelays: 2,
+      })
+    ).toEqual({ state: "found", event })
   })
 
   it("publishes a first follow only after all relays confirm no prior list", async () => {
@@ -205,6 +244,54 @@ describe("NIP-02 follow helpers", () => {
     expect(publisher.reads).toBe(2)
     expect(publisher.signed).toBe(1)
     expect(publisher.published?.content).toBe("")
+    expect(publisher.published?.tags).toContainEqual(["p", BOB_PUBKEY, ""])
+  })
+
+  it("publishes a first follow with a two-relay EOSE quorum", async () => {
+    const publisher = configurePublisher({
+      events: [],
+      relays: [
+        ...successfulRelays(),
+        {
+          relayUrl: "wss://offline.example",
+          status: "failed",
+          eventCount: 0,
+        },
+      ],
+    })
+
+    await publishContactListUpdate({
+      ownerPubkey: ALICE_PUBKEY,
+      targetPubkey: BOB_PUBKEY,
+      shouldFollow: true,
+      appId: "market",
+    })
+
+    expect(publisher.signed).toBe(1)
+    expect(publisher.published?.tags).toContainEqual(["p", BOB_PUBKEY, ""])
+  })
+
+  it("publishes after one relay completes EOSE when the remaining fanout is unavailable", async () => {
+    const publisher = configurePublisher({
+      events: [],
+      relays: [
+        ...successfulRelays(1),
+        {
+          relayUrl: "wss://offline.example",
+          status: "failed",
+          eventCount: 0,
+        },
+      ],
+    })
+
+    await publishContactListUpdate({
+      ownerPubkey: ALICE_PUBKEY,
+      targetPubkey: BOB_PUBKEY,
+      shouldFollow: true,
+      appId: "market",
+    })
+
+    expect(publisher.signed).toBe(1)
     expect(publisher.published?.tags).toContainEqual(["p", BOB_PUBKEY, ""])
   })
 
@@ -293,6 +380,11 @@ describe("NIP-02 follow helpers", () => {
       fetchEventsFanoutDetailed: (async (_filter, options) => {
         seenRelayUrls.push([...(options.relayUrls ?? [])])
         call += 1
+        const relays = (options.relayUrls ?? []).map((relayUrl) => ({
+          relayUrl,
+          status: "success" as const,
+          eventCount: 0,
+        }))
         return call === 1
           ? {
               events: [
@@ -304,9 +396,9 @@ describe("NIP-02 follow helpers", () => {
                 event.kind = 10_002
                 return event
               }),
-              relays: successfulRelays(),
+              relays,
             }
-          : { events: [], relays: successfulRelays() }
+          : { events: [], relays }
       }) as never,
       createEvent: () => new NDKEvent(),
       signEvent: async () => {},

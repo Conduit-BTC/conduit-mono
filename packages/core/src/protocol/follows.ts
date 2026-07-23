@@ -38,7 +38,13 @@ export type FollowListEventLike = {
 export type ContactListSnapshot =
   | { state: "found"; event: FollowListEventLike }
   | { state: "confirmed_absent" }
-  | { state: "unavailable" }
+  | {
+      state: "unavailable"
+      attemptedRelays: number
+      successfulRelays: number
+      requiredRelays: number
+      successfulRequiredRelays: number
+    }
 
 interface FollowTestOverrides {
   requireNdkConnected?: typeof requireNdkConnected
@@ -101,13 +107,38 @@ export function selectLatestFollowListEvent<T extends FollowListEventLike>(
 
 export function classifyContactListSnapshot(
   result: FetchEventsFanoutResult,
-  ownerPubkey: string
+  ownerPubkey: string,
+  confidence: {
+    requiredRelayUrls?: readonly string[]
+    minimumSuccessfulRequiredRelays?: number
+    minimumSuccessfulRelays?: number
+  } = {}
 ): ContactListSnapshot {
+  const successfulRelayUrls = new Set(
+    result.relays
+      .filter((relay) => relay.status === "success")
+      .map((relay) => relay.relayUrl)
+  )
+  const requiredRelayUrls = confidence.requiredRelayUrls ?? []
+  const successfulRequiredRelays = requiredRelayUrls.filter((relayUrl) =>
+    successfulRelayUrls.has(relayUrl)
+  ).length
+  const minimumSuccessfulRequiredRelays =
+    confidence.minimumSuccessfulRequiredRelays ?? requiredRelayUrls.length
+  const minimumSuccessfulRelays =
+    confidence.minimumSuccessfulRelays ?? result.relays.length
   if (
     result.relays.length === 0 ||
-    result.relays.some((relay) => relay.status !== "success")
+    successfulRelayUrls.size < minimumSuccessfulRelays ||
+    successfulRequiredRelays < minimumSuccessfulRequiredRelays
   ) {
-    return { state: "unavailable" }
+    return {
+      state: "unavailable",
+      attemptedRelays: result.relays.length,
+      successfulRelays: successfulRelayUrls.size,
+      requiredRelays: requiredRelayUrls.length,
+      successfulRequiredRelays,
+    }
   }
 
   const event = selectLatestFollowListEvent(
@@ -229,6 +260,7 @@ function appendClientTagWithoutReplacingExisting(
 type LoadedContactListSnapshot = {
   snapshot: ContactListSnapshot
   publishRelayUrls: string[]
+  unavailableStage?: "relay discovery" | "contact list"
 }
 
 async function loadContactListSnapshot(
@@ -246,7 +278,17 @@ async function loadContactListSnapshot(
     skipHealthFilter: true,
   })
   if (discoveryPlan.relayUrls.length === 0) {
-    return { snapshot: { state: "unavailable" }, publishRelayUrls: [] }
+    return {
+      snapshot: {
+        state: "unavailable",
+        attemptedRelays: 0,
+        successfulRelays: 0,
+        requiredRelays: 0,
+        successfulRequiredRelays: 0,
+      },
+      publishRelayUrls: [],
+      unavailableStage: "relay discovery",
+    }
   }
 
   const fetchDetailed =
@@ -258,10 +300,16 @@ async function loadContactListSnapshot(
       authors: [ownerPubkey],
       limit: 5,
     },
-    discoveryPlan.relayUrls
+    discoveryPlan.relayUrls,
+    undefined,
+    { minimumSuccessfulRelays: 1 }
   )
   if (relayListResult.state === "unavailable") {
-    return { snapshot: relayListResult, publishRelayUrls: [] }
+    return {
+      snapshot: relayListResult,
+      publishRelayUrls: [],
+      unavailableStage: "relay discovery",
+    }
   }
 
   const relayLists = new Map<string, RelayList>(cachedRelayLists)
@@ -298,26 +346,48 @@ async function loadContactListSnapshot(
     ])
   )
   if (relayUrls.length === 0) {
-    return { snapshot: { state: "unavailable" }, publishRelayUrls: [] }
+    return {
+      snapshot: {
+        state: "unavailable",
+        attemptedRelays: 0,
+        successfulRelays: 0,
+        requiredRelays: 0,
+        successfulRequiredRelays: 0,
+      },
+      publishRelayUrls: [],
+      unavailableStage: "contact list",
+    }
   }
 
+  const declaredWriteRelayUrls =
+    relayLists.get(ownerPubkey)?.writeRelayUrls ?? []
+  const snapshot = await fetchCompleteSnapshot(
+    fetchDetailed,
+    {
+      kinds: [EVENT_KINDS.CONTACT_LIST],
+      authors: [ownerPubkey],
+      limit: 10,
+    },
+    relayUrls,
+    ownerPubkey,
+    declaredWriteRelayUrls.length
+      ? {
+          requiredRelayUrls: declaredWriteRelayUrls,
+          minimumSuccessfulRequiredRelays: 1,
+          minimumSuccessfulRelays: 1,
+        }
+      : { minimumSuccessfulRelays: 1 }
+  )
   return {
-    snapshot: await fetchCompleteSnapshot(
-      fetchDetailed,
-      {
-        kinds: [EVENT_KINDS.CONTACT_LIST],
-        authors: [ownerPubkey],
-        limit: 10,
-      },
-      relayUrls,
-      ownerPubkey
-    ),
+    snapshot,
     publishRelayUrls: Array.from(
       new Set([
         ...(relayLists.get(ownerPubkey)?.writeRelayUrls ?? []),
         ...writePlan.primaryRelayUrls,
       ])
     ),
+    unavailableStage:
+      snapshot.state === "unavailable" ? "contact list" : undefined,
   }
 }
 
@@ -325,15 +395,39 @@ async function fetchCompleteSnapshot(
   fetchDetailed: typeof fetchEventsFanoutDetailed,
   filter: Parameters<typeof fetchEventsFanoutDetailed>[0],
   relayUrls: string[],
-  ownerPubkey?: string
+  ownerPubkey?: string,
+  confidence?: {
+    requiredRelayUrls?: readonly string[]
+    minimumSuccessfulRequiredRelays?: number
+    minimumSuccessfulRelays?: number
+  }
 ): Promise<ContactListSnapshot> {
   const classify = (result: FetchEventsFanoutResult): ContactListSnapshot => {
-    if (ownerPubkey) return classifyContactListSnapshot(result, ownerPubkey)
+    if (ownerPubkey) {
+      return classifyContactListSnapshot(result, ownerPubkey, confidence)
+    }
+    const successfulRelayUrls = new Set(
+      result.relays
+        .filter((relay) => relay.status === "success")
+        .map((relay) => relay.relayUrl)
+    )
     if (
       result.relays.length === 0 ||
-      result.relays.some((relay) => relay.status !== "success")
+      successfulRelayUrls.size < (confidence?.minimumSuccessfulRelays ?? 1) ||
+      confidence?.requiredRelayUrls?.some(
+        (relayUrl) => !successfulRelayUrls.has(relayUrl)
+      )
     ) {
-      return { state: "unavailable" }
+      return {
+        state: "unavailable",
+        attemptedRelays: result.relays.length,
+        successfulRelays: successfulRelayUrls.size,
+        requiredRelays: confidence?.requiredRelayUrls?.length ?? 0,
+        successfulRequiredRelays:
+          confidence?.requiredRelayUrls?.filter((relayUrl) =>
+            successfulRelayUrls.has(relayUrl)
+          ).length ?? 0,
+      }
     }
     const event = selectLatestFollowListEvent(
       result.events.filter(
@@ -397,7 +491,7 @@ export async function publishContactListUpdate({
   const { snapshot } = loaded
   if (snapshot.state === "unavailable") {
     throw new ReplaceablePublishSafetyError(
-      "Could not load the complete follow list from its relays. Check your connection and try again."
+      `Could not load the complete follow list from its relays. ${loaded.unavailableStage ?? "Relay reads"} completed on ${snapshot.successfulRelays} of ${snapshot.attemptedRelays} relays${snapshot.requiredRelays > 0 ? ` (${snapshot.successfulRequiredRelays} of ${snapshot.requiredRelays} declared write relays)` : ""}. Check your connection and try again.`
     )
   }
   if (snapshot.state === "confirmed_absent" && !shouldFollow) return
