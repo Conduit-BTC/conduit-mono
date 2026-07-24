@@ -15,13 +15,19 @@ describe("Market cart HUD policy", () => {
       ),
       "utf8"
     )
+    const styles = readFileSync(
+      new URL("../apps/market/src/styles/index.css", import.meta.url),
+      "utf8"
+    )
 
     expect(source).toContain("var(--primary-500)_15%,transparent")
     expect(source).toContain("var(--primary-500)_9%,transparent")
     expect(source).toContain("var(--primary-500)_10%,transparent")
     expect(source).toContain("var(--primary-500)_5%,transparent")
     expect(source).toContain("shadow-[var(--shadow-glass-inset)]")
-    expect(source).toContain("var(--warning)_1%,var(--surface)")
+    expect(source).toContain("market-cart-hud-surface")
+    expect(styles).toContain("var(--background) 92%, transparent")
+    expect(styles).toContain("var(--warning) 1%, var(--surface)")
     expect(source).toContain("var(--primary-500)_4%,var(--surface)")
     expect(source).toContain("var(--primary-500)_8%,var(--surface)")
     expect(
