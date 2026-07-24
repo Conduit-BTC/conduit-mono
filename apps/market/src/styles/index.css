@@ -47,6 +47,20 @@ body {
   animation: market-cart-hud-value-in 160ms ease-out;
 }
 
+.market-cart-hud-surface {
+  background: color-mix(
+    in srgb,
+    var(--warning) 1%,
+    color-mix(in srgb, var(--background) 92%, transparent)
+  );
+}
+
+@media (prefers-color-scheme: light) {
+  .market-cart-hud-surface {
+    background: color-mix(in srgb, var(--warning) 1%, var(--surface));
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .market-cart-hud-item,
   .market-cart-hud-value {
