@@ -28,8 +28,8 @@ import {
 import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import { useMarketBrowseModel } from "../../hooks/useMarketBrowseModel"
-import { createCartItemFromProduct } from "../../lib/cart-model"
 import { normalizeFacetValues } from "../../lib/facets"
+import { cartItemInputFromProduct, selectCartItem } from "../../lib/cart-model"
 import {
   type MarketBrowseSearch,
   type MarketBrowseSortOption,
@@ -764,25 +764,29 @@ function ProductsPage() {
                   btcUsdRate={btcUsdRate}
                   pricePreference={shopperPricing.preference}
                   cartQuantity={
-                    cart.items.find((item) => item.productId === product.id)
-                      ?.quantity ?? 0
+                    selectCartItem(cart.items, {
+                      merchantPubkey: product.pubkey,
+                      productId: product.id,
+                    })?.quantity ?? 0
                   }
                   onAddToCart={() =>
-                    cart.addItem(createCartItemFromProduct(product), 1)
+                    cart.addItem(cartItemInputFromProduct(product), 1)
                   }
                   onIncrement={() =>
-                    cart.addItem(createCartItemFromProduct(product), 1)
+                    cart.addItem(cartItemInputFromProduct(product), 1)
                   }
                   onDecrement={() => {
-                    const existing = cart.items.find(
-                      (item) => item.productId === product.id
-                    )
+                    const identity = {
+                      merchantPubkey: product.pubkey,
+                      productId: product.id,
+                    }
+                    const existing = selectCartItem(cart.items, identity)
                     if (!existing) return
                     if (existing.quantity <= 1) {
-                      cart.removeItem(product.id)
+                      cart.removeItem(identity)
                       return
                     }
-                    cart.setQuantity(product.id, existing.quantity - 1)
+                    cart.setQuantity(identity, existing.quantity - 1)
                   }}
                 />
               </li>

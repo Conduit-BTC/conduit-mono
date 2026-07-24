@@ -68,6 +68,7 @@ type EventWithSourceRelayUrls = NDKEvent & {
 type Listener = () => void
 
 let ndkInstance: NDK | null = null
+let activeSigner: NDKSigner | undefined
 let state: NdkState = {
   status: "idle",
   connectedRelays: [],
@@ -129,6 +130,7 @@ export function getNdk(): NDK {
         fallbackRelayUrls: config.defaultRelays,
       }),
     })
+    if (activeSigner) ndkInstance.signer = activeSigner
   }
   return ndkInstance
 }
@@ -839,7 +841,7 @@ export async function requireNdkConnected(timeoutMs = 10_000): Promise<NDK> {
       }
 
       // First attempt failed — reset the NDK instance for fresh websocket connections and retry
-      const savedSigner = ndk.signer
+      const savedSigner = activeSigner ?? ndk.signer
       ndkInstance = null
       connectPromise = null
       ndk = getNdk()
@@ -873,17 +875,20 @@ export async function requireNdkConnected(timeoutMs = 10_000): Promise<NDK> {
 }
 
 export function setSigner(signer: NDKSigner): void {
+  activeSigner = signer
   const ndk = getNdk()
   ndk.signer = signer
 }
 
 export function removeSigner(): void {
+  activeSigner = undefined
   const ndk = getNdk()
   ndk.signer = undefined
 }
 
 export function disconnectNdk(): void {
   ndkGeneration += 1
+  activeSigner = undefined
   if (ndkInstance) {
     ndkInstance.signer = undefined
     ndkInstance = null
@@ -904,7 +909,7 @@ export function refreshNdkRelaySettings(scope?: string | null): void {
     setActiveRelaySettingsScope(scope)
   }
 
-  const savedSigner = ndkInstance?.signer
+  const savedSigner = activeSigner ?? ndkInstance?.signer
 
   if (ndkInstance) {
     for (const [, relay] of ndkInstance.pool?.relays?.entries() ?? []) {

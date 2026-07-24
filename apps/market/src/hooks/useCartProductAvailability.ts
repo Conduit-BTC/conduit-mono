@@ -2,6 +2,7 @@ import { useMemo } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { getProductsByIds } from "@conduit/core"
 import {
+  getCartItemKey,
   getCartProductAvailability,
   isCartAvailabilityReadFresh,
   isCartProductAvailabilityBlocking,
@@ -35,8 +36,8 @@ export function useCartProductAvailability(items: CartItem[]) {
     () => getRefreshedAvailability(items, query.data?.data),
     [items, query.data?.data]
   )
-  const availabilityByProductId = useMemo(
-    () => new Map(availability.map((entry) => [entry.productId, entry])),
+  const availabilityByItemKey = useMemo(
+    () => new Map(availability.map((entry) => [getCartItemKey(entry), entry])),
     [availability]
   )
   const hasInsufficientStockItems = availability.some(
@@ -66,7 +67,7 @@ export function useCartProductAvailability(items: CartItem[]) {
   }
 
   return {
-    availabilityByProductId,
+    availabilityByItemKey,
     hasInsufficientStockItems,
     hasUnavailableItems,
     isChecking: query.isLoading || query.isFetching,

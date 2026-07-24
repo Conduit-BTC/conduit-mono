@@ -174,9 +174,10 @@ export async function seedMarketCart(page: Page): Promise<void> {
     localStorage.setItem(
       "conduit:cart",
       JSON.stringify({
+        version: 2,
         items: [
           {
-            productId: "e2e-smoke-product",
+            productId: `30402:${merchantPubkey}:e2e-smoke-product`,
             merchantPubkey,
             title: "E2E Smoke Product",
             price: 1_000,

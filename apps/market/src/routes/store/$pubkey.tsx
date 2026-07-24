@@ -12,6 +12,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
 } from "react"
@@ -62,7 +63,7 @@ import {
   getComparablePriceValue,
 } from "../../lib/pricing"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
-import { createCartItemFromProduct } from "../../lib/cart-model"
+import { cartItemInputFromProduct, selectCartItem } from "../../lib/cart-model"
 import {
   filterProductsByFacets,
   getCategoryFacetOptions,
@@ -165,7 +166,9 @@ function StorefrontPage() {
   const navigate = Route.useNavigate()
   const queryClient = useQueryClient()
   const cart = useCart()
-  const { pubkey: viewerPubkey, status } = useAuth()
+  const { pubkey: viewerPubkey, status, authGeneration } = useAuth()
+  const authGenerationRef = useRef(authGeneration)
+  authGenerationRef.current = authGeneration
   const shopperPricing = useShopperPricing()
   const btcUsdRate = shopperPricing.quote
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
@@ -204,6 +207,12 @@ function StorefrontPage() {
   >("idle")
   const [followOverride, setFollowOverride] = useState<boolean | null>(null)
   const [followError, setFollowError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setFollowState("idle")
+    setFollowOverride(null)
+    setFollowError(null)
+  }, [authGeneration])
 
   const merchantIdentityPending = merchantTrust.merchantNamePending
   const merchantName = merchantTrust.merchantName
@@ -360,6 +369,7 @@ function StorefrontPage() {
     if (isFollowBusy) return
 
     const nextShouldFollow = !isFollowing
+    const followAuthGeneration = authGeneration
     setFollowState(nextShouldFollow ? "saving_follow" : "saving_unfollow")
     setFollowError(null)
     try {
@@ -368,7 +378,10 @@ function StorefrontPage() {
         targetPubkey: pubkey,
         shouldFollow: nextShouldFollow,
         appId: "market",
+        isSessionCurrent: () =>
+          authGenerationRef.current === followAuthGeneration,
       })
+      if (authGenerationRef.current !== followAuthGeneration) return
 
       setFollowOverride(nextShouldFollow)
       await queryClient.invalidateQueries({
@@ -376,6 +389,7 @@ function StorefrontPage() {
       })
       setFollowState("idle")
     } catch (error) {
+      if (authGenerationRef.current !== followAuthGeneration) return
       setFollowOverride(null)
       setFollowError(
         error instanceof Error
@@ -562,7 +576,17 @@ function StorefrontPage() {
               </div>
               {followError && (
                 <p className="max-w-sm text-left text-xs leading-5 text-[var(--warning)] sm:ml-auto sm:text-right">
-                  {followError}
+                  {followError}{" "}
+                  {followError.startsWith(
+                    "Could not load the complete follow list"
+                  ) ? (
+                    <Link
+                      to="/network"
+                      className="font-semibold underline underline-offset-2 hover:text-[var(--text-primary)]"
+                    >
+                      Open Network settings
+                    </Link>
+                  ) : null}
                 </p>
               )}
             </div>
@@ -797,25 +821,29 @@ function StorefrontPage() {
                     btcUsdRate={btcUsdRate}
                     pricePreference={shopperPricing.preference}
                     cartQuantity={
-                      cart.items.find((item) => item.productId === product.id)
-                        ?.quantity ?? 0
+                      selectCartItem(cart.items, {
+                        merchantPubkey: product.pubkey,
+                        productId: product.id,
+                      })?.quantity ?? 0
                     }
                     onAddToCart={() =>
-                      cart.addItem(createCartItemFromProduct(product))
+                      cart.addItem(cartItemInputFromProduct(product))
                     }
                     onIncrement={() =>
-                      cart.addItem(createCartItemFromProduct(product))
+                      cart.addItem(cartItemInputFromProduct(product))
                     }
                     onDecrement={() => {
-                      const existing = cart.items.find(
-                        (item) => item.productId === product.id
-                      )
+                      const identity = {
+                        merchantPubkey: product.pubkey,
+                        productId: product.id,
+                      }
+                      const existing = selectCartItem(cart.items, identity)
                       if (!existing) return
                       if (existing.quantity <= 1) {
-                        cart.removeItem(product.id)
+                        cart.removeItem(identity)
                         return
                       }
-                      cart.setQuantity(product.id, existing.quantity - 1)
+                      cart.setQuantity(identity, existing.quantity - 1)
                     }}
                   />
                 </li>

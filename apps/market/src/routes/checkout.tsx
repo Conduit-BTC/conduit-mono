@@ -49,6 +49,7 @@ import {
   Badge,
   Button,
   Combobox,
+  HoldToReleaseButton,
   Input,
   Label,
   Textarea,
@@ -77,8 +78,10 @@ import {
 } from "../lib/cart-shipping-options"
 import {
   getCartAvailabilityBlockingMessage,
+  getCartItemKey,
   getCartPublicZapPolicy,
   isCartProductAvailabilityBlocking,
+  selectMerchantCartItems,
   type CartProductAvailability,
 } from "../lib/cart-model"
 import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
@@ -462,13 +465,13 @@ function OrderSummary({
   items,
   merchantPubkey,
   btcUsdRate,
-  availabilityByProductId,
+  availabilityByItemKey,
   formatPrice,
 }: {
   items: CartItem[]
   merchantPubkey: string
   btcUsdRate: PricingRateInput
-  availabilityByProductId: ReadonlyMap<string, CartProductAvailability>
+  availabilityByItemKey: ReadonlyMap<string, CartProductAvailability>
   formatPrice: PriceFormatter
 }) {
   const { data: merchantProfile } = useProfile(merchantPubkey)
@@ -543,7 +546,7 @@ function OrderSummary({
 
       <div className="mt-4 space-y-4">
         {items.map((item) => {
-          const availability = availabilityByProductId.get(item.productId)
+          const availability = availabilityByItemKey.get(getCartItemKey(item))
           const soldOut = availability?.status === "sold_out"
           const insufficientStock =
             availability?.status === "insufficient_stock"
@@ -564,7 +567,7 @@ function OrderSummary({
           })
           return (
             <div
-              key={item.productId}
+              key={getCartItemKey(item)}
               className={`grid grid-cols-[72px_minmax(0,1fr)_auto] gap-3 border-b border-[var(--border)] pb-4 last:border-b-0 last:pb-0 ${
                 unavailable ? "opacity-80" : ""
               }`}
@@ -734,16 +737,16 @@ function CheckoutPage() {
 
   const checkoutItems = useMemo(() => {
     if (!selectedMerchant) return []
-    return cart.items.filter((item) => item.merchantPubkey === selectedMerchant)
+    return selectMerchantCartItems(cart.items, selectedMerchant)
   }, [cart.items, selectedMerchant])
   const checkoutAvailability = useCartProductAvailability(checkoutItems)
   const checkoutAvailabilityMessage = useMemo(
     () =>
       getCartAvailabilityBlockingMessage(
         checkoutItems,
-        checkoutAvailability.availabilityByProductId
+        checkoutAvailability.availabilityByItemKey
       ),
-    [checkoutAvailability.availabilityByProductId, checkoutItems]
+    [checkoutAvailability.availabilityByItemKey, checkoutItems]
   )
   const hasUnavailableCheckoutItems = checkoutAvailabilityMessage !== null
   const publicZapPolicy = useMemo(
@@ -1242,12 +1245,12 @@ function CheckoutPage() {
       )
     }
 
-    const refreshedAvailabilityByProductId = new Map(
-      refreshResult.availability.map((entry) => [entry.productId, entry])
+    const refreshedAvailabilityByItemKey = new Map(
+      refreshResult.availability.map((entry) => [getCartItemKey(entry), entry])
     )
     const refreshedAvailabilityMessage = getCartAvailabilityBlockingMessage(
       checkoutItems,
-      refreshedAvailabilityByProductId
+      refreshedAvailabilityByItemKey
     )
 
     if (refreshedAvailabilityMessage) {
@@ -1536,6 +1539,7 @@ function CheckoutPage() {
       rumor.tags = appendConduitClientTag(rumor.tags, "market")
       rumor.content = JSON.stringify(payload)
 
+      await assertCheckoutItemsAvailable()
       setStep("sending")
 
       const [delivery] = await Promise.all([
@@ -1844,6 +1848,7 @@ function CheckoutPage() {
       orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
       orderRumor.content = JSON.stringify(orderPayload)
 
+      await assertCheckoutItemsAvailable()
       const orderDelivery = await publishBuyerOrderMessage(
         orderRumor,
         ndk,
@@ -2977,26 +2982,33 @@ function CheckoutPage() {
                 {/* Action buttons */}
                 <div className="mt-6 flex flex-wrap gap-3">
                   {fastEligible && (
-                    <Button
+                    <HoldToReleaseButton
                       className="h-11 px-5 text-sm"
                       disabled={
                         checkoutAvailability.isChecking ||
                         hasUnavailableCheckoutItems
                       }
-                      onClick={() => {
+                      canComplete={() =>
+                        fastEligible &&
+                        !checkoutAvailability.isChecking &&
+                        !hasUnavailableCheckoutItems &&
+                        !paymentInFlightRef.current
+                      }
+                      onHoldComplete={() => {
                         if (canAttemptLightningPayment) {
                           setOverlayPlaying(true)
                         }
                         void payNow()
                       }}
+                      chargedLabel="Release to zap out"
                     >
                       <LightningIcon className="h-4 w-4" />
                       {isGuestCheckout
-                        ? "Send order and show invoice"
+                        ? "Hold to send order and show invoice"
                         : walletPaymentConstraint && !weblnAvailable
-                          ? "Send order and show invoice"
-                          : "Zap out"}
-                    </Button>
+                          ? "Hold to send order and show invoice"
+                          : "Hold to zap out"}
+                    </HoldToReleaseButton>
                   )}
                   {pricingOnlyFastCheckoutBlocker && !fastEligible && (
                     <Button
@@ -3063,7 +3075,7 @@ function CheckoutPage() {
           items={checkoutItems}
           merchantPubkey={selectedMerchant!}
           btcUsdRate={btcUsdRate}
-          availabilityByProductId={checkoutAvailability.availabilityByProductId}
+          availabilityByItemKey={checkoutAvailability.availabilityByItemKey}
           formatPrice={shopperPricing.formatPrice}
         />
       </div>

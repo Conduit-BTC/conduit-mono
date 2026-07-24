@@ -2417,6 +2417,14 @@ export async function getProductsByIds(
       dTags,
       limit: Math.max(addresses.length * 2, 20),
     })
+    const liveAddressIds = new Set(
+      records
+        .map((record) => record.addressId)
+        .filter((addressId) => wanted.has(addressId))
+    )
+    const hasCompleteLiveCoverage = Array.from(wanted).every((addressId) =>
+      liveAddressIds.has(addressId)
+    )
     const merged = mergeCachedAndLiveProductRecords({
       cached,
       live: records,
@@ -2428,13 +2436,12 @@ export async function getProductsByIds(
     }).filter((record) => wanted.has(record.addressId))
     return {
       data: filtered,
-      meta:
-        records.length > 0
-          ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES)
-          : createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
-              stale: filtered.length > 0,
-              degraded: filtered.length > 0,
-            }),
+      meta: hasCompleteLiveCoverage
+        ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES)
+        : createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
+            stale: filtered.length > 0,
+            degraded: filtered.length > 0,
+          }),
     }
   } catch {
     const fallback = mergeCachedAndLiveProductRecords({
