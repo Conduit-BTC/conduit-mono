@@ -63,12 +63,13 @@ import {
   getComparablePriceValue,
 } from "../../lib/pricing"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
-import { cartItemInputFromProduct, selectCartItem } from "../../lib/cart-model"
+import { selectCartItem } from "../../lib/cart-model"
 import {
   filterProductsByFacets,
   getCategoryFacetOptions,
   normalizeFacetValues,
 } from "../../lib/facets"
+import { cartItemInputFromProductSelection } from "../../lib/productVariations"
 
 type SortOption = "newest" | "price_asc" | "price_desc"
 type CategoryFacetOption = ReturnType<typeof getCategoryFacetOptions>[number]
@@ -820,22 +821,32 @@ function StorefrontPage() {
                     imageLoading={index < 4 ? "eager" : "lazy"}
                     btcUsdRate={btcUsdRate}
                     pricePreference={shopperPricing.preference}
-                    cartQuantity={
+                    getCartQuantity={(selectedProduct) =>
                       selectCartItem(cart.items, {
-                        merchantPubkey: product.pubkey,
-                        productId: product.id,
+                        merchantPubkey: selectedProduct.pubkey,
+                        productId: selectedProduct.id,
                       })?.quantity ?? 0
                     }
-                    onAddToCart={() =>
-                      cart.addItem(cartItemInputFromProduct(product))
+                    onAddToCart={(selectedProduct) =>
+                      cart.addItem(
+                        cartItemInputFromProductSelection(
+                          product,
+                          selectedProduct
+                        )
+                      )
                     }
-                    onIncrement={() =>
-                      cart.addItem(cartItemInputFromProduct(product))
+                    onIncrement={(selectedProduct) =>
+                      cart.addItem(
+                        cartItemInputFromProductSelection(
+                          product,
+                          selectedProduct
+                        )
+                      )
                     }
-                    onDecrement={() => {
+                    onDecrement={(selectedProduct) => {
                       const identity = {
-                        merchantPubkey: product.pubkey,
-                        productId: product.id,
+                        merchantPubkey: selectedProduct.pubkey,
+                        productId: selectedProduct.id,
                       }
                       const existing = selectCartItem(cart.items, identity)
                       if (!existing) return

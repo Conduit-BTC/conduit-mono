@@ -52,12 +52,12 @@ import {
   getMerchantDisplayName,
   getProfileNip05,
 } from "../components/MerchantIdentity"
+import { ProductVariationSelector } from "../components/ProductVariationSelector"
 import { type CartItem, useCart } from "../hooks/useCart"
 import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
 import {
-  cartItemInputFromProduct,
   getCartCostSummary,
   getCartItemIdentity,
   getCartItemKey,
@@ -69,6 +69,12 @@ import {
   type CartProductAvailability,
   type MerchantCartGroup,
 } from "../lib/cart-model"
+import {
+  cartItemInputFromProductSelection,
+  getDefaultProductSelection,
+  getProductSelection,
+  getProductSelectionImages,
+} from "../lib/productVariations"
 
 type PriceFormatter = (price: CommercePriceLike) => ShopperPriceDisplay
 
@@ -291,27 +297,45 @@ function MerchantIdentity({
 function RelatedProductRow({
   product,
   formatPrice,
-  cartQuantity,
+  getCartQuantity,
   onAdd,
 }: {
   product: Product
   formatPrice: PriceFormatter
-  cartQuantity: number
-  onAdd: () => void
+  getCartQuantity: (product: Product) => number
+  onAdd: (product: Product) => void
 }) {
+  const defaultSelection = useMemo(
+    () => getDefaultProductSelection(product),
+    [product]
+  )
+  const [selectedProductId, setSelectedProductId] = useState(
+    defaultSelection.id
+  )
   const [imageFailed, setImageFailed] = useState(false)
-  const imageUrl = product.images[0]?.url
-  const price = formatPrice(product)
+  const selectedProduct = getProductSelection(product, selectedProductId)
+  const images = getProductSelectionImages(product, selectedProduct)
+  const imageUrl = images[0]?.url
+  const price = formatPrice(selectedProduct)
+  const cartQuantity = getCartQuantity(selectedProduct)
   const { data: profile } = useProfile(product.pubkey)
   const merchantName = getProfileName(profile)
   const merchantLabel = merchantName ?? formatNpub(product.pubkey, 6)
-  const soldOut = product.stock === 0
+  const soldOut = selectedProduct.stock === 0
   const addAvailability = getProductAddAvailability(
-    product.stock,
+    selectedProduct.stock,
     cartQuantity,
     1
   )
   const atStockLimit = !soldOut && !addAvailability.canAdd
+
+  useEffect(() => {
+    setSelectedProductId(defaultSelection.id)
+  }, [defaultSelection.id])
+
+  useEffect(() => {
+    setImageFailed(false)
+  }, [imageUrl])
 
   if (!imageUrl || imageFailed) return null
 
@@ -328,7 +352,7 @@ function RelatedProductRow({
       >
         <img
           src={imageUrl}
-          alt={product.images[0]?.alt ?? product.title}
+          alt={images[0]?.alt ?? product.title}
           className={`h-20 w-20 object-cover ${
             soldOut ? "grayscale opacity-60" : ""
           }`}
@@ -369,6 +393,13 @@ function RelatedProductRow({
             {price.secondary}
           </div>
         )}
+        <ProductVariationSelector
+          product={product}
+          selectedProductId={selectedProduct.id}
+          onSelect={(variation) => setSelectedProductId(variation.id)}
+          compact
+          className="mt-2"
+        />
         <Button
           size="sm"
           variant={cartQuantity > 0 ? "muted" : "outline"}
@@ -376,7 +407,7 @@ function RelatedProductRow({
           disabled={soldOut || atStockLimit}
           onClick={() => {
             if (!addAvailability.canAdd) return
-            onAdd()
+            onAdd(selectedProduct)
           }}
         >
           <CartIcon className="h-4 w-4" />
@@ -1094,19 +1125,24 @@ function CartPage() {
               )}
 
               {relatedProducts.map((product) => {
-                const cartQuantity = selectCartItemQuantity(cart.items, {
-                  merchantPubkey: product.pubkey,
-                  productId: product.id,
-                })
-
                 return (
                   <RelatedProductRow
                     key={product.id}
                     product={product}
                     formatPrice={shopperPricing.formatPrice}
-                    cartQuantity={cartQuantity}
-                    onAdd={() =>
-                      cart.addItem(cartItemInputFromProduct(product))
+                    getCartQuantity={(selectedProduct) =>
+                      selectCartItemQuantity(cart.items, {
+                        merchantPubkey: selectedProduct.pubkey,
+                        productId: selectedProduct.id,
+                      })
+                    }
+                    onAdd={(selectedProduct) =>
+                      cart.addItem(
+                        cartItemInputFromProductSelection(
+                          product,
+                          selectedProduct
+                        )
+                      )
                     }
                   />
                 )

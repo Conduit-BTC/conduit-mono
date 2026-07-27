@@ -16,6 +16,7 @@ function product(overrides: Partial<Product> = {}): Product {
     price: 1000,
     currency: "SATS",
     type: "simple",
+    specifications: [],
     format: "physical",
     visibility: "public",
     images: [{ url: "https://example.com/item.png" }],
@@ -203,6 +204,24 @@ describe("listing safety", () => {
     expect(variation.reasons.map((reason) => reason.code)).toContain(
       "unsupported_product_type"
     )
+  })
+
+  it("allows non-simple listings only after commerce prepares a valid group", () => {
+    const variable = evaluateListingSafety(
+      product({ type: "variable", images: [] }),
+      undefined,
+      { variationGroupRole: "parent", hasGroupImage: true }
+    )
+    const variation = evaluateListingSafety(
+      product({ type: "variation" }),
+      undefined,
+      { variationGroupRole: "variation" }
+    )
+
+    expect(variable.state).toBe("active")
+    expect(variable.marketVisible).toBe(true)
+    expect(variation.state).toBe("active")
+    expect(variation.purchasable).toBe(true)
   })
 
   it("validates market image URLs", () => {

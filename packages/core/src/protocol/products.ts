@@ -18,6 +18,7 @@ const PRODUCT_IMAGE_URL_PATTERN = /^https?:\/\//i
 const PRODUCT_JSON_DISPLAY_PROJECTION_MAX_DEPTH = 3
 const PRODUCT_TITLE_MAX_LENGTH = 200
 const PRODUCT_SUMMARY_MAX_LENGTH = 5000
+const PRODUCT_ADDRESS_PATTERN = /^30402:([0-9a-f]{64}):(.+)$/i
 export const PRODUCT_PUBLIC_ZAPS_TAG = "checkout_public_zaps"
 export const PRODUCT_ZAP_MESSAGE_POLICY_TAG = "checkout_zap_message_policy"
 const PRODUCT_PUBLIC_ZAPS_LEGACY_TAG = "public_zaps"
@@ -51,6 +52,74 @@ export function canonicalizeProductTags(tags: unknown): string[] {
   }
 
   return canonicalTags
+}
+
+function parseProductTypeTag(tags: string[][] | undefined): {
+  type?: ProductSchema["type"]
+  format?: ProductSchema["format"]
+} {
+  const typeTag = tags?.find((tag) => tag[0] === "type")
+  const type =
+    typeTag?.[1] === "simple" ||
+    typeTag?.[1] === "variable" ||
+    typeTag?.[1] === "variation"
+      ? typeTag[1]
+      : undefined
+  const format =
+    typeTag?.[2] === "digital" || typeTag?.[2] === "physical"
+      ? typeTag[2]
+      : undefined
+  return { type, format }
+}
+
+function parseProductVisibilityTag(
+  tags: string[][] | undefined
+): ProductSchema["visibility"] | undefined {
+  const value = tags
+    ?.find((tag) => tag[0] === "visibility")?.[1]
+    ?.trim()
+    .toLowerCase()
+
+  if (value === "public") return "public"
+  if (value === "hidden" || value === "private") return "private"
+  return undefined
+}
+
+function parseProductSpecifications(
+  tags: string[][] | undefined
+): ProductSchema["specifications"] {
+  const specifications: ProductSchema["specifications"] = []
+  const seen = new Set<string>()
+
+  for (const tag of tags ?? []) {
+    if (tag[0] !== "spec") continue
+    const key = tag[1]?.trim()
+    const value = tag[2]?.trim()
+    if (!key || !value) continue
+
+    const identity = JSON.stringify([key.toLowerCase(), value])
+    if (seen.has(identity)) continue
+    seen.add(identity)
+    specifications.push({ key, value })
+  }
+
+  return specifications
+}
+
+function parseVariationParentProductId(
+  tags: string[][] | undefined,
+  productType: ProductSchema["type"]
+): string | undefined {
+  if (productType !== "variation") return undefined
+
+  const productReferences = (tags ?? [])
+    .filter((tag) => tag[0] === "a" && tag[1]?.startsWith("30402:"))
+    .map((tag) => tag[1]!.trim())
+
+  if (productReferences.length !== 1) return undefined
+  const match = PRODUCT_ADDRESS_PATTERN.exec(productReferences[0]!)
+  if (!match || !match[2]?.trim()) return undefined
+  return `30402:${match[1]!.toLowerCase()}:${match[2]}`
 }
 
 /**
@@ -672,6 +741,9 @@ export function parseProductEvent(
   const dTag = getTagValue(event.tags, "d")
   const zapPolicy = parseProductZapPolicy(event.tags)
   const stockTag = parseStockTag(event.tags)
+  const productTypeTag = parseProductTypeTag(event.tags)
+  const visibilityTag = parseProductVisibilityTag(event.tags)
+  const specifications = parseProductSpecifications(event.tags)
 
   // Try legacy Conduit JSON content first for already-published listings.
   try {
@@ -687,6 +759,10 @@ export function parseProductEvent(
       tags: canonicalizeProductTags(
         Array.isArray(parsed.tags) ? parsed.tags : getTagValues(event.tags, "t")
       ),
+      ...(productTypeTag.type ? { type: productTypeTag.type } : {}),
+      ...(productTypeTag.format ? { format: productTypeTag.format } : {}),
+      ...(visibilityTag ? { visibility: visibilityTag } : {}),
+      specifications,
       // Compatibility content may describe the product, but it cannot replace
       // identity or time committed to by the signed event envelope.
       id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
@@ -695,6 +771,10 @@ export function parseProductEvent(
       createdAt: createdAtMs,
       updatedAt: createdAtMs,
     }
+    candidate.parentProductId = parseVariationParentProductId(
+      event.tags,
+      candidate.type ?? "simple"
+    )
 
     const pricedCandidate =
       typeof candidate.price === "number"
@@ -745,13 +825,10 @@ export function parseProductEvent(
   const locationTag = getTagValue(event.tags, "location")
 
   // market-spec: ["type", "simple|variable|variation", "digital|physical"]
-  const typeTag = event.tags?.find((t) => t[0] === "type")
-  const type =
-    typeTag?.[1] === "variable" || typeTag?.[1] === "variation"
-      ? typeTag[1]
-      : "simple"
+  const type = productTypeTag.type ?? "simple"
   const format: "physical" | "digital" =
-    typeTag?.[2] === "digital" ? "digital" : "physical"
+    productTypeTag.format === "physical" ? "physical" : "digital"
+  const parentProductId = parseVariationParentProductId(event.tags, type)
 
   const images = getTagValues(event.tags, "image")
     .filter((url) => url.startsWith("http://") || url.startsWith("https://"))
@@ -786,7 +863,10 @@ export function parseProductEvent(
       price: priceInfo?.price ?? 0,
       currency: priceInfo?.currency ?? "USD",
       type,
+      parentProductId,
+      specifications,
       format,
+      ...(visibilityTag ? { visibility: visibilityTag } : {}),
       ...shippingTags,
       ...zapPolicy,
       ...stockTag,

@@ -20,6 +20,7 @@ import {
   getProductDetail,
   getProductsByIds,
   getProfiles,
+  parseProductEvent,
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
 } from "@conduit/core"
@@ -84,6 +85,49 @@ function makeProductEvent(params: {
       ...(typeof params.stock === "number"
         ? [["stock", String(params.stock)]]
         : []),
+    ],
+  }
+}
+
+function makeGammaProductEvent(params: {
+  pubkey: string
+  dTag: string
+  id: string
+  createdAt: number
+  title: string
+  type: "simple" | "variable" | "variation"
+  format?: "physical" | "digital" | null
+  parentProductId?: string
+  size?: string
+  stock?: number
+  image?: boolean
+  visibility?: "public" | "hidden"
+}) {
+  return {
+    id: params.id,
+    kind: EVENT_KINDS.PRODUCT,
+    pubkey: params.pubkey,
+    created_at: params.createdAt,
+    content: `${params.title} description`,
+    sig: "signed",
+    tags: [
+      ["d", params.dTag],
+      ["title", params.title],
+      ["price", "25000", "SATS"],
+      [
+        "type",
+        params.type,
+        ...(params.format === null ? [] : [params.format ?? "physical"]),
+      ],
+      ...(params.parentProductId ? [["a", params.parentProductId]] : []),
+      ...(params.size ? [["spec", "size", params.size]] : []),
+      ...(params.visibility ? [["visibility", params.visibility]] : []),
+      ...(typeof params.stock === "number"
+        ? [["stock", String(params.stock)]]
+        : []),
+      ...(params.image === false
+        ? []
+        : [["image", "https://example.com/product.png"]]),
     ],
   }
 }
@@ -223,6 +267,508 @@ afterEach(async () => {
 })
 
 describe("commerce gateway", () => {
+  it("groups reachable Gamma variations while hiding orphan and foreign children", async () => {
+    const merchantPubkey = MERCHANT_A_PUBKEY
+    const foreignPubkey = getPublicKey(MERCHANT_B_SECRET)
+    const parentProductId = `30402:${merchantPubkey}:shirt`
+    const events = [
+      makeGammaProductEvent({
+        pubkey: merchantPubkey,
+        dTag: "shirt",
+        id: "shirt-parent-event",
+        createdAt: 100,
+        title: "Conduit Shirt",
+        type: "variable",
+      }),
+      ...["S", "M", "L", "XL"].map((size, index) =>
+        makeGammaProductEvent({
+          pubkey: merchantPubkey,
+          dTag: `shirt-${size.toLowerCase()}`,
+          id: `shirt-${size.toLowerCase()}-event`,
+          createdAt: 101 + index,
+          title: `Conduit Shirt — ${size}`,
+          type: "variation",
+          parentProductId,
+          size,
+          stock: size === "S" ? 0 : 5,
+          image: false,
+        })
+      ),
+      makeGammaProductEvent({
+        pubkey: merchantPubkey,
+        dTag: "orphan",
+        id: "orphan-event",
+        createdAt: 106,
+        title: "Orphan Option",
+        type: "variation",
+        parentProductId: `30402:${merchantPubkey}:missing`,
+        size: "XXL",
+      }),
+      makeGammaProductEvent({
+        pubkey: merchantPubkey,
+        dTag: "blocked-child",
+        id: "blocked-child-event",
+        createdAt: 107,
+        title: "Counterfeit Child",
+        type: "variation",
+        parentProductId,
+        size: "XS",
+      }),
+      makeGammaProductEvent({
+        pubkey: merchantPubkey,
+        dTag: "hidden-child",
+        id: "hidden-child-event",
+        createdAt: 108,
+        title: "Hidden Child",
+        type: "variation",
+        parentProductId,
+        size: "XXS",
+        visibility: "hidden",
+      }),
+      makeGammaProductEvent({
+        pubkey: foreignPubkey,
+        dTag: "foreign-child",
+        id: "foreign-child-event",
+        createdAt: 109,
+        title: "Foreign Child",
+        type: "variation",
+        parentProductId,
+        size: "XS",
+      }),
+      makeGammaProductEvent({
+        pubkey: merchantPubkey,
+        dTag: "sticker",
+        id: "sticker-event",
+        createdAt: 110,
+        title: "Conduit Sticker",
+        type: "simple",
+      }),
+    ]
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? (events.filter(
+              (event) =>
+                (!filter.authors || filter.authors.includes(event.pubkey)) &&
+                (!filter["#d"] ||
+                  event.tags.some(
+                    (tag) =>
+                      tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+                  )) &&
+                (!filter["#a"] ||
+                  event.tags.some(
+                    (tag) =>
+                      tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+                  ))
+            ) as never)
+          : [],
+    })
+
+    const market = await getMarketplaceProducts()
+    const parent = market.data.find(
+      (record) => record.addressId === parentProductId
+    )
+    const merchant = await getMerchantStorefront({
+      merchantPubkey,
+      includeMarketHidden: true,
+    })
+    const childDetail = await getProductDetail({
+      productId: `30402:${merchantPubkey}:shirt-l`,
+    })
+    const hiddenAwareChildDetail = await getProductDetail({
+      productId: `30402:${merchantPubkey}:shirt-l`,
+      includeMarketHidden: true,
+    })
+    const hiddenChildDetail = await getProductDetail({
+      productId: `30402:${merchantPubkey}:hidden-child`,
+    })
+    const hiddenAwareHiddenChildDetail = await getProductDetail({
+      productId: `30402:${merchantPubkey}:hidden-child`,
+      includeMarketHidden: true,
+    })
+    const selectedVariation = await getProductsByIds([
+      `30402:${merchantPubkey}:shirt-l`,
+    ])
+    const orphanVariation = await getProductsByIds([
+      `30402:${merchantPubkey}:orphan`,
+    ])
+
+    expect(market.data.map((record) => record.product.title).sort()).toEqual([
+      "Conduit Shirt",
+      "Conduit Sticker",
+    ])
+    expect(parent?.safety?.state).toBe("active")
+    expect(
+      parent?.product.variations?.map((variation) => variation.id)
+    ).toEqual([
+      `30402:${merchantPubkey}:shirt-s`,
+      `30402:${merchantPubkey}:shirt-m`,
+      `30402:${merchantPubkey}:shirt-l`,
+      `30402:${merchantPubkey}:shirt-xl`,
+    ])
+    expect(parent?.product.variations?.[2]?.specifications).toEqual([
+      { key: "size", value: "L" },
+    ])
+    expect(merchant.data).toHaveLength(9)
+    expect(childDetail.data?.addressId).toBe(parentProductId)
+    expect(childDetail.data?.product.variations).toHaveLength(4)
+    expect(hiddenAwareChildDetail.data?.addressId).toBe(parentProductId)
+    expect(hiddenAwareChildDetail.data?.product.variations).toHaveLength(4)
+    expect(hiddenChildDetail.data).toBeNull()
+    expect(hiddenAwareHiddenChildDetail.data?.addressId).toBe(
+      `30402:${merchantPubkey}:hidden-child`
+    )
+    expect(hiddenAwareHiddenChildDetail.data?.product.visibility).toBe(
+      "private"
+    )
+    expect(selectedVariation.meta.source).toBe("commerce")
+    expect(selectedVariation.data).toHaveLength(1)
+    expect(selectedVariation.data[0]?.addressId).toBe(
+      `30402:${merchantPubkey}:shirt-l`
+    )
+    expect(selectedVariation.data[0]?.product.type).toBe("variation")
+    expect(selectedVariation.data[0]?.product.parentProductId).toBe(
+      parentProductId
+    )
+    expect(selectedVariation.data[0]?.product.stock).toBe(5)
+    expect(orphanVariation.data).toHaveLength(0)
+  })
+
+  it("defaults Gamma listings without a format to digital", () => {
+    const event = makeGammaProductEvent({
+      pubkey: MERCHANT_A_PUBKEY,
+      dTag: "download",
+      id: "download-event",
+      createdAt: 100,
+      title: "Digital download",
+      type: "simple",
+      format: null,
+    })
+
+    expect(parseProductEvent(event as never).format).toBe("digital")
+  })
+
+  it("applies catalog limits after assembling complete variation groups", async () => {
+    const merchantPubkey = MERCHANT_A_PUBKEY
+    const parentProductId = `30402:${merchantPubkey}:shirt`
+    const events = [
+      makeGammaProductEvent({
+        pubkey: merchantPubkey,
+        dTag: "shirt",
+        id: "shirt-parent-event",
+        createdAt: 100,
+        title: "Conduit Shirt",
+        type: "variable",
+      }),
+      ...["S", "M", "L", "XL"].map((size, index) =>
+        makeGammaProductEvent({
+          pubkey: merchantPubkey,
+          dTag: `shirt-${size.toLowerCase()}`,
+          id: `shirt-${size.toLowerCase()}-event`,
+          createdAt: 101 + index,
+          title: `Conduit Shirt — ${size}`,
+          type: "variation",
+          parentProductId,
+          size,
+        })
+      ),
+    ]
+    const productFilters: Array<Record<string, unknown>> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        productFilters.push(filter as Record<string, unknown>)
+        return events.filter(
+          (event) =>
+            (!filter.authors || filter.authors.includes(event.pubkey)) &&
+            (!filter["#d"] ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              )) &&
+            (!filter["#a"] ||
+              event.tags.some(
+                (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+              ))
+        ) as never
+      },
+    })
+
+    const market = await getMarketplaceProducts({ limit: 1 })
+    const storefront = await getMerchantStorefront({
+      merchantPubkey,
+      limit: 1,
+    })
+    const progressive = await getMarketplaceProductsProgressive(
+      { limit: 1 },
+      () => {}
+    )
+    await getProductDetail({
+      productId: `30402:${merchantPubkey}:shirt-l`,
+    })
+
+    expect(market.data).toHaveLength(1)
+    expect(market.data[0]?.product.variations).toHaveLength(4)
+    expect(storefront.data).toHaveLength(1)
+    expect(storefront.data[0]?.product.variations).toHaveLength(4)
+    expect(progressive.data).toHaveLength(1)
+    expect(progressive.data[0]?.product.variations).toHaveLength(4)
+    expect(
+      productFilters
+        .filter((filter) => !("#d" in filter) && !("#a" in filter))
+        .every((filter) => filter.limit === 100)
+    ).toBe(true)
+    expect(
+      productFilters
+        .filter((filter) => "#a" in filter)
+        .every((filter) => filter.limit === 200)
+    ).toBe(true)
+  })
+
+  it("marks a saturated bounded catalog read as degraded", async () => {
+    const events = Array.from({ length: 100 }, (_, index) =>
+      makeProductEvent({
+        pubkey: MERCHANT_A_PUBKEY,
+        dTag: `bounded-${index}`,
+        id: `bounded-event-${index}`,
+        createdAt: 100 + index,
+        title: `Bounded item ${index}`,
+      })
+    )
+    let productLimit: number | undefined
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        productLimit = filter.limit
+        return events.slice(0, filter.limit ?? events.length) as never
+      },
+    })
+
+    const result = await getMarketplaceProducts({ limit: 1 })
+
+    expect(productLimit).toBe(100)
+    expect(result.data).toHaveLength(1)
+    expect(result.meta.degraded).toBe(true)
+    expect(result.meta.stale).toBe(false)
+  })
+
+  it("marks partial relay product reads as degraded below the cap", async () => {
+    const event = makeProductEvent({
+      pubkey: MERCHANT_A_PUBKEY,
+      dTag: "partial-read",
+      id: "partial-read-event",
+      createdAt: 100,
+      title: "Partial read",
+    })
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutDetailed: async () => ({
+        events: [event as never],
+        relays: [
+          {
+            relayUrl: "wss://partial.example",
+            status: "partial",
+            eventCount: 1,
+          },
+        ],
+      }),
+    })
+
+    const market = await getMarketplaceProducts({ limit: 10 })
+    const storefront = await getMerchantStorefront({
+      merchantPubkey: MERCHANT_A_PUBKEY,
+      limit: 10,
+    })
+
+    expect(market.data).toHaveLength(1)
+    expect(market.meta.degraded).toBe(true)
+    expect(storefront.data).toHaveLength(1)
+    expect(storefront.meta.degraded).toBe(true)
+  })
+
+  it("marks partial progressive relay completion as degraded", async () => {
+    const event = makeProductEvent({
+      pubkey: MERCHANT_A_PUBKEY,
+      dTag: "partial-progressive",
+      id: "partial-progressive-event",
+      createdAt: 100,
+      title: "Partial progressive",
+    }) as never
+
+    __setCommerceTestOverrides({
+      fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
+        await onProgress({
+          relayUrl: options.relayUrls?.[0] ?? "wss://partial.example",
+          events: [event],
+          mergedEvents: [event],
+          status: "partial",
+        })
+        return [event]
+      },
+    })
+
+    const result = await getMarketplaceProductsProgressive(
+      { limit: 10 },
+      () => {}
+    )
+
+    expect(result.data).toHaveLength(1)
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("keeps a complete progressive relay read fresh without expansion relays", async () => {
+    const event = makeProductEvent({
+      pubkey: MERCHANT_A_PUBKEY,
+      dTag: "complete-progressive",
+      id: "complete-progressive-event",
+      createdAt: 100,
+      title: "Complete progressive",
+    }) as never
+
+    __setCommerceTestOverrides({
+      fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
+        await onProgress({
+          relayUrl: options.relayUrls?.[0] ?? "wss://complete.example",
+          events: [event],
+          mergedEvents: [event],
+          status: "success",
+        })
+        return [event]
+      },
+    })
+
+    const result = await getMarketplaceProductsProgressive(
+      { limit: 10 },
+      () => {}
+    )
+
+    expect(result.data).toHaveLength(1)
+    expect(result.meta.degraded).toBe(false)
+  })
+
+  it("marks a saturated variation-group read as degraded", async () => {
+    const merchantPubkey = MERCHANT_A_PUBKEY
+    const parentProductId = `30402:${merchantPubkey}:large-catalog`
+    const events = [
+      makeGammaProductEvent({
+        pubkey: merchantPubkey,
+        dTag: "large-catalog",
+        id: "large-catalog-parent",
+        createdAt: 100,
+        title: "Large catalog",
+        type: "variable",
+      }),
+      ...Array.from({ length: 200 }, (_, index) =>
+        makeGammaProductEvent({
+          pubkey: merchantPubkey,
+          dTag: `large-catalog-${index}`,
+          id: `large-catalog-variation-${index}`,
+          createdAt: 101 + index,
+          title: `Large catalog — ${index}`,
+          type: "variation",
+          parentProductId,
+          size: String(index),
+        })
+      ),
+    ]
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const matches = events.filter(
+          (event) =>
+            (!filter.authors || filter.authors.includes(event.pubkey)) &&
+            (!filter["#d"] ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              )) &&
+            (!filter["#a"] ||
+              event.tags.some(
+                (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+              ))
+        )
+        return matches.slice(0, filter.limit ?? matches.length) as never
+      },
+    })
+
+    const result = await getProductDetail({ productId: parentProductId })
+
+    expect(result.data?.product.variations).toHaveLength(200)
+    expect(result.meta.source).toBe("commerce")
+    expect(result.meta.degraded).toBe(true)
+  })
+
+  it("partitions exact product batches by author without Cartesian collisions", async () => {
+    const merchants = Array.from({ length: 11 }, (_, index) =>
+      getPublicKey(new Uint8Array(32).fill(index + 1))
+    )
+    const wantedEvents = merchants.map((pubkey, index) =>
+      makeProductEvent({
+        pubkey,
+        dTag: `item-${index}`,
+        id: `wanted-${index}`,
+        createdAt: 200 + index,
+        title: `Wanted ${index}`,
+      })
+    )
+    const crossEvents = merchants.flatMap((pubkey, authorIndex) =>
+      merchants.flatMap((_, dTagIndex) =>
+        authorIndex === dTagIndex
+          ? []
+          : [
+              makeProductEvent({
+                pubkey,
+                dTag: `item-${dTagIndex}`,
+                id: `cross-${authorIndex}-${dTagIndex}`,
+                createdAt: 100 + authorIndex,
+                title: `Cross ${authorIndex}-${dTagIndex}`,
+              }),
+            ]
+      )
+    )
+    const productFilters: Array<Record<string, unknown>> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        productFilters.push(filter as Record<string, unknown>)
+        const matches = [...crossEvents, ...wantedEvents].filter(
+          (event) =>
+            (!filter.authors || filter.authors.includes(event.pubkey)) &&
+            (!filter["#d"] ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              ))
+        )
+        return matches.slice(0, filter.limit ?? matches.length) as never
+      },
+    })
+
+    const result = await getProductsByIds(
+      merchants.map((pubkey, index) => `30402:${pubkey}:item-${index}`)
+    )
+    const exactFilters = productFilters.filter((filter) => "#d" in filter)
+
+    expect(result.data).toHaveLength(merchants.length)
+    expect(result.data.map((record) => record.product.title).sort()).toEqual(
+      wantedEvents.map((_, index) => `Wanted ${index}`).sort()
+    )
+    expect(exactFilters).toHaveLength(merchants.length)
+    expect(
+      exactFilters.every(
+        (filter) =>
+          Array.isArray(filter.authors) &&
+          filter.authors.length === 1 &&
+          Array.isArray(filter["#d"]) &&
+          filter["#d"].length === 1 &&
+          filter.limit === undefined
+      )
+    ).toBe(true)
+  })
+
   it("passes author filters for perspective-scoped marketplace discovery", async () => {
     const productEvents = [
       makeProductEvent({

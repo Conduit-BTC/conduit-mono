@@ -434,12 +434,35 @@ function ListingSafetySummary({
   onEdit,
 }: {
   item: MerchantProduct
-  onEdit: () => void
+  onEdit?: () => void
 }) {
   const display = getListingSafetyDisplay(item.safety)
   const isActive = item.safety.state === "active"
   const isPolicyWarning = item.safety.state === "flagged"
+  const isExternallyManaged = item.product.type !== "simple"
   const zapPolicyLabel = getZapPolicyLabel(item.product)
+
+  if (isExternallyManaged) {
+    return (
+      <article className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="font-semibold text-[var(--text-primary)]">
+              {item.product.title}
+            </div>
+            <p className="mt-2 leading-6">
+              This Gamma {item.product.type} listing is read-only in Merchant.
+              Manage it with a variation-aware publisher to preserve its parent
+              coordinate and option tags.
+            </p>
+          </div>
+          <StatusPill variant="info" className="text-[10px]">
+            External listing
+          </StatusPill>
+        </div>
+      </article>
+    )
+  }
 
   if (isActive) {
     return (
@@ -492,9 +515,11 @@ function ListingSafetySummary({
       <p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">
         {display.merchantAction}
       </p>
-      <Button variant="outline" size="sm" className="mt-3" onClick={onEdit}>
-        {isPolicyWarning ? "Review listing" : "Fix listing"}
-      </Button>
+      {onEdit && (
+        <Button variant="outline" size="sm" className="mt-3" onClick={onEdit}>
+          {isPolicyWarning ? "Review listing" : "Fix listing"}
+        </Button>
+      )}
     </article>
   )
 }
@@ -621,6 +646,7 @@ async function publishProduct(
     price: normalizedPrice,
     currency,
     type: "simple",
+    specifications: [],
     format: form.format,
     ...shippingCost,
     ...shippingMetadata,
@@ -1390,7 +1416,11 @@ function ProductsPage() {
                 <ListingSafetySummary
                   key={item.addressId}
                   item={item}
-                  onEdit={() => openEditDialog(item)}
+                  onEdit={
+                    item.product.type === "simple"
+                      ? () => openEditDialog(item)
+                      : undefined
+                  }
                 />
               )
             }
@@ -1404,7 +1434,11 @@ function ProductsPage() {
                 {!isActive && (
                   <ListingSafetySummary
                     item={item}
-                    onEdit={() => openEditDialog(item)}
+                    onEdit={
+                      item.product.type === "simple"
+                        ? () => openEditDialog(item)
+                        : undefined
+                    }
                   />
                 )}
                 <ProductCard

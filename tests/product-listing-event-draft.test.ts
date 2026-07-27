@@ -18,6 +18,7 @@ function baseProduct(overrides: Partial<ProductSchema> = {}): ProductSchema {
     price: 10,
     currency: "USD",
     type: "simple",
+    specifications: [],
     format: "physical",
     shippingCostSats: 1,
     shippingOptionId: "30406:merchant:conduit-default",
@@ -881,6 +882,69 @@ describe("product listing event parsing", () => {
     expect(variable.format).toBe("physical")
     expect(variation.type).toBe("variation")
     expect(variation.format).toBe("physical")
+  })
+
+  it("parses Gamma variation parent coordinates and signed spec tags", () => {
+    const merchantPubkey = "a".repeat(64)
+    const parentProductId = `30402:${merchantPubkey}:shirt`
+    const parsed = parseProductEvent({
+      id: "shirt-medium-event",
+      pubkey: merchantPubkey,
+      created_at: 1_779_762_725,
+      content: "Medium shirt option.",
+      tags: [
+        ["d", "shirt-medium"],
+        ["title", "Shirt — Medium"],
+        ["price", "25000", "SATS"],
+        ["type", "variation", "physical"],
+        ["a", parentProductId],
+        ["spec", "size", "M"],
+        ["spec", "color", "Navy"],
+      ],
+    })
+
+    expect(parsed.parentProductId).toBe(parentProductId)
+    expect(parsed.specifications).toEqual([
+      { key: "size", value: "M" },
+      { key: "color", value: "Navy" },
+    ])
+  })
+
+  it("does not trust malformed or ambiguous variation parent references", () => {
+    const merchantPubkey = "a".repeat(64)
+    const validParent = `30402:${merchantPubkey}:shirt`
+    const malformed = parseProductEvent({
+      id: "malformed-parent-event",
+      pubkey: merchantPubkey,
+      created_at: 1_779_762_725,
+      content: "",
+      tags: [
+        ["d", "shirt-small"],
+        ["title", "Shirt — Small"],
+        ["price", "25000", "SATS"],
+        ["type", "variation", "physical"],
+        ["a", "30402:not-a-pubkey:shirt"],
+        ["spec", "size", "S"],
+      ],
+    })
+    const ambiguous = parseProductEvent({
+      id: "ambiguous-parent-event",
+      pubkey: merchantPubkey,
+      created_at: 1_779_762_725,
+      content: "",
+      tags: [
+        ["d", "shirt-large"],
+        ["title", "Shirt — Large"],
+        ["price", "25000", "SATS"],
+        ["type", "variation", "physical"],
+        ["a", validParent],
+        ["a", `30402:${merchantPubkey}:other-shirt`],
+        ["spec", "size", "L"],
+      ],
+    })
+
+    expect(malformed.parentProductId).toBeUndefined()
+    expect(ambiguous.parentProductId).toBeUndefined()
   })
 
   it("parses independent stock values for variation listings", () => {
