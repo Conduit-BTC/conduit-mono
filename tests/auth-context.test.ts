@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, mock } from "bun:test"
+import { readFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools/pure"
@@ -372,6 +373,35 @@ describe("NIP-07 availability", () => {
       )
     ).rejects.toThrow("signer account changed")
     expect(encryptCalls).toBe(0)
+  })
+})
+
+describe("restore attempt isolation", () => {
+  const source = readFileSync(
+    new URL("../packages/core/src/context/AuthContext.tsx", import.meta.url),
+    "utf8"
+  )
+
+  it("never clears the global signer when a restore attempt fails", () => {
+    expect(source).toContain(
+      'void connect({ mode: "restore" }).catch(() => undefined)'
+    )
+    const bareRemoveSignerCalls = source.match(/\n\s*removeSigner\(\)/g) ?? []
+    expect(bareRemoveSignerCalls).toHaveLength(0)
+  })
+
+  it("returns silently when a queued restore finds an already connected session", () => {
+    expect(source).toContain('if (mode === "restore") return')
+  })
+
+  it("releases the connecting flag inside the epoch-owned finally block", () => {
+    const fenceIndex = source.indexOf("if (attemptOwnsEpoch()) {")
+    expect(fenceIndex).toBeGreaterThan(-1)
+    const fencedBlock = source.slice(
+      fenceIndex,
+      source.indexOf("}", fenceIndex)
+    )
+    expect(fencedBlock).toContain("connecting.current = false")
   })
 })
 

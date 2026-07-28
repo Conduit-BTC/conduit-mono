@@ -448,6 +448,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       options.method ?? (mode === "restore" ? storedSession?.type : "nip07")
     if (connecting.current) return
     if (connected.current) {
+      if (mode === "restore") return
       throw new Error("Disconnect the current signer before connecting another.")
     }
     if (!requestedMethod) {
