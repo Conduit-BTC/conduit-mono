@@ -29,6 +29,8 @@ import {
 import { getCartHudRouteMode, reconcileCartHudMerchant } from "../lib/cart-hud"
 import { MerchantAvatarFallback } from "./MerchantIdentity"
 
+const HUD_EXIT_DURATION_MS = 240
+
 export type MarketCartHudProps = {
   pathname: string
 }
@@ -51,17 +53,36 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     merchantPubkeys[0] ?? null
   )
   const [announcement, setAnnouncement] = useState("")
+  const [mounted, setMounted] = useState(false)
+  const [entered, setEntered] = useState(false)
   const hudRef = useRef<HTMLElement>(null)
   const previousQuantitiesRef = useRef(new Map<string, number>())
   const previousScrollYRef = useRef(0)
 
-  const selectedMerchant = reconcileCartHudMerchant(
+  const currentMerchant = reconcileCartHudMerchant(
     activeMerchant,
     merchantPubkeys
   )
-  const activeGroup = groups.find(
-    (group) => group.merchantPubkey === selectedMerchant
+  const currentGroup = groups.find(
+    (group) => group.merchantPubkey === currentMerchant
   )
+  // Retain the last rendered cart so the dock can slide out instead of
+  // disappearing when the cart empties or the route suppresses the HUD.
+  const lastVisibleRef = useRef<{
+    merchantPubkey: string
+    group: NonNullable<typeof currentGroup>
+  } | null>(null)
+  if (currentMerchant && currentGroup) {
+    lastVisibleRef.current = {
+      merchantPubkey: currentMerchant,
+      group: currentGroup,
+    }
+  }
+  const shouldShow =
+    routeMode !== "suppressed" && !!currentMerchant && !!currentGroup
+  const selectedMerchant =
+    currentMerchant ?? lastVisibleRef.current?.merchantPubkey ?? null
+  const activeGroup = currentGroup ?? lastVisibleRef.current?.group
   const activeProfile = selectedMerchant
     ? profiles.data[selectedMerchant]
     : undefined
@@ -76,8 +97,19 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   }, [pathname, routeMode])
 
   useEffect(() => {
-    if (selectedMerchant !== activeMerchant) setActiveMerchant(selectedMerchant)
-  }, [activeMerchant, selectedMerchant])
+    if (currentMerchant !== activeMerchant) setActiveMerchant(currentMerchant)
+  }, [activeMerchant, currentMerchant])
+
+  useEffect(() => {
+    if (shouldShow) {
+      setMounted(true)
+      const frame = requestAnimationFrame(() => setEntered(true))
+      return () => cancelAnimationFrame(frame)
+    }
+    setEntered(false)
+    const timer = setTimeout(() => setMounted(false), HUD_EXIT_DURATION_MS)
+    return () => clearTimeout(timer)
+  }, [shouldShow])
 
   useEffect(() => {
     const previous = previousQuantitiesRef.current
@@ -148,7 +180,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   useEffect(() => {
     const root = document.documentElement
     const element = hudRef.current
-    if (!element || routeMode === "suppressed" || groups.length === 0) {
+    if (!element || !mounted) {
       root.style.removeProperty("--market-hud-height")
       return
     }
@@ -165,9 +197,9 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
       observer.disconnect()
       root.style.removeProperty("--market-hud-height")
     }
-  }, [expanded, groups.length, routeMode])
+  }, [expanded, mounted])
 
-  if (routeMode === "suppressed" || !activeGroup || !selectedMerchant) {
+  if (!mounted || !activeGroup || !selectedMerchant) {
     return null
   }
 
@@ -176,12 +208,19 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
 
   return (
     <div
-      className="pointer-events-none fixed inset-x-0 z-30 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-4"
+      className={cn(
+        "pointer-events-none fixed inset-x-0 z-30 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] transition-transform duration-200 ease-out motion-reduce:transition-none sm:px-4",
+        entered
+          ? "translate-y-0"
+          : "translate-y-[calc(100%_+_var(--market-fixed-footer-height,0px))]"
+      )}
       style={{ bottom: "var(--market-fixed-footer-height, 0px)" }}
     >
       <section
         ref={hudRef}
         aria-label="Cart inventory"
+        aria-hidden={!shouldShow}
+        inert={!shouldShow}
         className="market-cart-hud-surface pointer-events-auto mx-auto w-full max-w-4xl overflow-hidden rounded-2xl border border-[var(--border)] shadow-[0_12px_34px_color-mix(in_srgb,var(--shadow)_22%,transparent)] backdrop-blur"
       >
         <div className="flex min-h-14 items-center gap-2 px-3 py-2 sm:gap-3 sm:px-4">

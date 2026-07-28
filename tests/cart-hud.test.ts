@@ -43,6 +43,33 @@ describe("Market cart HUD policy", () => {
     expect(source).toContain("selected && expanded")
   })
 
+  it("slides the dock in and out of the bottom of the page", () => {
+    const source = readFileSync(
+      new URL(
+        "../apps/market/src/components/MarketCartHud.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    )
+
+    expect(source).toContain(
+      "transition-transform duration-200 ease-out motion-reduce:transition-none"
+    )
+    expect(source).toContain('entered\n          ? "translate-y-0"')
+    expect(source).toContain(
+      "translate-y-[calc(100%_+_var(--market-fixed-footer-height,0px))]"
+    )
+    expect(source).toContain("requestAnimationFrame(() => setEntered(true))")
+    expect(source).toContain("setTimeout(() => setMounted(false)")
+    expect(source).toContain("const HUD_EXIT_DURATION_MS = 240")
+    expect(source).toContain("lastVisibleRef")
+    expect(source).toContain("aria-hidden={!shouldShow}")
+    expect(source).toContain("inert={!shouldShow}")
+    expect(source).toContain(
+      "if (!mounted || !activeGroup || !selectedMerchant)"
+    )
+  })
+
   it("expands on browse surfaces, compacts product detail, and suppresses workflows", () => {
     expect(getCartHudRouteMode("/products")).toBe("expanded")
     expect(getCartHudRouteMode("/store/merchant")).toBe("expanded")
