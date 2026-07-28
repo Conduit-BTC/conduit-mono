@@ -16,7 +16,11 @@ import {
 } from "../pricing"
 import type { ProductSchema } from "../schemas"
 import { EVENT_KINDS } from "./kinds"
-import { fetchEventsFanout, fetchEventsFanoutDetailed } from "./ndk"
+import {
+  fetchEventsFanout,
+  fetchEventsFanoutDetailed,
+  type FetchEventsFanoutResult,
+} from "./ndk"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import type { ConduitAppId } from "./nip89"
@@ -24,6 +28,11 @@ import { appendConduitClientTag } from "./nip89"
 
 export const CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG = "conduit-default"
 export const FIXED_PRODUCT_SHIPPING_D_TAG_SUFFIX = "-shipping-standard"
+export const SHIPPING_OPTION_READ_BATCH_SIZE = 50
+
+const SHIPPING_OPTION_READ_LIMIT = 100
+const SHIPPING_DELETION_READ_LIMIT = 300
+const SHIPPING_OPTION_READ_CONCURRENCY = 3
 
 const FIXED_STANDARD_UNSUPPORTED_TAGS = new Set([
   "carrier",
@@ -437,7 +446,11 @@ export async function getShippingOptions(
 }
 
 export function selectLatestShippingOptions(
-  events: readonly Pick<NDKEvent, "id" | "pubkey" | "tags" | "created_at">[]
+  events: readonly Pick<NDKEvent, "id" | "pubkey" | "tags" | "created_at">[],
+  deletionEvents: readonly Pick<
+    NDKEvent,
+    "id" | "pubkey" | "tags" | "created_at"
+  >[] = []
 ): ParsedShippingOption[] {
   const candidatesByCoordinate = new Map<
     string,
@@ -453,7 +466,7 @@ export function selectLatestShippingOptions(
   }
 
   const latest: ParsedShippingOption[] = []
-  for (const candidates of candidatesByCoordinate.values()) {
+  for (const [coordinate, candidates] of candidatesByCoordinate) {
     const newestCreatedAt = Math.max(
       ...candidates.map((candidate) => candidate.created_at ?? 0)
     )
@@ -463,64 +476,184 @@ export function selectLatestShippingOptions(
     if (new Set(newest.map((candidate) => candidate.id)).size !== 1) {
       continue
     }
-    const parsed = parseShippingOptionEvent(newest[0]!)
+    const event = newest[0]!
+    const deleted = deletionEvents.some(
+      (deletion) =>
+        deletion.pubkey === event.pubkey &&
+        (deletion.created_at ?? 0) >= (event.created_at ?? 0) &&
+        deletion.tags.some(
+          (tag) =>
+            (tag[0] === "e" && tag[1] === event.id) ||
+            (tag[0] === "a" && tag[1] === coordinate)
+        )
+    )
+    if (deleted) continue
+
+    const parsed = parseShippingOptionEvent(event)
     if (parsed) latest.push(parsed)
   }
   return latest
 }
 
-export async function getShippingOptionsByCoordinates(
-  coordinates: readonly string[]
-): Promise<ParsedShippingOption[]> {
-  const addresses = Array.from(
-    new Map(
-      coordinates
-        .map(parseShippingOptionAddress)
-        .filter((address): address is ShippingOptionAddress => !!address)
-        .map((address) => [address.coordinate, address])
-    ).values()
-  )
-  if (addresses.length === 0) return []
+export interface ShippingOptionReadBatch {
+  pubkey: string
+  coordinates: string[]
+  dTags: string[]
+}
 
-  const authors = Array.from(
-    new Set(addresses.map((address) => address.pubkey))
-  )
-  const dTags = Array.from(new Set(addresses.map((address) => address.dTag)))
-  const relayLists = await getRelayLists(authors, { cacheOnly: false })
-  const readPlan = planRelayReads({
-    intent: "author_products",
-    authors,
-    relayLists,
-    maxRelays: 12,
-  })
-  const filter: NDKFilter = {
-    kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
-    authors,
-    "#d": dTags,
-    limit: 100,
+export function buildShippingOptionReadBatches(
+  coordinates: readonly string[]
+): ShippingOptionReadBatch[] {
+  const addressesByAuthor = new Map<string, ShippingOptionAddress[]>()
+  const seen = new Set<string>()
+  for (const coordinate of coordinates) {
+    const address = parseShippingOptionAddress(coordinate)
+    if (!address || seen.has(address.coordinate)) continue
+    seen.add(address.coordinate)
+    const addresses = addressesByAuthor.get(address.pubkey) ?? []
+    addresses.push(address)
+    addressesByAuthor.set(address.pubkey, addresses)
   }
-  const requested = new Set(addresses.map((address) => address.coordinate))
-  const result = await fetchEventsFanoutDetailed(filter, {
-    relayUrls: readPlan.relayUrls,
-  })
+
+  const batches: ShippingOptionReadBatch[] = []
+  for (const [pubkey, addresses] of addressesByAuthor) {
+    for (
+      let offset = 0;
+      offset < addresses.length;
+      offset += SHIPPING_OPTION_READ_BATCH_SIZE
+    ) {
+      const batch = addresses.slice(
+        offset,
+        offset + SHIPPING_OPTION_READ_BATCH_SIZE
+      )
+      batches.push({
+        pubkey,
+        coordinates: batch.map((address) => address.coordinate),
+        dTags: batch.map((address) => address.dTag),
+      })
+    }
+  }
+  return batches
+}
+
+function requireCompleteShippingRead(
+  result: FetchEventsFanoutResult,
+  relayUrls: readonly string[],
+  queryLimit: number
+): NDKEvent[] {
   const relayStatuses = new Map(
     result.relays.map((relay) => [relay.relayUrl, relay])
   )
   if (
-    relayStatuses.size !== readPlan.relayUrls.length ||
-    readPlan.relayUrls.some(
+    relayStatuses.size !== relayUrls.length ||
+    relayUrls.some(
       (relayUrl) => relayStatuses.get(relayUrl)?.status !== "success"
     ) ||
-    result.relays.some((relay) => relay.eventCount >= 100)
+    result.relays.some((relay) => relay.eventCount >= queryLimit)
   ) {
     throw new Error(
       "Fixed shipping could not be verified across the planned relays"
     )
   }
+  return result.events
+}
 
-  return selectLatestShippingOptions(result.events).filter((option) =>
-    requested.has(option.id)
+async function mapWithConcurrency<T, TResult>(
+  values: readonly T[],
+  concurrency: number,
+  mapper: (value: T) => Promise<TResult>
+): Promise<TResult[]> {
+  const results = new Array<TResult>(values.length)
+  let nextIndex = 0
+  async function worker() {
+    while (nextIndex < values.length) {
+      const index = nextIndex++
+      results[index] = await mapper(values[index]!)
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, async () =>
+      worker()
+    )
   )
+  return results
+}
+
+export async function getShippingOptionsByCoordinates(
+  coordinates: readonly string[]
+): Promise<ParsedShippingOption[]> {
+  const batches = buildShippingOptionReadBatches(coordinates)
+  if (batches.length === 0) return []
+
+  const authors = Array.from(new Set(batches.map((batch) => batch.pubkey)))
+  const relayLists = await getRelayLists(authors, { cacheOnly: false })
+  const requested = new Set(batches.flatMap((batch) => batch.coordinates))
+  const batchResults = await mapWithConcurrency(
+    batches,
+    SHIPPING_OPTION_READ_CONCURRENCY,
+    async (batch) => {
+      const readPlan = planRelayReads({
+        intent: "author_products",
+        authors: [batch.pubkey],
+        relayLists,
+        maxRelays: 12,
+      })
+      const shippingEvents = requireCompleteShippingRead(
+        await fetchEventsFanoutDetailed(
+          {
+            kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
+            authors: [batch.pubkey],
+            "#d": batch.dTags,
+            limit: SHIPPING_OPTION_READ_LIMIT,
+          },
+          { relayUrls: readPlan.relayUrls }
+        ),
+        readPlan.relayUrls,
+        SHIPPING_OPTION_READ_LIMIT
+      )
+      const addressDeletionEvents = requireCompleteShippingRead(
+        await fetchEventsFanoutDetailed(
+          {
+            kinds: [EVENT_KINDS.DELETION as number],
+            authors: [batch.pubkey],
+            "#a": batch.coordinates,
+            limit: SHIPPING_DELETION_READ_LIMIT,
+          },
+          { relayUrls: readPlan.relayUrls }
+        ),
+        readPlan.relayUrls,
+        SHIPPING_DELETION_READ_LIMIT
+      )
+      const eventIds = Array.from(
+        new Set(shippingEvents.map((event) => event.id).filter(Boolean))
+      )
+      const eventDeletionEvents =
+        eventIds.length === 0
+          ? []
+          : requireCompleteShippingRead(
+              await fetchEventsFanoutDetailed(
+                {
+                  kinds: [EVENT_KINDS.DELETION as number],
+                  authors: [batch.pubkey],
+                  "#e": eventIds,
+                  limit: SHIPPING_DELETION_READ_LIMIT,
+                },
+                { relayUrls: readPlan.relayUrls }
+              ),
+              readPlan.relayUrls,
+              SHIPPING_DELETION_READ_LIMIT
+            )
+      return {
+        shippingEvents,
+        deletionEvents: [...addressDeletionEvents, ...eventDeletionEvents],
+      }
+    }
+  )
+
+  return selectLatestShippingOptions(
+    batchResults.flatMap((result) => result.shippingEvents),
+    batchResults.flatMap((result) => result.deletionEvents)
+  ).filter((option) => requested.has(option.id))
 }
 
 export function resolveProductFulfillment(

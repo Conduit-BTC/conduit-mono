@@ -54,6 +54,22 @@ export function isProductUsingPresetShippingZone(
   )
 }
 
+export function getProductShippingPricingMode(
+  product: Pick<
+    ProductSchema,
+    "format" | "shippingOptionId" | "sourceShippingCost" | "shippingCostSats"
+  >
+): ProductShippingPricingMode {
+  const hasFixedShippingCost =
+    typeof product.sourceShippingCost?.amount === "number" ||
+    typeof product.shippingCostSats === "number"
+  return product.format === "physical" &&
+    !product.shippingOptionId &&
+    !hasFixedShippingCost
+    ? "coordinate_after_order"
+    : "fixed"
+}
+
 export function buildProductShippingMetadata(
   merchantPubkey: string,
   productDTag: string,
