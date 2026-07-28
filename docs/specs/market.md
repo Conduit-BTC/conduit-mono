@@ -323,6 +323,14 @@ shipping-zone eligibility. Shipping-zone success must not be the only green/pass
 state while address/contact validity is missing, invalid, or unverified. See
 `docs/specs/order-lifecycle.md` for the full policy.
 
+For fixed product shipping, Market resolves only the exact Gamma kind `30406`
+coordinate referenced by each product. It prepares one fulfillment snapshot
+used by destination eligibility, pricing, order construction, and lifecycle
+persistence. Missing, malformed, conflicting, unsupported, or revision-stale
+shipping disables direct payment and leaves the order-first path available.
+Legacy inline product shipping is read-only compatibility input and does not
+authorize direct payment. See `docs/specs/fixed-product-shipping.md`.
+
 ## Protocol Events
 
 ### Read
@@ -330,6 +338,7 @@ state while address/contact validity is missing, invalid, or unverified. See
 - Kind `0`: profiles
 - Kind `3`: contact/follow graph for trust context
 - Kind `30402`: product listings
+- Kind `30406`: exact product-referenced shipping options
 - Kind `1059`: gift-wrapped NIP-17 messages
 - Kind `9735`: zap receipts where relevant to proof handling
 - Kind `10002`: relay lists

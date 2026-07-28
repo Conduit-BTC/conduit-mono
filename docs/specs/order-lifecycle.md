@@ -51,6 +51,12 @@ Fields:
 Repository helpers: `createOrderLifecycle`, `getOrderLifecycle`,
 `patchOrderLifecycle`, `listOrderLifecycles`, `deriveOrderLifecyclePhase`.
 
+For canonical fixed shipping, each physical item snapshot preserves the exact
+kind `30406` coordinate, agreed per-item cost, and country destinations from the
+same prepared fulfillment state used to calculate checkout. Digital and
+coordinate-after-order items do not claim a selected fixed option or agreed
+fixed cost.
+
 ## State flow
 
 1. Every checkout mode publishes the encrypted order first, then calls
