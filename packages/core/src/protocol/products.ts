@@ -2,9 +2,7 @@ import type { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   canonicalizeProductPrice,
   canonicalizeShippingCost,
-  isSatsLikeCurrency,
   type CommerceShippingCostLike,
-  normalizeCurrencyCode,
 } from "../pricing"
 import {
   productSchema,
@@ -13,6 +11,7 @@ import {
 } from "../schemas"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
+import { parseLegacyConduitInlineShippingTags } from "./compat/conduit-inline-shipping"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 
 export const MAX_PRODUCT_IMAGE_CANDIDATES = 12
@@ -295,29 +294,8 @@ export function buildProductListingEventDraft({
     tags.push(["stock", String(product.stock)])
   }
 
-  if (product.sourceShippingCost) {
-    tags.push([
-      "shipping_cost",
-      String(product.sourceShippingCost.amount),
-      product.sourceShippingCost.currency,
-    ])
-  } else if (typeof product.shippingCostSats === "number") {
-    tags.push(["shipping_cost", String(product.shippingCostSats)])
-  }
-
-  const shippingOptionTag = buildShippingOptionTag(product, priceCurrency)
+  const shippingOptionTag = buildShippingOptionTag(product)
   if (shippingOptionTag) tags.push(shippingOptionTag)
-  if (product.shippingCountries && product.shippingCountries.length > 0) {
-    tags.push(["shipping_country", ...product.shippingCountries])
-  }
-  for (const rule of product.shippingCountryRules ?? []) {
-    if (rule.restrictTo.length > 0) {
-      tags.push(["shipping_restrict", rule.code, ...rule.restrictTo])
-    }
-    if (rule.exclude.length > 0) {
-      tags.push(["shipping_exclude", rule.code, ...rule.exclude])
-    }
-  }
   for (const image of getProductProtocolImages(product)) {
     tags.push(["image", image.url])
   }
@@ -429,58 +407,9 @@ function parsePriceTag(
   return null
 }
 
-function parseShippingCostTag(
-  tags: string[][] | undefined
-): CommerceShippingCostLike {
-  const tag = tags?.find((t) => t[0] === "shipping_cost")
-  const raw = tag?.[1]
-  if (typeof raw !== "string") return {}
-
-  const amount = Number(raw)
-  const currency = typeof tag?.[2] === "string" ? tag[2] : "SATS"
-  if (!Number.isFinite(amount) || amount < 0) return {}
-
-  return canonicalizeShippingCost(amount, currency)
-}
-
-function getProductShippingOptionExtraCostTag(
-  product: ProductSchema,
-  productCurrency: string
-): string | null {
-  const normalizedProductCurrency = normalizeCurrencyCode(productCurrency)
-  const sourceShippingCurrency = product.sourceShippingCost?.normalizedCurrency
-
-  if (
-    product.sourceShippingCost &&
-    sourceShippingCurrency === normalizedProductCurrency
-  ) {
-    return String(product.sourceShippingCost.amount)
-  }
-
-  if (
-    typeof product.shippingCostSats === "number" &&
-    (product.shippingCostSats === 0 ||
-      isSatsLikeCurrency(normalizedProductCurrency))
-  ) {
-    return String(product.shippingCostSats)
-  }
-
-  return null
-}
-
-function buildShippingOptionTag(
-  product: ProductSchema,
-  productCurrency: string
-): string[] | null {
+function buildShippingOptionTag(product: ProductSchema): string[] | null {
   if (!product.shippingOptionId) return null
-
-  const tag = ["shipping_option", product.shippingOptionId]
-  const extraCost = getProductShippingOptionExtraCostTag(
-    product,
-    productCurrency
-  )
-  if (extraCost !== null) tag.push(extraCost)
-  return tag
+  return ["shipping_option", product.shippingOptionId]
 }
 
 function parseStockTag(
@@ -509,9 +438,12 @@ function parseShippingOptionTag(
 ): {
   shippingOptionId?: string
   shippingOptionDTag?: string
+  shippingOptionLaunchUnsupported?: boolean
   extraCost?: CommerceShippingCostLike
 } {
-  const tag = tags?.find((t) => t[0] === "shipping_option")
+  const shippingOptionTags =
+    tags?.filter((candidate) => candidate[0] === "shipping_option") ?? []
+  const tag = shippingOptionTags[0]
   const ref = tag?.[1]
   if (!ref) return {}
   const parts = ref.split(":")
@@ -530,46 +462,9 @@ function parseShippingOptionTag(
     shippingOptionId: ref,
     shippingOptionDTag:
       parts.length >= 3 ? parts.slice(2).join(":") : undefined,
+    shippingOptionLaunchUnsupported:
+      shippingOptionTags.length !== 1 || tag.length > 2,
     extraCost,
-  }
-}
-
-function parseShippingCountryRules(tags: string[][] | undefined): {
-  shippingCountries?: string[]
-  shippingCountryRules?: ProductSchema["shippingCountryRules"]
-} {
-  if (!tags) return {}
-  const shippingCountries = Array.from(
-    new Set(
-      tags
-        .filter((t) => t[0] === "shipping_country")
-        .flatMap((t) => t.slice(1))
-        .map((country) => country.trim().toUpperCase())
-        .filter(Boolean)
-    )
-  )
-  if (shippingCountries.length === 0) return {}
-
-  return {
-    shippingCountries,
-    shippingCountryRules: shippingCountries.map((code) => ({
-      code,
-      name: code,
-      restrictTo:
-        tags
-          .find(
-            (t) => t[0] === "shipping_restrict" && t[1]?.toUpperCase() === code
-          )
-          ?.slice(2)
-          .filter(Boolean) ?? [],
-      exclude:
-        tags
-          .find(
-            (t) => t[0] === "shipping_exclude" && t[1]?.toUpperCase() === code
-          )
-          ?.slice(2)
-          .filter(Boolean) ?? [],
-    })),
   }
 }
 
@@ -577,16 +472,18 @@ function parseProductShippingTags(
   tags: string[][] | undefined,
   productCurrency: string | undefined
 ): Partial<ProductSchema> {
-  const shippingCost = parseShippingCostTag(tags)
+  const legacyInline = parseLegacyConduitInlineShippingTags(tags)
   const shippingOption = parseShippingOptionTag(tags, productCurrency)
   const { extraCost, ...shippingOptionFields } = shippingOption
 
   return {
-    ...(Object.keys(shippingCost).length > 0
-      ? shippingCost
+    ...legacyInline,
+    ...(legacyInline.sourceShippingCost ||
+    typeof legacyInline.shippingCostSats === "number"
+      ? {}
       : (extraCost ?? {})),
     ...shippingOptionFields,
-    ...parseShippingCountryRules(tags),
+    canonicalShippingResolved: false,
   }
 }
 
@@ -945,6 +842,7 @@ export function parseProductEvent(
       id: dTag ? `30402:${event.pubkey}:${dTag}` : event.id,
       pubkey: event.pubkey,
       ...zapPolicy,
+      canonicalShippingResolved: false,
       createdAt: createdAtMs,
       updatedAt: createdAtMs,
     }

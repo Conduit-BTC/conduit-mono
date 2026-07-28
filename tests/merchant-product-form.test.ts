@@ -51,51 +51,47 @@ function validate(
 }
 
 describe("merchant product form validation", () => {
-  it("round-trips preset-backed fixed shipping without losing its association", () => {
-    const metadata = buildProductShippingMetadata("merchant", true, {
-      countries: [
-        {
-          code: "US",
-          name: "United States",
-          restrictTo: ["787**"],
-          exclude: ["78799"],
-        },
-      ],
-    })
+  it("uses one product-scoped wire identity for preset and custom fixed shipping", () => {
+    const fixedIntent = {
+      kind: "fixed_standard" as const,
+      amount: 5,
+      currency: "USD",
+      countries: ["US"],
+    }
+    const presetMetadata = buildProductShippingMetadata(
+      "merchant",
+      "pocket-node",
+      fixedIntent
+    )
+    const customMetadata = buildProductShippingMetadata(
+      "merchant",
+      "pocket-node",
+      fixedIntent
+    )
 
-    expect(metadata).toEqual({
-      shippingOptionId: "30406:merchant:conduit-default",
-      shippingOptionDTag: "conduit-default",
+    expect(presetMetadata).toEqual({
+      shippingOptionId: "30406:merchant:pocket-node-shipping-standard",
+      shippingOptionDTag: "pocket-node-shipping-standard",
       shippingCountries: ["US"],
       shippingCountryRules: [
         {
           code: "US",
-          name: "United States",
-          restrictTo: ["787**"],
-          exclude: ["78799"],
-        },
-      ],
-    })
-    expect(isProductUsingPresetShippingZone(metadata, true)).toBe(true)
-    expect(isProductUsingPresetShippingZone(metadata, false)).toBe(false)
-  })
-
-  it("keeps custom fixed shipping detached from the shared preset", () => {
-    const metadata = buildProductShippingMetadata("merchant", false, {
-      countries: [
-        {
-          code: "CA",
-          name: "Canada",
+          name: "US",
           restrictTo: [],
           exclude: [],
         },
       ],
     })
+    expect(customMetadata).toEqual(presetMetadata)
+    expect(isProductUsingPresetShippingZone(presetMetadata, true)).toBe(false)
+  })
 
-    expect(metadata.shippingOptionId).toBeUndefined()
-    expect(metadata.shippingOptionDTag).toBeUndefined()
-    expect(metadata.shippingCountries).toEqual(["CA"])
-    expect(isProductUsingPresetShippingZone(metadata, true)).toBe(false)
+  it("does not emit shipping metadata for order-first fulfillment", () => {
+    const metadata = buildProductShippingMetadata("merchant", "pocket-node", {
+      kind: "coordinate_after_order",
+    })
+
+    expect(metadata).toEqual({})
   })
 
   it("keeps tag recommendations advisory within the publishable range", () => {

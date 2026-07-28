@@ -87,6 +87,7 @@ function productEvent(
     currency?: string
     shippingCost?: number
     shippingCurrency?: string
+    canonicalShipping?: boolean
   } = {}
 ): SignedPublicNostrEvent {
   const currency = overrides.currency ?? "SATS"
@@ -97,13 +98,20 @@ function productEvent(
     [
       "type",
       "simple",
-      overrides.shippingCost === undefined ? "digital" : "physical",
+      overrides.shippingCost === undefined && !overrides.canonicalShipping
+        ? "digital"
+        : "physical",
     ],
     ["image", "https://cdn.conduit.market/cnd-150-pages.png"],
     ["checkout_public_zaps", "true"],
     ["checkout_zap_message_policy", "generic_only"],
   ]
-  if (overrides.shippingCost !== undefined) {
+  if (overrides.canonicalShipping) {
+    tags.push([
+      "shipping_option",
+      `30406:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}-shipping-standard`,
+    ])
+  } else if (overrides.shippingCost !== undefined) {
     tags.push([
       "shipping_cost",
       String(overrides.shippingCost),
@@ -115,6 +123,25 @@ function productEvent(
     kind: 30402,
     tags,
     content: "A signed public Pages authorization fixture.",
+  })
+}
+
+function shippingEvent(
+  overrides: {
+    price?: number
+    currency?: string
+    omitService?: boolean
+  } = {}
+): SignedPublicNostrEvent {
+  return signMerchantEvent({
+    kind: 30406,
+    tags: [
+      ["d", `${PRODUCT_D_TAG}-shipping-standard`],
+      ["title", "Standard Shipping"],
+      ["price", String(overrides.price ?? 5), overrides.currency ?? "SATS"],
+      ["country", "US"],
+      ...(overrides.omitService ? [] : [["service", "standard"]]),
+    ],
   })
 }
 
@@ -193,13 +220,22 @@ function createDependencies(
     signerCalls?: SignerCall[]
     publicEventFilters?: unknown[]
     product?: SignedPublicNostrEvent
+    shippingOption?: SignedPublicNostrEvent
     pricingRate?: BtcUsdRateQuote
     pricingRateCalls?: string[][]
     pricingRateError?: Error
     incompleteRead?:
-      "products" | "profile" | "address_deletions" | "event_deletions"
+      | "products"
+      | "shipping"
+      | "profile"
+      | "address_deletions"
+      | "event_deletions"
     saturatedRead?:
-      "products" | "profile" | "address_deletions" | "event_deletions"
+      | "products"
+      | "shipping"
+      | "profile"
+      | "address_deletions"
+      | "event_deletions"
   } = {}
 ): AnonZapPagesDependencies {
   const signerCalls = options.signerCalls ?? []
@@ -208,15 +244,20 @@ function createDependencies(
       options.publicEventFilters?.push(filter)
       const readKind = filter.kinds.includes(30402)
         ? "products"
-        : filter.kinds.includes(0)
-          ? "profile"
-          : filter["#a"]
-            ? "address_deletions"
-            : "event_deletions"
+        : filter.kinds.includes(30406)
+          ? "shipping"
+          : filter.kinds.includes(0)
+            ? "profile"
+            : filter["#a"]
+              ? "address_deletions"
+              : "event_deletions"
       const status = options.incompleteRead === readKind ? "partial" : "success"
       let events: SignedPublicNostrEvent[] = []
       if (filter.kinds.includes(30402)) {
         events = [options.product ?? productEvent()]
+      }
+      if (filter.kinds.includes(30406) && options.shippingOption) {
+        events = [options.shippingOption]
       }
       if (filter.kinds.includes(0)) events = [profileEvent()]
       return {
@@ -1048,8 +1089,13 @@ describe("Anon zap Pages proxy", () => {
         product: productEvent({
           price: 10,
           currency: "USD",
+          canonicalShipping: true,
           shippingCost: 5,
           shippingCurrency: "USD",
+        }),
+        shippingOption: shippingEvent({
+          price: 5,
+          currency: "USD",
         }),
         pricingRateCalls,
       })
@@ -1070,15 +1116,71 @@ describe("Anon zap Pages proxy", () => {
     })
   })
 
-  it("does not fetch a rate for zero-cost fiat shipping", async () => {
+  it("fetches and prices the exact canonical fixed-shipping option", async () => {
+    const publicEventFilters: unknown[] = []
+    const authorization = await issueAuthorization(
+      createDependencies({
+        product: productEvent({
+          price: 10,
+          currency: "USD",
+          canonicalShipping: true,
+        }),
+        shippingOption: shippingEvent({ price: 5, currency: "USD" }),
+        publicEventFilters,
+      })
+    )
+
+    expect(publicEventFilters).toContainEqual({
+      kinds: [30406],
+      authors: [MERCHANT_PUBKEY],
+      "#d": [`${PRODUCT_D_TAG}-shipping-standard`],
+      limit: 100,
+    })
+    expect(authorization.pricing).toMatchObject({
+      itemSubtotalSats: 10_000,
+      shippingCostSats: 5_000,
+      totalSats: 15_000,
+      items: [
+        {
+          shippingOptionId: `30406:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}-shipping-standard`,
+          unitShippingSats: 5_000,
+        },
+      ],
+    })
+  })
+
+  it("fails closed when the canonical shipping relay read is incomplete", async () => {
+    const response = await authorizeAnonZapRequest(
+      post(
+        "https://shop.conduit.market/api/anon-zap-authorize",
+        checkoutIntent()
+      ),
+      env(),
+      createDependencies({
+        product: productEvent({ canonicalShipping: true }),
+        shippingOption: shippingEvent(),
+        incompleteRead: "shipping",
+      })
+    )
+
+    expect(response.status).toBe(503)
+    await expect(response.json()).resolves.toEqual({
+      error: "Checkout public relay reads are temporarily unavailable.",
+    })
+  })
+
+  it("does not fetch a rate for zero-cost shipping", async () => {
     const pricingRateCalls: string[][] = []
     const authorization = await issueAuthorization(
       createDependencies({
         product: productEvent({
           price: 10,
           currency: "SATS",
-          shippingCost: 0,
-          shippingCurrency: "USD",
+          canonicalShipping: true,
+        }),
+        shippingOption: shippingEvent({
+          price: 0,
+          currency: "SATS",
         }),
         pricingRateCalls,
       })

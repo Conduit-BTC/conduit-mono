@@ -43,6 +43,7 @@ function productEvent(
     shippingCost?: number | null
     shippingCurrency?: string
     shippingCountries?: string[]
+    canonicalShipping?: boolean
     dTag?: string
   } = {}
 ): SignedPublicNostrEvent {
@@ -61,21 +62,53 @@ function productEvent(
     tags.push(["checkout_public_zaps", publicZapPolicy])
   }
   if (shippingCost !== undefined && shippingCost !== null) {
-    tags.push([
-      "shipping_cost",
-      String(shippingCost),
-      overrides.shippingCurrency ?? currency,
-    ])
+    if (overrides.canonicalShipping) {
+      tags.push([
+        "shipping_option",
+        `30406:${MERCHANT_PUBKEY}:${overrides.dTag ?? PRODUCT_D_TAG}-shipping-standard`,
+      ])
+    } else {
+      tags.push([
+        "shipping_cost",
+        String(shippingCost),
+        overrides.shippingCurrency ?? currency,
+      ])
+    }
   }
-  for (const country of overrides.shippingCountries ??
-    (shippingCost !== undefined ? ["US"] : [])) {
-    tags.push(["shipping_country", country])
+  if (!overrides.canonicalShipping) {
+    for (const country of overrides.shippingCountries ??
+      (shippingCost !== undefined ? ["US"] : [])) {
+      tags.push(["shipping_country", country])
+    }
   }
   return signMerchantEvent({
     kind: 30402,
     createdAt: overrides.createdAt,
     tags,
     content: "A signed public checkout fixture.",
+  })
+}
+
+function shippingEvent(
+  overrides: {
+    createdAt?: number
+    price?: number
+    currency?: string
+    countries?: string[]
+    dTag?: string
+    omitService?: boolean
+  } = {}
+): SignedPublicNostrEvent {
+  return signMerchantEvent({
+    kind: 30406,
+    createdAt: overrides.createdAt,
+    tags: [
+      ["d", `${overrides.dTag ?? PRODUCT_D_TAG}-shipping-standard`],
+      ["title", "Standard Shipping"],
+      ["price", String(overrides.price ?? 5), overrides.currency ?? "SATS"],
+      ["country", ...(overrides.countries ?? ["US"])],
+      ...(overrides.omitService ? [] : [["service", "standard"]]),
+    ],
   })
 }
 
@@ -95,6 +128,7 @@ function authorize(
       items: [{ productAddress: PRODUCT_ADDRESS, quantity: 1 }],
     },
     productEvents: [productEvent()],
+    shippingEvents: [],
     profileEvents: [profileEvent()],
     deletionEvents: [],
     receiptRelayUrls: ["wss://relay.conduit.market"],
@@ -169,7 +203,10 @@ describe("anonymous public zap checkout authorization", () => {
         merchantPubkey: MERCHANT_PUBKEY,
         items: [{ productAddress: PRODUCT_ADDRESS, quantity: 2 }],
       },
-      productEvents: [productEvent({ shippingCost: 5 })],
+      productEvents: [
+        productEvent({ shippingCost: 5, canonicalShipping: true }),
+      ],
+      shippingEvents: [shippingEvent({ price: 5 })],
     })
 
     expect(result.draft).toEqual({
@@ -205,10 +242,54 @@ describe("anonymous public zap checkout authorization", () => {
           unitPriceSats: 10,
           unitShippingSats: 5,
           lineTotalSats: 30,
+          shippingOptionId: `30406:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}-shipping-standard`,
           shippingCountryRules: [{ code: "US", restrictTo: [], exclude: [] }],
         },
       ],
     })
+  })
+
+  it("prices canonical fixed shipping only from the exact signed option", () => {
+    const product = productEvent({
+      shippingCost: 5,
+      canonicalShipping: true,
+    })
+    const exactOption = shippingEvent({ price: 5 })
+    const result = authorize({
+      productEvents: [product],
+      shippingEvents: [exactOption],
+    })
+
+    expect(result.pricing.shippingCostSats).toBe(5)
+    expect(result.pricing.items[0]).toMatchObject({
+      shippingOptionId: `30406:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}-shipping-standard`,
+      unitShippingSats: 5,
+    })
+
+    expect(() =>
+      authorize({ productEvents: [product], shippingEvents: [] })
+    ).toThrow("Checkout product requires merchant-coordinated shipping.")
+    expect(() =>
+      authorize({
+        productEvents: [product],
+        shippingEvents: [shippingEvent({ omitService: true })],
+      })
+    ).toThrow("Checkout product requires merchant-coordinated shipping.")
+    expect(() =>
+      authorize({
+        productEvents: [product],
+        shippingEvents: [shippingEvent({ createdAt: NOW_SECONDS - 59 })],
+      })
+    ).toThrow("Checkout product requires merchant-coordinated shipping.")
+  })
+
+  it("keeps legacy inline fixed shipping on the order-first path", () => {
+    expect(() =>
+      authorize({
+        productEvents: [productEvent({ shippingCost: 5 })],
+        shippingEvents: [],
+      })
+    ).toThrow("Checkout product requires merchant-coordinated shipping.")
   })
 
   it("derives USD price and shipping from a fresh server rate", () => {
@@ -224,8 +305,10 @@ describe("anonymous public zap checkout authorization", () => {
           currency: "USD",
           shippingCost: 5,
           shippingCurrency: "USD",
+          canonicalShipping: true,
         }),
       ],
+      shippingEvents: [shippingEvent({ price: 5, currency: "USD" })],
       pricingRate,
     })
 
@@ -248,6 +331,7 @@ describe("anonymous public zap checkout authorization", () => {
           unitPriceSats: 10_000,
           unitShippingSats: 5_000,
           lineTotalSats: 15_000,
+          shippingOptionId: `30406:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}-shipping-standard`,
           shippingCountryRules: [{ code: "US", restrictTo: [], exclude: [] }],
         },
       ],
@@ -267,8 +351,10 @@ describe("anonymous public zap checkout authorization", () => {
           currency: "EUR",
           shippingCost: 2,
           shippingCurrency: "EUR",
+          canonicalShipping: true,
         }),
       ],
+      shippingEvents: [shippingEvent({ price: 2, currency: "EUR" })],
       pricingRate: {
         rate: 100_000,
         fetchedAt: NOW_SECONDS * 1000,
@@ -358,8 +444,9 @@ describe("anonymous public zap checkout authorization", () => {
     expect(() =>
       authorize({
         productEvents: [
-          productEvent({ shippingCost: 5, shippingCountries: [] }),
+          productEvent({ shippingCost: 5, canonicalShipping: true }),
         ],
+        shippingEvents: [shippingEvent({ price: 5, countries: [] })],
       })
     ).toThrow("Checkout product requires merchant-coordinated shipping.")
   })

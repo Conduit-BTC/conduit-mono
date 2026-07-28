@@ -46,6 +46,7 @@ export type CartItem = {
   }
   shippingOptionId?: string
   shippingOptionDTag?: string
+  shippingOptionLaunchUnsupported?: boolean
   shippingCountries?: string[]
   shippingCountryRules?: Array<{
     code: string
@@ -53,6 +54,10 @@ export type CartItem = {
     restrictTo: string[]
     exclude: string[]
   }>
+  /** Signed product event timestamp used by the fixed-shipping staleness guard. */
+  productUpdatedAt?: number
+  /** True only after exact canonical kind-30406 resolution. */
+  canonicalShippingResolved?: boolean
   publicZapEnabled?: boolean
   zapMessagePolicy?: ProductZapMessagePolicy
   publicZapPolicyKnown?: boolean
@@ -162,6 +167,7 @@ export function getProductAddAvailability(
 export function createCartItemFromProduct(
   product: Product
 ): Omit<CartItem, "quantity"> {
+  const canonicalShippingResolved = product.canonicalShippingResolved === true
   return {
     productId: product.id,
     selectedSpecifications:
@@ -181,8 +187,11 @@ export function createCartItemFromProduct(
     sourceShippingCost: product.sourceShippingCost,
     shippingOptionId: product.shippingOptionId,
     shippingOptionDTag: product.shippingOptionDTag,
+    shippingOptionLaunchUnsupported: product.shippingOptionLaunchUnsupported,
     shippingCountries: product.shippingCountries,
     shippingCountryRules: product.shippingCountryRules,
+    productUpdatedAt: product.updatedAt,
+    canonicalShippingResolved,
     publicZapEnabled: product.publicZapEnabled,
     zapMessagePolicy: product.zapMessagePolicy,
     publicZapPolicyKnown: product.publicZapPolicyKnown,
@@ -884,8 +893,9 @@ export function getCartCostSummary(
   const shippingResolvableItems = items.map((item) => {
     const hasShippingZone =
       item.format === "digital" ||
-      !!item.shippingOptionId ||
-      (item.shippingCountryRules?.length ?? 0) > 0
+      (item.canonicalShippingResolved === true &&
+        !!item.shippingOptionId &&
+        (item.shippingCountryRules?.length ?? 0) > 0)
 
     return hasShippingZone
       ? item
@@ -912,7 +922,10 @@ export function getCartCostSummary(
     }
     if (item.format === "digital") continue
 
-    const hasShippingSnapshot = (item.shippingCountryRules?.length ?? 0) > 0
+    const hasShippingSnapshot =
+      item.canonicalShippingResolved === true &&
+      !!item.shippingOptionId &&
+      (item.shippingCountryRules?.length ?? 0) > 0
     if (!hasShippingSnapshot || getShippingCostSats(item, rateInput) === null) {
       shippingReadyForZap = false
     }
