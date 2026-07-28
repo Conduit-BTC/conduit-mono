@@ -334,21 +334,28 @@ Do not use retired Conduit relay hosts in active Merchant docs or examples.
 
 ## Shipping Options
 
-Shipping option events use kind `30406`:
+Kind `30406` shipping options follow the GammaMarkets market-spec. The Shipping
+route stores a local destination preset for product authoring. It does not
+publish a zero-priced merchant-wide option.
 
 ```typescript
 const shippingEvent = {
   kind: 30406,
   tags: [
-    ["d", optionId],
+    ["d", `${productDTag}-shipping-standard`],
     ["title", "Standard Shipping"],
-    ["price", "5000", "SAT"],
-    ["region", "US"],
-    ["eta", "5-7", "days"],
+    ["price", "5.00", "USD"],
+    ["country", "US", "CA"],
+    ["service", "standard"],
   ],
-  content: "Description of shipping option",
+  content: "",
 }
 ```
+
+For fixed physical shipping, Merchant publishes this complete product-scoped
+option and requires a positive relay acknowledgement before publishing the
+referencing product. Preset and custom destination inputs compile to the same
+wire representation. See `docs/specs/fixed-product-shipping.md`.
 
 ## Environment
 

@@ -129,8 +129,9 @@ function getKnownShippingCostSats(
 function isCheckoutShippingCostResolvable(item: CartItem): boolean {
   return (
     item.format === "digital" ||
-    !!item.shippingOptionId ||
-    (item.shippingCountryRules?.length ?? 0) > 0
+    (item.canonicalShippingResolved === true &&
+      !!item.shippingOptionId &&
+      (item.shippingCountryRules?.length ?? 0) > 0)
   )
 }
 
@@ -383,6 +384,7 @@ export function getAuthorizedAnonZapDestinationEligibility(
     .map((item) =>
       getShippingDestinationEligibility(destination, [
         {
+          eventId: item.shippingOptionId ?? item.productAddress,
           id: item.shippingOptionId ?? item.productAddress,
           pubkey: item.productAddress.split(":")[1] ?? "",
           dTag: item.shippingOptionId ?? item.productAddress,
@@ -396,6 +398,7 @@ export function getAuthorizedAnonZapDestinationEligibility(
           })),
           service: "standard",
           createdAt: 0,
+          launchUnsupportedTags: [],
         },
       ])
     )

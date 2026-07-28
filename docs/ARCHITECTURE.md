@@ -120,7 +120,7 @@ Do not document Store Builder behavior beyond implemented routes and shared app 
 | `10002` | Relay list                   | NIP-65                            |
 | `10050` | Private message relays       | NIP-17 recipient relay hints      |
 | `30402` | Product listing              | NIP-99 + GammaMarkets market-spec |
-| `30406` | Shipping option              | Conduit commerce extension        |
+| `30406` | Shipping option              | GammaMarkets market-spec          |
 | `31989` | Application recommendation   | NIP-89                            |
 | `31990` | Application handler metadata | NIP-89                            |
 
@@ -139,6 +139,13 @@ Product listings are replaceable addressable events:
 ```
 
 Routes should prefer shared product parsing, dedupe, relay-planning, and cache helpers instead of inventing per-route event semantics. Current code may still use NDK as the edge library.
+
+Fixed physical-product shipping uses a product-scoped Gamma kind `30406`.
+Merchant requires a positive relay acknowledgement for that option before
+publishing the referencing kind `30402`. Market resolves only the exact
+coordinate and prepares one fulfillment snapshot for pricing, destination
+eligibility, checkout, and order persistence. See
+`docs/specs/fixed-product-shipping.md`.
 
 ### Orders And Messages
 

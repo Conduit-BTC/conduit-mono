@@ -150,7 +150,7 @@ describe("cart model", () => {
     expect(items).toEqual([])
   })
 
-  it("preserves product stock when creating a cart item snapshot", () => {
+  it("preserves product stock and shipping-shape safety when creating a cart item snapshot", () => {
     const product: Product = {
       id: "30402:merchant-a:sold-out-tee",
       pubkey: "merchant-a",
@@ -159,6 +159,8 @@ describe("cart model", () => {
       currency: "SATS",
       type: "simple",
       format: "physical",
+      shippingOptionId: "30406:merchant-a:sold-out-tee-shipping-standard",
+      shippingOptionLaunchUnsupported: true,
       visibility: "public",
       stock: 0,
       images: [],
@@ -175,6 +177,7 @@ describe("cart model", () => {
       merchantPubkey: product.pubkey,
       title: product.title,
       stock: 0,
+      shippingOptionLaunchUnsupported: true,
     })
   })
 
@@ -415,7 +418,8 @@ describe("cart model", () => {
           quantity: 2,
           priceSats: 100,
           shippingCostSats: 25,
-          shippingOptionId: "standard",
+          shippingOptionId: "30406:merchant-a:product-a-shipping-standard",
+          canonicalShippingResolved: true,
           shippingCountryRules: [
             { code: "US", name: "United States", restrictTo: [], exclude: [] },
           ],
@@ -425,7 +429,8 @@ describe("cart model", () => {
           quantity: 1,
           priceSats: 500,
           shippingCostSats: 50,
-          shippingOptionId: "standard",
+          shippingOptionId: "30406:merchant-a:product-b-shipping-standard",
+          canonicalShippingResolved: true,
           shippingCountryRules: [
             { code: "US", name: "United States", restrictTo: [], exclude: [] },
           ],
@@ -482,7 +487,7 @@ describe("cart model", () => {
     })
   })
 
-  it("accepts a product shipping snapshot without a preset reference", () => {
+  it("rejects an unreferenced inline product shipping snapshot", () => {
     expect(
       getCartCostSummary([
         item({
@@ -498,11 +503,11 @@ describe("cart model", () => {
     ).toMatchObject({
       count: 2,
       itemSubtotalSats: 200,
-      shippingTotalSats: 50,
-      totalSats: 250,
+      shippingTotalSats: 0,
+      totalSats: 200,
       itemPricesAvailable: true,
-      shippingReadyForZap: true,
-      canZapOut: true,
+      shippingReadyForZap: false,
+      canZapOut: false,
     })
   })
 
