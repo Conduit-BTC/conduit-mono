@@ -30,7 +30,11 @@ import {
   groupCartItems,
   isCartProductAvailabilityBlocking,
 } from "../lib/cart-model"
-import { getCartHudRouteMode, reconcileCartHudMerchant } from "../lib/cart-hud"
+import {
+  getCartHudRouteMode,
+  isCartHudZapOutEligible,
+  reconcileCartHudMerchant,
+} from "../lib/cart-hud"
 import { MerchantAvatarFallback } from "./MerchantIdentity"
 
 const HUD_EXIT_DURATION_MS = 240
@@ -104,6 +108,12 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
       )
     : null
   const checkoutDisabled = !!activeAvailabilityMessage
+  const canZapOut = isCartHudZapOutEligible({
+    checkoutBlocked: checkoutDisabled,
+    availabilityChecking: cartAvailability.isChecking,
+    merchantLightningReady: Boolean(activeProfile?.lud16),
+    cartZapReady: Boolean(activeSummary?.canZapOut),
+  })
   useEffect(() => {
     setExpanded(routeMode === "expanded")
   }, [pathname, routeMode])
@@ -363,7 +373,10 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                   to="/checkout"
                   search={{ merchant: pubkeyToNpub(selectedMerchant) }}
                 >
-                  Checkout
+                  {canZapOut ? (
+                    <Zap className="h-4 w-4" aria-hidden="true" />
+                  ) : null}
+                  {canZapOut ? "Zap out" : "Checkout"}
                 </Link>
               </Button>
             ))}
@@ -539,7 +552,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         "Checking current product stock"
                       }
                     >
-                      <Zap className="h-4 w-4" aria-hidden="true" />
                       Continue to checkout
                     </Button>
                   ) : (
@@ -548,8 +560,10 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         to="/checkout"
                         search={{ merchant: pubkeyToNpub(selectedMerchant) }}
                       >
-                        <Zap className="h-4 w-4" aria-hidden="true" />
-                        Continue to checkout
+                        {canZapOut ? (
+                          <Zap className="h-4 w-4" aria-hidden="true" />
+                        ) : null}
+                        {canZapOut ? "Zap out" : "Continue to checkout"}
                       </Link>
                     </Button>
                   )}

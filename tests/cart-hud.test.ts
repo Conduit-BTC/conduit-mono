@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs"
 import {
   getCartHudCheckoutCapability,
   getCartHudRouteMode,
+  isCartHudZapOutEligible,
   reconcileCartHudMerchant,
 } from "../apps/market/src/lib/cart-hud"
 
@@ -120,6 +121,68 @@ describe("Market cart HUD policy", () => {
         "merchant_lightning_unavailable",
       ],
     })
+  })
+
+  it("labels only prepared merchant carts as Zap out", () => {
+    expect(
+      isCartHudZapOutEligible({
+        checkoutBlocked: false,
+        availabilityChecking: false,
+        merchantLightningReady: true,
+        cartZapReady: true,
+      })
+    ).toBe(true)
+
+    for (const input of [
+      {
+        checkoutBlocked: true,
+        availabilityChecking: false,
+        merchantLightningReady: true,
+        cartZapReady: true,
+      },
+      {
+        checkoutBlocked: false,
+        availabilityChecking: true,
+        merchantLightningReady: true,
+        cartZapReady: true,
+      },
+      {
+        checkoutBlocked: false,
+        availabilityChecking: false,
+        merchantLightningReady: false,
+        cartZapReady: true,
+      },
+      {
+        checkoutBlocked: false,
+        availabilityChecking: false,
+        merchantLightningReady: true,
+        cartZapReady: false,
+      },
+    ]) {
+      expect(isCartHudZapOutEligible(input)).toBe(false)
+    }
+  })
+
+  it("sends eligible Zap out actions directly to checkout shipping", () => {
+    const hud = readFileSync(
+      new URL(
+        "../apps/market/src/components/MarketCartHud.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    )
+    const checkout = readFileSync(
+      new URL("../apps/market/src/routes/checkout.tsx", import.meta.url),
+      "utf8"
+    )
+
+    expect(hud).toContain('to="/checkout"')
+    expect(hud).toContain('{canZapOut ? "Zap out" : "Checkout"}')
+    expect(hud).toContain('{canZapOut ? "Zap out" : "Continue to checkout"}')
+    expect(hud).toContain('<Zap className="h-4 w-4" aria-hidden="true" />')
+    expect(checkout).toContain(
+      'const [step, setStep] = useState<CheckoutStep>("shipping")'
+    )
   })
 
   it("keeps a valid merchant selection and otherwise chooses the newest group", () => {
