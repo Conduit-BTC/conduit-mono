@@ -1,0 +1,62 @@
+import { afterEach, describe, expect, it } from "bun:test"
+import type { NDKSigner } from "@nostr-dev-kit/ndk"
+import {
+  __resetNdkTestState,
+  disconnectNdk,
+  getNdk,
+  refreshNdkRelaySettings,
+  removeSigner,
+  setSigner,
+} from "../packages/core/src/protocol/ndk"
+
+function fakeSigner(pubkey: string): NDKSigner {
+  return {
+    pubkey,
+    user: async () => ({ pubkey }),
+  } as NDKSigner
+}
+
+describe("NDK signer lifecycle", () => {
+  afterEach(() => {
+    __resetNdkTestState()
+    disconnectNdk()
+  })
+
+  it("keeps the connected signer across a relay-client reset", () => {
+    const activeSigner = fakeSigner("a".repeat(64))
+
+    setSigner(activeSigner)
+    disconnectNdk()
+
+    expect(getNdk().signer).toBe(activeSigner)
+  })
+
+  it("keeps the connected signer when relay settings rebuild the client", () => {
+    const activeSigner = fakeSigner("a".repeat(64))
+
+    setSigner(activeSigner)
+    refreshNdkRelaySettings()
+
+    expect(getNdk().signer).toBe(activeSigner)
+  })
+
+  it("does not let stale auth cleanup remove a newer connected signer", () => {
+    const staleSigner = fakeSigner("a".repeat(64))
+    const activeSigner = fakeSigner("b".repeat(64))
+
+    const staleLease = setSigner(staleSigner)
+    setSigner(activeSigner)
+    removeSigner(staleLease)
+
+    expect(getNdk().signer).toBe(activeSigner)
+  })
+
+  it("lets the active auth lifecycle remove its own signer", () => {
+    const activeSigner = fakeSigner("a".repeat(64))
+    const activeLease = setSigner(activeSigner)
+
+    removeSigner(activeLease)
+
+    expect(getNdk().signer).toBeUndefined()
+  })
+})

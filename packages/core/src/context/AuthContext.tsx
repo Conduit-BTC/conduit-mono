@@ -9,7 +9,11 @@ import {
 } from "react"
 import { NDKNip07Signer } from "@nostr-dev-kit/ndk"
 import { CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS } from "../config"
-import { setSigner, removeSigner } from "../protocol/ndk"
+import {
+  setSigner,
+  removeSigner,
+  type SignerLease,
+} from "../protocol/ndk"
 import {
   forgetAuthSession,
   forgetRemoteSignerKey,
@@ -271,6 +275,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const connected = useRef(false)
   const authEpoch = useRef(0)
   const remoteConnection = useRef<RemoteSignerConnection | null>(null)
+  const activeSignerLease = useRef<SignerLease | null>(null)
   const activeSession = useRef<AuthSession | null>(null)
   const activePairing = useRef<AbortController | null>(null)
 
@@ -281,10 +286,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     connecting.current = false
     connected.current = false
     const connection = remoteConnection.current
+    const signerLease = activeSignerLease.current
     remoteConnection.current = null
+    activeSignerLease.current = null
     activeSession.current = null
     connection?.signer.invalidate()
-    removeSigner()
+    if (signerLease) removeSigner(signerLease)
     setPubkey(null)
     setMethod(null)
     setRememberedMethod(null)
@@ -480,7 +487,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       remoteConnection.current = connectedRemote
       uncommittedRemote = null
       activeSession.current = session
-      setSigner(signer)
+      activeSignerLease.current = setSigner(signer)
       setPubkey(pk)
       setMethod(session.type)
       setRememberedMethod(session.type)
@@ -496,7 +503,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       if (uncommittedRemote) {
         abandonRemoteConnection(uncommittedRemote)
-        uncommittedRemote = null
       }
       if (!attemptIsCurrent()) {
         if (
@@ -664,23 +670,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const stored = initialSessionRef.current
     if (!stored) return
 
-    let cancelled = false
-
-    async function reconnectIfPossible() {
-      if (cancelled) return
-
-      // Don't crash the app on auto-reconnect failure; surface state via `error`.
-      void connect({ mode: "restore" }).catch(() => {
-        if (cancelled) return
-        removeSigner()
-      })
-    }
-
-    void reconnectIfPossible()
-
-    return () => {
-      cancelled = true
-    }
+    // Don't crash the app on auto-reconnect failure; surface state via `error`.
+    void connect({ mode: "restore" }).catch(() => undefined)
   }, [connect])
 
   useEffect(

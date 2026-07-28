@@ -49,6 +49,7 @@ export {
   getNdkState,
   type NdkConnectionState,
   type NdkState,
+  type SignerLease,
   type FetchEventsFanoutResult,
   type FetchEventsRelayStatus,
 } from "./ndk"
