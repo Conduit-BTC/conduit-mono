@@ -221,6 +221,7 @@ function createDependencies(
     publicEventFilters?: unknown[]
     product?: SignedPublicNostrEvent
     shippingOption?: SignedPublicNostrEvent
+    shippingDeletion?: SignedPublicNostrEvent
     pricingRate?: BtcUsdRateQuote
     pricingRateCalls?: string[][]
     pricingRateError?: Error
@@ -230,12 +231,16 @@ function createDependencies(
       | "profile"
       | "address_deletions"
       | "event_deletions"
+      | "shipping_address_deletions"
+      | "shipping_event_deletions"
     saturatedRead?:
       | "products"
       | "shipping"
       | "profile"
       | "address_deletions"
       | "event_deletions"
+      | "shipping_address_deletions"
+      | "shipping_event_deletions"
   } = {}
 ): AnonZapPagesDependencies {
   const signerCalls = options.signerCalls ?? []
@@ -248,9 +253,15 @@ function createDependencies(
           ? "shipping"
           : filter.kinds.includes(0)
             ? "profile"
-            : filter["#a"]
-              ? "address_deletions"
-              : "event_deletions"
+            : filter["#a"]?.some((value) => value.startsWith("30406:"))
+              ? "shipping_address_deletions"
+              : filter["#e"]?.includes(
+                    (options.shippingOption ?? shippingEvent()).id
+                  )
+                ? "shipping_event_deletions"
+                : filter["#a"]
+                  ? "address_deletions"
+                  : "event_deletions"
       const status = options.incompleteRead === readKind ? "partial" : "success"
       let events: SignedPublicNostrEvent[] = []
       if (filter.kinds.includes(30402)) {
@@ -260,6 +271,18 @@ function createDependencies(
         events = [options.shippingOption]
       }
       if (filter.kinds.includes(0)) events = [profileEvent()]
+      if (filter.kinds.includes(5) && options.shippingDeletion) {
+        const target = options.shippingDeletion.tags.find(
+          (tag) => tag[0] === "a" || tag[0] === "e"
+        )
+        if (
+          target &&
+          (filter["#a"]?.includes(target[1]!) ||
+            filter["#e"]?.includes(target[1]!))
+        ) {
+          events = [options.shippingDeletion]
+        }
+      }
       return {
         events,
         relays: relayUrls.map((relayUrl) => ({
@@ -1136,6 +1159,18 @@ describe("Anon zap Pages proxy", () => {
       "#d": [`${PRODUCT_D_TAG}-shipping-standard`],
       limit: 100,
     })
+    expect(publicEventFilters).toContainEqual({
+      kinds: [5],
+      authors: [MERCHANT_PUBKEY],
+      "#a": [`30406:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}-shipping-standard`],
+      limit: 300,
+    })
+    expect(publicEventFilters).toContainEqual({
+      kinds: [5],
+      authors: [MERCHANT_PUBKEY],
+      "#e": [shippingEvent({ price: 5, currency: "USD" }).id],
+      limit: 300,
+    })
     expect(authorization.pricing).toMatchObject({
       itemSubtotalSats: 10_000,
       shippingCostSats: 5_000,
@@ -1146,6 +1181,31 @@ describe("Anon zap Pages proxy", () => {
           unitShippingSats: 5_000,
         },
       ],
+    })
+  })
+
+  it("rejects a canonical shipping option deleted on the public relays", async () => {
+    const shippingOption = shippingEvent()
+    const shippingDeletion = signMerchantEvent({
+      kind: 5,
+      tags: [["e", shippingOption.id]],
+    })
+    const response = await authorizeAnonZapRequest(
+      post(
+        "https://shop.conduit.market/api/anon-zap-authorize",
+        checkoutIntent()
+      ),
+      env(),
+      createDependencies({
+        product: productEvent({ canonicalShipping: true }),
+        shippingOption,
+        shippingDeletion,
+      })
+    )
+
+    expect(response.status).toBe(403)
+    await expect(response.json()).resolves.toEqual({
+      error: "Checkout product requires merchant-coordinated shipping.",
     })
   })
 
@@ -1264,7 +1324,10 @@ describe("Anon zap Pages proxy", () => {
       "profile",
       "address_deletions",
       "event_deletions",
+      "shipping_address_deletions",
+      "shipping_event_deletions",
     ] as const) {
+      const canonicalShipping = incompleteRead.startsWith("shipping_")
       const response = await authorizeAnonZapRequest(
         post(
           "https://shop.conduit.market/api/anon-zap-authorize",
@@ -1274,7 +1337,13 @@ describe("Anon zap Pages proxy", () => {
           ANON_ZAP_COMMERCE_RELAYS:
             "wss://commerce-a.conduit.market,wss://commerce-b.conduit.market",
         }),
-        createDependencies({ incompleteRead })
+        createDependencies({
+          incompleteRead,
+          product: canonicalShipping
+            ? productEvent({ canonicalShipping: true })
+            : undefined,
+          shippingOption: canonicalShipping ? shippingEvent() : undefined,
+        })
       )
 
       expect(response.status).toBe(503)
@@ -1290,14 +1359,23 @@ describe("Anon zap Pages proxy", () => {
       "profile",
       "address_deletions",
       "event_deletions",
+      "shipping_address_deletions",
+      "shipping_event_deletions",
     ] as const) {
+      const canonicalShipping = saturatedRead.startsWith("shipping_")
       const response = await authorizeAnonZapRequest(
         post(
           "https://shop.conduit.market/api/anon-zap-authorize",
           checkoutIntent()
         ),
         env(),
-        createDependencies({ saturatedRead })
+        createDependencies({
+          saturatedRead,
+          product: canonicalShipping
+            ? productEvent({ canonicalShipping: true })
+            : undefined,
+          shippingOption: canonicalShipping ? shippingEvent() : undefined,
+        })
       )
 
       expect(response.status).toBe(503)

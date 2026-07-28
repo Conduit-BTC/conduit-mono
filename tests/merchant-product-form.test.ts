@@ -4,6 +4,7 @@ import {
   buildProductShippingMetadata,
   canSubmitProductForm,
   formatProductTags,
+  getProductShippingPricingMode,
   getProductTagEditFeedback,
   MAX_PRODUCT_TAG_COUNT,
   MAX_PRODUCT_TAG_LENGTH,
@@ -92,6 +93,26 @@ describe("merchant product form validation", () => {
     })
 
     expect(metadata).toEqual({})
+  })
+
+  it("keeps an unresolved canonical shipping reference in fixed mode", () => {
+    expect(
+      getProductShippingPricingMode({
+        format: "physical",
+        shippingOptionId: "30406:merchant:pocket-node-shipping-standard",
+      })
+    ).toBe("fixed")
+    expect(
+      getProductShippingPricingMode({
+        format: "physical",
+      })
+    ).toBe("coordinate_after_order")
+    expect(
+      getProductShippingPricingMode({
+        format: "physical",
+        shippingCostSats: 5,
+      })
+    ).toBe("fixed")
   })
 
   it("keeps tag recommendations advisory within the publishable range", () => {

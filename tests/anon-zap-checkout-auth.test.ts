@@ -283,6 +283,33 @@ describe("anonymous public zap checkout authorization", () => {
     ).toThrow("Checkout product requires merchant-coordinated shipping.")
   })
 
+  it("rejects a canonical shipping option deleted by address or exact event id", () => {
+    const product = productEvent({
+      shippingCost: 5,
+      canonicalShipping: true,
+    })
+    const shipping = shippingEvent({ price: 5 })
+    const shippingAddress = `30406:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}-shipping-standard`
+
+    for (const target of [
+      ["a", shippingAddress],
+      ["e", shipping.id],
+    ]) {
+      const deletion = signMerchantEvent({
+        kind: 5,
+        createdAt: NOW_SECONDS,
+        tags: [target],
+      })
+      expect(() =>
+        authorize({
+          productEvents: [product],
+          shippingEvents: [shipping],
+          deletionEvents: [deletion],
+        })
+      ).toThrow("Checkout product requires merchant-coordinated shipping.")
+    }
+  })
+
   it("keeps legacy inline fixed shipping on the order-first path", () => {
     expect(() =>
       authorize({

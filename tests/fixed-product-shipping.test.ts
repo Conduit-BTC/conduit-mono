@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import {
   buildFixedShippingOptionEventDraft,
   buildProductListingEventDraft,
+  buildShippingOptionReadBatches,
   compileProductFulfillmentIntent,
   getProductShippingOptionAddress,
   isBuyerCountryEligible,
@@ -346,6 +347,94 @@ describe("canonical fixed product shipping", () => {
         tags: [...valid.tags, ["price", "6", "USD"]],
       })
     ).toBeNull()
+  })
+
+  it("does not resolve a latest shipping option deleted by address or event id", () => {
+    const older = {
+      id: "older",
+      pubkey: MERCHANT,
+      created_at: 1,
+      tags: [
+        ["d", `${PRODUCT_D_TAG}-shipping-standard`],
+        ["title", "Standard Shipping"],
+        ["price", "4", "USD"],
+        ["country", "US"],
+        ["service", "standard"],
+      ],
+    }
+    const latest = {
+      ...older,
+      id: "latest",
+      created_at: 2,
+      tags: older.tags.map((tag) =>
+        tag[0] === "price" ? ["price", "5", "USD"] : tag
+      ),
+    }
+
+    for (const target of [
+      ["a", SHIPPING_COORDINATE],
+      ["e", latest.id],
+    ]) {
+      expect(
+        selectLatestShippingOptions(
+          [older, latest],
+          [
+            {
+              id: `delete-${target[0]}`,
+              pubkey: MERCHANT,
+              created_at: 3,
+              tags: [target],
+            },
+          ]
+        )
+      ).toEqual([])
+    }
+
+    expect(
+      selectLatestShippingOptions(
+        [latest],
+        [
+          {
+            id: "foreign-delete",
+            pubkey: OTHER_MERCHANT,
+            created_at: 3,
+            tags: [["a", SHIPPING_COORDINATE]],
+          },
+          {
+            id: "older-delete",
+            pubkey: MERCHANT,
+            created_at: 1,
+            tags: [["e", latest.id]],
+          },
+        ]
+      )
+    ).toHaveLength(1)
+  })
+
+  it("batches exact shipping reads below the relay result limit", () => {
+    const merchantCoordinates = Array.from(
+      { length: 101 },
+      (_, index) => `30406:${MERCHANT}:option-${index}`
+    )
+    const batches = buildShippingOptionReadBatches([
+      ...merchantCoordinates,
+      merchantCoordinates[0]!,
+      `30406:${OTHER_MERCHANT}:other-option`,
+      "invalid-coordinate",
+    ])
+
+    expect(batches.map((batch) => batch.coordinates.length)).toEqual([
+      50, 50, 1, 1,
+    ])
+    expect(batches[0]).toMatchObject({
+      pubkey: MERCHANT,
+      dTags: Array.from({ length: 50 }, (_, index) => `option-${index}`),
+    })
+    expect(batches[3]).toEqual({
+      pubkey: OTHER_MERCHANT,
+      coordinates: [`30406:${OTHER_MERCHANT}:other-option`],
+      dTags: ["other-option"],
+    })
   })
 
   it("keeps legacy inline listings readable but fail-closed for direct payment", () => {

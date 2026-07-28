@@ -77,6 +77,7 @@ import {
 import {
   buildProductShippingMetadata,
   canSubmitProductForm,
+  getProductShippingPricingMode,
   isProductUsingPresetShippingZone,
   MAX_PRODUCT_TAG_COUNT,
   MAX_PRODUCT_TAG_LENGTH,
@@ -302,9 +303,6 @@ function productToForm(
   const source = product.sourcePrice
   const sourceShippingCost = product.sourceShippingCost
   const currency = source?.normalizedCurrency ?? product.currency
-  const hasFixedShippingCost =
-    typeof sourceShippingCost?.amount === "number" ||
-    typeof product.shippingCostSats === "number"
   return {
     title: product.title,
     summary: product.summary ?? "",
@@ -313,10 +311,7 @@ function productToForm(
     variations: family.variationForm.state,
     currency,
     format: product.format,
-    shippingPricingMode:
-      product.format === "physical" && !hasFixedShippingCost
-        ? "coordinate_after_order"
-        : "fixed",
+    shippingPricingMode: getProductShippingPricingMode(product),
     shippingCost:
       typeof sourceShippingCost?.amount === "number"
         ? formatProductAmountInput(sourceShippingCost.amount)
@@ -635,7 +630,7 @@ async function fetchMerchantProducts(
     result.data.flatMap((record) =>
       record.product.shippingOptionId ? [record.product.shippingOptionId] : []
     )
-  ).catch(() => [])
+  )
   return {
     data: result.data.map((record) => {
       const fulfillment = resolveProductFulfillment(
@@ -643,9 +638,9 @@ async function fetchMerchantProducts(
         shippingOptions
       )
       const product =
-        fulfillment.reason === "legacy_inline"
-          ? record.product
-          : applyPreparedProductFulfillment(record.product, fulfillment)
+        fulfillment.status === "ready"
+          ? applyPreparedProductFulfillment(record.product, fulfillment)
+          : record.product
       return {
         eventId: record.eventId,
         addressId: record.addressId,

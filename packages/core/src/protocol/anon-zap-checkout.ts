@@ -323,16 +323,17 @@ export function authorizeAnonZapCheckout(input: {
     (event) =>
       event.kind === PROFILE_KIND && event.pubkey === intent.merchantPubkey
   )
+  const deletions = validEvents.filter(
+    (event) =>
+      event.kind === DELETION_KIND && event.pubkey === intent.merchantPubkey
+  )
   const shippingOptions = selectLatestShippingOptions(
     validEvents.filter(
       (event) =>
         event.kind === SHIPPING_OPTION_KIND &&
         event.pubkey === intent.merchantPubkey
-    )
-  )
-  const deletions = validEvents.filter(
-    (event) =>
-      event.kind === DELETION_KIND && event.pubkey === intent.merchantPubkey
+    ),
+    deletions
   )
 
   let itemSubtotalSats = 0
