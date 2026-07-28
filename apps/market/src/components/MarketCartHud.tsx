@@ -19,14 +19,20 @@ import {
 } from "@conduit/ui"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useCart } from "../hooks/useCart"
+import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import {
+  getCartAvailabilityBlockingMessage,
   getCartCostSummary,
   getCartItemIdentity,
   getCartItemKey,
   groupCartItems,
 } from "../lib/cart-model"
-import { getCartHudRouteMode, reconcileCartHudMerchant } from "../lib/cart-hud"
+import {
+  getCartHudRouteMode,
+  isCartHudZapOutEligible,
+  reconcileCartHudMerchant,
+} from "../lib/cart-hud"
 import { MerchantAvatarFallback } from "./MerchantIdentity"
 
 const HUD_EXIT_DURATION_MS = 240
@@ -37,6 +43,7 @@ export type MarketCartHudProps = {
 
 export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const cart = useCart()
+  const cartAvailability = useCartProductAvailability(cart.items)
   const shopperPricing = useShopperPricing()
   const groups = useMemo(() => groupCartItems(cart.items), [cart.items])
   const merchantPubkeys = useMemo(
@@ -92,6 +99,19 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const activeTotal = activeSummary
     ? shopperPricing.formatSatsAmount(activeSummary.totalSats)
     : null
+  const activeAvailabilityMessage = activeGroup
+    ? getCartAvailabilityBlockingMessage(
+        activeGroup.items,
+        cartAvailability.availabilityByProductId
+      )
+    : null
+  const checkoutDisabled = !!activeAvailabilityMessage
+  const canZapOut = isCartHudZapOutEligible({
+    checkoutBlocked: checkoutDisabled,
+    availabilityChecking: cartAvailability.isChecking,
+    merchantLightningReady: Boolean(activeProfile?.lud16),
+    cartZapReady: Boolean(activeSummary?.canZapOut),
+  })
   useEffect(() => {
     setExpanded(routeMode === "expanded")
   }, [pathname, routeMode])
@@ -334,16 +354,30 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               aria-hidden="true"
             />
           </button>
-          {!expanded && (
-            <Button asChild size="sm">
-              <Link
-                to="/checkout"
-                search={{ merchant: pubkeyToNpub(selectedMerchant) }}
+          {!expanded &&
+            (checkoutDisabled ? (
+              <Button
+                size="sm"
+                disabled
+                title={
+                  activeAvailabilityMessage ?? "Checking current product stock"
+                }
               >
                 Checkout
-              </Link>
-            </Button>
-          )}
+              </Button>
+            ) : (
+              <Button asChild size="sm">
+                <Link
+                  to="/checkout"
+                  search={{ merchant: pubkeyToNpub(selectedMerchant) }}
+                >
+                  {canZapOut ? (
+                    <Zap className="h-4 w-4" aria-hidden="true" />
+                  ) : null}
+                  {canZapOut ? "Zap out" : "Checkout"}
+                </Link>
+              </Button>
+            ))}
         </div>
 
         <div
@@ -483,15 +517,30 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                       View cart
                     </Link>
                   </Button>
-                  <Button asChild size="sm">
-                    <Link
-                      to="/checkout"
-                      search={{ merchant: pubkeyToNpub(selectedMerchant) }}
+                  {checkoutDisabled ? (
+                    <Button
+                      size="sm"
+                      disabled
+                      title={
+                        activeAvailabilityMessage ??
+                        "Checking current product stock"
+                      }
                     >
-                      <Zap className="h-4 w-4" aria-hidden="true" />
                       Continue to checkout
-                    </Link>
-                  </Button>
+                    </Button>
+                  ) : (
+                    <Button asChild size="sm">
+                      <Link
+                        to="/checkout"
+                        search={{ merchant: pubkeyToNpub(selectedMerchant) }}
+                      >
+                        {canZapOut ? (
+                          <Zap className="h-4 w-4" aria-hidden="true" />
+                        ) : null}
+                        {canZapOut ? "Zap out" : "Continue to checkout"}
+                      </Link>
+                    </Button>
+                  )}
                 </div>
               </div>
             </div>
