@@ -1074,7 +1074,47 @@ export async function authorizeAnonZapRequest(
             300
           )
         : []
-    const deletionEvents = [...addressDeletionEvents, ...eventDeletionEvents]
+    const shippingAddressDeletionEvents =
+      shippingCoordinates.length > 0
+        ? requireCompletePublicRead(
+            await dependencies.fetchPublicEvents(
+              {
+                kinds: [5],
+                authors: [intent.merchantPubkey],
+                "#a": shippingCoordinates,
+                limit: 300,
+              },
+              commerceRelays
+            ),
+            commerceRelays,
+            300
+          )
+        : []
+    const shippingEventIds = Array.from(
+      new Set(shippingEvents.map((event) => event.id).filter(Boolean))
+    )
+    const shippingEventDeletionEvents =
+      shippingEventIds.length > 0
+        ? requireCompletePublicRead(
+            await dependencies.fetchPublicEvents(
+              {
+                kinds: [5],
+                authors: [intent.merchantPubkey],
+                "#e": shippingEventIds,
+                limit: 300,
+              },
+              commerceRelays
+            ),
+            commerceRelays,
+            300
+          )
+        : []
+    const deletionEvents = [
+      ...addressDeletionEvents,
+      ...eventDeletionEvents,
+      ...shippingAddressDeletionEvents,
+      ...shippingEventDeletionEvents,
+    ]
     const requiredPricingCurrencies = getRequiredPricingCurrencies(
       intent,
       productEvents,
