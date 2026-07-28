@@ -856,11 +856,9 @@ export async function requireNdkConnected(timeoutMs = 10_000): Promise<NDK> {
       }
 
       // First attempt failed — reset the NDK instance for fresh websocket connections and retry
-      const savedSigner = ndk.signer
       ndkInstance = null
       connectPromise = null
       ndk = getNdk()
-      if (savedSigner) ndk.signer = savedSigner
 
       await connectNdk(timeoutMs * 2)
       if (generation !== ndkGeneration) {

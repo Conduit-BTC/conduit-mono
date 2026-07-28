@@ -1,13 +1,16 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import type { NDKSigner } from "@nostr-dev-kit/ndk"
+import NDK, { type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
   __resetNdkTestState,
   disconnectNdk,
   getNdk,
   refreshNdkRelaySettings,
   removeSigner,
+  requireNdkConnected,
   setSigner,
 } from "../packages/core/src/protocol/ndk"
+
+const originalNdkConnect = NDK.prototype.connect
 
 function fakeSigner(pubkey: string): NDKSigner {
   return {
@@ -18,6 +21,7 @@ function fakeSigner(pubkey: string): NDKSigner {
 
 describe("NDK signer lifecycle", () => {
   afterEach(() => {
+    NDK.prototype.connect = originalNdkConnect
     __resetNdkTestState()
     disconnectNdk()
   })
@@ -36,6 +40,21 @@ describe("NDK signer lifecycle", () => {
 
     setSigner(activeSigner)
     refreshNdkRelaySettings()
+
+    expect(getNdk().signer).toBe(activeSigner)
+  })
+
+  it("uses the active signer lease when a connection retry rebuilds the client", async () => {
+    const staleSigner = fakeSigner("a".repeat(64))
+    const activeSigner = fakeSigner("b".repeat(64))
+
+    NDK.prototype.connect = async () => {}
+    setSigner(activeSigner)
+    getNdk().signer = staleSigner
+
+    await expect(requireNdkConnected(1)).rejects.toThrow(
+      "No relays responded within timeout"
+    )
 
     expect(getNdk().signer).toBe(activeSigner)
   })
