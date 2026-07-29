@@ -54,7 +54,6 @@ import {
   getCartShippingDestinationEligibility,
   hasPhysicalItemsMissingShippingZone,
 } from "../lib/cart-shipping-options"
-import { getKnownWalletPaymentConstraint } from "../lib/wallet-readiness"
 
 const HUD_EXIT_DURATION_MS = 240
 
@@ -67,7 +66,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const { pubkey, status: authStatus } = useAuth()
   const cart = useCart()
   const shopperPricing = useShopperPricing()
-  const wallet = useWallet({ refreshBalance: true })
+  const wallet = useWallet()
   const groups = useMemo(() => groupCartItems(cart.items), [cart.items])
   const merchantPubkeys = useMemo(
     () => groups.map((group) => group.merchantPubkey),
@@ -174,19 +173,9 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     activeGroup &&
     cartItemsMatchCurrentProducts(activeGroup.items, cartAvailability.products)
   )
-  const walletPaymentConstraint = getKnownWalletPaymentConstraint({
-    amountMsats:
-      pricingIntent?.status === "ok" ? pricingIntent.totalMsats : null,
-    balance: wallet.balance,
-    budget: wallet.budget,
-    methods: wallet.info?.methods,
-    formatSatsAmount: (sats) => shopperPricing.formatSatsAmount(sats).primary,
-  })
   const automaticWalletReady =
     webLnAvailable ||
-    (wallet.status === "pay-capable" &&
-      Boolean(wallet.connection) &&
-      !walletPaymentConstraint)
+    (wallet.status === "pay-capable" && Boolean(wallet.connection))
   const lnurlMetadata = useQuery({
     queryKey: ["cart-hud-lnurl", merchantLud16],
     queryFn: () => fetchLnurlPayMetadata(merchantLud16!),

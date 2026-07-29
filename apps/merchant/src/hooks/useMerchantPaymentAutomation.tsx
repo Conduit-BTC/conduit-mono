@@ -20,9 +20,10 @@ import {
   type NwcGetInfoResult,
 } from "@conduit/core"
 import {
+  getMerchantPaymentEvidenceKey,
   getMerchantNwcAddressStatus,
   getMerchantPaymentVerificationCandidates,
-  isNwcSettlementMatch,
+  verifyMerchantPaymentCandidates,
   type MerchantNwcAddressStatus,
 } from "../lib/merchant-payment-verification"
 import { getNwcConnectionCacheKey } from "../lib/readiness"
@@ -63,7 +64,7 @@ export function MerchantPaymentAutomationProvider({
   const queryClient = useQueryClient()
   const profileQuery = useProfile(pubkey, { authenticatedPubkey: pubkey })
   const nwc = useNwcConnection()
-  const attemptedRunsRef = useRef(new Set<string>())
+  const confirmedEvidenceRef = useRef(new Set<string>())
   const runningRef = useRef(false)
   const [run, setRun] = useState<VerificationRunState>({
     status: "idle",
@@ -119,7 +120,7 @@ export function MerchantPaymentAutomationProvider({
     .join("|")
 
   useEffect(() => {
-    attemptedRunsRef.current.clear()
+    confirmedEvidenceRef.current.clear()
     setRun({ status: "idle", checked: 0, verified: 0 })
   }, [addressStatus, nwc.connection])
 
@@ -135,17 +136,24 @@ export function MerchantPaymentAutomationProvider({
   }, [conversationReadUnavailable, conversationsQuery.isFetching])
 
   const verifyCandidates = useCallback(async () => {
+    const connection = nwc.connection
     if (
       !pubkey ||
       !signerConnected ||
-      !nwc.connection ||
+      !connection ||
       !canVerifyPayments ||
       conversationReadUnavailable ||
       runningRef.current
     ) {
       return
     }
-    if (candidates.length === 0) {
+    const pendingCandidates = candidates.filter(
+      (candidate) =>
+        !confirmedEvidenceRef.current.has(
+          getMerchantPaymentEvidenceKey(candidate)
+        )
+    )
+    if (pendingCandidates.length === 0) {
       setRun({ status: "complete", checked: 0, verified: 0 })
       return
     }
@@ -154,60 +162,40 @@ export function MerchantPaymentAutomationProvider({
     setRun({ status: "checking", checked: 0, verified: 0 })
     let checked = 0
     let verified = 0
-    let lookupFailures = 0
-    const matches: Array<{
-      candidate: (typeof candidates)[number]
-      paymentHash: string
-    }> = []
 
     try {
-      for (const candidate of candidates) {
-        try {
-          const settlement = await nwcLookupInvoice(
-            nwc.connection,
+      const result = await verifyMerchantPaymentCandidates({
+        candidates: pendingCandidates,
+        confirmedEvidence: confirmedEvidenceRef.current,
+        lookupInvoice: (candidate) =>
+          nwcLookupInvoice(
+            connection,
             { invoice: candidate.invoice },
             10_000,
             "merchant"
-          )
-          checked += 1
-          if (isNwcSettlementMatch(candidate, settlement)) {
-            matches.push({
-              candidate,
-              paymentHash: settlement.paymentHash.toLowerCase(),
-            })
-          }
-        } catch {
-          lookupFailures += 1
-        }
-      }
-
-      const paymentHashCounts = new Map<string, number>()
-      for (const match of matches) {
-        paymentHashCounts.set(
-          match.paymentHash,
-          (paymentHashCounts.get(match.paymentHash) ?? 0) + 1
-        )
-      }
-
-      for (const match of matches) {
-        if (paymentHashCounts.get(match.paymentHash) !== 1) continue
-        await publishMerchantOrderMessage({
-          merchantPubkey: pubkey,
-          buyerPubkey: match.candidate.buyerPubkey,
-          orderId: match.candidate.orderId,
-          type: "status_update",
-          tags: [["status", "paid"]],
-          payload: { status: "paid" },
-          delivery: match.candidate.delivery,
-        })
-        verified += 1
-      }
+          ),
+        publishConfirmation: (candidate) =>
+          publishMerchantOrderMessage({
+            merchantPubkey: pubkey,
+            buyerPubkey: candidate.buyerPubkey,
+            orderId: candidate.orderId,
+            type: "status_update",
+            tags: [["status", "paid"]],
+            payload: { status: "paid" },
+            delivery: candidate.delivery,
+          }),
+      })
+      checked = result.checked
+      verified = result.verified
 
       setRun({
-        status: lookupFailures === candidates.length ? "error" : "complete",
+        status:
+          result.lookupFailures === pendingCandidates.length
+            ? "error"
+            : "complete",
         checked,
         verified,
-        ...(lookupFailures === candidates.length
+        ...(result.lookupFailures === pendingCandidates.length
           ? { message: "The wallet could not check pending invoices." }
           : {}),
       })
@@ -263,9 +251,6 @@ export function MerchantPaymentAutomationProvider({
     ) {
       return
     }
-    const scopedRunKey = `${connectionKey}:${runKey}`
-    if (attemptedRunsRef.current.has(scopedRunKey)) return
-    attemptedRunsRef.current.add(scopedRunKey)
     void verifyCandidates()
   }, [
     canVerifyPayments,
@@ -278,7 +263,6 @@ export function MerchantPaymentAutomationProvider({
   ])
 
   const retry = useCallback(() => {
-    attemptedRunsRef.current.clear()
     setRun({ status: "idle", checked: 0, verified: 0 })
     if (pubkey) clearProtectedReadAuthenticationSuppression(pubkey)
     void infoQuery.refetch()

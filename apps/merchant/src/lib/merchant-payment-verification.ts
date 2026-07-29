@@ -22,6 +22,78 @@ export interface MerchantPaymentVerificationCandidate {
   delivery: "buyer_and_self" | "self_only"
 }
 
+export type MerchantPaymentVerificationResult = {
+  checked: number
+  verified: number
+  lookupFailures: number
+}
+
+export function getMerchantPaymentEvidenceKey(
+  candidate: MerchantPaymentVerificationCandidate
+): string {
+  return `${candidate.orderId}:${candidate.evidenceMessageId}`
+}
+
+export async function verifyMerchantPaymentCandidates({
+  candidates,
+  confirmedEvidence,
+  lookupInvoice,
+  publishConfirmation,
+}: {
+  candidates: MerchantPaymentVerificationCandidate[]
+  confirmedEvidence: Set<string>
+  lookupInvoice: (
+    candidate: MerchantPaymentVerificationCandidate
+  ) => Promise<NwcLookupInvoiceResult>
+  publishConfirmation: (
+    candidate: MerchantPaymentVerificationCandidate
+  ) => Promise<void>
+}): Promise<MerchantPaymentVerificationResult> {
+  const pendingCandidates = candidates.filter(
+    (candidate) =>
+      !confirmedEvidence.has(getMerchantPaymentEvidenceKey(candidate))
+  )
+  let checked = 0
+  let verified = 0
+  let lookupFailures = 0
+  const matches: Array<{
+    candidate: MerchantPaymentVerificationCandidate
+    paymentHash: string
+  }> = []
+
+  for (const candidate of pendingCandidates) {
+    try {
+      const settlement = await lookupInvoice(candidate)
+      checked += 1
+      if (isNwcSettlementMatch(candidate, settlement)) {
+        matches.push({
+          candidate,
+          paymentHash: settlement.paymentHash.toLowerCase(),
+        })
+      }
+    } catch {
+      lookupFailures += 1
+    }
+  }
+
+  const paymentHashCounts = new Map<string, number>()
+  for (const match of matches) {
+    paymentHashCounts.set(
+      match.paymentHash,
+      (paymentHashCounts.get(match.paymentHash) ?? 0) + 1
+    )
+  }
+
+  for (const match of matches) {
+    if (paymentHashCounts.get(match.paymentHash) !== 1) continue
+    await publishConfirmation(match.candidate)
+    confirmedEvidence.add(getMerchantPaymentEvidenceKey(match.candidate))
+    verified += 1
+  }
+
+  return { checked, verified, lookupFailures }
+}
+
 function normalizeLud16(value: string | null | undefined): string | null {
   const normalized = value?.trim().toLowerCase()
   return normalized || null
