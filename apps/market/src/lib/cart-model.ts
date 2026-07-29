@@ -110,6 +110,7 @@ export type CartPublicZapPolicy = {
 
 export type CartProductAvailability = {
   productId: string
+  merchantPubkey: string
   status: "available" | "sold_out" | "insufficient_stock" | "untracked"
   stock?: number
   refreshed: boolean
@@ -182,16 +183,23 @@ export function getCartProductAvailability(
   items: CartItem[],
   refreshedProducts: Product[]
 ): CartProductAvailability[] {
-  const productsById = new Map(
-    refreshedProducts.map((product) => [product.id, product])
+  const productsByItemKey = new Map(
+    refreshedProducts.map((product) => [
+      getCartItemKey({
+        merchantPubkey: product.pubkey,
+        productId: product.id,
+      }),
+      product,
+    ])
   )
 
   return items.map((item) => {
-    const refreshedProduct = productsById.get(item.productId)
+    const refreshedProduct = productsByItemKey.get(getCartItemKey(item))
     const stock = refreshedProduct ? refreshedProduct.stock : item.stock
 
     return {
       productId: item.productId,
+      merchantPubkey: item.merchantPubkey,
       status:
         stock === 0
           ? "sold_out"
@@ -589,6 +597,62 @@ export function cartItemInputFromProduct(product: Product): CartItemInput {
   }
 }
 
+export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
+  return JSON.stringify(
+    items
+      .map((item) => ({
+        merchantPubkey: item.merchantPubkey,
+        productId: item.productId,
+        quantity: item.quantity,
+        price: item.price,
+        currency: item.currency,
+        priceSats: item.priceSats ?? null,
+        sourcePrice: item.sourcePrice ?? null,
+        format: item.format ?? "physical",
+        shippingCostSats: item.shippingCostSats ?? null,
+        sourceShippingCost: item.sourceShippingCost ?? null,
+        shippingOptionId: item.shippingOptionId ?? null,
+        shippingOptionDTag: item.shippingOptionDTag ?? null,
+        shippingCountries: item.shippingCountries ?? null,
+        shippingCountryRules: item.shippingCountryRules ?? null,
+        publicZapEnabled: item.publicZapEnabled ?? null,
+        zapMessagePolicy: item.zapMessagePolicy ?? null,
+        publicZapPolicyKnown: item.publicZapPolicyKnown ?? null,
+      }))
+      .sort((a, b) =>
+        `${a.merchantPubkey}:${a.productId}`.localeCompare(
+          `${b.merchantPubkey}:${b.productId}`
+        )
+      )
+  )
+}
+
+export function cartItemsMatchCurrentProducts(
+  items: readonly CartItem[],
+  products: readonly Product[]
+): boolean {
+  const productsByKey = new Map(
+    products.map((product) => [
+      getCartItemKey({
+        merchantPubkey: product.pubkey,
+        productId: product.id,
+      }),
+      product,
+    ])
+  )
+  const currentItems = items.map((item) => {
+    const product = productsByKey.get(getCartItemKey(item))
+    return product
+      ? { ...cartItemInputFromProduct(product), quantity: item.quantity }
+      : null
+  })
+  return (
+    currentItems.every((item) => item !== null) &&
+    getCartCommerceFingerprint(currentItems) ===
+      getCartCommerceFingerprint(items)
+  )
+}
+
 export function parsePersistedCart(value: unknown): ParsedPersistedCart {
   if (
     isRecord(value) &&
@@ -862,30 +926,34 @@ export function addCartItem(
 
   const q = Math.max(1, Math.floor(quantity))
   const existing = selectCartItem(items, item)
-  const quantityToAdd =
-    typeof item.stock === "number"
-      ? Math.max(0, Math.min(q, item.stock - (existing?.quantity ?? 0)))
-      : q
-  if (quantityToAdd === 0) return items
   const merchantAddedAt =
     getMerchantAddedAt(items, item.merchantPubkey) ??
     item.merchantAddedAt ??
     nextMerchantAddedAt(items)
 
   if (existing) {
+    const nextQuantity = currentCartQuantity(existing) + q
+    if (typeof item.stock === "number" && nextQuantity > item.stock) {
+      return items
+    }
     return items.map((current) =>
       isSameCartItem(current, item)
         ? {
             ...current,
             ...item,
             merchantAddedAt: current.merchantAddedAt ?? merchantAddedAt,
-            quantity: current.quantity + quantityToAdd,
+            quantity: current.quantity + q,
           }
         : current
     )
   }
 
-  return [...items, { ...item, merchantAddedAt, quantity: quantityToAdd }]
+  if (typeof item.stock === "number" && q > item.stock) return items
+  return [...items, { ...item, merchantAddedAt, quantity: q }]
+}
+
+function currentCartQuantity(item: CartItem): number {
+  return Math.max(1, Math.floor(item.quantity))
 }
 
 export function setCartItemQuantity(

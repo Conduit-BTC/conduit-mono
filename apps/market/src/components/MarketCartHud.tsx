@@ -1,16 +1,22 @@
-import { ChevronDown, Minus, Plus, ShoppingCart } from "lucide-react"
-import { Link } from "@tanstack/react-router"
+import { ChevronDown, Minus, Plus, ShoppingCart, Zap } from "lucide-react"
+import { Link, useNavigate } from "@tanstack/react-router"
+import { useQuery } from "@tanstack/react-query"
 import {
+  fetchLnurlPayMetadata,
   formatNpub,
   getProfileName,
+  hasWebLN,
   pubkeyToNpub,
+  useAuth,
   useProfiles,
+  validateAddressConsistency,
 } from "@conduit/core"
 import {
   Avatar,
   AvatarFallback,
   AvatarImage,
   Button,
+  HoldToReleaseButton,
   StatusPill,
   Tabs,
   TabsList,
@@ -21,11 +27,13 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { useCart } from "../hooks/useCart"
 import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
+import { useWallet } from "../hooks/useWallet"
 import {
   getCartAvailabilityBlockingMessage,
   getCartCostSummary,
   getCartItemIdentity,
   getCartItemKey,
+  cartItemsMatchCurrentProducts,
   groupCartItems,
 } from "../lib/cart-model"
 import {
@@ -35,6 +43,18 @@ import {
   reconcileCartHudMerchant,
 } from "../lib/cart-hud"
 import { MerchantAvatarFallback } from "./MerchantIdentity"
+import { buildCheckoutPricingIntent } from "../lib/checkout-payment"
+import { readCheckoutShippingSession } from "../lib/checkout-session"
+import { validateShippingFields } from "../lib/checkout-validation"
+import {
+  armHudZapIntent,
+  getHudZapCartFingerprint,
+} from "../lib/hud-zap-intent"
+import {
+  getCartShippingDestinationEligibility,
+  hasPhysicalItemsMissingShippingZone,
+} from "../lib/cart-shipping-options"
+import { getKnownWalletPaymentConstraint } from "../lib/wallet-readiness"
 
 const HUD_EXIT_DURATION_MS = 240
 
@@ -43,9 +63,11 @@ export type MarketCartHudProps = {
 }
 
 export function MarketCartHud({ pathname }: MarketCartHudProps) {
+  const navigate = useNavigate()
+  const { pubkey, status: authStatus } = useAuth()
   const cart = useCart()
-  const cartAvailability = useCartProductAvailability(cart.items)
   const shopperPricing = useShopperPricing()
+  const wallet = useWallet({ refreshBalance: true })
   const groups = useMemo(() => groupCartItems(cart.items), [cart.items])
   const merchantPubkeys = useMemo(
     () => groups.map((group) => group.merchantPubkey),
@@ -63,6 +85,8 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const [announcement, setAnnouncement] = useState("")
   const [mounted, setMounted] = useState(false)
   const [entered, setEntered] = useState(false)
+  const [webLnAvailable, setWebLnAvailable] = useState(false)
+  const [zapStarting, setZapStarting] = useState(false)
   const hudRef = useRef<HTMLElement>(null)
   const previousQuantitiesRef = useRef(new Map<string, number>())
   const previousScrollYRef = useRef(0)
@@ -91,9 +115,11 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const selectedMerchant =
     currentMerchant ?? lastVisibleRef.current?.merchantPubkey ?? null
   const activeGroup = currentGroup ?? lastVisibleRef.current?.group
+  const cartAvailability = useCartProductAvailability(currentGroup?.items ?? [])
   const activeProfile = selectedMerchant
     ? profiles.data[selectedMerchant]
     : undefined
+  const merchantLud16 = activeProfile?.lud16
   const activeSummary = activeGroup
     ? getCartCostSummary(activeGroup.items, shopperPricing.quote)
     : null
@@ -109,15 +135,101 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
       )
     : null
   const checkoutDisabled = !!activeAvailabilityMessage
+  const isAllDigital = Boolean(
+    activeGroup?.items.length &&
+    activeGroup.items.every((item) => item.format === "digital")
+  )
+  const shippingPreset = readCheckoutShippingSession()
+  const shippingAddress = {
+    name: `${shippingPreset.firstName.trim()} ${shippingPreset.lastName.trim()}`.trim(),
+    street: [shippingPreset.street.trim(), shippingPreset.line2.trim()]
+      .filter(Boolean)
+      .join(", "),
+    city: shippingPreset.city.trim(),
+    state: (shippingPreset.state ?? "").trim() || undefined,
+    postalCode: shippingPreset.postalCode.trim(),
+    country: shippingPreset.country.trim().toUpperCase(),
+  }
+  const shippingPresetReady =
+    isAllDigital ||
+    (validateShippingFields(shippingPreset).length === 0 &&
+      validateAddressConsistency(shippingAddress).canDirectPay)
+  const shippingDestinationReady = Boolean(
+    isAllDigital ||
+    (activeGroup &&
+      !hasPhysicalItemsMissingShippingZone(activeGroup.items) &&
+      getCartShippingDestinationEligibility(
+        {
+          country: shippingAddress.country,
+          postalCode: shippingAddress.postalCode,
+        },
+        activeGroup.items,
+        []
+      ).eligible === true)
+  )
+  const pricingIntent = activeGroup
+    ? buildCheckoutPricingIntent(activeGroup.items, shopperPricing.quote)
+    : null
+  const listingTermsCurrent = Boolean(
+    activeGroup &&
+    cartItemsMatchCurrentProducts(activeGroup.items, cartAvailability.products)
+  )
+  const walletPaymentConstraint = getKnownWalletPaymentConstraint({
+    amountMsats:
+      pricingIntent?.status === "ok" ? pricingIntent.totalMsats : null,
+    balance: wallet.balance,
+    budget: wallet.budget,
+    methods: wallet.info?.methods,
+    formatSatsAmount: (sats) => shopperPricing.formatSatsAmount(sats).primary,
+  })
+  const automaticWalletReady =
+    webLnAvailable ||
+    (wallet.status === "pay-capable" &&
+      Boolean(wallet.connection) &&
+      !walletPaymentConstraint)
+  const lnurlMetadata = useQuery({
+    queryKey: ["cart-hud-lnurl", merchantLud16],
+    queryFn: () => fetchLnurlPayMetadata(merchantLud16!),
+    enabled: Boolean(merchantLud16 && pricingIntent?.status === "ok"),
+    staleTime: 5 * 60 * 1000,
+  })
+  const lnurlAmountReady = Boolean(
+    pricingIntent?.status === "ok" &&
+    lnurlMetadata.data &&
+    pricingIntent.totalMsats >= lnurlMetadata.data.minSendable &&
+    pricingIntent.totalMsats <= lnurlMetadata.data.maxSendable
+  )
   const checkoutCapability = getCartHudCheckoutCapability({
-    itemPricesAvailable: activeSummary?.itemPricesAvailable ?? false,
-    shippingReady: activeSummary?.shippingReadyForZap ?? false,
-    merchantLightningReady: Boolean(activeProfile?.lud16),
+    listingFresh:
+      shouldShow &&
+      cartAvailability.isFresh &&
+      !cartAvailability.hasUnavailableItems &&
+      listingTermsCurrent,
+    shopperPresetReady: shippingPresetReady,
+    walletReady:
+      authStatus === "connected" && Boolean(pubkey) && automaticWalletReady,
+    itemPricesAvailable:
+      activeSummary?.itemPricesAvailable === true &&
+      pricingIntent?.status === "ok",
+    shippingReady:
+      shippingPresetReady &&
+      shippingDestinationReady &&
+      activeSummary?.shippingReadyForZap === true,
+    merchantLightningReady: Boolean(merchantLud16),
+    lnurlReady: lnurlAmountReady,
   })
   const checkoutFallbackMessage =
     getCartHudCheckoutFallbackMessage(checkoutCapability)
   useEffect(() => {
+    const check = () => setWebLnAvailable(hasWebLN())
+    check()
+    window.addEventListener("focus", check)
+    return () => window.removeEventListener("focus", check)
+  }, [])
+
+  useEffect(() => {
     setExpanded(routeMode === "expanded")
+    if (pathname !== "/checkout") setZapStarting(false)
   }, [pathname, routeMode])
 
   useEffect(() => {
@@ -229,6 +341,27 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
 
   const merchantName =
     getProfileName(activeProfile) ?? `Store ${formatNpub(selectedMerchant, 6)}`
+  const zapReady = checkoutCapability.state === "zap_ready"
+  const startZapOut = () => {
+    if (!zapReady || zapStarting || !pubkey || pricingIntent?.status !== "ok") {
+      return
+    }
+    setZapStarting(true)
+    armHudZapIntent({
+      merchantPubkey: selectedMerchant,
+      buyerPubkey: pubkey,
+      cartFingerprint: getHudZapCartFingerprint(activeGroup.items),
+      totalMsats: pricingIntent.totalMsats,
+      createdAt: Date.now(),
+    })
+    void navigate({
+      to: "/checkout",
+      search: {
+        merchant: pubkeyToNpub(selectedMerchant),
+        intent: "zap",
+      },
+    })
+  }
 
   return (
     <div
@@ -256,11 +389,11 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
             <Tabs
               value={selectedMerchant}
               onValueChange={setActiveMerchant}
-              className="mr-auto min-w-0 flex-1"
+              className="mr-auto min-w-0 w-fit max-w-[calc(100%_-_7rem)] flex-none"
             >
               <TabsList
                 aria-label="Store carts"
-                className="flex h-auto max-w-full justify-start gap-1 overflow-x-auto rounded-xl border-0 p-1 pr-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                className="flex h-auto w-fit max-w-full justify-start gap-1 overflow-x-auto rounded-xl border-0 p-1 pr-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                 style={{
                   maskImage:
                     "linear-gradient(to right, black 0, black calc(100% - 20px), transparent 100%)",
@@ -322,7 +455,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               to="/store/$pubkey"
               params={{ pubkey: selectedMerchant }}
               aria-label={`Open ${merchantName} store`}
-              className="mr-auto flex min-h-11 min-w-0 max-w-60 flex-1 items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-3 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+              className="mr-auto flex min-h-11 w-fit min-w-0 max-w-60 flex-none items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-3 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
             >
               <Avatar className="h-7 w-7">
                 <AvatarImage src={activeProfile?.picture} alt="" />
@@ -376,6 +509,19 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               >
                 Checkout
               </Button>
+            ) : zapReady ? (
+              <HoldToReleaseButton
+                size="sm"
+                disabled={zapStarting}
+                canComplete={() =>
+                  checkoutCapability.state === "zap_ready" && !zapStarting
+                }
+                onHoldComplete={startZapOut}
+                chargedLabel="Release to zap out"
+              >
+                <Zap className="h-4 w-4" aria-hidden="true" />
+                Zap out
+              </HoldToReleaseButton>
             ) : (
               <Button asChild size="sm">
                 <Link
@@ -556,6 +702,19 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                     >
                       Continue to checkout
                     </Button>
+                  ) : zapReady ? (
+                    <HoldToReleaseButton
+                      size="sm"
+                      disabled={zapStarting}
+                      canComplete={() =>
+                        checkoutCapability.state === "zap_ready" && !zapStarting
+                      }
+                      onHoldComplete={startZapOut}
+                      chargedLabel="Release to zap out"
+                    >
+                      <Zap className="h-4 w-4" aria-hidden="true" />
+                      Zap out
+                    </HoldToReleaseButton>
                   ) : (
                     <Button asChild size="sm">
                       <Link

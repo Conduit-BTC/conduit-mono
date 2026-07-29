@@ -3,19 +3,25 @@ export type CartHudRouteMode = "expanded" | "compact" | "suppressed"
 export type CartHudCheckoutBlocker =
   | "listing_freshness_unavailable"
   | "shopper_preset_unavailable"
+  | "wallet_unavailable"
   | "price_unavailable"
   | "shipping_unavailable"
   | "merchant_lightning_unavailable"
+  | "lnurl_unavailable"
 
 export type CartHudCheckoutCapability = {
-  state: "route_to_checkout"
+  state: "zap_ready" | "route_to_checkout"
   blockers: CartHudCheckoutBlocker[]
 }
 
 export type CartHudCapabilityInput = {
+  listingFresh: boolean
+  shopperPresetReady: boolean
+  walletReady: boolean
   itemPricesAvailable: boolean
   shippingReady: boolean
   merchantLightningReady: boolean
+  lnurlReady: boolean
 }
 
 const SUPPRESSED_ROUTES = new Set([
@@ -47,16 +53,20 @@ export function getCartHudRouteMode(pathname: string): CartHudRouteMode {
 export function getCartHudCheckoutCapability(
   input: CartHudCapabilityInput
 ): CartHudCheckoutCapability {
-  const blockers: CartHudCheckoutBlocker[] = [
-    "listing_freshness_unavailable",
-    "shopper_preset_unavailable",
-  ]
+  const blockers: CartHudCheckoutBlocker[] = []
+  if (!input.listingFresh) blockers.push("listing_freshness_unavailable")
+  if (!input.shopperPresetReady) blockers.push("shopper_preset_unavailable")
+  if (!input.walletReady) blockers.push("wallet_unavailable")
   if (!input.itemPricesAvailable) blockers.push("price_unavailable")
   if (!input.shippingReady) blockers.push("shipping_unavailable")
   if (!input.merchantLightningReady) {
     blockers.push("merchant_lightning_unavailable")
   }
-  return { state: "route_to_checkout", blockers }
+  if (!input.lnurlReady) blockers.push("lnurl_unavailable")
+  return {
+    state: blockers.length === 0 ? "zap_ready" : "route_to_checkout",
+    blockers,
+  }
 }
 
 export function getCartHudCheckoutFallbackMessage(
@@ -70,6 +80,12 @@ export function getCartHudCheckoutFallbackMessage(
   }
   if (capability.blockers.includes("merchant_lightning_unavailable")) {
     return "Checkout is needed to choose an available payment path."
+  }
+  if (capability.blockers.includes("wallet_unavailable")) {
+    return "Checkout is needed because an automatic wallet payment is not ready."
+  }
+  if (capability.blockers.includes("lnurl_unavailable")) {
+    return "Checkout is needed to confirm the merchant payment endpoint."
   }
   return "Checkout is needed to confirm shipping and payment readiness."
 }
