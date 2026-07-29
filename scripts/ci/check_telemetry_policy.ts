@@ -25,7 +25,9 @@ export const allowedTelemetryProperties = new Set([
 ])
 
 export const allowedProviderTelemetryEventNames = new Set([
+  "$pageleave",
   "$pageview",
+  "$web_vitals",
   "pageview",
 ])
 
@@ -110,17 +112,29 @@ const unsafeTelemetryConfigPatterns: Array<[RegExp, string]> = [
     "PostHog automatic pageviews must stay disabled",
   ],
   [
-    /\bcapture_pageleave\s*:\s*true\b/,
-    "PostHog pageleave capture must stay disabled",
-  ],
-  [
     /\bdisable_session_recording\s*:\s*false\b/,
     "PostHog session recording must stay disabled",
   ],
   [/\benable_heatmaps\s*:\s*true\b/, "PostHog heatmaps must stay disabled"],
   [
-    /\bdisable_persistence\s*:\s*false\b/,
-    "PostHog persistence must stay disabled",
+    /\bnetwork_timing\s*:\s*true\b/,
+    "network timing capture must stay disabled",
+  ],
+  [
+    /\bweb_vitals_attribution\s*:\s*true\b/,
+    "Web Vitals attribution must stay disabled",
+  ],
+  [
+    /\bsave_campaign_params\s*:\s*true\b/,
+    "PostHog campaign persistence must stay disabled",
+  ],
+  [
+    /\bsave_referrer\s*:\s*true\b/,
+    "PostHog referrer persistence must stay disabled",
+  ],
+  [
+    /\bpersistence\s*:\s*["'`](?:cookie|localStorage|localStorage\+cookie)["'`]/,
+    "persistent PostHog identity storage is not allowed",
   ],
   [
     /\bperson_profiles\s*:\s*["'`](?!never["'`])/,
@@ -269,6 +283,15 @@ export function validateTelemetrySourceUsage(input: {
         `${input.relativePath} has unsafe telemetry config: ${message}`
       )
     }
+  }
+
+  if (
+    /\bdisable_persistence\s*:\s*false\b/.test(input.source) &&
+    !/\bpersistence\s*:\s*["'`]sessionStorage["'`]/.test(input.source)
+  ) {
+    errors.push(
+      `${input.relativePath} has unsafe telemetry config: PostHog persistence must be sessionStorage-only`
+    )
   }
 
   for (const [pattern, message] of forbiddenCookieSourcePatterns) {

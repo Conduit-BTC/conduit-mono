@@ -135,20 +135,33 @@ describe("browser telemetry", () => {
 
     expect(config).toMatchObject({
       api_host: "https://us.i.posthog.com",
+      ui_host: "https://us.posthog.com",
+      bootstrap: {
+        distinctID: "conduit-browser-telemetry",
+        isIdentifiedID: false,
+      },
       autocapture: false,
       capture_exceptions: false,
       capture_dead_clicks: false,
       capture_heatmaps: false,
       capture_pageview: false,
-      capture_pageleave: false,
-      capture_performance: false,
+      capture_pageleave: true,
+      capture_performance: {
+        network_timing: false,
+        web_vitals: true,
+        web_vitals_allowed_metrics: ["LCP", "CLS", "FCP", "INP"],
+        web_vitals_attribution: false,
+      },
       rageclick: false,
       disable_session_recording: true,
       disable_surveys: true,
       disable_web_experiments: true,
       disable_external_dependency_loading: true,
-      disable_persistence: true,
-      persistence: "memory",
+      disable_persistence: false,
+      persistence: "sessionStorage",
+      save_campaign_params: false,
+      save_referrer: false,
+      session_idle_timeout_seconds: 1800,
       person_profiles: "never",
       advanced_disable_flags: true,
       advanced_disable_feature_flags: true,
@@ -503,8 +516,10 @@ describe("browser telemetry", () => {
       properties: {
         $current_url: "https://shop.conduit.market/products/:productId",
         $pathname: "/products/:productId",
+        $process_person_profile: false,
         action: "add",
         app: "market",
+        distinct_id: "conduit-browser-telemetry",
         page_path: "/products/:productId",
         page_url: "https://shop.conduit.market/products/:productId",
         status: "success",
@@ -572,6 +587,114 @@ describe("browser telemetry", () => {
         distinct_id: "conduit-browser-telemetry",
         page_path: "/products",
         page_url: "https://sell.conduit.market/products",
+      },
+    })
+  })
+
+  it("keeps only ephemeral UUIDv7 session context on pageleave events", () => {
+    const sessionId = "018f22e2-7b31-7a3f-8d2a-2be67b4f3f65"
+    const pageviewId = "018f22e2-8c42-7b40-9e3b-3cf78c504076"
+
+    expect(
+      sanitizePostHogCaptureEvent({
+        event: "$pageleave",
+        properties: {
+          $browser: "Chrome",
+          $current_url:
+            "https://shop.conduit.market/products/private-product?q=secret",
+          $pageview_id: pageviewId,
+          $pathname: "/products/private-product",
+          $prev_pageview_duration: 42.5,
+          $prev_pageview_id: pageviewId,
+          $prev_pageview_last_scroll: 900,
+          $prev_pageview_max_scroll_percentage: 0.75,
+          $session_id: sessionId,
+          $window_id: "018f22e2-9d53-7c41-af4c-4d089d615187",
+          distinct_id: "sdk-session-identity",
+        },
+      })
+    ).toEqual({
+      event: "$pageleave",
+      properties: {
+        $current_url: "https://shop.conduit.market/products/:productId",
+        $pageview_id: pageviewId,
+        $pathname: "/products/:productId",
+        $prev_pageview_duration: 42.5,
+        $prev_pageview_id: pageviewId,
+        $prev_pageview_max_scroll_percentage: 0.75,
+        $process_person_profile: false,
+        $session_id: sessionId,
+        app: "market",
+        distinct_id: "conduit-browser-telemetry",
+        page_path: "/products/:productId",
+        page_url: "https://shop.conduit.market/products/:productId",
+      },
+    })
+  })
+
+  it("keeps metric values but drops Web Vitals attribution payloads", () => {
+    const sessionId = "018f22e2-7b31-7a3f-8d2a-2be67b4f3f65"
+
+    expect(
+      sanitizePostHogCaptureEvent({
+        event: "$web_vitals",
+        properties: {
+          $current_url: "https://sell.conduit.market/products?draft=secret",
+          $pathname: "/products",
+          $session_id: sessionId,
+          $web_vitals_CLS_event: {
+            entries: [{ node: "private-dom-node" }],
+            id: "metric-identity",
+            rating: "good",
+          },
+          $web_vitals_CLS_value: 0.04,
+          $web_vitals_LCP_event: {
+            attribution: { element: "private-product-title" },
+            id: "metric-identity",
+          },
+          $web_vitals_LCP_value: 1750,
+          $window_id: "018f22e2-9d53-7c41-af4c-4d089d615187",
+          distinct_id: "sdk-session-identity",
+        },
+      })
+    ).toEqual({
+      event: "$web_vitals",
+      properties: {
+        $current_url: "https://sell.conduit.market/products",
+        $pathname: "/products",
+        $process_person_profile: false,
+        $session_id: sessionId,
+        $web_vitals_CLS_value: 0.04,
+        $web_vitals_LCP_value: 1750,
+        app: "merchant",
+        distinct_id: "conduit-browser-telemetry",
+        page_path: "/products",
+        page_url: "https://sell.conduit.market/products",
+      },
+    })
+  })
+
+  it("drops malformed and overlong session and performance values", () => {
+    expect(
+      sanitizePostHogCaptureEvent({
+        event: "$web_vitals",
+        properties: {
+          $current_url: "https://shop.conduit.market/",
+          $session_id: "not-a-uuidv7",
+          $web_vitals_CLS_value: -1,
+          $web_vitals_LCP_value: 900_001,
+        },
+      })
+    ).toEqual({
+      event: "$web_vitals",
+      properties: {
+        $current_url: "https://shop.conduit.market/",
+        $pathname: "/",
+        $process_person_profile: false,
+        app: "market",
+        distinct_id: "conduit-browser-telemetry",
+        page_path: "/",
+        page_url: "https://shop.conduit.market/",
       },
     })
   })

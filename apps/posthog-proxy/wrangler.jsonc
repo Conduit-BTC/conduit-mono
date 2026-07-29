@@ -1,0 +1,15 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "conduit-posthog-proxy",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-29",
+  "routes": [
+    {
+      "pattern": "e.conduit.market",
+      "custom_domain": true,
+    },
+  ],
+  "observability": {
+    "enabled": false,
+  },
+}
