@@ -42,7 +42,7 @@ test("market hold-to-release supports cancellation, keyboard, assistive activati
       React.createElement(
         HoldToReleaseButton,
         {
-          holdDurationMs: 80,
+          holdDurationMs: 500,
           onHoldComplete: () => {
             state.__holdCount += 1
           },
@@ -67,7 +67,7 @@ test("market hold-to-release supports cancellation, keyboard, assistive activati
         React.createElement(
           HoldToReleaseButton,
           {
-            holdDurationMs: 80,
+            holdDurationMs: 500,
             onHoldComplete: () => root.unmount(),
             style: { width: "220px", height: "52px" },
           },
@@ -93,27 +93,27 @@ test("market hold-to-release supports cancellation, keyboard, assistive activati
   await expect.poll(() => page.evaluate(() => window.__holdCount)).toBe(0)
 
   await page.mouse.down()
-  await page.waitForTimeout(110)
+  await page.waitForTimeout(550)
   await expect(button).toHaveAttribute("data-hold-state", "charged")
   await page.mouse.up()
   await expect.poll(() => page.evaluate(() => window.__holdCount)).toBe(1)
 
   await page.mouse.move(center.x, center.y)
   await page.mouse.down()
-  await page.waitForTimeout(110)
+  await page.waitForTimeout(550)
   await page.mouse.move(box!.x + box!.width + 80, center.y)
   await page.mouse.up()
   await expect.poll(() => page.evaluate(() => window.__holdCount)).toBe(1)
 
   await button.focus()
   await page.keyboard.down("Space")
-  await page.waitForTimeout(110)
+  await page.waitForTimeout(550)
   await expect(button).toHaveAttribute("data-hold-state", "charged")
   await page.keyboard.up("Space")
   await expect.poll(() => page.evaluate(() => window.__holdCount)).toBe(2)
 
   await page.keyboard.down("Enter")
-  await page.waitForTimeout(110)
+  await page.waitForTimeout(550)
   await expect(button).toHaveAttribute("data-hold-state", "charged")
   await page.keyboard.up("Enter")
   await expect.poll(() => page.evaluate(() => window.__holdCount)).toBe(3)
@@ -142,7 +142,7 @@ test("market hold-to-release supports cancellation, keyboard, assistive activati
     unmountingBox!.y + unmountingBox!.height / 2
   )
   await page.mouse.down()
-  await page.waitForTimeout(110)
+  await page.waitForTimeout(550)
   await expect(unmountingButton).toHaveAttribute("data-hold-state", "charged")
   await page.mouse.up()
   await expect(unmountingButton).toBeHidden()

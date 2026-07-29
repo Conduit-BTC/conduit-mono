@@ -453,6 +453,62 @@ export function cartItemInputFromProduct(product: Product): CartItemInput {
   }
 }
 
+export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
+  return JSON.stringify(
+    items
+      .map((item) => ({
+        merchantPubkey: item.merchantPubkey,
+        productId: item.productId,
+        quantity: item.quantity,
+        price: item.price,
+        currency: item.currency,
+        priceSats: item.priceSats ?? null,
+        sourcePrice: item.sourcePrice ?? null,
+        format: item.format ?? "physical",
+        shippingCostSats: item.shippingCostSats ?? null,
+        sourceShippingCost: item.sourceShippingCost ?? null,
+        shippingOptionId: item.shippingOptionId ?? null,
+        shippingOptionDTag: item.shippingOptionDTag ?? null,
+        shippingCountries: item.shippingCountries ?? null,
+        shippingCountryRules: item.shippingCountryRules ?? null,
+        publicZapEnabled: item.publicZapEnabled ?? null,
+        zapMessagePolicy: item.zapMessagePolicy ?? null,
+        publicZapPolicyKnown: item.publicZapPolicyKnown ?? null,
+      }))
+      .sort((a, b) =>
+        `${a.merchantPubkey}:${a.productId}`.localeCompare(
+          `${b.merchantPubkey}:${b.productId}`
+        )
+      )
+  )
+}
+
+export function cartItemsMatchCurrentProducts(
+  items: readonly CartItem[],
+  products: readonly Product[]
+): boolean {
+  const productsByKey = new Map(
+    products.map((product) => [
+      getCartItemKey({
+        merchantPubkey: product.pubkey,
+        productId: product.id,
+      }),
+      product,
+    ])
+  )
+  const currentItems = items.map((item) => {
+    const product = productsByKey.get(getCartItemKey(item))
+    return product
+      ? { ...cartItemInputFromProduct(product), quantity: item.quantity }
+      : null
+  })
+  return (
+    currentItems.every((item) => item !== null) &&
+    getCartCommerceFingerprint(currentItems) ===
+      getCartCommerceFingerprint(items)
+  )
+}
+
 export function parsePersistedCart(value: unknown): ParsedPersistedCart {
   if (
     isRecord(value) &&

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import {
   addCartItem,
   cartItemInputFromProduct,
+  cartItemsMatchCurrentProducts,
   clearMerchantCart,
   getCartAvailabilityBlockingMessage,
   getCartItemKey,
@@ -332,6 +333,47 @@ describe("cart model", () => {
       title: product.title,
       stock: 0,
     })
+  })
+
+  it("requires current product price and fulfillment terms before ordering", () => {
+    const cartItem = item({
+      price: 2_500,
+      priceSats: 2_500,
+      format: "digital",
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+    })
+    const product: Product = {
+      id: cartItem.productId,
+      pubkey: cartItem.merchantPubkey,
+      title: cartItem.title,
+      price: 2_500,
+      priceSats: 2_500,
+      currency: "SATS",
+      type: "simple",
+      format: "digital",
+      visibility: "public",
+      images: [],
+      tags: [],
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+
+    expect(cartItemsMatchCurrentProducts([cartItem], [product])).toBe(true)
+    expect(
+      cartItemsMatchCurrentProducts([cartItem], [{ ...product, price: 3_000 }])
+    ).toBe(false)
+    expect(
+      cartItemsMatchCurrentProducts(
+        [cartItem],
+        [{ ...product, format: "physical" }]
+      )
+    ).toBe(false)
+    expect(cartItemsMatchCurrentProducts([cartItem], [])).toBe(false)
   })
 
   it("flags an existing cart item when refreshed product stock reaches zero", () => {

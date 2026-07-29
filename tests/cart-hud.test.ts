@@ -38,7 +38,10 @@ describe("Market cart HUD policy", () => {
     expect(source).toContain("linear-gradient(to right")
     expect(source).toContain("rounded-xl border-0 p-1 pr-8")
     expect(source.match(/max-w-60/g)?.length).toBe(2)
-    expect(source).toContain('className="mr-auto min-w-0 flex-1"')
+    expect(source).toContain(
+      'className="mr-auto min-w-0 w-fit max-w-[calc(100%_-_7rem)] flex-none"'
+    )
+    expect(source).toContain("min-h-11 w-fit min-w-0 max-w-60 flex-none")
     expect(source.match(/<StatusPill/g)?.length).toBe(2)
     expect(source).toContain('variant="neutral"')
     expect(source).toContain("selected && expanded")
@@ -91,34 +94,44 @@ describe("Market cart HUD policy", () => {
     }
   })
 
-  it("routes to checkout while freshness and shopper presets are unavailable", () => {
+  it("arms zap out only when every HUD eligibility input is ready", () => {
     expect(
       getCartHudCheckoutCapability({
+        listingFresh: true,
+        shopperPresetReady: true,
+        walletReady: true,
         itemPricesAvailable: true,
         shippingReady: true,
         merchantLightningReady: true,
+        lnurlReady: true,
       })
     ).toEqual({
-      state: "route_to_checkout",
-      blockers: ["listing_freshness_unavailable", "shopper_preset_unavailable"],
+      state: "zap_ready",
+      blockers: [],
     })
   })
 
-  it("reports additional blockers without claiming direct-payment eligibility", () => {
+  it("reports every unavailable HUD checkout input", () => {
     expect(
       getCartHudCheckoutCapability({
+        listingFresh: false,
+        shopperPresetReady: false,
+        walletReady: false,
         itemPricesAvailable: false,
         shippingReady: false,
         merchantLightningReady: false,
+        lnurlReady: false,
       })
     ).toEqual({
       state: "route_to_checkout",
       blockers: [
         "listing_freshness_unavailable",
         "shopper_preset_unavailable",
+        "wallet_unavailable",
         "price_unavailable",
         "shipping_unavailable",
         "merchant_lightning_unavailable",
+        "lnurl_unavailable",
       ],
     })
   })
@@ -138,7 +151,7 @@ describe("Market cart HUD policy", () => {
     ).toBe("Checkout is needed to confirm shipping and payment readiness.")
   })
 
-  it("routes HUD actions to checkout until its required capability inputs exist", () => {
+  it("hands eligible HUD holds to checkout's canonical zap lifecycle", () => {
     const hud = readFileSync(
       new URL(
         "../apps/market/src/components/MarketCartHud.tsx",
@@ -152,8 +165,14 @@ describe("Market cart HUD policy", () => {
     )
 
     expect(hud).toContain('to="/checkout"')
-    expect(hud).not.toContain('"Zap out"')
+    expect(hud).toContain("<HoldToReleaseButton")
+    expect(hud).toContain("Zap out")
+    expect(hud).toContain('intent: "zap"')
     expect(hud).toContain("checkoutFallbackMessage")
+    expect(checkout).toContain("consumeHudZapIntent(selectedMerchant)")
+    expect(checkout).toContain("!autoZapAuthorization")
+    expect(checkout).toContain("isHudZapAuthorizationValid")
+    expect(checkout).toContain("void payNowRef.current()")
     expect(checkout).toContain(
       'const [step, setStep] = useState<CheckoutStep>("shipping")'
     )
