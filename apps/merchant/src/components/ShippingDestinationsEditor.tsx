@@ -1,7 +1,23 @@
 import { useCallback, useId, useMemo, useState } from "react"
 import { Trash2, X } from "lucide-react"
-import { SHIPPING_COUNTRIES, type CountryOption } from "@conduit/core"
-import { Badge, Button, Combobox, Label, cn } from "@conduit/ui"
+import {
+  SHIPPING_COUNTRIES,
+  SUPPORTED_PRODUCT_PRICE_CURRENCIES,
+  type CountryOption,
+} from "@conduit/core"
+import {
+  Badge,
+  Button,
+  Combobox,
+  Input,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  cn,
+} from "@conduit/ui"
 import type { ShippingConfig, ShippingCountryConfig } from "../lib/readiness"
 
 function PostalTagInput({
@@ -84,11 +100,13 @@ function CountryRow({
   onUpdate,
   onRemove,
   compact = false,
+  defaultCurrency,
 }: {
   entry: ShippingCountryConfig
   onUpdate: (updated: ShippingCountryConfig) => void
   onRemove: () => void
   compact?: boolean
+  defaultCurrency: string
 }) {
   return (
     <div
@@ -112,6 +130,73 @@ function CountryRow({
           <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
         </Button>
       </div>
+      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_8rem]">
+        <div className="grid gap-1.5">
+          <Label
+            htmlFor={`shipping-rate-${entry.code}`}
+            className="text-xs text-[var(--text-secondary)]"
+          >
+            Flat checkout rate
+          </Label>
+          <Input
+            id={`shipping-rate-${entry.code}`}
+            type="number"
+            min="0"
+            step="any"
+            inputMode="decimal"
+            value={entry.rate?.amount ?? ""}
+            placeholder="Use product fallback"
+            onChange={(event) => {
+              const raw = event.target.value
+              if (!raw) {
+                onUpdate({ ...entry, rate: undefined })
+                return
+              }
+              const amount = Number(raw)
+              if (!Number.isFinite(amount) || amount < 0) return
+              onUpdate({
+                ...entry,
+                rate: {
+                  amount,
+                  currency: entry.rate?.currency ?? defaultCurrency,
+                },
+              })
+            }}
+          />
+        </div>
+        <div className="grid gap-1.5">
+          <Label className="text-xs text-[var(--text-secondary)]">
+            Currency
+          </Label>
+          <Select
+            disabled={!entry.rate}
+            value={entry.rate?.currency ?? defaultCurrency}
+            onValueChange={(currency) =>
+              onUpdate({
+                ...entry,
+                rate: {
+                  amount: entry.rate?.amount ?? 0,
+                  currency,
+                },
+              })
+            }
+          >
+            <SelectTrigger aria-label={`${entry.name} rate currency`}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {SUPPORTED_PRODUCT_PRICE_CURRENCIES.map((currency) => (
+                <SelectItem key={currency} value={currency}>
+                  {currency}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <p className="text-[10px] text-[var(--text-muted)]">
+        Leave the rate blank to use the product-level fallback amount.
+      </p>
       <PostalTagInput
         label="Restrict by postal code (optional)"
         tags={entry.restrictTo}
@@ -175,6 +260,7 @@ export function ShippingDestinationsEditor({
   compact = false,
   className,
   rowsClassName,
+  defaultCurrency = "SATS",
 }: {
   config: ShippingConfig
   onChange: (config: ShippingConfig) => void
@@ -182,6 +268,7 @@ export function ShippingDestinationsEditor({
   compact?: boolean
   className?: string
   rowsClassName?: string
+  defaultCurrency?: string
 }) {
   const addCountry = useCallback(
     (country: CountryOption) => {
@@ -193,6 +280,7 @@ export function ShippingDestinationsEditor({
             name: country.name,
             restrictTo: [],
             exclude: [],
+            rate: undefined,
           },
         ],
       })
@@ -234,6 +322,7 @@ export function ShippingDestinationsEditor({
               key={entry.code}
               entry={entry}
               compact={compact}
+              defaultCurrency={defaultCurrency}
               onUpdate={(updated) => updateCountry(index, updated)}
               onRemove={() => removeCountry(index)}
             />

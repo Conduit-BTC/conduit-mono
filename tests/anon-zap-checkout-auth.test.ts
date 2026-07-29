@@ -138,14 +138,28 @@ function authorize(
 
 describe("anonymous public zap checkout authorization", () => {
   it("parses only bounded public product coordinates", () => {
+    const selectedShippingOptionId = `30406:${MERCHANT_PUBKEY}:${PRODUCT_D_TAG}-shipping-standard-us`
+
     expect(
       parseAnonZapCheckoutIntent({
         merchantPubkey: MERCHANT_PUBKEY.toUpperCase(),
-        items: [{ productAddress: PRODUCT_ADDRESS, quantity: 2 }],
+        items: [
+          {
+            productAddress: PRODUCT_ADDRESS,
+            quantity: 2,
+            shippingOptionId: selectedShippingOptionId,
+          },
+        ],
       })
     ).toEqual({
       merchantPubkey: MERCHANT_PUBKEY,
-      items: [{ productAddress: PRODUCT_ADDRESS, quantity: 2 }],
+      items: [
+        {
+          productAddress: PRODUCT_ADDRESS,
+          quantity: 2,
+          shippingOptionId: selectedShippingOptionId,
+        },
+      ],
     })
 
     expect(
@@ -278,6 +292,79 @@ describe("anonymous public zap checkout authorization", () => {
       authorize({
         productEvents: [product],
         shippingEvents: [shippingEvent({ createdAt: NOW_SECONDS - 59 })],
+      })
+    ).toThrow("Checkout product requires merchant-coordinated shipping.")
+  })
+
+  it("authorizes the exact selected option from a multi-zone listing", () => {
+    const usDTag = `${PRODUCT_D_TAG}-shipping-standard-us`
+    const euDTag = `${PRODUCT_D_TAG}-shipping-standard-de-fr`
+    const usOptionId = `30406:${MERCHANT_PUBKEY}:${usDTag}`
+    const euOptionId = `30406:${MERCHANT_PUBKEY}:${euDTag}`
+    const product = signMerchantEvent({
+      kind: 30402,
+      tags: [
+        ["d", PRODUCT_D_TAG],
+        ["title", "CND-156 zoned product"],
+        ["price", "10000", "SATS"],
+        ["type", "simple", "physical"],
+        ["image", "https://cdn.example/cnd-156.png"],
+        ["checkout_public_zaps", "true"],
+        ["checkout_zap_message_policy", "generic_only"],
+        ["shipping_option", euOptionId],
+        ["shipping_option", usOptionId],
+      ],
+    })
+    const usOption = signMerchantEvent({
+      kind: 30406,
+      tags: [
+        ["d", usDTag],
+        ["title", "Standard Shipping (US)"],
+        ["price", "5000", "SATS"],
+        ["country", "US"],
+        ["service", "standard"],
+      ],
+    })
+    const euOption = signMerchantEvent({
+      kind: 30406,
+      tags: [
+        ["d", euDTag],
+        ["title", "Standard Shipping (DE, FR)"],
+        ["price", "9000", "SATS"],
+        ["country", "DE", "FR"],
+        ["service", "standard"],
+      ],
+    })
+
+    const result = authorize({
+      intent: {
+        merchantPubkey: MERCHANT_PUBKEY,
+        items: [
+          {
+            productAddress: PRODUCT_ADDRESS,
+            quantity: 1,
+            shippingOptionId: euOptionId,
+          },
+        ],
+      },
+      productEvents: [product],
+      shippingEvents: [usOption, euOption],
+    })
+
+    expect(result.pricing).toMatchObject({
+      shippingCostSats: 9_000,
+      totalSats: 19_000,
+      items: [
+        {
+          shippingOptionId: euOptionId,
+          unitShippingSats: 9_000,
+        },
+      ],
+    })
+    expect(() =>
+      authorize({
+        productEvents: [product],
+        shippingEvents: [usOption, euOption],
       })
     ).toThrow("Checkout product requires merchant-coordinated shipping.")
   })

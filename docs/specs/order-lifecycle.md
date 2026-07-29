@@ -51,9 +51,11 @@ Fields:
 Repository helpers: `createOrderLifecycle`, `getOrderLifecycle`,
 `patchOrderLifecycle`, `listOrderLifecycles`, `deriveOrderLifecyclePhase`.
 
-For canonical fixed shipping, each physical item snapshot preserves the exact
-kind `30406` coordinate, agreed per-item cost, and country destinations from the
-same prepared fulfillment state used to calculate checkout. Digital and
+For canonical fixed shipping, a product may advertise multiple country-rate
+options, but each physical item snapshot preserves exactly the selected kind
+`30406` coordinate, agreed per-item cost, and country destinations from the
+same prepared fulfillment state used to calculate checkout. Destination
+changes require re-selection and re-pricing before payment. Digital and
 coordinate-after-order items do not claim a selected fixed option or agreed
 fixed cost.
 

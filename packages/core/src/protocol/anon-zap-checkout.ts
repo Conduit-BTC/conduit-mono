@@ -10,6 +10,7 @@ import { evaluateListingSafety } from "./listing-safety"
 import { parseProductEvent } from "./products"
 import {
   applyPreparedProductFulfillment,
+  parseShippingOptionAddress,
   resolveProductFulfillment,
   selectLatestShippingOptions,
 } from "./shipping"
@@ -27,6 +28,7 @@ export {
 export type AnonZapCheckoutItem = {
   productAddress: string
   quantity: number
+  shippingOptionId?: string
 }
 
 export type AnonZapCheckoutIntent = {
@@ -148,12 +150,27 @@ export function parseAnonZapCheckoutIntent(
   for (const rawItem of value.items) {
     if (!isRecord(rawItem)) return null
     if (
-      !hasOnlyKeys(rawItem, ["productAddress", "quantity"]) ||
+      !hasOnlyKeys(rawItem, [
+        "productAddress",
+        "quantity",
+        "shippingOptionId",
+      ]) ||
       typeof rawItem.productAddress !== "string" ||
       typeof rawItem.quantity !== "number" ||
       !Number.isSafeInteger(rawItem.quantity) ||
       rawItem.quantity < 1 ||
       rawItem.quantity > MAX_ITEM_QUANTITY
+    ) {
+      return null
+    }
+    const shippingOptionAddress =
+      typeof rawItem.shippingOptionId === "string"
+        ? parseShippingOptionAddress(rawItem.shippingOptionId)
+        : null
+    if (
+      rawItem.shippingOptionId !== undefined &&
+      (!shippingOptionAddress ||
+        shippingOptionAddress.pubkey.toLowerCase() !== merchantPubkey)
     ) {
       return null
     }
@@ -164,7 +181,13 @@ export function parseAnonZapCheckoutIntent(
     const productAddress = `${PRODUCT_KIND}:${merchantPubkey}:${parsedAddress.dTag}`
     if (seen.has(productAddress)) return null
     seen.add(productAddress)
-    items.push({ productAddress, quantity: rawItem.quantity })
+    items.push({
+      productAddress,
+      quantity: rawItem.quantity,
+      ...(shippingOptionAddress
+        ? { shippingOptionId: shippingOptionAddress.coordinate }
+        : {}),
+    })
   }
 
   return { merchantPubkey, items }
@@ -355,7 +378,10 @@ export function authorizeAnonZapCheckout(input: {
     const parsedProduct = parseProductEvent(event)
     const fulfillment = resolveProductFulfillment(
       parsedProduct,
-      shippingOptions
+      shippingOptions,
+      item.shippingOptionId
+        ? { shippingOptionId: item.shippingOptionId }
+        : undefined
     )
     const product = applyPreparedProductFulfillment(parsedProduct, fulfillment)
     const safety = evaluateListingSafety(product)

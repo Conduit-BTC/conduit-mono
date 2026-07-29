@@ -164,10 +164,11 @@ Product listings are addressable events:
 Implementations must not dedupe only by `d` tag because different merchants can publish the same `d` value. Product identity, cart references, order item tags, and cache records should preserve the full addressable coordinate.
 
 Fixed physical products follow `docs/specs/fixed-product-shipping.md`: Merchant
-publishes and receives a relay acknowledgement for one complete,
-product-scoped Gamma kind `30406` before publishing the kind `30402` that
-references it. New product writes use an exact two-field `shipping_option` tag
-and do not emit legacy inline shipping tags or product-level extra cost.
+publishes and receives a relay acknowledgement for every complete,
+product-scoped Gamma kind `30406` rate zone before publishing the kind `30402`
+that references them. New product writes use one exact two-field
+`shipping_option` tag per zone and do not emit legacy inline shipping tags or
+product-level extra cost.
 
 ### Product Deletion Frontier
 
@@ -383,7 +384,9 @@ Tags:
 - `["order", order_id]`
 - `["amount", "<integer_sats>"]`
 - one per item: `["item", "30402:<merchant_pubkey>:<product_d_tag>", "<quantity>"]`
-- optional shipping selection: `["shipping", "30406:<merchant_pubkey>:<shipping_d_tag>"]`
+- selected shipping option per physical item:
+  `["shipping", "30406:<merchant_pubkey>:<shipping_d_tag>"]`; the tag may
+  repeat when an order contains items with different selected options
 - optional buyer contact/shipping tags as supported by the current checkout schema
 
 Content:

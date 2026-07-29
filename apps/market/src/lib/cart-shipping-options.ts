@@ -18,7 +18,11 @@ export function getCartShippingOptionCoordinates(items: CartItem[]): string[] {
       items
         .filter(isPhysicalItem)
         .flatMap((item) =>
-          item.shippingOptionId ? [item.shippingOptionId] : []
+          item.shippingOptionIds?.length
+            ? item.shippingOptionIds
+            : item.shippingOptionId
+              ? [item.shippingOptionId]
+              : []
         )
     )
   ).sort()
@@ -45,7 +49,8 @@ export type PreparedCartFulfillment = {
 
 export function prepareCartFulfillment(
   items: CartItem[],
-  shippingOptions: readonly ParsedShippingOption[]
+  shippingOptions: readonly ParsedShippingOption[],
+  destination?: { country: string; postalCode: string }
 ): PreparedCartFulfillment {
   const resolutions = new Map<string, PreparedProductFulfillment>()
   const preparedItems = items.map((item) => {
@@ -60,12 +65,15 @@ export function prepareCartFulfillment(
         sourceShippingCost: item.sourceShippingCost,
         shippingOptionId: item.shippingOptionId,
         shippingOptionDTag: item.shippingOptionDTag,
+        shippingOptionIds: item.shippingOptionIds,
+        shippingOptionDTags: item.shippingOptionDTags,
         shippingOptionLaunchUnsupported: item.shippingOptionLaunchUnsupported,
         shippingCountries: item.shippingCountries,
         shippingCountryRules: item.shippingCountryRules,
         updatedAt: item.productUpdatedAt ?? 0,
       },
-      shippingOptions
+      shippingOptions,
+      destination
     )
     resolutions.set(item.productId, resolution)
 
