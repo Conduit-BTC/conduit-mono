@@ -201,7 +201,11 @@ export interface OrderPaymentContext {
   zapContent: string
   totalSats: number
   totalMsats: number
-  items: Array<{ productAddress: string; quantity: number }>
+  items: Array<{
+    productAddress: string
+    quantity: number
+    shippingOptionId?: string
+  }>
   preparedAnonZap?: SignedCheckoutZapRequest
   anonZapPreparation?: {
     localPricing: Extract<CheckoutPricingIntent, { status: "ok" }>
@@ -674,6 +678,7 @@ export async function runOrderPayment(
       items: lifecycle.items.map((item) => ({
         productAddress: item.productId,
         quantity: item.quantity,
+        shippingOptionId: item.shippingOptionId,
       })),
     }
     emit(orderId, {

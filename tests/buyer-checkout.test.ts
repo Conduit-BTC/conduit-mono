@@ -49,6 +49,7 @@ import {
   getCartShippingDestinationEligibility,
   getCartShippingOptionsAvailable,
   hasPhysicalItemsMissingShippingZone,
+  prepareCartFulfillment,
 } from "../apps/market/src/lib/cart-shipping-options"
 import type { CartItem } from "../apps/market/src/hooks/useCart"
 import {
@@ -2148,6 +2149,72 @@ describe("payCheckoutInvoice", () => {
 // ─── shipping eligibility ───────────────────────────────────────────────────
 
 describe("shipping destination eligibility", () => {
+  it("charges the buyer using the selected country-rate zone", () => {
+    const usOptionId = `30406:${FAKE_PUBKEY}:notebook-shipping-standard-us`
+    const euOptionId = `30406:${FAKE_PUBKEY}:notebook-shipping-standard-de-fr`
+    const item = cartItem({
+      productId: `30402:${FAKE_PUBKEY}:notebook`,
+      format: "physical",
+      quantity: 2,
+      productUpdatedAt: 2_000,
+      shippingOptionId: usOptionId,
+      shippingOptionDTag: "notebook-shipping-standard-us",
+      shippingOptionIds: [euOptionId, usOptionId],
+      shippingOptionDTags: [
+        "notebook-shipping-standard-de-fr",
+        "notebook-shipping-standard-us",
+      ],
+    })
+    const options = [
+      parseShippingOptionEvent({
+        id: "eu-zone",
+        pubkey: FAKE_PUBKEY,
+        created_at: 1,
+        tags: [
+          ["d", "notebook-shipping-standard-de-fr"],
+          ["title", "Standard Shipping (DE, FR)"],
+          ["price", "9000", "SATS"],
+          ["country", "DE", "FR"],
+          ["service", "standard"],
+        ],
+      }),
+      parseShippingOptionEvent({
+        id: "us-zone",
+        pubkey: FAKE_PUBKEY,
+        created_at: 1,
+        tags: [
+          ["d", "notebook-shipping-standard-us"],
+          ["title", "Standard Shipping (US)"],
+          ["price", "5000", "SATS"],
+          ["country", "US"],
+          ["service", "standard"],
+        ],
+      }),
+    ].filter((option) => option !== null)
+
+    const us = prepareCartFulfillment([item], options, {
+      country: "US",
+      postalCode: "02139",
+    }).items
+    const eu = prepareCartFulfillment([item], options, {
+      country: "DE",
+      postalCode: "10115",
+    }).items
+
+    expect(us[0]).toMatchObject({
+      shippingOptionId: usOptionId,
+      shippingCostSats: 5_000,
+      canonicalShippingResolved: true,
+    })
+    expect(getCheckoutShippingCost(us).totalSats).toBe(10_000)
+    expect(eu[0]).toMatchObject({
+      shippingOptionId: euOptionId,
+      shippingCostSats: 9_000,
+      canonicalShippingResolved: true,
+    })
+    expect(getCheckoutShippingCost(eu).totalSats).toBe(18_000)
+  })
+
   it("parses product-level shipping option references and snapshots", () => {
     const product = parseProductEvent({
       id: "product-event",

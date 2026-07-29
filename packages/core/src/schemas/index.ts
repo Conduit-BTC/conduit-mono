@@ -36,9 +36,12 @@ export const productSchema = z.object({
       normalizedCurrency: z.string(),
     })
     .optional(),
-  /** Addressable kind-30406 shipping option reference attached by the merchant. */
+  /** Selected/read-compatible kind-30406 reference. */
   shippingOptionId: z.string().optional(),
   shippingOptionDTag: z.string().optional(),
+  /** All addressable kind-30406 options referenced by the product listing. */
+  shippingOptionIds: z.array(z.string()).optional(),
+  shippingOptionDTags: z.array(z.string()).optional(),
   /** True when the product reference uses a launch-unsupported Gamma shape. */
   shippingOptionLaunchUnsupported: z.boolean().optional(),
   /** Read-side shipping details. Canonical checkout requires explicit resolution. */
@@ -50,6 +53,18 @@ export const productSchema = z.object({
         name: z.string(),
         restrictTo: z.array(z.string()).default([]),
         exclude: z.array(z.string()).default([]),
+      })
+    )
+    .optional(),
+  /** Resolved read-side zone options before a buyer destination is selected. */
+  shippingZones: z
+    .array(
+      z.object({
+        shippingOptionId: z.string(),
+        shippingOptionDTag: z.string(),
+        amount: z.number().min(0),
+        currency: z.string(),
+        countries: z.array(z.string()),
       })
     )
     .optional(),

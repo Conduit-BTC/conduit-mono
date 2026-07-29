@@ -160,7 +160,7 @@ export function getProductShippingCostHelpText(
   const trimmed = value.trim()
   const currencyLabel = getProductShippingCurrencyLabel(currency)
   if (!trimmed) {
-    return `Enter 0 when shipping is included, or enter a fixed amount in ${currencyLabel}. A known amount keeps fast checkout available.`
+    return `Optional fallback in ${currencyLabel}. It is used only for destinations without their own zone rate.`
   }
 
   let amount: number
@@ -171,11 +171,11 @@ export function getProductShippingCostHelpText(
   }
 
   if (Number.isFinite(amount) && amount === 0) {
-    return "Shipping is included in the product price. Buyers can use fast checkout without an added shipping charge."
+    return "Destinations without their own zone rate will use included shipping."
   }
 
   if (Number.isFinite(amount) && amount > 0) {
-    return `This fixed shipping amount will be added to the buyer total at checkout in ${currencyLabel}, keeping fast checkout available.`
+    return `Destinations without their own zone rate will use this ${currencyLabel} fallback at checkout.`
   }
 
   return `Enter a non-negative shipping amount in ${currencyLabel}.`

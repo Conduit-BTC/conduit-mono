@@ -43,16 +43,35 @@ function validate(
   values: ProductPublishFormValues,
   hasPresetShippingZone = false
 ) {
-  return validateProductPublishForm(values, { hasPresetShippingZone })
+  return validateProductPublishForm(values, {
+    hasPresetShippingZone,
+    presetShippingConfig: hasPresetShippingZone
+      ? {
+          countries: [
+            {
+              code: "US",
+              name: "United States",
+              restrictTo: [],
+              exclude: [],
+            },
+          ],
+        }
+      : undefined,
+  })
 }
 
 describe("merchant product form validation", () => {
-  it("uses one product-scoped wire identity for preset and custom fixed shipping", () => {
+  it("uses product-scoped wire identities for fixed shipping zones", () => {
     const fixedIntent = {
       kind: "fixed_standard" as const,
-      amount: 5,
-      currency: "USD",
-      countries: ["US"],
+      zones: [
+        {
+          amount: 5,
+          currency: "USD",
+          countries: ["US"],
+          usesProductFallback: true,
+        },
+      ],
     }
     const presetMetadata = buildProductShippingMetadata(
       "merchant",
@@ -66,8 +85,10 @@ describe("merchant product form validation", () => {
     )
 
     expect(presetMetadata).toEqual({
-      shippingOptionId: "30406:merchant:pocket-node-shipping-standard",
-      shippingOptionDTag: "pocket-node-shipping-standard",
+      shippingOptionId: "30406:merchant:pocket-node-shipping-standard-us",
+      shippingOptionDTag: "pocket-node-shipping-standard-us",
+      shippingOptionIds: ["30406:merchant:pocket-node-shipping-standard-us"],
+      shippingOptionDTags: ["pocket-node-shipping-standard-us"],
       shippingCountries: ["US"],
       shippingCountryRules: [
         {
@@ -310,7 +331,7 @@ describe("merchant product form validation", () => {
     )
   })
 
-  it("requires physical sellers to choose fixed or coordinated shipping", () => {
+  it("requires physical sellers to choose fixed zones or coordinated shipping", () => {
     const blankFixed = validate(
       form({ shippingPricingMode: "fixed", shippingCost: "" })
     )
@@ -328,11 +349,57 @@ describe("merchant product form validation", () => {
       })
     )
 
-    expect(blankFixed.errors.shippingCost).toContain(
-      "Enter 0 for included shipping"
+    expect(blankFixed.errors.shippingZone).toContain(
+      "custom shipping destination"
     )
     expect(coordinated.canPublish).toBe(true)
     expect(digital.canPublish).toBe(true)
+  })
+
+  it("allows zone rates without a product fallback amount", () => {
+    const zoned = validate(
+      form({
+        shippingPricingMode: "fixed",
+        shippingCost: "",
+        customShippingConfig: {
+          countries: [
+            {
+              code: "US",
+              name: "United States",
+              restrictTo: [],
+              exclude: [],
+              rate: { amount: 5_000, currency: "USD" },
+            },
+          ],
+        },
+      })
+    )
+
+    expect(zoned.canPublish).toBe(true)
+    expect(zoned.errors.shippingCost).toBeUndefined()
+  })
+
+  it("rejects zone rates that would be rounded", () => {
+    const zoned = validate(
+      form({
+        shippingPricingMode: "fixed",
+        shippingCost: "",
+        customShippingConfig: {
+          countries: [
+            {
+              code: "US",
+              name: "United States",
+              restrictTo: [],
+              exclude: [],
+              rate: { amount: 6.666, currency: "USD" },
+            },
+          ],
+        },
+      })
+    )
+
+    expect(zoned.canPublish).toBe(false)
+    expect(zoned.errors.shippingZone).toContain("supported precision")
   })
 
   it("requires a shipping zone when physical fixed shipping is set", () => {

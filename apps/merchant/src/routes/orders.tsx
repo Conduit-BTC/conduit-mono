@@ -156,15 +156,19 @@ async function resolveStockUpdateFulfillmentIntent(
     })
   }
 
-  if (product.shippingOptionId) {
-    const shippingOptions = await getShippingOptionsByCoordinates([
-      product.shippingOptionId,
-    ])
+  const shippingOptionIds = product.shippingOptionIds?.length
+    ? product.shippingOptionIds
+    : product.shippingOptionId
+      ? [product.shippingOptionId]
+      : []
+  if (shippingOptionIds.length > 0) {
+    const shippingOptions =
+      await getShippingOptionsByCoordinates(shippingOptionIds)
     const prepared = resolveProductFulfillment(product, shippingOptions)
     if (
       prepared.intent !== "fixed_standard" ||
       prepared.status !== "ready" ||
-      !prepared.option
+      (!prepared.option && !prepared.options?.length)
     ) {
       throw new Error(
         "Could not verify this listing's fixed shipping option. Review the listing before updating stock."
@@ -172,9 +176,12 @@ async function resolveStockUpdateFulfillmentIntent(
     }
     return {
       kind: "fixed_standard",
-      amount: prepared.option.price,
-      currency: prepared.option.currency,
-      countries: [...prepared.option.countries],
+      zones: (prepared.options ?? [prepared.option!]).map((option) => ({
+        amount: option.price,
+        currency: option.currency,
+        countries: [...option.countries],
+        usesProductFallback: false,
+      })),
     }
   }
 

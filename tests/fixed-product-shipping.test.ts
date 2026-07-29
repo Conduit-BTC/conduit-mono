@@ -1,10 +1,12 @@
 import { describe, expect, it } from "bun:test"
 import {
   buildFixedShippingOptionEventDraft,
+  buildFixedShippingOptionEventDrafts,
   buildProductListingEventDraft,
   buildShippingOptionReadBatches,
   compileProductFulfillmentIntent,
   getProductShippingOptionAddress,
+  getProductShippingZoneAddress,
   isBuyerCountryEligible,
   parseProductEvent,
   parseShippingOptionEvent,
@@ -74,6 +76,181 @@ function shippingOption(
 }
 
 describe("canonical fixed product shipping", () => {
+  it("compiles and emits one priced Gamma option per country-rate zone", () => {
+    const intent = compileProductFulfillmentIntent({
+      format: "physical",
+      shippingPricingMode: "fixed",
+      currency: "SATS",
+      destinations: [
+        {
+          code: "US",
+          name: "United States",
+          restrictTo: [],
+          exclude: [],
+          rate: { amount: 5_000, currency: "SATS" },
+        },
+        {
+          code: "DE",
+          name: "Germany",
+          restrictTo: [],
+          exclude: [],
+          rate: { amount: 9_000, currency: "SATS" },
+        },
+        {
+          code: "FR",
+          name: "France",
+          restrictTo: [],
+          exclude: [],
+          rate: { amount: 9_000, currency: "SATS" },
+        },
+      ],
+    })
+
+    expect(intent).toEqual({
+      kind: "fixed_standard",
+      zones: [
+        {
+          amount: 9_000,
+          currency: "SATS",
+          countries: ["DE", "FR"],
+          usesProductFallback: false,
+        },
+        {
+          amount: 5_000,
+          currency: "SATS",
+          countries: ["US"],
+          usesProductFallback: false,
+        },
+      ],
+    })
+
+    if (intent.kind !== "fixed_standard") {
+      throw new Error("Expected fixed shipping intent")
+    }
+    const drafts = buildFixedShippingOptionEventDrafts({
+      productDTag: PRODUCT_D_TAG,
+      intent,
+    })
+
+    expect(drafts.map((draft) => draft.tags)).toEqual([
+      [
+        ["d", `${PRODUCT_D_TAG}-shipping-standard-de-fr`],
+        ["title", "Standard Shipping (DE, FR)"],
+        ["price", "9000", "SATS"],
+        ["country", "DE", "FR"],
+        ["service", "standard"],
+      ],
+      [
+        ["d", `${PRODUCT_D_TAG}-shipping-standard-us`],
+        ["title", "Standard Shipping (US)"],
+        ["price", "5000", "SATS"],
+        ["country", "US"],
+        ["service", "standard"],
+      ],
+    ])
+  })
+
+  it("selects the buyer's exact priced zone and fails closed on overlap", () => {
+    const usCoordinate = getProductShippingZoneAddress(
+      MERCHANT,
+      PRODUCT_D_TAG,
+      ["US"]
+    )
+    const euCoordinate = getProductShippingZoneAddress(
+      MERCHANT,
+      PRODUCT_D_TAG,
+      ["DE", "FR"]
+    )
+    const zonedProduct = product({
+      currency: "SATS",
+      sourcePrice: {
+        amount: 20_000,
+        currency: "SATS",
+        normalizedCurrency: "SATS",
+      },
+      shippingOptionId: usCoordinate,
+      shippingOptionDTag: `${PRODUCT_D_TAG}-shipping-standard-us`,
+      shippingOptionIds: [euCoordinate, usCoordinate],
+      shippingOptionDTags: [
+        `${PRODUCT_D_TAG}-shipping-standard-de-fr`,
+        `${PRODUCT_D_TAG}-shipping-standard-us`,
+      ],
+    })
+    const usOption = shippingOption({
+      eventId: "us-event",
+      id: usCoordinate,
+      dTag: `${PRODUCT_D_TAG}-shipping-standard-us`,
+      currency: "SATS",
+      price: 5_000,
+      countries: ["US"],
+      countryRules: [{ code: "US", name: "US", restrictTo: [], exclude: [] }],
+    })
+    const euOption = shippingOption({
+      eventId: "eu-event",
+      id: euCoordinate,
+      dTag: `${PRODUCT_D_TAG}-shipping-standard-de-fr`,
+      currency: "SATS",
+      price: 9_000,
+      countries: ["DE", "FR"],
+      countryRules: [
+        { code: "DE", name: "DE", restrictTo: [], exclude: [] },
+        { code: "FR", name: "FR", restrictTo: [], exclude: [] },
+      ],
+    })
+
+    expect(
+      resolveProductFulfillment(zonedProduct, [usOption, euOption], {
+        country: "US",
+        postalCode: "02139",
+      })
+    ).toMatchObject({
+      status: "ready",
+      option: { id: usCoordinate, price: 5_000 },
+    })
+    expect(
+      resolveProductFulfillment(zonedProduct, [usOption, euOption], {
+        country: "DE",
+        postalCode: "10115",
+      })
+    ).toMatchObject({
+      status: "ready",
+      option: { id: euCoordinate, price: 9_000 },
+    })
+    expect(
+      resolveProductFulfillment(zonedProduct, [usOption, euOption], {
+        country: "GB",
+        postalCode: "SW1A1AA",
+      })
+    ).toMatchObject({
+      status: "order_first",
+      reason: "destination_unsupported",
+    })
+    expect(
+      resolveProductFulfillment(
+        zonedProduct,
+        [
+          usOption,
+          shippingOption({
+            eventId: "overlap",
+            id: euCoordinate,
+            dTag: `${PRODUCT_D_TAG}-shipping-standard-de-fr`,
+            currency: "SATS",
+            price: 9_000,
+            countries: ["US", "DE"],
+            countryRules: [
+              { code: "US", name: "US", restrictTo: [], exclude: [] },
+              { code: "DE", name: "DE", restrictTo: [], exclude: [] },
+            ],
+          }),
+        ],
+        { country: "US", postalCode: "02139" }
+      )
+    ).toMatchObject({
+      status: "order_first",
+      reason: "ambiguous_destination",
+    })
+  })
+
   it("compiles the three shared fulfillment intents", () => {
     expect(
       compileProductFulfillmentIntent({
@@ -109,9 +286,14 @@ describe("canonical fixed product shipping", () => {
       })
     ).toEqual({
       kind: "fixed_standard",
-      amount: 5,
-      currency: "USD",
-      countries: ["US"],
+      zones: [
+        {
+          amount: 5,
+          currency: "USD",
+          countries: ["US"],
+          usesProductFallback: true,
+        },
+      ],
     })
   })
 
@@ -164,7 +346,9 @@ describe("canonical fixed product shipping", () => {
     })
 
     expect(presetIntent).toEqual(customIntent)
-    expect(presetIntent).toMatchObject({ countries: ["CA", "US"] })
+    expect(presetIntent).toMatchObject({
+      zones: [{ countries: ["CA", "US"] }],
+    })
     if (
       presetIntent.kind !== "fixed_standard" ||
       customIntent.kind !== "fixed_standard"
@@ -187,9 +371,14 @@ describe("canonical fixed product shipping", () => {
   it("emits one complete Gamma option and one exact two-field product reference", () => {
     const intent = {
       kind: "fixed_standard" as const,
-      amount: 5,
-      currency: "USD",
-      countries: ["US", "CA"],
+      zones: [
+        {
+          amount: 5,
+          currency: "USD",
+          countries: ["US", "CA"],
+          usesProductFallback: true,
+        },
+      ],
     }
     const shippingDraft = buildFixedShippingOptionEventDraft({
       productDTag: PRODUCT_D_TAG,
@@ -214,6 +403,31 @@ describe("canonical fixed product shipping", () => {
     expect(
       productDraft.tags.find((tag) => tag[0] === "shipping_option")
     ).toHaveLength(2)
+
+    const usCoordinate = getProductShippingZoneAddress(
+      MERCHANT,
+      PRODUCT_D_TAG,
+      ["US"]
+    )
+    const euCoordinate = getProductShippingZoneAddress(
+      MERCHANT,
+      PRODUCT_D_TAG,
+      ["DE", "FR"]
+    )
+    const zonedProductDraft = buildProductListingEventDraft({
+      product: product({
+        shippingOptionId: usCoordinate,
+        shippingOptionIds: [euCoordinate, usCoordinate],
+      }),
+      dTag: PRODUCT_D_TAG,
+    })
+    expect(
+      zonedProductDraft.tags.filter((tag) => tag[0] === "shipping_option")
+    ).toEqual([
+      ["shipping_option", euCoordinate],
+      ["shipping_option", usCoordinate],
+    ])
+
     for (const legacyTag of [
       "shipping_cost",
       "shipping_country",
@@ -225,7 +439,9 @@ describe("canonical fixed product shipping", () => {
   })
 
   it("resolves only an exact merchant-owned, supported, current option", () => {
-    expect(resolveProductFulfillment(product(), [shippingOption()])).toEqual({
+    expect(
+      resolveProductFulfillment(product(), [shippingOption()])
+    ).toMatchObject({
       intent: "fixed_standard",
       status: "ready",
       option: shippingOption(),
@@ -275,7 +491,7 @@ describe("canonical fixed product shipping", () => {
     ).toMatchObject({ status: "order_first", reason: "conflicting" })
   })
 
-  it("fails closed for product extra-cost and multiple option references", () => {
+  it("fails closed for product extra-cost while accepting multiple references", () => {
     const extraCostProduct = parseProductEvent({
       id: "extra-cost-product",
       pubkey: MERCHANT,
@@ -308,13 +524,17 @@ describe("canonical fixed product shipping", () => {
     })
 
     expect(extraCostProduct.shippingOptionLaunchUnsupported).toBe(true)
-    expect(multipleOptionsProduct.shippingOptionLaunchUnsupported).toBe(true)
+    expect(multipleOptionsProduct.shippingOptionLaunchUnsupported).toBe(false)
+    expect(multipleOptionsProduct.shippingOptionIds).toEqual([
+      SHIPPING_COORDINATE,
+      getProductShippingOptionAddress(MERCHANT, "express"),
+    ])
     expect(
       resolveProductFulfillment(extraCostProduct, [shippingOption()])
     ).toMatchObject({ status: "order_first", reason: "unsupported" })
     expect(
       resolveProductFulfillment(multipleOptionsProduct, [shippingOption()])
-    ).toMatchObject({ status: "order_first", reason: "unsupported" })
+    ).toMatchObject({ status: "order_first", reason: "unresolved" })
   })
 
   it("requires all Gamma launch fields and lets malformed latest events mask older state", () => {
@@ -493,6 +713,24 @@ describe("canonical fixed product shipping", () => {
         ],
       })
     ).toThrow("Fixed checkout supports country destinations only.")
+
+    expect(() =>
+      compileProductFulfillmentIntent({
+        format: "physical",
+        shippingPricingMode: "fixed",
+        amount: 5,
+        currency: "USD",
+        destinations: [
+          {
+            code: "US",
+            name: "United States",
+            restrictTo: [],
+            exclude: [],
+            rate: { amount: -1, currency: "USD" },
+          },
+        ],
+      })
+    ).toThrow("non-negative zone rate for US")
   })
 
   it("does not infer country eligibility when no option resolved", () => {

@@ -29,9 +29,12 @@ export interface Product {
     currency: string
     normalizedCurrency: string
   }
-  /** Addressable kind-30406 shipping option reference attached by the merchant. */
+  /** Selected/read-compatible kind-30406 reference. */
   shippingOptionId?: string
   shippingOptionDTag?: string
+  /** All addressable kind-30406 options referenced by the product listing. */
+  shippingOptionIds?: string[]
+  shippingOptionDTags?: string[]
   /** True when the product reference uses a launch-unsupported Gamma shape. */
   shippingOptionLaunchUnsupported?: boolean
   /** Read-side shipping details. Canonical checkout requires explicit resolution. */
@@ -41,6 +44,14 @@ export interface Product {
     name: string
     restrictTo: string[]
     exclude: string[]
+  }>
+  /** Resolved read-side zone options before a buyer destination is selected. */
+  shippingZones?: Array<{
+    shippingOptionId: string
+    shippingOptionDTag: string
+    amount: number
+    currency: string
+    countries: string[]
   }>
   /** True only after exact kind-30406 resolution prepared this product. */
   canonicalShippingResolved?: boolean

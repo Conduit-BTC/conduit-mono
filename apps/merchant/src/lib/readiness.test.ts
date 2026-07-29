@@ -225,6 +225,10 @@ test("maps published shipping options back into readiness config", () => {
         name: "United States",
         restrictTo: ["787**"],
         exclude: ["78799"],
+        rate: {
+          amount: 0,
+          currency: "USD",
+        },
       },
     ],
   })

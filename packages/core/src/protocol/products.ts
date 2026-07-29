@@ -95,8 +95,7 @@ export function buildProductListingEventDraft({
     tags.push(["stock", String(product.stock)])
   }
 
-  const shippingOptionTag = buildShippingOptionTag(product)
-  if (shippingOptionTag) tags.push(shippingOptionTag)
+  tags.push(...buildShippingOptionTags(product))
   for (const image of product.images) {
     tags.push(["image", image.url])
   }
@@ -161,9 +160,17 @@ function parsePriceTag(
   return null
 }
 
-function buildShippingOptionTag(product: ProductSchema): string[] | null {
-  if (!product.shippingOptionId) return null
-  return ["shipping_option", product.shippingOptionId]
+function buildShippingOptionTags(product: ProductSchema): string[][] {
+  const references = Array.from(
+    new Set(
+      product.shippingOptionIds?.length
+        ? product.shippingOptionIds
+        : product.shippingOptionId
+          ? [product.shippingOptionId]
+          : []
+    )
+  )
+  return references.map((reference) => ["shipping_option", reference])
 }
 
 function parseStockTag(
@@ -192,14 +199,27 @@ function parseShippingOptionTag(
 ): {
   shippingOptionId?: string
   shippingOptionDTag?: string
+  shippingOptionIds?: string[]
+  shippingOptionDTags?: string[]
   shippingOptionLaunchUnsupported?: boolean
   extraCost?: CommerceShippingCostLike
 } {
   const shippingOptionTags =
     tags?.filter((candidate) => candidate[0] === "shipping_option") ?? []
-  const tag = shippingOptionTags[0]
-  const ref = tag?.[1]
-  if (!ref) return {}
+  const references = Array.from(
+    new Set(
+      shippingOptionTags.flatMap((tag) =>
+        typeof tag[1] === "string" && tag[1].trim() ? [tag[1].trim()] : []
+      )
+    )
+  )
+  const ref = references[0]
+  if (!ref) {
+    return shippingOptionTags.length > 0
+      ? { shippingOptionLaunchUnsupported: true }
+      : {}
+  }
+  const tag = shippingOptionTags.find((candidate) => candidate[1] === ref)!
   const parts = ref.split(":")
 
   const rawExtraCost = tag?.[2]
@@ -216,8 +236,15 @@ function parseShippingOptionTag(
     shippingOptionId: ref,
     shippingOptionDTag:
       parts.length >= 3 ? parts.slice(2).join(":") : undefined,
+    shippingOptionIds: references,
+    shippingOptionDTags: references.map((reference) =>
+      reference.split(":").slice(2).join(":")
+    ),
     shippingOptionLaunchUnsupported:
-      shippingOptionTags.length !== 1 || tag.length > 2,
+      references.length !== shippingOptionTags.length ||
+      shippingOptionTags.some(
+        (candidate) => candidate.length !== 2 || !candidate[1]?.trim()
+      ),
     extraCost,
   }
 }

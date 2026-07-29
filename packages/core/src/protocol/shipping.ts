@@ -4,7 +4,8 @@
  * GammaMarkets market-spec: https://github.com/GammaMarkets/market-spec
  *
  * The canonical fixed-shipping writer publishes one complete, product-scoped
- * Gamma kind-30406 before its referencing kind-30402.
+ * Gamma kind-30406 per distinct country-rate zone before its referencing
+ * kind-30402.
  */
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk"
 import {
@@ -74,14 +75,48 @@ export function getProductShippingOptionAddress(
   )
 }
 
+export function getProductShippingZoneDTag(
+  productDTag: string,
+  countries: readonly string[]
+): string {
+  const normalizedCountries = Array.from(
+    new Set(countries.map((country) => country.trim().toUpperCase()))
+  ).sort()
+  if (
+    normalizedCountries.length === 0 ||
+    normalizedCountries.some((country) => !/^[A-Z]{2}$/.test(country))
+  ) {
+    throw new Error("Shipping zone requires at least one valid country")
+  }
+  return `${getProductShippingOptionDTag(productDTag)}-${normalizedCountries
+    .map((country) => country.toLowerCase())
+    .join("-")}`
+}
+
+export function getProductShippingZoneAddress(
+  pubkey: string,
+  productDTag: string,
+  countries: readonly string[]
+): string {
+  return getShippingOptionAddress(
+    pubkey,
+    getProductShippingZoneDTag(productDTag, countries)
+  )
+}
+
+export interface FixedShippingRateZone {
+  amount: number
+  currency: string
+  countries: string[]
+  usesProductFallback: boolean
+}
+
 export type ProductFulfillmentIntent =
   | { kind: "digital" }
   | { kind: "coordinate_after_order" }
   | {
       kind: "fixed_standard"
-      amount: number
-      currency: string
-      countries: string[]
+      zones: FixedShippingRateZone[]
     }
 
 export function compileProductFulfillmentIntent(input: {
@@ -96,28 +131,50 @@ export function compileProductFulfillmentIntent(input: {
     return { kind: "coordinate_after_order" }
   }
 
-  if (
-    typeof input.amount !== "number" ||
-    !Number.isFinite(input.amount) ||
-    input.amount < 0
-  ) {
-    throw new Error("Fixed shipping requires a non-negative amount")
-  }
-
   const currency = normalizeCurrencyCode(input.currency)
   if (!currency) throw new Error("Fixed shipping currency is required")
 
-  const countries = Array.from(
-    new Set(
-      input.destinations.map((destination) =>
-        destination.code.trim().toUpperCase()
-      )
-    )
-  ).sort()
+  const fallbackAmount =
+    typeof input.amount === "number" &&
+    Number.isFinite(input.amount) &&
+    input.amount >= 0
+      ? input.amount
+      : undefined
   if (
-    countries.length === 0 ||
-    countries.some((country) => !/^[A-Z]{2}$/.test(country))
+    input.amount !== undefined &&
+    (fallbackAmount === undefined || !Number.isFinite(input.amount))
   ) {
+    throw new Error("Fixed shipping fallback requires a non-negative amount")
+  }
+
+  const destinationsByCountry = new Map<string, ShippingCountryConfig>()
+  for (const destination of input.destinations) {
+    const country = destination.code.trim().toUpperCase()
+    if (!/^[A-Z]{2}$/.test(country)) {
+      throw new Error(
+        "Fixed shipping requires at least one valid country destination"
+      )
+    }
+    const existing = destinationsByCountry.get(country)
+    if (existing) {
+      const existingCurrency = normalizeCurrencyCode(
+        existing.rate?.currency ?? currency
+      )
+      const nextCurrency = normalizeCurrencyCode(
+        destination.rate?.currency ?? currency
+      )
+      if (
+        existing.rate?.amount !== destination.rate?.amount ||
+        existingCurrency !== nextCurrency
+      ) {
+        throw new Error(`Fixed shipping has conflicting rates for ${country}`)
+      }
+      continue
+    }
+    destinationsByCountry.set(country, destination)
+  }
+  const countries = Array.from(destinationsByCountry.keys()).sort()
+  if (countries.length === 0) {
     throw new Error(
       "Fixed shipping requires at least one valid country destination"
     )
@@ -133,11 +190,62 @@ export function compileProductFulfillmentIntent(input: {
     )
   }
 
+  const groupedZones = new Map<
+    string,
+    {
+      amount: number
+      currency: string
+      countries: string[]
+      usesProductFallback: boolean
+    }
+  >()
+  for (const country of countries) {
+    const destination = destinationsByCountry.get(country)!
+    const explicitRate = destination.rate
+    if (
+      explicitRate &&
+      (!Number.isFinite(explicitRate.amount) || explicitRate.amount < 0)
+    ) {
+      throw new Error(
+        `Fixed shipping requires a non-negative zone rate for ${country}`
+      )
+    }
+    const amount = explicitRate?.amount ?? fallbackAmount
+    const rateCurrency = normalizeCurrencyCode(
+      explicitRate?.currency ?? currency
+    )
+    if (amount === undefined) {
+      throw new Error(
+        `Fixed shipping requires a zone rate or product fallback for ${country}`
+      )
+    }
+    if (!rateCurrency || rateCurrency !== currency) {
+      throw new Error(
+        "Fixed shipping zone currency must match the product currency"
+      )
+    }
+    const key = `${rateCurrency}\u0000${amount}`
+    const group = groupedZones.get(key) ?? {
+      amount,
+      currency: rateCurrency,
+      countries: [],
+      usesProductFallback: false,
+    }
+    group.countries.push(country)
+    group.usesProductFallback ||= explicitRate === undefined
+    groupedZones.set(key, group)
+  }
+
   return {
     kind: "fixed_standard",
-    amount: input.amount,
-    currency,
-    countries,
+    zones: Array.from(groupedZones.values())
+      .map((zone) => ({
+        ...zone,
+        countries: zone.countries.sort(),
+      }))
+      .sort((a, b) =>
+        a.countries.join(",").localeCompare(b.countries.join(","))
+      ),
   }
 }
 
@@ -152,11 +260,15 @@ export function buildFixedShippingOptionEventDraft(input: {
   intent: Extract<ProductFulfillmentIntent, { kind: "fixed_standard" }>
   clientAppId?: ConduitAppId
 }): ShippingOptionEventDraft {
+  if (input.intent.zones.length !== 1) {
+    throw new Error("Expected exactly one fixed shipping zone")
+  }
+  const zone = input.intent.zones[0]!
   let tags: string[][] = [
     ["d", getProductShippingOptionDTag(input.productDTag)],
     ["title", "Standard Shipping"],
-    ["price", String(input.intent.amount), input.intent.currency],
-    ["country", ...input.intent.countries],
+    ["price", String(zone.amount), zone.currency],
+    ["country", ...zone.countries],
     ["service", "standard"],
   ]
   if (input.clientAppId) {
@@ -167,6 +279,30 @@ export function buildFixedShippingOptionEventDraft(input: {
     content: "",
     tags,
   }
+}
+
+export function buildFixedShippingOptionEventDrafts(input: {
+  productDTag: string
+  intent: Extract<ProductFulfillmentIntent, { kind: "fixed_standard" }>
+  clientAppId?: ConduitAppId
+}): ShippingOptionEventDraft[] {
+  return input.intent.zones.map((zone) => {
+    let tags: string[][] = [
+      ["d", getProductShippingZoneDTag(input.productDTag, zone.countries)],
+      ["title", `Standard Shipping (${zone.countries.join(", ")})`],
+      ["price", String(zone.amount), zone.currency],
+      ["country", ...zone.countries],
+      ["service", "standard"],
+    ]
+    if (input.clientAppId) {
+      tags = appendConduitClientTag(tags, input.clientAppId)
+    }
+    return {
+      kind: EVENT_KINDS.SHIPPING_OPTION,
+      content: "",
+      tags,
+    }
+  })
 }
 
 export type ShippingOptionAddress = {
@@ -210,6 +346,11 @@ export interface ShippingCountryConfig {
   restrictTo: string[]
   /** Postal code / prefix patterns that are excluded */
   exclude: string[]
+  /** Optional flat checkout rate for this country/zone. */
+  rate?: {
+    amount: number
+    currency: string
+  }
 }
 
 export interface ShippingConfig {
@@ -249,12 +390,15 @@ export type ProductFulfillmentResolutionReason =
   | "unsupported"
   | "currency_mismatch"
   | "stale"
+  | "destination_unsupported"
+  | "ambiguous_destination"
 
 export type PreparedProductFulfillment = {
   intent: "digital" | "coordinate_after_order" | "fixed_standard"
   status: "ready" | "order_first"
   reason?: ProductFulfillmentResolutionReason
   option?: ParsedShippingOption
+  options?: ParsedShippingOption[]
 }
 
 export type ResolvableProductFulfillment = Pick<
@@ -268,6 +412,8 @@ export type ResolvableProductFulfillment = Pick<
   | "sourceShippingCost"
   | "shippingOptionId"
   | "shippingOptionDTag"
+  | "shippingOptionIds"
+  | "shippingOptionDTags"
   | "shippingOptionLaunchUnsupported"
   | "shippingCountries"
   | "shippingCountryRules"
@@ -658,7 +804,12 @@ export async function getShippingOptionsByCoordinates(
 
 export function resolveProductFulfillment(
   product: ResolvableProductFulfillment,
-  shippingOptions: readonly ParsedShippingOption[]
+  shippingOptions: readonly ParsedShippingOption[],
+  destination?: {
+    country?: string
+    postalCode?: string
+    shippingOptionId?: string
+  }
 ): PreparedProductFulfillment {
   if (product.format === "digital") {
     return { intent: "digital", status: "ready" }
@@ -668,7 +819,16 @@ export function resolveProductFulfillment(
     typeof product.shippingCostSats === "number" ||
     (product.shippingCountries?.length ?? 0) > 0 ||
     (product.shippingCountryRules?.length ?? 0) > 0
-  if (!product.shippingOptionId) {
+  const productShippingOptionIds = Array.from(
+    new Set(
+      product.shippingOptionIds?.length
+        ? product.shippingOptionIds
+        : product.shippingOptionId
+          ? [product.shippingOptionId]
+          : []
+    )
+  )
+  if (productShippingOptionIds.length === 0) {
     return hasLegacyInlineShipping
       ? {
           intent: "fixed_standard",
@@ -682,15 +842,16 @@ export function resolveProductFulfillment(
         }
   }
 
-  const address = parseShippingOptionAddress(product.shippingOptionId)
-  if (!address) {
+  const addresses = productShippingOptionIds.map(parseShippingOptionAddress)
+  if (addresses.some((address) => !address)) {
     return {
       intent: "fixed_standard",
       status: "order_first",
       reason: "invalid_reference",
     }
   }
-  if (address.pubkey !== product.pubkey) {
+  const parsedAddresses = addresses as ShippingOptionAddress[]
+  if (parsedAddresses.some((address) => address.pubkey !== product.pubkey)) {
     return {
       intent: "fixed_standard",
       status: "order_first",
@@ -706,46 +867,15 @@ export function resolveProductFulfillment(
     }
   }
 
-  if (address.dTag === CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG) {
-    return {
-      intent: "fixed_standard",
-      status: "order_first",
-      reason: "legacy_inline",
-    }
-  }
-
-  const candidates = shippingOptions.filter(
-    (option) => option.id === address.coordinate
-  )
-  if (candidates.length === 0) {
-    return {
-      intent: "fixed_standard",
-      status: "order_first",
-      reason: "unresolved",
-    }
-  }
-  const newestCreatedAt = Math.max(
-    ...candidates.map((candidate) => candidate.createdAt)
-  )
-  const newest = candidates.filter(
-    (candidate) => candidate.createdAt === newestCreatedAt
-  )
-  if (new Set(newest.map((candidate) => candidate.eventId)).size !== 1) {
-    return {
-      intent: "fixed_standard",
-      status: "order_first",
-      reason: "conflicting",
-    }
-  }
-  const option = newest[0]!
   if (
-    option.service !== "standard" ||
-    option.launchUnsupportedTags.length > 0
+    parsedAddresses.some(
+      (address) => address.dTag === CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG
+    )
   ) {
     return {
       intent: "fixed_standard",
       status: "order_first",
-      reason: "unsupported",
+      reason: "legacy_inline",
     }
   }
 
@@ -754,29 +884,107 @@ export function resolveProductFulfillment(
       product.sourcePrice?.currency ??
       product.currency
   )
-  if (option.currency !== productCurrency) {
+  const resolvedOptions: ParsedShippingOption[] = []
+  for (const address of parsedAddresses) {
+    const candidates = shippingOptions.filter(
+      (option) => option.id === address.coordinate
+    )
+    if (candidates.length === 0) {
+      return {
+        intent: "fixed_standard",
+        status: "order_first",
+        reason: "unresolved",
+      }
+    }
+    const newestCreatedAt = Math.max(
+      ...candidates.map((candidate) => candidate.createdAt)
+    )
+    const newest = candidates.filter(
+      (candidate) => candidate.createdAt === newestCreatedAt
+    )
+    if (new Set(newest.map((candidate) => candidate.eventId)).size !== 1) {
+      return {
+        intent: "fixed_standard",
+        status: "order_first",
+        reason: "conflicting",
+      }
+    }
+    const option = newest[0]!
+    if (
+      option.service !== "standard" ||
+      option.launchUnsupportedTags.length > 0
+    ) {
+      return {
+        intent: "fixed_standard",
+        status: "order_first",
+        reason: "unsupported",
+      }
+    }
+    if (option.currency !== productCurrency) {
+      return {
+        intent: "fixed_standard",
+        status: "order_first",
+        reason: "currency_mismatch",
+      }
+    }
+    if (
+      !Number.isFinite(product.updatedAt) ||
+      product.updatedAt <= 0 ||
+      option.createdAt > product.updatedAt
+    ) {
+      return {
+        intent: "fixed_standard",
+        status: "order_first",
+        reason: "stale",
+      }
+    }
+    resolvedOptions.push(option)
+  }
+
+  let matchingOptions = resolvedOptions
+  if (destination?.shippingOptionId) {
+    matchingOptions = resolvedOptions.filter(
+      (option) => option.id === destination.shippingOptionId
+    )
+  } else if (destination?.country?.trim()) {
+    const country = destination.country.trim().toUpperCase()
+    const postalCode = destination.postalCode ?? ""
+    matchingOptions = resolvedOptions.filter((option) => {
+      const eligibility = getShippingDestinationEligibility(
+        { country, postalCode },
+        [option]
+      )
+      return eligibility.eligible === true
+    })
+  } else if (resolvedOptions.length > 1) {
+    return {
+      intent: "fixed_standard",
+      status: "ready",
+      options: resolvedOptions,
+    }
+  }
+
+  if (matchingOptions.length === 0) {
     return {
       intent: "fixed_standard",
       status: "order_first",
-      reason: "currency_mismatch",
+      reason: "destination_unsupported",
     }
   }
-  if (
-    !Number.isFinite(product.updatedAt) ||
-    product.updatedAt <= 0 ||
-    option.createdAt > product.updatedAt
-  ) {
+  if (matchingOptions.length > 1) {
     return {
       intent: "fixed_standard",
       status: "order_first",
-      reason: "stale",
+      reason: "ambiguous_destination",
     }
   }
+  const option = matchingOptions[0]!
 
   return {
     intent: "fixed_standard",
     status: "ready",
     option,
+    options: resolvedOptions,
   }
 }
 
@@ -793,36 +1001,54 @@ export function applyPreparedProductFulfillment(
     canonicalShippingResolved: false,
     shippingOptionCreatedAt: undefined,
     shippingOptionLaunchUnsupported: undefined,
+    shippingZones: undefined,
   }
-  if (
-    prepared.intent !== "fixed_standard" ||
-    prepared.status !== "ready" ||
-    !prepared.option
-  ) {
+  if (prepared.intent !== "fixed_standard" || prepared.status !== "ready") {
     return prepared.intent === "digital"
       ? {
           ...withoutShipping,
           shippingOptionId: undefined,
           shippingOptionDTag: undefined,
+          shippingOptionIds: undefined,
+          shippingOptionDTags: undefined,
         }
       : withoutShipping
   }
 
-  const option = prepared.option
-  return {
-    ...withoutShipping,
-    ...canonicalizeShippingCost(option.price, option.currency),
+  const options = prepared.options ?? (prepared.option ? [prepared.option] : [])
+  const shippingZones = options.map((option) => ({
     shippingOptionId: option.id,
     shippingOptionDTag: option.dTag,
-    shippingCountries: [...option.countries],
-    shippingCountryRules: option.countryRules.map((rule) => ({
-      ...rule,
-      restrictTo: [...rule.restrictTo],
-      exclude: [...rule.exclude],
-    })),
-    canonicalShippingResolved: true,
-    shippingOptionCreatedAt: option.createdAt,
+    amount: option.price,
+    currency: option.currency,
+    countries: [...option.countries],
+  }))
+  const countries = Array.from(
+    new Set(options.flatMap((option) => option.countries))
+  ).sort()
+  const base: ProductSchema = {
+    ...withoutShipping,
+    shippingCountries: countries,
+    shippingCountryRules: options.flatMap((option) =>
+      option.countryRules.map((rule) => ({
+        ...rule,
+        restrictTo: [...rule.restrictTo],
+        exclude: [...rule.exclude],
+      }))
+    ),
+    shippingZones,
   }
+  const option = prepared.option
+  return option
+    ? {
+        ...base,
+        ...canonicalizeShippingCost(option.price, option.currency),
+        shippingOptionId: option.id,
+        shippingOptionDTag: option.dTag,
+        canonicalShippingResolved: true,
+        shippingOptionCreatedAt: option.createdAt,
+      }
+    : base
 }
 
 // ---------------------------------------------------------------------------
