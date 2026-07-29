@@ -18,13 +18,6 @@ export type CartHudCapabilityInput = {
   merchantLightningReady: boolean
 }
 
-export type CartHudZapOutInput = {
-  checkoutBlocked: boolean
-  availabilityChecking: boolean
-  merchantLightningReady: boolean
-  cartZapReady: boolean
-}
-
 const SUPPRESSED_ROUTES = new Set([
   "/about",
   "/cart",
@@ -66,13 +59,19 @@ export function getCartHudCheckoutCapability(
   return { state: "route_to_checkout", blockers }
 }
 
-export function isCartHudZapOutEligible(input: CartHudZapOutInput): boolean {
-  return (
-    !input.checkoutBlocked &&
-    !input.availabilityChecking &&
-    input.merchantLightningReady &&
-    input.cartZapReady
-  )
+export function getCartHudCheckoutFallbackMessage(
+  capability: CartHudCheckoutCapability
+): string {
+  if (capability.blockers.includes("price_unavailable")) {
+    return "Checkout is needed to refresh the cart total."
+  }
+  if (capability.blockers.includes("shipping_unavailable")) {
+    return "Checkout is needed to confirm shipping."
+  }
+  if (capability.blockers.includes("merchant_lightning_unavailable")) {
+    return "Checkout is needed to choose an available payment path."
+  }
+  return "Checkout is needed to confirm shipping and payment readiness."
 }
 
 export function reconcileCartHudMerchant(

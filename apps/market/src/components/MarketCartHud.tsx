@@ -1,4 +1,4 @@
-import { ChevronDown, Minus, Plus, ShoppingCart, Zap } from "lucide-react"
+import { ChevronDown, Minus, Plus, ShoppingCart } from "lucide-react"
 import { Link } from "@tanstack/react-router"
 import {
   formatNpub,
@@ -29,8 +29,9 @@ import {
   groupCartItems,
 } from "../lib/cart-model"
 import {
+  getCartHudCheckoutCapability,
+  getCartHudCheckoutFallbackMessage,
   getCartHudRouteMode,
-  isCartHudZapOutEligible,
   reconcileCartHudMerchant,
 } from "../lib/cart-hud"
 import { MerchantAvatarFallback } from "./MerchantIdentity"
@@ -97,7 +98,9 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     ? getCartCostSummary(activeGroup.items, shopperPricing.quote)
     : null
   const activeTotal = activeSummary
-    ? shopperPricing.formatSatsAmount(activeSummary.totalSats)
+    ? activeSummary.itemPricesAvailable
+      ? shopperPricing.formatSatsAmount(activeSummary.totalSats)
+      : null
     : null
   const activeAvailabilityMessage = activeGroup
     ? getCartAvailabilityBlockingMessage(
@@ -106,12 +109,13 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
       )
     : null
   const checkoutDisabled = !!activeAvailabilityMessage
-  const canZapOut = isCartHudZapOutEligible({
-    checkoutBlocked: checkoutDisabled,
-    availabilityChecking: cartAvailability.isChecking,
+  const checkoutCapability = getCartHudCheckoutCapability({
+    itemPricesAvailable: activeSummary?.itemPricesAvailable ?? false,
+    shippingReady: activeSummary?.shippingReadyForZap ?? false,
     merchantLightningReady: Boolean(activeProfile?.lud16),
-    cartZapReady: Boolean(activeSummary?.canZapOut),
   })
+  const checkoutFallbackMessage =
+    getCartHudCheckoutFallbackMessage(checkoutCapability)
   useEffect(() => {
     setExpanded(routeMode === "expanded")
   }, [pathname, routeMode])
@@ -302,7 +306,9 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         </span>
                         {selected && expanded ? (
                           <span className="block max-w-44 truncate text-xs font-normal text-[var(--text-muted)]">
-                            {groupTotal.primary}
+                            {groupSummary.itemPricesAvailable
+                              ? groupTotal.primary
+                              : "Total unavailable"}
                           </span>
                         ) : null}
                       </span>
@@ -312,7 +318,12 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               </TabsList>
             </Tabs>
           ) : (
-            <div className="mr-auto flex min-h-11 min-w-0 max-w-60 flex-1 items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-3 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)]">
+            <Link
+              to="/store/$pubkey"
+              params={{ pubkey: selectedMerchant }}
+              aria-label={`Open ${merchantName} store`}
+              className="mr-auto flex min-h-11 min-w-0 max-w-60 flex-1 items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--primary-500)_15%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_9%,transparent)] px-3 text-[var(--text-primary)] shadow-[var(--shadow-glass-inset)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+            >
               <Avatar className="h-7 w-7">
                 <AvatarImage src={activeProfile?.picture} alt="" />
                 <AvatarFallback>
@@ -330,13 +341,13 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                     {activeGroup.totalItems}
                   </StatusPill>
                 </span>
-                {expanded && activeTotal ? (
+                {expanded && activeSummary ? (
                   <span className="block truncate text-xs font-normal text-[var(--text-muted)]">
-                    {activeTotal.primary}
+                    {activeTotal?.primary ?? "Total unavailable"}
                   </span>
                 ) : null}
               </span>
-            </div>
+            </Link>
           )}
 
           <button
@@ -370,11 +381,9 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                 <Link
                   to="/checkout"
                   search={{ merchant: pubkeyToNpub(selectedMerchant) }}
+                  title={checkoutFallbackMessage}
                 >
-                  {canZapOut ? (
-                    <Zap className="h-4 w-4" aria-hidden="true" />
-                  ) : null}
-                  {canZapOut ? "Zap out" : "Checkout"}
+                  Checkout
                 </Link>
               </Button>
             ))}
@@ -392,6 +401,22 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
         >
           <div className="min-h-0 overflow-hidden">
             <div className="space-y-3 p-3 sm:p-4">
+              {groups.length > 1 ? (
+                <Link
+                  to="/store/$pubkey"
+                  params={{ pubkey: selectedMerchant }}
+                  aria-label={`Open ${merchantName} store`}
+                  className="inline-flex min-h-10 max-w-full items-center gap-2 rounded-lg px-2 text-sm font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+                >
+                  <Avatar className="h-7 w-7">
+                    <AvatarImage src={activeProfile?.picture} alt="" />
+                    <AvatarFallback>
+                      <MerchantAvatarFallback iconClassName="h-4 w-4" />
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="truncate">{merchantName}</span>
+                </Link>
+              ) : null}
               <div
                 role="region"
                 aria-label="Cart products"
@@ -507,7 +532,10 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                 })}
               </div>
 
-              <div className="flex justify-end gap-2 border-t border-[var(--border)] pt-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)] pt-3">
+                <span className="max-w-md text-xs text-[var(--text-muted)]">
+                  {checkoutFallbackMessage}
+                </span>
                 <div className="flex shrink-0 gap-2">
                   <Button asChild variant="outline" size="sm">
                     <Link
@@ -533,11 +561,9 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                       <Link
                         to="/checkout"
                         search={{ merchant: pubkeyToNpub(selectedMerchant) }}
+                        title={checkoutFallbackMessage}
                       >
-                        {canZapOut ? (
-                          <Zap className="h-4 w-4" aria-hidden="true" />
-                        ) : null}
-                        {canZapOut ? "Zap out" : "Continue to checkout"}
+                        Continue to checkout
                       </Link>
                     </Button>
                   )}

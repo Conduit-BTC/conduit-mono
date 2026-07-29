@@ -81,8 +81,12 @@ describe("checkout completion navigation contracts", () => {
       "apps/market/src/routes/checkout.tsx"
     ).text()
 
-    expect(checkoutRoute).toContain("{isGuestCheckout && !fastEligible && (")
+    expect(checkoutRoute).toContain("!guestManualInvoiceEligible && (")
     expect(checkoutRoute).toContain("Connect signer to send order")
+    expect(checkoutRoute).toContain("Send order and show invoice")
+    expect(checkoutRoute).toContain(
+      "walletPayCapable: !isGuestCheckout && canAttemptLightningPayment"
+    )
     expect(checkoutRoute).toContain("<SignerSwitch")
   })
 

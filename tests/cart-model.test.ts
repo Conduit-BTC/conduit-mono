@@ -520,6 +520,10 @@ describe("cart model", () => {
     expect(parsed.writable).toBe(true)
     expect(parsed.shouldPersist).toBe(true)
     expect(parsed.state.items).toHaveLength(2)
+    expect(parsed.state.items.map((entry) => entry.productId)).toEqual([
+      "30402:merchant-a:legacy-d-tag",
+      "30402:merchant-b:legacy-d-tag",
+    ])
     expect(parsed.state.items[0]?.sourcePrice).toEqual({
       amount: 10,
       currency: "USD",
@@ -532,14 +536,14 @@ describe("cart model", () => {
       version: 2,
       items: [
         item({
-          productId: "shared",
+          productId: "30402:merchant-a:shared",
           merchantPubkey: "merchant-a",
           merchantAddedAt: 20,
           title: "Old title",
           quantity: 2,
         }),
         item({
-          productId: "shared",
+          productId: "30402:merchant-a:shared",
           merchantPubkey: "merchant-a",
           merchantAddedAt: 10,
           title: "Current title",
@@ -567,8 +571,9 @@ describe("cart model", () => {
       ],
     })
 
+    expect(parsed.shouldPersist).toBe(true)
     expect(parsed.state.items).toMatchObject([
-      { productId: "valid-legacy", quantity: 2 },
+      { productId: "30402:merchant-a:valid-legacy", quantity: 2 },
     ])
   })
 

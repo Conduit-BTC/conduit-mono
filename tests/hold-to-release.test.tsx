@@ -27,7 +27,7 @@ describe("HoldToReleaseButton", () => {
   it("supports release completion and all required cancellation paths", () => {
     expect(source).toContain('stateRef.current !== "charged"')
     expect(source).toContain("firedRef.current = true")
-    expect(source).toContain("onPointerCancel={cancel}")
+    expect(source).toContain("onPointerCancel={() =>")
     expect(source).toContain("onPointerMove={handlePointerMove}")
     expect(source).toContain("releasedInside")
     expect(source).toContain("onLostPointerCapture")
@@ -36,6 +36,8 @@ describe("HoldToReleaseButton", () => {
     expect(source).toContain('document.addEventListener("visibilitychange"')
     expect(source).toContain('window.addEventListener("blur", cancel)')
     expect(source).toContain("if (!firedRef.current && haptics) vibrate(0)")
+    expect(source).toContain("event.detail === 0")
+    expect(source).toContain("activateAssistively()")
   })
 
   it("uses progressive browser haptics without requiring vibration support", () => {

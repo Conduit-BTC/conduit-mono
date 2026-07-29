@@ -270,7 +270,6 @@ export function isFastCheckoutEligible(params: {
   walletPayCapable: boolean
   merchantLud16: string | undefined | null
   lnurlAllowsNostr: boolean
-  allowsManualFallback?: boolean
   requiresNostrZap?: boolean
   pricingReady?: boolean
   shippingEligible?: boolean
@@ -322,7 +321,6 @@ export function getFastCheckoutUnavailableReasons(params: {
   walletPayCapable: boolean
   merchantLud16: string | undefined | null
   lnurlAllowsNostr: boolean
-  allowsManualFallback?: boolean
   requiresNostrZap?: boolean
   pricingReady?: boolean
   shippingEligible?: boolean
@@ -332,10 +330,7 @@ export function getFastCheckoutUnavailableReasons(params: {
   addressValidForDirectPayment?: boolean
 }): string[] {
   const reasons: string[] = []
-  const canStartLightningFlow =
-    params.walletPayCapable || params.allowsManualFallback === true
-
-  if (!canStartLightningFlow) {
+  if (!params.walletPayCapable) {
     reasons.push(
       "Connect a Lightning wallet or enable browser Lightning payments."
     )

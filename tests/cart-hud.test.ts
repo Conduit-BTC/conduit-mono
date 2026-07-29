@@ -2,8 +2,8 @@ import { describe, expect, it } from "bun:test"
 import { readFileSync } from "node:fs"
 import {
   getCartHudCheckoutCapability,
+  getCartHudCheckoutFallbackMessage,
   getCartHudRouteMode,
-  isCartHudZapOutEligible,
   reconcileCartHudMerchant,
 } from "../apps/market/src/lib/cart-hud"
 
@@ -123,47 +123,22 @@ describe("Market cart HUD policy", () => {
     })
   })
 
-  it("labels only prepared merchant carts as Zap out", () => {
+  it("explains why the HUD routes through checkout", () => {
     expect(
-      isCartHudZapOutEligible({
-        checkoutBlocked: false,
-        availabilityChecking: false,
-        merchantLightningReady: true,
-        cartZapReady: true,
+      getCartHudCheckoutFallbackMessage({
+        state: "route_to_checkout",
+        blockers: ["price_unavailable"],
       })
-    ).toBe(true)
-
-    for (const input of [
-      {
-        checkoutBlocked: true,
-        availabilityChecking: false,
-        merchantLightningReady: true,
-        cartZapReady: true,
-      },
-      {
-        checkoutBlocked: false,
-        availabilityChecking: true,
-        merchantLightningReady: true,
-        cartZapReady: true,
-      },
-      {
-        checkoutBlocked: false,
-        availabilityChecking: false,
-        merchantLightningReady: false,
-        cartZapReady: true,
-      },
-      {
-        checkoutBlocked: false,
-        availabilityChecking: false,
-        merchantLightningReady: true,
-        cartZapReady: false,
-      },
-    ]) {
-      expect(isCartHudZapOutEligible(input)).toBe(false)
-    }
+    ).toBe("Checkout is needed to refresh the cart total.")
+    expect(
+      getCartHudCheckoutFallbackMessage({
+        state: "route_to_checkout",
+        blockers: ["listing_freshness_unavailable"],
+      })
+    ).toBe("Checkout is needed to confirm shipping and payment readiness.")
   })
 
-  it("sends eligible Zap out actions directly to checkout shipping", () => {
+  it("routes HUD actions to checkout until its required capability inputs exist", () => {
     const hud = readFileSync(
       new URL(
         "../apps/market/src/components/MarketCartHud.tsx",
@@ -177,9 +152,8 @@ describe("Market cart HUD policy", () => {
     )
 
     expect(hud).toContain('to="/checkout"')
-    expect(hud).toContain('{canZapOut ? "Zap out" : "Checkout"}')
-    expect(hud).toContain('{canZapOut ? "Zap out" : "Continue to checkout"}')
-    expect(hud).toContain('<Zap className="h-4 w-4" aria-hidden="true" />')
+    expect(hud).not.toContain('"Zap out"')
+    expect(hud).toContain("checkoutFallbackMessage")
     expect(checkout).toContain(
       'const [step, setStep] = useState<CheckoutStep>("shipping")'
     )
