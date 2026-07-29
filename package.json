@@ -54,6 +54,10 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
   },
+  "overrides": {
+    "brace-expansion": "5.0.8",
+    "postcss": "8.5.23"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@getalby/sdk": "^8.0.3",
