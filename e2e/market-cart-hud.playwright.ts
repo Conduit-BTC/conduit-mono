@@ -46,7 +46,7 @@ for (const viewport of [
   { name: "mobile", width: 390, height: 844 },
   { name: "desktop", width: 1_440, height: 900 },
 ]) {
-  test(`cart HUD is contained and route-aware on ${viewport.name}`, async ({
+  test(`market cart HUD is contained and route-aware on ${viewport.name}`, async ({
     page,
   }) => {
     await page.setViewportSize(viewport)
@@ -69,6 +69,9 @@ for (const viewport of [
     await expect(selectedItemCount).toHaveText("1")
     await expect(selectedCart).toContainText("3,400")
     await expect(hud.getByText("Reading Lamp")).toBeVisible()
+    const merchantLink = hud.getByRole("link", { name: /Open .* store/ })
+    await expect(merchantLink).toBeVisible()
+    await expect(merchantLink).toHaveAttribute("href", `/store/${MERCHANT_B}`)
     const productRail = hud.getByRole("region", { name: "Cart products" })
     await expect(productRail).toBeVisible()
     expect(
@@ -137,3 +140,52 @@ for (const viewport of [
     ).toHaveCount(0)
   })
 }
+
+test("market cart HUD does not present a partial total", async ({ page }) => {
+  await page.addInitScript(
+    ({ merchant }) => {
+      localStorage.setItem(
+        "conduit:cart",
+        JSON.stringify({
+          version: 2,
+          items: [
+            {
+              productId: "priced",
+              merchantPubkey: merchant,
+              title: "Priced item",
+              price: 1_200,
+              priceSats: 1_200,
+              currency: "SATS",
+              format: "digital",
+              quantity: 1,
+            },
+            {
+              productId: "unpriced",
+              merchantPubkey: merchant,
+              title: "Unpriced item",
+              price: 10,
+              currency: "UNSUPPORTED",
+              format: "digital",
+              quantity: 1,
+            },
+          ],
+        })
+      )
+    },
+    { merchant: MERCHANT_A }
+  )
+  await page.goto(`${marketUrl}/products`)
+  const hud = page.getByRole("region", { name: "Cart inventory" })
+  await expect(hud).toContainText("Total unavailable")
+  await expect(hud).not.toContainText("1,200 sats")
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const stored = JSON.parse(localStorage.getItem("conduit:cart") ?? "{}")
+        return stored.items?.map(
+          (item: { productId: string }) => item.productId
+        )
+      })
+    )
+    .toEqual([`30402:${MERCHANT_A}:priced`, `30402:${MERCHANT_A}:unpriced`])
+})

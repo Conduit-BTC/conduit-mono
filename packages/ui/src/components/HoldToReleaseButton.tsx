@@ -57,6 +57,7 @@ export function HoldToReleaseButton({
   const generationRef = useRef(0)
   const pointerIdRef = useRef<number | null>(null)
   const keyRef = useRef<" " | "Enter" | null>(null)
+  const nativeActivationRef = useRef(false)
   const firedRef = useRef(false)
   const statusId = useId()
 
@@ -110,7 +111,20 @@ export function HoldToReleaseButton({
     updateState("idle")
     if (haptics) vibrate([12, 28, 30])
     onHoldComplete()
+    window.setTimeout(() => {
+      firedRef.current = false
+    }, 0)
   }, [canComplete, cancel, haptics, onHoldComplete, updateState])
+
+  const activateAssistively = useCallback(() => {
+    if (disabled || firedRef.current || stateRef.current !== "idle") return
+    if (canComplete && !canComplete()) return
+    firedRef.current = true
+    onHoldComplete()
+    window.setTimeout(() => {
+      firedRef.current = false
+    }, 0)
+  }, [canComplete, disabled, onHoldComplete])
 
   useEffect(
     () => () => {
@@ -148,6 +162,7 @@ export function HoldToReleaseButton({
   const handlePointerDown = (event: PointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0 || pointerIdRef.current !== null || disabled) return
     event.preventDefault()
+    nativeActivationRef.current = true
     pointerIdRef.current = event.pointerId
     event.currentTarget.setPointerCapture(event.pointerId)
     arm()
@@ -165,10 +180,14 @@ export function HoldToReleaseButton({
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
     if (!releasedInside) {
+      nativeActivationRef.current = false
       cancel()
       return
     }
     release()
+    window.setTimeout(() => {
+      nativeActivationRef.current = false
+    }, 0)
   }
 
   const handlePointerMove = (event: PointerEvent<HTMLButtonElement>) => {
@@ -183,6 +202,7 @@ export function HoldToReleaseButton({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
+    nativeActivationRef.current = false
     cancel()
   }
 
@@ -196,6 +216,7 @@ export function HoldToReleaseButton({
       return
     }
     event.preventDefault()
+    nativeActivationRef.current = true
     keyRef.current = event.key
     arm()
   }
@@ -204,6 +225,9 @@ export function HoldToReleaseButton({
     if (keyRef.current !== event.key) return
     event.preventDefault()
     release()
+    window.setTimeout(() => {
+      nativeActivationRef.current = false
+    }, 0)
   }
 
   const statusLabel =
@@ -231,11 +255,21 @@ export function HoldToReleaseButton({
           "--hold-duration": `${Math.max(1, holdDurationMs)}ms`,
         } as CSSProperties
       }
-      onClick={(event) => event.preventDefault()}
+      onClick={(event) => {
+        event.preventDefault()
+        if (nativeActivationRef.current) {
+          nativeActivationRef.current = false
+          return
+        }
+        if (event.detail === 0) activateAssistively()
+      }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
-      onPointerCancel={cancel}
+      onPointerCancel={() => {
+        nativeActivationRef.current = false
+        cancel()
+      }}
       onLostPointerCapture={() => {
         if (!firedRef.current && pointerIdRef.current !== null) cancel()
       }}

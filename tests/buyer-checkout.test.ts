@@ -430,15 +430,14 @@ describe("isFastCheckoutEligible", () => {
     ).toBe(false)
   })
 
-  it("allows fast checkout when LNURL is ready and external-wallet fallback is available", () => {
+  it("keeps manual invoice fallback out of fast checkout eligibility", () => {
     expect(
       isFastCheckoutEligible({
         walletPayCapable: false,
         merchantLud16: "merchant@wallet.example",
         lnurlAllowsNostr: true,
-        allowsManualFallback: true,
       })
-    ).toBe(true)
+    ).toBe(false)
   })
 
   it("returns false when merchantLud16 is missing", () => {
@@ -537,15 +536,16 @@ describe("isFastCheckoutEligible", () => {
     ).toEqual([])
   })
 
-  it("does not report a wallet-capability blocker when manual fallback can continue", () => {
+  it("reports wallet capability separately from the manual invoice fallback", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: false,
         merchantLud16: "merchant@wallet.example",
         lnurlAllowsNostr: true,
-        allowsManualFallback: true,
       })
-    ).toEqual([])
+    ).toEqual([
+      "Connect a Lightning wallet or enable browser Lightning payments.",
+    ])
   })
 
   it("enables private checkout but disables public zap when LNURL-pay lacks NIP-57", () => {

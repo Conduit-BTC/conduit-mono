@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 
-test("hold-to-release supports cancellation, keyboard, and optional haptics", async ({
+test("market hold-to-release supports cancellation, keyboard, assistive activation, and optional haptics", async ({
   page,
 }) => {
   await page.goto(`${marketUrl}/products`)
@@ -108,8 +108,21 @@ test("hold-to-release supports cancellation, keyboard, and optional haptics", as
   await button.focus()
   await page.keyboard.down("Space")
   await page.waitForTimeout(110)
+  await expect(button).toHaveAttribute("data-hold-state", "charged")
   await page.keyboard.up("Space")
   await expect.poll(() => page.evaluate(() => window.__holdCount)).toBe(2)
+
+  await page.keyboard.down("Enter")
+  await page.waitForTimeout(110)
+  await expect(button).toHaveAttribute("data-hold-state", "charged")
+  await page.keyboard.up("Enter")
+  await expect.poll(() => page.evaluate(() => window.__holdCount)).toBe(3)
+
+  await button.evaluate((element) => {
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }))
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }))
+  })
+  await expect.poll(() => page.evaluate(() => window.__holdCount)).toBe(4)
   await expect
     .poll(() => page.evaluate(() => window.__vibrations))
     .toContainEqual([12, 28, 30])

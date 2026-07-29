@@ -296,35 +296,40 @@ function parseShippingRules(value: unknown): CartItem["shippingCountryRules"] {
   return rules
 }
 
-function coordinateMatchesMerchant(
+function normalizeProductCoordinate(
   productId: string,
   merchantPubkey: string
-): boolean {
-  if (!productId.startsWith("30402:")) return true
+): string | null {
+  if (!productId.startsWith("30402:")) {
+    return `30402:${merchantPubkey}:${productId}`
+  }
   const [, coordinatePubkey, ...identifier] = productId.split(":")
   return coordinatePubkey === merchantPubkey && identifier.join(":").length > 0
+    ? productId
+    : null
 }
 
 function parseCartItem(value: unknown): CartItem | null {
   if (!isRecord(value)) return null
-  const productId = nonemptyString(value.productId)
+  const storedProductId = nonemptyString(value.productId)
   const merchantPubkey = nonemptyString(value.merchantPubkey)
   const title = nonemptyString(value.title)
   const currency = nonemptyString(value.currency)
   const price = finiteNonnegativeNumber(value.price)
   const quantityValue = finiteNonnegativeNumber(value.quantity)
   if (
-    !productId ||
+    !storedProductId ||
     !merchantPubkey ||
     !title ||
     !currency ||
     price === undefined ||
     quantityValue === undefined ||
-    quantityValue <= 0 ||
-    !coordinateMatchesMerchant(productId, merchantPubkey)
+    quantityValue <= 0
   ) {
     return null
   }
+  const productId = normalizeProductCoordinate(storedProductId, merchantPubkey)
+  if (!productId) return null
 
   const quantity = Math.max(1, Math.floor(quantityValue))
   const merchantAddedAt = finiteNonnegativeNumber(value.merchantAddedAt)
@@ -495,9 +500,17 @@ export function parsePersistedCart(value: unknown): ParsedPersistedCart {
     })
   }
 
+  const hasLegacyProductIds = value.items.some(
+    (item) =>
+      isRecord(item) &&
+      typeof item.productId === "string" &&
+      !item.productId.startsWith("30402:")
+  )
+
   return {
     state: { items: Array.from(deduplicated.values()) },
-    shouldPersist: value.version !== CART_STORAGE_VERSION,
+    shouldPersist:
+      value.version !== CART_STORAGE_VERSION || hasLegacyProductIds,
     supported: true,
     writable: true,
   }
