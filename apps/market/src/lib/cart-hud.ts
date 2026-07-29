@@ -72,6 +72,9 @@ export function getCartHudCheckoutCapability(
 export function getCartHudCheckoutFallbackMessage(
   capability: CartHudCheckoutCapability
 ): string {
+  if (capability.state === "zap_ready") {
+    return "Ready to zap out using your saved checkout details."
+  }
   if (capability.blockers.includes("price_unavailable")) {
     return "Checkout is needed to refresh the cart total."
   }

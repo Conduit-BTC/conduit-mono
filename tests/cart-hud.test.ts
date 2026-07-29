@@ -139,6 +139,12 @@ describe("Market cart HUD policy", () => {
   it("explains why the HUD routes through checkout", () => {
     expect(
       getCartHudCheckoutFallbackMessage({
+        state: "zap_ready",
+        blockers: [],
+      })
+    ).toBe("Ready to zap out using your saved checkout details.")
+    expect(
+      getCartHudCheckoutFallbackMessage({
         state: "route_to_checkout",
         blockers: ["price_unavailable"],
       })
@@ -169,6 +175,9 @@ describe("Market cart HUD policy", () => {
     expect(hud).toContain("Zap out")
     expect(hud).toContain('intent: "zap"')
     expect(hud).toContain("checkoutFallbackMessage")
+    expect(hud).toContain("const wallet = useWallet()")
+    expect(hud).not.toContain("refreshBalance: true")
+    expect(hud).not.toContain("getKnownWalletPaymentConstraint")
     expect(checkout).toContain("consumeHudZapIntent(selectedMerchant)")
     expect(checkout).toContain("!autoZapAuthorization")
     expect(checkout).toContain("isHudZapAuthorizationValid")

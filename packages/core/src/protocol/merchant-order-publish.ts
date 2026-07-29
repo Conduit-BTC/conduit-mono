@@ -3,7 +3,7 @@ import { cacheParsedOrderMessage } from "./commerce"
 import { EVENT_KINDS } from "./kinds"
 import { getNdk } from "./ndk"
 import { appendConduitClientTag } from "./nip89"
-import { parseOrderMessageRumorEvent } from "./orders"
+import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import { publishPrivateMessage } from "./messaging"
 
 export type MerchantOrderDelivery = "buyer_and_self" | "self_only"
@@ -51,6 +51,21 @@ export function buildMerchantOrderRumorTags(
   )
 }
 
+export async function cachePublishedMerchantOrderMessage(
+  message: ParsedOrderMessage,
+  cacheMessage: (
+    message: ParsedOrderMessage
+  ) => Promise<void> = cacheParsedOrderMessage
+): Promise<boolean> {
+  try {
+    await cacheMessage(message)
+    return true
+  } catch {
+    console.warn("Published merchant order message could not be cached locally")
+    return false
+  }
+}
+
 function prepareMerchantRumor(rumor: NDKEvent, merchantPubkey: string): void {
   rumor.pubkey = merchantPubkey
   if (!rumor.id) rumor.id = rumor.getEventHash()
@@ -90,5 +105,5 @@ export async function publishMerchantOrderMessage(
   }
 
   const parsed = parseOrderMessageRumorEvent(rumor)
-  await cacheParsedOrderMessage(parsed)
+  await cachePublishedMerchantOrderMessage(parsed)
 }
