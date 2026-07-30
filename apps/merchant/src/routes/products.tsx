@@ -7,8 +7,7 @@ import {
   EVENT_KINDS,
   SHIPPING_COUNTRIES,
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
-  appendConduitClientTag,
-  buildProductDeletionTarget,
+  buildProductDeletionEventDraft,
   buildProductPublishResultTelemetryProperties,
   cacheSignedProductDeletionEvent,
   canonicalizeProductPrice,
@@ -101,9 +100,9 @@ import {
   productDeletionJobToPublishResult,
 } from "../lib/product-deletion-delivery"
 import {
-  deliverSignedProductEvent,
+  deliverSignedProductEventBundle,
   getRelayPublishDiagnosticsError,
-  signAndPublishProductListing,
+  signAndPublishProductWriteBundle,
   SignedProductDeliveryError,
 } from "../lib/product-publishing"
 import {
@@ -111,6 +110,16 @@ import {
   isPlainStockInput,
   parseProductStockInput,
 } from "../lib/productStock"
+import {
+  buildProductFamilyChangePlan,
+  createEmptyProductVariationForm,
+  getProductVariationCombinations,
+  getProductVariationFormState,
+  groupProductVariationRecords,
+  reconcileProductVariationForm,
+  updateProductVariationOverride,
+  type ProductVariationFormResult,
+} from "../lib/productVariations"
 
 export const Route = createFileRoute("/products")({
   beforeLoad: () => {
@@ -129,19 +138,25 @@ type MerchantProduct = {
   safety: ListingSafetyEvaluation
 }
 
+type MerchantProductFamily = MerchantProduct & {
+  variations: MerchantProduct[]
+  orphanVariation: boolean
+  variationForm: ProductVariationFormResult
+}
+
 type ProductFormState = MerchantProductFormValues
 
 type ProductPublishMutationPayload = {
   merchantPubkey: string
   form: ProductFormState
   dTag: string
-  existing?: MerchantProduct
-  signedEvent?: NDKEvent
+  existing?: MerchantProductFamily
+  signedEvents?: readonly NDKEvent[]
   previousNotice?: ProductDeliveryNotice
 }
 
 type ProductDeleteMutationPayload = {
-  product?: MerchantProduct
+  product?: MerchantProductFamily
   deliveryJobId?: string
   previousNotice?: ProductDeliveryNotice
 }
@@ -160,6 +175,7 @@ function createEmptyProductForm(
     summary: "",
     price: "0",
     stock: "",
+    variations: createEmptyProductVariationForm(),
     currency: "USD",
     format: "physical",
     shippingPricingMode: "fixed",
@@ -177,12 +193,18 @@ const EMPTY_FORM: ProductFormState = createEmptyProductForm()
 
 function getProductDraftTarget(
   merchantPubkey: string,
-  product?: MerchantProduct | null
+  product?: MerchantProductFamily | null
 ): ProductDraftTarget {
+  const familyEventId = product
+    ? [product, ...product.variations]
+        .map((record) => record.eventId)
+        .sort()
+        .join(":")
+    : null
   return {
     merchantPubkey,
     productAddressId: product?.addressId ?? null,
-    baseEventId: product?.eventId ?? null,
+    baseEventId: familyEventId,
   }
 }
 
@@ -229,9 +251,10 @@ function productShippingConfigFromProduct(
 }
 
 function productToForm(
-  product: ProductSchema,
+  family: MerchantProductFamily,
   presetAvailable = true
 ): ProductFormState {
+  const product = family.product
   const source = product.sourcePrice
   const sourceShippingCost = product.sourceShippingCost
   const currency = source?.normalizedCurrency ?? product.currency
@@ -243,6 +266,7 @@ function productToForm(
     summary: product.summary ?? "",
     price: formatProductAmountInput(source?.amount ?? product.price),
     stock: typeof product.stock === "number" ? String(product.stock) : "",
+    variations: family.variationForm.state,
     currency,
     format: product.format,
     shippingPricingMode:
@@ -445,13 +469,52 @@ function ListingSafetySummary({
   item,
   onEdit,
 }: {
-  item: MerchantProduct
-  onEdit: () => void
+  item: MerchantProductFamily
+  onEdit?: () => void
 }) {
   const display = getListingSafetyDisplay(item.safety)
   const isActive = item.safety.state === "active"
   const isPolicyWarning = item.safety.state === "flagged"
   const zapPolicyLabel = getZapPolicyLabel(item.product)
+
+  if (item.product.type === "variable" && item.variationForm.supported) {
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2">
+        <StatusPill variant="info" className="text-[10px]">
+          Variable product
+        </StatusPill>
+        <span className="text-xs text-[var(--text-secondary)]">
+          {item.variations.length} variation
+          {item.variations.length === 1 ? "" : "s"}
+        </span>
+      </div>
+    )
+  }
+
+  if (!item.variationForm.supported) {
+    return (
+      <article className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="font-semibold text-[var(--text-primary)]">
+              {item.product.title}
+            </div>
+            <p className="mt-2 leading-6">
+              {item.variationForm.reason ??
+                "This variation family cannot be edited safely."}
+            </p>
+          </div>
+          <StatusPill variant="warning" className="text-[10px]">
+            Read-only
+          </StatusPill>
+        </div>
+        <p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">
+          You can delete the known listing family, but editing is disabled to
+          avoid losing unsupported option data.
+        </p>
+      </article>
+    )
+  }
 
   if (isActive) {
     return (
@@ -504,9 +567,11 @@ function ListingSafetySummary({
       <p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">
         {display.merchantAction}
       </p>
-      <Button variant="outline" size="sm" className="mt-3" onClick={onEdit}>
-        {isPolicyWarning ? "Review listing" : "Fix listing"}
-      </Button>
+      {onEdit && (
+        <Button variant="outline" size="sm" className="mt-3" onClick={onEdit}>
+          {isPolicyWarning ? "Review listing" : "Fix listing"}
+        </Button>
+      )}
     </article>
   )
 }
@@ -559,8 +624,8 @@ async function publishProduct(
   merchantPubkey: string,
   form: ProductFormState,
   dTag: string,
-  onSignedLocal: (event: NDKEvent) => Promise<void>,
-  existing?: MerchantProduct
+  onSignedLocal: (events: readonly NDKEvent[]) => Promise<void>,
+  existing?: MerchantProductFamily
 ): Promise<PublishWithPlannerResult> {
   const formValidation = validateProductPublishForm(form, {
     hasPresetShippingZone: isShippingComplete(
@@ -635,6 +700,8 @@ async function publishProduct(
     price: normalizedPrice,
     currency,
     type: "simple",
+    parentProductId: undefined,
+    specifications: [],
     format: form.format,
     ...shippingCost,
     ...shippingMetadata,
@@ -650,18 +717,39 @@ async function publishProduct(
     updatedAt: now,
   })
 
-  return signAndPublishProductListing({
+  const plan = buildProductFamilyChangePlan({
+    parentDTag: dTag,
+    baseProduct: product,
+    variations: form.variations,
+    currency,
+    existing: existing
+      ? {
+          root: existing,
+          variations: existing.variations,
+          orphanVariation: existing.orphanVariation,
+        }
+      : undefined,
+    now,
+  })
+
+  return signAndPublishProductWriteBundle({
     merchantPubkey,
-    product,
-    dTag,
-    previousEventCreatedAt: existing?.eventCreatedAt,
+    listings: plan.publish.map((target) => ({
+      product: target.product,
+      dTag: target.dTag,
+      previousEventCreatedAt: target.existing?.eventCreatedAt,
+    })),
+    deletions: plan.remove.map((target) => ({
+      eventId: target.eventId,
+      addressId: target.addressId,
+    })),
     onSignedLocal,
   })
 }
 
 async function deleteProduct(
   merchantPubkey: string,
-  product: MerchantProduct,
+  product: MerchantProductFamily,
   onSignedLocal: (event: NDKEvent, deliveryJobId: string) => Promise<void>
 ): Promise<{ delivery: PublishWithPlannerResult; deliveryJobId: string }> {
   const ndk = await requireNdkConnected()
@@ -670,15 +758,19 @@ async function deleteProduct(
   if (signerPubkey !== merchantPubkey) {
     throw new Error("Active signer does not match current merchant pubkey")
   }
-  if (product.product.pubkey !== merchantPubkey) {
+  const familyRecords = [product, ...product.variations]
+  if (familyRecords.some((record) => record.product.pubkey !== merchantPubkey)) {
     throw new Error(
       "Product pubkey mismatch; refusing to publish deletion event"
     )
   }
-  const target = buildProductDeletionTarget({
-    authorPubkey: merchantPubkey,
-    eventId: product.eventId,
-    addressId: product.dTag ? product.addressId : null,
+  const draft = buildProductDeletionEventDraft({
+    merchantPubkey,
+    targets: familyRecords.map((record) => ({
+      eventId: record.eventId,
+      addressId: record.dTag ? record.addressId : undefined,
+    })),
+    clientAppId: "merchant",
   })
   const currentWriteRelayUrls =
     await planCurrentProductDeletionWriteRelays(merchantPubkey)
@@ -686,18 +778,16 @@ async function deleteProduct(
   const deletion = new NDKEvent(ndk)
   deletion.kind = EVENT_KINDS.DELETION
   deletion.created_at = Math.floor(Date.now() / 1000)
-  const tags: string[][] = [
-    ...target.tags.map((tag) => [...tag]),
-    ["p", product.product.pubkey],
-  ]
-  deletion.tags = appendConduitClientTag(tags, "merchant")
-  deletion.content = ""
+  deletion.tags = draft.tags
+  deletion.content = draft.content
 
   await deletion.sign(ndk.signer)
   const deliveryJob = await persistSignedProductDeletion({
     signedEvent: deletion.rawEvent(),
     currentWriteRelayUrls,
-    sourceRelayUrls: product.sourceRelayUrls,
+    sourceRelayUrls: Array.from(
+      new Set(familyRecords.flatMap((record) => record.sourceRelayUrls))
+    ),
   })
   await cacheSignedProductDeletionEvent(deletion)
   try {
@@ -721,7 +811,7 @@ function ProductsPage() {
   const productDraftStoreRef = useRef(new ProductDraftStore())
   const productPublishStartedAtRef = useRef<number | null>(null)
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM)
-  const [editing, setEditing] = useState<MerchantProduct | null>(null)
+  const [editing, setEditing] = useState<MerchantProductFamily | null>(null)
   const [productDialogOpen, setProductDialogOpen] = useState(false)
   const [activeProductDraftTarget, setActiveProductDraftTarget] =
     useState<ProductDraftTarget | null>(null)
@@ -756,9 +846,37 @@ function ProductsPage() {
     () => pendingDeletionJobsQuery.data ?? [],
     [pendingDeletionJobsQuery.data]
   )
-  const merchantProducts = useMemo(
+  const merchantProductRecords = useMemo(
     () => productsQuery.data?.data ?? cachedProductsQuery.data?.data ?? [],
     [cachedProductsQuery.data?.data, productsQuery.data?.data]
+  )
+  const merchantProducts = useMemo<MerchantProductFamily[]>(
+    () =>
+      groupProductVariationRecords(merchantProductRecords).map((family) => {
+        const variationForm = getProductVariationFormState(
+          family.root,
+          family.variations
+        )
+        const hasFamilyImage = [family.root, ...family.variations].some(
+          (record) => getProductImageCandidates(record.product).length > 0
+        )
+        const safety =
+          family.root.product.type === "variable" && variationForm.supported
+            ? evaluateListingSafety(family.root.product, undefined, {
+                variationGroupRole: "parent",
+                hasGroupImage: hasFamilyImage,
+              })
+            : family.root.safety
+
+        return {
+          ...family.root,
+          safety,
+          variations: family.variations,
+          orphanVariation: family.orphanVariation,
+          variationForm,
+        }
+      }),
+    [merchantProductRecords]
   )
   const shippingConfig = loadShippingConfig(pubkey)
   const hasPresetShippingZone = isShippingComplete(shippingConfig)
@@ -808,9 +926,9 @@ function ProductsPage() {
 
   const saveMutation = useMutation({
     mutationFn: async (payload: ProductPublishMutationPayload) => {
-      if (payload.signedEvent) {
-        return deliverSignedProductEvent(
-          payload.signedEvent,
+      if (payload.signedEvents) {
+        return deliverSignedProductEventBundle(
+          payload.signedEvents,
           payload.merchantPubkey
         )
       }
@@ -819,10 +937,10 @@ function ProductsPage() {
         payload.merchantPubkey,
         payload.form,
         payload.dTag,
-        async (event) => {
+        async (events) => {
           setProductDeliveryRetry({
             action: "publish",
-            payload: { ...payload, signedEvent: event },
+            payload: { ...payload, signedEvents: events },
           })
           completeLocalProductSave(payload)
           await showLocalProductProjection("publish", payload.merchantPubkey)
@@ -832,9 +950,9 @@ function ProductsPage() {
     },
     onMutate: (payload) => {
       productPublishStartedAtRef.current = Date.now()
-      if (!payload.signedEvent) setProductDeliveryRetry(null)
+      if (!payload.signedEvents) setProductDeliveryRetry(null)
       setProductDeliveryNotice(
-        payload.signedEvent ? buildLocalProductDeliveryNotice("publish") : null
+        payload.signedEvents ? buildLocalProductDeliveryNotice("publish") : null
       )
     },
     onSuccess: async (data, variables) => {
@@ -847,7 +965,7 @@ function ProductsPage() {
         app: "merchant",
         eventName: "product_publish_result",
         properties: buildProductPublishResultTelemetryProperties({
-          eventFamily: variables.signedEvent
+          eventFamily: variables.signedEvents
             ? "delivery_retry"
             : variables.existing
               ? "update"
@@ -867,7 +985,7 @@ function ProductsPage() {
         app: "merchant",
         eventName: "product_publish_result",
         properties: buildProductPublishResultTelemetryProperties({
-          eventFamily: variables.signedEvent
+          eventFamily: variables.signedEvents
             ? "delivery_retry"
             : variables.existing
               ? "update"
@@ -1036,7 +1154,7 @@ function ProductsPage() {
 
     if (
       productDeliveryRetry?.action === "publish" &&
-      productDeliveryRetry.payload.signedEvent
+      productDeliveryRetry.payload.signedEvents
     ) {
       saveMutation.mutate({
         ...productDeliveryRetry.payload,
@@ -1050,7 +1168,7 @@ function ProductsPage() {
   const savedProductForm = useMemo(
     () =>
       editing
-        ? productToForm(editing.product, hasPresetShippingZone)
+        ? productToForm(editing, hasPresetShippingZone)
         : createEmptyProductForm(hasPresetShippingZone),
     [editing, hasPresetShippingZone]
   )
@@ -1091,7 +1209,9 @@ function ProductsPage() {
   const productStatusMessage = !productFormValidation.canPublish
     ? productFormValidation.firstError
     : editing
-      ? "Save changes to publish this listing update."
+      ? form.variations.enabled
+        ? "Save changes to publish only the parent or variations that changed."
+        : "Save changes to publish this listing update."
       : "Publish this product to add it to your store."
   const productsInitialLoading =
     productsQuery.isLoading && cachedProductsQuery.isLoading
@@ -1144,7 +1264,13 @@ function ProductsPage() {
     return `${count} listing${count === 1 ? "" : "s"}`
   }, [merchantProducts])
 
-  const productStatusLabel = `${visibleProducts.length} of ${merchantProducts.length} listings`
+  const productStatusLabel = productsQuery.isFetching
+    ? "Updating listings"
+    : `${visibleProducts.length} of ${merchantProducts.length} listings`
+  const productVariationCombinations = useMemo(
+    () => getProductVariationCombinations(form.variations),
+    [form.variations]
+  )
   const productIsDigital = form.format === "digital"
   const productCoordinatesShipping =
     !productIsDigital && form.shippingPricingMode === "coordinate_after_order"
@@ -1244,7 +1370,8 @@ function ProductsPage() {
     setProductDialogOpen(true)
   }
 
-  function openEditDialog(item: MerchantProduct): void {
+  function openEditDialog(item: MerchantProductFamily): void {
+    if (!item.variationForm.supported) return
     rememberProductDialogTrigger()
     saveMutation.reset()
     if (
@@ -1273,7 +1400,7 @@ function ProductsPage() {
             loaded.draft,
             hasPresetShippingZone
           )
-        : productToForm(item.product, hasPresetShippingZone)
+        : productToForm(item, hasPresetShippingZone)
     )
     setDraftStorageAvailable(loaded.storageAvailable)
     setProductDialogOpen(true)
@@ -1476,18 +1603,44 @@ function ProductsPage() {
               item.product,
               btcUsdRateQuery.data ?? null
             )
+            const isConstrainedVariationFamily =
+              item.product.type === "variable" &&
+              item.variationForm.supported &&
+              item.variations.length > 0
 
             if (!item.safety.marketVisible) {
               return (
-                <ListingSafetySummary
-                  key={item.addressId}
-                  item={item}
-                  onEdit={() => openEditDialog(item)}
-                />
+                <div key={item.addressId} className="grid gap-2">
+                  <ListingSafetySummary
+                    item={item}
+                    onEdit={
+                      item.variationForm.supported
+                        ? () => openEditDialog(item)
+                        : undefined
+                    }
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={isDeleting}
+                    onClick={() => {
+                      const targetCount = 1 + item.variations.length
+                      const ok = window.confirm(
+                        targetCount > 1
+                          ? `Delete "${item.product.title}" and its ${item.variations.length} variations?`
+                          : `Delete "${item.product.title}"?`
+                      )
+                      if (ok) deleteMutation.mutate({ product: item })
+                    }}
+                  >
+                    {isDeleting ? "..." : "Delete"}
+                  </Button>
+                </div>
               )
             }
 
-            const isActive = item.safety.state === "active"
+            const isActive =
+              item.safety.state === "active" || isConstrainedVariationFamily
             const zapBadge = getZapPolicyBadge(item.product)
             const stockDisplay = getProductStockDisplay(item.product.stock)
 
@@ -1505,7 +1658,9 @@ function ProductsPage() {
                     <div className="flex flex-col items-end gap-1">
                       {isActive && (
                         <StatusPill variant="success" className="text-[10px]">
-                          Active
+                          {isConstrainedVariationFamily
+                            ? `${item.variations.length} variants`
+                            : "Active"}
                         </StatusPill>
                       )}
                       <StatusPill
@@ -1532,9 +1687,11 @@ function ProductsPage() {
                         variant="outline"
                         size="sm"
                         className="h-7 px-2 text-xs"
+                        disabled={!item.variationForm.supported}
                         onClick={(event) => {
                           event.preventDefault()
                           event.stopPropagation()
+                          if (!item.variationForm.supported) return
                           openEditDialog(item)
                         }}
                       >
@@ -1548,8 +1705,11 @@ function ProductsPage() {
                         onClick={(event) => {
                           event.preventDefault()
                           event.stopPropagation()
+                          const targetCount = 1 + item.variations.length
                           const ok = window.confirm(
-                            `Delete "${item.product.title}"?`
+                            targetCount > 1
+                              ? `Delete "${item.product.title}" and its ${item.variations.length} variations?`
+                              : `Delete "${item.product.title}"?`
                           )
                           if (ok) deleteMutation.mutate({ product: item })
                         }}
@@ -1576,7 +1736,10 @@ function ProductsPage() {
         }}
       >
         <DialogContent
-          className="max-h-[90vh] overflow-y-auto sm:max-w-2xl"
+          className={cn(
+            "max-h-[90vh] overflow-y-auto",
+            form.variations.enabled ? "sm:max-w-4xl" : "sm:max-w-2xl"
+          )}
           onPointerDownOutside={(event) => event.preventDefault()}
           onEscapeKeyDown={(event) => {
             if (isSaving) event.preventDefault()
@@ -1590,11 +1753,17 @@ function ProductsPage() {
         >
           <DialogHeader>
             <DialogTitle>
-              {editing ? "Edit listing" : "Add product"}
+              {editing
+                ? form.variations.enabled
+                  ? "Edit product family"
+                  : "Edit listing"
+                : "Add product"}
             </DialogTitle>
             <DialogDescription>
               {editing
-                ? "Update this product listing."
+                ? form.variations.enabled
+                  ? "Update the parent product and its size or color variations."
+                  : "Update this product listing."
                 : "Add a product to your store."}
             </DialogDescription>
           </DialogHeader>
@@ -1642,7 +1811,9 @@ function ProductsPage() {
 
             <div className="grid gap-3 sm:grid-cols-4">
               <div className="grid gap-1.5">
-                <Label htmlFor="product-price">Price</Label>
+                <Label htmlFor="product-price">
+                  {form.variations.enabled ? "Base price" : "Price"}
+                </Label>
                 <Input
                   id="product-price"
                   type="text"
@@ -1752,7 +1923,11 @@ function ProductsPage() {
                 />
               </div>
               <div className="grid gap-1.5 sm:col-span-2">
-                <Label htmlFor="product-stock">Stock quantity</Label>
+                <Label htmlFor="product-stock">
+                  {form.variations.enabled
+                    ? "Default stock quantity"
+                    : "Stock quantity"}
+                </Label>
                 <Input
                   id="product-stock"
                   type="text"
@@ -1782,7 +1957,9 @@ function ProductsPage() {
                 )}
               >
                 {productFormValidation.errors.stock ??
-                  "Leave blank to publish without stock tracking. Enter 0 to mark the listing sold out."}
+                  (form.variations.enabled
+                    ? "Used by every variation unless you enter a row override. Leave blank to publish without stock tracking."
+                    : "Leave blank to publish without stock tracking. Enter 0 to mark the listing sold out.")}
               </div>
               {productFormValidation.errors.price && (
                 <p
@@ -1935,6 +2112,216 @@ function ProductsPage() {
               )}
             </div>
 
+            <fieldset className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+              <legend className="px-1 text-sm font-semibold text-[var(--text-primary)]">
+                Product options
+              </legend>
+              <label className="flex items-start gap-3 text-sm">
+                <input
+                  type="checkbox"
+                  checked={form.variations.enabled}
+                  onChange={(event) =>
+                    setForm((previous) => ({
+                      ...previous,
+                      variations: reconcileProductVariationForm({
+                        ...previous.variations,
+                        enabled: event.target.checked,
+                      }),
+                    }))
+                  }
+                  className="mt-1 h-4 w-4 rounded border-[var(--border)] accent-secondary-500"
+                />
+                <span className="grid gap-1">
+                  <span className="font-medium text-[var(--text-primary)]">
+                    This product has size or color options
+                  </span>
+                  <span className="text-xs leading-5 text-[var(--text-muted)]">
+                    Conduit publishes one variable parent and one independently
+                    priced, independently stocked listing for each combination.
+                  </span>
+                </span>
+              </label>
+
+              {form.variations.enabled && (
+                <>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="product-variation-sizes">Sizes</Label>
+                      <Input
+                        id="product-variation-sizes"
+                        value={form.variations.sizeOptions}
+                        aria-invalid={!!productFormValidation.errors.variations}
+                        aria-describedby="product-variations-help"
+                        placeholder="S, M, L, XL"
+                        onChange={(event) =>
+                          setForm((previous) => ({
+                            ...previous,
+                            variations: reconcileProductVariationForm({
+                              ...previous.variations,
+                              sizeOptions: event.target.value,
+                            }),
+                          }))
+                        }
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="product-variation-colors">Colors</Label>
+                      <Input
+                        id="product-variation-colors"
+                        value={form.variations.colorOptions}
+                        aria-invalid={!!productFormValidation.errors.variations}
+                        aria-describedby="product-variations-help"
+                        placeholder="Black, Purple"
+                        onChange={(event) =>
+                          setForm((previous) => ({
+                            ...previous,
+                            variations: reconcileProductVariationForm({
+                              ...previous.variations,
+                              colorOptions: event.target.value,
+                            }),
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div
+                    id="product-variations-help"
+                    className={cn(
+                      "text-xs leading-5",
+                      productFormValidation.errors.variations
+                        ? "text-error"
+                        : "text-[var(--text-muted)]"
+                    )}
+                  >
+                    {productFormValidation.errors.variations ??
+                      "Use one option or both. Separate values with commas. Every size and color combination becomes a variation."}
+                  </div>
+
+                  {productVariationCombinations.length > 0 && (
+                    <div className="grid gap-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-sm font-medium text-[var(--text-primary)]">
+                          Generated variations
+                        </div>
+                        <Badge
+                          variant="secondary"
+                          className="border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-secondary)]"
+                        >
+                          {productVariationCombinations.length}
+                        </Badge>
+                      </div>
+                      <p className="text-xs leading-5 text-[var(--text-muted)]">
+                        Leave an override blank to use the base price or default
+                        stock.
+                      </p>
+                      <div className="hidden grid-cols-[minmax(0,1fr)_minmax(9rem,0.7fr)_minmax(9rem,0.7fr)] gap-3 px-3 text-xs font-medium text-[var(--text-muted)] sm:grid">
+                        <span>Option</span>
+                        <span>Price override ({form.currency})</span>
+                        <span>Stock override</span>
+                      </div>
+                      <div className="grid max-h-[24rem] gap-2 overflow-y-auto pr-1">
+                        {productVariationCombinations.map(
+                          (combination, index) => (
+                            <div
+                              key={combination.identity}
+                              className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:grid-cols-[minmax(0,1fr)_minmax(9rem,0.7fr)_minmax(9rem,0.7fr)] sm:items-end"
+                            >
+                              <div className="min-w-0">
+                                <div className="text-xs text-[var(--text-muted)] sm:hidden">
+                                  Option
+                                </div>
+                                <div className="truncate text-sm font-medium text-[var(--text-primary)]">
+                                  {combination.label}
+                                </div>
+                              </div>
+                              <div className="grid gap-1">
+                                <Label
+                                  htmlFor={`product-variation-price-${index}`}
+                                  className="text-xs sm:sr-only"
+                                >
+                                  {combination.label} price override
+                                </Label>
+                                <Input
+                                  id={`product-variation-price-${index}`}
+                                  type="text"
+                                  inputMode={getProductAmountInputMode(
+                                    form.currency
+                                  )}
+                                  autoComplete="off"
+                                  className="tabular-nums"
+                                  value={combination.price}
+                                  placeholder={form.price || "Base price"}
+                                  onChange={(event) => {
+                                    if (
+                                      !isPlainDecimalInput(event.target.value)
+                                    ) {
+                                      return
+                                    }
+                                    setForm((previous) => ({
+                                      ...previous,
+                                      variations:
+                                        updateProductVariationOverride(
+                                          previous.variations,
+                                          combination.identity,
+                                          "price",
+                                          event.target.value
+                                        ),
+                                    }))
+                                  }}
+                                />
+                              </div>
+                              <div className="grid gap-1">
+                                <Label
+                                  htmlFor={`product-variation-stock-${index}`}
+                                  className="text-xs sm:sr-only"
+                                >
+                                  {combination.label} stock override
+                                </Label>
+                                <Input
+                                  id={`product-variation-stock-${index}`}
+                                  type="text"
+                                  inputMode="numeric"
+                                  autoComplete="off"
+                                  className="tabular-nums"
+                                  value={combination.stock}
+                                  placeholder={form.stock || "Not tracked"}
+                                  onChange={(event) => {
+                                    if (
+                                      !isPlainStockInput(event.target.value)
+                                    ) {
+                                      return
+                                    }
+                                    setForm((previous) => ({
+                                      ...previous,
+                                      variations:
+                                        updateProductVariationOverride(
+                                          previous.variations,
+                                          combination.identity,
+                                          "stock",
+                                          event.target.value
+                                        ),
+                                    }))
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          )
+                        )}
+                      </div>
+                      <p className="text-xs leading-5 text-[var(--text-muted)]">
+                        First publish requires{" "}
+                        {productVariationCombinations.length + 1} signer
+                        approvals: one parent and{" "}
+                        {productVariationCombinations.length} variation
+                        {productVariationCombinations.length === 1 ? "" : "s"}.
+                      </p>
+                    </div>
+                  )}
+                </>
+              )}
+            </fieldset>
+
             <div className="grid gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
               <label className="flex items-start gap-3 text-sm">
                 <input
@@ -2036,8 +2423,16 @@ function ProductsPage() {
                       : "idle"
               }
               dirtyMessage={productStatusMessage}
-              awaitingSignatureMessage="Confirm the product listing in your signer. It will save locally while relay delivery runs."
-              publishingMessage="The signed listing is visible locally. Delivering it to relays."
+              awaitingSignatureMessage={
+                form.variations.enabled
+                  ? "Confirm each changed product listing in your signer. The family will save locally before relay delivery runs."
+                  : "Confirm the product listing in your signer. It will save locally while relay delivery runs."
+              }
+              publishingMessage={
+                form.variations.enabled
+                  ? "The signed product family is visible locally. Delivering its changed listings to relays."
+                  : "The signed listing is visible locally. Delivering it to relays."
+              }
               errorMessage={getPublishErrorMessage(
                 saveMutation.error,
                 "publish"

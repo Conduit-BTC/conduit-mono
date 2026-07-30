@@ -9,6 +9,15 @@ export type ProductZapMessagePolicy = z.infer<
   typeof productZapMessagePolicySchema
 >
 
+export const productSpecificationSchema = z.object({
+  key: z.string().min(1),
+  value: z.string().min(1),
+})
+
+export type ProductSpecificationSchema = z.infer<
+  typeof productSpecificationSchema
+>
+
 export const productSchema = z.object({
   id: z.string(),
   pubkey: z.string(),
@@ -25,6 +34,10 @@ export const productSchema = z.object({
     })
     .optional(),
   type: z.enum(["simple", "variable", "variation"]).default("simple"),
+  /** Full kind-30402 coordinate of this variation's variable parent. */
+  parentProductId: z.string().optional(),
+  /** GammaMarkets `spec` tags preserved in signed-event order. */
+  specifications: z.array(productSpecificationSchema).default([]),
   /** Whether the product requires physical shipping. Defaults to "physical". */
   format: z.enum(["physical", "digital"]).default("physical"),
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */

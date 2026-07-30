@@ -139,7 +139,7 @@ function hasSameProductsByReference(a: Product[], b: Product[]): boolean {
 function mergeProducts(existing: Product[], incoming: Product[]): Product[] {
   if (incoming.length === 0) return existing
 
-  const merged = dedupeProducts([...existing, ...incoming])
+  const merged = dedupeProducts([...incoming, ...existing])
   return hasSameProductsByReference(existing, merged) ? existing : merged
 }
 

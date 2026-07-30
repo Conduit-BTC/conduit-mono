@@ -40,6 +40,16 @@ export interface ListingSafetyDecision {
   evaluatedAt?: number
 }
 
+export interface ListingSafetyContext {
+  /**
+   * Non-simple products are checkout-capable only after the commerce layer
+   * proves a reachable parent/child group.
+   */
+  variationGroupRole?: "parent" | "variation"
+  /** A valid image on another member of the prepared group can render the card. */
+  hasGroupImage?: boolean
+}
+
 type ListingSafetyRuleTerm =
   | string
   | {
@@ -619,7 +629,8 @@ function isPurchasableState(state: ListingSafetyState): boolean {
 
 export function evaluateListingSafety(
   product: Product,
-  decision?: ListingSafetyDecision | null
+  decision?: ListingSafetyDecision | null,
+  context: ListingSafetyContext = {}
 ): ListingSafetyEvaluation {
   const evaluatedAt = Date.now()
 
@@ -649,7 +660,10 @@ export function evaluateListingSafety(
     })
   }
 
-  if (!hasMarketVisibleListingImage(product)) {
+  if (
+    !hasMarketVisibleListingImage(product) &&
+    context.hasGroupImage !== true
+  ) {
     states.push("hidden")
     reasons.push({
       code: "missing_market_image",
@@ -661,7 +675,11 @@ export function evaluateListingSafety(
     })
   }
 
-  if (product.type !== "simple") {
+  const supportedVariationGroupRole =
+    (product.type === "variable" && context.variationGroupRole === "parent") ||
+    (product.type === "variation" && context.variationGroupRole === "variation")
+
+  if (product.type !== "simple" && !supportedVariationGroupRole) {
     states.push("unsupported")
     reasons.push({
       code: "unsupported_product_type",

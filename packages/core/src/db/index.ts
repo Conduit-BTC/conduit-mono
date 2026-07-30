@@ -75,6 +75,8 @@ export interface CachedProduct {
     normalizedCurrency: string
   }
   type?: "simple" | "variable" | "variation"
+  parentProductId?: string
+  specifications?: Array<{ key: string; value: string }>
   format?: "physical" | "digital"
   shippingCostSats?: number
   sourceShippingCost?: {
