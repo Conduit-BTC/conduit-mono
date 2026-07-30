@@ -7,6 +7,7 @@ import {
   type ConduitAppId,
   type NwcDiagnostic,
   type NwcConnection,
+  type ShopperPaymentRail,
 } from "@conduit/core"
 import {
   payInvoiceWithBuyerNwcSession,
@@ -28,6 +29,28 @@ export type CheckoutInvoicePaymentResult =
       reason: string
       diagnostics?: NwcDiagnostic[]
     }
+
+export function getPreferredPaymentRailAttempts(
+  preferredRail: ShopperPaymentRail,
+  availability: { nwc: boolean; webln: boolean }
+): {
+  tryNwc: boolean
+  tryWebln: boolean
+  preferredAutomaticRail: CheckoutPaymentRail
+} {
+  if (preferredRail === "manual") {
+    return {
+      tryNwc: false,
+      tryWebln: false,
+      preferredAutomaticRail: "nwc",
+    }
+  }
+  return {
+    tryNwc: availability.nwc,
+    tryWebln: availability.webln,
+    preferredAutomaticRail: preferredRail === "webln" ? "webln" : "nwc",
+  }
+}
 
 type PaymentRailDependencies = {
   nwcSessionPayInvoice: typeof payInvoiceWithBuyerNwcSession
@@ -56,10 +79,6 @@ function recordMarketPaymentAttemptResult(
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
-}
-
-function isWeblnAmbiguousProofFailure(error: unknown): boolean {
-  return getErrorMessage(error, "").includes("did not return a payment proof")
 }
 
 function isNwcPrePublishFailure(
@@ -100,6 +119,7 @@ export async function payCheckoutInvoice(
     walletConnection: NwcConnection | null
     tryNwc: boolean
     tryWebln?: boolean
+    preferredAutomaticRail?: CheckoutPaymentRail
     timeoutMs: number
     appId: ConduitAppId
     metadata?: Record<string, unknown>
@@ -112,6 +132,57 @@ export async function payCheckoutInvoice(
   const recordPaymentAttemptResult =
     dependencies.recordPaymentAttemptResult ?? recordMarketPaymentAttemptResult
   let attemptedAutomaticRail = false
+  let attemptedWebln = false
+
+  const attemptWebln =
+    async (): Promise<CheckoutInvoicePaymentResult | null> => {
+      if (
+        attemptedWebln ||
+        input.tryWebln === false ||
+        !dependencies.hasWebLN()
+      ) {
+        return null
+      }
+      attemptedWebln = true
+      attemptedAutomaticRail = true
+      const startedAt = Date.now()
+      try {
+        const result = await dependencies.weblnSendPayment({
+          invoice: input.invoice,
+        })
+
+        recordPaymentAttemptResult({
+          amountSats,
+          latencyMs: Date.now() - startedAt,
+          rail: "webln",
+          status: "success",
+        })
+
+        return {
+          status: "paid",
+          rail: "webln",
+          preimage: result.preimage,
+          paymentHash: result.paymentHash,
+        }
+      } catch (error) {
+        const message = getErrorMessage(error, "Browser wallet payment failed")
+        recordPaymentAttemptResult({
+          amountSats,
+          latencyMs: Date.now() - startedAt,
+          rail: "webln",
+          status: "ambiguous",
+        })
+        throw new Error(
+          `${message} Check your wallet before trying another payment path.`,
+          { cause: error }
+        )
+      }
+    }
+
+  if (input.preferredAutomaticRail === "webln") {
+    const result = await attemptWebln()
+    if (result) return result
+  }
 
   if (input.walletConnection && input.tryNwc) {
     attemptedAutomaticRail = true
@@ -186,44 +257,8 @@ export async function payCheckoutInvoice(
     }
   }
 
-  if (input.tryWebln !== false && dependencies.hasWebLN()) {
-    attemptedAutomaticRail = true
-    const startedAt = Date.now()
-    try {
-      const result = await dependencies.weblnSendPayment({
-        invoice: input.invoice,
-      })
-
-      recordPaymentAttemptResult({
-        amountSats,
-        latencyMs: Date.now() - startedAt,
-        rail: "webln",
-        status: "success",
-      })
-
-      return {
-        status: "paid",
-        rail: "webln",
-        preimage: result.preimage,
-        paymentHash: result.paymentHash,
-      }
-    } catch (error) {
-      const message = getErrorMessage(error, "Browser wallet payment failed")
-      recordPaymentAttemptResult({
-        amountSats,
-        latencyMs: Date.now() - startedAt,
-        rail: "webln",
-        status: isWeblnAmbiguousProofFailure(error) ? "ambiguous" : "failure",
-      })
-      if (isWeblnAmbiguousProofFailure(error)) {
-        throw new Error(
-          `${message} Check your wallet before trying another payment path.`,
-          { cause: error }
-        )
-      }
-      failures.push(message)
-    }
-  }
+  const weblnResult = await attemptWebln()
+  if (weblnResult) return weblnResult
 
   if (!attemptedAutomaticRail) {
     recordPaymentAttemptResult({

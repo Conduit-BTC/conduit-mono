@@ -66,6 +66,10 @@ visible result slice is selected.
   rather than being discarded.
 - Explicit price ordering remains literal and does not use this discovery
   policy.
+- When a connected shopper unlocks a shipping preset, the default order groups
+  listings by country and postal-code shipping evidence: explicitly eligible,
+  unknown, then explicitly ineligible. Fresh & diverse ordering applies
+  independently inside each group. Listings remain visible.
 - During progressive catalog discovery, the prepared order may improve as
   additional valid merchants and products are discovered.
 
@@ -156,6 +160,7 @@ This messaging flow requires a signed-in buyer identity. It does not apply to
 | `/network`             | Relay/network settings              |
 | `/wallet`              | Buyer wallet / NWC setup            |
 | `/profile`             | Buyer profile                       |
+| `/preferences`         | Encrypted shopper checkout presets  |
 | `/store/$pubkey`       | Merchant storefront                 |
 | `/u/$profileRef`       | Profile reference view              |
 | `/about`               | App/source/provenance surface       |
@@ -175,6 +180,10 @@ Do not document `/orders/$orderId` unless that route exists again.
 
 - Dexie stores orders, messages, product/profile caches, relay lists, social summaries, and payment attempts.
 - localStorage stores cart and small preferences.
+- An opted-in shopper preset uses client-side password encryption in kind
+  `30078`; see `docs/specs/shopper-presets.md`. Decrypted address data stays in
+  active React memory. Market does not persist a plaintext preset or address
+  projection.
 - Sensitive payment/message/order contents should not be added to telemetry or browser storage outside the intended encrypted/local persistence paths.
 
 ## Cart System
@@ -331,11 +340,13 @@ state while address/contact validity is missing, invalid, or unverified. See
 - Kind `1059`: gift-wrapped NIP-17 messages
 - Kind `9735`: zap receipts where relevant to proof handling
 - Kind `10002`: relay lists
+- Kind `30078`: encrypted Conduit shopper presets
 
 ### Publish
 
 - Kind `1059`: gift-wrapped order/payment/status messages
 - Kind `9734`: zap requests when using zap-style payment flows
+- Kind `30078`: encrypted Conduit shopper presets
 - NIP-89 events where app handler metadata/recommendations are explicitly implemented
 
 ## Trust Context

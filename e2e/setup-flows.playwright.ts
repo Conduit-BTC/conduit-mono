@@ -435,3 +435,94 @@ test("market wallet setup route renders for connected signer", async ({
   ).toBeVisible()
   await expect(page.getByPlaceholder("nostr+walletconnect://...")).toBeVisible()
 })
+
+test("market shopper preferences remove legacy plaintext and render the complete form", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await installTestSigner(page, TEST_BUYER_PUBKEY, { nip44: false })
+  await page.addInitScript((buyerPubkey) => {
+    localStorage.setItem(
+      `conduit:market-shopper-presets:v1:${buyerPubkey}`,
+      JSON.stringify({
+        version: 1,
+        updatedAt: Date.now(),
+        value: {
+          shippingCountry: "DE",
+        },
+      })
+    )
+  }, TEST_BUYER_PUBKEY)
+
+  await page.goto(`${marketUrl}/preferences`)
+  await expect(page.getByRole("heading", { name: "Preferences" })).toBeVisible()
+  await expect(page.getByRole("status")).toContainText(
+    /Encrypted on relays|Relay ready|Relay sync unavailable|Relay sync failed/,
+    { timeout: 20_000 }
+  )
+  const recipientName = page.getByLabel("Recipient name")
+  const addressLine1 = page.getByLabel("Address line 1")
+  await expect(recipientName).toBeVisible()
+  await expect(addressLine1).toBeVisible()
+  const addressPositionBefore = await addressLine1.boundingBox()
+  await expect(
+    recipientName.locator("..").getByText("Required", { exact: true })
+  ).toBeVisible()
+  await recipientName.fill("Ada Lovelace")
+  await expect(
+    recipientName.locator("..").getByText("Required", { exact: true })
+  ).not.toBeVisible()
+  const addressPositionAfter = await addressLine1.boundingBox()
+  expect(addressPositionAfter?.y).toBe(addressPositionBefore?.y)
+  await expect(page.getByLabel("Postal / ZIP code")).toBeVisible()
+  const encryptionPassword = page.getByLabel("Encryption password")
+  const confirmPassword = page.getByLabel("Confirm password")
+  const unlockPreference = page.getByLabel("Unlock preference")
+  await expect(encryptionPassword).toBeVisible()
+  await expect(confirmPassword).toBeVisible()
+  await expect(unlockPreference).toBeVisible()
+  const encryptionPasswordPosition = await encryptionPassword.boundingBox()
+  const confirmPasswordPosition = await confirmPassword.boundingBox()
+  expect(confirmPasswordPosition?.y).toBe(encryptionPasswordPosition?.y)
+  const unlockPreferencePositionBefore = await unlockPreference.evaluate(
+    (element) => element.getBoundingClientRect().top + window.scrollY
+  )
+  await encryptionPassword.fill("short")
+  await expect(
+    encryptionPassword
+      .locator("..")
+      .getByText("Password must contain 8 or more characters.")
+  ).toBeVisible()
+  await encryptionPassword.fill("password")
+  const unlockPreferencePositionAfter = await unlockPreference.evaluate(
+    (element) => element.getBoundingClientRect().top + window.scrollY
+  )
+  expect(unlockPreferencePositionAfter).toBe(unlockPreferencePositionBefore)
+  await expect(
+    encryptionPassword
+      .locator("..")
+      .getByText("Password must contain 8 or more characters.")
+  ).not.toBeVisible()
+  await confirmPassword.fill("different")
+  await expect(
+    confirmPassword.locator("..").getByText("Password confirmation must match.")
+  ).toBeVisible()
+  await confirmPassword.fill("password")
+  await expect(
+    confirmPassword.locator("..").getByText("Password confirmation must match.")
+  ).not.toBeVisible()
+  await expect(page.getByText(/save requirements remaining/)).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Save preferences" })
+  ).toBeDisabled()
+
+  await expect
+    .poll(() =>
+      page.evaluate((buyerPubkey) => {
+        return localStorage.getItem(
+          `conduit:market-shopper-presets:v1:${buyerPubkey}`
+        )
+      }, TEST_BUYER_PUBKEY)
+    )
+    .toBeNull()
+})

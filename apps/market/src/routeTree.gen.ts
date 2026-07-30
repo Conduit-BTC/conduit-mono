@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as ZapoutsRouteImport } from './routes/zapouts'
 import { Route as WalletRouteImport } from './routes/wallet'
 import { Route as ProfileRouteImport } from './routes/profile'
+import { Route as PreferencesRouteImport } from './routes/preferences'
 import { Route as OrdersRouteImport } from './routes/orders'
 import { Route as NetworkRouteImport } from './routes/network'
 import { Route as MessagesRouteImport } from './routes/messages'
@@ -37,6 +38,11 @@ const WalletRoute = WalletRouteImport.update({
 const ProfileRoute = ProfileRouteImport.update({
   id: '/profile',
   path: '/profile',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PreferencesRoute = PreferencesRouteImport.update({
+  id: '/preferences',
+  path: '/preferences',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OrdersRoute = OrdersRouteImport.update({
@@ -103,6 +109,7 @@ export interface FileRoutesByFullPath {
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
+  '/preferences': typeof PreferencesRoute
   '/profile': typeof ProfileRoute
   '/wallet': typeof WalletRoute
   '/zapouts': typeof ZapoutsRoute
@@ -119,6 +126,7 @@ export interface FileRoutesByTo {
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
+  '/preferences': typeof PreferencesRoute
   '/profile': typeof ProfileRoute
   '/wallet': typeof WalletRoute
   '/zapouts': typeof ZapoutsRoute
@@ -136,6 +144,7 @@ export interface FileRoutesById {
   '/messages': typeof MessagesRoute
   '/network': typeof NetworkRoute
   '/orders': typeof OrdersRoute
+  '/preferences': typeof PreferencesRoute
   '/profile': typeof ProfileRoute
   '/wallet': typeof WalletRoute
   '/zapouts': typeof ZapoutsRoute
@@ -154,6 +163,7 @@ export interface FileRouteTypes {
     | '/messages'
     | '/network'
     | '/orders'
+    | '/preferences'
     | '/profile'
     | '/wallet'
     | '/zapouts'
@@ -170,6 +180,7 @@ export interface FileRouteTypes {
     | '/messages'
     | '/network'
     | '/orders'
+    | '/preferences'
     | '/profile'
     | '/wallet'
     | '/zapouts'
@@ -186,6 +197,7 @@ export interface FileRouteTypes {
     | '/messages'
     | '/network'
     | '/orders'
+    | '/preferences'
     | '/profile'
     | '/wallet'
     | '/zapouts'
@@ -203,6 +215,7 @@ export interface RootRouteChildren {
   MessagesRoute: typeof MessagesRoute
   NetworkRoute: typeof NetworkRoute
   OrdersRoute: typeof OrdersRoute
+  PreferencesRoute: typeof PreferencesRoute
   ProfileRoute: typeof ProfileRoute
   WalletRoute: typeof WalletRoute
   ZapoutsRoute: typeof ZapoutsRoute
@@ -233,6 +246,13 @@ declare module '@tanstack/react-router' {
       path: '/profile'
       fullPath: '/profile'
       preLoaderRoute: typeof ProfileRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/preferences': {
+      id: '/preferences'
+      path: '/preferences'
+      fullPath: '/preferences'
+      preLoaderRoute: typeof PreferencesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/orders': {
@@ -323,6 +343,7 @@ const rootRouteChildren: RootRouteChildren = {
   MessagesRoute: MessagesRoute,
   NetworkRoute: NetworkRoute,
   OrdersRoute: OrdersRoute,
+  PreferencesRoute: PreferencesRoute,
   ProfileRoute: ProfileRoute,
   WalletRoute: WalletRoute,
   ZapoutsRoute: ZapoutsRoute,

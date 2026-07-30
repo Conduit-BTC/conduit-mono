@@ -210,6 +210,7 @@ export interface OrderPaymentContext {
   walletConnection: NwcConnection | null
   tryNwc: boolean
   tryWebln?: boolean
+  preferredAutomaticRail?: "nwc" | "webln"
   formatSatsAmount?: (sats: number) => string
 }
 
@@ -925,6 +926,7 @@ export async function runOrderPayment(
         walletConnection: ctx.walletConnection,
         tryNwc: ctx.tryNwc,
         tryWebln: ctx.tryWebln,
+        preferredAutomaticRail: ctx.preferredAutomaticRail,
         timeoutMs: 60_000,
         appId: "market",
         metadata: {

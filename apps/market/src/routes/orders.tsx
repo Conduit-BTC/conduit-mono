@@ -65,6 +65,7 @@ import {
 } from "../lib/orderConversations"
 import { fetchStoreProducts } from "../lib/storeProducts"
 import { useShopperPricing } from "../hooks/useShopperPricing"
+import { useShopperPresets } from "../hooks/useShopperPresets"
 import { useWallet } from "../hooks/useWallet"
 import {
   buildOrderTimeline,
@@ -89,6 +90,7 @@ import {
   subscribeOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
+import { getPreferredPaymentRailAttempts } from "../lib/payment-rails"
 
 type PriceFormatter = (price: CommercePriceLike) => ShopperPriceDisplay
 import {
@@ -662,6 +664,7 @@ function OrderDetail({
   const { vm, headerStatus } = row
   const wallet = useWallet()
   const shopperPricing = useShopperPricing()
+  const shopperPresets = useShopperPresets()
   const formatSats = (sats: number) =>
     shopperPricing.formatSatsAmount(sats).primary
   const { data: profile } = useProfile(row.merchantPubkey, {
@@ -701,6 +704,10 @@ function OrderDetail({
     const lc = row.lifecycle
     if (!lc) return null
     if (!lc.merchantLightningAddress) return null
+    const preferredPaymentAttempts = getPreferredPaymentRailAttempts(
+      shopperPresets.preset.preferredRail,
+      { nwc: canTryNwc, webln: !guestIdentity }
+    )
     return {
       orderId: vm.orderId,
       buyerPubkey,
@@ -716,8 +723,9 @@ function OrderDetail({
         quantity: item.quantity,
       })),
       walletConnection: wallet.connection,
-      tryNwc: canTryNwc,
-      tryWebln: !guestIdentity,
+      tryNwc: preferredPaymentAttempts.tryNwc,
+      tryWebln: preferredPaymentAttempts.tryWebln,
+      preferredAutomaticRail: preferredPaymentAttempts.preferredAutomaticRail,
       formatSatsAmount: formatSats,
     }
   }

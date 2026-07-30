@@ -33,6 +33,7 @@ export * from "./signing-retry"
 export * from "./social-hydrator"
 export * from "./session"
 export * from "./shipping"
+export * from "./shopper-presets"
 export {
   getNdk,
   connectNdk,
