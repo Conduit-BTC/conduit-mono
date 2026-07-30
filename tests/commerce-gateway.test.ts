@@ -88,6 +88,42 @@ function makeProductEvent(params: {
   }
 }
 
+function makeGammaProductEvent(params: {
+  pubkey: string
+  dTag: string
+  id: string
+  createdAt: number
+  title: string
+  type: "simple" | "variable" | "variation"
+  parentProductId?: string
+  size?: string
+  stock?: number
+  image?: boolean
+}) {
+  return {
+    id: params.id,
+    kind: EVENT_KINDS.PRODUCT,
+    pubkey: params.pubkey,
+    created_at: params.createdAt,
+    content: `${params.title} description`,
+    sig: "signed",
+    tags: [
+      ["d", params.dTag],
+      ["title", params.title],
+      ["price", "25000", "SATS"],
+      ["type", params.type, "physical"],
+      ...(params.parentProductId ? [["a", params.parentProductId]] : []),
+      ...(params.size ? [["spec", "size", params.size]] : []),
+      ...(typeof params.stock === "number"
+        ? [["stock", String(params.stock)]]
+        : []),
+      ...(params.image === false
+        ? []
+        : [["image", "https://example.com/product.png"]]),
+    ],
+  }
+}
+
 function makeSignedProductEvent(params: {
   secretKey?: Uint8Array
   dTag: string
@@ -223,6 +259,106 @@ afterEach(async () => {
 })
 
 describe("commerce gateway", () => {
+  it("groups reachable Gamma variations while hiding orphan and foreign children", async () => {
+    const merchantPubkey = MERCHANT_A_PUBKEY
+    const foreignPubkey = getPublicKey(MERCHANT_B_SECRET)
+    const parentProductId = `30402:${merchantPubkey}:shirt`
+    const events = [
+      makeGammaProductEvent({
+        pubkey: merchantPubkey,
+        dTag: "shirt",
+        id: "shirt-parent-event",
+        createdAt: 100,
+        title: "Conduit Shirt",
+        type: "variable",
+      }),
+      ...["S", "M", "L", "XL"].map((size, index) =>
+        makeGammaProductEvent({
+          pubkey: merchantPubkey,
+          dTag: `shirt-${size.toLowerCase()}`,
+          id: `shirt-${size.toLowerCase()}-event`,
+          createdAt: 101 + index,
+          title: `Conduit Shirt — ${size}`,
+          type: "variation",
+          parentProductId,
+          size,
+          stock: size === "S" ? 0 : 5,
+          image: false,
+        })
+      ),
+      makeGammaProductEvent({
+        pubkey: merchantPubkey,
+        dTag: "orphan",
+        id: "orphan-event",
+        createdAt: 106,
+        title: "Orphan Option",
+        type: "variation",
+        parentProductId: `30402:${merchantPubkey}:missing`,
+        size: "XXL",
+      }),
+      makeGammaProductEvent({
+        pubkey: foreignPubkey,
+        dTag: "foreign-child",
+        id: "foreign-child-event",
+        createdAt: 107,
+        title: "Foreign Child",
+        type: "variation",
+        parentProductId,
+        size: "XS",
+      }),
+      makeGammaProductEvent({
+        pubkey: merchantPubkey,
+        dTag: "sticker",
+        id: "sticker-event",
+        createdAt: 108,
+        title: "Conduit Sticker",
+        type: "simple",
+      }),
+    ]
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? (events as never) : [],
+    })
+
+    const market = await getMarketplaceProducts({ sort: "newest" })
+    const merchant = await getMerchantStorefront({
+      merchantPubkey,
+      includeMarketHidden: true,
+    })
+    const childDetail = await getProductDetail({
+      productId: `30402:${merchantPubkey}:shirt-l`,
+    })
+    const selectedVariation = await getProductsByIds([
+      `30402:${merchantPubkey}:shirt-l`,
+    ])
+    const orphanVariation = await getProductsByIds([
+      `30402:${merchantPubkey}:orphan`,
+    ])
+    const parent = market.data.find(
+      (record) => record.addressId === parentProductId
+    )
+
+    expect(market.data.map((record) => record.product.title).sort()).toEqual([
+      "Conduit Shirt",
+      "Conduit Sticker",
+    ])
+    expect(parent?.safety?.state).toBe("active")
+    expect(
+      parent?.product.variations?.map((variation) => variation.id)
+    ).toEqual([
+      `30402:${merchantPubkey}:shirt-s`,
+      `30402:${merchantPubkey}:shirt-m`,
+      `30402:${merchantPubkey}:shirt-l`,
+      `30402:${merchantPubkey}:shirt-xl`,
+    ])
+    expect(merchant.data).toHaveLength(7)
+    expect(childDetail.data?.addressId).toBe(parentProductId)
+    expect(childDetail.data?.product.variations).toHaveLength(4)
+    expect(selectedVariation.data[0]?.product.stock).toBe(5)
+    expect(orphanVariation.data).toHaveLength(0)
+  })
+
   it("passes author filters for perspective-scoped marketplace discovery", async () => {
     const productEvents = [
       makeProductEvent({

@@ -1,7 +1,6 @@
 import { useNavigate } from "@tanstack/react-router"
 import {
   getShopperPriceDisplay,
-  getProductImageCandidates,
   pubkeyToNpub,
   type PricingRateInput,
   type Product,
@@ -12,20 +11,28 @@ import {
   ProductCardSkeleton,
   ProductCartAction,
 } from "@conduit/ui"
+import { useEffect, useMemo, useState } from "react"
 import { getProductAddAvailability } from "../lib/cart-model"
+import {
+  getDefaultProductSelection,
+  getProductSelection,
+  getProductSelectionImages,
+} from "../lib/productVariations"
 import { getPendingMerchantDisplayName } from "./MerchantIdentity"
+import { ProductVariationSelector } from "./ProductVariationSelector"
 
 type ProductGridCardProps = {
   product: Product
   merchantName?: string
   merchantNamePending?: boolean
   imageLoading?: "eager" | "lazy"
-  onAddToCart?: () => void
+  onAddToCart?: (product: Product) => void
   btcUsdRate?: PricingRateInput
   pricePreference?: ShopperPricePreference
   cartQuantity?: number
-  onIncrement?: () => void
-  onDecrement?: () => void
+  getCartQuantity?: (product: Product) => number
+  onIncrement?: (product: Product) => void
+  onDecrement?: (product: Product) => void
   onInvalidImage?: (productId: string) => void
 }
 
@@ -38,42 +45,72 @@ export function ProductGridCard({
   btcUsdRate,
   pricePreference,
   cartQuantity = 0,
+  getCartQuantity,
   onIncrement,
   onDecrement,
   onInvalidImage,
 }: ProductGridCardProps) {
   const navigate = useNavigate()
+  const defaultSelection = useMemo(
+    () => getDefaultProductSelection(product),
+    [product]
+  )
+  const [selectedProductId, setSelectedProductId] = useState(
+    defaultSelection.id
+  )
+  const selectedProduct = getProductSelection(product, selectedProductId)
+  const hasVariations =
+    product.type === "variable" && (product.variations?.length ?? 0) > 0
+  const images = getProductSelectionImages(product, selectedProduct)
+  const selectedCartQuantity =
+    getCartQuantity?.(selectedProduct) ?? cartQuantity
+
+  useEffect(() => {
+    setSelectedProductId(defaultSelection.id)
+  }, [defaultSelection.id])
+
   const merchantNamePending =
     merchantNamePendingOverride ?? !merchantNameOverride
   const merchantName =
     merchantNameOverride ||
     getPendingMerchantDisplayName(product.pubkey, { chars: 6 })
   const { primary, secondary, approximateUsd } = getShopperPriceDisplay(
-    product,
+    selectedProduct,
     pricePreference,
     typeof btcUsdRate === "object" ? btcUsdRate : null
   )
-  const soldOut = product.stock === 0
+  const soldOut = selectedProduct.stock === 0
   const atStockLimit =
     !soldOut &&
-    getProductAddAvailability(product.stock, cartQuantity, 1).canAdd === false
+    getProductAddAvailability(selectedProduct.stock, selectedCartQuantity, 1)
+      .canAdd === false
 
   return (
     <ProductCard
       title={product.title}
       merchantName={merchantName}
       merchantNamePending={merchantNamePending}
-      images={getProductImageCandidates(product)}
+      images={images}
       primaryPrice={primary}
       secondaryPrice={secondary}
       approximateUsdPrice={approximateUsd}
       imageLoading={imageLoading}
-      cartQuantity={cartQuantity}
+      cartQuantity={selectedCartQuantity}
       soldOut={soldOut}
+      options={
+        hasVariations ? (
+          <ProductVariationSelector
+            product={product}
+            selectedProductId={selectedProduct.id}
+            onSelect={(variation) => setSelectedProductId(variation.id)}
+            compact
+          />
+        ) : undefined
+      }
       onActivate={() =>
         navigate({
           to: "/products/$productId",
-          params: { productId: product.id },
+          params: { productId: selectedProduct.id },
         })
       }
       onMerchantActivate={() =>
@@ -87,10 +124,14 @@ export function ProductGridCard({
         onAddToCart ? (
           <ProductCartAction
             title={product.title}
-            cartQuantity={cartQuantity}
-            onAddToCart={onAddToCart}
-            onIncrement={onIncrement}
-            onDecrement={onDecrement}
+            cartQuantity={selectedCartQuantity}
+            onAddToCart={() => onAddToCart(selectedProduct)}
+            onIncrement={
+              onIncrement ? () => onIncrement(selectedProduct) : undefined
+            }
+            onDecrement={
+              onDecrement ? () => onDecrement(selectedProduct) : undefined
+            }
             soldOut={soldOut}
             atStockLimit={atStockLimit}
           />

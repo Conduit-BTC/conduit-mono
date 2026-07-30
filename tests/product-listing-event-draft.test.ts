@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import {
+  buildProductDeletionEventDraft,
   buildProductListingEventDraft,
   canonicalizeProductPrice,
   canonicalizeProductTags,
@@ -18,6 +19,7 @@ function baseProduct(overrides: Partial<ProductSchema> = {}): ProductSchema {
     price: 10,
     currency: "USD",
     type: "simple",
+    specifications: [],
     format: "physical",
     shippingCostSats: 1,
     shippingOptionId: "30406:merchant:conduit-default",
@@ -218,9 +220,14 @@ describe("product listing event drafts", () => {
   })
 
   it("round-trips independent stock values through variation listing drafts", () => {
+    const merchantPubkey = "a".repeat(64)
+    const parentProductId = `30402:${merchantPubkey}:shirt`
     const largeDraft = buildProductListingEventDraft({
       product: baseProduct({
+        pubkey: merchantPubkey,
         type: "variation",
+        parentProductId,
+        specifications: [{ key: "size", value: "L" }],
         title: "Large Shirt",
         stock: 2,
       }),
@@ -228,7 +235,10 @@ describe("product listing event drafts", () => {
     })
     const mediumDraft = buildProductListingEventDraft({
       product: baseProduct({
+        pubkey: merchantPubkey,
         type: "variation",
+        parentProductId,
+        specifications: [{ key: "size", value: "M" }],
         title: "Medium Shirt",
         stock: 7,
       }),
@@ -237,14 +247,14 @@ describe("product listing event drafts", () => {
 
     const large = parseProductEvent({
       id: "large-shirt-event",
-      pubkey: "merchant",
+      pubkey: merchantPubkey,
       created_at: 1_779_762_725,
       content: largeDraft.content,
       tags: largeDraft.tags,
     })
     const medium = parseProductEvent({
       id: "medium-shirt-event",
-      pubkey: "merchant",
+      pubkey: merchantPubkey,
       created_at: 1_779_762_725,
       content: mediumDraft.content,
       tags: mediumDraft.tags,
@@ -254,6 +264,100 @@ describe("product listing event drafts", () => {
     expect(large.stock).toBe(2)
     expect(medium.type).toBe("variation")
     expect(medium.stock).toBe(7)
+  })
+
+  it("emits and parses Gamma variation parent and specification tags", () => {
+    const merchantPubkey = "b".repeat(64)
+    const parentProductId = `30402:${merchantPubkey}:conduit-tee`
+    const draft = buildProductListingEventDraft({
+      product: baseProduct({
+        pubkey: merchantPubkey,
+        type: "variation",
+        parentProductId,
+        specifications: [
+          { key: "size", value: "XL" },
+          { key: "color", value: "Purple" },
+        ],
+      }),
+      dTag: "conduit-tee-xl-purple",
+    })
+
+    expectTag(draft.tags, ["a", parentProductId])
+    expect(draft.tags.filter((tag) => tag[0] === "a")).toEqual([
+      ["a", parentProductId],
+    ])
+    expectTag(draft.tags, ["spec", "size", "XL"])
+    expectTag(draft.tags, ["spec", "color", "Purple"])
+
+    const parsed = parseProductEvent({
+      id: "variation-event",
+      pubkey: merchantPubkey,
+      created_at: 1_779_762_725,
+      content: draft.content,
+      tags: draft.tags,
+    })
+
+    expect(parsed.parentProductId).toBe(parentProductId)
+    expect(parsed.specifications).toEqual([
+      { key: "size", value: "XL" },
+      { key: "color", value: "Purple" },
+    ])
+  })
+
+  it("refuses to emit a variation without one same-merchant parent", () => {
+    const merchantPubkey = "c".repeat(64)
+    expect(() =>
+      buildProductListingEventDraft({
+        product: baseProduct({
+          pubkey: merchantPubkey,
+          type: "variation",
+          specifications: [{ key: "size", value: "M" }],
+        }),
+        dTag: "missing-parent",
+      })
+    ).toThrow("require one same-merchant")
+
+    expect(() =>
+      buildProductListingEventDraft({
+        product: baseProduct({
+          pubkey: merchantPubkey,
+          type: "variation",
+          parentProductId: `30402:${"d".repeat(64)}:foreign-parent`,
+          specifications: [{ key: "size", value: "M" }],
+        }),
+        dTag: "foreign-parent",
+      })
+    ).toThrow("require one same-merchant")
+  })
+
+  it("builds one NIP-09 request for a complete product family", () => {
+    const merchantPubkey = "e".repeat(64)
+    const draft = buildProductDeletionEventDraft({
+      merchantPubkey,
+      targets: [
+        {
+          eventId: "parent-event",
+          addressId: `30402:${merchantPubkey}:conduit-tee`,
+        },
+        {
+          eventId: "small-event",
+          addressId: `30402:${merchantPubkey}:conduit-tee-s`,
+        },
+      ],
+      clientAppId: "merchant",
+    })
+
+    expect(draft.kind).toBe(EVENT_KINDS.DELETION)
+    expect(draft.content).toBe("")
+    expect(draft.tags.filter((tag) => tag[0] === "e")).toEqual([
+      ["e", "parent-event"],
+      ["e", "small-event"],
+    ])
+    expect(draft.tags.filter((tag) => tag[0] === "a")).toEqual([
+      ["a", `30402:${merchantPubkey}:conduit-tee`],
+      ["a", `30402:${merchantPubkey}:conduit-tee-s`],
+    ])
+    expectTag(draft.tags, ["k", String(EVENT_KINDS.PRODUCT)])
   })
 
   it("distinguishes included shipping from post-order coordination", () => {
