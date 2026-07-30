@@ -1,0 +1,221 @@
+import { describe, expect, it } from "bun:test"
+import type {
+  ShopperPresetsReadResult,
+  ShopperShippingPreset,
+} from "@conduit/core"
+import { fetchShopperPresetsForSession } from "../apps/market/src/hooks/useShopperPresets"
+import { getShopperPreferencesSaveBlockers } from "../apps/market/src/lib/shopper-preferences-validation"
+import { getCartShippingCountryPresetEligibility } from "../apps/market/src/lib/cart-shipping-options"
+import {
+  DEFAULT_CHECKOUT_SHIPPING,
+  readCheckoutShippingInitialization,
+  writeCheckoutShippingSession,
+} from "../apps/market/src/lib/checkout-session"
+import {
+  clearShopperPresetsUnlock,
+  getLegacyShopperPresetsStorageKey,
+  getShopperPresetsUnlockStorageKey,
+  persistShopperPresetsUnlock,
+  readRememberedShopperPresetsPassword,
+  removeLegacyPlaintextShopperPresets,
+} from "../apps/market/src/lib/shopper-presets-store"
+import type { CartItem } from "../apps/market/src/lib/cart-model"
+
+function memoryStorage(): Storage {
+  const values = new Map<string, string>()
+  return {
+    get length() {
+      return values.size
+    },
+    clear: () => values.clear(),
+    getItem: (key) => values.get(key) ?? null,
+    key: (index) => Array.from(values.keys())[index] ?? null,
+    removeItem: (key) => {
+      values.delete(key)
+    },
+    setItem: (key, value) => {
+      values.set(key, value)
+    },
+  }
+}
+
+const preset: ShopperShippingPreset = {
+  recipientName: "Ada Lovelace",
+  addressLine1: "12 St James Square",
+  addressLine2: "Flat 3",
+  city: "London",
+  stateOrRegion: "Greater London",
+  postalCode: "SW1Y 4LB",
+  country: "GB",
+  email: "ada@example.test",
+  phone: "+44 20 0000 0000",
+}
+
+function cartItem(productId: string, input: Partial<CartItem> = {}): CartItem {
+  return {
+    productId,
+    merchantPubkey: "merchant",
+    title: productId,
+    price: 100,
+    currency: "SATS",
+    quantity: 1,
+    ...input,
+  }
+}
+
+describe("Market shopper preset integration", () => {
+  it("lists every requirement that blocks saving preferences", () => {
+    const blockers = getShopperPreferencesSaveBlockers({
+      shipping: {
+        recipientName: "",
+        addressLine1: "",
+        addressLine2: "",
+        city: "",
+        stateOrRegion: "",
+        postalCode: "",
+        country: "US",
+        email: "",
+        phone: "",
+      },
+      password: "short",
+      confirmPassword: "",
+      identityConnected: true,
+      relayState: "unavailable",
+    })
+
+    expect(blockers.map(({ id }) => id)).toEqual([
+      "recipient-name",
+      "address-line-1",
+      "city",
+      "postal-code",
+      "password-length",
+      "password-confirmation",
+      "relay-access",
+    ])
+  })
+
+  it("allows saving when required fields, passwords, and relays are ready", () => {
+    expect(
+      getShopperPreferencesSaveBlockers({
+        shipping: preset,
+        password: "password",
+        confirmPassword: "password",
+        identityConnected: true,
+        relayState: "ready",
+      })
+    ).toEqual([])
+  })
+
+  it("retries one transient relay-read failure during cold start", async () => {
+    const results: ShopperPresetsReadResult[] = [
+      { state: "unavailable", reason: "relay_read" },
+      { state: "not_found" },
+    ]
+    let fetchCount = 0
+    let waitCount = 0
+
+    const result = await fetchShopperPresetsForSession(
+      "buyer",
+      async () => results[fetchCount++]!,
+      async () => {
+        waitCount += 1
+      }
+    )
+
+    expect(result).toEqual({ state: "not_found" })
+    expect(fetchCount).toBe(2)
+    expect(waitCount).toBe(1)
+  })
+
+  it("stores an unlock password only after an explicit policy choice", () => {
+    const local = memoryStorage()
+    const session = memoryStorage()
+    persistShopperPresetsUnlock(
+      "buyer",
+      "password one",
+      "always",
+      local,
+      session
+    )
+    expect(
+      readRememberedShopperPresetsPassword("buyer", local, session)
+    ).toBeNull()
+
+    persistShopperPresetsUnlock(
+      "buyer",
+      "password two",
+      "session",
+      local,
+      session
+    )
+    expect(
+      readRememberedShopperPresetsPassword("buyer", local, session)
+    ).toEqual({
+      password: "password two",
+      policy: "session",
+    })
+    expect(local.getItem(getShopperPresetsUnlockStorageKey("buyer"))).toBeNull()
+
+    clearShopperPresetsUnlock("buyer", local, session)
+    expect(
+      readRememberedShopperPresetsPassword("buyer", local, session)
+    ).toBeNull()
+  })
+
+  it("removes the previous plaintext preset storage", () => {
+    const storage = memoryStorage()
+    const key = getLegacyShopperPresetsStorageKey("buyer")
+    storage.setItem(key, JSON.stringify({ value: preset }))
+    removeLegacyPlaintextShopperPresets("buyer", storage)
+    expect(storage.getItem(key)).toBeNull()
+  })
+
+  it("prefills the complete checkout form without replacing an active draft", () => {
+    const empty = memoryStorage()
+    expect(readCheckoutShippingInitialization(preset, empty, 1_001)).toEqual({
+      value: {
+        firstName: "Ada",
+        lastName: "Lovelace",
+        name: "Ada Lovelace",
+        street: "12 St James Square",
+        line2: "Flat 3",
+        city: "London",
+        state: "Greater London",
+        postalCode: "SW1Y 4LB",
+        country: "GB",
+        email: "ada@example.test",
+        phone: "+44 20 0000 0000",
+      },
+      hasActiveDraft: false,
+    })
+
+    const storage = memoryStorage()
+    const draft = { ...DEFAULT_CHECKOUT_SHIPPING, street: "Active draft" }
+    writeCheckoutShippingSession(draft, storage, 1_000)
+    expect(readCheckoutShippingInitialization(preset, storage, 1_001)).toEqual({
+      value: draft,
+      hasActiveDraft: true,
+    })
+  })
+
+  it("uses country and postal code for local shipping compatibility", () => {
+    const restricted = cartItem("restricted", {
+      shippingCountries: ["US"],
+      shippingCountryRules: [
+        { code: "US", name: "US", restrictTo: ["94**"], exclude: [] },
+      ],
+    })
+    expect(
+      getCartShippingCountryPresetEligibility([restricted], {
+        country: "US",
+        postalCode: "94559",
+      })
+    ).toBe("eligible")
+    expect(
+      getCartShippingCountryPresetEligibility([restricted], {
+        country: "US",
+        postalCode: "10001",
+      })
+    ).toBe("ineligible")
+  })
+})

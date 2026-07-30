@@ -6,6 +6,7 @@ export const TEST_MERCHANT_PUBKEY = "a".repeat(64)
 type TestSignerOptions = {
   rememberAuth?: boolean
   getRelaysThrows?: boolean
+  nip44?: boolean
   relays?: Record<string, { read: boolean; write: boolean }>
 }
 
@@ -52,14 +53,18 @@ export async function installTestSigner(
               return ciphertext
             },
           },
-          nip44: {
-            async encrypt(_pubkey: string, plaintext: string) {
-              return plaintext
-            },
-            async decrypt(_pubkey: string, ciphertext: string) {
-              return ciphertext
-            },
-          },
+          ...(signerOptions.nip44 === false
+            ? {}
+            : {
+                nip44: {
+                  async encrypt(_pubkey: string, plaintext: string) {
+                    return plaintext
+                  },
+                  async decrypt(_pubkey: string, ciphertext: string) {
+                    return ciphertext
+                  },
+                },
+              }),
         },
       })
     },

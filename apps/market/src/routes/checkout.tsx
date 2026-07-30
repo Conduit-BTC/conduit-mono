@@ -89,6 +89,7 @@ import {
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallets, type WalletRuntimeState } from "../hooks/useWallets"
+import { useShopperPresets } from "../hooks/useShopperPresets"
 import {
   type NwcSessionBalanceState,
   type NwcSessionBudgetState,
@@ -141,7 +142,9 @@ import {
 } from "../lib/checkout-validation"
 import {
   clearCheckoutShippingSession,
-  readCheckoutShippingSession,
+  DEFAULT_CHECKOUT_SHIPPING,
+  getShippingFormFromPreset,
+  readCheckoutShippingInitialization,
   writeCheckoutShippingSession,
 } from "../lib/checkout-session"
 import {
@@ -903,6 +906,7 @@ function CheckoutPage() {
   const search = Route.useSearch()
   const navigate = useNavigate()
   const shopperPricing = useShopperPricing()
+  const shopperPresets = useShopperPresets()
   const btcUsdRateQuery = shopperPricing.rateQuery
   const wallets = useWallets()
   const checkoutWalletNetwork = getWalletNetworkFromLightningConfig(
@@ -951,8 +955,21 @@ function CheckoutPage() {
   })
 
   const [step, setStep] = useState<CheckoutStep>("shipping")
-  const [shipping, setShipping] = useState<ShippingFormState>(() =>
-    readCheckoutShippingSession()
+  const initialShippingRef = useRef<ReturnType<
+    typeof readCheckoutShippingInitialization
+  > | null>(null)
+  if (!initialShippingRef.current) {
+    initialShippingRef.current = readCheckoutShippingInitialization(
+      shopperPresets.preset.shipping
+    )
+  }
+  const presetMaySeedShippingRef = useRef(
+    !initialShippingRef.current.hasActiveDraft
+  )
+  const shippingEditedRef = useRef(initialShippingRef.current.hasActiveDraft)
+  const presetIdentityRef = useRef(authStatus === "connected" ? pubkey : null)
+  const [shipping, setShipping] = useState<ShippingFormState>(
+    initialShippingRef.current.value
   )
   const [note, setNote] = useState("")
   const [error, setError] = useState<string | null>(null)
@@ -1021,6 +1038,31 @@ function CheckoutPage() {
     }
     return { kind: "signed_in", pubkey: signedBuyerPubkey, signer }
   }
+
+  useEffect(() => {
+    if (presetIdentityRef.current === signedBuyerPubkey) return
+    presetIdentityRef.current = signedBuyerPubkey
+    if (shippingEditedRef.current) return
+    presetMaySeedShippingRef.current = true
+    const preset = shopperPresets.preset.shipping
+    const next = preset
+      ? getShippingFormFromPreset(preset)
+      : DEFAULT_CHECKOUT_SHIPPING
+    if (JSON.stringify(shipping) === JSON.stringify(next)) return
+    setShipping(next)
+    writeCheckoutShippingSession(next)
+  }, [shipping, shopperPresets.preset.shipping, signedBuyerPubkey])
+
+  useEffect(() => {
+    if (!presetMaySeedShippingRef.current) return
+    const preset = shopperPresets.preset.shipping
+    if (!preset) return
+    presetMaySeedShippingRef.current = false
+    const next = getShippingFormFromPreset(preset)
+    if (JSON.stringify(shipping) === JSON.stringify(next)) return
+    setShipping(next)
+    writeCheckoutShippingSession(next)
+  }, [shipping, shopperPresets.preset.shipping])
 
   const selectedMerchant =
     search.merchant ??
@@ -1593,6 +1635,8 @@ function CheckoutPage() {
     field: K,
     value: ShippingFormState[K]
   ): void {
+    presetMaySeedShippingRef.current = false
+    shippingEditedRef.current = true
     const normalizedValue =
       field === "phone"
         ? (sanitizeShippingPhoneInput(String(value)) as ShippingFormState[K])

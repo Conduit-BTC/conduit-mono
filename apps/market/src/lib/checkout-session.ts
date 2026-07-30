@@ -1,4 +1,7 @@
-import { GUEST_ORDER_LOCAL_RETENTION_MS } from "@conduit/core"
+import {
+  GUEST_ORDER_LOCAL_RETENTION_MS,
+  type ShopperShippingPreset,
+} from "@conduit/core"
 import type { ShippingFormState } from "./checkout-validation"
 
 const CHECKOUT_SHIPPING_STORAGE_KEY = "conduit:checkout-shipping"
@@ -131,6 +134,47 @@ export function readCheckoutShippingSession(
   const stored = readStoredCheckoutShipping(storage, nowMs)
   if (!stored) return DEFAULT_CHECKOUT_SHIPPING
   return { ...DEFAULT_CHECKOUT_SHIPPING, ...stored.value }
+}
+
+export function readCheckoutShippingInitialization(
+  preset: ShopperShippingPreset | null,
+  storage: SessionStorageLike | null = getSessionStorage(),
+  nowMs = Date.now()
+): { value: ShippingFormState; hasActiveDraft: boolean } {
+  const stored = readStoredCheckoutShipping(storage, nowMs)
+  if (stored) {
+    return {
+      value: { ...DEFAULT_CHECKOUT_SHIPPING, ...stored.value },
+      hasActiveDraft: true,
+    }
+  }
+  return {
+    value: preset
+      ? getShippingFormFromPreset(preset)
+      : DEFAULT_CHECKOUT_SHIPPING,
+    hasActiveDraft: false,
+  }
+}
+
+export function getShippingFormFromPreset(
+  preset: ShopperShippingPreset
+): ShippingFormState {
+  const names = preset.recipientName.trim().split(/\s+/u)
+  const lastName = names.length > 1 ? (names.pop() ?? "") : ""
+  return {
+    ...DEFAULT_CHECKOUT_SHIPPING,
+    firstName: names.join(" "),
+    lastName,
+    name: preset.recipientName,
+    street: preset.addressLine1,
+    line2: preset.addressLine2 ?? "",
+    city: preset.city,
+    state: preset.stateOrRegion ?? "",
+    postalCode: preset.postalCode,
+    country: preset.country,
+    email: preset.email ?? "",
+    phone: preset.phone ?? "",
+  }
 }
 
 export function writeCheckoutShippingSession(

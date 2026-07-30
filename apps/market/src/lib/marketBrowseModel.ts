@@ -1,6 +1,7 @@
 import {
   formatNpub,
   getProfileName,
+  getShippingDestinationEligibility,
   isCommerceReadIncomplete,
   normalizePublicMediaUrl,
   type CommerceProductRecord,
@@ -123,6 +124,46 @@ function getBrowsePriceProduct(
   )
 }
 
+export type ProductShippingPresetEligibility =
+  "eligible" | "unknown" | "ineligible"
+
+export function getProductShippingPresetEligibility(
+  product: Product,
+  destination: { country: string; postalCode: string }
+): ProductShippingPresetEligibility {
+  if (product.format === "digital") return "eligible"
+  const country = destination.country.trim().toUpperCase()
+  const countryRules = product.shippingCountryRules ?? []
+  const matchingRules = countryRules.filter(
+    (rule) => rule.code.trim().toUpperCase() === country
+  )
+  const advertisedCountries = new Set(
+    (product.shippingCountries ?? countryRules.map((rule) => rule.code)).map(
+      (code) => code.trim().toUpperCase()
+    )
+  )
+  if (advertisedCountries.size === 0) return "unknown"
+  if (!advertisedCountries.has(country)) return "ineligible"
+  if (matchingRules.length === 0) return "eligible"
+  const result = getShippingDestinationEligibility(destination, [
+    {
+      id: product.id,
+      pubkey: product.pubkey,
+      dTag: product.id,
+      title: product.title,
+      currency: product.currency,
+      price: product.price,
+      countries: Array.from(advertisedCountries),
+      countryRules,
+      service: "standard",
+      createdAt: product.createdAt,
+    },
+  ])
+  if (result.eligible === false) return "ineligible"
+  if (result.eligible === null) return "unknown"
+  return "eligible"
+}
+
 export function mergeProductSearchResults(
   catalogProducts: readonly Product[],
   searchProducts: readonly Product[]
@@ -182,7 +223,8 @@ export function sortBrowseProducts(
   products: Product[],
   sort: MarketBrowseSortOption | undefined,
   btcUsdRate: PricingRateInput,
-  familiesByProductId: ProductFamiliesById = {}
+  familiesByProductId: ProductFamiliesById = {},
+  destination?: { country: string; postalCode: string } | null
 ): Product[] {
   switch (sort) {
     case "price_asc":
@@ -206,10 +248,22 @@ export function sortBrowseProducts(
           ) || b.createdAt - a.createdAt
       )
     case "newest":
-    default:
-      return diversifyMerchantProductOrder(
-        Array.from(products).sort((a, b) => b.createdAt - a.createdAt)
+    default: {
+      const newest = Array.from(products).sort(
+        (a, b) => b.createdAt - a.createdAt
       )
+      if (!destination) return diversifyMerchantProductOrder(newest)
+      return (["eligible", "unknown", "ineligible"] as const).flatMap(
+        (eligibility) =>
+          diversifyMerchantProductOrder(
+            newest.filter(
+              (product) =>
+                getProductShippingPresetEligibility(product, destination) ===
+                eligibility
+            )
+          )
+      )
+    }
   }
 }
 
