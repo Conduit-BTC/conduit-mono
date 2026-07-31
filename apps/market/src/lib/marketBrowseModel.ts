@@ -1,5 +1,6 @@
 import {
   formatNpub,
+  getDefaultProductSelection,
   getProfileName,
   type PricingRateInput,
   type Product,
@@ -120,14 +121,22 @@ export function sortBrowseProducts(
     case "price_asc":
       return Array.from(products).sort(
         (a, b) =>
-          compareCommercePrices(a, b, btcUsdRate, "asc") ||
-          b.createdAt - a.createdAt
+          compareCommercePrices(
+            getDefaultProductSelection(a),
+            getDefaultProductSelection(b),
+            btcUsdRate,
+            "asc"
+          ) || b.createdAt - a.createdAt
       )
     case "price_desc":
       return Array.from(products).sort(
         (a, b) =>
-          compareCommercePrices(a, b, btcUsdRate, "desc") ||
-          b.createdAt - a.createdAt
+          compareCommercePrices(
+            getDefaultProductSelection(a),
+            getDefaultProductSelection(b),
+            btcUsdRate,
+            "desc"
+          ) || b.createdAt - a.createdAt
       )
     case "newest":
     default:
@@ -144,7 +153,11 @@ export function hasUnavailablePriceForBrowseSort(
 ): boolean {
   if (!isPriceSort(sort)) return false
   return products.some(
-    (product) => getComparablePriceValue(product, btcUsdRate) === null
+    (product) =>
+      getComparablePriceValue(
+        getDefaultProductSelection(product),
+        btcUsdRate
+      ) === null
   )
 }
 

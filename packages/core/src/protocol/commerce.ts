@@ -16,6 +16,7 @@ import {
 import { CANONICAL_APP_BACKPLANE_RELAYS, config } from "../config"
 import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
+import { getDefaultProductSelection } from "../utils"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanout,
@@ -801,14 +802,22 @@ function sortProducts(
     case "price_asc":
       return items.sort(
         (a, b) =>
-          compareCommercePrices(a.product, b.product, null, "asc") ||
-          b.product.updatedAt - a.product.updatedAt
+          compareCommercePrices(
+            getDefaultProductSelection(a.product),
+            getDefaultProductSelection(b.product),
+            null,
+            "asc"
+          ) || b.product.updatedAt - a.product.updatedAt
       )
     case "price_desc":
       return items.sort(
         (a, b) =>
-          compareCommercePrices(a.product, b.product, null, "desc") ||
-          b.product.updatedAt - a.product.updatedAt
+          compareCommercePrices(
+            getDefaultProductSelection(a.product),
+            getDefaultProductSelection(b.product),
+            null,
+            "desc"
+          ) || b.product.updatedAt - a.product.updatedAt
       )
     case "updated_at_desc":
       return items.sort(

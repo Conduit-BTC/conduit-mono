@@ -987,6 +987,25 @@ describe("product listing event parsing", () => {
     expect(variation.format).toBe("physical")
   })
 
+  it("keeps the legacy physical fallback when the type format is omitted", () => {
+    const parsed = parseProductEvent({
+      id: "legacy-format-event",
+      pubkey: "merchant",
+      created_at: 1_779_762_725,
+      content: "Legacy physical listing.",
+      tags: [
+        ["d", "legacy-format"],
+        ["title", "Legacy Format Product"],
+        ["price", "25000", "SATS"],
+        ["type", "simple"],
+        ["image", "https://example.com/legacy-format.png"],
+      ],
+    })
+
+    expect(parsed.type).toBe("simple")
+    expect(parsed.format).toBe("physical")
+  })
+
   it("parses independent stock values for variation listings", () => {
     const large = parseProductEvent({
       id: "large-variation-event",

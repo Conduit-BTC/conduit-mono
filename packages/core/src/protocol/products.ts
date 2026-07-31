@@ -956,7 +956,7 @@ export function parseProductEvent(
   // market-spec: ["type", "simple|variable|variation", "digital|physical"]
   const type = productTypeTag.type ?? "simple"
   const format: "physical" | "digital" =
-    productTypeTag.format === "physical" ? "physical" : "digital"
+    productTypeTag.format === "digital" ? "digital" : "physical"
   const parentProductId = parseVariationParentProductId(event.tags, type)
 
   const images = getTagValues(event.tags, "image")

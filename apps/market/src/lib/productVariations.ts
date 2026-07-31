@@ -1,4 +1,8 @@
-import { getProductImageCandidates, type Product } from "@conduit/core"
+import {
+  getDefaultProductSelection as getCoreDefaultProductSelection,
+  getProductImageCandidates,
+  type Product,
+} from "@conduit/core"
 import { createCartItemFromProduct, type CartItem } from "./cart-model"
 
 export interface ProductVariationOption {
@@ -129,15 +133,7 @@ export function getProductVariationSelectorModel(
   return { label: selectorLabel, options }
 }
 
-export function getDefaultProductSelection(product: Product): Product {
-  const model = getProductVariationSelectorModel(product)
-  if (!model) return product
-  return (
-    model.options.find((option) => !option.soldOut)?.product ??
-    model.options[0]?.product ??
-    product
-  )
-}
+export { getCoreDefaultProductSelection as getDefaultProductSelection }
 
 export function getProductSelection(
   product: Product,
@@ -156,7 +152,7 @@ export function getProductSelection(
     product.variations?.find(
       (variation) =>
         variation.id === selectedProductId || variation.id === decodedProductId
-    ) ?? getDefaultProductSelection(product)
+    ) ?? getCoreDefaultProductSelection(product)
   )
 }
 
