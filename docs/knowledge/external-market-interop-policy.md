@@ -189,3 +189,10 @@ Add short entries here as they arise:
 - Conduit behavior: Render product descriptions through a constrained Markdown renderer for display only. Do not infer checkout price, shipping, stock, payment, merchant identity, or order state from Markdown text.
 - Risk: Level 1 rendering mismatch.
 - Action: adapter.
+
+- **[2026-07-31]** Omitted product format compatibility
+- Spec expectation: GammaMarkets defaults an omitted product format to `digital`.
+- Observed behavior: NIP-99 listings can predate the Gamma `type` format slot, and Conduit historically treated an omitted format as `physical`; changing that fallback would silently hide shipping behavior on existing listings.
+- Conduit behavior: Continue accepting an omitted format as `physical` for backward-compatible reads. Merchant emits the explicit `digital` or `physical` format on every new listing.
+- Risk: Level 1 rendering mismatch and Level 2 checkout degradation.
+- Action: compatibility parser fallback; keep emitted events explicit and spec-aligned.

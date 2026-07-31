@@ -99,6 +99,7 @@ function makeGammaProductEvent(params: {
   size?: string
   stock?: number
   image?: boolean
+  price?: number
 }) {
   return {
     id: params.id,
@@ -110,7 +111,7 @@ function makeGammaProductEvent(params: {
     tags: [
       ["d", params.dTag],
       ["title", params.title],
-      ["price", "25000", "SATS"],
+      ["price", String(params.price ?? 25_000), "SATS"],
       ["type", params.type, "physical"],
       ...(params.parentProductId ? [["a", params.parentProductId]] : []),
       ...(params.size ? [["spec", "size", params.size]] : []),
@@ -357,6 +358,55 @@ describe("commerce gateway", () => {
     expect(childDetail.data?.product.variations).toHaveLength(4)
     expect(selectedVariation.data[0]?.product.stock).toBe(5)
     expect(orphanVariation.data).toHaveLength(0)
+  })
+
+  it("sorts a variable family by the default variation price shown on cards", async () => {
+    const merchantPubkey = MERCHANT_A_PUBKEY
+    const parentProductId = `30402:${merchantPubkey}:shirt`
+    const events = [
+      makeGammaProductEvent({
+        pubkey: merchantPubkey,
+        dTag: "shirt",
+        id: "shirt-parent-event",
+        createdAt: 100,
+        title: "Conduit Shirt",
+        type: "variable",
+        price: 1_000,
+      }),
+      makeGammaProductEvent({
+        pubkey: merchantPubkey,
+        dTag: "shirt-s",
+        id: "shirt-s-event",
+        createdAt: 101,
+        title: "Conduit Shirt — S",
+        type: "variation",
+        parentProductId,
+        size: "S",
+        stock: 5,
+        price: 3_000,
+      }),
+      makeGammaProductEvent({
+        pubkey: merchantPubkey,
+        dTag: "sticker",
+        id: "sticker-event",
+        createdAt: 102,
+        title: "Conduit Sticker",
+        type: "simple",
+        price: 2_000,
+      }),
+    ]
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT) ? (events as never) : [],
+    })
+
+    const result = await getMarketplaceProducts({ sort: "price_asc" })
+
+    expect(result.data.map((record) => record.product.title)).toEqual([
+      "Conduit Sticker",
+      "Conduit Shirt",
+    ])
   })
 
   it("passes author filters for perspective-scoped marketplace discovery", async () => {

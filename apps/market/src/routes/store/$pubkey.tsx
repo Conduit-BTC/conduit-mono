@@ -31,6 +31,7 @@ import {
 import {
   formatNpub,
   getCommerceReadRelayUrls,
+  getDefaultProductSelection,
   getTelemetryCountBucket,
   normalizePubkey,
   publishContactListUpdate,
@@ -108,14 +109,22 @@ function sortProducts(
     case "price_asc":
       return [...products].sort(
         (a, b) =>
-          compareCommercePrices(a, b, btcUsdRate, "asc") ||
-          b.createdAt - a.createdAt
+          compareCommercePrices(
+            getDefaultProductSelection(a),
+            getDefaultProductSelection(b),
+            btcUsdRate,
+            "asc"
+          ) || b.createdAt - a.createdAt
       )
     case "price_desc":
       return [...products].sort(
         (a, b) =>
-          compareCommercePrices(a, b, btcUsdRate, "desc") ||
-          b.createdAt - a.createdAt
+          compareCommercePrices(
+            getDefaultProductSelection(a),
+            getDefaultProductSelection(b),
+            btcUsdRate,
+            "desc"
+          ) || b.createdAt - a.createdAt
       )
     case "newest":
     default:
@@ -288,7 +297,11 @@ function StorefrontPage() {
   const hasUnavailablePriceForSort = useMemo(() => {
     if (!isPriceSort(search.sort)) return false
     return matchingProducts.some(
-      (product) => getComparablePriceValue(product, btcUsdRate) === null
+      (product) =>
+        getComparablePriceValue(
+          getDefaultProductSelection(product),
+          btcUsdRate
+        ) === null
     )
   }, [btcUsdRate, matchingProducts, search.sort])
 
