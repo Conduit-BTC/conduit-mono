@@ -1957,7 +1957,7 @@ describe("payCheckoutInvoice", () => {
     })
     const weblnPay = mock(async () => {
       attempts.push("webln")
-      throw new Error("Browser wallet unavailable")
+      throw new Error("WebLN did not return a payment proof")
     })
 
     await expect(
@@ -1982,6 +1982,44 @@ describe("payCheckoutInvoice", () => {
 
     expect(attempts).toEqual(["webln"])
     expect(nwcPay).toHaveBeenCalledTimes(0)
+  })
+
+  it("falls back from WebLN when payment did not start", async () => {
+    const attempts: string[] = []
+    const nwcPay = mock(async () => {
+      attempts.push("nwc")
+      return {
+        status: "paid" as const,
+        preimage: "nwc-preimage",
+        paymentHash: "nwc-hash",
+        feeMsats: 0,
+      }
+    })
+    const weblnPay = mock(async () => {
+      attempts.push("webln")
+      throw new Error("Browser wallet unavailable")
+    })
+
+    const result = await payCheckoutInvoice(
+      {
+        invoice: "lnbc1test",
+        amountMsats: 1000,
+        walletConnection: connection,
+        tryNwc: true,
+        tryWebln: true,
+        preferredAutomaticRail: "webln",
+        timeoutMs: 60_000,
+        appId: "market",
+      },
+      {
+        nwcSessionPayInvoice: nwcPay as never,
+        hasWebLN: () => true,
+        weblnSendPayment: weblnPay as never,
+      }
+    )
+
+    expect(result).toMatchObject({ status: "paid", rail: "nwc" })
+    expect(attempts).toEqual(["webln", "nwc"])
   })
 
   it("returns manual fallback when automatic rails are unavailable", async () => {

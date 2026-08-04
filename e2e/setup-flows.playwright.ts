@@ -434,6 +434,22 @@ test("market wallet setup route renders for connected signer", async ({
     page.getByRole("button", { name: /connect wallet/i })
   ).toBeVisible()
   await expect(page.getByPlaceholder("nostr+walletconnect://...")).toBeVisible()
+
+  const displayCurrency = page.getByRole("combobox", {
+    name: "Preferred currency",
+  })
+  const satsStandard = page.getByRole("switch", {
+    name: "Sats the standard",
+  })
+  await displayCurrency.click()
+  await page.getByRole("option", { name: "EUR" }).click()
+  await satsStandard.click()
+  await expect(displayCurrency).toContainText("EUR")
+  await expect(satsStandard).toBeChecked()
+
+  await page.reload()
+  await expect(displayCurrency).toContainText("EUR")
+  await expect(satsStandard).toBeChecked()
 })
 
 test("market shopper preferences remove legacy plaintext and render the complete form", async ({

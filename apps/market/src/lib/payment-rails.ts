@@ -81,6 +81,10 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
 
+function isWeblnAmbiguousProofFailure(error: unknown): boolean {
+  return getErrorMessage(error, "").includes("did not return a payment proof")
+}
+
 function isNwcPrePublishFailure(
   result: NwcSessionPaymentResult
 ): result is Extract<
@@ -166,16 +170,21 @@ export async function payCheckoutInvoice(
         }
       } catch (error) {
         const message = getErrorMessage(error, "Browser wallet payment failed")
+        const ambiguous = isWeblnAmbiguousProofFailure(error)
         recordPaymentAttemptResult({
           amountSats,
           latencyMs: Date.now() - startedAt,
           rail: "webln",
-          status: "ambiguous",
+          status: ambiguous ? "ambiguous" : "failure",
         })
-        throw new Error(
-          `${message} Check your wallet before trying another payment path.`,
-          { cause: error }
-        )
+        if (ambiguous) {
+          throw new Error(
+            `${message} Check your wallet before trying another payment path.`,
+            { cause: error }
+          )
+        }
+        failures.push(message)
+        return null
       }
     }
 
