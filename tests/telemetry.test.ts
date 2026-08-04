@@ -591,7 +591,7 @@ describe("browser telemetry", () => {
     })
   })
 
-  it("keeps only ephemeral UUIDv7 session context on pageleave events", () => {
+  it("attributes pageleave metrics to the sanitized departing route", () => {
     const sessionId = "018f22e2-7b31-7a3f-8d2a-2be67b4f3f65"
     const pageviewId = "018f22e2-8c42-7b40-9e3b-3cf78c504076"
 
@@ -600,14 +600,14 @@ describe("browser telemetry", () => {
         event: "$pageleave",
         properties: {
           $browser: "Chrome",
-          $current_url:
-            "https://shop.conduit.market/products/private-product?q=secret",
+          $current_url: "https://shop.conduit.market/cart?coupon=secret",
           $pageview_id: pageviewId,
-          $pathname: "/products/private-product",
+          $pathname: "/cart",
           $prev_pageview_duration: 42.5,
           $prev_pageview_id: pageviewId,
           $prev_pageview_last_scroll: 900,
           $prev_pageview_max_scroll_percentage: 0.75,
+          $prev_pageview_pathname: "/products/private-product?source=secret",
           $session_id: sessionId,
           $window_id: "018f22e2-9d53-7c41-af4c-4d089d615187",
           distinct_id: "sdk-session-identity",
@@ -622,6 +622,7 @@ describe("browser telemetry", () => {
         $prev_pageview_duration: 42.5,
         $prev_pageview_id: pageviewId,
         $prev_pageview_max_scroll_percentage: 0.75,
+        $prev_pageview_pathname: "/products/:productId",
         $process_person_profile: false,
         $session_id: sessionId,
         app: "market",

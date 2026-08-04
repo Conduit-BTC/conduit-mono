@@ -514,19 +514,32 @@ export function sanitizePostHogCaptureEvent(
   const sourcePageUrl = sanitizeTelemetryRouteUrl(
     getStringProperty(sourceProperties, "$current_url")
   )
-  const pageUrl =
+  const currentPageUrl =
     typeof sanitizedProperties.page_url === "string"
       ? sanitizedProperties.page_url
       : sourcePageUrl
   const sourcePagePath = getStringProperty(sourceProperties, "$pathname")
+  const previousPagePath =
+    eventName === "$pageleave" &&
+    typeof sanitizedProperties.$prev_pageview_pathname === "string"
+      ? sanitizedProperties.$prev_pageview_pathname
+      : null
   const pagePath =
-    typeof sanitizedProperties.page_path === "string"
+    previousPagePath ??
+    (typeof sanitizedProperties.page_path === "string"
       ? sanitizedProperties.page_path
       : sourcePagePath
         ? sanitizeTelemetryPath(sourcePagePath)
-        : pageUrl
-          ? sanitizeTelemetryPath(new URL(pageUrl).pathname)
-          : "/"
+        : currentPageUrl
+          ? sanitizeTelemetryPath(new URL(currentPageUrl).pathname)
+          : "/")
+  const pageUrl =
+    previousPagePath && currentPageUrl
+      ? buildTelemetryPageUrl({
+          origin: new URL(currentPageUrl).origin,
+          pathname: previousPagePath,
+        })
+      : currentPageUrl
 
   if (pageUrl) sanitizedProperties.$current_url = pageUrl
   sanitizedProperties.$pathname = pagePath
@@ -576,6 +589,11 @@ function addPostHogPageLeaveProperties(
   sanitized: Record<string, PostHogPropertyValue>,
   source: Record<string, unknown>
 ): void {
+  const previousPagePath = getStringProperty(source, "$prev_pageview_pathname")
+  if (previousPagePath) {
+    sanitized.$prev_pageview_pathname = sanitizeTelemetryPath(previousPagePath)
+  }
+
   const duration = source.$prev_pageview_duration
   if (
     typeof duration === "number" &&

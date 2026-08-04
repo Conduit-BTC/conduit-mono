@@ -45,11 +45,12 @@ property allowlist must be dropped rather than repaired downstream. Browser
 events must remove raw paths, query strings, SDK-generated device/window
 properties, IP/fingerprint properties, and active-user identifiers. The only
 allowed SDK journey properties are UUIDv7 `$session_id`, `$pageview_id`, and
-`$prev_pageview_id` values used to calculate anonymous session metrics. Worker
-events must construct a new payload from the documented property allowlist and
-must never spread request-derived properties into a provider payload. If an
-event outside this contract is ingested, delete it from the provider and treat
-the incident as a telemetry-policy failure.
+`$prev_pageview_id` values used to calculate anonymous session metrics, plus a
+sanitized `$prev_pageview_pathname` route class on `$pageleave`. Worker events
+must construct a new payload from the documented property allowlist and must
+never spread request-derived properties into a provider payload. If an event
+outside this contract is ingested, delete it from the provider and treat the
+incident as a telemetry-policy failure.
 
 ## PostHog Dashboard Split
 
@@ -84,8 +85,9 @@ Three PostHog lifecycle events are allowed through the shared sanitizer:
 - `$pageview` uses the static browser-service distinct ID, sanitized route
   class, app, and ephemeral UUIDv7 session/pageview IDs.
 - `$pageleave` adds bounded duration and scroll/content percentages so bounce
-  rate and session duration can be calculated. Pixel coordinates, raw paths,
-  and SDK window/device fields are dropped.
+  rate and session duration can be calculated. Its route fields and
+  `$prev_pageview_pathname` identify the departing sanitized route class.
+  Pixel coordinates, raw paths, and SDK window/device fields are dropped.
 - `$web_vitals` keeps only finite bounded CLS, FCP, INP, and LCP numeric values,
   app, sanitized route class, and the ephemeral session ID. Nested metric
   events, DOM attribution, element data, metric IDs, window IDs, and browser
