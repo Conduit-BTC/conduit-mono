@@ -9,8 +9,10 @@ import {
 } from "../apps/merchant/src/lib/productDraft"
 import type { MerchantProductFormValues } from "../apps/merchant/src/lib/productForm"
 import {
+  createProductVariationAxis,
   createEmptyProductVariationForm,
-  reconcileProductVariationForm,
+  generateProductVariationRows,
+  updateProductVariationOverride,
 } from "../apps/merchant/src/lib/productVariations"
 
 class MemoryStorage implements Storage {
@@ -134,18 +136,19 @@ describe("merchant product drafts", () => {
   it("round-trips constrained variation options and overrides", () => {
     const storage = new MemoryStorage()
     const draftTarget = target()
-    const variations = reconcileProductVariationForm({
+    const generated = generateProductVariationRows({
       ...createEmptyProductVariationForm(),
       enabled: true,
-      sizeOptions: "S, M, L, XL",
-      overrides: [
-        {
-          identity: "size:m",
-          price: "30",
-          stock: "4",
-        },
-      ],
+      axes: [createProductVariationAxis("size", "S, M, L, XL")],
     })
+    const medium = generated.rows.find((row) => row.identity === "size:m")
+    if (!medium) throw new Error("Expected M row")
+    const variations = updateProductVariationOverride(
+      updateProductVariationOverride(generated, medium.identity, "price", "30"),
+      medium.identity,
+      "stock",
+      "4"
+    )
     const values = form({ variations })
 
     expect(saveProductDraft(draftTarget, values, storage)).toBe(true)

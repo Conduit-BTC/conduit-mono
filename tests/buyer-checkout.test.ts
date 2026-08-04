@@ -735,6 +735,33 @@ function emptyWalletBudget() {
 }
 
 describe("checkout payment helpers", () => {
+  it("preserves the exact variation and specification snapshot in pricing", () => {
+    const intent = buildCheckoutPricingIntent(
+      [
+        cartItem({
+          productId: "30402:merchant:shirt-large-blue",
+          familyProductId: "30402:merchant:shirt",
+          selectedSpecifications: [
+            { key: "size", value: "Large" },
+            { key: "color", value: "Blue" },
+          ],
+        }),
+      ],
+      null
+    )
+
+    expect(intent.status).toBe("ok")
+    if (intent.status !== "ok") return
+    expect(intent.items[0]).toMatchObject({
+      productId: "30402:merchant:shirt-large-blue",
+      familyProductId: "30402:merchant:shirt",
+      selectedSpecifications: [
+        { key: "size", value: "Large" },
+        { key: "color", value: "Blue" },
+      ],
+    })
+  })
+
   it("creates SATS purchase payload from a fresh non-SATS quote", () => {
     const now = 1_700_000_000_000
     const intent = buildCheckoutPricingIntent(
@@ -1725,6 +1752,40 @@ describe("order payload schema", () => {
 
     expect(digital.items[0]?.format).toBe("digital")
     expect(legacy.items[0]?.format).toBe("physical")
+    expect(legacy.items[0]?.selectedSpecifications).toBeUndefined()
+  })
+
+  it("round-trips an optional variation selection snapshot", () => {
+    const parsed = orderSchema.parse({
+      id: "order-variation",
+      merchantPubkey: "merchant",
+      buyerPubkey: "buyer",
+      items: [
+        {
+          productId: "30402:merchant:shirt-large-blue",
+          familyProductId: "30402:merchant:shirt",
+          selectedSpecifications: [
+            { key: "size", value: "Large" },
+            { key: "color", value: "Blue" },
+          ],
+          quantity: 1,
+          priceAtPurchase: 1000,
+          currency: "SATS",
+        },
+      ],
+      subtotal: 1000,
+      currency: "SATS",
+      createdAt: 1_700_000_000_000,
+    })
+
+    expect(parsed.items[0]).toMatchObject({
+      productId: "30402:merchant:shirt-large-blue",
+      familyProductId: "30402:merchant:shirt",
+      selectedSpecifications: [
+        { key: "size", value: "Large" },
+        { key: "color", value: "Blue" },
+      ],
+    })
   })
 
   it("accepts structured guest contact on ephemeral guest orders", () => {

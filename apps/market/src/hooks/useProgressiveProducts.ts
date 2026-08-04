@@ -16,6 +16,7 @@ import {
   isListingMarketVisible,
   normalizePubkey,
   type ListingSafetyEvaluation,
+  type PreparedProductFamily,
   type Product,
 } from "@conduit/core"
 import {
@@ -85,6 +86,10 @@ type ProgressiveListQuery =
 
 export interface ProgressiveProductsResult {
   products: Product[]
+  familiesByProductId: Record<
+    string,
+    PreparedProductFamily<CommerceProductRecord>
+  >
   meta: CommerceQueryMeta | null
   profileRelayHintsByPubkey: Record<string, string[]>
   cachedCount: number
@@ -120,6 +125,21 @@ function toProducts(
   result: CommerceResult<CommerceProductRecord[]> | undefined
 ): Product[] {
   return result?.data.map((record) => record.product) ?? []
+}
+
+function getFamiliesByProductId(
+  ...results: Array<CommerceResult<CommerceProductRecord[]> | undefined>
+): Record<string, PreparedProductFamily<CommerceProductRecord>> {
+  const families: Record<
+    string,
+    PreparedProductFamily<CommerceProductRecord>
+  > = {}
+  for (const result of results) {
+    for (const record of result?.data ?? []) {
+      if (record.family) families[record.product.id] = record.family
+    }
+  }
+  return families
 }
 
 function dedupeProducts(products: Product[]): Product[] {
@@ -722,6 +742,15 @@ export function useProgressiveProducts(
       ),
     [activeProgressiveResult, cachedQuery.data, firstNetworkQuery.data]
   )
+  const familiesByProductId = useMemo(
+    () =>
+      getFamiliesByProductId(
+        cachedQuery.data,
+        firstNetworkQuery.data,
+        activeProgressiveResult
+      ),
+    [activeProgressiveResult, cachedQuery.data, firstNetworkQuery.data]
+  )
   const hydrationStage = isResolvingPerspectiveGraph
     ? "resolving_follows"
     : progressiveRead.count > 0 || firstNetworkQuery.data
@@ -730,6 +759,7 @@ export function useProgressiveProducts(
 
   return {
     products,
+    familiesByProductId,
     meta:
       (progressiveRead.key === discoveryKey ? progressiveRead.meta : null) ??
       firstNetworkQuery.data?.meta ??
@@ -768,6 +798,7 @@ export function useProgressiveProducts(
 
 export function useProgressiveProductDetail(productId: string): {
   product: Product | null
+  family: PreparedProductFamily<CommerceProductRecord> | null
   listingSafety: ListingSafetyEvaluation | null
   isMarketVisible: boolean
   meta: CommerceQueryMeta | null
@@ -799,6 +830,7 @@ export function useProgressiveProductDetail(productId: string): {
   const active =
     hasNetworkResult || !cachedQuery.data ? networkQuery.data : cachedQuery.data
   const product = active?.data?.product ?? null
+  const family = active?.data?.family ?? null
   const listingSafety = active?.data?.safety ?? null
   const isMarketVisible = listingSafety
     ? isListingMarketVisible(listingSafety)
@@ -810,6 +842,7 @@ export function useProgressiveProductDetail(productId: string): {
 
   return {
     product,
+    family,
     listingSafety,
     isMarketVisible,
     meta: active?.meta ?? null,

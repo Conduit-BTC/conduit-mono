@@ -39,6 +39,8 @@ import type { StatusStepperRow, StatusStepperRowStatus } from "@conduit/ui"
 
 export interface OrderViewItem {
   productId: string
+  familyProductId?: string
+  selectedSpecifications?: Array<{ key: string; value: string }>
   displayTitle: string
   format: "physical" | "digital"
   quantity: number
@@ -206,6 +208,10 @@ export function buildOrderViewModel(
   const items: OrderViewItem[] = lifecycle
     ? lifecycle.items.map((item) => ({
         productId: item.productId,
+        familyProductId: item.familyProductId,
+        selectedSpecifications: item.selectedSpecifications?.map(
+          (specification) => ({ ...specification })
+        ),
         displayTitle:
           item.title?.trim() || deriveItemDisplayTitle(item.productId),
         format: item.format ?? "physical",
@@ -216,6 +222,10 @@ export function buildOrderViewModel(
       }))
     : (summary?.items ?? []).map((item) => ({
         productId: item.productId,
+        familyProductId: item.familyProductId,
+        selectedSpecifications: item.selectedSpecifications?.map(
+          (specification) => ({ ...specification })
+        ),
         displayTitle:
           item.title?.trim() || deriveItemDisplayTitle(item.productId),
         format: item.format,

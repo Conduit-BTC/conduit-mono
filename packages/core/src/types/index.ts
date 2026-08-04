@@ -29,11 +29,6 @@ export interface Product {
   parentProductId?: string
   /** GammaMarkets `spec` tags preserved in signed-event order. */
   specifications: ProductSpecification[]
-  /**
-   * Reachable, same-merchant variation listings prepared for Market display.
-   * Individual variation identity and checkout data remain on each child.
-   */
-  variations?: Product[]
   /** Whether the product requires physical shipping. Defaults to "physical". */
   format: "physical" | "digital"
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
@@ -102,6 +97,8 @@ export interface Order {
 
 export interface OrderItem {
   productId: string
+  familyProductId?: string
+  selectedSpecifications?: ProductSpecification[]
   format: "physical" | "digital"
   quantity: number
   priceAtPurchase: number

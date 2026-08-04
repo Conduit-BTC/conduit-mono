@@ -736,7 +736,7 @@ function ProductsPage() {
       {/* Product grid */}
       {productCards.length > 0 && (
         <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
-          {productCards.map(({ product, merchant }, index) => {
+          {productCards.map(({ product, family, merchant }, index) => {
             return (
               <li
                 key={product.id}
@@ -752,6 +752,7 @@ function ProductsPage() {
               >
                 <ProductGridCard
                   product={product}
+                  family={family}
                   merchantName={merchant.displayName}
                   merchantNamePending={merchant.status === "pending"}
                   imageLoading={index < 4 ? "eager" : "lazy"}

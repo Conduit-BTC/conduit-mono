@@ -153,6 +153,15 @@ export type OrderGuestContactSchema = z.infer<typeof orderGuestContactSchema>
  */
 export const orderItemSchema = z.object({
   productId: z.string(),
+  familyProductId: z.string().optional(),
+  selectedSpecifications: z
+    .array(
+      z.object({
+        key: z.string().min(1).max(80),
+        value: z.string().min(1).max(200),
+      })
+    )
+    .optional(),
   title: z.string().max(200).optional(),
   /** Durable fulfillment snapshot; legacy orders remain physical-safe. */
   format: z.enum(["physical", "digital"]).default("physical"),

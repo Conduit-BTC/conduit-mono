@@ -78,12 +78,13 @@ function ProductPage() {
 
   const productQuery = useProgressiveProductDetail(productId)
   const product = productQuery.product
+  const family = productQuery.family ?? undefined
   const routeProductSelection = useMemo(
-    () => (product ? getProductSelection(product, productId) : null),
-    [product, productId]
+    () => (product ? getProductSelection(product, family, productId) : null),
+    [family, product, productId]
   )
   const selectedProduct = product
-    ? getProductSelection(product, selectedProductId)
+    ? getProductSelection(product, family, selectedProductId)
     : null
   const listingSafety = productQuery.listingSafety
   const listingSafetyDisplay = listingSafety
@@ -565,11 +566,13 @@ function ProductPage() {
                   ) : null}
                 </div>
 
-                <ProductVariationSelector
-                  product={product}
-                  selectedProductId={selectedProduct?.id ?? product.id}
-                  onSelect={(variation) => setSelectedProductId(variation.id)}
-                />
+                {family && selectedProduct ? (
+                  <ProductVariationSelector
+                    family={family}
+                    selectedProduct={selectedProduct}
+                    onSelect={(variation) => setSelectedProductId(variation.id)}
+                  />
+                ) : null}
 
                 <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                   <div className="text-2xl font-bold text-secondary-400">
@@ -838,6 +841,11 @@ function ProductPage() {
                     <li key={relatedProduct.id} className="h-full">
                       <ProductGridCard
                         product={relatedProduct}
+                        family={
+                          relatedProductsQuery.familiesByProductId[
+                            relatedProduct.id
+                          ]
+                        }
                         merchantName={merchantName}
                         merchantNamePending={merchantIdentityPending}
                         imageLoading={index < 4 ? "eager" : "lazy"}
