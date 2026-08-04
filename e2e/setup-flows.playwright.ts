@@ -592,6 +592,22 @@ test("market wallets route renders portable and connected wallet groups", async 
   await expect(page.getByRole("alert")).toBeVisible()
   await page.getByRole("button", { name: "Cancel", exact: true }).click()
   await expect(connectWalletButton).toBeFocused()
+
+  const displayCurrency = page.getByRole("combobox", {
+    name: "Preferred currency",
+  })
+  const satsStandard = page.getByRole("switch", {
+    name: "Sats the standard",
+  })
+  await displayCurrency.click()
+  await page.getByRole("option", { name: "EUR" }).click()
+  await satsStandard.click()
+  await expect(displayCurrency).toContainText("EUR")
+  await expect(satsStandard).toBeChecked()
+
+  await page.reload()
+  await expect(displayCurrency).toContainText("EUR")
+  await expect(satsStandard).toBeChecked()
 })
 
 test("portable wallet restore keeps derivation advanced and device-only fields clear", async ({
