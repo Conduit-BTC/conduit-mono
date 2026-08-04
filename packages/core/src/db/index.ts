@@ -1,6 +1,7 @@
 import Dexie, { type EntityTable, type Table } from "dexie"
 import { config } from "../config"
 import type { ProductZapMessagePolicy } from "../schemas"
+import type { ProductSpecification } from "../types"
 
 export interface StoredOrder {
   id: string
@@ -8,6 +9,8 @@ export interface StoredOrder {
   merchantPubkey: string
   items: Array<{
     productId: string
+    familyProductId?: string
+    selectedSpecifications?: ProductSpecification[]
     format?: "physical" | "digital"
     quantity: number
     priceAtPurchase: number
@@ -277,6 +280,8 @@ export type OrderLifecyclePhase =
 
 export interface OrderLifecycleItem {
   productId: string
+  familyProductId?: string
+  selectedSpecifications?: ProductSpecification[]
   /** Local product-title snapshot for buyer order display. Public listing data. */
   title?: string
   /** Fulfillment type at purchase time. Missing legacy values require shipping. */

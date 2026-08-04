@@ -14,9 +14,11 @@ import {
   getMerchantStorefront,
   getProductImageCandidates,
   getProductPriceDisplay,
+  prepareProductCatalog,
   recordBrowserTelemetryEvent,
   type CommerceResult,
   type ListingSafetyEvaluation,
+  type PreparedProductFamily,
   type ProductSchema,
   type ProductZapMessagePolicy,
   type PublishWithPlannerResult,
@@ -92,17 +94,26 @@ import {
   SignedProductDeliveryError,
 } from "../lib/product-publishing"
 import {
+  getProductFamilyStockDisplay,
   getProductStockDisplay,
   isPlainStockInput,
   parseProductStockInput,
 } from "../lib/productStock"
 import {
+  addProductVariationAxis,
   buildProductFamilyChangePlan,
   createEmptyProductVariationForm,
+  generateProductVariationRows,
+  getProductVariationCartesianCount,
   getProductVariationCombinations,
   getProductVariationFormState,
   groupProductVariationRecords,
+  MAX_PRODUCT_VARIATION_COUNT,
   reconcileProductVariationForm,
+  removeProductVariationAxis,
+  removeProductVariationRow,
+  updateProductVariationAxis,
+  updateProductVariationInheritance,
   updateProductVariationOverride,
   type ProductVariationFormResult,
 } from "../lib/productVariations"
@@ -127,6 +138,7 @@ type MerchantProductFamily = MerchantProduct & {
   variations: MerchantProduct[]
   orphanVariation: boolean
   variationForm: ProductVariationFormResult
+  family?: PreparedProductFamily<MerchantProduct>
 }
 
 type ProductFormState = MerchantProductFormValues
@@ -789,6 +801,8 @@ function ProductsPage() {
     () => productsQuery.data?.data ?? cachedProductsQuery.data?.data ?? [],
     [cachedProductsQuery.data?.data, productsQuery.data?.data]
   )
+  const merchantProductReadMeta =
+    productsQuery.data?.meta ?? cachedProductsQuery.data?.meta
   const merchantProducts = useMemo<MerchantProductFamily[]>(
     () =>
       groupProductVariationRecords(merchantProductRecords).map((family) => {
@@ -806,6 +820,16 @@ function ProductsPage() {
                 hasGroupImage: hasFamilyImage,
               })
             : family.root.safety
+        const prepared = prepareProductCatalog(
+          [family.root, ...family.variations],
+          {
+            source: merchantProductReadMeta?.source ?? "local_cache",
+            fetchedAt: merchantProductReadMeta?.fetchedAt ?? Date.now(),
+            stale: merchantProductReadMeta?.stale ?? true,
+            degraded: merchantProductReadMeta?.degraded ?? true,
+            capped: merchantProductReadMeta?.capped ?? false,
+          }
+        ).items[0]
 
         return {
           ...family.root,
@@ -813,9 +837,10 @@ function ProductsPage() {
           variations: family.variations,
           orphanVariation: family.orphanVariation,
           variationForm,
+          family: prepared?.kind === "family" ? prepared.family : undefined,
         }
       }),
-    [merchantProductRecords]
+    [merchantProductReadMeta, merchantProductRecords]
   )
   const shippingConfig = loadShippingConfig(pubkey)
   const hasPresetShippingZone = isShippingComplete(shippingConfig)
@@ -1130,13 +1155,25 @@ function ProductsPage() {
           return a.product.title.localeCompare(b.product.title)
         case "price_asc":
           return (
-            (a.product.priceSats ?? a.product.price) -
-            (b.product.priceSats ?? b.product.price)
+            (a.family?.priceSummary.minimum?.product.priceSats ??
+              a.family?.priceSummary.minimum?.product.price ??
+              a.product.priceSats ??
+              a.product.price) -
+            (b.family?.priceSummary.minimum?.product.priceSats ??
+              b.family?.priceSummary.minimum?.product.price ??
+              b.product.priceSats ??
+              b.product.price)
           )
         case "price_desc":
           return (
-            (b.product.priceSats ?? b.product.price) -
-            (a.product.priceSats ?? a.product.price)
+            (b.family?.priceSummary.minimum?.product.priceSats ??
+              b.family?.priceSummary.minimum?.product.price ??
+              b.product.priceSats ??
+              b.product.price) -
+            (a.family?.priceSummary.minimum?.product.priceSats ??
+              a.family?.priceSummary.minimum?.product.price ??
+              a.product.priceSats ??
+              a.product.price)
           )
         case "updated_desc":
           return b.eventCreatedAt - a.eventCreatedAt
@@ -1156,6 +1193,14 @@ function ProductsPage() {
     () => getProductVariationCombinations(form.variations),
     [form.variations]
   )
+  const productVariationCartesianCount = useMemo(
+    () => getProductVariationCartesianCount(form.variations),
+    [form.variations]
+  )
+  const productVariationGenerationMessage =
+    productVariationCartesianCount > MAX_PRODUCT_VARIATION_COUNT
+      ? `These axes define ${productVariationCartesianCount} combinations. Reduce the values to generate at most ${MAX_PRODUCT_VARIATION_COUNT}, or keep the existing sparse rows.`
+      : null
   const productIsDigital = form.format === "digital"
   const productCoordinatesShipping =
     !productIsDigital && form.shippingPricingMode === "coordinate_after_order"
@@ -1479,8 +1524,10 @@ function ProductsPage() {
 
         <div className="grid auto-rows-fr gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {visibleProducts.map((item) => {
+            const priceProduct =
+              item.family?.priceSummary.minimum?.product ?? item.product
             const { primary, secondary } = getProductPriceDisplay(
-              item.product,
+              priceProduct,
               btcUsdRateQuery.data ?? null
             )
             const isConstrainedVariationFamily =
@@ -1522,7 +1569,9 @@ function ProductsPage() {
             const isActive =
               item.safety.state === "active" || isConstrainedVariationFamily
             const zapBadge = getZapPolicyBadge(item.product)
-            const stockDisplay = getProductStockDisplay(item.product.stock)
+            const stockDisplay = item.family
+              ? getProductFamilyStockDisplay(item.family.inventorySummary)
+              : getProductStockDisplay(item.product.stock)
 
             return (
               <div key={item.addressId} className="grid gap-2">
@@ -1558,7 +1607,11 @@ function ProductsPage() {
                   }
                   merchantName="Your store"
                   images={getProductImageCandidates(item.product)}
-                  primaryPrice={primary}
+                  primaryPrice={
+                    item.family?.priceSummary.varies
+                      ? `From ${primary}`
+                      : primary
+                  }
                   secondaryPrice={secondary}
                   imageLoading="lazy"
                   action={
@@ -2013,55 +2066,179 @@ function ProductsPage() {
                 />
                 <span className="grid gap-1">
                   <span className="font-medium text-[var(--text-primary)]">
-                    This product has size or color options
+                    This product has variations
                   </span>
                   <span className="text-xs leading-5 text-[var(--text-muted)]">
-                    Conduit publishes one variable parent and one independently
-                    priced, independently stocked listing for each combination.
+                    Conduit publishes one variable parent and one explicit child
+                    listing for each row.
                   </span>
                 </span>
               </label>
 
               {form.variations.enabled && (
                 <>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="grid gap-1.5">
-                      <Label htmlFor="product-variation-sizes">Sizes</Label>
-                      <Input
-                        id="product-variation-sizes"
-                        value={form.variations.sizeOptions}
-                        aria-invalid={!!productFormValidation.errors.variations}
-                        aria-describedby="product-variations-help"
-                        placeholder="S, M, L, XL"
-                        onChange={(event) =>
-                          setForm((previous) => ({
-                            ...previous,
-                            variations: reconcileProductVariationForm({
-                              ...previous.variations,
-                              sizeOptions: event.target.value,
-                            }),
-                          }))
-                        }
-                      />
+                  <div className="grid gap-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-medium text-[var(--text-primary)]">
+                          Option axes
+                        </div>
+                        <p className="mt-1 text-xs text-[var(--text-muted)]">
+                          Size and color are presets. Axis names remain generic
+                          protocol specifications.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {!form.variations.axes.some(
+                          (axis) => axis.key.trim().toLowerCase() === "size"
+                        ) ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              setForm((previous) => ({
+                                ...previous,
+                                variations: addProductVariationAxis(
+                                  previous.variations,
+                                  "size"
+                                ),
+                              }))
+                            }
+                          >
+                            Add size
+                          </Button>
+                        ) : null}
+                        {!form.variations.axes.some(
+                          (axis) => axis.key.trim().toLowerCase() === "color"
+                        ) ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              setForm((previous) => ({
+                                ...previous,
+                                variations: addProductVariationAxis(
+                                  previous.variations,
+                                  "color"
+                                ),
+                              }))
+                            }
+                          >
+                            Add color
+                          </Button>
+                        ) : null}
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            setForm((previous) => ({
+                              ...previous,
+                              variations: addProductVariationAxis(
+                                previous.variations
+                              ),
+                            }))
+                          }
+                        >
+                          Add custom axis
+                        </Button>
+                      </div>
                     </div>
-                    <div className="grid gap-1.5">
-                      <Label htmlFor="product-variation-colors">Colors</Label>
-                      <Input
-                        id="product-variation-colors"
-                        value={form.variations.colorOptions}
-                        aria-invalid={!!productFormValidation.errors.variations}
-                        aria-describedby="product-variations-help"
-                        placeholder="Black, Purple"
-                        onChange={(event) =>
+
+                    {form.variations.axes.map((axis, index) => (
+                      <div
+                        key={axis.id}
+                        className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:grid-cols-[minmax(8rem,0.45fr)_minmax(0,1fr)_auto] sm:items-end"
+                      >
+                        <div className="grid gap-1.5">
+                          <Label htmlFor={`product-variation-axis-${axis.id}`}>
+                            Axis name
+                          </Label>
+                          <Input
+                            id={`product-variation-axis-${axis.id}`}
+                            value={axis.key}
+                            placeholder={index === 0 ? "size" : "license-tier"}
+                            onChange={(event) =>
+                              setForm((previous) => ({
+                                ...previous,
+                                variations: updateProductVariationAxis(
+                                  previous.variations,
+                                  axis.id,
+                                  "key",
+                                  event.target.value
+                                ),
+                              }))
+                            }
+                          />
+                        </div>
+                        <div className="grid gap-1.5">
+                          <Label
+                            htmlFor={`product-variation-values-${axis.id}`}
+                          >
+                            Values
+                          </Label>
+                          <Input
+                            id={`product-variation-values-${axis.id}`}
+                            value={axis.values}
+                            aria-invalid={
+                              !!productFormValidation.errors.variations
+                            }
+                            aria-describedby="product-variations-help"
+                            placeholder={
+                              axis.key.trim().toLowerCase() === "size"
+                                ? "S, M, L, XL"
+                                : "Personal, Business"
+                            }
+                            onChange={(event) =>
+                              setForm((previous) => ({
+                                ...previous,
+                                variations: updateProductVariationAxis(
+                                  previous.variations,
+                                  axis.id,
+                                  "values",
+                                  event.target.value
+                                ),
+                              }))
+                            }
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            setForm((previous) => ({
+                              ...previous,
+                              variations: removeProductVariationAxis(
+                                previous.variations,
+                                axis.id
+                              ),
+                            }))
+                          }
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                    ))}
+
+                    <div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={!!productVariationGenerationMessage}
+                        onClick={() =>
                           setForm((previous) => ({
                             ...previous,
-                            variations: reconcileProductVariationForm({
-                              ...previous.variations,
-                              colorOptions: event.target.value,
-                            }),
+                            variations: generateProductVariationRows(
+                              previous.variations
+                            ),
                           }))
                         }
-                      />
+                      >
+                        Generate combinations
+                      </Button>
                     </div>
                   </div>
 
@@ -2071,18 +2248,21 @@ function ProductsPage() {
                       "text-xs leading-5",
                       productFormValidation.errors.variations
                         ? "text-error"
-                        : "text-[var(--text-muted)]"
+                        : productVariationGenerationMessage
+                          ? "text-warning"
+                          : "text-[var(--text-muted)]"
                     )}
                   >
                     {productFormValidation.errors.variations ??
-                      "Use one option or both. Separate values with commas. Every size and color combination becomes a variation."}
+                      productVariationGenerationMessage ??
+                      "Separate values with commas. Generated rows are explicit: remove any row you do not stock to keep a sparse family."}
                   </div>
 
                   {productVariationCombinations.length > 0 && (
                     <div className="grid gap-2">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="text-sm font-medium text-[var(--text-primary)]">
-                          Generated variations
+                          Variation rows
                         </div>
                         <Badge
                           variant="secondary"
@@ -2092,98 +2272,312 @@ function ProductsPage() {
                         </Badge>
                       </div>
                       <p className="text-xs leading-5 text-[var(--text-muted)]">
-                        Leave an override blank to use the base price or default
-                        stock.
+                        Rows are the publish truth. Imported custom titles and
+                        child-specific fields are preserved.
                       </p>
-                      <div className="hidden grid-cols-[minmax(0,1fr)_minmax(9rem,0.7fr)_minmax(9rem,0.7fr)] gap-3 px-3 text-xs font-medium text-[var(--text-muted)] sm:grid">
-                        <span>Option</span>
-                        <span>Price override ({form.currency})</span>
-                        <span>Stock override</span>
-                      </div>
-                      <div className="grid max-h-[24rem] gap-2 overflow-y-auto pr-1">
+                      <div className="grid max-h-[32rem] gap-3 overflow-y-auto pr-1">
                         {productVariationCombinations.map(
                           (combination, index) => (
                             <div
                               key={combination.identity}
-                              className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3 sm:grid-cols-[minmax(0,1fr)_minmax(9rem,0.7fr)_minmax(9rem,0.7fr)] sm:items-end"
+                              className="grid gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-3"
                             >
-                              <div className="min-w-0">
-                                <div className="text-xs text-[var(--text-muted)] sm:hidden">
-                                  Option
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-medium text-[var(--text-primary)]">
+                                    {combination.label}
+                                  </div>
+                                  <div className="mt-0.5 text-xs text-[var(--text-muted)]">
+                                    {combination.specifications
+                                      .map(
+                                        (specification) =>
+                                          `${specification.key}: ${specification.value}`
+                                      )
+                                      .join(" · ")}
+                                  </div>
                                 </div>
-                                <div className="truncate text-sm font-medium text-[var(--text-primary)]">
-                                  {combination.label}
-                                </div>
-                              </div>
-                              <div className="grid gap-1">
-                                <Label
-                                  htmlFor={`product-variation-price-${index}`}
-                                  className="text-xs sm:sr-only"
-                                >
-                                  {combination.label} price override
-                                </Label>
-                                <Input
-                                  id={`product-variation-price-${index}`}
-                                  type="text"
-                                  inputMode={getProductAmountInputMode(
-                                    form.currency
-                                  )}
-                                  autoComplete="off"
-                                  className="tabular-nums"
-                                  value={combination.price}
-                                  placeholder={form.price || "Base price"}
-                                  onChange={(event) => {
-                                    if (
-                                      !isPlainDecimalInput(event.target.value)
-                                    ) {
-                                      return
-                                    }
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() =>
                                     setForm((previous) => ({
                                       ...previous,
-                                      variations:
-                                        updateProductVariationOverride(
-                                          previous.variations,
-                                          combination.identity,
-                                          "price",
-                                          event.target.value
-                                        ),
+                                      variations: removeProductVariationRow(
+                                        previous.variations,
+                                        combination.identity
+                                      ),
                                     }))
-                                  }}
-                                />
-                              </div>
-                              <div className="grid gap-1">
-                                <Label
-                                  htmlFor={`product-variation-stock-${index}`}
-                                  className="text-xs sm:sr-only"
+                                  }
                                 >
-                                  {combination.label} stock override
-                                </Label>
-                                <Input
-                                  id={`product-variation-stock-${index}`}
-                                  type="text"
-                                  inputMode="numeric"
-                                  autoComplete="off"
-                                  className="tabular-nums"
-                                  value={combination.stock}
-                                  placeholder={form.stock || "Not tracked"}
-                                  onChange={(event) => {
-                                    if (
-                                      !isPlainStockInput(event.target.value)
-                                    ) {
-                                      return
+                                  Remove row
+                                </Button>
+                              </div>
+
+                              <div className="grid gap-3 sm:grid-cols-3">
+                                <div className="grid gap-1">
+                                  <Label
+                                    htmlFor={`product-variation-title-${index}`}
+                                    className="text-xs"
+                                  >
+                                    Child title
+                                  </Label>
+                                  <Input
+                                    id={`product-variation-title-${index}`}
+                                    value={combination.title}
+                                    placeholder={`${form.title || "Product"} - ${combination.label}`}
+                                    onChange={(event) =>
+                                      setForm((previous) => ({
+                                        ...previous,
+                                        variations:
+                                          updateProductVariationOverride(
+                                            previous.variations,
+                                            combination.identity,
+                                            "title",
+                                            event.target.value
+                                          ),
+                                      }))
                                     }
-                                    setForm((previous) => ({
-                                      ...previous,
-                                      variations:
-                                        updateProductVariationOverride(
-                                          previous.variations,
-                                          combination.identity,
-                                          "stock",
-                                          event.target.value
-                                        ),
-                                    }))
-                                  }}
-                                />
+                                  />
+                                </div>
+                                <div className="grid gap-1">
+                                  <Label
+                                    htmlFor={`product-variation-price-${index}`}
+                                    className="text-xs"
+                                  >
+                                    Price ({form.currency})
+                                  </Label>
+                                  <Input
+                                    id={`product-variation-price-${index}`}
+                                    type="text"
+                                    inputMode={getProductAmountInputMode(
+                                      form.currency
+                                    )}
+                                    autoComplete="off"
+                                    className="tabular-nums"
+                                    value={combination.price}
+                                    placeholder={form.price || "Base price"}
+                                    onChange={(event) => {
+                                      if (
+                                        !isPlainDecimalInput(event.target.value)
+                                      ) {
+                                        return
+                                      }
+                                      setForm((previous) => ({
+                                        ...previous,
+                                        variations:
+                                          updateProductVariationOverride(
+                                            previous.variations,
+                                            combination.identity,
+                                            "price",
+                                            event.target.value
+                                          ),
+                                      }))
+                                    }}
+                                  />
+                                </div>
+                                <div className="grid gap-1">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <Label
+                                      htmlFor={`product-variation-stock-${index}`}
+                                      className="text-xs"
+                                    >
+                                      Stock
+                                    </Label>
+                                    <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                                      <input
+                                        type="checkbox"
+                                        checked={combination.inheritStock}
+                                        onChange={(event) =>
+                                          setForm((previous) => ({
+                                            ...previous,
+                                            variations:
+                                              updateProductVariationInheritance(
+                                                previous.variations,
+                                                combination.identity,
+                                                "inheritStock",
+                                                event.target.checked
+                                              ),
+                                          }))
+                                        }
+                                      />
+                                      Base
+                                    </label>
+                                  </div>
+                                  <Input
+                                    id={`product-variation-stock-${index}`}
+                                    type="text"
+                                    inputMode="numeric"
+                                    autoComplete="off"
+                                    className="tabular-nums"
+                                    value={combination.stock}
+                                    disabled={combination.inheritStock}
+                                    placeholder={form.stock || "Not tracked"}
+                                    onChange={(event) => {
+                                      if (
+                                        !isPlainStockInput(event.target.value)
+                                      ) {
+                                        return
+                                      }
+                                      setForm((previous) => ({
+                                        ...previous,
+                                        variations:
+                                          updateProductVariationOverride(
+                                            previous.variations,
+                                            combination.identity,
+                                            "stock",
+                                            event.target.value
+                                          ),
+                                      }))
+                                    }}
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="grid gap-3 sm:grid-cols-3">
+                                <div className="grid gap-1">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <Label
+                                      htmlFor={`product-variation-images-${index}`}
+                                      className="text-xs"
+                                    >
+                                      Image URLs
+                                    </Label>
+                                    <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                                      <input
+                                        type="checkbox"
+                                        checked={combination.inheritImages}
+                                        onChange={(event) =>
+                                          setForm((previous) => ({
+                                            ...previous,
+                                            variations:
+                                              updateProductVariationInheritance(
+                                                previous.variations,
+                                                combination.identity,
+                                                "inheritImages",
+                                                event.target.checked
+                                              ),
+                                          }))
+                                        }
+                                      />
+                                      Base
+                                    </label>
+                                  </div>
+                                  <Textarea
+                                    id={`product-variation-images-${index}`}
+                                    value={combination.imageUrls}
+                                    disabled={combination.inheritImages}
+                                    placeholder="One HTTPS URL per line"
+                                    rows={2}
+                                    onChange={(event) =>
+                                      setForm((previous) => ({
+                                        ...previous,
+                                        variations:
+                                          updateProductVariationOverride(
+                                            previous.variations,
+                                            combination.identity,
+                                            "imageUrls",
+                                            event.target.value
+                                          ),
+                                      }))
+                                    }
+                                  />
+                                </div>
+                                <div className="grid gap-1">
+                                  <Label
+                                    htmlFor={`product-variation-format-${index}`}
+                                    className="text-xs"
+                                  >
+                                    Format
+                                  </Label>
+                                  <Select
+                                    value={combination.format}
+                                    onValueChange={(value) =>
+                                      setForm((previous) => ({
+                                        ...previous,
+                                        variations:
+                                          updateProductVariationOverride(
+                                            previous.variations,
+                                            combination.identity,
+                                            "format",
+                                            value
+                                          ),
+                                      }))
+                                    }
+                                  >
+                                    <SelectTrigger
+                                      id={`product-variation-format-${index}`}
+                                    >
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="inherit">
+                                        Base format
+                                      </SelectItem>
+                                      <SelectItem value="physical">
+                                        Physical
+                                      </SelectItem>
+                                      <SelectItem value="digital">
+                                        Digital
+                                      </SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <div className="grid gap-1">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <Label
+                                      htmlFor={`product-variation-shipping-${index}`}
+                                      className="text-xs"
+                                    >
+                                      Shipping ({form.currency})
+                                    </Label>
+                                    <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
+                                      <input
+                                        type="checkbox"
+                                        checked={combination.inheritShipping}
+                                        onChange={(event) =>
+                                          setForm((previous) => ({
+                                            ...previous,
+                                            variations:
+                                              updateProductVariationInheritance(
+                                                previous.variations,
+                                                combination.identity,
+                                                "inheritShipping",
+                                                event.target.checked
+                                              ),
+                                          }))
+                                        }
+                                      />
+                                      Base
+                                    </label>
+                                  </div>
+                                  <Input
+                                    id={`product-variation-shipping-${index}`}
+                                    value={combination.shippingCost}
+                                    disabled={combination.inheritShipping}
+                                    inputMode={getProductAmountInputMode(
+                                      form.currency
+                                    )}
+                                    placeholder="Coordinate after order"
+                                    onChange={(event) => {
+                                      if (
+                                        !isPlainDecimalInput(event.target.value)
+                                      ) {
+                                        return
+                                      }
+                                      setForm((previous) => ({
+                                        ...previous,
+                                        variations:
+                                          updateProductVariationOverride(
+                                            previous.variations,
+                                            combination.identity,
+                                            "shippingCost",
+                                            event.target.value
+                                          ),
+                                      }))
+                                    }}
+                                  />
+                                </div>
                               </div>
                             </div>
                           )

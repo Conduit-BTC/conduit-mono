@@ -13,6 +13,7 @@ import {
   cacheSignedProductDeletionEvent,
   cacheSignedProductListingEvent,
   getConversationDetail,
+  getAtomicProductDetail,
   getMarketplaceProducts,
   getMarketplaceProductsProgressive,
   getMerchantConversationList,
@@ -315,6 +316,14 @@ describe("commerce gateway", () => {
         title: "Conduit Sticker",
         type: "simple",
       }),
+      makeGammaProductEvent({
+        pubkey: merchantPubkey,
+        dTag: "empty-family",
+        id: "empty-family-event",
+        createdAt: 109,
+        title: "Incomplete Family",
+        type: "variable",
+      }),
     ]
 
     __setCommerceTestOverrides({
@@ -329,6 +338,14 @@ describe("commerce gateway", () => {
     })
     const childDetail = await getProductDetail({
       productId: `30402:${merchantPubkey}:shirt-l`,
+    })
+    const atomicChild = await getAtomicProductDetail({
+      productId: `30402:${merchantPubkey}:shirt-l`,
+      includeMarketHidden: true,
+    })
+    const incompleteFamily = await getProductDetail({
+      productId: `30402:${merchantPubkey}:empty-family`,
+      includeMarketHidden: true,
     })
     const selectedVariation = await getProductsByIds([
       `30402:${merchantPubkey}:shirt-l`,
@@ -346,21 +363,31 @@ describe("commerce gateway", () => {
     ])
     expect(parent?.safety?.state).toBe("active")
     expect(
-      parent?.product.variations?.map((variation) => variation.id)
+      parent?.family?.children.map((variation) => variation.product.id)
     ).toEqual([
-      `30402:${merchantPubkey}:shirt-s`,
-      `30402:${merchantPubkey}:shirt-m`,
       `30402:${merchantPubkey}:shirt-l`,
+      `30402:${merchantPubkey}:shirt-m`,
+      `30402:${merchantPubkey}:shirt-s`,
       `30402:${merchantPubkey}:shirt-xl`,
     ])
-    expect(merchant.data).toHaveLength(7)
+    expect(merchant.data).toHaveLength(8)
     expect(childDetail.data?.addressId).toBe(parentProductId)
-    expect(childDetail.data?.product.variations).toHaveLength(4)
+    expect(childDetail.data?.family?.children).toHaveLength(4)
+    expect(atomicChild.data?.addressId).toBe(`30402:${merchantPubkey}:shirt-l`)
+    expect(atomicChild.data?.product.type).toBe("variation")
+    expect(atomicChild.data?.family).toBeUndefined()
+    expect(incompleteFamily.data?.family?.state).toBe("parent_only")
+    expect(incompleteFamily.data?.family?.readEvidence).toMatchObject({
+      source: incompleteFamily.meta.source,
+      stale: incompleteFamily.meta.stale,
+      degraded: incompleteFamily.meta.degraded,
+      capped: incompleteFamily.meta.capped,
+    })
     expect(selectedVariation.data[0]?.product.stock).toBe(5)
     expect(orphanVariation.data).toHaveLength(0)
   })
 
-  it("sorts a variable family by the default variation price shown on cards", async () => {
+  it("sorts a variable family by the minimum child price shown in its summary", async () => {
     const merchantPubkey = MERCHANT_A_PUBKEY
     const parentProductId = `30402:${merchantPubkey}:shirt`
     const events = [

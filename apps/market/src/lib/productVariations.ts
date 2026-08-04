@@ -1,28 +1,38 @@
 import {
-  getDefaultProductSelection as getCoreDefaultProductSelection,
-  getProductImageCandidates,
+  resolvePurchasableSelection,
+  type CommerceProductRecord,
+  type PreparedProductFamily,
   type Product,
 } from "@conduit/core"
 import { createCartItemFromProduct, type CartItem } from "./cart-model"
 
-export interface ProductVariationOption {
-  product: Product
+export type MarketProductFamily = PreparedProductFamily<CommerceProductRecord>
+
+export interface ProductVariationAxisOption {
+  value: string
   label: string
   soldOut: boolean
+  disabled: boolean
+}
+
+export interface ProductVariationAxisModel {
+  key: string
+  label: string
+  selectedValue: string
+  options: ProductVariationAxisOption[]
 }
 
 export interface ProductVariationSelectorModel {
-  label: string
-  options: ProductVariationOption[]
+  axes: ProductVariationAxisModel[]
 }
 
-const SIZE_ORDER = new Map(
+const SIZE_PRESENTATION_ORDER = new Map(
   ["xxs", "xs", "s", "m", "l", "xl", "xxl", "xxxl"].map((size, index) => [
     size,
     index,
   ])
 )
-const NATURAL_COLLATOR = new Intl.Collator(undefined, {
+const PRESENTATION_COLLATOR = new Intl.Collator(undefined, {
   numeric: true,
   sensitivity: "base",
 })
@@ -34,109 +44,32 @@ function titleCase(value: string): string {
     .replace(/\b\w/g, (character) => character.toUpperCase())
 }
 
-function getSpecificationValue(
+function getSpecificationValue(product: Product, key: string): string {
+  return (
+    product.specifications.find(
+      (specification) =>
+        specification.key.trim().toLowerCase() === key.toLowerCase()
+    )?.value ?? ""
+  )
+}
+
+export function getDefaultProductSelection(
   product: Product,
-  key: string
-): string | undefined {
-  return product.specifications.find(
-    (specification) =>
-      specification.key.trim().toLowerCase() === key.toLowerCase()
-  )?.value
-}
-
-function compareOptionLabels(
-  left: ProductVariationOption,
-  right: ProductVariationOption,
-  singleKey?: string
-): number {
-  if (singleKey?.toLowerCase() === "size") {
-    const leftRank = SIZE_ORDER.get(left.label.trim().toLowerCase())
-    const rightRank = SIZE_ORDER.get(right.label.trim().toLowerCase())
-    if (leftRank !== undefined || rightRank !== undefined) {
-      return (
-        (leftRank ?? Number.MAX_SAFE_INTEGER) -
-          (rightRank ?? Number.MAX_SAFE_INTEGER) ||
-        NATURAL_COLLATOR.compare(left.label, right.label)
-      )
-    }
+  family?: MarketProductFamily
+): Product {
+  if (product.type !== "variable" || !family || family.state !== "ready") {
+    return product
   }
-
-  return NATURAL_COLLATOR.compare(left.label, right.label)
+  return (
+    family.children.find((child) => child.product.stock !== 0)?.product ??
+    family.children[0]?.product ??
+    product
+  )
 }
-
-export function getProductVariationSelectorModel(
-  product: Product
-): ProductVariationSelectorModel | null {
-  const variations = product.variations ?? []
-  if (product.type !== "variable" || variations.length === 0) return null
-
-  const specificationKeys = Array.from(
-    new Map(
-      variations.flatMap((variation) =>
-        variation.specifications.map((specification) => [
-          specification.key.trim().toLowerCase(),
-          specification.key.trim(),
-        ])
-      )
-    ).values()
-  ).filter(Boolean)
-  const varyingKeys = specificationKeys.filter((key) => {
-    const values = new Set(
-      variations.map((variation) => getSpecificationValue(variation, key) ?? "")
-    )
-    return values.size > 1
-  })
-
-  const selectorLabel =
-    varyingKeys.length === 1
-      ? titleCase(varyingKeys[0]!)
-      : varyingKeys.length > 1
-        ? "Options"
-        : "Option"
-  const options = variations
-    .map((variation) => {
-      let label = variation.title
-      if (varyingKeys.length === 1) {
-        label =
-          getSpecificationValue(variation, varyingKeys[0]!) ?? variation.title
-      } else if (varyingKeys.length > 1) {
-        label = varyingKeys
-          .map((key) => {
-            const value = getSpecificationValue(variation, key)
-            return value ? `${titleCase(key)}: ${value}` : null
-          })
-          .filter(Boolean)
-          .join(" / ")
-      } else if (variation.specifications.length > 0) {
-        label = variation.specifications
-          .map(
-            (specification) =>
-              `${titleCase(specification.key)}: ${specification.value}`
-          )
-          .join(" / ")
-      }
-
-      return {
-        product: variation,
-        label,
-        soldOut: variation.stock === 0,
-      }
-    })
-    .sort((left, right) =>
-      compareOptionLabels(
-        left,
-        right,
-        varyingKeys.length === 1 ? varyingKeys[0] : undefined
-      )
-    )
-
-  return { label: selectorLabel, options }
-}
-
-export { getCoreDefaultProductSelection as getDefaultProductSelection }
 
 export function getProductSelection(
   product: Product,
+  family: MarketProductFamily | undefined,
   selectedProductId?: string
 ): Product {
   let decodedProductId = selectedProductId
@@ -149,28 +82,100 @@ export function getProductSelection(
   }
 
   return (
-    product.variations?.find(
-      (variation) =>
-        variation.id === selectedProductId || variation.id === decodedProductId
-    ) ?? getCoreDefaultProductSelection(product)
+    family?.children.find(
+      (candidate) =>
+        candidate.product.id === selectedProductId ||
+        candidate.product.id === decodedProductId ||
+        candidate.addressId === selectedProductId ||
+        candidate.addressId === decodedProductId
+    )?.product ?? getDefaultProductSelection(product, family)
   )
+}
+
+export function getProductVariationSelectorModel(
+  family: MarketProductFamily | undefined,
+  selectedProduct: Product
+): ProductVariationSelectorModel | null {
+  if (!family || family.state !== "ready" || family.axes.length === 0) {
+    return null
+  }
+
+  return {
+    axes: family.axes.map((axis) => {
+      const selectedValue = getSpecificationValue(selectedProduct, axis.key)
+      const otherSelections = selectedProduct.specifications.filter(
+        (specification) => specification.key.trim().toLowerCase() !== axis.key
+      )
+      const presentationValues = [...axis.values].sort((left, right) => {
+        if (axis.key !== "size") {
+          return PRESENTATION_COLLATOR.compare(left, right)
+        }
+        return (
+          (SIZE_PRESENTATION_ORDER.get(left.trim().toLowerCase()) ??
+            Number.MAX_SAFE_INTEGER) -
+            (SIZE_PRESENTATION_ORDER.get(right.trim().toLowerCase()) ??
+              Number.MAX_SAFE_INTEGER) ||
+          PRESENTATION_COLLATOR.compare(left, right)
+        )
+      })
+      const options = presentationValues.map((value) => {
+        const compatible = family.children.filter((child) => {
+          const hasValue =
+            getSpecificationValue(child.product, axis.key).toLowerCase() ===
+            value.toLowerCase()
+          const matchesOthers = otherSelections.every(
+            (selection) =>
+              getSpecificationValue(
+                child.product,
+                selection.key
+              ).toLowerCase() === selection.value.trim().toLowerCase()
+          )
+          return hasValue && matchesOthers
+        })
+        return {
+          value,
+          label: value,
+          soldOut:
+            compatible.length > 0 &&
+            compatible.every((child) => child.product.stock === 0),
+          disabled: compatible.length === 0,
+        }
+      })
+
+      return {
+        key: axis.key,
+        label: titleCase(axis.label),
+        selectedValue,
+        options,
+      }
+    }),
+  }
+}
+
+export function getProductSelectionForAxisValue(
+  family: MarketProductFamily,
+  selectedProduct: Product,
+  axisKey: string,
+  value: string
+): Product | null {
+  const specifications = selectedProduct.specifications.map((specification) =>
+    specification.key.trim().toLowerCase() === axisKey
+      ? { ...specification, value }
+      : specification
+  )
+  const result = resolvePurchasableSelection(
+    { kind: "family", family },
+    { specifications }
+  )
+  return result.status === "selected" ? result.record.product : null
 }
 
 export function getProductSelectionImages(
   product: Product,
   selectedProduct: Product
 ): Array<{ url: string; alt?: string }> {
-  const selectedImages = getProductImageCandidates(selectedProduct)
-  if (selectedImages.length > 0) return selectedImages
-
-  const parentImages = getProductImageCandidates(product)
-  if (parentImages.length > 0) return parentImages
-
-  for (const variation of product.variations ?? []) {
-    const siblingImages = getProductImageCandidates(variation)
-    if (siblingImages.length > 0) return siblingImages
-  }
-
+  if (selectedProduct.images.length > 0) return selectedProduct.images
+  if (product.images.length > 0) return product.images
   return []
 }
 
@@ -180,6 +185,12 @@ export function cartItemInputFromProductSelection(
 ): Omit<CartItem, "quantity"> {
   return {
     ...createCartItemFromProduct(selectedProduct),
+    familyProductId:
+      selectedProduct.type === "variation" ? product.id : undefined,
+    selectedSpecifications:
+      selectedProduct.type === "variation"
+        ? [...selectedProduct.specifications]
+        : undefined,
     image: getProductSelectionImages(product, selectedProduct)[0]?.url,
   }
 }

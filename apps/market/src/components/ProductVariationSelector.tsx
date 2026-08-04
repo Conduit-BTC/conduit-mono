@@ -7,68 +7,79 @@ import {
   SelectValue,
   cn,
 } from "@conduit/ui"
-import { getProductVariationSelectorModel } from "../lib/productVariations"
+import {
+  getProductSelectionForAxisValue,
+  getProductVariationSelectorModel,
+  type MarketProductFamily,
+} from "../lib/productVariations"
 
 interface ProductVariationSelectorProps {
-  product: Product
-  selectedProductId: string
+  family: MarketProductFamily
+  selectedProduct: Product
   onSelect: (product: Product) => void
   compact?: boolean
   className?: string
 }
 
 export function ProductVariationSelector({
-  product,
-  selectedProductId,
+  family,
+  selectedProduct,
   onSelect,
   compact = false,
   className,
 }: ProductVariationSelectorProps) {
-  const model = getProductVariationSelectorModel(product)
+  const model = getProductVariationSelectorModel(family, selectedProduct)
   if (!model) return null
 
   return (
     <div
-      className={cn("space-y-1.5", className)}
+      className={cn("space-y-2", className)}
       onClick={(event) => event.stopPropagation()}
       onKeyDown={(event) => event.stopPropagation()}
     >
-      <label
-        className={cn(
-          "font-medium text-[var(--text-secondary)]",
-          compact ? "text-[11px]" : "text-sm"
-        )}
-      >
-        {model.label}
-      </label>
-      <Select
-        value={selectedProductId}
-        onValueChange={(productId) => {
-          const option = model.options.find(
-            (candidate) => candidate.product.id === productId
-          )
-          if (option) onSelect(option.product)
-        }}
-      >
-        <SelectTrigger
-          aria-label={`Choose ${model.label.toLowerCase()}`}
-          className={compact ? "h-8 px-2.5 text-xs" : undefined}
-        >
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {model.options.map((option) => (
-            <SelectItem
-              key={option.product.id}
-              value={option.product.id}
-              disabled={option.soldOut}
+      {model.axes.map((axis) => (
+        <div key={axis.key} className="space-y-1.5">
+          <label
+            className={cn(
+              "font-medium text-[var(--text-secondary)]",
+              compact ? "text-[11px]" : "text-sm"
+            )}
+          >
+            {axis.label}
+          </label>
+          <Select
+            value={axis.selectedValue}
+            onValueChange={(value) => {
+              const next = getProductSelectionForAxisValue(
+                family,
+                selectedProduct,
+                axis.key,
+                value
+              )
+              if (next) onSelect(next)
+            }}
+          >
+            <SelectTrigger
+              aria-label={`Choose ${axis.label.toLowerCase()}`}
+              className={compact ? "h-8 px-2.5 text-xs" : undefined}
             >
-              {option.label}
-              {option.soldOut ? " — Sold out" : ""}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {axis.options.map((option) => (
+                <SelectItem
+                  key={option.value}
+                  value={option.value}
+                  disabled={option.disabled || option.soldOut}
+                >
+                  {option.label}
+                  {option.soldOut ? " — Sold out" : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      ))}
     </div>
   )
 }

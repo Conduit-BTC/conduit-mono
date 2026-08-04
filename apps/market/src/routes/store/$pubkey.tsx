@@ -31,15 +31,12 @@ import {
 import {
   formatNpub,
   getCommerceReadRelayUrls,
-  getDefaultProductSelection,
   getTelemetryCountBucket,
   normalizePubkey,
   publishContactListUpdate,
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
   useAuth,
-  type PricingRateInput,
-  type Product,
 } from "@conduit/core"
 import { SignerSwitch } from "../../components/SignerSwitch"
 import { RichProfileText } from "../../components/RichProfileText"
@@ -58,10 +55,6 @@ import { ProfileBanner } from "../../components/ProfileBanner"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import { useMerchantTrustContext } from "../../hooks/useMerchantTrustContext"
-import {
-  compareCommercePrices,
-  getComparablePriceValue,
-} from "../../lib/pricing"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
 import {
   filterProductsByFacets,
@@ -69,13 +62,13 @@ import {
   normalizeFacetValues,
 } from "../../lib/facets"
 import { cartItemInputFromProductSelection } from "../../lib/productVariations"
+import {
+  hasUnavailablePriceForBrowseSort,
+  sortBrowseProducts,
+} from "../../lib/marketBrowseModel"
 
 type SortOption = "newest" | "price_asc" | "price_desc"
 type CategoryFacetOption = ReturnType<typeof getCategoryFacetOptions>[number]
-
-function isPriceSort(sort: SortOption | undefined): boolean {
-  return sort === "price_asc" || sort === "price_desc"
-}
 
 type StoreSearch = {
   q?: string
@@ -99,38 +92,6 @@ export const Route = createFileRoute("/store/$pubkey")({
     }
   },
 })
-
-function sortProducts(
-  products: Product[],
-  sort: SortOption | undefined,
-  btcUsdRate: PricingRateInput
-): Product[] {
-  switch (sort) {
-    case "price_asc":
-      return [...products].sort(
-        (a, b) =>
-          compareCommercePrices(
-            getDefaultProductSelection(a),
-            getDefaultProductSelection(b),
-            btcUsdRate,
-            "asc"
-          ) || b.createdAt - a.createdAt
-      )
-    case "price_desc":
-      return [...products].sort(
-        (a, b) =>
-          compareCommercePrices(
-            getDefaultProductSelection(a),
-            getDefaultProductSelection(b),
-            btcUsdRate,
-            "desc"
-          ) || b.createdAt - a.createdAt
-      )
-    case "newest":
-    default:
-      return [...products].sort((a, b) => b.createdAt - a.createdAt)
-  }
-}
 
 function CategoryFacetButton({
   option,
@@ -295,19 +256,33 @@ function StorefrontPage() {
   }, [search.q, selectedTags, storeProducts])
 
   const hasUnavailablePriceForSort = useMemo(() => {
-    if (!isPriceSort(search.sort)) return false
-    return matchingProducts.some(
-      (product) =>
-        getComparablePriceValue(
-          getDefaultProductSelection(product),
-          btcUsdRate
-        ) === null
+    return hasUnavailablePriceForBrowseSort(
+      matchingProducts,
+      search.sort,
+      btcUsdRate,
+      productsQuery.familiesByProductId
     )
-  }, [btcUsdRate, matchingProducts, search.sort])
+  }, [
+    btcUsdRate,
+    matchingProducts,
+    productsQuery.familiesByProductId,
+    search.sort,
+  ])
 
   const filteredProducts = useMemo(
-    () => sortProducts(matchingProducts, search.sort, btcUsdRate),
-    [btcUsdRate, matchingProducts, search.sort]
+    () =>
+      sortBrowseProducts(
+        matchingProducts,
+        search.sort,
+        btcUsdRate,
+        productsQuery.familiesByProductId
+      ),
+    [
+      btcUsdRate,
+      matchingProducts,
+      productsQuery.familiesByProductId,
+      search.sort,
+    ]
   )
 
   useEffect(() => {
@@ -804,6 +779,7 @@ function StorefrontPage() {
                 <li key={product.id} className="h-full">
                   <ProductGridCard
                     product={product}
+                    family={productsQuery.familiesByProductId[product.id]}
                     merchantName={merchantName}
                     merchantNamePending={merchantIdentityPending}
                     imageLoading={index < 4 ? "eager" : "lazy"}

@@ -17,12 +17,14 @@ import {
   getDefaultProductSelection,
   getProductSelection,
   getProductSelectionImages,
+  type MarketProductFamily,
 } from "../lib/productVariations"
 import { getPendingMerchantDisplayName } from "./MerchantIdentity"
 import { ProductVariationSelector } from "./ProductVariationSelector"
 
 type ProductGridCardProps = {
   product: Product
+  family?: MarketProductFamily
   merchantName?: string
   merchantNamePending?: boolean
   imageLoading?: "eager" | "lazy"
@@ -38,6 +40,7 @@ type ProductGridCardProps = {
 
 export function ProductGridCard({
   product,
+  family,
   merchantName: merchantNameOverride,
   merchantNamePending: merchantNamePendingOverride,
   imageLoading = "lazy",
@@ -52,15 +55,18 @@ export function ProductGridCard({
 }: ProductGridCardProps) {
   const navigate = useNavigate()
   const defaultSelection = useMemo(
-    () => getDefaultProductSelection(product),
-    [product]
+    () => getDefaultProductSelection(product, family),
+    [family, product]
   )
   const [selectedProductId, setSelectedProductId] = useState(
     defaultSelection.id
   )
-  const selectedProduct = getProductSelection(product, selectedProductId)
-  const hasVariations =
-    product.type === "variable" && (product.variations?.length ?? 0) > 0
+  const selectedProduct = getProductSelection(
+    product,
+    family,
+    selectedProductId
+  )
+  const hasVariations = product.type === "variable" && family?.state === "ready"
   const images = getProductSelectionImages(product, selectedProduct)
   const selectedCartQuantity =
     getCartQuantity?.(selectedProduct) ?? cartQuantity
@@ -74,11 +80,25 @@ export function ProductGridCard({
   const merchantName =
     merchantNameOverride ||
     getPendingMerchantDisplayName(product.pubkey, { chars: 6 })
-  const { primary, secondary, approximateUsd } = getShopperPriceDisplay(
+  const selectedPriceDisplay = getShopperPriceDisplay(
     selectedProduct,
     pricePreference,
     typeof btcUsdRate === "object" ? btcUsdRate : null
   )
+  const summaryMinimum = family?.priceSummary.minimum?.product
+  const summaryPriceDisplay = summaryMinimum
+    ? getShopperPriceDisplay(
+        summaryMinimum,
+        pricePreference,
+        typeof btcUsdRate === "object" ? btcUsdRate : null
+      )
+    : selectedPriceDisplay
+  const primary =
+    family?.priceSummary.varies === true
+      ? `From ${summaryPriceDisplay.primary}`
+      : summaryPriceDisplay.primary
+  const secondary = summaryPriceDisplay.secondary
+  const approximateUsd = summaryPriceDisplay.approximateUsd
   const soldOut = selectedProduct.stock === 0
   const atStockLimit =
     !soldOut &&
@@ -100,8 +120,8 @@ export function ProductGridCard({
       options={
         hasVariations ? (
           <ProductVariationSelector
-            product={product}
-            selectedProductId={selectedProduct.id}
+            family={family!}
+            selectedProduct={selectedProduct}
             onSelect={(variation) => setSelectedProductId(variation.id)}
             compact
           />

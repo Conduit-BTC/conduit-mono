@@ -16,7 +16,6 @@ import {
 import { config } from "../config"
 import { compareCommercePrices } from "../pricing"
 import type { Product, Profile } from "../types"
-import { getDefaultProductSelection } from "../utils"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanout,
@@ -43,6 +42,11 @@ import {
   isListingMarketVisible,
   type ListingSafetyEvaluation,
 } from "./listing-safety"
+import {
+  prepareProductCatalog,
+  type PreparedProductFamily,
+  type ProductFamilyReadEvidence,
+} from "./product-family"
 import {
   canonicalizeProductTags,
   normalizeProductSummaryForDisplay,
@@ -98,6 +102,8 @@ export interface CommerceQueryMeta {
   source: CommerceReadSource
   degraded: boolean
   stale: boolean
+  /** True when a transport/result limit may have truncated the evidence set. */
+  capped?: boolean
   capabilities: CommerceCapabilities
   fetchedAt: number
   nextCursor?: string
@@ -119,6 +125,7 @@ export interface CommerceResult<T> {
 export interface CommerceProductRecord {
   product: Product
   safety?: ListingSafetyEvaluation
+  family?: PreparedProductFamily<CommerceProductRecord>
   eventId: string
   addressId: string
   dTag: string | null
@@ -511,6 +518,7 @@ function createMeta(
   options: {
     stale?: boolean
     degraded?: boolean
+    capped?: boolean
     nextCursor?: string
     decryptFailures?: DecryptFailure[]
     legacyDecryptFailures?: LegacyDmDecryptFailure[]
@@ -528,6 +536,7 @@ function createMeta(
   return {
     source,
     stale: options.stale ?? source === "local_cache",
+    capped: options.capped ?? false,
     degraded:
       options.degraded ??
       (options.stale === true ||
@@ -678,13 +687,15 @@ function sortProducts(
   sort: CommerceSortMode | undefined
 ): CommerceProductRecord[] {
   const items = [...records]
+  const familySummaryPrice = (record: CommerceProductRecord): Product =>
+    record.family?.priceSummary.minimum?.product ?? record.product
   switch (sort) {
     case "price_asc":
       return items.sort(
         (a, b) =>
           compareCommercePrices(
-            getDefaultProductSelection(a.product),
-            getDefaultProductSelection(b.product),
+            familySummaryPrice(a),
+            familySummaryPrice(b),
             null,
             "asc"
           ) || b.product.updatedAt - a.product.updatedAt
@@ -693,8 +704,8 @@ function sortProducts(
       return items.sort(
         (a, b) =>
           compareCommercePrices(
-            getDefaultProductSelection(a.product),
-            getDefaultProductSelection(b.product),
+            familySummaryPrice(a),
+            familySummaryPrice(b),
             null,
             "desc"
           ) || b.product.updatedAt - a.product.updatedAt
@@ -743,45 +754,33 @@ function withListingSafety(
 }
 
 function isMarketRenderableRecord(record: CommerceProductRecord): boolean {
+  if (record.product.type === "variable" && record.family?.state !== "ready") {
+    return false
+  }
   return isListingMarketVisible(
     record.safety ?? evaluateListingSafety(record.product)
   )
 }
 
 function prepareVariationGroups(
-  records: CommerceProductRecord[]
-): CommerceProductRecord[] {
-  const recordsByAddress = new Map(
-    records.map((record) => [record.addressId, record])
-  )
-  const variationsByParent = new Map<string, CommerceProductRecord[]>()
-
-  for (const record of records) {
-    const { product } = record
-    if (product.type !== "variation" || !product.parentProductId) continue
-
-    const parent = recordsByAddress.get(product.parentProductId)
-    if (
-      !parent ||
-      parent.product.type !== "variable" ||
-      parent.product.pubkey !== product.pubkey
-    ) {
-      continue
-    }
-
-    const siblings = variationsByParent.get(parent.addressId) ?? []
-    siblings.push(record)
-    variationsByParent.set(parent.addressId, siblings)
+  records: CommerceProductRecord[],
+  readEvidence: ProductFamilyReadEvidence = {
+    source: records.some((record) => (record.sourceRelayUrls?.length ?? 0) > 0)
+      ? "commerce"
+      : "local_cache",
+    fetchedAt: now(),
+    stale: false,
+    degraded: false,
+    capped: false,
   }
+): CommerceProductRecord[] {
+  const catalog = prepareProductCatalog(records, readEvidence)
 
-  return records.flatMap((record) => {
-    if (record.product.type === "variation") return []
-    if (record.product.type !== "variable") return [record]
+  return catalog.items.flatMap((item) => {
+    if (item.kind === "simple") return [item.record]
 
-    const variationRecords = variationsByParent.get(record.addressId)
-    if (!variationRecords || variationRecords.length === 0) return []
-
-    const eligibleVariationRecords = variationRecords.filter((variation) =>
+    const { parent } = item.family
+    const eligibleVariationRecords = item.family.children.filter((variation) =>
       isListingMarketVisible(
         evaluateListingSafety(variation.product, undefined, {
           variationGroupRole: "variation",
@@ -790,7 +789,7 @@ function prepareVariationGroups(
       )
     )
     const hasGroupImage =
-      hasMarketProductImage(record.product) ||
+      hasMarketProductImage(parent.product) ||
       eligibleVariationRecords.some((variation) =>
         hasMarketProductImage(variation.product)
       )
@@ -808,21 +807,66 @@ function prepareVariationGroups(
           left.eventCreatedAt - right.eventCreatedAt ||
           left.addressId.localeCompare(right.addressId)
       )
-      .map((variation) => variation.product)
-    if (variations.length === 0) return []
+    if (variations.length === 0) {
+      return [
+        {
+          ...parent,
+          family: item.family,
+          safety: evaluateListingSafety(parent.product, undefined, {
+            variationGroupRole: "parent",
+            hasGroupImage,
+          }),
+        },
+      ]
+    }
 
-    const product = { ...record.product, variations }
+    const prepared = prepareProductCatalog(
+      [parent, ...variations],
+      readEvidence
+    ).items[0]
+    if (prepared?.kind !== "family") return []
+
     return [
       {
-        ...record,
-        product,
-        safety: evaluateListingSafety(product, undefined, {
+        ...parent,
+        family: prepared.family,
+        safety: evaluateListingSafety(parent.product, undefined, {
           variationGroupRole: "parent",
           hasGroupImage,
         }),
       },
     ]
   })
+}
+
+function withProductFamilyReadEvidence(
+  records: CommerceProductRecord[],
+  meta: CommerceQueryMeta
+): CommerceProductRecord[] {
+  const readEvidence: ProductFamilyReadEvidence = {
+    source: meta.source,
+    fetchedAt: meta.fetchedAt,
+    stale: meta.stale,
+    degraded: meta.degraded,
+    capped: meta.capped ?? false,
+  }
+  return records.map((record) =>
+    record.family
+      ? {
+          ...record,
+          family: { ...record.family, readEvidence },
+        }
+      : record
+  )
+}
+
+function withProductFamilyRecordReadEvidence(
+  record: CommerceProductRecord | null,
+  meta: CommerceQueryMeta
+): CommerceProductRecord | null {
+  return record
+    ? (withProductFamilyReadEvidence([record], meta)[0] ?? null)
+    : null
 }
 
 function filterProductRecordsForRead(
@@ -869,16 +913,15 @@ function filterExactProductRecordsForRead(
     const parent = target.product.parentProductId
       ? preparedByAddress.get(target.product.parentProductId)
       : undefined
-    const variation = parent?.product.variations?.find(
-      (candidate) => candidate.id === target.product.id
+    const variation = parent?.family?.children.find(
+      (candidate) => candidate.product.id === target.product.id
     )
     if (!parent || !isMarketRenderableRecord(parent) || !variation) return []
 
     return [
       {
         ...target,
-        product: variation,
-        safety: evaluateListingSafety(variation, undefined, {
+        safety: evaluateListingSafety(variation.product, undefined, {
           variationGroupRole: "variation",
           hasGroupImage: true,
         }),
@@ -2031,13 +2074,14 @@ export async function getMarketplaceProducts(
     const authorPubkeys = query.merchantPubkey
       ? [query.merchantPubkey]
       : query.authorPubkeys
+    const rawEventLimit = getProductRawEventLimit(query.limit)
     const fetchedRecords = await fetchPublicProductRecords({
       authors:
         authorPubkeys && authorPubkeys.length > 0
           ? uniqueStrings(authorPubkeys)
           : undefined,
       authenticatedPubkey: query.authenticatedPubkey,
-      limit: getProductRawEventLimit(query.limit),
+      limit: rawEventLimit,
       readPolicy: query.readPolicy,
     })
     const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
@@ -2060,10 +2104,13 @@ export async function getMarketplaceProducts(
       query.limit
     )
 
-    return {
-      data: filtered,
-      meta: createMeta("marketplace_products", "public", PRODUCT_CAPABILITIES),
-    }
+    const meta = createMeta(
+      "marketplace_products",
+      "public",
+      PRODUCT_CAPABILITIES,
+      { capped: fetchedRecords.length >= rawEventLimit }
+    )
+    return { data: withProductFamilyReadEvidence(filtered, meta), meta }
   } catch (error) {
     const cached = applyProductLimit(
       sortProducts(
@@ -2080,15 +2127,13 @@ export async function getMarketplaceProducts(
     )
 
     if (cached.length > 0) {
-      return {
-        data: cached,
-        meta: createMeta(
-          "marketplace_products",
-          "local_cache",
-          PRODUCT_CAPABILITIES,
-          { stale: true }
-        ),
-      }
+      const meta = createMeta(
+        "marketplace_products",
+        "local_cache",
+        PRODUCT_CAPABILITIES,
+        { stale: true, degraded: true }
+      )
+      return { data: withProductFamilyReadEvidence(cached, meta), meta }
     }
 
     throw error
@@ -2129,18 +2174,22 @@ export async function getMarketplaceProductsProgressive(
       records,
       localDeletionTimestamps
     )
-    return {
-      data: applyProductLimit(
-        sortProducts(
-          filterProductRecordsForRead(filteredRecords).filter((record) =>
-            productMatchesQuery(record, query)
-          ),
-          query.sort
+    const data = applyProductLimit(
+      sortProducts(
+        filterProductRecordsForRead(filteredRecords).filter((record) =>
+          productMatchesQuery(record, query)
         ),
-        limit
+        query.sort
       ),
-      meta: createMeta("marketplace_products", "public", PRODUCT_CAPABILITIES),
-    }
+      limit
+    )
+    const meta = createMeta(
+      "marketplace_products",
+      "public",
+      PRODUCT_CAPABILITIES,
+      { capped: records.length >= rawEventLimit }
+    )
+    return { data: withProductFamilyReadEvidence(data, meta), meta }
   }
 
   const fetchedRecords = await fetchPublicProductRecordsProgressive(
@@ -2203,18 +2252,16 @@ export async function getCachedMarketplaceProducts(
     query.limit
   )
 
-  return {
-    data: cached,
-    meta: createMeta(
-      "marketplace_products",
-      "local_cache",
-      PRODUCT_CAPABILITIES,
-      {
-        stale: true,
-        degraded: cached.length > 0,
-      }
-    ),
-  }
+  const meta = createMeta(
+    "marketplace_products",
+    "local_cache",
+    PRODUCT_CAPABILITIES,
+    {
+      stale: true,
+      degraded: cached.length > 0,
+    }
+  )
+  return { data: withProductFamilyReadEvidence(cached, meta), meta }
 }
 
 export async function getMerchantStorefront(
@@ -2289,17 +2336,22 @@ export async function getMerchantStorefront(
     const filtered = applyProductLimit(sorted, query.limit)
 
     await cacheProductRecords(mergedRecords)
+    const meta =
+      liveRecords.length === 0 && filtered.length > 0
+        ? createMeta(
+            "merchant_storefront",
+            "local_cache",
+            PRODUCT_CAPABILITIES,
+            { stale: true, degraded: true }
+          )
+        : createMeta("merchant_storefront", "commerce", PRODUCT_CAPABILITIES, {
+            capped:
+              typeof productFilter.limit === "number" &&
+              rawEvents.length >= productFilter.limit,
+          })
     return {
-      data: filtered,
-      meta:
-        liveRecords.length === 0 && filtered.length > 0
-          ? createMeta(
-              "merchant_storefront",
-              "local_cache",
-              PRODUCT_CAPABILITIES,
-              { stale: true, degraded: true }
-            )
-          : createMeta("merchant_storefront", "commerce", PRODUCT_CAPABILITIES),
+      data: withProductFamilyReadEvidence(filtered, meta),
+      meta,
     }
   } catch (error) {
     const filteredCache = sortProducts(
@@ -2317,14 +2369,18 @@ export async function getMerchantStorefront(
     )
 
     if (filteredCache.length > 0) {
+      const meta = createMeta(
+        "merchant_storefront",
+        "local_cache",
+        PRODUCT_CAPABILITIES,
+        { stale: true, degraded: true }
+      )
       return {
-        data: applyProductLimit(filteredCache, query.limit),
-        meta: createMeta(
-          "merchant_storefront",
-          "local_cache",
-          PRODUCT_CAPABILITIES,
-          { stale: true }
+        data: withProductFamilyReadEvidence(
+          applyProductLimit(filteredCache, query.limit),
+          meta
         ),
+        meta,
       }
     }
 
@@ -2361,18 +2417,16 @@ export async function getCachedMerchantStorefront(
     query.limit
   )
 
-  return {
-    data: cached,
-    meta: createMeta(
-      "merchant_storefront",
-      "local_cache",
-      PRODUCT_CAPABILITIES,
-      {
-        stale: true,
-        degraded: cached.length > 0,
-      }
-    ),
-  }
+  const meta = createMeta(
+    "merchant_storefront",
+    "local_cache",
+    PRODUCT_CAPABILITIES,
+    {
+      stale: true,
+      degraded: cached.length > 0,
+    }
+  )
+  return { data: withProductFamilyReadEvidence(cached, meta), meta }
 }
 
 function parseAddress(
@@ -2447,8 +2501,8 @@ function findProductDetailRecord(
           lookupIds.includes(item.product.id) ||
           lookupIds.includes(item.addressId) ||
           lookupIds.includes(item.eventId) ||
-          item.product.variations?.some((variation) =>
-            lookupIds.includes(variation.id)
+          item.family?.children.some((variation) =>
+            lookupIds.includes(variation.product.id)
           )
       ) ?? null
     )
@@ -2462,8 +2516,8 @@ function findProductDetailRecord(
     const display = prepared.find((item) => item.addressId === displayAddress)
     const includesTargetVariation =
       target.product.type !== "variation" ||
-      display?.product.variations?.some(
-        (variation) => variation.id === target.product.id
+      display?.family?.children.some(
+        (variation) => variation.product.id === target.product.id
       )
     if (display && includesTargetVariation) return display
   }
@@ -2549,17 +2603,23 @@ export async function getProductDetail(
         query.includeMarketHidden
       )
       if (record) {
+        const meta =
+          direct.length > 0 || groupRecords.length > 0
+            ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES, {
+                capped:
+                  groupRecords.filter(
+                    (candidate) => candidate.product.type === "variation"
+                  ).length >= PRODUCT_VARIATION_EVENT_LIMIT,
+              })
+            : createMeta(
+                "product_detail",
+                "local_cache",
+                PRODUCT_CAPABILITIES,
+                { stale: true, degraded: true }
+              )
         return {
-          data: record,
-          meta:
-            direct.length > 0 || groupRecords.length > 0
-              ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES)
-              : createMeta(
-                  "product_detail",
-                  "local_cache",
-                  PRODUCT_CAPABILITIES,
-                  { stale: true, degraded: true }
-                ),
+          data: withProductFamilyRecordReadEvidence(record, meta),
+          meta,
         }
       }
 
@@ -2571,13 +2631,14 @@ export async function getProductDetail(
         storefront.data.find(
           (item) =>
             item.addressId === addressId ||
-            item.product.variations?.some(
-              (variation) => variation.id === addressId
+            item.family?.children.some(
+              (variation) => variation.product.id === addressId
             )
         ) ?? null
+      const meta = { ...storefront.meta, fetchedAt: now() }
       return {
-        data: fallbackRecord,
-        meta: { ...storefront.meta, fetchedAt: now() },
+        data: withProductFamilyRecordReadEvidence(fallbackRecord, meta),
+        meta,
       }
     }
 
@@ -2605,9 +2666,20 @@ export async function getProductDetail(
         [decodedId],
         query.includeMarketHidden
       )
+      const meta = createMeta(
+        "product_detail",
+        "public",
+        PRODUCT_CAPABILITIES,
+        {
+          capped:
+            groupRecords.filter(
+              (candidate) => candidate.product.type === "variation"
+            ).length >= PRODUCT_VARIATION_EVENT_LIMIT,
+        }
+      )
       return {
-        data: record,
-        meta: createMeta("product_detail", "public", PRODUCT_CAPABILITIES),
+        data: withProductFamilyRecordReadEvidence(record, meta),
+        meta,
       }
     }
   } catch (error) {
@@ -2624,14 +2696,15 @@ export async function getProductDetail(
       query.includeMarketHidden
     )
     if (record) {
+      const meta = createMeta(
+        "product_detail",
+        "local_cache",
+        PRODUCT_CAPABILITIES,
+        { stale: true, degraded: true }
+      )
       return {
-        data: record,
-        meta: createMeta(
-          "product_detail",
-          "local_cache",
-          PRODUCT_CAPABILITIES,
-          { stale: true }
-        ),
+        data: withProductFamilyRecordReadEvidence(record, meta),
+        meta,
       }
     }
     throw error
@@ -2649,14 +2722,15 @@ export async function getProductDetail(
     lookupIds,
     query.includeMarketHidden
   )
+  const meta = createMeta(
+    "product_detail",
+    record ? "local_cache" : "public",
+    PRODUCT_CAPABILITIES,
+    { stale: !!record, degraded: !!record }
+  )
   return {
-    data: record,
-    meta: createMeta(
-      "product_detail",
-      record ? "local_cache" : "public",
-      PRODUCT_CAPABILITIES,
-      { stale: !!record, degraded: !!record }
-    ),
+    data: withProductFamilyRecordReadEvidence(record, meta),
+    meta,
   }
 }
 
@@ -2782,6 +2856,34 @@ export async function getProductsByIds(
   }
 }
 
+/**
+ * Resolve one exact atomic kind-30402 listing.
+ *
+ * Unlike getProductDetail, variation coordinates are not projected to their
+ * variable parent. Mutation workflows use this interface so stock and other
+ * child-specific fields are always verified and republished on the selected
+ * leaf.
+ */
+export async function getAtomicProductDetail(
+  query: ProductDetailQuery
+): Promise<CommerceResult<CommerceProductRecord | null>> {
+  const { addressId } = getProductLookupIds(query.productId)
+  if (!addressId) {
+    return {
+      data: null,
+      meta: createMeta("product_detail", "public", PRODUCT_CAPABILITIES),
+    }
+  }
+
+  const result = await getProductsByIds([addressId], {
+    includeMarketHidden: query.includeMarketHidden,
+  })
+  return {
+    data: result.data.find((record) => record.addressId === addressId) ?? null,
+    meta: result.meta,
+  }
+}
+
 export async function getCachedProductDetail(
   query: ProductDetailQuery,
   options: CachedProductReadOptions = { includeStale: true }
@@ -2800,14 +2902,15 @@ export async function getCachedProductDetail(
     query.includeMarketHidden
   )
 
+  const meta = createMeta(
+    "product_detail",
+    record ? "local_cache" : "public",
+    PRODUCT_CAPABILITIES,
+    { stale: !!record, degraded: !!record }
+  )
   return {
-    data: record,
-    meta: createMeta(
-      "product_detail",
-      record ? "local_cache" : "public",
-      PRODUCT_CAPABILITIES,
-      { stale: !!record, degraded: !!record }
-    ),
+    data: withProductFamilyRecordReadEvidence(record, meta),
+    meta,
   }
 }
 

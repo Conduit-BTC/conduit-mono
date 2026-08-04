@@ -1,7 +1,8 @@
 import {
   formatNpub,
-  getDefaultProductSelection,
   getProfileName,
+  type CommerceProductRecord,
+  type PreparedProductFamily,
   type PricingRateInput,
   type Product,
   type Profile,
@@ -54,7 +55,22 @@ export function getGlobalProductSearchQueryKey(input: {
 
 export interface MarketProductCardView {
   product: Product
+  family?: PreparedProductFamily<CommerceProductRecord>
   merchant: MerchantIdentityView
+}
+
+type ProductFamiliesById = Record<
+  string,
+  PreparedProductFamily<CommerceProductRecord>
+>
+
+function getBrowsePriceProduct(
+  product: Product,
+  familiesByProductId: ProductFamiliesById
+): Product {
+  return (
+    familiesByProductId[product.id]?.priceSummary.minimum?.product ?? product
+  )
 }
 
 export function mergeProductSearchResults(
@@ -115,15 +131,16 @@ export function getMerchantIdentityFromMap(
 export function sortBrowseProducts(
   products: Product[],
   sort: MarketBrowseSortOption | undefined,
-  btcUsdRate: PricingRateInput
+  btcUsdRate: PricingRateInput,
+  familiesByProductId: ProductFamiliesById = {}
 ): Product[] {
   switch (sort) {
     case "price_asc":
       return Array.from(products).sort(
         (a, b) =>
           compareCommercePrices(
-            getDefaultProductSelection(a),
-            getDefaultProductSelection(b),
+            getBrowsePriceProduct(a, familiesByProductId),
+            getBrowsePriceProduct(b, familiesByProductId),
             btcUsdRate,
             "asc"
           ) || b.createdAt - a.createdAt
@@ -132,8 +149,8 @@ export function sortBrowseProducts(
       return Array.from(products).sort(
         (a, b) =>
           compareCommercePrices(
-            getDefaultProductSelection(a),
-            getDefaultProductSelection(b),
+            getBrowsePriceProduct(a, familiesByProductId),
+            getBrowsePriceProduct(b, familiesByProductId),
             btcUsdRate,
             "desc"
           ) || b.createdAt - a.createdAt
@@ -149,13 +166,14 @@ export function sortBrowseProducts(
 export function hasUnavailablePriceForBrowseSort(
   products: Product[],
   sort: MarketBrowseSortOption | undefined,
-  btcUsdRate: PricingRateInput
+  btcUsdRate: PricingRateInput,
+  familiesByProductId: ProductFamiliesById = {}
 ): boolean {
   if (!isPriceSort(sort)) return false
   return products.some(
     (product) =>
       getComparablePriceValue(
-        getDefaultProductSelection(product),
+        getBrowsePriceProduct(product, familiesByProductId),
         btcUsdRate
       ) === null
   )

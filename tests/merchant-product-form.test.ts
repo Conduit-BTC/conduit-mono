@@ -19,8 +19,9 @@ import {
   type ProductPublishFormValues,
 } from "../apps/merchant/src/lib/productForm"
 import {
+  createProductVariationAxis,
   createEmptyProductVariationForm,
-  reconcileProductVariationForm,
+  generateProductVariationRows,
 } from "../apps/merchant/src/lib/productVariations"
 
 function form(
@@ -191,10 +192,10 @@ describe("merchant product form validation", () => {
     )
     const validOptions = validate(
       form({
-        variations: reconcileProductVariationForm({
+        variations: generateProductVariationRows({
           ...createEmptyProductVariationForm(),
           enabled: true,
-          sizeOptions: "S, M, L, XL",
+          axes: [createProductVariationAxis("size", "S, M, L, XL")],
         }),
       })
     )

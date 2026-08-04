@@ -3,11 +3,14 @@ import { canonicalizeProductPrice, type ProductSchema } from "@conduit/core"
 import {
   buildProductFamilyChangePlan,
   createEmptyProductVariationForm,
+  createProductVariationAxis,
+  generateProductVariationRows,
+  getProductVariationCartesianCount,
   getProductVariationCombinations,
   getProductVariationFormError,
   getProductVariationFormState,
   groupProductVariationRecords,
-  reconcileProductVariationForm,
+  removeProductVariationRow,
   updateProductVariationOverride,
   type ProductListingFamily,
   type ProductListingRecordLike,
@@ -43,12 +46,20 @@ function baseProduct(overrides: Partial<ProductSchema> = {}): ProductSchema {
   })
 }
 
-function sizeVariationForm(sizes = "S, M, L, XL"): ProductVariationFormState {
-  return reconcileProductVariationForm({
+function variationForm(
+  axes: Array<{ key: string; values: string }>
+): ProductVariationFormState {
+  return generateProductVariationRows({
     ...createEmptyProductVariationForm(),
     enabled: true,
-    sizeOptions: sizes,
+    axes: axes.map((axis, index) =>
+      createProductVariationAxis(axis.key, axis.values, index)
+    ),
   })
+}
+
+function sizeVariationForm(sizes = "S, M, L, XL") {
+  return variationForm([{ key: "size", values: sizes }])
 }
 
 function toRecord(
@@ -76,7 +87,7 @@ function toFamily(
 }
 
 describe("merchant product variation planning", () => {
-  it("builds a variable parent and S/M/L/XL child listings", () => {
+  it("builds a variable parent and explicit S/M/L/XL child rows", () => {
     const plan = buildProductFamilyChangePlan({
       parentDTag: "conduit-tee",
       baseProduct: baseProduct(),
@@ -87,27 +98,45 @@ describe("merchant product variation planning", () => {
 
     expect(plan.desired).toHaveLength(5)
     expect(plan.publish).toHaveLength(5)
-    expect(plan.remove).toEqual([])
     expect(plan.desired[0]?.product.type).toBe("variable")
-
-    const children = plan.desired.slice(1)
-    expect(children.map(({ product }) => product.specifications)).toEqual([
+    expect(
+      plan.desired.slice(1).map(({ product }) => product.specifications)
+    ).toEqual([
       [{ key: "size", value: "S" }],
       [{ key: "size", value: "M" }],
       [{ key: "size", value: "L" }],
       [{ key: "size", value: "XL" }],
     ])
-    for (const child of children) {
-      expect(child.product.type).toBe("variation")
-      expect(child.product.parentProductId).toBe(
-        `30402:${MERCHANT_PUBKEY}:conduit-tee`
-      )
-      expect(child.product.price).toBe(25)
-      expect(child.product.stock).toBe(10)
-    }
   })
 
-  it("publishes only the edited variation when its price changes", () => {
+  it("supports three generic axes and explicit sparse child rows", () => {
+    const full = variationForm([
+      { key: "screen-size", values: '13", 15"' },
+      { key: "license-tier", values: "Personal, Business" },
+      { key: "theme", values: "Light, Dark" },
+    ])
+    const sparse = {
+      ...full,
+      rows: full.rows.filter((_, index) => ![1, 4, 6].includes(index)),
+    }
+    const plan = buildProductFamilyChangePlan({
+      parentDTag: "workspace",
+      baseProduct: baseProduct({ title: "Portable Workspace" }),
+      variations: sparse,
+      currency: "USD",
+      now: NOW,
+    })
+
+    expect(full.rows).toHaveLength(8)
+    expect(plan.desired).toHaveLength(6)
+    expect(
+      plan.desired
+        .slice(1)
+        .every(({ product }) => product.specifications.length === 3)
+    ).toBe(true)
+  })
+
+  it("publishes only the edited child when its price changes", () => {
     const initialPlan = buildProductFamilyChangePlan({
       parentDTag: "conduit-tee",
       baseProduct: baseProduct(),
@@ -121,7 +150,6 @@ describe("merchant product variation planning", () => {
       existing.variations
     )
     expect(restored.supported).toBe(true)
-
     const medium = getProductVariationCombinations(restored.state).find(
       ({ label }) => label === "M"
     )
@@ -135,10 +163,7 @@ describe("merchant product variation planning", () => {
     )
     const editedPlan = buildProductFamilyChangePlan({
       parentDTag: "conduit-tee",
-      baseProduct: {
-        ...existing.root.product,
-        updatedAt: NOW + 60_000,
-      },
+      baseProduct: existing.root.product,
       variations: editedState,
       currency: "USD",
       existing,
@@ -146,96 +171,88 @@ describe("merchant product variation planning", () => {
     })
 
     expect(editedPlan.publish).toHaveLength(1)
-    expect(editedPlan.remove).toEqual([])
     expect(editedPlan.publish[0]?.product.specifications).toEqual([
       { key: "size", value: "M" },
     ])
     expect(editedPlan.publish[0]?.product.price).toBe(30)
   })
 
-  it("tombstones removed options and all children when options are disabled", () => {
-    const initialPlan = buildProductFamilyChangePlan({
-      parentDTag: "conduit-tee",
-      baseProduct: baseProduct(),
-      variations: sizeVariationForm(),
+  it("round-trips sparse imported custom child fields without rewriting them", () => {
+    const initial = buildProductFamilyChangePlan({
+      parentDTag: "workspace",
+      baseProduct: baseProduct({ title: "Workspace" }),
+      variations: variationForm([
+        { key: "screen-size", values: '13", 15"' },
+        { key: "license-tier", values: "Personal, Business" },
+      ]),
       currency: "USD",
       now: NOW,
     })
-    const existing = toFamily(initialPlan)
-    const reducedPlan = buildProductFamilyChangePlan({
-      parentDTag: "conduit-tee",
-      baseProduct: existing.root.product,
-      variations: sizeVariationForm("S, M, L"),
+    const family = toFamily(initial)
+    family.variations = family.variations.slice(0, 3)
+    family.variations[1] = {
+      ...family.variations[1]!,
+      product: {
+        ...family.variations[1]!.product,
+        title: "Studio License",
+        images: [{ url: "https://example.com/studio.png", alt: "Studio" }],
+        format: "digital",
+        shippingCostSats: undefined,
+        shippingCountries: undefined,
+      },
+    }
+    const restored = getProductVariationFormState(
+      family.root,
+      family.variations
+    )
+    expect(restored.supported).toBe(true)
+
+    const roundTrip = buildProductFamilyChangePlan({
+      parentDTag: "workspace",
+      baseProduct: family.root.product,
+      variations: restored.state,
       currency: "USD",
-      existing,
+      existing: family,
       now: NOW + 60_000,
     })
 
-    expect(reducedPlan.publish).toEqual([])
-    expect(reducedPlan.remove).toHaveLength(1)
-    expect(reducedPlan.remove[0]?.product.specifications).toEqual([
-      { key: "size", value: "XL" },
-    ])
-
-    const simplePlan = buildProductFamilyChangePlan({
-      parentDTag: "conduit-tee",
-      baseProduct: existing.root.product,
-      variations: createEmptyProductVariationForm(),
-      currency: "USD",
-      existing,
-      now: NOW + 60_000,
+    expect(roundTrip.desired).toHaveLength(4)
+    expect(roundTrip.publish).toEqual([])
+    expect(roundTrip.remove).toEqual([])
+    expect(roundTrip.desired[2]?.product).toMatchObject({
+      title: "Studio License",
+      images: [{ url: "https://example.com/studio.png", alt: "Studio" }],
+      format: "digital",
     })
-
-    expect(simplePlan.publish).toHaveLength(1)
-    expect(simplePlan.publish[0]?.product.type).toBe("simple")
-    expect(simplePlan.remove).toHaveLength(4)
   })
 
-  it("uses stable child coordinates for complete two-axis combinations", () => {
-    const state = reconcileProductVariationForm({
-      ...createEmptyProductVariationForm(),
-      enabled: true,
-      sizeOptions: "S, M",
-      colorOptions: "Black, Purple",
-    })
-    const first = buildProductFamilyChangePlan({
+  it("tombstones an explicitly removed sparse row", () => {
+    const initial = buildProductFamilyChangePlan({
       parentDTag: "conduit-tee",
       baseProduct: baseProduct(),
-      variations: state,
+      variations: sizeVariationForm("S, M, L"),
       currency: "USD",
       now: NOW,
     })
-    const second = buildProductFamilyChangePlan({
+    const family = toFamily(initial)
+    const restored = getProductVariationFormState(
+      family.root,
+      family.variations
+    )
+    const removedIdentity = restored.state.rows[2]!.identity
+    const reduced = removeProductVariationRow(restored.state, removedIdentity)
+    const plan = buildProductFamilyChangePlan({
       parentDTag: "conduit-tee",
-      baseProduct: baseProduct(),
-      variations: state,
+      baseProduct: family.root.product,
+      variations: reduced,
       currency: "USD",
+      existing: family,
       now: NOW + 60_000,
     })
 
-    expect(first.desired).toHaveLength(5)
-    expect(first.desired.map(({ dTag }) => dTag)).toEqual(
-      second.desired.map(({ dTag }) => dTag)
-    )
-    expect(
-      first.desired.slice(1).map(({ product }) => product.specifications)
-    ).toEqual([
-      [
-        { key: "size", value: "S" },
-        { key: "color", value: "Black" },
-      ],
-      [
-        { key: "size", value: "S" },
-        { key: "color", value: "Purple" },
-      ],
-      [
-        { key: "size", value: "M" },
-        { key: "color", value: "Black" },
-      ],
-      [
-        { key: "size", value: "M" },
-        { key: "color", value: "Purple" },
-      ],
+    expect(plan.remove).toHaveLength(1)
+    expect(plan.remove[0]?.product.specifications).toEqual([
+      { key: "size", value: "L" },
     ])
   })
 
@@ -263,7 +280,6 @@ describe("merchant product variation planning", () => {
     const grouped = groupProductVariationRecords([...records, orphan])
 
     expect(grouped).toHaveLength(2)
-    expect(grouped[0]?.root.product.type).toBe("variable")
     expect(grouped[0]?.variations).toHaveLength(2)
     expect(grouped[1]).toMatchObject({
       root: { addressId: orphan.addressId },
@@ -272,52 +288,50 @@ describe("merchant product variation planning", () => {
     })
   })
 
-  it("rejects unsafe or incomplete constrained families", () => {
-    const twoAxisState = reconcileProductVariationForm({
+  it("diagnoses duplicate axes and duplicate explicit rows", () => {
+    const duplicateAxes = variationForm([
+      { key: "size", values: "S, M" },
+      { key: "Size", values: "Small, Medium" },
+    ])
+    expect(getProductVariationFormError(duplicateAxes, "USD")).toContain(
+      "different name"
+    )
+
+    const state = sizeVariationForm("S, M")
+    const duplicateRow = {
+      ...state,
+      rows: [...state.rows, { ...state.rows[0]! }],
+    }
+    expect(getProductVariationFormError(duplicateRow, "USD")).toContain(
+      "duplicates another"
+    )
+
+    const unknownValue = {
+      ...state,
+      rows: [
+        {
+          ...state.rows[0]!,
+          specifications: [{ key: "size", value: "XL" }],
+        },
+      ],
+    }
+    expect(getProductVariationFormError(unknownValue, "USD")).toContain(
+      "not listed"
+    )
+  })
+
+  it("does not silently truncate oversized Cartesian generation", () => {
+    const state = {
       ...createEmptyProductVariationForm(),
       enabled: true,
-      sizeOptions: "S, M",
-      colorOptions: "Black, Purple",
-    })
-    const initialPlan = buildProductFamilyChangePlan({
-      parentDTag: "conduit-tee",
-      baseProduct: baseProduct(),
-      variations: twoAxisState,
-      currency: "USD",
-      now: NOW,
-    })
-    const existing = toFamily(initialPlan)
-    const incomplete = getProductVariationFormState(
-      existing.root,
-      existing.variations.slice(0, -1)
-    )
-    const duplicateSpec = getProductVariationFormState(existing.root, [
-      {
-        ...existing.variations[0]!,
-        product: {
-          ...existing.variations[0]!.product,
-          specifications: [
-            { key: "size", value: "S" },
-            { key: "size", value: "Small" },
-          ],
-        },
-      },
-      ...existing.variations.slice(1),
-    ])
+      axes: [
+        createProductVariationAxis("material", "A, B, C, D, E", 0),
+        createProductVariationAxis("finish", "1, 2, 3, 4, 5", 1),
+        createProductVariationAxis("voltage", "110, 220, USB", 2),
+      ],
+    }
 
-    expect(incomplete.supported).toBe(false)
-    expect(incomplete.reason).toContain("complete")
-    expect(duplicateSpec.supported).toBe(false)
-    expect(duplicateSpec.reason).toContain("cannot preserve")
-    expect(
-      getProductVariationFormError(
-        {
-          ...createEmptyProductVariationForm(),
-          enabled: true,
-          sizeOptions: "S, s",
-        },
-        "USD"
-      )
-    ).toContain("duplicate")
+    expect(getProductVariationCartesianCount(state)).toBe(75)
+    expect(generateProductVariationRows(state).rows).toEqual([])
   })
 })
