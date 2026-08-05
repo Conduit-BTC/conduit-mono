@@ -269,7 +269,9 @@ export function getShippingStepBlockingMessage(params: {
 export function isFastCheckoutEligible(params: {
   walletPayCapable: boolean
   merchantLud16: string | undefined | null
+  merchantProfileUnavailable?: boolean
   lnurlAllowsNostr: boolean
+  lnurlAmountWithinRange?: boolean
   requiresNostrZap?: boolean
   pricingReady?: boolean
   shippingEligible?: boolean
@@ -279,6 +281,44 @@ export function isFastCheckoutEligible(params: {
   addressValidForDirectPayment?: boolean
 }): boolean {
   return getFastCheckoutUnavailableReasons(params).length === 0
+}
+
+export type FastCheckoutPendingInput = {
+  authPending: boolean
+  walletConnecting: boolean
+  merchantProfileLoading: boolean
+  lnurlProbing: boolean
+  /**
+   * True while checkout still has to downgrade a public zap mode to a private
+   * invoice because the merchant endpoint does not advertise Nostr zaps. The
+   * downgrade lands one render later, so eligibility is not yet decided.
+   */
+  privateZapFallbackPending: boolean
+  shippingLookupPending: boolean
+  shippingState: ShippingCheckoutState
+  availabilityChecking: boolean
+  pricingRefreshing: boolean
+}
+
+/**
+ * True while any fast-checkout eligibility input is still being resolved.
+ * An armed zap out must wait for this to clear before it is declined, otherwise
+ * a transient gap becomes a terminal decline.
+ */
+export function isFastCheckoutInputPending(
+  params: FastCheckoutPendingInput
+): boolean {
+  return (
+    params.authPending ||
+    params.walletConnecting ||
+    params.merchantProfileLoading ||
+    params.lnurlProbing ||
+    params.privateZapFallbackPending ||
+    params.shippingLookupPending ||
+    params.shippingState === "loading" ||
+    params.availabilityChecking ||
+    params.pricingRefreshing
+  )
 }
 
 export type ShippingCheckoutState =
@@ -320,7 +360,9 @@ export function getShippingCheckoutState(params: {
 export function getFastCheckoutUnavailableReasons(params: {
   walletPayCapable: boolean
   merchantLud16: string | undefined | null
+  merchantProfileUnavailable?: boolean
   lnurlAllowsNostr: boolean
+  lnurlAmountWithinRange?: boolean
   requiresNostrZap?: boolean
   pricingReady?: boolean
   shippingEligible?: boolean
@@ -336,7 +378,11 @@ export function getFastCheckoutUnavailableReasons(params: {
     )
   }
   if (!params.merchantLud16) {
-    reasons.push("Merchant has not added a Lightning Address.")
+    reasons.push(
+      params.merchantProfileUnavailable
+        ? "Merchant profile could not be loaded from relays."
+        : "Merchant has not added a Lightning Address."
+    )
   }
   if (params.merchantLud16 && !params.lnurlAllowsNostr) {
     if (params.requiresNostrZap ?? true) {
@@ -346,6 +392,13 @@ export function getFastCheckoutUnavailableReasons(params: {
     } else {
       reasons.push("Merchant Lightning Address could not be checked.")
     }
+  }
+  if (
+    params.merchantLud16 &&
+    params.lnurlAllowsNostr &&
+    params.lnurlAmountWithinRange === false
+  ) {
+    reasons.push("Merchant Lightning Address cannot accept this order amount.")
   }
   if (params.pricingReady === false) {
     reasons.push("Refresh price conversion before paying.")

@@ -103,7 +103,6 @@ describe("Market cart HUD policy", () => {
         itemPricesAvailable: true,
         shippingReady: true,
         merchantLightningReady: true,
-        lnurlReady: true,
       })
     ).toEqual({
       state: "zap_ready",
@@ -120,7 +119,6 @@ describe("Market cart HUD policy", () => {
         itemPricesAvailable: false,
         shippingReady: false,
         merchantLightningReady: false,
-        lnurlReady: false,
       })
     ).toEqual({
       state: "route_to_checkout",
@@ -131,7 +129,6 @@ describe("Market cart HUD policy", () => {
         "price_unavailable",
         "shipping_unavailable",
         "merchant_lightning_unavailable",
-        "lnurl_unavailable",
       ],
     })
   })
@@ -142,7 +139,9 @@ describe("Market cart HUD policy", () => {
         state: "zap_ready",
         blockers: [],
       })
-    ).toBe("Ready to zap out using your saved checkout details.")
+    ).toBe(
+      "Ready to zap out. Checkout confirms the merchant payment endpoint before paying."
+    )
     expect(
       getCartHudCheckoutFallbackMessage({
         state: "route_to_checkout",
@@ -178,6 +177,13 @@ describe("Market cart HUD policy", () => {
     expect(hud).toContain("const wallet = useWallet()")
     expect(hud).not.toContain("refreshBalance: true")
     expect(hud).not.toContain("getKnownWalletPaymentConstraint")
+    expect(hud).not.toContain("fetchLnurlPayMetadata")
+    expect(checkout).toContain("fetchLnurlPayMetadata(merchantLud16)")
+    expect(checkout).toContain("lnurlAllowsNostr: lnurlReadyForSelectedPayment")
+    expect(checkout).toContain("lnurlAmountWithinRange: lnurlAmountReady")
+    expect(checkout).toContain("if (!fastEligible) {")
+    expect(checkout).toContain("isFastCheckoutInputPending({")
+    expect(checkout).toContain("autoZapInputsResolving")
     expect(checkout).toContain("consumeHudZapIntent(selectedMerchant)")
     expect(checkout).toContain("!autoZapAuthorization")
     expect(checkout).toContain("isHudZapAuthorizationValid")
