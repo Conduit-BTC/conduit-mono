@@ -2275,7 +2275,10 @@ function ProductsPage() {
                         Rows are the publish truth. Imported custom titles and
                         child-specific fields are preserved.
                       </p>
-                      <div className="grid max-h-[32rem] gap-3 overflow-y-auto pr-1">
+                      <div
+                        data-product-variation-rows
+                        className="relative grid max-h-[32rem] gap-3 overflow-y-auto pr-1"
+                      >
                         {productVariationCombinations.map(
                           (combination, index) => (
                             <div

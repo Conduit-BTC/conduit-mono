@@ -278,6 +278,34 @@ test("merchant product options support generic three-axis sparse rows", async ({
   await expect(page.getByRole("button", { name: "Remove row" })).toHaveCount(8)
   await expect(page.getByText('13" / Personal / Light')).toBeVisible()
 
+  const dialogOverflow = await page
+    .getByRole("dialog", { name: "Add product" })
+    .evaluate((dialog) => {
+      const directContentBottom = Math.max(
+        ...Array.from(dialog.children).map(
+          (child) => child.offsetTop + child.clientHeight
+        )
+      )
+      const variationScroller = dialog.querySelector(
+        "[data-product-variation-rows]"
+      )
+
+      if (!(variationScroller instanceof HTMLElement)) {
+        throw new Error("Variation row scroller was not rendered")
+      }
+
+      return {
+        excessScrollHeight: dialog.scrollHeight - directContentBottom,
+        variationClientHeight: variationScroller.clientHeight,
+        variationScrollHeight: variationScroller.scrollHeight,
+      }
+    })
+
+  expect(dialogOverflow.variationScrollHeight).toBeGreaterThan(
+    dialogOverflow.variationClientHeight
+  )
+  expect(dialogOverflow.excessScrollHeight).toBeLessThanOrEqual(32)
+
   await page.getByRole("button", { name: "Remove row" }).first().click()
   await expect(page.getByRole("button", { name: "Remove row" })).toHaveCount(7)
   await page.getByLabel("Child title").first().fill("Studio License")
