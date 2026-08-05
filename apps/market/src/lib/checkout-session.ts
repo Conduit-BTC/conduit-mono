@@ -85,7 +85,7 @@ function scheduleCheckoutShippingExpiry(
 function readStoredCheckoutShipping(
   storage: SessionStorageLike | null,
   nowMs: number,
-  ownerPubkey: string | null
+  ownerPubkey?: string | null
 ): StoredCheckoutShipping | null {
   if (!storage) return null
   try {
@@ -98,7 +98,7 @@ function readStoredCheckoutShipping(
       Array.isArray(parsed.value) ||
       !("ownerPubkey" in parsed) ||
       (parsed.ownerPubkey !== null && typeof parsed.ownerPubkey !== "string") ||
-      parsed.ownerPubkey !== ownerPubkey ||
+      (ownerPubkey !== undefined && parsed.ownerPubkey !== ownerPubkey) ||
       !Number.isFinite(parsed.updatedAt) ||
       (parsed.updatedAt ?? 0) <= 0 ||
       (parsed.updatedAt ?? 0) > nowMs ||
@@ -129,7 +129,7 @@ export function pruneExpiredCheckoutShippingSession(
   } catch {
     return false
   }
-  return readStoredCheckoutShipping(storage, nowMs, null) === null
+  return readStoredCheckoutShipping(storage, nowMs) === null
 }
 
 export function readCheckoutShippingSession(
