@@ -10,6 +10,7 @@ import {
   SHOPPER_PRESETS_FORMAT,
   SHOPPER_PRESETS_KDF,
   buildShopperPresetsDocument,
+  config,
   decryptShopperPresetsDocument,
   encryptShopperPresetsDocument,
   fetchShopperPresets,
@@ -25,7 +26,7 @@ import {
 } from "@conduit/core"
 
 const nowMs = 1_770_000_000_000
-const password = "correct horse battery staple"
+const password = "correct horse battery staple 7"
 
 const preset: ShopperPresetsValue = {
   shipping: {
@@ -120,6 +121,18 @@ describe("NIP-78 shopper presets", () => {
     ).rejects.toThrow()
   })
 
+  it("requires 16 password characters and one number", async () => {
+    await expect(
+      encryptShopperPresetsDocument(presetDocument(), "short pass 7")
+    ).rejects.toThrow("16 or more characters")
+    await expect(
+      encryptShopperPresetsDocument(
+        presetDocument(),
+        "sixteen characters exactly"
+      )
+    ).rejects.toThrow("at least one number")
+  })
+
   it("derives only the narrow discovery destination", () => {
     const value = getShopperPresetsValue(presetDocument())
     expect(getShopperDiscoveryDestination(value)).toEqual({
@@ -192,6 +205,55 @@ describe("NIP-78 shopper presets", () => {
     expect(result).toEqual({ state: "not_found" })
   })
 
+  it("uses cached relay hints and bounded read timeouts", async () => {
+    const { pubkey } = await signerFixture()
+    let relayListOptions:
+      | {
+          cacheOnly?: boolean
+          allowInsecureRelayUrlsForPubkey?: string | null
+        }
+      | undefined
+    let fetchOptions:
+      | {
+          relayUrls?: readonly string[]
+          connectTimeoutMs?: number
+          fetchTimeoutMs?: number
+        }
+      | undefined
+
+    const result = await fetchShopperPresets(pubkey, {
+      getRelayLists: async (_pubkeys, options) => {
+        relayListOptions = options
+        return new Map()
+      },
+      fetchEvents: async (_filter, options) => {
+        fetchOptions = options
+        return {
+          events: [],
+          relays: [
+            {
+              relayUrl: options.relayUrls![0]!,
+              status: "success",
+              eventCount: 0,
+            },
+          ],
+        }
+      },
+    })
+
+    expect(result).toEqual({ state: "not_found" })
+    expect(relayListOptions).toMatchObject({
+      cacheOnly: true,
+      allowInsecureRelayUrlsForPubkey: pubkey,
+    })
+    expect(fetchOptions).toMatchObject({
+      connectTimeoutMs: 2_000,
+      fetchTimeoutMs: 3_000,
+    })
+    expect(fetchOptions!.relayUrls![0]).toBe(config.appWriteRelayUrls[0])
+    expect(fetchOptions!.relayUrls!.length).toBeLessThanOrEqual(6)
+  })
+
   it("gives the signer ciphertext only", async () => {
     const { signer: realSigner, pubkey, ndk } = await signerFixture()
     let signerContent = ""
@@ -213,6 +275,8 @@ describe("NIP-78 shopper presets", () => {
     } as unknown as NDKSigner
     ndk.signer = signer
     let published: NDKEvent | null = null
+    let publishOptions:
+      { refreshRelayLists?: boolean; deliveryMode?: string } | undefined
 
     const result = await publishShopperPresets({
       pubkey,
@@ -240,8 +304,9 @@ describe("NIP-78 shopper presets", () => {
             },
           ],
         }),
-        publishEvent: async (event) => {
+        publishEvent: async (event, options) => {
           published = event
+          publishOptions = options
           return {
             plan: {
               intent: "author_event",
@@ -260,6 +325,10 @@ describe("NIP-78 shopper presets", () => {
     })
 
     expect(encryptionCalled).toBe(false)
+    expect(publishOptions).toMatchObject({
+      refreshRelayLists: false,
+      deliveryMode: "standard",
+    })
     expect(signerContent).toBe(serializeShopperPresetsEnvelope(result.envelope))
     for (const plaintext of ["Ada", "SW1Y", "London", "example.test"]) {
       expect(signerContent).not.toContain(plaintext)

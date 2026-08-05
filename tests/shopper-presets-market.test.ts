@@ -98,12 +98,27 @@ describe("Market shopper preset integration", () => {
     expect(
       getShopperPreferencesSaveBlockers({
         shipping: preset,
-        password: "password",
-        confirmPassword: "password",
+        password: "secure password 7",
+        confirmPassword: "secure password 7",
         identityConnected: true,
         relayState: "ready",
       })
     ).toEqual([])
+  })
+
+  it("requires at least one number in an otherwise long password", () => {
+    expect(
+      getShopperPreferencesSaveBlockers({
+        shipping: preset,
+        password: "long password without digits",
+        confirmPassword: "long password without digits",
+        identityConnected: true,
+        relayState: "ready",
+      })
+    ).toContainEqual({
+      id: "password-number",
+      message: "Password must contain at least one number.",
+    })
   })
 
   it("retries one transient relay-read failure during cold start", async () => {

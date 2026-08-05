@@ -78,7 +78,8 @@ to 8192 bytes. The serialized envelope is limited to 16384 bytes.
 Each save or clear operation generates a new random 16-byte salt and 24-byte
 nonce. The client derives a 32-byte key from the user's password, encrypts or
 decrypts locally, and overwrites the derived key bytes after use. A password must
-encode to between 8 and 1024 UTF-8 bytes.
+contain 16 or more characters and at least one ASCII digit. It must not exceed
+1024 UTF-8 bytes.
 
 Wrong passwords, modified ciphertext, unsupported parameters, malformed
 envelopes, and invalid document schemas must fail closed.

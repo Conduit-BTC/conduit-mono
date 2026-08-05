@@ -16,6 +16,7 @@ import {
   SHIPPING_COUNTRIES,
   SHOPPER_PAYMENT_RAILS,
   SUPPORTED_SHOPPER_DISPLAY_CURRENCIES,
+  getShopperPresetPasswordError,
   shopperShippingPresetSchema,
   type ShopperDisplayCurrency,
   type ShopperPaymentRail,
@@ -43,10 +44,7 @@ import {
 } from "@conduit/ui"
 import { useShopperPresets } from "../hooks/useShopperPresets"
 import { requireAuth } from "../lib/auth"
-import {
-  SHOPPER_PRESET_PASSWORD_MIN_CHARACTERS,
-  getShopperPreferencesSaveBlockers,
-} from "../lib/shopper-preferences-validation"
+import { getShopperPreferencesSaveBlockers } from "../lib/shopper-preferences-validation"
 import type { ShopperPresetsUnlockPolicy } from "../lib/shopper-presets-store"
 
 export const Route = createFileRoute("/preferences")({
@@ -113,6 +111,7 @@ function UnlockPanel({
   const [message, setMessage] = useState<string | null>(null)
   const busy = presets.unlockState === "unlocking"
   const passwordCharacters = Array.from(password).length
+  const passwordError = getShopperPresetPasswordError(password)
 
   async function unlock(): Promise<void> {
     setMessage(null)
@@ -146,16 +145,10 @@ function UnlockPanel({
             onChange={(event) => setPassword(event.target.value)}
           />
           <p
-            className={`min-h-5 text-xs leading-5 text-[var(--text-muted)] ${passwordCharacters >= SHOPPER_PRESET_PASSWORD_MIN_CHARACTERS ? "invisible" : ""}`}
-            aria-hidden={
-              passwordCharacters >= SHOPPER_PRESET_PASSWORD_MIN_CHARACTERS
-                ? "true"
-                : undefined
-            }
+            className={`min-h-5 text-xs leading-5 text-[var(--text-muted)] ${passwordError ? "" : "invisible"}`}
+            aria-hidden={passwordError ? undefined : "true"}
           >
-            {passwordCharacters === 0
-              ? "Required"
-              : `Password must contain ${SHOPPER_PRESET_PASSWORD_MIN_CHARACTERS} or more characters.`}
+            {passwordCharacters === 0 ? "Required" : passwordError}
           </p>
         </div>
         <div className="mt-4">
@@ -173,7 +166,7 @@ function UnlockPanel({
         <div className="mt-5 flex flex-wrap gap-2">
           <Button
             className="rounded-xl"
-            disabled={busy || password.length < 8}
+            disabled={busy || !!passwordError}
             onClick={() => void unlock()}
           >
             <UnlockKeyhole className="size-4" />
@@ -272,11 +265,9 @@ function PreferencesPage() {
     ]
   )
   const passwordCharacters = Array.from(password).length
-  const passwordHelperText =
-    passwordCharacters > 0 &&
-    passwordCharacters < SHOPPER_PRESET_PASSWORD_MIN_CHARACTERS
-      ? `Password must contain ${SHOPPER_PRESET_PASSWORD_MIN_CHARACTERS} or more characters.`
-      : undefined
+  const passwordHelperText = passwordCharacters
+    ? (getShopperPresetPasswordError(password) ?? undefined)
+    : undefined
   const confirmationHelperText =
     confirmPassword && password !== confirmPassword
       ? "Password confirmation must match."
@@ -687,7 +678,7 @@ function PreferencesPage() {
               size="sm"
               className="rounded-xl"
               onClick={() => setClearOpen(true)}
-              disabled={busy || password.length < 8}
+              disabled={busy || !!getShopperPresetPasswordError(password)}
             >
               <Trash2 className="size-4" />
               Clear

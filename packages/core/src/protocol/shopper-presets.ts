@@ -39,6 +39,11 @@ export const SHOPPER_PRESETS_KDF = {
 export const SHOPPER_PRESETS_NONCE_LENGTH = 24
 export const MAX_SHOPPER_PRESETS_PLAINTEXT_BYTES = 8_192
 export const MAX_SHOPPER_PRESETS_ENVELOPE_BYTES = 16_384
+export const SHOPPER_PRESET_PASSWORD_MIN_CHARACTERS = 16
+export const SHOPPER_PRESET_PASSWORD_MAX_BYTES = 1_024
+const SHOPPER_PRESETS_MAX_READ_RELAYS = 6
+const SHOPPER_PRESETS_CONNECT_TIMEOUT_MS = 2_000
+const SHOPPER_PRESETS_FETCH_TIMEOUT_MS = 3_000
 
 export const SHOPPER_PAYMENT_RAILS = [
   "automatic",
@@ -258,11 +263,23 @@ function secureRandomBytes(length: number): Uint8Array {
   return globalThis.crypto.getRandomValues(new Uint8Array(length))
 }
 
-function validatePassword(password: string): Uint8Array {
-  const encoded = new TextEncoder().encode(password)
-  if (encoded.byteLength < 8 || encoded.byteLength > 1_024) {
-    throw new Error("The preset password must be between 8 and 1024 bytes")
+export function getShopperPresetPasswordError(password: string): string | null {
+  if (Array.from(password).length < SHOPPER_PRESET_PASSWORD_MIN_CHARACTERS) {
+    return `Password must contain ${SHOPPER_PRESET_PASSWORD_MIN_CHARACTERS} or more characters.`
   }
+  if (!/[0-9]/u.test(password)) {
+    return "Password must contain at least one number."
+  }
+  if (byteLength(password) > SHOPPER_PRESET_PASSWORD_MAX_BYTES) {
+    return "Password is too long."
+  }
+  return null
+}
+
+function validatePassword(password: string): Uint8Array {
+  const error = getShopperPresetPasswordError(password)
+  if (error) throw new Error(error)
+  const encoded = new TextEncoder().encode(password)
   return encoded
 }
 
@@ -490,7 +507,10 @@ export async function fetchShopperPresets(
 ): Promise<ShopperPresetsReadResult> {
   const owner = normalizePubkey(pubkey)
   const resolveRelayLists = dependencies.getRelayLists ?? getRelayLists
-  const relayLists = await resolveRelayLists([owner], { cacheOnly: false })
+  const relayLists = await resolveRelayLists([owner], {
+    cacheOnly: true,
+    allowInsecureRelayUrlsForPubkey: owner,
+  })
   const plan = planRelayReads({
     intent: "general",
     authors: [owner],
@@ -502,12 +522,13 @@ export async function fetchShopperPresets(
     ? Array.from(new Set(dependencies.readRelayUrls))
     : Array.from(
         new Set([
+          ...config.appWriteRelayUrls,
+          ...plan.hintRelayUrls,
           ...getCommerceWriteRelayUrls(),
           ...plan.relayUrls,
-          ...config.appWriteRelayUrls,
           ...config.corePublicFallbackRelayUrls,
         ])
-      ).slice(0, 8)
+      ).slice(0, SHOPPER_PRESETS_MAX_READ_RELAYS)
   if (relayUrls.length === 0)
     return { state: "unavailable", reason: "relay_read" }
 
@@ -520,7 +541,11 @@ export async function fetchShopperPresets(
   const fetchEvents = dependencies.fetchEvents ?? fetchEventsFanoutDetailed
   let result: Awaited<ReturnType<typeof fetchEventsFanoutDetailed>>
   try {
-    result = await fetchEvents(filter, { relayUrls })
+    result = await fetchEvents(filter, {
+      relayUrls,
+      connectTimeoutMs: SHOPPER_PRESETS_CONNECT_TIMEOUT_MS,
+      fetchTimeoutMs: SHOPPER_PRESETS_FETCH_TIMEOUT_MS,
+    })
   } catch {
     return { state: "unavailable", reason: "relay_read" }
   }
@@ -619,8 +644,8 @@ export async function publishShopperPresets({
     intent: "author_event",
     authorPubkey: owner,
     authenticatedPubkey: owner,
-    refreshRelayLists: true,
-    deliveryMode: "critical",
+    refreshRelayLists: false,
+    deliveryMode: "standard",
   })
 
   const convergenceRelayUrls =
