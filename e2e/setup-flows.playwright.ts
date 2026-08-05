@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test"
-import { getPublicKey } from "nostr-tools/pure"
+import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
 import {
   TEST_BUYER_PUBKEY,
   TEST_MERCHANT_PUBKEY,
@@ -727,7 +727,7 @@ test("market shopper preferences remove legacy plaintext and render the complete
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 900 })
-  const secretKey = new Uint8Array(32).fill(7)
+  const secretKey = generateSecretKey()
   const buyerPubkey = getPublicKey(secretKey)
   await installTestSigner(page, buyerPubkey, { nip44: false, secretKey })
   await page.addInitScript((buyerPubkey) => {

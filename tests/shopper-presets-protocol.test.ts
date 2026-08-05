@@ -205,11 +205,12 @@ describe("NIP-78 shopper presets", () => {
     expect(result).toEqual({ state: "not_found" })
   })
 
-  it("uses cached relay hints and bounded read timeouts", async () => {
+  it("discovers relay hints and uses bounded preset read timeouts", async () => {
     const { pubkey } = await signerFixture()
     let relayListOptions:
       | {
           cacheOnly?: boolean
+          relayUrls?: readonly string[]
           allowInsecureRelayUrlsForPubkey?: string | null
         }
       | undefined
@@ -243,15 +244,57 @@ describe("NIP-78 shopper presets", () => {
 
     expect(result).toEqual({ state: "not_found" })
     expect(relayListOptions).toMatchObject({
-      cacheOnly: true,
+      cacheOnly: false,
       allowInsecureRelayUrlsForPubkey: pubkey,
     })
+    expect(relayListOptions!.relayUrls).toEqual([
+      ...config.appWriteRelayUrls,
+      ...config.corePublicFallbackRelayUrls,
+    ])
     expect(fetchOptions).toMatchObject({
       connectTimeoutMs: 2_000,
       fetchTimeoutMs: 3_000,
     })
     expect(fetchOptions!.relayUrls![0]).toBe(config.appWriteRelayUrls[0])
     expect(fetchOptions!.relayUrls!.length).toBeLessThanOrEqual(6)
+  })
+
+  it("fails closed when the newest replacement has an invalid envelope", async () => {
+    const { pubkey } = await signerFixture()
+    const validEnvelope = await encryptShopperPresetsDocument(
+      presetDocument(),
+      password
+    )
+    const older = eventFixture(pubkey, {
+      id: "b".repeat(64),
+      createdAt: 10,
+      content: serializeShopperPresetsEnvelope(validEnvelope),
+    })
+    const newer = eventFixture(pubkey, {
+      id: "a".repeat(64),
+      createdAt: 11,
+      content: JSON.stringify({
+        format: SHOPPER_PRESETS_FORMAT,
+        version: 2,
+      }),
+    })
+
+    const result = await fetchShopperPresets(pubkey, {
+      readRelayUrls: ["wss://relay.example"],
+      getRelayLists: async () => new Map(),
+      fetchEvents: async () => ({
+        events: [older, newer],
+        relays: [
+          {
+            relayUrl: "wss://relay.example",
+            status: "success",
+            eventCount: 2,
+          },
+        ],
+      }),
+    })
+
+    expect(result).toEqual({ state: "unavailable", reason: "invalid_envelope" })
   })
 
   it("gives the signer ciphertext only", async () => {
