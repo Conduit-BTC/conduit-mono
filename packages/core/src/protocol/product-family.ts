@@ -281,7 +281,12 @@ function prepareFamilyChildren<
 function prepareFamilyPriceSummary<
   TRecord extends ProductFamilyRecord = ProductFamilyRecord,
 >(children: readonly TRecord[]): ProductFamilyPriceSummary<TRecord> {
-  const ordered = [...children].sort(
+  const availableChildren = children.filter(
+    (child) => child.product.stock !== 0
+  )
+  const ordered = [
+    ...(availableChildren.length > 0 ? availableChildren : children),
+  ].sort(
     (left, right) =>
       compareCommercePrices(left.product, right.product) ||
       left.addressId.localeCompare(right.addressId)
