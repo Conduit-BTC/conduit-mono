@@ -267,13 +267,48 @@ describe("product family module", () => {
 
     expect(item.family.priceSummary).toMatchObject({
       varies: true,
-      minimum: { addressId: `30402:${MERCHANT_PUBKEY}:workspace-personal` },
+      minimum: { addressId: `30402:${MERCHANT_PUBKEY}:workspace-enterprise` },
       maximum: { addressId: `30402:${MERCHANT_PUBKEY}:workspace-business` },
     })
     expect(item.family.inventorySummary).toEqual({
       tracking: "tracked",
       availability: "available",
       totalStock: 6,
+    })
+  })
+
+  it("advertises prices from selectable children while any remain available", () => {
+    const parent = record("workspace", { type: "variable" })
+    const child = (dTag: string, value: string, price: number, stock: number) =>
+      record(dTag, {
+        type: "variation",
+        parentProductId: parent.addressId,
+        specifications: [{ key: "license-tier", value }],
+        price,
+        stock,
+      })
+    const catalog = prepareProductCatalog(
+      [
+        parent,
+        child("workspace-personal", "Personal", 5_000, 0),
+        child("workspace-business", "Business", 20_000, 3),
+        child("workspace-enterprise", "Enterprise", 30_000, 1),
+      ],
+      {
+        source: "commerce",
+        fetchedAt: 2,
+        stale: false,
+        degraded: false,
+        capped: false,
+      }
+    )
+    const item = catalog.items[0]
+    if (item?.kind !== "family") throw new Error("Expected a family")
+
+    expect(item.family.priceSummary).toMatchObject({
+      minimum: { addressId: `30402:${MERCHANT_PUBKEY}:workspace-business` },
+      maximum: { addressId: `30402:${MERCHANT_PUBKEY}:workspace-enterprise` },
+      varies: true,
     })
   })
 })

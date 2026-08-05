@@ -436,6 +436,297 @@ describe("commerce gateway", () => {
     ])
   })
 
+  it("marks a saturated bounded catalog read as degraded", async () => {
+    const events = Array.from({ length: 100 }, (_, index) =>
+      makeProductEvent({
+        pubkey: MERCHANT_A_PUBKEY,
+        dTag: `bounded-${index}`,
+        id: `bounded-event-${index}`,
+        createdAt: 100 + index,
+        title: `Bounded item ${index}`,
+      })
+    )
+    let productLimit: number | undefined
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        productLimit = filter.limit
+        return events.slice(0, filter.limit ?? events.length) as never
+      },
+    })
+
+    const result = await getMarketplaceProducts({ limit: 1 })
+
+    expect(productLimit).toBe(100)
+    expect(result.data).toHaveLength(1)
+    expect(result.meta.capped).toBe(true)
+    expect(result.meta.degraded).toBe(true)
+    expect(result.meta.stale).toBe(false)
+  })
+
+  it("marks partial relay product reads as degraded below the cap", async () => {
+    const event = makeProductEvent({
+      pubkey: MERCHANT_A_PUBKEY,
+      dTag: "partial-read",
+      id: "partial-read-event",
+      createdAt: 100,
+      title: "Partial read",
+    })
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async () => [],
+      fetchEventsFanoutDetailed: async () => ({
+        events: [event as never],
+        relays: [
+          {
+            relayUrl: "wss://partial.example",
+            status: "partial",
+            eventCount: 1,
+          },
+        ],
+      }),
+    })
+
+    const market = await getMarketplaceProducts({ limit: 10 })
+    const storefront = await getMerchantStorefront({
+      merchantPubkey: MERCHANT_A_PUBKEY,
+      limit: 10,
+    })
+
+    expect(market.data).toHaveLength(1)
+    expect(market.meta.degraded).toBe(true)
+    expect(storefront.data).toHaveLength(1)
+    expect(storefront.meta.degraded).toBe(true)
+  })
+
+  it("propagates progressive relay completion into final freshness", async () => {
+    const event = makeProductEvent({
+      pubkey: MERCHANT_A_PUBKEY,
+      dTag: "progressive-read",
+      id: "progressive-read-event",
+      createdAt: 100,
+      title: "Progressive read",
+    }) as never
+    let relayStatus: "partial" | "success" = "partial"
+
+    __setCommerceTestOverrides({
+      fetchEventsFanoutProgressive: async (_filter, options, onProgress) => {
+        await onProgress({
+          relayUrl: options.relayUrls?.[0] ?? "wss://progressive.example",
+          events: [event],
+          mergedEvents: [event],
+          status: relayStatus,
+        })
+        return [event]
+      },
+    })
+
+    const partial = await getMarketplaceProductsProgressive(
+      { limit: 10 },
+      () => {}
+    )
+    relayStatus = "success"
+    const complete = await getMarketplaceProductsProgressive(
+      { limit: 10 },
+      () => {}
+    )
+
+    expect(partial.data).toHaveLength(1)
+    expect(partial.meta.degraded).toBe(true)
+    expect(complete.data).toHaveLength(1)
+    expect(complete.meta.degraded).toBe(false)
+  })
+
+  it("marks a saturated variation-group read as degraded", async () => {
+    const merchantPubkey = MERCHANT_A_PUBKEY
+    const parentProductId = `30402:${merchantPubkey}:large-catalog`
+    const events = [
+      makeGammaProductEvent({
+        pubkey: merchantPubkey,
+        dTag: "large-catalog",
+        id: "large-catalog-parent",
+        createdAt: 100,
+        title: "Large catalog",
+        type: "variable",
+      }),
+      ...Array.from({ length: 200 }, (_, index) =>
+        makeGammaProductEvent({
+          pubkey: merchantPubkey,
+          dTag: `large-catalog-${index}`,
+          id: `large-catalog-variation-${index}`,
+          createdAt: 101 + index,
+          title: `Large catalog - ${index}`,
+          type: "variation",
+          parentProductId,
+          size: String(index),
+        })
+      ),
+    ]
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        const matches = events.filter(
+          (event) =>
+            (!filter.authors || filter.authors.includes(event.pubkey)) &&
+            (!filter["#d"] ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              )) &&
+            (!filter["#a"] ||
+              event.tags.some(
+                (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1] ?? "")
+              ))
+        )
+        return matches.slice(0, filter.limit ?? matches.length) as never
+      },
+    })
+
+    const result = await getProductDetail({ productId: parentProductId })
+
+    expect(result.data?.family?.children).toHaveLength(200)
+    expect(result.meta.source).toBe("commerce")
+    expect(result.meta.capped).toBe(true)
+    expect(result.meta.degraded).toBe(true)
+    expect(result.data?.family?.readEvidence.degraded).toBe(true)
+  })
+
+  it("partitions exact product batches by author without Cartesian collisions", async () => {
+    const merchants = Array.from({ length: 11 }, (_, index) =>
+      getPublicKey(new Uint8Array(32).fill(index + 1))
+    )
+    const wantedEvents = merchants.map((pubkey, index) =>
+      makeProductEvent({
+        pubkey,
+        dTag: `item-${index}`,
+        id: `wanted-${index}`,
+        createdAt: 200 + index,
+        title: `Wanted ${index}`,
+      })
+    )
+    const crossEvents = merchants.flatMap((pubkey, authorIndex) =>
+      merchants.flatMap((_, dTagIndex) =>
+        authorIndex === dTagIndex
+          ? []
+          : [
+              makeProductEvent({
+                pubkey,
+                dTag: `item-${dTagIndex}`,
+                id: `cross-${authorIndex}-${dTagIndex}`,
+                createdAt: 100 + authorIndex,
+                title: `Cross ${authorIndex}-${dTagIndex}`,
+              }),
+            ]
+      )
+    )
+    const productFilters: Array<Record<string, unknown>> = []
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        productFilters.push(filter as Record<string, unknown>)
+        const matches = [...crossEvents, ...wantedEvents].filter(
+          (event) =>
+            (!filter.authors || filter.authors.includes(event.pubkey)) &&
+            (!filter["#d"] ||
+              event.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+              ))
+        )
+        return matches.slice(0, filter.limit ?? matches.length) as never
+      },
+    })
+
+    const result = await getProductsByIds(
+      merchants.map((pubkey, index) => `30402:${pubkey}:item-${index}`)
+    )
+    const exactFilters = productFilters.filter((filter) => "#d" in filter)
+
+    expect(result.data).toHaveLength(merchants.length)
+    expect(result.data.map((record) => record.product.title).sort()).toEqual(
+      wantedEvents.map((_, index) => `Wanted ${index}`).sort()
+    )
+    expect(exactFilters).toHaveLength(merchants.length)
+    expect(
+      exactFilters.every(
+        (filter) =>
+          Array.isArray(filter.authors) &&
+          filter.authors.length === 1 &&
+          Array.isArray(filter["#d"]) &&
+          filter["#d"].length === 1 &&
+          filter.limit === undefined
+      )
+    ).toBe(true)
+  })
+
+  it("keeps a family stale until every cached sibling has live group coverage", async () => {
+    const merchantPubkey = MERCHANT_A_PUBKEY
+    const parentProductId = `30402:${merchantPubkey}:coverage-shirt`
+    const parent = makeGammaProductEvent({
+      pubkey: merchantPubkey,
+      dTag: "coverage-shirt",
+      id: "coverage-shirt-parent",
+      createdAt: 100,
+      title: "Coverage shirt",
+      type: "variable",
+    })
+    const small = makeGammaProductEvent({
+      pubkey: merchantPubkey,
+      dTag: "coverage-shirt-s",
+      id: "coverage-shirt-s-event",
+      createdAt: 101,
+      title: "Coverage shirt - S",
+      type: "variation",
+      parentProductId,
+      size: "S",
+    })
+    const medium = makeGammaProductEvent({
+      pubkey: merchantPubkey,
+      dTag: "coverage-shirt-m",
+      id: "coverage-shirt-m-event",
+      createdAt: 102,
+      title: "Coverage shirt - M",
+      type: "variation",
+      parentProductId,
+      size: "M",
+    })
+    let includeEverySibling = true
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (!filter.kinds?.includes(EVENT_KINDS.PRODUCT)) return []
+        if (filter["#d"]) {
+          return [parent, small, medium].filter((event) =>
+            event.tags.some(
+              (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1] ?? "")
+            )
+          ) as never
+        }
+        if (filter["#a"]) {
+          return (includeEverySibling ? [small, medium] : [small]) as never
+        }
+        return [parent, small, medium] as never
+      },
+    })
+
+    await getMarketplaceProducts()
+    includeEverySibling = false
+    const partial = await getProductsByIds([parentProductId])
+    includeEverySibling = true
+    const complete = await getProductsByIds([parentProductId])
+
+    expect(partial.data[0]?.family?.children).toHaveLength(2)
+    expect(partial.meta.source).toBe("commerce")
+    expect(partial.meta.stale).toBe(true)
+    expect(partial.meta.degraded).toBe(true)
+    expect(partial.data[0]?.family?.readEvidence.stale).toBe(true)
+    expect(complete.meta.source).toBe("commerce")
+    expect(complete.meta.stale).toBe(false)
+    expect(complete.meta.degraded).toBe(false)
+    expect(complete.data[0]?.family?.readEvidence.stale).toBe(false)
+  })
+
   it("passes author filters for perspective-scoped marketplace discovery", async () => {
     const productEvents = [
       makeProductEvent({
@@ -1044,6 +1335,33 @@ describe("commerce gateway", () => {
     expect(result.data).toBeNull()
   })
 
+  it("suppresses direct product detail with a relay deletion event", async () => {
+    const dTag = "relay-deleted-detail"
+    const staleProduct = makeSignedProductEvent({
+      dTag,
+      createdAt: 100,
+      title: "Relay Deleted Detail",
+    })
+    const addressId = `30402:${staleProduct.pubkey}:${dTag}`
+    const deletion = makeSignedDeletionEvent({
+      createdAt: 101,
+      tags: [["a", addressId]],
+    })
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([staleProduct] as never)
+          : filter.kinds?.includes(EVENT_KINDS.DELETION)
+            ? ([deletion] as never)
+            : [],
+    })
+
+    const result = await getProductDetail({ productId: addressId })
+
+    expect(result.data).toBeNull()
+  })
+
   it("suppresses deleted products from batched live reads", async () => {
     const dTag = "locally-deleted-batch"
     const staleProduct = makeSignedProductEvent({
@@ -1071,6 +1389,35 @@ describe("commerce gateway", () => {
     })
 
     expect(result.meta.source).toBe("commerce")
+    expect(result.data).toHaveLength(0)
+  })
+
+  it("suppresses relay-deleted products from batched live reads", async () => {
+    const dTag = "relay-deleted-batch"
+    const staleProduct = makeSignedProductEvent({
+      dTag,
+      createdAt: 100,
+      title: "Relay Deleted Batch Item",
+    })
+    const addressId = `30402:${staleProduct.pubkey}:${dTag}`
+    const deletion = makeSignedDeletionEvent({
+      createdAt: 101,
+      tags: [["a", addressId]],
+    })
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([staleProduct] as never)
+          : filter.kinds?.includes(EVENT_KINDS.DELETION)
+            ? ([deletion] as never)
+            : [],
+    })
+
+    const result = await getProductsByIds([addressId], {
+      includeMarketHidden: true,
+    })
+
     expect(result.data).toHaveLength(0)
   })
 

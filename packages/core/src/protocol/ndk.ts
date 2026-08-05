@@ -39,6 +39,7 @@ export interface FetchEventsFanoutProgress {
   relayUrl: string
   events: NDKEvent[]
   mergedEvents: NDKEvent[]
+  status?: FetchEventsRelayStatus["status"]
 }
 
 export interface FetchEventsRelayStatus {
@@ -748,6 +749,7 @@ export async function fetchEventsFanoutProgressive(
           relayUrl,
           events: result.events,
           mergedEvents: Array.from(merged.values()),
+          status: result.status,
         })
       })
     )

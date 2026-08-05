@@ -19,6 +19,7 @@ import type { Product, Profile } from "../types"
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchEventsFanout,
+  fetchEventsFanoutDetailed,
   fetchEventsFanoutProgressive,
   getEventSourceRelayUrls,
   requireNdkConnected,
@@ -268,6 +269,7 @@ type LegacyDmSyncResult = {
 
 type CommerceTestOverrides = {
   fetchEventsFanout?: typeof fetchEventsFanout
+  fetchEventsFanoutDetailed?: typeof fetchEventsFanoutDetailed
   fetchEventsFanoutProgressive?: typeof fetchEventsFanoutProgressive
   requireNdkConnected?: typeof requireNdkConnected
   giftUnwrap?: (
@@ -480,6 +482,44 @@ async function runFetchEventsFanout(
   return (await impl(filter, options)) as NDKEvent[]
 }
 
+async function runFetchEventsFanoutDetailed(
+  filter: NDKFilter,
+  options?: Parameters<typeof fetchEventsFanoutDetailed>[1]
+): Promise<{ events: NDKEvent[]; degraded: boolean }> {
+  if (testOverrides.fetchEventsFanoutDetailed) {
+    const result = await testOverrides.fetchEventsFanoutDetailed(
+      filter,
+      options
+    )
+    return {
+      events: result.events,
+      degraded:
+        result.relays.length === 0 ||
+        result.relays.some((relay) => relay.status !== "success"),
+    }
+  }
+
+  // Most gateway tests replace the older event-only seam. Preserve that
+  // deterministic contract while production reads use per-relay completion.
+  if (testOverrides.fetchEventsFanout) {
+    return {
+      events: (await testOverrides.fetchEventsFanout(
+        filter,
+        options
+      )) as NDKEvent[],
+      degraded: false,
+    }
+  }
+
+  const result = await fetchEventsFanoutDetailed(filter, options)
+  return {
+    events: result.events,
+    degraded:
+      result.relays.length === 0 ||
+      result.relays.some((relay) => relay.status !== "success"),
+  }
+}
+
 async function runRequireNdkConnected(): Promise<
   Awaited<ReturnType<typeof requireNdkConnected>>
 > {
@@ -540,6 +580,7 @@ function createMeta(
     degraded:
       options.degraded ??
       (options.stale === true ||
+        options.capped === true ||
         source !== plan.sources[0] ||
         decryptFailures !== undefined ||
         legacyDecryptFailures !== undefined),
@@ -599,8 +640,12 @@ async function streamProductRecordChunks(input: {
   readPolicy?: CommerceReadPolicy
   merged: Map<string, NDKEvent>
   onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
+  onTransportStatus?: (degraded: boolean) => void
 }): Promise<void> {
-  if (input.relayUrls.length === 0) return
+  if (input.relayUrls.length === 0) {
+    input.onTransportStatus?.(true)
+    return
+  }
 
   let nextChunkIndex = 0
   const workerCount = Math.min(
@@ -627,7 +672,10 @@ async function streamProductRecordChunks(input: {
             connectTimeoutMs: input.readPolicy?.connectTimeoutMs ?? 4_000,
             fetchTimeoutMs: input.readPolicy?.fetchTimeoutMs ?? 8_000,
           },
-          ({ mergedEvents, relayUrl }) => {
+          ({ mergedEvents, relayUrl, status }) => {
+            if (status) {
+              input.onTransportStatus?.(status !== "success")
+            }
             for (const event of mergedEvents) {
               putMergedEvent(input.merged, event)
             }
@@ -1719,6 +1767,27 @@ async function fetchDeletionTimestamps(
   return { byEventId, byAddressId }
 }
 
+async function fetchDeletionTimestampsForProductRecords(
+  records: readonly CommerceProductRecord[],
+  authorPubkeys: readonly string[] = uniqueStrings(
+    records.map((record) => record.product.pubkey)
+  )
+): Promise<DeletionTimestamps> {
+  const reads = await Promise.all(
+    uniqueStrings(authorPubkeys).map((authorPubkey) => {
+      const authorRecords = records.filter(
+        (record) => record.product.pubkey === authorPubkey
+      )
+      return fetchDeletionTimestamps(
+        authorPubkey,
+        uniqueStrings(authorRecords.map((record) => record.eventId)),
+        uniqueStrings(authorRecords.map((record) => record.addressId))
+      )
+    })
+  )
+  return mergeDeletionTimestamps(...reads)
+}
+
 function isDeletedByNip09(
   event: Pick<NDKEvent, "id" | "pubkey" | "created_at">,
   addressId: string,
@@ -1867,6 +1936,7 @@ async function fetchPublicProductRecords(query: {
   authenticatedPubkey?: string | null
   limit?: number
   readPolicy?: CommerceReadPolicy
+  onTransportStatus?: (degraded: boolean) => void
 }): Promise<CommerceProductRecord[]> {
   const filter: NDKFilter = {
     kinds: [EVENT_KINDS.PRODUCT],
@@ -1888,13 +1958,14 @@ async function fetchPublicProductRecords(query: {
     maxRelays: query.readPolicy?.maxRelays,
   })
 
-  const events = await runFetchEventsFanout(filter, {
+  const result = await runFetchEventsFanoutDetailed(filter, {
     relayUrls,
     connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
     fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 8_000,
   })
+  query.onTransportStatus?.(result.degraded)
 
-  return dedupeProductEvents(events)
+  return dedupeProductEvents(result.events)
 }
 
 async function fetchPublicProductRecordsProgressive(
@@ -1906,6 +1977,7 @@ async function fetchPublicProductRecordsProgressive(
     authenticatedPubkey?: string | null
     limit?: number
     readPolicy?: CommerceReadPolicy
+    onTransportStatus?: (degraded: boolean) => void
   },
   onRecords: (records: CommerceProductRecord[], relayUrl: string) => void
 ): Promise<CommerceProductRecord[]> {
@@ -1958,20 +2030,24 @@ async function fetchPublicProductRecordsProgressive(
     readPolicy: query.readPolicy,
     merged,
     onRecords,
+    onTransportStatus: query.onTransportStatus,
   })
 
   const expandedRelayUrls = await expandedRelayUrlsPromise
   const expansionRelayUrls = expandedRelayUrls.filter(
     (relayUrl) => !relayUrls.includes(relayUrl)
   )
-  await streamProductRecordChunks({
-    baseFilter: filter,
-    authorChunks,
-    relayUrls: expansionRelayUrls,
-    readPolicy: query.readPolicy,
-    merged,
-    onRecords,
-  })
+  if (expansionRelayUrls.length > 0) {
+    await streamProductRecordChunks({
+      baseFilter: filter,
+      authorChunks,
+      relayUrls: expansionRelayUrls,
+      readPolicy: query.readPolicy,
+      merged,
+      onRecords,
+      onTransportStatus: query.onTransportStatus,
+    })
+  }
 
   return dedupeProductEvents(Array.from(merged.values()))
 }
@@ -2075,6 +2151,7 @@ export async function getMarketplaceProducts(
       ? [query.merchantPubkey]
       : query.authorPubkeys
     const rawEventLimit = getProductRawEventLimit(query.limit)
+    let transportDegraded = false
     const fetchedRecords = await fetchPublicProductRecords({
       authors:
         authorPubkeys && authorPubkeys.length > 0
@@ -2083,6 +2160,9 @@ export async function getMarketplaceProducts(
       authenticatedPubkey: query.authenticatedPubkey,
       limit: rawEventLimit,
       readPolicy: query.readPolicy,
+      onTransportStatus: (degraded) => {
+        transportDegraded ||= degraded
+      },
     })
     const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
       query.merchantPubkey,
@@ -2108,7 +2188,10 @@ export async function getMarketplaceProducts(
       "marketplace_products",
       "public",
       PRODUCT_CAPABILITIES,
-      { capped: fetchedRecords.length >= rawEventLimit }
+      {
+        capped: fetchedRecords.length >= rawEventLimit,
+        degraded: transportDegraded || fetchedRecords.length >= rawEventLimit,
+      }
     )
     return { data: withProductFamilyReadEvidence(filtered, meta), meta }
   } catch (error) {
@@ -2165,11 +2248,15 @@ export async function getMarketplaceProductsProgressive(
     : query.authorPubkeys
   const limit = query.limit
   const rawEventLimit = getProductRawEventLimit(limit)
+  let transportDegraded = false
   const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
     query.merchantPubkey,
     query.authorPubkeys
   )
-  const toResult = (records: CommerceProductRecord[]) => {
+  const toResult = (
+    records: CommerceProductRecord[],
+    options: { degraded?: boolean } = {}
+  ) => {
     const filteredRecords = filterDeletedProductRecords(
       records,
       localDeletionTimestamps
@@ -2187,7 +2274,10 @@ export async function getMarketplaceProductsProgressive(
       "marketplace_products",
       "public",
       PRODUCT_CAPABILITIES,
-      { capped: records.length >= rawEventLimit }
+      {
+        capped: records.length >= rawEventLimit,
+        degraded: options.degraded ?? records.length >= rawEventLimit,
+      }
     )
     return { data: withProductFamilyReadEvidence(data, meta), meta }
   }
@@ -2201,9 +2291,14 @@ export async function getMarketplaceProductsProgressive(
       authenticatedPubkey: query.authenticatedPubkey,
       limit: rawEventLimit,
       readPolicy: query.readPolicy,
+      onTransportStatus: (degraded) => {
+        transportDegraded ||= degraded
+      },
     },
     (records, relayUrl) => {
-      onProgress(toResult(records), relayUrl)
+      // Until every planned relay settles, the progressive snapshot is
+      // intentionally incomplete even if the first relay succeeded.
+      onProgress(toResult(records, { degraded: true }), relayUrl)
     }
   )
 
@@ -2211,7 +2306,9 @@ export async function getMarketplaceProductsProgressive(
     fetchedRecords,
     localDeletionTimestamps
   )
-  const result = toResult(records)
+  const result = toResult(records, {
+    degraded: transportDegraded || fetchedRecords.length >= rawEventLimit,
+  })
   await cacheProductRecords(records)
   return result
 }
@@ -2284,11 +2381,12 @@ export async function getMerchantStorefront(
       limit: getProductRawEventLimit(query.limit),
     }
 
-    const rawEvents = await runFetchEventsFanout(productFilter, {
+    const productRead = await runFetchEventsFanoutDetailed(productFilter, {
       relayUrls,
       connectTimeoutMs: query.readPolicy?.connectTimeoutMs ?? 4_000,
       fetchTimeoutMs: query.readPolicy?.fetchTimeoutMs ?? 10_000,
     })
+    const rawEvents = productRead.events
 
     const relayDeletionTimestamps = await fetchDeletionTimestamps(
       query.merchantPubkey,
@@ -2348,6 +2446,10 @@ export async function getMerchantStorefront(
             capped:
               typeof productFilter.limit === "number" &&
               rawEvents.length >= productFilter.limit,
+            degraded:
+              productRead.degraded ||
+              (typeof productFilter.limit === "number" &&
+                rawEvents.length >= productFilter.limit),
           })
     return {
       data: withProductFamilyReadEvidence(filtered, meta),
@@ -2527,8 +2629,14 @@ function findProductDetailRecord(
 
 async function fetchVariationGroupRecords(
   target: CommerceProductRecord
-): Promise<CommerceProductRecord[]> {
-  if (target.product.type === "simple") return []
+): Promise<{
+  records: CommerceProductRecord[]
+  degraded: boolean
+  capped: boolean
+}> {
+  if (target.product.type === "simple") {
+    return { records: [], degraded: false, capped: false }
+  }
 
   const parentAddress =
     target.product.type === "variable"
@@ -2541,24 +2649,88 @@ async function fetchVariationGroupRecords(
     parsedParent.kind !== EVENT_KINDS.PRODUCT ||
     parsedParent.pubkey !== target.product.pubkey
   ) {
-    return []
+    return { records: [], degraded: true, capped: false }
   }
 
+  let transportDegraded = false
   const [parents, variations] = await Promise.all([
     target.product.type === "variation"
       ? fetchPublicProductRecords({
           authors: [parsedParent.pubkey],
           dTags: [parsedParent.d],
           limit: 10,
+          onTransportStatus: (degraded) => {
+            transportDegraded ||= degraded
+          },
         })
       : Promise.resolve([]),
     fetchPublicProductRecords({
       authors: [parsedParent.pubkey],
       parentAddresses: [parentAddress],
       limit: PRODUCT_VARIATION_EVENT_LIMIT,
+      onTransportStatus: (degraded) => {
+        transportDegraded ||= degraded
+      },
     }),
   ])
-  return [...parents, ...variations]
+  const capped = variations.length >= PRODUCT_VARIATION_EVENT_LIMIT
+  return {
+    records: [...parents, ...variations],
+    degraded: transportDegraded || capped,
+    capped,
+  }
+}
+
+function getVariationParentAddress(
+  target: CommerceProductRecord
+): string | undefined {
+  if (target.product.type === "simple") return undefined
+  return target.product.type === "variable"
+    ? target.addressId
+    : target.product.parentProductId
+}
+
+function isProductRecordInFamily(
+  record: CommerceProductRecord,
+  parentAddress: string
+): boolean {
+  return (
+    record.addressId === parentAddress ||
+    record.product.parentProductId === parentAddress
+  )
+}
+
+function hasCompleteLiveVariationGroupCoverage(input: {
+  target: CommerceProductRecord
+  groupRead: {
+    records: CommerceProductRecord[]
+    degraded: boolean
+  }
+  knownRecords: CommerceProductRecord[]
+  directRecords: CommerceProductRecord[]
+}): boolean {
+  if (input.target.product.type === "simple") return true
+  if (input.groupRead.degraded) return false
+
+  const parentAddress = getVariationParentAddress(input.target)
+  if (!parentAddress) return false
+
+  const liveAddressIds = new Set(
+    [...input.directRecords, ...input.groupRead.records].map(
+      (record) => record.addressId
+    )
+  )
+  const knownFamilyAddressIds = new Set(
+    input.knownRecords
+      .filter((record) => isProductRecordInFamily(record, parentAddress))
+      .map((record) => record.addressId)
+  )
+  knownFamilyAddressIds.add(input.target.addressId)
+  knownFamilyAddressIds.add(parentAddress)
+
+  return Array.from(knownFamilyAddressIds).every((addressId) =>
+    liveAddressIds.has(addressId)
+  )
 }
 
 export async function getProductDetail(
@@ -2572,30 +2744,54 @@ export async function getProductDetail(
         includeStale: true,
         includeMarketHidden: true,
       })
+      let directReadDegraded = false
       const direct = await fetchPublicProductRecords({
         authors: [address.pubkey],
         dTags: [address.d],
         limit: 10,
+        onTransportStatus: (degraded) => {
+          directReadDegraded ||= degraded
+        },
       })
       const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
         address.pubkey
       )
-      let merged = mergeCachedAndLiveProductRecords({
+      const locallyVisibleDirect = filterDeletedProductRecords(
+        direct,
+        localDeletionTimestamps
+      )
+      const locallyMerged = mergeCachedAndLiveProductRecords({
         cached,
-        live: direct,
+        live: locallyVisibleDirect,
         deletionTimestamps: localDeletionTimestamps,
       })
-      const target = merged.find((item) => item.addressId === addressId) ?? null
-      const groupRecords = target
-        ? await fetchVariationGroupRecords(target)
-        : []
-      if (groupRecords.length > 0) {
-        merged = mergeCachedAndLiveProductRecords({
-          cached: merged,
-          live: groupRecords,
-          deletionTimestamps: localDeletionTimestamps,
-        })
-      }
+      const targetCandidate =
+        locallyMerged.find((item) => item.addressId === addressId) ?? null
+      const groupRead = targetCandidate
+        ? await fetchVariationGroupRecords(targetCandidate)
+        : { records: [], degraded: false, capped: false }
+      const relayDeletionTimestamps =
+        await fetchDeletionTimestampsForProductRecords(
+          [...cached, ...direct, ...groupRead.records],
+          [address.pubkey]
+        )
+      const deletionTimestamps = mergeDeletionTimestamps(
+        relayDeletionTimestamps,
+        localDeletionTimestamps
+      )
+      const directVisible = filterDeletedProductRecords(
+        direct,
+        deletionTimestamps
+      )
+      const groupVisible = filterDeletedProductRecords(
+        groupRead.records,
+        deletionTimestamps
+      )
+      const merged = mergeCachedAndLiveProductRecords({
+        cached,
+        live: [...directVisible, ...groupVisible],
+        deletionTimestamps,
+      })
       await cacheProductRecords(merged)
       const record = findProductDetailRecord(
         merged,
@@ -2603,20 +2799,39 @@ export async function getProductDetail(
         query.includeMarketHidden
       )
       if (record) {
-        const meta =
-          direct.length > 0 || groupRecords.length > 0
-            ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES, {
-                capped:
-                  groupRecords.filter(
-                    (candidate) => candidate.product.type === "variation"
-                  ).length >= PRODUCT_VARIATION_EVENT_LIMIT,
+        const hasLiveDirectTarget = directVisible.some(
+          (candidate) => candidate.addressId === addressId
+        )
+        const hasCompleteGroupCoverage =
+          record.product.type === "simple"
+            ? true
+            : !!targetCandidate &&
+              hasCompleteLiveVariationGroupCoverage({
+                target: targetCandidate,
+                groupRead: { ...groupRead, records: groupVisible },
+                knownRecords: filterDeletedProductRecords(
+                  cached,
+                  deletionTimestamps
+                ),
+                directRecords: directVisible,
               })
-            : createMeta(
-                "product_detail",
-                "local_cache",
-                PRODUCT_CAPABILITIES,
-                { stale: true, degraded: true }
-              )
+        const completeLiveRead =
+          hasLiveDirectTarget &&
+          !directReadDegraded &&
+          directVisible.length < 10 &&
+          hasCompleteGroupCoverage
+        const hasLiveEvidence =
+          directVisible.length > 0 || groupVisible.length > 0
+        const meta = hasLiveEvidence
+          ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES, {
+              stale: !completeLiveRead,
+              degraded: !completeLiveRead,
+              capped: groupRead.capped || directVisible.length >= 10,
+            })
+          : createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
+              stale: true,
+              degraded: true,
+            })
         return {
           data: withProductFamilyRecordReadEvidence(record, meta),
           meta,
@@ -2643,24 +2858,34 @@ export async function getProductDetail(
     }
 
     if (/^[0-9a-f]{64}$/i.test(decodedId)) {
+      let directReadDegraded = false
       const records = await fetchPublicProductRecords({
         ids: [decodedId],
         limit: 1,
+        onTransportStatus: (degraded) => {
+          directReadDegraded ||= degraded
+        },
       })
       const target = records[0] ?? null
-      const groupRecords = target
+      const groupRead = target
         ? await fetchVariationGroupRecords(target)
-        : []
-      const fetched = [...records, ...groupRecords]
-      await cacheProductRecords(fetched)
+        : { records: [], degraded: false, capped: false }
+      const fetched = [...records, ...groupRead.records]
       const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
         undefined,
         uniqueStrings(fetched.map((record) => record.product.pubkey))
       )
-      const visibleRecords = filterDeletedProductRecords(
-        fetched,
+      const relayDeletionTimestamps =
+        await fetchDeletionTimestampsForProductRecords(fetched)
+      const deletionTimestamps = mergeDeletionTimestamps(
+        relayDeletionTimestamps,
         localDeletionTimestamps
       )
+      const visibleRecords = filterDeletedProductRecords(
+        fetched,
+        deletionTimestamps
+      )
+      await cacheProductRecords(visibleRecords)
       const record = findProductDetailRecord(
         visibleRecords,
         [decodedId],
@@ -2671,10 +2896,9 @@ export async function getProductDetail(
         "public",
         PRODUCT_CAPABILITIES,
         {
-          capped:
-            groupRecords.filter(
-              (candidate) => candidate.product.type === "variation"
-            ).length >= PRODUCT_VARIATION_EVENT_LIMIT,
+          stale: directReadDegraded || groupRead.degraded,
+          degraded: directReadDegraded || groupRead.degraded,
+          capped: groupRead.capped,
         }
       )
       return {
@@ -2756,7 +2980,6 @@ export async function getProductsByIds(
   }
 
   const authors = uniqueStrings(addresses.map((address) => address.pubkey))
-  const dTags = uniqueStrings(addresses.map((address) => address.d))
   const wanted = new Set(
     addresses.map((address) => `${address.kind}:${address.pubkey}:${address.d}`)
   )
@@ -2774,18 +2997,37 @@ export async function getProductsByIds(
   )
 
   try {
-    const records = await fetchPublicProductRecords({
-      authors,
-      dTags,
-      limit: Math.max(addresses.length * 2, 20),
-    })
-    const directTargets = mergeCachedAndLiveProductRecords({
+    let directReadDegraded = false
+    const dTagsByAuthor = new Map<string, string[]>()
+    for (const address of addresses) {
+      const authorDTags = dTagsByAuthor.get(address.pubkey) ?? []
+      authorDTags.push(address.d)
+      dTagsByAuthor.set(address.pubkey, authorDTags)
+    }
+    const records = (
+      await Promise.all(
+        Array.from(dTagsByAuthor.entries()).map(([author, authorDTags]) =>
+          fetchPublicProductRecords({
+            authors: [author],
+            dTags: uniqueStrings(authorDTags),
+            onTransportStatus: (degraded) => {
+              directReadDegraded ||= degraded
+            },
+          })
+        )
+      )
+    ).flat()
+    const locallyVisibleDirectRecords = filterDeletedProductRecords(
+      records,
+      localDeletionTimestamps
+    )
+    const directTargetCandidates = mergeCachedAndLiveProductRecords({
       cached: cachedTargets,
-      live: records,
+      live: locallyVisibleDirectRecords,
       deletionTimestamps: localDeletionTimestamps,
     }).filter((record) => wanted.has(record.addressId))
     const groupTargetsByParent = new Map<string, CommerceProductRecord>()
-    for (const target of directTargets) {
+    for (const target of directTargetCandidates) {
       if (target.product.type === "simple") continue
       const parentAddress =
         target.product.type === "variable"
@@ -2795,11 +3037,63 @@ export async function getProductsByIds(
         groupTargetsByParent.set(parentAddress, target)
       }
     }
+    const groupTargets = Array.from(groupTargetsByParent.values())
     const groupFetches = await Promise.allSettled(
-      Array.from(groupTargetsByParent.values()).map(fetchVariationGroupRecords)
+      groupTargets.map(fetchVariationGroupRecords)
     )
     const groupRecords = groupFetches.flatMap((result) =>
-      result.status === "fulfilled" ? result.value : []
+      result.status === "fulfilled" ? result.value.records : []
+    )
+    const relayDeletionTimestamps =
+      await fetchDeletionTimestampsForProductRecords(
+        [...cachedByAuthors, ...records, ...groupRecords],
+        authors
+      )
+    const deletionTimestamps = mergeDeletionTimestamps(
+      relayDeletionTimestamps,
+      localDeletionTimestamps
+    )
+    const liveDirectRecords = filterDeletedProductRecords(
+      records,
+      deletionTimestamps
+    )
+    const liveDirectAddressIds = new Set(
+      liveDirectRecords.map((record) => record.addressId)
+    )
+    const hasCompleteLiveDirectCoverage = Array.from(wanted).every(
+      (addressId) => liveDirectAddressIds.has(addressId)
+    )
+    const directTargets = mergeCachedAndLiveProductRecords({
+      cached: cachedTargets,
+      live: liveDirectRecords,
+      deletionTimestamps,
+    }).filter((record) => wanted.has(record.addressId))
+    const visibleGroupRecords = filterDeletedProductRecords(
+      groupRecords,
+      deletionTimestamps
+    )
+    const knownRecords = filterDeletedProductRecords(
+      [...cachedByAuthors, ...directTargets],
+      deletionTimestamps
+    )
+    const hasCompleteLiveVariationCoverage = groupFetches.every(
+      (result, index) =>
+        result.status === "fulfilled" &&
+        hasCompleteLiveVariationGroupCoverage({
+          target: groupTargets[index]!,
+          groupRead: {
+            ...result.value,
+            records: filterDeletedProductRecords(
+              result.value.records,
+              deletionTimestamps
+            ),
+          },
+          knownRecords,
+          directRecords: liveDirectRecords,
+        })
+    )
+    const groupReadCapped = groupFetches.some(
+      (result) => result.status === "fulfilled" && result.value.capped
     )
     const neededParentAddresses = new Set(groupTargetsByParent.keys())
     const cachedContext = cachedByAuthors.filter(
@@ -2810,14 +3104,11 @@ export async function getProductsByIds(
           ? neededParentAddresses.has(record.product.parentProductId)
           : false)
     )
-    const liveContext = filterDeletedProductRecords(
-      [...records, ...groupRecords],
-      localDeletionTimestamps
-    )
+    const liveContext = [...liveDirectRecords, ...visibleGroupRecords]
     const merged = mergeCachedAndLiveProductRecords({
       cached: cachedContext,
       live: liveContext,
-      deletionTimestamps: localDeletionTimestamps,
+      deletionTimestamps,
     })
     await cacheProductRecords(liveContext)
     const filtered = filterExactProductRecordsForRead(
@@ -2825,15 +3116,24 @@ export async function getProductsByIds(
       wanted,
       options.includeMarketHidden
     )
+    const completeLiveRead =
+      hasCompleteLiveDirectCoverage &&
+      hasCompleteLiveVariationCoverage &&
+      !directReadDegraded
+    const hasLiveEvidence = records.length > 0 || groupRecords.length > 0
+    const meta = createMeta(
+      "product_detail",
+      hasLiveEvidence ? "commerce" : "local_cache",
+      PRODUCT_CAPABILITIES,
+      {
+        stale: !completeLiveRead,
+        degraded: !completeLiveRead,
+        capped: groupReadCapped,
+      }
+    )
     return {
-      data: filtered,
-      meta:
-        records.length > 0
-          ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES)
-          : createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
-              stale: filtered.length > 0,
-              degraded: filtered.length > 0,
-            }),
+      data: withProductFamilyReadEvidence(filtered, meta),
+      meta,
     }
   } catch {
     const fallback = mergeCachedAndLiveProductRecords({
@@ -2846,12 +3146,18 @@ export async function getProductsByIds(
       wanted,
       options.includeMarketHidden
     )
+    const meta = createMeta(
+      "product_detail",
+      "local_cache",
+      PRODUCT_CAPABILITIES,
+      {
+        stale: true,
+        degraded: true,
+      }
+    )
     return {
-      data: filtered,
-      meta: createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
-        stale: filtered.length > 0,
-        degraded: filtered.length > 0,
-      }),
+      data: withProductFamilyReadEvidence(filtered, meta),
+      meta,
     }
   }
 }
