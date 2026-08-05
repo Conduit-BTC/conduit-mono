@@ -1,7 +1,12 @@
 import {
   buildPaymentAttemptResultTelemetryProperties,
   classifyNwcPaymentError,
+  getNwcErrorCode,
+  getWeblnPaymentFailurePhase,
   hasWebLN,
+  isNwcPrePublishDiagnosticCode,
+  isNwcWalletRefusalErrorCode,
+  isWeblnPreSubmitFailure,
   recordBrowserTelemetryEvent,
   weblnSendPayment,
   type ConduitAppId,
@@ -15,6 +20,27 @@ import {
 } from "./buyer-nwc-session"
 
 export type CheckoutPaymentRail = "nwc" | "webln"
+
+/**
+ * Marks an error whose payment outcome is unknown. `isAmbiguousPaymentError`
+ * in the order payment service matches this exact sentence to stop a retry, so
+ * both sides must read it from here.
+ */
+export const AMBIGUOUS_PAYMENT_WARNING =
+  "Check your wallet before trying another payment path."
+
+/**
+ * Added when a wallet already held this invoice. A BOLT11 invoice can only
+ * settle once, so re-presenting the same invoice is safe; requesting a new one
+ * would not be.
+ */
+export const SAME_INVOICE_ONLY_WARNING =
+  "Check your wallet before paying this same invoice again."
+
+export function isAmbiguousCheckoutPaymentError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return error.message.includes(AMBIGUOUS_PAYMENT_WARNING)
+}
 
 export type CheckoutInvoicePaymentResult =
   | {
@@ -81,8 +107,23 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
 
-function isWeblnAmbiguousProofFailure(error: unknown): boolean {
-  return getErrorMessage(error, "").includes("did not return a payment proof")
+type WeblnFailureTreatment = "retry_other_rail" | "manual_only" | "ambiguous"
+
+/**
+ * How a WebLN failure may be recovered.
+ *
+ * Only a proven pre-submit failure may be handed to another rail. Once the
+ * wallet held the invoice the outcome is unknown, so nothing retries
+ * automatically - but the shopper may still settle that same invoice manually,
+ * because a BOLT11 invoice cannot be settled twice. A wallet that reported
+ * success without a preimage most likely paid, so nothing is offered.
+ */
+function getWeblnFailureTreatment(error: unknown): WeblnFailureTreatment {
+  if (isWeblnPreSubmitFailure(error)) return "retry_other_rail"
+  if (getWeblnPaymentFailurePhase(error) === "settled_without_proof") {
+    return "ambiguous"
+  }
+  return "manual_only"
 }
 
 function isNwcPrePublishFailure(
@@ -92,6 +133,20 @@ function isNwcPrePublishFailure(
   { status: "pre_publish_failed" }
 > {
   return result.status === "pre_publish_failed"
+}
+
+/**
+ * Whether another rail or the manual invoice may reuse this invoice.
+ *
+ * Decided by the structured result rather than the wallet's message text: a
+ * published request whose outcome is unknown must never be retried, and a
+ * wallet error only clears the invoice when its NIP-47 code proves the wallet
+ * refused before attempting payment.
+ */
+function isNwcSafeFallbackResult(result: NwcSessionPaymentResult): boolean {
+  if (isNwcPrePublishFailure(result)) return true
+  if (result.status !== "wallet_error") return false
+  return isNwcWalletRefusalErrorCode(result.errorCode)
 }
 
 function getNwcDiagnosticTelemetryStatus(
@@ -137,11 +192,14 @@ export async function payCheckoutInvoice(
     dependencies.recordPaymentAttemptResult ?? recordMarketPaymentAttemptResult
   let attemptedAutomaticRail = false
   let attemptedWebln = false
+  /** Set once a wallet has held this invoice, blocking every automatic rail. */
+  let blockedAutomaticRails = false
 
   const attemptWebln =
     async (): Promise<CheckoutInvoicePaymentResult | null> => {
       if (
         attemptedWebln ||
+        blockedAutomaticRails ||
         input.tryWebln === false ||
         !dependencies.hasWebLN()
       ) {
@@ -170,18 +228,24 @@ export async function payCheckoutInvoice(
         }
       } catch (error) {
         const message = getErrorMessage(error, "Browser wallet payment failed")
-        const ambiguous = isWeblnAmbiguousProofFailure(error)
+        const treatment = getWeblnFailureTreatment(error)
         recordPaymentAttemptResult({
           amountSats,
           latencyMs: Date.now() - startedAt,
           rail: "webln",
-          status: ambiguous ? "ambiguous" : "failure",
+          status: treatment === "retry_other_rail" ? "failure" : "ambiguous",
         })
-        if (ambiguous) {
-          throw new Error(
-            `${message} Check your wallet before trying another payment path.`,
-            { cause: error }
-          )
+        if (treatment === "ambiguous") {
+          throw new Error(`${message} ${AMBIGUOUS_PAYMENT_WARNING}`, {
+            cause: error,
+          })
+        }
+        if (treatment === "manual_only") {
+          // The wallet held this invoice, so no rail may retry it. The same
+          // invoice is still safe for the shopper to settle deliberately.
+          blockedAutomaticRails = true
+          failures.push(`${message} ${SAME_INVOICE_ONLY_WARNING}`)
+          return null
         }
         failures.push(message)
         return null
@@ -193,7 +257,7 @@ export async function payCheckoutInvoice(
     if (result) return result
   }
 
-  if (input.walletConnection && input.tryNwc) {
+  if (input.walletConnection && input.tryNwc && !blockedAutomaticRails) {
     attemptedAutomaticRail = true
     const startedAt = Date.now()
     let result: NwcSessionPaymentResult | null = null
@@ -213,10 +277,17 @@ export async function payCheckoutInvoice(
         rail: "nwc",
         status: getNwcDiagnosticTelemetryStatus(diagnostic),
       })
-      if (!diagnostic.safeManualFallback) {
-        throw new Error(`${diagnostic.detail} ${diagnostic.action}`, {
-          cause: error,
-        })
+      const refusedWithoutAttempt = isNwcWalletRefusalErrorCode(
+        getNwcErrorCode(error)
+      )
+      if (
+        !refusedWithoutAttempt &&
+        !isNwcPrePublishDiagnosticCode(diagnostic.code)
+      ) {
+        throw new Error(
+          `${diagnostic.detail} ${diagnostic.action} ${AMBIGUOUS_PAYMENT_WARNING}`,
+          { cause: error }
+        )
       }
       diagnostics.push(diagnostic)
       failures.push(`${diagnostic.title}: ${diagnostic.action}`)
@@ -255,10 +326,8 @@ export async function payCheckoutInvoice(
               : getNwcDiagnosticTelemetryStatus(diagnostic),
       })
 
-      if (!isNwcPrePublishFailure(result) && !diagnostic.safeManualFallback) {
-        throw new Error(
-          `${result.reason} Check your wallet before trying another payment path.`
-        )
+      if (!isNwcSafeFallbackResult(result)) {
+        throw new Error(`${result.reason} ${AMBIGUOUS_PAYMENT_WARNING}`)
       }
 
       diagnostics.push(diagnostic)

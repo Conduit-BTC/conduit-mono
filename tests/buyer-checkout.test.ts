@@ -19,7 +19,12 @@ import {
   SHIPPING_PHONE_HELP_ID,
   type ShippingFormState,
 } from "../apps/market/src/lib/checkout-validation"
-import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
+import {
+  AMBIGUOUS_PAYMENT_WARNING,
+  SAME_INVOICE_ONLY_WARNING,
+  isAmbiguousCheckoutPaymentError,
+  payCheckoutInvoice,
+} from "../apps/market/src/lib/payment-rails"
 import { getKnownWalletPaymentConstraint } from "../apps/market/src/lib/wallet-readiness"
 import {
   buildCheckoutPricingIntent,
@@ -58,6 +63,17 @@ import {
   OMF_ZAPOUT_MARKER_TAG,
 } from "../packages/core/src/protocol/lightning"
 import { parseNwcUri } from "../packages/core/src/protocol/nwc"
+import {
+  isNwcPrePublishDiagnosticCode,
+  isNwcWalletRefusalErrorCode,
+} from "../packages/core/src/protocol/nwc-diagnostics"
+import {
+  WEBLN_MISSING_PROOF_MESSAGE,
+  WeblnPaymentError,
+  getWeblnPaymentFailurePhase,
+  isWeblnPreSubmitFailure,
+  weblnSendPayment,
+} from "../packages/core/src/protocol/webln"
 import {
   getShippingDestinationEligibility,
   parseShippingOptionEvent,
@@ -1944,7 +1960,7 @@ describe("payCheckoutInvoice", () => {
     ])
   })
 
-  it("does not fall back from WebLN after payment submission begins", async () => {
+  it("does not fall back when the browser wallet may have paid without proof", async () => {
     const attempts: string[] = []
     const nwcPay = mock(async () => {
       attempts.push("nwc")
@@ -1957,7 +1973,10 @@ describe("payCheckoutInvoice", () => {
     })
     const weblnPay = mock(async () => {
       attempts.push("webln")
-      throw new Error("WebLN did not return a payment proof")
+      throw new WeblnPaymentError(
+        WEBLN_MISSING_PROOF_MESSAGE,
+        "settled_without_proof"
+      )
     })
 
     await expect(
@@ -1997,7 +2016,7 @@ describe("payCheckoutInvoice", () => {
     })
     const weblnPay = mock(async () => {
       attempts.push("webln")
-      throw new Error("Browser wallet unavailable")
+      throw new WeblnPaymentError("Browser wallet unavailable", "unavailable")
     })
 
     const result = await payCheckoutInvoice(
@@ -2133,6 +2152,7 @@ describe("payCheckoutInvoice", () => {
           status: "wallet_error" as const,
           phase: "after_publish" as const,
           reason: "QUOTA_EXCEEDED: wallet budget exceeded",
+          errorCode: "QUOTA_EXCEEDED",
         })) as never,
         hasWebLN: () => false,
         weblnSendPayment: mock(async () => {
@@ -2151,6 +2171,220 @@ describe("payCheckoutInvoice", () => {
       ],
     })
     expect(result.reason).toContain("Wallet app connection rejected payment")
+  })
+
+  it("falls back to WebLN when the wallet refuses before attempting payment", async () => {
+    const attempts: string[] = []
+    const weblnPay = mock(async () => {
+      attempts.push("webln")
+      return { preimage: "webln-preimage", paymentHash: "webln-hash" }
+    })
+
+    const result = await payCheckoutInvoice(
+      {
+        invoice: "lnbc1test",
+        amountMsats: 1000,
+        walletConnection: connection,
+        tryNwc: true,
+        tryWebln: true,
+        timeoutMs: 60_000,
+        appId: "market",
+      },
+      {
+        nwcSessionPayInvoice: mock(async () => {
+          attempts.push("nwc")
+          return {
+            status: "wallet_error" as const,
+            phase: "after_publish" as const,
+            reason: "INSUFFICIENT_BALANCE: not enough balance",
+            errorCode: "INSUFFICIENT_BALANCE",
+          }
+        }) as never,
+        hasWebLN: () => true,
+        weblnSendPayment: weblnPay as never,
+      }
+    )
+
+    expect(result).toMatchObject({ status: "paid", rail: "webln" })
+    expect(attempts).toEqual(["nwc", "webln"])
+  })
+
+  it("does not fall back to WebLN when the wallet reports a failed payment", async () => {
+    const weblnPay = mock(async () => ({ preimage: "should-not-pay" }))
+
+    await expect(
+      payCheckoutInvoice(
+        {
+          invoice: "lnbc1test",
+          amountMsats: 1000,
+          walletConnection: connection,
+          tryNwc: true,
+          tryWebln: true,
+          timeoutMs: 60_000,
+          appId: "market",
+        },
+        {
+          nwcSessionPayInvoice: mock(async () => ({
+            status: "wallet_error" as const,
+            phase: "after_publish" as const,
+            reason: "PAYMENT_FAILED: insufficient capacity on all routes",
+            errorCode: "PAYMENT_FAILED",
+          })) as never,
+          hasWebLN: () => true,
+          weblnSendPayment: weblnPay as never,
+        }
+      )
+    ).rejects.toThrow(/Check your wallet/)
+    expect(weblnPay).toHaveBeenCalledTimes(0)
+  })
+
+  it("does not fall back to WebLN when the wallet omits an error code", async () => {
+    const weblnPay = mock(async () => ({ preimage: "should-not-pay" }))
+
+    await expect(
+      payCheckoutInvoice(
+        {
+          invoice: "lnbc1test",
+          amountMsats: 1000,
+          walletConnection: connection,
+          tryNwc: true,
+          tryWebln: true,
+          timeoutMs: 60_000,
+          appId: "market",
+        },
+        {
+          nwcSessionPayInvoice: mock(async () => ({
+            status: "wallet_error" as const,
+            phase: "after_publish" as const,
+            reason: "wallet reported insufficient permission",
+            errorCode: null,
+          })) as never,
+          hasWebLN: () => true,
+          weblnSendPayment: weblnPay as never,
+        }
+      )
+    ).rejects.toThrow(/Check your wallet/)
+    expect(weblnPay).toHaveBeenCalledTimes(0)
+  })
+
+  it("does not fall back after a published NWC request whose reason reads as a refusal", async () => {
+    const weblnPay = mock(async () => ({ preimage: "should-not-pay" }))
+
+    await expect(
+      payCheckoutInvoice(
+        {
+          invoice: "lnbc1test",
+          amountMsats: 1000,
+          walletConnection: connection,
+          tryNwc: true,
+          tryWebln: true,
+          timeoutMs: 60_000,
+          appId: "market",
+        },
+        {
+          nwcSessionPayInvoice: mock(async () => ({
+            status: "published_timeout" as const,
+            phase: "after_publish" as const,
+            reason: "relay closed with insufficient permission",
+          })) as never,
+          hasWebLN: () => true,
+          weblnSendPayment: weblnPay as never,
+        }
+      )
+    ).rejects.toThrow(/Check your wallet/)
+    expect(weblnPay).toHaveBeenCalledTimes(0)
+  })
+
+  it("falls back when a thrown wallet error carries a refusal code", async () => {
+    const attempts: string[] = []
+    const weblnPay = mock(async () => {
+      attempts.push("webln")
+      return { preimage: "webln-preimage" }
+    })
+
+    const result = await payCheckoutInvoice(
+      {
+        invoice: "lnbc1test",
+        amountMsats: 1000,
+        walletConnection: connection,
+        tryNwc: true,
+        tryWebln: true,
+        timeoutMs: 60_000,
+        appId: "market",
+      },
+      {
+        nwcSessionPayInvoice: mock(async () => {
+          attempts.push("nwc")
+          const error = new Error("wallet has no spending budget left")
+          ;(error as { code?: string }).code = "QUOTA_EXCEEDED"
+          throw error
+        }) as never,
+        hasWebLN: () => true,
+        weblnSendPayment: weblnPay as never,
+      }
+    )
+
+    expect(result).toMatchObject({ status: "paid", rail: "webln" })
+    expect(attempts).toEqual(["nwc", "webln"])
+  })
+
+  it("marks an unexpected NWC exception as ambiguous for the order lifecycle", async () => {
+    const weblnPay = mock(async () => ({ preimage: "should-not-pay" }))
+
+    const error = await payCheckoutInvoice(
+      {
+        invoice: "lnbc1test",
+        amountMsats: 1000,
+        walletConnection: connection,
+        tryNwc: true,
+        tryWebln: true,
+        timeoutMs: 60_000,
+        appId: "market",
+      },
+      {
+        nwcSessionPayInvoice: mock(async () => {
+          throw new Error("wallet rejected: unauthorized app connection")
+        }) as never,
+        hasWebLN: () => true,
+        weblnSendPayment: weblnPay as never,
+      }
+    ).catch((thrown: unknown) => thrown)
+
+    expect(isAmbiguousCheckoutPaymentError(error)).toBe(true)
+    expect(weblnPay).toHaveBeenCalledTimes(0)
+  })
+
+  it("still falls back after a pre-publish invoice amount mismatch", async () => {
+    const attempts: string[] = []
+    const weblnPay = mock(async () => {
+      attempts.push("webln")
+      return { preimage: "webln-preimage" }
+    })
+
+    const result = await payCheckoutInvoice(
+      {
+        invoice: "lnbc1test",
+        amountMsats: 1000,
+        walletConnection: connection,
+        tryNwc: true,
+        tryWebln: true,
+        timeoutMs: 60_000,
+        appId: "market",
+      },
+      {
+        nwcSessionPayInvoice: mock(async () => {
+          attempts.push("nwc")
+          throw new Error(
+            "Amount in invoice does not match the requested amount."
+          )
+        }) as never,
+        hasWebLN: () => true,
+        weblnSendPayment: weblnPay as never,
+      }
+    )
+
+    expect(result).toMatchObject({ status: "paid", rail: "webln" })
+    expect(attempts).toEqual(["nwc", "webln"])
   })
 
   it("does not fall back after an ambiguous NWC request failure", async () => {
@@ -2184,6 +2418,111 @@ describe("payCheckoutInvoice", () => {
     expect(weblnPay).toHaveBeenCalledTimes(0)
   })
 
+  it("does not retry another rail when the browser wallet fails after submission", async () => {
+    const nwcPay = mock(async () => ({
+      status: "paid" as const,
+      preimage: "nwc-preimage",
+      paymentHash: "nwc-hash",
+      feeMsats: 0,
+    }))
+
+    const result = await payCheckoutInvoice(
+      {
+        invoice: "lnbc1test",
+        amountMsats: 1000,
+        walletConnection: connection,
+        tryNwc: true,
+        tryWebln: true,
+        preferredAutomaticRail: "webln",
+        timeoutMs: 60_000,
+        appId: "market",
+      },
+      {
+        nwcSessionPayInvoice: nwcPay as never,
+        hasWebLN: () => true,
+        weblnSendPayment: mock(async () => {
+          throw new WeblnPaymentError("User rejected the request", "submitted")
+        }) as never,
+      }
+    )
+
+    // The same invoice stays payable by hand; nothing retries it automatically.
+    if (result.status !== "manual_required") {
+      throw new Error(`expected manual_required, got ${result.status}`)
+    }
+    expect(result.reason).toContain(SAME_INVOICE_ONLY_WARNING)
+    expect(nwcPay).toHaveBeenCalledTimes(0)
+  })
+
+  it("does not retry another rail after an untyped browser wallet failure", async () => {
+    const nwcPay = mock(async () => ({
+      status: "paid" as const,
+      preimage: "nwc-preimage",
+      paymentHash: "nwc-hash",
+      feeMsats: 0,
+    }))
+
+    const result = await payCheckoutInvoice(
+      {
+        invoice: "lnbc1test",
+        amountMsats: 1000,
+        walletConnection: connection,
+        tryNwc: true,
+        tryWebln: true,
+        preferredAutomaticRail: "webln",
+        timeoutMs: 60_000,
+        appId: "market",
+      },
+      {
+        nwcSessionPayInvoice: nwcPay as never,
+        hasWebLN: () => true,
+        weblnSendPayment: mock(async () => {
+          throw new Error("Internal provider error")
+        }) as never,
+      }
+    )
+
+    expect(result.status).toBe("manual_required")
+    expect(nwcPay).toHaveBeenCalledTimes(0)
+  })
+
+  it("falls back to NWC when the browser wallet rejects the connection request", async () => {
+    const attempts: string[] = []
+    const nwcPay = mock(async () => {
+      attempts.push("nwc")
+      return {
+        status: "paid" as const,
+        preimage: "nwc-preimage",
+        paymentHash: "nwc-hash",
+        feeMsats: 0,
+      }
+    })
+
+    const result = await payCheckoutInvoice(
+      {
+        invoice: "lnbc1test",
+        amountMsats: 1000,
+        walletConnection: connection,
+        tryNwc: true,
+        tryWebln: true,
+        preferredAutomaticRail: "webln",
+        timeoutMs: 60_000,
+        appId: "market",
+      },
+      {
+        nwcSessionPayInvoice: nwcPay as never,
+        hasWebLN: () => true,
+        weblnSendPayment: mock(async () => {
+          attempts.push("webln")
+          throw new WeblnPaymentError("User rejected the request", "enable")
+        }) as never,
+      }
+    )
+
+    expect(result).toMatchObject({ status: "paid", rail: "nwc" })
+    expect(attempts).toEqual(["webln", "nwc"])
+  })
+
   it("does not offer manual fallback when WebLN may have paid without proof", async () => {
     await expect(
       payCheckoutInvoice(
@@ -2206,6 +2545,226 @@ describe("payCheckoutInvoice", () => {
         }
       )
     ).rejects.toThrow(/Check your wallet/)
+  })
+})
+
+// ─── NWC failure classification ─────────────────────────────────────────────
+
+describe("NWC failure classification", () => {
+  it("only treats documented NIP-47 refusals as provably unpaid", () => {
+    for (const code of [
+      "INSUFFICIENT_BALANCE",
+      "NOT_IMPLEMENTED",
+      "QUOTA_EXCEEDED",
+      "RATE_LIMITED",
+      "RESTRICTED",
+      "UNAUTHORIZED",
+      "UNSUPPORTED_ENCRYPTION",
+    ]) {
+      expect(isNwcWalletRefusalErrorCode(code)).toBe(true)
+    }
+
+    // NIP-47 documents PAYMENT_FAILED as also covering a timeout.
+    for (const code of ["PAYMENT_FAILED", "INTERNAL", "OTHER", "NOT_FOUND"]) {
+      expect(isNwcWalletRefusalErrorCode(code)).toBe(false)
+    }
+
+    expect(isNwcWalletRefusalErrorCode(null)).toBe(false)
+    expect(isNwcWalletRefusalErrorCode(undefined)).toBe(false)
+    expect(isNwcWalletRefusalErrorCode("")).toBe(false)
+    // NIP-47 defines uppercase literals; a non-conforming wallet stays strict.
+    expect(isNwcWalletRefusalErrorCode(" quota_exceeded ")).toBe(false)
+    expect(isNwcWalletRefusalErrorCode("quota_exceeded")).toBe(false)
+  })
+
+  it("only treats pre-publish diagnostics as safe to hand to another rail", () => {
+    for (const code of [
+      "invalid_uri",
+      "private_relay",
+      "non_wss_relay",
+      "relay_unreachable",
+      "unsupported_pay_invoice",
+      "invoice_amount_mismatch",
+      "network_mismatch",
+    ] as const) {
+      expect(isNwcPrePublishDiagnosticCode(code)).toBe(true)
+    }
+
+    for (const code of [
+      "permission_or_budget",
+      "ambiguous_timeout",
+      "unknown",
+    ] as const) {
+      expect(isNwcPrePublishDiagnosticCode(code)).toBe(false)
+    }
+  })
+
+  it("shares one ambiguity marker with the order payment service", () => {
+    expect(
+      isAmbiguousCheckoutPaymentError(
+        new Error(`Wallet did not answer. ${AMBIGUOUS_PAYMENT_WARNING}`)
+      )
+    ).toBe(true)
+    expect(
+      isAmbiguousCheckoutPaymentError(new Error("Wallet refused the payment."))
+    ).toBe(false)
+    expect(isAmbiguousCheckoutPaymentError("not an error")).toBe(false)
+  })
+})
+
+// ─── WebLN failure phases ───────────────────────────────────────────────────
+
+describe("weblnSendPayment failure phases", () => {
+  const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "window"
+  )
+
+  // Other suites may install a non-writable `window`, so swap the descriptor.
+  function installWindow(value: unknown): void {
+    Object.defineProperty(globalThis, "window", {
+      value,
+      configurable: true,
+      writable: true,
+    })
+  }
+
+  afterEach(() => {
+    if (!originalWindowDescriptor) {
+      delete (globalThis as { window?: unknown }).window
+      return
+    }
+    Object.defineProperty(globalThis, "window", originalWindowDescriptor)
+  })
+
+  function installProvider(provider: {
+    enable: () => Promise<void>
+    sendPayment: (invoice: string) => Promise<{
+      preimage?: string
+      paymentHash?: string
+    }>
+  }): void {
+    installWindow({
+      webln: {
+        ...provider,
+        makeInvoice: async () => ({ paymentRequest: "lnbc1unused" }),
+      },
+    })
+  }
+
+  it("reports a missing provider as a pre-submit failure", async () => {
+    installWindow({})
+
+    const error = await weblnSendPayment({ invoice: "lnbc1test" }).catch(
+      (thrown: unknown) => thrown
+    )
+
+    expect(getWeblnPaymentFailurePhase(error)).toBe("unavailable")
+    expect(isWeblnPreSubmitFailure(error)).toBe(true)
+  })
+
+  it("reports a rejected connection request as a pre-submit failure", async () => {
+    let submitted = false
+    installProvider({
+      enable: async () => {
+        throw new Error("User rejected the request")
+      },
+      sendPayment: async () => {
+        submitted = true
+        return { preimage: "should-not-happen" }
+      },
+    })
+
+    const error = await weblnSendPayment({ invoice: "lnbc1test" }).catch(
+      (thrown: unknown) => thrown
+    )
+
+    expect(getWeblnPaymentFailurePhase(error)).toBe("enable")
+    expect(isWeblnPreSubmitFailure(error)).toBe(true)
+    expect(submitted).toBe(false)
+  })
+
+  it("reports a provider error after submission as submitted", async () => {
+    installProvider({
+      enable: async () => {},
+      sendPayment: async () => {
+        throw new Error("Payment request timed out")
+      },
+    })
+
+    const error = await weblnSendPayment({ invoice: "lnbc1test" }).catch(
+      (thrown: unknown) => thrown
+    )
+
+    expect(getWeblnPaymentFailurePhase(error)).toBe("submitted")
+    expect(isWeblnPreSubmitFailure(error)).toBe(false)
+    expect((error as Error).message).toContain("may already have sent")
+  })
+
+  it("reports a missing preimage as settled without proof", async () => {
+    installProvider({
+      enable: async () => {},
+      sendPayment: async () => ({ preimage: "   " }),
+    })
+
+    const error = await weblnSendPayment({ invoice: "lnbc1test" }).catch(
+      (thrown: unknown) => thrown
+    )
+
+    expect(getWeblnPaymentFailurePhase(error)).toBe("settled_without_proof")
+    expect(isWeblnPreSubmitFailure(error)).toBe(false)
+  })
+
+  it("reports a provider that cannot pay as a pre-submit failure", async () => {
+    installWindow({ webln: { enable: async () => {} } })
+
+    const error = await weblnSendPayment({ invoice: "lnbc1test" }).catch(
+      (thrown: unknown) => thrown
+    )
+
+    expect(getWeblnPaymentFailurePhase(error)).toBe("unavailable")
+    expect(isWeblnPreSubmitFailure(error)).toBe(true)
+  })
+
+  it("classifies an untyped missing-proof failure as settled without proof", () => {
+    expect(
+      getWeblnPaymentFailurePhase(new Error(WEBLN_MISSING_PROOF_MESSAGE))
+    ).toBe("settled_without_proof")
+  })
+
+  it("does not treat unknown errors as pre-submit failures", () => {
+    expect(isWeblnPreSubmitFailure(new Error("Internal provider error"))).toBe(
+      false
+    )
+    expect(isWeblnPreSubmitFailure(undefined)).toBe(false)
+    expect(
+      isWeblnPreSubmitFailure({ name: "WeblnPaymentError", phase: "bogus" })
+    ).toBe(false)
+  })
+
+  it("reads the phase from a duplicated module instance", () => {
+    expect(
+      isWeblnPreSubmitFailure({
+        name: "WeblnPaymentError",
+        phase: "enable",
+        message: "User rejected the request",
+      })
+    ).toBe(true)
+  })
+
+  it("returns the proof when the provider settles the invoice", async () => {
+    installProvider({
+      enable: async () => {},
+      sendPayment: async () => ({
+        preimage: " webln-preimage ",
+        paymentHash: "webln-hash",
+      }),
+    })
+
+    await expect(weblnSendPayment({ invoice: "lnbc1test" })).resolves.toEqual({
+      preimage: "webln-preimage",
+      paymentHash: "webln-hash",
+    })
   })
 })
 
