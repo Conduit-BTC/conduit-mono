@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test"
+import { getPublicKey } from "nostr-tools/pure"
 import {
   TEST_BUYER_PUBKEY,
   TEST_MERCHANT_PUBKEY,
@@ -726,7 +727,9 @@ test("market shopper preferences remove legacy plaintext and render the complete
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 900 })
-  await installTestSigner(page, TEST_BUYER_PUBKEY, { nip44: false })
+  const secretKey = new Uint8Array(32).fill(7)
+  const buyerPubkey = getPublicKey(secretKey)
+  await installTestSigner(page, buyerPubkey, { nip44: false, secretKey })
   await page.addInitScript((buyerPubkey) => {
     localStorage.setItem(
       `conduit:market-shopper-presets:v1:${buyerPubkey}`,
@@ -738,7 +741,7 @@ test("market shopper preferences remove legacy plaintext and render the complete
         },
       })
     )
-  }, TEST_BUYER_PUBKEY)
+  }, buyerPubkey)
 
   await page.goto(`${marketUrl}/preferences`)
   await expect(page.getByRole("heading", { name: "Preferences" })).toBeVisible()
@@ -777,9 +780,15 @@ test("market shopper preferences remove legacy plaintext and render the complete
   await expect(
     encryptionPassword
       .locator("..")
-      .getByText("Password must contain 8 or more characters.")
+      .getByText("Password must contain 16 or more characters.")
   ).toBeVisible()
-  await encryptionPassword.fill("password")
+  await encryptionPassword.fill("long password text")
+  await expect(
+    encryptionPassword
+      .locator("..")
+      .getByText("Password must contain at least one number.")
+  ).toBeVisible()
+  await encryptionPassword.fill("secure password 7")
   const unlockPreferencePositionAfter = await unlockPreference.evaluate(
     (element) => element.getBoundingClientRect().top + window.scrollY
   )
@@ -787,13 +796,13 @@ test("market shopper preferences remove legacy plaintext and render the complete
   await expect(
     encryptionPassword
       .locator("..")
-      .getByText("Password must contain 8 or more characters.")
+      .getByText("Password must contain 16 or more characters.")
   ).not.toBeVisible()
   await confirmPassword.fill("different")
   await expect(
     confirmPassword.locator("..").getByText("Password confirmation must match.")
   ).toBeVisible()
-  await confirmPassword.fill("password")
+  await confirmPassword.fill("secure password 7")
   await expect(
     confirmPassword.locator("..").getByText("Password confirmation must match.")
   ).not.toBeVisible()
@@ -808,7 +817,19 @@ test("market shopper preferences remove legacy plaintext and render the complete
         return localStorage.getItem(
           `conduit:market-shopper-presets:v1:${buyerPubkey}`
         )
-      }, TEST_BUYER_PUBKEY)
+      }, buyerPubkey)
     )
     .toBeNull()
+
+  await addressLine1.fill("12 St James Square")
+  await page.getByLabel("City").fill("London")
+  await page.getByLabel("Postal / ZIP code").fill("SW1Y 4LB")
+  await expect(page.getByText("Ready to save", { exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "Save preferences" }).click()
+  await expect(
+    page.getByText("Preset encrypted and saved on your relays.")
+  ).toBeVisible({ timeout: 20_000 })
+  await expect(
+    page.getByText("Encrypted on relays", { exact: true })
+  ).toBeVisible()
 })

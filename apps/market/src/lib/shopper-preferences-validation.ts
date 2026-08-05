@@ -1,7 +1,11 @@
-import { SHIPPING_COUNTRIES, type ShopperShippingPreset } from "@conduit/core"
+import {
+  SHIPPING_COUNTRIES,
+  SHOPPER_PRESET_PASSWORD_MIN_CHARACTERS,
+  getShopperPresetPasswordError,
+  type ShopperShippingPreset,
+} from "@conduit/core"
 
-export const SHOPPER_PRESET_PASSWORD_MIN_CHARACTERS = 8
-export const SHOPPER_PRESET_PASSWORD_MAX_BYTES = 1_024
+export { SHOPPER_PRESET_PASSWORD_MIN_CHARACTERS }
 
 export type ShopperPreferencesRelayState =
   "disconnected" | "syncing" | "ready" | "synced" | "unavailable" | "error"
@@ -12,10 +16,6 @@ export type ShopperPreferencesSaveBlocker = {
 }
 
 const countryCodes = new Set(SHIPPING_COUNTRIES.map(({ code }) => code))
-
-export function getShopperPresetPasswordByteLength(password: string): number {
-  return new TextEncoder().encode(password).byteLength
-}
 
 export function getShopperPreferencesSaveBlockers(input: {
   shipping: ShopperShippingPreset
@@ -58,15 +58,12 @@ export function getShopperPreferencesSaveBlockers(input: {
     blockers.push({ id: "country", message: "Select a supported country." })
   }
 
-  const passwordCharacters = Array.from(input.password).length
-  const passwordBytes = getShopperPresetPasswordByteLength(input.password)
-  if (passwordCharacters < SHOPPER_PRESET_PASSWORD_MIN_CHARACTERS) {
+  const passwordError = getShopperPresetPasswordError(input.password)
+  if (passwordError) {
     blockers.push({
-      id: "password-length",
-      message: `Password must contain ${SHOPPER_PRESET_PASSWORD_MIN_CHARACTERS} or more characters.`,
+      id: /number/u.test(passwordError) ? "password-number" : "password-length",
+      message: passwordError,
     })
-  } else if (passwordBytes > SHOPPER_PRESET_PASSWORD_MAX_BYTES) {
-    blockers.push({ id: "password-length", message: "Password is too long." })
   }
   if (!input.confirmPassword) {
     blockers.push({
