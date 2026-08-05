@@ -8,6 +8,7 @@ import { getShopperPreferencesSaveBlockers } from "../apps/market/src/lib/shoppe
 import { getCartShippingCountryPresetEligibility } from "../apps/market/src/lib/cart-shipping-options"
 import {
   DEFAULT_CHECKOUT_SHIPPING,
+  getIdentityBoundShippingPreset,
   readCheckoutShippingInitialization,
   writeCheckoutShippingSession,
 } from "../apps/market/src/lib/checkout-session"
@@ -211,6 +212,47 @@ describe("Market shopper preset integration", () => {
       value: draft,
       hasActiveDraft: true,
     })
+  })
+
+  it("does not expose one identity's preset after an identity transition", () => {
+    expect(
+      getIdentityBoundShippingPreset("buyer-b", "buyer-a", preset)
+    ).toBeNull()
+    expect(getIdentityBoundShippingPreset(null, "buyer-a", preset)).toBeNull()
+    expect(getIdentityBoundShippingPreset("buyer-a", "buyer-a", preset)).toBe(
+      preset
+    )
+  })
+
+  it("drops identity-scoped checkout data after account switch or logout", () => {
+    const buyerSwitchStorage = memoryStorage()
+    writeCheckoutShippingSession(
+      readCheckoutShippingInitialization(preset).value,
+      buyerSwitchStorage,
+      1_000,
+      "buyer-a"
+    )
+    expect(
+      readCheckoutShippingInitialization(
+        null,
+        buyerSwitchStorage,
+        1_001,
+        "buyer-b"
+      )
+    ).toEqual({ value: DEFAULT_CHECKOUT_SHIPPING, hasActiveDraft: false })
+    expect(buyerSwitchStorage.length).toBe(0)
+
+    const logoutStorage = memoryStorage()
+    writeCheckoutShippingSession(
+      readCheckoutShippingInitialization(preset).value,
+      logoutStorage,
+      1_000,
+      "buyer-a"
+    )
+    expect(
+      readCheckoutShippingInitialization(null, logoutStorage, 1_001, null)
+    ).toEqual({ value: DEFAULT_CHECKOUT_SHIPPING, hasActiveDraft: false })
+    expect(logoutStorage.length).toBe(0)
   })
 
   it("uses country and postal code for local shipping compatibility", () => {

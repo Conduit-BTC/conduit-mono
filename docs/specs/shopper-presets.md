@@ -146,8 +146,8 @@ message content is permitted in the document.
 4. Distinguish a successful empty read from total relay unavailability.
 5. Select the greatest `created_at`; for equal timestamps, select the
    lexicographically lowest event ID as required by NIP-01.
-6. If a newer candidate has an invalid envelope, continue to the next valid
-   candidate. Fail when no matching candidate has a valid envelope.
+6. If the newest coordinate event has an invalid or unsupported envelope, fail
+   closed. Do not use an older replacement.
 7. Decrypt only after the user supplies or explicitly remembers the password.
 
 Every write performs a fresh usable read first. An unsupported future version,

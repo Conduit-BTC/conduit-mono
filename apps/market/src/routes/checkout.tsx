@@ -143,6 +143,7 @@ import {
 import {
   clearCheckoutShippingSession,
   DEFAULT_CHECKOUT_SHIPPING,
+  getIdentityBoundShippingPreset,
   getShippingFormFromPreset,
   readCheckoutShippingInitialization,
   writeCheckoutShippingSession,
@@ -959,8 +960,16 @@ function CheckoutPage() {
     typeof readCheckoutShippingInitialization
   > | null>(null)
   if (!initialShippingRef.current) {
+    const initialIdentity = authStatus === "connected" ? pubkey : null
     initialShippingRef.current = readCheckoutShippingInitialization(
-      shopperPresets.preset.shipping
+      getIdentityBoundShippingPreset(
+        initialIdentity,
+        shopperPresets.presetOwnerPubkey,
+        shopperPresets.preset.shipping
+      ),
+      undefined,
+      undefined,
+      initialIdentity
     )
   }
   const presetMaySeedShippingRef = useRef(
@@ -1042,27 +1051,53 @@ function CheckoutPage() {
   useEffect(() => {
     if (presetIdentityRef.current === signedBuyerPubkey) return
     presetIdentityRef.current = signedBuyerPubkey
-    if (shippingEditedRef.current) return
-    presetMaySeedShippingRef.current = true
-    const preset = shopperPresets.preset.shipping
+    shippingEditedRef.current = false
+    clearCheckoutShippingSession()
+    const preset = getIdentityBoundShippingPreset(
+      signedBuyerPubkey,
+      shopperPresets.presetOwnerPubkey,
+      shopperPresets.preset.shipping
+    )
+    presetMaySeedShippingRef.current = !preset
     const next = preset
       ? getShippingFormFromPreset(preset)
       : DEFAULT_CHECKOUT_SHIPPING
     if (JSON.stringify(shipping) === JSON.stringify(next)) return
     setShipping(next)
-    writeCheckoutShippingSession(next)
-  }, [shipping, shopperPresets.preset.shipping, signedBuyerPubkey])
+    if (preset) {
+      writeCheckoutShippingSession(
+        next,
+        undefined,
+        undefined,
+        signedBuyerPubkey
+      )
+    }
+  }, [
+    shipping,
+    shopperPresets.preset.shipping,
+    shopperPresets.presetOwnerPubkey,
+    signedBuyerPubkey,
+  ])
 
   useEffect(() => {
     if (!presetMaySeedShippingRef.current) return
-    const preset = shopperPresets.preset.shipping
+    const preset = getIdentityBoundShippingPreset(
+      signedBuyerPubkey,
+      shopperPresets.presetOwnerPubkey,
+      shopperPresets.preset.shipping
+    )
     if (!preset) return
     presetMaySeedShippingRef.current = false
     const next = getShippingFormFromPreset(preset)
     if (JSON.stringify(shipping) === JSON.stringify(next)) return
     setShipping(next)
-    writeCheckoutShippingSession(next)
-  }, [shipping, shopperPresets.preset.shipping])
+    writeCheckoutShippingSession(next, undefined, undefined, signedBuyerPubkey)
+  }, [
+    shipping,
+    shopperPresets.preset.shipping,
+    shopperPresets.presetOwnerPubkey,
+    signedBuyerPubkey,
+  ])
 
   const selectedMerchant =
     search.merchant ??
@@ -1643,7 +1678,7 @@ function CheckoutPage() {
         : value
     const next = { ...shipping, [field]: normalizedValue }
     setShipping(next)
-    writeCheckoutShippingSession(next)
+    writeCheckoutShippingSession(next, undefined, undefined, signedBuyerPubkey)
     setShippingErrors(validateCheckoutDetails(next))
     if (isValidationField(field)) {
       markShippingFieldTouched(field)

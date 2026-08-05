@@ -49,8 +49,14 @@ type RemotePreset = {
   eventId: string
 }
 
+type DecryptedPreset = {
+  ownerPubkey: string
+  value: ShopperPresetsValue
+}
+
 type ShopperPresetsContextValue = {
   identityPubkey: string | null
+  presetOwnerPubkey: string | null
   preset: ShopperPresetsValue
   discoveryDestination: { country: string; postalCode: string } | null
   syncState: ShopperPresetsSyncState
@@ -105,7 +111,8 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
   const identityRef = useRef(identityPubkey)
   identityRef.current = identityPubkey
   const handledRemoteRef = useRef<string | null>(null)
-  const [preset, setPreset] = useState(DEFAULT_SHOPPER_PRESETS)
+  const [decryptedPreset, setDecryptedPreset] =
+    useState<DecryptedPreset | null>(null)
   const [remotePreset, setRemotePreset] = useState<RemotePreset | null>(null)
   const [unlockState, setUnlockState] =
     useState<ShopperPresetsUnlockState>("disconnected")
@@ -157,7 +164,10 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           password
         )
         if (identityRef.current !== identity) return false
-        setPreset(getShopperPresetsValue(document))
+        setDecryptedPreset({
+          ownerPubkey: identity,
+          value: getShopperPresetsValue(document),
+        })
         setUnlockState("unlocked")
         setSyncState("synced")
         rememberPassword(password, policy)
@@ -172,7 +182,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     handledRemoteRef.current = null
-    setPreset(DEFAULT_SHOPPER_PRESETS)
+    setDecryptedPreset(null)
     setRemotePreset(null)
     if (!identityPubkey) {
       setUnlockState("disconnected")
@@ -195,7 +205,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     if (!identityPubkey || !result) return
     if (result.state === "not_found") {
       setRemotePreset(null)
-      setPreset(DEFAULT_SHOPPER_PRESETS)
+      setDecryptedPreset(null)
       setUnlockState("empty")
       setSyncState("ready")
       return
@@ -212,7 +222,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       eventId: result.revision.eventId,
     }
     setRemotePreset(encrypted)
-    setPreset(DEFAULT_SHOPPER_PRESETS)
+    setDecryptedPreset(null)
     setSyncState("synced")
     const storage = getBrowserShopperPresetsStorage()
     const remembered = storage
@@ -283,7 +293,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           envelope: result.envelope,
           eventId: result.revision.eventId,
         })
-        setPreset(value)
+        setDecryptedPreset({ ownerPubkey: identity, value })
         setUnlockState("unlocked")
         setSyncState("synced")
         rememberPassword(password, policy)
@@ -322,7 +332,10 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           envelope: result.envelope,
           eventId: result.revision.eventId,
         })
-        setPreset(DEFAULT_SHOPPER_PRESETS)
+        setDecryptedPreset({
+          ownerPubkey: identity,
+          value: DEFAULT_SHOPPER_PRESETS,
+        })
         setUnlockState("unlocked")
         setSyncState("synced")
         rememberPassword(password, unlockPolicy)
@@ -345,7 +358,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
 
   const lock = useCallback(() => {
     if (!identityPubkey) return
-    setPreset(DEFAULT_SHOPPER_PRESETS)
+    setDecryptedPreset(null)
     setUnlockState(remotePreset ? "locked" : "empty")
     const storage = getBrowserShopperPresetsStorage()
     if (storage) {
@@ -367,6 +380,21 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
     }
   }, [identityPubkey, queryClient])
 
+  const presetOwnerPubkey =
+    decryptedPreset?.ownerPubkey === identityPubkey
+      ? decryptedPreset.ownerPubkey
+      : null
+  const preset =
+    presetOwnerPubkey && decryptedPreset
+      ? decryptedPreset.value
+      : DEFAULT_SHOPPER_PRESETS
+  const updateLocal = useCallback(
+    (value: ShopperPresetsValue) => {
+      if (!identityPubkey) return
+      setDecryptedPreset({ ownerPubkey: identityPubkey, value })
+    },
+    [identityPubkey]
+  )
   const discoveryDestination = useMemo(
     () => getShopperDiscoveryDestination(preset),
     [preset]
@@ -374,6 +402,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({
       identityPubkey,
+      presetOwnerPubkey,
       preset,
       discoveryDestination,
       syncState,
@@ -381,7 +410,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       unlockPolicy,
       hasRemotePreset: remotePreset !== null,
       canSync: !!identityPubkey && identityReady && !!signer,
-      updateLocal: setPreset,
+      updateLocal,
       unlock,
       save,
       clear,
@@ -395,6 +424,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       identityReady,
       lock,
       preset,
+      presetOwnerPubkey,
       refresh,
       remotePreset,
       save,
@@ -403,6 +433,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       unlock,
       unlockPolicy,
       unlockState,
+      updateLocal,
     ]
   )
 
