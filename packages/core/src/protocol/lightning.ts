@@ -499,6 +499,13 @@ export function normalizeLightningInvoice(invoice: string): string {
   return invoice.trim().replace(/^lightning:/i, "")
 }
 
+export function isAmountlessLightningInvoice(invoice: string): boolean {
+  const normalized = normalizeLightningInvoice(invoice).toLowerCase()
+  if (!isValidBech32Invoice(normalized)) return false
+  const humanReadablePart = normalized.slice(0, normalized.lastIndexOf("1"))
+  return ["lnbc", "lnbcrt", "lntb", "lnsb"].includes(humanReadablePart)
+}
+
 function bech32Polymod(values: number[]): number {
   let chk = 1
   for (const value of values) {

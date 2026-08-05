@@ -90,6 +90,7 @@ import {
   type OrderHeaderStatus,
   type OrderViewModel,
 } from "../lib/order-view"
+import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
 import {
   authorizeCheckoutWithAnonSigner,
   signAuthorizedAnonZapCheckout,
@@ -768,13 +769,18 @@ function OrderDetail({
     paymentWallet?.providerId === "nwc"
       ? wallets.nwcSnapshots[paymentWallet.id]
       : null
+  const nwcReadiness =
+    paymentWallet?.providerId === "nwc" && nwcSnapshot
+      ? getNwcPaymentReadiness({
+          snapshot: nwcSnapshot,
+          walletNetwork: paymentWallet.network,
+          configuredNetwork: walletNetwork,
+        })
+      : null
   const canTryNwc =
     !guestIdentity &&
     paymentWallet?.providerId === "nwc" &&
-    !!nwcSnapshot?.connection &&
-    nwcSnapshot.status !== "unsupported" &&
-    nwcSnapshot.status !== "error" &&
-    nwcSnapshot.status !== "disconnected"
+    nwcReadiness?.ready === true
   const canTrySpark =
     !guestIdentity &&
     paymentWallet?.providerId === "spark" &&

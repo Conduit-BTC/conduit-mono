@@ -88,10 +88,10 @@ export function SparkFeeApprovalDialog({
     >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Review Spark fee</DialogTitle>
+          <DialogTitle>Review maximum Lightning fee</DialogTitle>
           <DialogDescription>
-            Spark prepared this Lightning payment. Nothing will be sent until
-            you confirm.
+            Spark prepared this Lightning payment. No bitcoin will be sent until
+            you confirm. The final fee may be lower than this approved maximum.
           </DialogDescription>
         </DialogHeader>
         {quote && (
@@ -111,13 +111,17 @@ export function SparkFeeApprovalDialog({
               </dd>
             </div>
             <div className="flex items-center justify-between gap-4">
-              <dt className="text-[var(--text-secondary)]">Lightning fee</dt>
+              <dt className="text-[var(--text-secondary)]">
+                Maximum Lightning fee
+              </dt>
               <dd className="font-medium text-[var(--text-primary)]">
                 {quote.feeSats.toLocaleString()} sats
               </dd>
             </div>
             <div className="flex items-center justify-between gap-4 border-t border-[var(--border)] pt-3">
-              <dt className="font-medium text-[var(--text-primary)]">Total</dt>
+              <dt className="font-medium text-[var(--text-primary)]">
+                Maximum total
+              </dt>
               <dd className="font-semibold text-[var(--text-primary)]">
                 {quote.totalSats.toLocaleString()} sats
               </dd>

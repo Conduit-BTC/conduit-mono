@@ -39,7 +39,7 @@ describe("Spark direct-transfer safety storage", () => {
     })
 
     expect(() => store.get("wallet-personal")).toThrow(
-      "Spark transfer safety state is invalid."
+      "Spark transfer safety state is invalid. Spark sends are disabled on this device."
     )
   })
 })

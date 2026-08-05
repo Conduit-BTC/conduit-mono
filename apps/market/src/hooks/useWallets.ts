@@ -18,9 +18,10 @@ import {
   getSparkWalletManager,
 } from "../lib/spark-sdk"
 import type {
-  SparkDirectTransferQuote,
-  SparkDirectTransferResult,
   SparkPaymentSummary,
+  SparkSendQuote,
+  SparkSendRequest,
+  SparkSendResult,
 } from "../lib/spark-wallet"
 import {
   decryptSparkMnemonic,
@@ -113,17 +114,14 @@ export interface UseWalletsReturn {
   receiveSparkLightning(walletId: string, amountSats?: number): Promise<string>
   getSparkAddress(walletId: string): Promise<string>
   listSparkPayments(walletId: string): Promise<SparkPaymentSummary[]>
-  prepareSparkTransfer(
+  prepareSparkSend(
     walletId: string,
-    input: { address: string; amountSats: number }
-  ): Promise<SparkDirectTransferQuote>
-  confirmSparkTransfer(
-    walletId: string,
-    quoteId: string
-  ): Promise<SparkDirectTransferResult>
-  hasUnresolvedSparkTransfer(walletId: string): boolean
-  acknowledgeUnresolvedSparkTransfer(walletId: string): void
-  discardSparkTransferQuote(walletId: string, quoteId: string): void
+    request: SparkSendRequest
+  ): Promise<SparkSendQuote>
+  confirmSparkSend(walletId: string, quoteId: string): Promise<SparkSendResult>
+  hasUnresolvedSparkSend(walletId: string): boolean
+  acknowledgeUnresolvedSparkSend(walletId: string): void
+  discardSparkSendQuote(walletId: string, quoteId: string): void
   refreshBalance(walletId: string): Promise<void>
   setDefaultPaymentWallet(walletId: string): Promise<void>
   removeWallet(
@@ -713,20 +711,17 @@ export function useWallets(): UseWalletsReturn {
     return requireSparkManager().listPayments(walletId)
   }, [])
 
-  const prepareSparkTransfer = useCallback(
-    async (
-      walletId: string,
-      input: { address: string; amountSats: number }
-    ) => {
-      return requireSparkManager().prepareSparkTransfer(walletId, input)
+  const prepareSparkSend = useCallback(
+    async (walletId: string, request: SparkSendRequest) => {
+      return requireSparkManager().prepareSend(walletId, request)
     },
     []
   )
 
-  const confirmSparkTransfer = useCallback(
+  const confirmSparkSend = useCallback(
     async (walletId: string, quoteId: string) => {
       const manager = requireSparkManager()
-      const result = await manager.confirmSparkTransfer(walletId, quoteId)
+      const result = await manager.confirmSend(walletId, quoteId)
       if (result.status === "sent") {
         await refreshSparkBalance(walletId, manager, setRuntime).catch(
           () => undefined
@@ -738,19 +733,19 @@ export function useWallets(): UseWalletsReturn {
     []
   )
 
-  const discardSparkTransferQuote = useCallback(
+  const discardSparkSendQuote = useCallback(
     (walletId: string, quoteId: string) => {
-      getSparkWalletManager()?.discardSparkTransferQuote(walletId, quoteId)
+      getSparkWalletManager()?.discardSendQuote(walletId, quoteId)
     },
     []
   )
 
-  const hasUnresolvedSparkTransfer = useCallback((walletId: string) => {
-    return requireSparkManager().hasUnresolvedSparkTransfer(walletId)
+  const hasUnresolvedSparkSend = useCallback((walletId: string) => {
+    return requireSparkManager().hasUnresolvedSend(walletId)
   }, [])
 
-  const acknowledgeUnresolvedSparkTransfer = useCallback((walletId: string) => {
-    requireSparkManager().acknowledgeUnresolvedSparkTransfer(walletId)
+  const acknowledgeUnresolvedSparkSend = useCallback((walletId: string) => {
+    requireSparkManager().acknowledgeUnresolvedSend(walletId)
   }, [])
 
   const refreshBalance = useCallback(
@@ -884,11 +879,11 @@ export function useWallets(): UseWalletsReturn {
     receiveSparkLightning,
     getSparkAddress,
     listSparkPayments,
-    prepareSparkTransfer,
-    confirmSparkTransfer,
-    hasUnresolvedSparkTransfer,
-    acknowledgeUnresolvedSparkTransfer,
-    discardSparkTransferQuote,
+    prepareSparkSend,
+    confirmSparkSend,
+    hasUnresolvedSparkSend,
+    acknowledgeUnresolvedSparkSend,
+    discardSparkSendQuote,
     refreshBalance,
     setDefaultPaymentWallet,
     removeWallet,
