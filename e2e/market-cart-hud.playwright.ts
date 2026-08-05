@@ -141,6 +141,80 @@ for (const viewport of [
   })
 }
 
+test("market cart HUD browsing never contacts a merchant LNURL endpoint", async ({
+  page,
+}) => {
+  const lnurlRequests: string[] = []
+  page.on("request", (request) => {
+    const url = request.url()
+    if (url.includes("/.well-known/lnurlp/") || url.includes("lnurl.test")) {
+      lnurlRequests.push(url)
+    }
+  })
+
+  await page.goto(`${marketUrl}/products`)
+  // Let the app open its Dexie database so the seed cannot create an empty one.
+  await expect(
+    page.getByRole("region", { name: "Cart inventory" })
+  ).toBeVisible()
+  await page.evaluate((merchantPubkey) => {
+    return new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open("conduit")
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => {
+        const database = request.result
+        const transaction = database.transaction("profiles", "readwrite")
+        transaction.objectStore("profiles").put({
+          pubkey: merchantPubkey,
+          name: "Lamp Merchant",
+          displayName: "Lamp Merchant",
+          lud16: "payments@lnurl.test",
+          cachedAt: Date.now(),
+        })
+        transaction.oncomplete = () => resolve()
+        transaction.onerror = () => reject(transaction.error)
+        transaction.onabort = () => reject(transaction.error)
+      }
+    })
+  }, MERCHANT_B)
+
+  await page.goto(`${marketUrl}/products`)
+  const hud = page.getByRole("region", { name: "Cart inventory" })
+  // The seeded profile is resolved, so the HUD held the merchant lightning
+  // address and every other input a browse-time probe would have needed.
+  await expect(
+    hud.getByRole("link", { name: "Open Lamp Merchant store" })
+  ).toBeVisible()
+  expect(
+    await page.evaluate(() => {
+      return new Promise<string | undefined>((resolve, reject) => {
+        const request = indexedDB.open("conduit")
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const read = request.result
+            .transaction("profiles", "readonly")
+            .objectStore("profiles")
+            .getAll()
+          read.onerror = () => reject(read.error)
+          read.onsuccess = () =>
+            resolve(
+              (read.result as Array<{ lud16?: string }>).find(
+                (row) => row.lud16
+              )?.lud16
+            )
+        }
+      })
+    })
+  ).toBe("payments@lnurl.test")
+
+  await page.goto(`${marketUrl}/store/${MERCHANT_B}`)
+  await expect(
+    page.getByRole("region", { name: "Cart inventory" })
+  ).toBeVisible()
+
+  expect(lnurlRequests).toEqual([])
+})
+
 test("market cart HUD does not present a partial total", async ({ page }) => {
   await page.addInitScript(
     ({ merchant }) => {

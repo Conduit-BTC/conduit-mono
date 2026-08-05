@@ -1,8 +1,6 @@
 import { ChevronDown, Minus, Plus, ShoppingCart, Zap } from "lucide-react"
 import { Link, useNavigate } from "@tanstack/react-router"
-import { useQuery } from "@tanstack/react-query"
 import {
-  fetchLnurlPayMetadata,
   formatNpub,
   getProfileName,
   hasWebLN,
@@ -178,18 +176,10 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const automaticWalletReady =
     webLnAvailable ||
     (wallet.status === "pay-capable" && Boolean(wallet.connection))
-  const lnurlMetadata = useQuery({
-    queryKey: ["cart-hud-lnurl", merchantLud16],
-    queryFn: () => fetchLnurlPayMetadata(merchantLud16!),
-    enabled: Boolean(merchantLud16 && pricingIntent?.status === "ok"),
-    staleTime: 5 * 60 * 1000,
-  })
-  const lnurlAmountReady = Boolean(
-    pricingIntent?.status === "ok" &&
-    lnurlMetadata.data &&
-    pricingIntent.totalMsats >= lnurlMetadata.data.minSendable &&
-    pricingIntent.totalMsats <= lnurlMetadata.data.maxSendable
-  )
+  // Browse-time eligibility stays capability-only. Contacting the merchant's
+  // LNURL endpoint here would disclose the visit to a merchant-controlled
+  // server, so checkout revalidates the payment endpoint and amount limits
+  // inside its explicit payment flow instead.
   const checkoutCapability = getCartHudCheckoutCapability({
     listingFresh:
       shouldShow &&
@@ -207,7 +197,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
       shippingDestinationReady &&
       activeSummary?.shippingReadyForZap === true,
     merchantLightningReady: Boolean(merchantLud16),
-    lnurlReady: lnurlAmountReady,
   })
   const checkoutFallbackMessage =
     getCartHudCheckoutFallbackMessage(checkoutCapability)

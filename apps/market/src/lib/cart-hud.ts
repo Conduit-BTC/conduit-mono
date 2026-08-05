@@ -7,7 +7,6 @@ export type CartHudCheckoutBlocker =
   | "price_unavailable"
   | "shipping_unavailable"
   | "merchant_lightning_unavailable"
-  | "lnurl_unavailable"
 
 export type CartHudCheckoutCapability = {
   state: "zap_ready" | "route_to_checkout"
@@ -21,7 +20,6 @@ export type CartHudCapabilityInput = {
   itemPricesAvailable: boolean
   shippingReady: boolean
   merchantLightningReady: boolean
-  lnurlReady: boolean
 }
 
 const SUPPRESSED_ROUTES = new Set([
@@ -62,7 +60,6 @@ export function getCartHudCheckoutCapability(
   if (!input.merchantLightningReady) {
     blockers.push("merchant_lightning_unavailable")
   }
-  if (!input.lnurlReady) blockers.push("lnurl_unavailable")
   return {
     state: blockers.length === 0 ? "zap_ready" : "route_to_checkout",
     blockers,
@@ -73,7 +70,7 @@ export function getCartHudCheckoutFallbackMessage(
   capability: CartHudCheckoutCapability
 ): string {
   if (capability.state === "zap_ready") {
-    return "Ready to zap out using your saved checkout details."
+    return "Ready to zap out. Checkout confirms the merchant payment endpoint before paying."
   }
   if (capability.blockers.includes("price_unavailable")) {
     return "Checkout is needed to refresh the cart total."
@@ -86,9 +83,6 @@ export function getCartHudCheckoutFallbackMessage(
   }
   if (capability.blockers.includes("wallet_unavailable")) {
     return "Checkout is needed because an automatic wallet payment is not ready."
-  }
-  if (capability.blockers.includes("lnurl_unavailable")) {
-    return "Checkout is needed to confirm the merchant payment endpoint."
   }
   return "Checkout is needed to confirm shipping and payment readiness."
 }

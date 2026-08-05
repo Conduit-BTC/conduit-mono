@@ -88,6 +88,7 @@ import {
 import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
 import {
   isFastCheckoutEligible,
+  isFastCheckoutInputPending,
   getFastCheckoutUnavailableReasons,
   getShippingCheckoutState,
   getShippingStepBlockingMessage,
@@ -135,6 +136,7 @@ import {
 } from "../lib/guest-order-identity"
 import {
   consumeHudZapIntent,
+  getHudZapAuthorizationRejection,
   isHudZapAuthorizationValid,
   type HudZapAuthorization,
 } from "../lib/hud-zap-intent"
@@ -1108,7 +1110,9 @@ function CheckoutPage() {
   const fastEligibilityInput = {
     walletPayCapable: !isGuestCheckout && canAttemptLightningPayment,
     merchantLud16,
-    lnurlAllowsNostr: lnurlReadyForSelectedPayment && lnurlAmountReady,
+    merchantProfileUnavailable: merchantTrust.profileState === "limited",
+    lnurlAllowsNostr: lnurlReadyForSelectedPayment,
+    lnurlAmountWithinRange: lnurlAmountReady,
     requiresNostrZap: requiresPublicZap,
     pricingReady: pricingPreview.status === "ok",
     shippingEligible: shippingEligibleForFastCheckout,
@@ -1304,6 +1308,14 @@ function CheckoutPage() {
     setShippingErrors(validateCheckoutDetails(next))
     if (isValidationField(field)) {
       markShippingFieldTouched(field)
+    }
+    // An armed zap out was authorized against the details the shopper held on.
+    // Editing delivery details withdraws that authorization.
+    if (autoZapAuthorization && !autoZapStartedRef.current) {
+      setAutoZapAuthorization(null)
+      setError(
+        "Delivery details changed after zap out was armed. Review checkout before paying."
+      )
     }
   }
 
@@ -2099,27 +2111,56 @@ function CheckoutPage() {
     })
   }, [navigate, search.intent, selectedMerchant])
 
+  // The HUD arms zap out from capability-only readiness, so checkout is the
+  // first place the merchant payment endpoint is known. Wait while that answer
+  // is still resolving, then explain the decline instead of stalling silently.
+  const autoZapInputsResolving = isFastCheckoutInputPending({
+    authPending,
+    walletConnecting: wallet.status === "connecting",
+    merchantProfileLoading: merchantTrust.profileState === "loading",
+    lnurlProbing,
+    privateZapFallbackPending:
+      !isGuestCheckout &&
+      lnurlPayAvailable &&
+      !lnurlAllowsNostr &&
+      isCheckoutPublicZapMode(selectedZapMode),
+    shippingLookupPending: shippingOptionsIsLoading,
+    shippingState: shippingCheckoutState,
+    availabilityChecking: checkoutAvailability.isChecking,
+    pricingRefreshing: pricingRefreshState === "refreshing",
+  })
+
   useEffect(() => {
     if (
       !autoZapAuthorization ||
       autoZapStartedRef.current ||
-      !fastEligible ||
-      checkoutAvailability.isChecking ||
+      autoZapInputsResolving ||
       hasUnavailableCheckoutItems
     ) {
       return
     }
-    const authorized = isHudZapAuthorizationValid(autoZapAuthorization, {
+    if (!fastEligible) {
+      setAutoZapAuthorization(null)
+      setError(
+        fastUnavailableReasons[0] ??
+          "Zap out is unavailable for this order. Review checkout before paying."
+      )
+      setStep("payment")
+      return
+    }
+    const rejection = getHudZapAuthorizationRejection(autoZapAuthorization, {
       merchantPubkey: selectedMerchant,
       buyerPubkey: signedBuyerPubkey,
       items: checkoutItems,
       totalMsats:
         pricingPreview.status === "ok" ? pricingPreview.totalMsats : null,
     })
-    if (!authorized) {
+    if (rejection) {
       setAutoZapAuthorization(null)
       setError(
-        "Cart or payment details changed after zap out was armed. Review checkout before paying."
+        rejection === "expired"
+          ? "Zap out expired while checkout confirmed payment details. Review checkout before paying."
+          : "Cart or payment details changed after zap out was armed. Review checkout before paying."
       )
       return
     }
@@ -2128,9 +2169,10 @@ function CheckoutPage() {
     void payNowRef.current()
   }, [
     autoZapAuthorization,
-    checkoutAvailability.isChecking,
+    autoZapInputsResolving,
     checkoutItems,
     fastEligible,
+    fastUnavailableReasons,
     hasUnavailableCheckoutItems,
     pricingPreview,
     selectedMerchant,

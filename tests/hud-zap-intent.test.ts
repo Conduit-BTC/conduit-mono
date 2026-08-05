@@ -3,6 +3,7 @@ import {
   armHudZapIntent,
   consumeHudZapIntent,
   getHudZapCartFingerprint,
+  getHudZapAuthorizationRejection,
   isHudZapAuthorizationValid,
 } from "../apps/market/src/lib/hud-zap-intent"
 import type { CartItem } from "../apps/market/src/lib/cart-model"
@@ -73,5 +74,36 @@ describe("HUD zap intent", () => {
         })
       ).toBe(false)
     }
+  })
+
+  it("separates a slow checkout confirmation from a changed cart", () => {
+    const intent = authorization()
+    expect(
+      getHudZapAuthorizationRejection(intent, {
+        merchantPubkey: "merchant-a",
+        buyerPubkey: "buyer-a",
+        items,
+        totalMsats: 1_000_000,
+        nowMs: 31_001,
+      })
+    ).toBe("expired")
+    expect(
+      getHudZapAuthorizationRejection(intent, {
+        merchantPubkey: "merchant-a",
+        buyerPubkey: "buyer-a",
+        items,
+        totalMsats: 2_000_000,
+        nowMs: 2_000,
+      })
+    ).toBe("changed")
+    expect(
+      getHudZapAuthorizationRejection(intent, {
+        merchantPubkey: "merchant-a",
+        buyerPubkey: "buyer-a",
+        items,
+        totalMsats: 1_000_000,
+        nowMs: 2_000,
+      })
+    ).toBeNull()
   })
 })
