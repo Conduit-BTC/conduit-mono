@@ -2,16 +2,13 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
   db,
-  formatNpub,
   getCachedMerchantConversationList,
   getCachedMerchantStorefront,
   getMerchantConversationList,
   getMerchantStorefront,
-  getProfileName,
   useAuth,
   useProfiles,
   type ParsedOrderMessage,
-  type Profile,
 } from "@conduit/core"
 import {
   ArrowRight,
@@ -42,6 +39,7 @@ import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
 import {
   getMerchantConversationQueue,
+  isMerchantGuestOrder,
   type OrderQueueTab,
 } from "../lib/order-phase"
 import type { MerchantSetupReadiness } from "../lib/readiness"
@@ -320,7 +318,10 @@ function DashboardPage() {
       [],
     [conversationsQuery.data, cachedConversationsQuery.data]
   )
-  const latestConversations = allConversations.slice(0, 5)
+  const latestConversations = useMemo(
+    () => allConversations.slice(0, 5),
+    [allConversations]
+  )
   const queueCounts = useMemo(() => {
     let verifyPayment = 0
     let paidFulfill = 0
@@ -361,14 +362,20 @@ function DashboardPage() {
     },
     []
   )
-  const buyerProfilesQuery = useProfiles(
-    latestConversations.map((conversation) => conversation.buyerPubkey),
-    { enabled: !!pubkey && latestConversations.length > 0 }
+  const buyerPubkeys = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          latestConversations
+            .filter((conversation) => !isMerchantGuestOrder(conversation))
+            .map((conversation) => conversation.buyerPubkey)
+        )
+      ),
+    [latestConversations]
   )
-  const buyerName = (buyerPubkey: string) =>
-    getProfileName(
-      (buyerProfilesQuery.data as Record<string, Profile>)?.[buyerPubkey]
-    ) || formatNpub(buyerPubkey, 8)
+  const buyerProfilesQuery = useProfiles(buyerPubkeys, {
+    enabled: !!pubkey && buyerPubkeys.length > 0,
+  })
 
   return (
     <div className="space-y-6">
@@ -514,12 +521,7 @@ function DashboardPage() {
               <OrderListItem
                 key={conversation.id}
                 conversation={conversation}
-                buyerName={buyerName(conversation.buyerPubkey)}
-                buyerPicture={
-                  (buyerProfilesQuery.data as Record<string, Profile>)?.[
-                    conversation.buyerPubkey
-                  ]?.picture
-                }
+                buyerProfile={buyerProfilesQuery.data[conversation.buyerPubkey]}
                 active={false}
                 onClick={() =>
                   navigate({

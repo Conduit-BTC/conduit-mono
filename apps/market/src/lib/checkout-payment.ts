@@ -1,5 +1,6 @@
 import {
   EVENT_KINDS,
+  DEFAULT_PRICING_RATE_MAX_AGE_MS,
   appendConduitClientTag,
   appendOmfZapoutMarker,
   buildAnonZapCheckoutContent,
@@ -10,6 +11,7 @@ import {
   getShippingCostSats,
   isBtcLikeCurrency,
   isMsatsLikeCurrency,
+  isPricingRateQuoteFresh,
   isSatsLikeCurrency,
   normalizeCommercePrice,
   resolveCartShippingCost,
@@ -29,7 +31,7 @@ import {
 } from "@conduit/core"
 import type { CartItem } from "../hooks/useCart"
 
-export const CHECKOUT_QUOTE_MAX_AGE_MS = 5 * 60_000
+export const CHECKOUT_QUOTE_MAX_AGE_MS = DEFAULT_PRICING_RATE_MAX_AGE_MS
 
 export type CheckoutZapVisibility = "public_zap" | "private_checkout"
 
@@ -187,7 +189,9 @@ export function buildCheckoutPricingIntent(
         }
       }
 
-      if (nowMs - rateInput.fetchedAt > CHECKOUT_QUOTE_MAX_AGE_MS) {
+      if (
+        !isPricingRateQuoteFresh(rateInput, nowMs, CHECKOUT_QUOTE_MAX_AGE_MS)
+      ) {
         return {
           status: "error",
           code: "stale_quote",
@@ -239,7 +243,9 @@ export function buildCheckoutPricingIntent(
         }
       }
 
-      if (nowMs - rateInput.fetchedAt > CHECKOUT_QUOTE_MAX_AGE_MS) {
+      if (
+        !isPricingRateQuoteFresh(rateInput, nowMs, CHECKOUT_QUOTE_MAX_AGE_MS)
+      ) {
         return {
           status: "error",
           code: "stale_quote",

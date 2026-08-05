@@ -5,7 +5,10 @@ import { Button } from "./Button"
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "./Dialog"
 import { Input } from "./Input"
 import { Label } from "./Label"
-import { OrderConversationMessage } from "./OrderConversationMessage"
+import {
+  OrderConversationMessage,
+  type OrderAmountFormatter,
+} from "./OrderConversationMessage"
 
 export type OrderMessagesWidgetProps = {
   open: boolean
@@ -24,6 +27,7 @@ export type OrderMessagesWidgetProps = {
   resolveItem?: (
     productId: string
   ) => { title?: string; imageUrl?: string } | undefined
+  formatAmount?: OrderAmountFormatter
 }
 
 export function OrderMessagesWidget({
@@ -41,6 +45,7 @@ export function OrderMessagesWidget({
   placeholder = "Message, then press Enter",
   readOnly = false,
   resolveItem,
+  formatAmount,
 }: OrderMessagesWidgetProps) {
   const replyInputId = useId()
   const errorId = useId()
@@ -79,6 +84,7 @@ export function OrderMessagesWidget({
                   message={message}
                   mine={message.senderPubkey === selfPubkey}
                   resolveItem={resolveItem}
+                  formatAmount={formatAmount}
                 />
               ))
             )}
@@ -150,7 +156,7 @@ export function OrderMessagesWidget({
               <MessageCircle className="size-6" aria-hidden="true" />
             )}
             {!open && messages.length > 0 && (
-              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] px-1 text-xs font-medium text-[var(--text-primary)]">
+              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full border border-[var(--warning)] bg-[var(--warning)] px-1 text-xs font-semibold text-[var(--text-primary)]">
                 {messages.length}
               </span>
             )}

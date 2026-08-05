@@ -1,5 +1,14 @@
-import { Check, ExternalLink, KeyRound, ShieldCheck } from "lucide-react"
-import { useId, useMemo, useRef, useState, type Ref } from "react"
+import {
+  Check,
+  Copy,
+  ExternalLink,
+  KeyRound,
+  Link2,
+  QrCode,
+  ShieldCheck,
+} from "lucide-react"
+import { QRCodeSVG } from "qrcode.react"
+import { useEffect, useId, useMemo, useRef, useState, type Ref } from "react"
 import { Badge } from "./Badge"
 import { Button } from "./Button"
 import {
@@ -11,20 +20,21 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "./Dialog"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./Tabs"
+import { Textarea } from "./Textarea"
 import { cn } from "../utils"
 
 export type SignerSwitchStatus =
-  | "disconnected"
-  | "restoring"
-  | "connecting"
-  | "connected"
-  | "error"
+  "disconnected" | "restoring" | "connecting" | "connected" | "error"
 
 export interface SignerSwitchProps {
   status: SignerSwitchStatus
   pubkeyLabel?: string | null
   pubkeyDetailLabel?: string | null
   error?: string | null
+  authUrl?: string | null
+  signerMethod?: "nip07" | "nip46" | null
+  rememberedMethod?: "nip07" | "nip46" | null
   extensionAvailable: boolean
   connectedDescription: string
   connectDescription: string
@@ -33,8 +43,13 @@ export interface SignerSwitchProps {
   open?: boolean
   onOpenChange?: (open: boolean) => void
   hideTrigger?: boolean
-  onConnect: () => Promise<void> | void
-  onDisconnect: () => void
+  nostrConnectUri?: string | null
+  onConnectExtension: () => Promise<void> | void
+  onConnectNostrConnect: () => Promise<void> | void
+  onConnectRemote: (bunkerUri: string) => Promise<void> | void
+  onCancelConnect: () => Promise<void> | void
+  onReconnect?: () => Promise<void> | void
+  onDisconnect: () => Promise<void> | void
 }
 
 export interface SignerConnectPanelProps {
@@ -44,14 +59,24 @@ export interface SignerConnectPanelProps {
   unlockLabel?: string
   unlockItems: readonly string[]
   error?: string | null
+  authUrl?: string | null
+  rememberedMethod?: "nip07" | "nip46" | null
+  connectingMethod?: "nip07" | "nip46" | null
   pendingSwitch?: boolean
   extensionNotice?: string | null
-  mobileSignerUnavailable?: boolean
+  mobile?: boolean
+  extensionAvailable: boolean
   connectPending?: boolean
   connectDisabled?: boolean
   className?: string
   bodyClassName?: string
-  onConnect: () => Promise<void> | void
+  nostrConnectUri?: string | null
+  onConnectExtension: () => Promise<void> | void
+  onConnectNostrConnect: () => Promise<void> | void
+  onConnectRemote: (bunkerUri: string) => Promise<void> | void
+  onCancelConnect: () => Promise<void> | void
+  onReconnect?: () => Promise<void> | void
+  onForget?: () => Promise<void> | void
 }
 
 function ConduitLogoLockup({ className = "h-10" }: { className?: string }) {
@@ -74,12 +99,36 @@ function SignerGlyph({ className = "h-5 w-5" }: { className?: string }) {
 const NSTART_URL = "https://nstart.me"
 const ALBY_URL = "https://getalby.com/"
 const NOSTR_GET_STARTED_URL = "https://grownostr.org/get-started"
+const AMBER_URL = "https://github.com/greenart7c3/Amber"
+const CLAVE_URL = "https://github.com/DocNR/clave"
 const signerConnectButtonClassName =
-  "h-14 w-full justify-center gap-3 rounded-xl bg-[linear-gradient(90deg,var(--primary-500),var(--primary-600))] text-base font-semibold text-[var(--on-primary)] shadow-[0_18px_38px_color-mix(in_srgb,var(--primary-500)_32%,transparent)] hover:brightness-110 focus-visible:ring-primary-400 disabled:brightness-75"
+  "h-14 w-full justify-center gap-3 rounded-xl bg-[linear-gradient(90deg,var(--primary-500),var(--primary-600))] text-base font-semibold text-[var(--on-primary)] shadow-[0_8px_20px_color-mix(in_srgb,var(--primary-500)_24%,transparent)] hover:brightness-110 focus-visible:ring-primary-400 disabled:brightness-75"
+const remoteSignerTabClassName =
+  "min-h-11 min-w-0 gap-1 rounded-lg border border-transparent px-1 text-xs whitespace-normal data-[state=active]:border-primary-600 data-[state=active]:bg-primary-500 data-[state=active]:font-semibold data-[state=active]:text-white data-[state=active]:shadow-none data-[state=inactive]:hover:border-[var(--border)] data-[state=inactive]:hover:bg-[color-mix(in_srgb,var(--primary-500)_2%,var(--surface))] sm:text-sm"
 
-function isMobileBrowser(): boolean {
-  if (typeof navigator === "undefined") return false
-  return /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent)
+export interface SignerEnvironmentInput {
+  userAgent: string
+  platform?: string
+  maxTouchPoints?: number
+}
+
+export function isMobileSignerEnvironment(
+  input?: SignerEnvironmentInput
+): boolean {
+  const environment =
+    input ??
+    (typeof navigator === "undefined"
+      ? { userAgent: "" }
+      : {
+          userAgent: navigator.userAgent,
+          platform: navigator.platform,
+          maxTouchPoints: navigator.maxTouchPoints,
+        })
+  return (
+    /android|iphone|ipad|ipod|mobile/i.test(environment.userAgent) ||
+    (environment.platform === "MacIntel" &&
+      (environment.maxTouchPoints ?? 0) > 1)
+  )
 }
 
 function SignerHeader({
@@ -108,7 +157,7 @@ function SignerHeader({
   )
 }
 
-function SignerConnectButton({
+function ExtensionConnectButton({
   connectPending,
   connectDisabled,
   onConnect,
@@ -120,13 +169,287 @@ function SignerConnectButton({
   return (
     <Button
       type="button"
-      onClick={() => void onConnect()}
+      onClick={() => void Promise.resolve(onConnect()).catch(() => undefined)}
       disabled={connectDisabled}
       className={signerConnectButtonClassName}
     >
       <SignerGlyph />
-      {connectPending ? "Connecting..." : "Connect signer"}
+      {connectPending ? "Connecting..." : "Connect Extension (NIP-07)"}
     </Button>
+  )
+}
+
+function RemoteSignerConnect({
+  connectPending,
+  connectDisabled,
+  nostrConnectUri,
+  onConnectNostrConnect,
+  onConnectBunker,
+  onCancelConnect,
+}: {
+  connectPending: boolean
+  connectDisabled: boolean
+  nostrConnectUri?: string | null
+  onConnectNostrConnect: () => Promise<void> | void
+  onConnectBunker: (bunkerUri: string) => Promise<void> | void
+  onCancelConnect: () => Promise<void> | void
+}) {
+  const [bunkerUri, setBunkerUri] = useState("")
+  const [activeTab, setActiveTab] = useState("qr")
+  const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState(false)
+  const connectionUrlRef = useRef<HTMLTextAreaElement>(null)
+  const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    setCopied(false)
+    setCopyError(false)
+    if (copyResetTimer.current) {
+      clearTimeout(copyResetTimer.current)
+      copyResetTimer.current = null
+    }
+    return () => {
+      if (copyResetTimer.current) clearTimeout(copyResetTimer.current)
+    }
+  }, [nostrConnectUri])
+
+  async function submitBunker(): Promise<void> {
+    const uri = bunkerUri.trim()
+    if (!uri || connectDisabled) return
+    try {
+      await onConnectBunker(uri)
+      setBunkerUri("")
+    } catch {
+      // Auth state owns the actionable inline error.
+    }
+  }
+
+  async function copyConnectionUrl(): Promise<void> {
+    if (!nostrConnectUri) return
+    let copySucceeded = false
+    try {
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(nostrConnectUri)
+        copySucceeded = true
+      }
+    } catch {
+      // Fall back to selection-based copying for older mobile browsers.
+    }
+    if (!copySucceeded && connectionUrlRef.current) {
+      connectionUrlRef.current.focus()
+      connectionUrlRef.current.select()
+      connectionUrlRef.current.setSelectionRange(0, nostrConnectUri.length)
+      try {
+        copySucceeded = document.execCommand("copy")
+      } catch {
+        copySucceeded = false
+      }
+    }
+    setCopied(copySucceeded)
+    setCopyError(!copySucceeded)
+    if (copyResetTimer.current) clearTimeout(copyResetTimer.current)
+    copyResetTimer.current = window.setTimeout(() => setCopied(false), 1_500)
+  }
+
+  const waitingForScan =
+    !!nostrConnectUri || activeTab === "qr" || activeTab === "url"
+
+  return (
+    <div className="space-y-3 rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+      <div className="flex items-start gap-3">
+        <Link2
+          className="mt-0.5 h-5 w-5 shrink-0 text-primary-400"
+          aria-hidden="true"
+        />
+        <div className="text-sm font-semibold text-[var(--text-primary)]">
+          Connect Signer (NIP-46)
+        </div>
+      </div>
+      {connectPending && (
+        <div className="space-y-2">
+          <div
+            role="status"
+            className="rounded-xl border border-primary-500/25 bg-primary-500/10 p-3 text-sm leading-5 text-[var(--text-secondary)]"
+          >
+            {waitingForScan
+              ? "Waiting for your remote signer to scan the QR code or open the connection URL."
+              : "Waiting for approval from your remote signer. Approve the bunker connection, then return here."}
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full border-error/30 text-error hover:border-error/50 hover:bg-error/15"
+            onClick={() =>
+              void Promise.resolve(onCancelConnect()).catch(() => undefined)
+            }
+          >
+            Cancel pairing
+          </Button>
+        </div>
+      )}
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList
+          className="grid h-auto w-full grid-cols-3 rounded-xl p-1"
+          aria-label="Remote signer connection method"
+        >
+          <TabsTrigger
+            value="qr"
+            aria-label="QR code"
+            title="QR code"
+            className={remoteSignerTabClassName}
+          >
+            <QrCode className="h-5 w-5 shrink-0" aria-hidden="true" />
+            QR
+          </TabsTrigger>
+          <TabsTrigger
+            value="url"
+            aria-label="Connection URL"
+            title="Connection URL"
+            className={remoteSignerTabClassName}
+          >
+            <Link2 className="h-5 w-5 shrink-0" aria-hidden="true" />
+            URL
+          </TabsTrigger>
+          <TabsTrigger
+            value="bunker"
+            aria-label="Bunker URL"
+            title="Bunker URL"
+            className={remoteSignerTabClassName}
+          >
+            <KeyRound className="h-5 w-5 shrink-0" aria-hidden="true" />
+            Bunker
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="qr" className="min-w-0">
+          {nostrConnectUri ? (
+            <div className="flex flex-col items-center gap-3 text-center">
+              <div
+                role="img"
+                aria-label="Nostr Connect connection QR code"
+                className="rounded-lg bg-white p-3"
+              >
+                <QRCodeSVG
+                  value={nostrConnectUri}
+                  size={200}
+                  level="M"
+                  className="h-auto w-[min(200px,65vw)] max-w-full"
+                />
+              </div>
+              <p className="text-sm leading-5 text-[var(--text-secondary)]">
+                Scan with your remote signer to connect.
+              </p>
+            </div>
+          ) : (
+            <NostrConnectStartButton
+              connectDisabled={connectDisabled}
+              connectPending={connectPending}
+              onConnect={onConnectNostrConnect}
+            />
+          )}
+        </TabsContent>
+
+        <TabsContent value="url" className="min-w-0">
+          {nostrConnectUri ? (
+            <div className="space-y-3">
+              <Textarea
+                ref={connectionUrlRef}
+                value={nostrConnectUri}
+                readOnly
+                aria-label="Nostr Connect connection URL"
+                spellCheck={false}
+                className="min-h-24 resize-none break-all font-mono text-xs"
+              />
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Button asChild className="w-full">
+                  <a href={nostrConnectUri}>
+                    <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                    Open in signer
+                  </a>
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void copyConnectionUrl()}
+                  aria-label={
+                    copied ? "Connection URL copied" : "Copy connection URL"
+                  }
+                  className="w-full"
+                >
+                  {copied ? (
+                    <Check className="h-4 w-4" aria-hidden="true" />
+                  ) : (
+                    <Copy className="h-4 w-4" aria-hidden="true" />
+                  )}
+                  {copied ? "Copied" : "Copy connection URL"}
+                </Button>
+              </div>
+              <p aria-live="polite" className="sr-only">
+                {copied ? "Connection URL copied to clipboard." : ""}
+              </p>
+              {copyError && (
+                <p role="alert" className="text-sm leading-5 text-error">
+                  Copy was blocked. Select the URL above and copy it manually.
+                </p>
+              )}
+            </div>
+          ) : (
+            <NostrConnectStartButton
+              connectDisabled={connectDisabled}
+              connectPending={connectPending}
+              onConnect={onConnectNostrConnect}
+            />
+          )}
+        </TabsContent>
+
+        <TabsContent value="bunker" className="min-w-0 space-y-3">
+          <Textarea
+            value={bunkerUri}
+            onChange={(event) => setBunkerUri(event.target.value)}
+            placeholder="bunker://..."
+            aria-label="Remote signer bunker URL"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            disabled={connectDisabled}
+            className="min-h-20 resize-none break-all font-mono text-xs"
+          />
+          <Button
+            type="button"
+            onClick={() => void submitBunker()}
+            disabled={connectDisabled || !bunkerUri.trim()}
+            className={signerConnectButtonClassName}
+          >
+            <Link2 className="h-5 w-5" aria-hidden="true" />
+            {connectPending ? "Connecting..." : "Connect Signer (NIP-46)"}
+          </Button>
+        </TabsContent>
+      </Tabs>
+    </div>
+  )
+}
+
+function NostrConnectStartButton({
+  connectDisabled,
+  connectPending,
+  onConnect,
+}: {
+  connectDisabled: boolean
+  connectPending: boolean
+  onConnect: () => Promise<void> | void
+}) {
+  return (
+    <div className="text-center">
+      <Button
+        type="button"
+        onClick={() => void Promise.resolve(onConnect()).catch(() => undefined)}
+        disabled={connectDisabled}
+        className={signerConnectButtonClassName}
+      >
+        <QrCode className="h-5 w-5" aria-hidden="true" />
+        {connectPending ? "Starting connection..." : "Create connection"}
+      </Button>
+    </div>
   )
 }
 
@@ -205,6 +528,34 @@ export function NoSignerSetupGuide({ className }: { className?: string }) {
   )
 }
 
+function RemoteSignerSetupGuide() {
+  return (
+    <div className="rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-5 text-left">
+      <div className="text-sm font-semibold text-[var(--text-primary)]">
+        Need a remote signer?
+      </div>
+      <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+        Create a bunker connection in a compatible signer such as Amber or
+        Clave, then paste it in the Bunker URL tab.
+      </p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button asChild variant="outline" size="sm">
+          <a href={AMBER_URL} target="_blank" rel="noopener noreferrer">
+            Amber
+            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+          </a>
+        </Button>
+        <Button asChild variant="outline" size="sm">
+          <a href={CLAVE_URL} target="_blank" rel="noopener noreferrer">
+            Clave
+            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+          </a>
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 export function SignerUnlockCard({
   label = "What this unlocks",
   unlockItems,
@@ -245,32 +596,114 @@ function SignerDisconnectedContent({
   unlockLabel,
   unlockItems,
   error,
+  authUrl,
+  rememberedMethod,
+  connectingMethod,
   pendingSwitch = false,
   extensionNotice,
-  mobileSignerUnavailable = false,
+  mobile = false,
+  extensionAvailable,
   connectPending = false,
   connectDisabled = false,
   bodyClassName,
-  onConnect,
+  nostrConnectUri,
+  onConnectExtension,
+  onConnectNostrConnect,
+  onConnectRemote,
+  onCancelConnect,
+  onReconnect,
+  onForget,
 }: Omit<SignerConnectPanelProps, "title" | "description" | "className">) {
   return (
     <>
       <div
         className={cn("mx-auto mt-6 w-full max-w-md space-y-3", bodyClassName)}
       >
-        {!mobileSignerUnavailable && (
-          <SignerConnectButton
-            connectPending={connectPending}
-            connectDisabled={connectDisabled}
-            onConnect={onConnect}
+        {rememberedMethod &&
+          onReconnect &&
+          (!mobile || rememberedMethod === "nip46") && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() =>
+                void Promise.resolve(onReconnect()).catch(() => undefined)
+              }
+              disabled={connectDisabled}
+              className="h-12 w-full justify-center gap-2 rounded-xl"
+            >
+              <KeyRound className="h-4 w-4" aria-hidden="true" />
+              {connectPending
+                ? "Reconnecting..."
+                : `Reconnect ${rememberedMethod === "nip46" ? "NIP-46 signer" : "extension"}`}
+            </Button>
+          )}
+
+        {rememberedMethod === "nip46" && onForget && (
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() =>
+              void Promise.resolve(onForget()).catch(() => undefined)
+            }
+            disabled={connectDisabled}
+            className="h-10 w-full justify-center"
+          >
+            Forget remote signer
+          </Button>
+        )}
+
+        {!mobile && (
+          <ExtensionConnectButton
+            connectPending={connectPending && connectingMethod === "nip07"}
+            connectDisabled={connectDisabled || !extensionAvailable}
+            onConnect={onConnectExtension}
           />
+        )}
+
+        <RemoteSignerConnect
+          connectPending={connectPending && connectingMethod === "nip46"}
+          connectDisabled={connectDisabled}
+          nostrConnectUri={nostrConnectUri}
+          onConnectNostrConnect={onConnectNostrConnect}
+          onConnectBunker={onConnectRemote}
+          onCancelConnect={onCancelConnect}
+        />
+
+        {error && (
+          <div
+            role="alert"
+            className="rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error"
+          >
+            {error}
+          </div>
+        )}
+
+        {authUrl && (
+          <div className="rounded-[1.25rem] border border-warning/30 bg-warning/10 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
+            Your remote signer needs approval. Open the authorization page, then
+            return here.
+            <Button asChild variant="outline" size="sm" className="mt-3 w-full">
+              <a href={authUrl} target="_blank" rel="noopener noreferrer">
+                Open signer approval
+                <ExternalLink className="h-4 w-4" aria-hidden="true" />
+              </a>
+            </Button>
+          </div>
         )}
 
         <p className="px-4 pt-2 text-center text-[15px] italic leading-6 text-[var(--text-secondary)]">
           {helperText}
         </p>
 
-        <NoSignerSetupGuide />
+        <p className="px-4 text-center text-sm leading-5 text-[var(--text-muted)]">
+          Conduit never stores or recovers your keys.
+        </p>
+        <p className="px-4 text-center text-xs leading-5 text-[var(--text-muted)]">
+          Remote reconnect stores an encrypted, revocable NIP-46 connection key
+          on this device. Your identity key stays in your signer.
+        </p>
+
+        {mobile ? <RemoteSignerSetupGuide /> : <NoSignerSetupGuide />}
       </div>
 
       <div className={cn("mx-auto mt-4 grid max-w-md gap-4", bodyClassName)}>
@@ -284,19 +717,8 @@ function SignerDisconnectedContent({
             bodyClassName
           )}
         >
-          Change the active account in your browser extension, then reconnect
-          here.
-        </div>
-      )}
-
-      {error && (
-        <div
-          className={cn(
-            "mx-auto mt-4 max-w-md rounded-[1.25rem] border border-error/30 bg-error/10 p-4 text-[15px] leading-6 text-error",
-            bodyClassName
-          )}
-        >
-          {error}
+          Choose another extension account or paste a new remote signer URI,
+          then reconnect here.
         </div>
       )}
 
@@ -321,14 +743,24 @@ export function SignerConnectPanel({
   unlockLabel,
   unlockItems,
   error,
+  authUrl,
+  rememberedMethod,
+  connectingMethod,
   pendingSwitch,
   extensionNotice,
-  mobileSignerUnavailable,
+  mobile,
+  extensionAvailable,
   connectPending,
   connectDisabled,
   className,
   bodyClassName,
-  onConnect,
+  nostrConnectUri,
+  onConnectExtension,
+  onConnectNostrConnect,
+  onConnectRemote,
+  onCancelConnect,
+  onReconnect,
+  onForget,
 }: SignerConnectPanelProps) {
   const titleId = useId()
 
@@ -359,13 +791,23 @@ export function SignerConnectPanel({
           unlockLabel={unlockLabel}
           unlockItems={unlockItems}
           error={error}
+          authUrl={authUrl}
+          rememberedMethod={rememberedMethod}
+          connectingMethod={connectingMethod}
           pendingSwitch={pendingSwitch}
           extensionNotice={extensionNotice}
-          mobileSignerUnavailable={mobileSignerUnavailable}
+          mobile={mobile}
+          extensionAvailable={extensionAvailable}
           connectPending={connectPending}
           connectDisabled={connectDisabled}
           bodyClassName={bodyClassName}
-          onConnect={onConnect}
+          nostrConnectUri={nostrConnectUri}
+          onConnectExtension={onConnectExtension}
+          onConnectNostrConnect={onConnectNostrConnect}
+          onConnectRemote={onConnectRemote}
+          onCancelConnect={onCancelConnect}
+          onReconnect={onReconnect}
+          onForget={onForget}
         />
       </div>
     </section>
@@ -377,6 +819,9 @@ export function SignerSwitch({
   pubkeyLabel,
   pubkeyDetailLabel,
   error,
+  authUrl,
+  signerMethod,
+  rememberedMethod,
   extensionAvailable,
   connectedDescription,
   connectDescription,
@@ -385,24 +830,28 @@ export function SignerSwitch({
   open,
   onOpenChange,
   hideTrigger = false,
-  onConnect,
+  nostrConnectUri,
+  onConnectExtension,
+  onConnectNostrConnect,
+  onConnectRemote,
+  onCancelConnect,
+  onReconnect,
   onDisconnect,
 }: SignerSwitchProps) {
   const [internalOpen, setInternalOpen] = useState(false)
   const [isWorking, setIsWorking] = useState(false)
   const [pendingSwitch, setPendingSwitch] = useState(false)
   const titleRef = useRef<HTMLHeadingElement>(null)
-  const mobileSignerUnavailable =
-    isMobileBrowser() && !extensionAvailable && status !== "connected"
+  const mobile = isMobileSignerEnvironment()
   const isControlled = typeof open === "boolean"
   const isOpen = isControlled ? open : internalOpen
   const connected = status === "connected" && !!pubkeyLabel
   const authPending = status === "connecting" || status === "restoring"
-  const signerHelperText = mobileSignerUnavailable
-    ? "Try a desktop browser with a signer extension, or a mobile browser that already exposes one."
-    : "Conduit currently supports external signers only."
+  const signerHelperText = mobile
+    ? "Connect a remote signer to continue securely on mobile."
+    : "Choose a browser extension or remote signer."
   const extensionNotice =
-    !extensionAvailable && !mobileSignerUnavailable
+    !extensionAvailable && !mobile
       ? "No complete NIP-07 signer detected yet. Install or unlock a signer such as Alby or nos2x, then try Connect signer again."
       : null
 
@@ -417,11 +866,11 @@ export function SignerSwitch({
     return "Connect"
   }, [authPending, connected, pubkeyLabel])
 
-  async function handleConnect(): Promise<void> {
+  async function handleConnectExtension(): Promise<void> {
     if (authPending) return
     setIsWorking(true)
     try {
-      await onConnect()
+      await onConnectExtension()
       setPendingSwitch(false)
       setOpen(false)
     } catch {
@@ -431,16 +880,55 @@ export function SignerSwitch({
     }
   }
 
-  function handleSwitchSigner(): void {
-    if (!connected || isWorking) return
-    onDisconnect()
-    setPendingSwitch(true)
+  async function handleConnectRemote(bunkerUri: string): Promise<void> {
+    if (authPending) return
+    setIsWorking(true)
+    try {
+      await onConnectRemote(bunkerUri)
+      setPendingSwitch(false)
+      setOpen(false)
+    } catch {
+      // Keep the dialog open so the inline error remains visible.
+    } finally {
+      setIsWorking(false)
+    }
   }
 
-  function handleDisconnect(): void {
-    onDisconnect()
-    setPendingSwitch(false)
-    setOpen(false)
+  async function handleConnectNostrConnect(): Promise<void> {
+    if (authPending) return
+    setIsWorking(true)
+    try {
+      await onConnectNostrConnect()
+      setPendingSwitch(false)
+      setOpen(false)
+    } catch {
+      // Keep the dialog open so the inline error remains visible.
+    } finally {
+      setIsWorking(false)
+    }
+  }
+
+  async function handleSwitchSigner(): Promise<void> {
+    if (!connected || isWorking) return
+    setIsWorking(true)
+    try {
+      await onDisconnect()
+      setPendingSwitch(true)
+    } finally {
+      setIsWorking(false)
+    }
+  }
+
+  async function handleDisconnect(): Promise<void> {
+    if (isWorking) return
+    setIsWorking(true)
+    try {
+      await onDisconnect()
+      setPendingSwitch(false)
+      setOpen(false)
+    } finally {
+      setIsWorking(false)
+    }
   }
 
   return (
@@ -458,13 +946,13 @@ export function SignerSwitch({
       )}
 
       <DialogContent
-        className="max-h-[calc(100dvh-1.5rem)] max-w-xl overflow-y-auto border-[var(--border)] bg-[var(--surface-dialog)] p-0 text-[var(--text-primary)] shadow-[var(--shadow-dialog)]"
+        className="max-h-[calc(100dvh-1.5rem)] max-w-xl touch-pan-y overflow-y-auto overscroll-contain border-[var(--border)] bg-[var(--surface-dialog)] p-0 text-[var(--text-primary)] shadow-[var(--shadow-dialog)] [-webkit-overflow-scrolling:touch]"
         onOpenAutoFocus={(event) => {
           event.preventDefault()
           titleRef.current?.focus({ preventScroll: true })
         }}
       >
-        <div className="relative rounded-[inherit] border border-[var(--border)] bg-[var(--surface-dialog)]">
+        <div className="relative rounded-[inherit]">
           <div className="relative px-5 py-5 sm:px-6 sm:py-6">
             {connected ? (
               <>
@@ -483,6 +971,9 @@ export function SignerSwitch({
                       >
                         Connected
                       </Badge>
+                      <Badge variant="outline">
+                        {signerMethod === "nip46" ? "NIP-46" : "NIP-07"}
+                      </Badge>
                       <Badge
                         variant="outline"
                         className="border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]"
@@ -495,10 +986,35 @@ export function SignerSwitch({
                     </p>
                   </div>
 
+                  {authUrl && (
+                    <div className="rounded-[1.25rem] border border-warning/30 bg-warning/10 p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
+                      Your remote signer needs approval. Open the authorization
+                      page, then return here.
+                      <Button
+                        asChild
+                        variant="outline"
+                        size="sm"
+                        className="mt-3 w-full"
+                      >
+                        <a
+                          href={authUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          Open signer approval
+                          <ExternalLink
+                            className="h-4 w-4"
+                            aria-hidden="true"
+                          />
+                        </a>
+                      </Button>
+                    </div>
+                  )}
+
                   {pendingSwitch && (
                     <div className="rounded-[1.25rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]">
-                      Change the active account in your browser extension, then
-                      reconnect here.
+                      Choose another extension account or paste a new remote
+                      signer URI, then reconnect here.
                     </div>
                   )}
 
@@ -513,14 +1029,16 @@ export function SignerSwitch({
                   <Button
                     variant="outline"
                     type="button"
-                    onClick={handleDisconnect}
+                    onClick={() => void handleDisconnect()}
                     disabled={isWorking}
                   >
-                    Disconnect
+                    {signerMethod === "nip46"
+                      ? "Disconnect remote signer"
+                      : "Disconnect"}
                   </Button>
                   <Button
                     type="button"
-                    onClick={handleSwitchSigner}
+                    onClick={() => void handleSwitchSigner()}
                     disabled={isWorking}
                   >
                     Switch account
@@ -530,16 +1048,8 @@ export function SignerSwitch({
             ) : (
               <>
                 <SignerHeader
-                  title={
-                    mobileSignerUnavailable
-                      ? "Signer unavailable here"
-                      : "Connect a signer"
-                  }
-                  description={
-                    mobileSignerUnavailable
-                      ? "This browser does not expose a supported Nostr signer."
-                      : connectDescription
-                  }
+                  title="Connect a signer"
+                  description={connectDescription}
                   titleRef={titleRef}
                 />
 
@@ -547,12 +1057,22 @@ export function SignerSwitch({
                   helperText={signerHelperText}
                   unlockItems={unlockItems}
                   error={error}
+                  authUrl={authUrl}
+                  rememberedMethod={rememberedMethod}
+                  connectingMethod={signerMethod}
                   pendingSwitch={pendingSwitch}
                   extensionNotice={extensionNotice}
-                  mobileSignerUnavailable={mobileSignerUnavailable}
+                  mobile={mobile}
+                  extensionAvailable={extensionAvailable}
                   connectPending={authPending || isWorking}
                   connectDisabled={isWorking || authPending}
-                  onConnect={handleConnect}
+                  nostrConnectUri={nostrConnectUri}
+                  onConnectExtension={handleConnectExtension}
+                  onConnectNostrConnect={handleConnectNostrConnect}
+                  onConnectRemote={handleConnectRemote}
+                  onCancelConnect={onCancelConnect}
+                  onReconnect={onReconnect}
+                  onForget={onDisconnect}
                 />
               </>
             )}

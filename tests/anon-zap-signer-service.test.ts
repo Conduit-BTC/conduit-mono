@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test"
-import { EVENT_KINDS, OMF_ZAPOUT_MARKER_TAG } from "@conduit/core"
+import {
+  EVENT_KINDS,
+  OMF_ZAPOUT_MARKER_TAG,
+  type AnonZapRequestDraft,
+} from "@conduit/core"
 import { createAnonZapProviderAttestation } from "@conduit/core/protocol/anon-zap"
 import { getPublicKey } from "nostr-tools"
 import {
@@ -7,7 +11,7 @@ import {
   signAnonZapRequestDraft,
   type AnonZapSignerEnv,
 } from "../apps/anon-zap-signer/src/signer"
-import type { AnonZapRequestDraft } from "@conduit/core"
+import type { AnonZapSignerTelemetryProperties } from "../apps/anon-zap-signer/src/telemetry"
 
 const PRIVATE_KEY_HEX = "0".repeat(63) + "1"
 const REQUEST_AUTH_SECRET = "22".repeat(32)
@@ -454,6 +458,74 @@ describe("Anon zap signer service", () => {
         tags: draft().tags,
       },
     })
+  })
+
+  it("schedules one content-free outcome after an authenticated request", async () => {
+    const tasks: Promise<unknown>[] = []
+    const events: Array<{
+      eventName: string
+      properties: AnonZapSignerTelemetryProperties
+    }> = []
+    let clockReads = 0
+    const response = await handleAnonZapSignerRequest(
+      await postRequest(signingRequestBody()),
+      env({ ANON_SIGNER_MAX_CLOCK_SKEW_SECONDS: "100000000" }),
+      {
+        nowMs: () => {
+          clockReads += 1
+          return clockReads === 1 ? 1_000 : 1_120
+        },
+        async telemetryRecorder(eventName, properties) {
+          events.push({ eventName, properties })
+        },
+        waitUntil(task) {
+          tasks.push(task)
+        },
+      }
+    )
+    await Promise.all(tasks)
+
+    expect(response.status).toBe(200)
+    expect(events).toEqual([
+      {
+        eventName: "anon_zap_signer_request_result",
+        properties: {
+          event_name: "anon_zap_signer_request_result",
+          app: "anon_zap_signer",
+          surface: "worker",
+          action: "sign",
+          status: "success",
+          latency_bucket: "100_499ms",
+        },
+      },
+    ])
+    const serialized = JSON.stringify(events)
+    expect(serialized).not.toContain("checkout-session-test")
+    expect(serialized).not.toContain(MERCHANT_PUBKEY)
+    expect(serialized).not.toContain(draft().content)
+  })
+
+  it("does not emit telemetry for unauthenticated request attempts", async () => {
+    let telemetryCalls = 0
+    const response = await handleAnonZapSignerRequest(
+      new Request("http://localhost:7010", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "http://localhost:7000",
+        },
+        body: JSON.stringify(signingRequestBody()),
+      }),
+      env(),
+      {
+        async telemetryRecorder() {
+          telemetryCalls += 1
+        },
+      }
+    )
+
+    expect(response.status).toBe(400)
+    expect(telemetryCalls).toBe(0)
   })
 
   it("rejects disallowed browser origins", async () => {

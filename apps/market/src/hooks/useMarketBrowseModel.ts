@@ -1,14 +1,23 @@
 import { useMemo } from "react"
-import { normalizePubkey, useAuth, type PricingRateInput } from "@conduit/core"
+import { useQuery } from "@tanstack/react-query"
+import {
+  getMarketplaceProducts,
+  normalizePubkey,
+  useAuth,
+  type PricingRateInput,
+} from "@conduit/core"
 import {
   filterProductsByFacets,
   getCategoryFacetOptions,
   getStoreFacetOptions,
 } from "../lib/facets"
 import {
+  allowsGlobalProductSearch,
   getBrowseSearchKey,
+  getGlobalProductSearchQueryKey,
   getStoreTriggerLabel,
   hasUnavailablePriceForBrowseSort,
+  mergeProductSearchResults,
   sortBrowseProducts,
   sortStoreFacetOptionsByRecentPublisher,
   type MarketBrowseSearch,
@@ -63,7 +72,62 @@ export function useMarketBrowseModel({
     seedAuthorPubkeys: guestMarket.seedAuthorPubkeys,
     sort: "newest",
   })
-  const productData = productsQuery.products
+  const normalizedSearchQuery = search.q?.trim() ?? ""
+  const globalSearchEnabled =
+    normalizedSearchQuery.length > 0 &&
+    allowsGlobalProductSearch({
+      catalogSource: effectiveCatalogSource,
+      anonymous: usesAnonymousPerspective,
+    })
+  const globalSearchQuery = useQuery({
+    queryKey: getGlobalProductSearchQueryKey({
+      query: normalizedSearchQuery,
+      pubkey,
+      catalogSource: effectiveCatalogSource,
+      anonymous: usesAnonymousPerspective,
+    }),
+    queryFn: () =>
+      getMarketplaceProducts({
+        authenticatedPubkey: status === "connected" ? pubkey : null,
+        textQuery: normalizedSearchQuery,
+        sort: "newest",
+        readPolicy: {
+          maxRelays: 12,
+          connectTimeoutMs: 4_000,
+          fetchTimeoutMs: 8_000,
+        },
+      }),
+    enabled: globalSearchEnabled,
+    staleTime: 20_000,
+  })
+  const globalSearchProducts = useMemo(
+    () => globalSearchQuery.data?.data.map((record) => record.product) ?? [],
+    [globalSearchQuery.data]
+  )
+  const productData = useMemo(
+    () =>
+      globalSearchEnabled
+        ? mergeProductSearchResults(
+            productsQuery.products,
+            globalSearchProducts
+          )
+        : productsQuery.products,
+    [globalSearchEnabled, globalSearchProducts, productsQuery.products]
+  )
+  const preparedProductsQuery = {
+    ...productsQuery,
+    isInitialLoading:
+      productsQuery.isInitialLoading ||
+      (globalSearchEnabled &&
+        productData.length === 0 &&
+        globalSearchQuery.isLoading),
+    isHydrating:
+      productsQuery.isHydrating ||
+      (globalSearchEnabled && globalSearchQuery.isFetching),
+    error:
+      productsQuery.error ??
+      (globalSearchEnabled ? globalSearchQuery.error : null),
+  }
   const allMerchantPubkeys = useMemo(() => {
     if (productData.length === 0) return []
     const set = new Set<string>()
@@ -198,10 +262,11 @@ export function useMarketBrowseModel({
     hasMore: visibleCount < filtered.length,
     hasUnavailablePriceForSort,
     isUpdatingListings:
-      !productsQuery.isInitialLoading && productsQuery.isHydrating,
+      !preparedProductsQuery.isInitialLoading &&
+      preparedProductsQuery.isHydrating,
     productCards,
     productData,
-    productsQuery,
+    productsQuery: preparedProductsQuery,
     searchKey,
     selectedMerchants,
     selectedMerchantSet,

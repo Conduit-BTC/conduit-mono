@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
-import { getProductPriceDisplay } from "@conduit/core"
-import { ProductCard } from "@conduit/ui"
+import { getProductPriceDisplay, getShopperPriceDisplay } from "@conduit/core"
+import { ProductCard, ProductCartAction } from "@conduit/ui"
 
 describe("ProductCard", () => {
   it("renders a stable card when no product image is available", () => {
@@ -51,5 +51,86 @@ describe("ProductCard", () => {
 
     expect(html).toContain("40,000 sats")
     expect(html).toContain("about $32.28 USD")
+  })
+
+  it("keeps a sold-out product visible while disabling its cart action", () => {
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Sold Out Tee"
+        merchantName="Alice Store"
+        images={[]}
+        primaryPrice="25 sats"
+        soldOut
+        action={
+          <ProductCartAction
+            title="Sold Out Tee"
+            cartQuantity={0}
+            onAddToCart={() => undefined}
+            soldOut
+          />
+        }
+      />
+    )
+
+    expect(html).toContain("Sold Out Tee")
+    expect(html).toContain("Sold out")
+    expect(html).toContain('disabled=""')
+  })
+
+  it("disables product-card increments at the known stock limit", () => {
+    const html = renderToStaticMarkup(
+      <ProductCartAction
+        title="Limited Tee"
+        cartQuantity={1}
+        onAddToCart={() => undefined}
+        onIncrement={() => undefined}
+        onDecrement={() => undefined}
+        atStockLimit
+      />
+    )
+
+    expect(html).toMatch(
+      /<button(?=[^>]*disabled="")(?=[^>]*aria-label="Stock limit reached for Limited Tee")[^>]*>/
+    )
+    expect(html).toMatch(
+      /<button(?![^>]*disabled="")(?=[^>]*aria-label="Remove one Limited Tee from cart")[^>]*>/
+    )
+  })
+
+  it("renders converted Bitcoin, source quote, and USD reference separately", () => {
+    const price = getShopperPriceDisplay(
+      {
+        price: 10,
+        currency: "EUR",
+        sourcePrice: {
+          amount: 10,
+          currency: "EUR",
+          normalizedCurrency: "EUR",
+        },
+      },
+      undefined,
+      {
+        rate: 100_000,
+        fetchedAt: 1_700_000_000_000,
+        source: "env",
+        fiatUsdRates: { EUR: 1.2 },
+        fiatSource: "env",
+      }
+    )
+    const html = renderToStaticMarkup(
+      <ProductCard
+        title="Euro Product"
+        merchantName="Alice Store"
+        images={[]}
+        primaryPrice={price.primary}
+        secondaryPrice={price.secondary}
+        approximateUsdPrice={price.approximateUsd}
+      />
+    )
+
+    expect(html).toContain("~ ₿12,000")
+    expect(html).not.toContain("~=")
+    expect(html).toContain("€10.00 EUR source quote")
+    expect(html).toContain("about $12.00 USD")
   })
 })

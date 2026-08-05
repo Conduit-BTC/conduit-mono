@@ -774,6 +774,54 @@ describe("checkout payment helpers", () => {
     expect(intent.quote?.rate).toBe(50_000)
   })
 
+  it("normalizes mixed source currencies into one trustworthy SATS total", () => {
+    const now = 1_700_000_000_000
+    const intent = buildCheckoutPricingIntent(
+      [
+        cartItem(),
+        cartItem({
+          productId: "product-2",
+          price: 1,
+          currency: "USD",
+          sourcePrice: {
+            amount: 1,
+            currency: "USD",
+            normalizedCurrency: "USD",
+          },
+        }),
+      ],
+      {
+        rate: 50_000,
+        fetchedAt: now,
+        source: "mempool",
+      },
+      now
+    )
+
+    expect(intent).toMatchObject({
+      status: "ok",
+      itemSubtotalSats: 3_000,
+      totalSats: 3_000,
+      totalMsats: 3_000_000,
+    })
+    if (intent.status !== "ok") return
+    expect(intent.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          productId: "product-1",
+          priceAtPurchase: 1_000,
+          currency: "SATS",
+        }),
+        expect.objectContaining({
+          productId: "product-2",
+          priceAtPurchase: 2_000,
+          currency: "SATS",
+          sourcePrice: expect.objectContaining({ currency: "USD" }),
+        }),
+      ])
+    )
+  })
+
   it("recomputes cached fiat sats from the fresh quote at click time", () => {
     const now = 1_700_000_000_000
     const intent = buildCheckoutPricingIntent(
@@ -946,6 +994,24 @@ describe("checkout payment helpers", () => {
       {
         rate: 50_000,
         fetchedAt: now - CHECKOUT_QUOTE_MAX_AGE_MS - 1,
+        source: "mempool",
+      },
+      now
+    )
+
+    expect(intent).toMatchObject({
+      status: "error",
+      code: "stale_quote",
+    })
+  })
+
+  it("blocks direct payment when a non-SATS quote is future-dated", () => {
+    const now = 1_700_000_000_000
+    const intent = buildCheckoutPricingIntent(
+      [cartItem({ price: 10, currency: "USD" })],
+      {
+        rate: 50_000,
+        fetchedAt: now + 1,
         source: "mempool",
       },
       now
@@ -1826,6 +1892,7 @@ describe("payCheckoutInvoice", () => {
   })
 
   it("falls back to WebLN when NWC fails before payment moves", async () => {
+    const telemetryResults: Array<Record<string, unknown>> = []
     const nwcPay = mock(async () => ({
       status: "pre_publish_failed" as const,
       phase: "before_publish" as const,
@@ -1849,6 +1916,7 @@ describe("payCheckoutInvoice", () => {
         nwcSessionPayInvoice: nwcPay as never,
         hasWebLN: () => true,
         weblnSendPayment: weblnPay as never,
+        recordPaymentAttemptResult: (input) => telemetryResults.push(input),
       }
     )
 
@@ -1860,6 +1928,20 @@ describe("payCheckoutInvoice", () => {
     })
     expect(nwcPay).toHaveBeenCalledTimes(1)
     expect(weblnPay).toHaveBeenCalledTimes(1)
+    expect(telemetryResults).toEqual([
+      {
+        amountSats: 1,
+        latencyMs: expect.any(Number),
+        rail: "nwc",
+        status: "unavailable",
+      },
+      {
+        amountSats: 1,
+        latencyMs: expect.any(Number),
+        rail: "webln",
+        status: "success",
+      },
+    ])
   })
 
   it("returns manual fallback when automatic rails are unavailable", async () => {

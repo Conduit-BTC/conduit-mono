@@ -4,6 +4,7 @@ export type ConduitTelemetryApp = "market" | "merchant"
 
 export const browserTelemetryEventNames = [
   "app_load_result",
+  "client_error_result",
   "signer_connected",
   "signer_disconnected",
   "cart_add",
@@ -136,9 +137,12 @@ type PostHogModule = {
 export interface ConduitPostHogConfig {
   api_host: string
   autocapture: false
+  capture_exceptions: false
   capture_dead_clicks: false
+  capture_heatmaps: false
   capture_pageview: false
   capture_pageleave: false
+  capture_performance: false
   rageclick: false
   disable_session_recording: true
   disable_surveys: true
@@ -146,12 +150,10 @@ export interface ConduitPostHogConfig {
   disable_external_dependency_loading: true
   disable_persistence: true
   persistence: "memory"
-  cookieless_mode: "always"
   person_profiles: "never"
   advanced_disable_flags: true
   advanced_disable_feature_flags: true
   enable_recording_console_log: false
-  enable_heatmaps: false
   mask_all_text: true
   mask_all_element_attributes: true
   property_denylist: string[]
@@ -172,7 +174,7 @@ declare global {
 
 const DEFAULT_PLAUSIBLE_SCRIPT_SRC = "https://plausible.io/js/script.js"
 const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com"
-const POSTHOG_COOKIELESS_DISTINCT_ID = "$posthog_cookieless"
+const POSTHOG_ANONYMOUS_DISTINCT_ID = "conduit-browser-telemetry"
 const staticTelemetryRouteSegments = new Set([
   "about",
   "cart",
@@ -219,6 +221,7 @@ const browserTelemetryPropertyNameSet = new Set<string>(
 let plausibleInitializedFor: string | null = null
 let posthogInitializedFor: string | null = null
 let posthogClientPromise: Promise<PostHogClient | null> | null = null
+let lastPageViewSignature: string | null = null
 
 function clean(value: string | undefined): string | null {
   const trimmed = value?.trim()
@@ -387,9 +390,12 @@ export function getConduitPostHogConfig(
   return {
     api_host: input.host,
     autocapture: false,
+    capture_exceptions: false,
     capture_dead_clicks: false,
+    capture_heatmaps: false,
     capture_pageview: false,
     capture_pageleave: false,
+    capture_performance: false,
     rageclick: false,
     disable_session_recording: true,
     disable_surveys: true,
@@ -397,12 +403,10 @@ export function getConduitPostHogConfig(
     disable_external_dependency_loading: true,
     disable_persistence: true,
     persistence: "memory",
-    cookieless_mode: "always",
     person_profiles: "never",
     advanced_disable_flags: true,
     advanced_disable_feature_flags: true,
     enable_recording_console_log: false,
-    enable_heatmaps: false,
     mask_all_text: true,
     mask_all_element_attributes: true,
     property_denylist: [...sensitiveTelemetryPropertyNames],
@@ -479,11 +483,8 @@ function getPostHogIngestionProperties(
     sanitized.token = token
   }
 
-  if (properties.distinct_id === POSTHOG_COOKIELESS_DISTINCT_ID) {
-    sanitized.distinct_id = POSTHOG_COOKIELESS_DISTINCT_ID
-  }
-  if (properties.$cookieless_mode === true) {
-    sanitized.$cookieless_mode = true
+  if (properties.distinct_id === POSTHOG_ANONYMOUS_DISTINCT_ID) {
+    sanitized.distinct_id = POSTHOG_ANONYMOUS_DISTINCT_ID
   }
   if (properties.$process_person_profile === false) {
     sanitized.$process_person_profile = false
@@ -493,6 +494,14 @@ function getPostHogIngestionProperties(
 }
 
 export function recordBrowserTelemetryEvent(input: TelemetryEventInput): void {
+  try {
+    recordBrowserTelemetryEventUnsafe(input)
+  } catch {
+    // Telemetry is best-effort and must never change the user-visible flow.
+  }
+}
+
+function recordBrowserTelemetryEventUnsafe(input: TelemetryEventInput): void {
   if (typeof window === "undefined" || typeof document === "undefined") return
   if (!isBrowserTelemetryEventName(input.eventName)) return
 
@@ -518,17 +527,31 @@ export function recordBrowserTelemetryEvent(input: TelemetryEventInput): void {
   }
 
   if (config.posthog) {
-    void ensurePostHog(config.posthog).then((client) => {
-      client?.capture(input.eventName, {
-        ...properties,
-        $current_url: properties.page_url,
-        $pathname: properties.page_path,
+    void ensurePostHog(config.posthog)
+      .then((client) => {
+        client?.capture(input.eventName, {
+          ...properties,
+          $current_url: properties.page_url,
+          $pathname: properties.page_path,
+          $process_person_profile: false,
+          distinct_id: POSTHOG_ANONYMOUS_DISTINCT_ID,
+        })
       })
-    })
+      .catch(() => undefined)
   }
 }
 
 export function recordBrowserTelemetryPageView(
+  input: TelemetryPageViewInput
+): void {
+  try {
+    recordBrowserTelemetryPageViewUnsafe(input)
+  } catch {
+    // Telemetry is best-effort and must never change the user-visible flow.
+  }
+}
+
+function recordBrowserTelemetryPageViewUnsafe(
   input: TelemetryPageViewInput
 ): void {
   if (typeof window === "undefined" || typeof document === "undefined") return
@@ -543,6 +566,12 @@ export function recordBrowserTelemetryPageView(
     pathname: input.pathname,
   })
   const sanitizedPath = sanitizeTelemetryPath(input.pathname)
+  // Keep the raw route only in memory for exact duplicate suppression. Using
+  // the sanitized provider URL here would collapse distinct dynamic routes
+  // such as `/products/a` and `/products/b` into one pageview.
+  const pageViewSignature = `${input.app}:${input.origin ?? window.location.origin}:${input.pathname}`
+  if (lastPageViewSignature === pageViewSignature) return
+  lastPageViewSignature = pageViewSignature
 
   if (config.plausible) {
     ensurePlausible(config.plausible)
@@ -550,15 +579,19 @@ export function recordBrowserTelemetryPageView(
   }
 
   if (config.posthog) {
-    void ensurePostHog(config.posthog).then((client) => {
-      client?.capture("$pageview", {
-        $current_url: pageUrl,
-        $pathname: sanitizedPath,
-        app: input.app,
-        page_path: sanitizedPath,
-        page_url: pageUrl,
+    void ensurePostHog(config.posthog)
+      .then((client) => {
+        client?.capture("$pageview", {
+          $current_url: pageUrl,
+          $pathname: sanitizedPath,
+          $process_person_profile: false,
+          app: input.app,
+          distinct_id: POSTHOG_ANONYMOUS_DISTINCT_ID,
+          page_path: sanitizedPath,
+          page_url: pageUrl,
+        })
       })
-    })
+      .catch(() => undefined)
   }
 }
 
@@ -606,8 +639,22 @@ function parseAllowedTelemetryHosts(raw: string | undefined): string[] {
 function isTelemetryAllowedForCurrentHost(
   config: BrowserTelemetryConfig
 ): boolean {
-  if (config.allowedHosts.length === 0) return true
-  return config.allowedHosts.includes(window.location.hostname.toLowerCase())
+  if (config.allowedHosts.length === 0) return false
+  const hostname = window.location.hostname.toLowerCase()
+  return config.allowedHosts.some((pattern) =>
+    isTelemetryHostnameMatch(hostname, pattern)
+  )
+}
+
+function isTelemetryHostnameMatch(hostname: string, pattern: string): boolean {
+  if (!pattern.startsWith("*.")) return hostname === pattern
+
+  const suffix = pattern.slice(2)
+  if (!suffix || suffix.includes("*")) return false
+  if (!hostname.endsWith(`.${suffix}`)) return false
+
+  const prefix = hostname.slice(0, -(suffix.length + 1))
+  return !!prefix && !prefix.includes(".")
 }
 
 function isGlobalPrivacyControlEnabled(): boolean {

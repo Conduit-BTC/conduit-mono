@@ -18,10 +18,10 @@ import {
   getMerchantConversationList,
   getMerchantStorefront,
   getProductDetail,
+  getProductsByIds,
   getProfiles,
   __resetRelayListTestOverrides,
   __setRelayListTestOverrides,
-  CANONICAL_APP_WRITE_RELAYS,
 } from "@conduit/core"
 import { EVENT_KINDS } from "@conduit/core"
 import type {
@@ -46,6 +46,7 @@ function makeProductEvent(params: {
   id: string
   createdAt: number
   title: string
+  stock?: number
 }): {
   id: string
   kind: number
@@ -70,6 +71,7 @@ function makeProductEvent(params: {
       visibility: "public",
       images: [{ url: "https://example.com/product.png" }],
       tags: ["test"],
+      stock: params.stock,
       createdAt: params.createdAt * 1000,
       updatedAt: params.createdAt * 1000,
     }),
@@ -79,6 +81,9 @@ function makeProductEvent(params: {
       ["title", params.title],
       ["price", "25", "USD"],
       ["t", "test"],
+      ...(typeof params.stock === "number"
+        ? [["stock", String(params.stock)]]
+        : []),
     ],
   }
 }
@@ -88,6 +93,7 @@ function makeSignedProductEvent(params: {
   dTag: string
   createdAt: number
   title: string
+  stock?: number
 }): NDKEvent {
   const secretKey = params.secretKey ?? MERCHANT_A_SECRET
   const pubkey = getPublicKey(secretKey)
@@ -105,6 +111,7 @@ function makeSignedProductEvent(params: {
         visibility: "public",
         images: [{ url: "https://example.com/product.png" }],
         tags: ["test"],
+        stock: params.stock,
         createdAt: params.createdAt * 1000,
         updatedAt: params.createdAt * 1000,
       }),
@@ -113,6 +120,9 @@ function makeSignedProductEvent(params: {
         ["title", params.title],
         ["price", "25", "USD"],
         ["t", "test"],
+        ...(typeof params.stock === "number"
+          ? [["stock", String(params.stock)]]
+          : []),
       ],
     },
     secretKey
@@ -146,6 +156,7 @@ beforeEach(async () => {
   cachedOrderMessages = []
   __setCommerceTestOverrides({
     now: () => FIXED_NOW,
+    resolveInboxRelayUrls: async () => ["wss://inbox.example"],
     getCachedProducts: async (merchantPubkey, authorPubkeys) =>
       cachedProducts.filter(
         (row) =>
@@ -197,6 +208,8 @@ beforeEach(async () => {
         ]
       }
     },
+    getCachedDirectMessages: async () => [],
+    putCachedDirectMessages: async () => {},
   })
 })
 
@@ -248,6 +261,43 @@ describe("commerce gateway", () => {
     expect(seenAuthors).toEqual(["merchant-a"])
     expect(result.data.map((record) => record.product.pubkey)).toEqual([
       "merchant-a",
+    ])
+  })
+
+  it("searches products globally when no perspective authors are supplied", async () => {
+    const productEvents = [
+      makeProductEvent({
+        pubkey: "merchant-a",
+        dTag: "other-item",
+        id: "global-search-event-a",
+        createdAt: 101,
+        title: "Other item",
+      }),
+      makeProductEvent({
+        pubkey: "merchant-b",
+        dTag: "test-shirt",
+        id: "global-search-event-b",
+        createdAt: 102,
+        title: "Test t-shirt",
+      }),
+    ]
+    let seenAuthors: string[] | undefined
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          seenAuthors = filter.authors
+          return productEvents as never
+        }
+        return []
+      },
+    })
+
+    const result = await getMarketplaceProducts({ textQuery: "test t-shirt" })
+
+    expect(seenAuthors).toBeUndefined()
+    expect(result.data.map((record) => record.product.title)).toEqual([
+      "Test t-shirt",
     ])
   })
 
@@ -633,6 +683,51 @@ describe("commerce gateway", () => {
     expect(cachedProducts[0]?.eventId).toBe(localProduct.id)
   })
 
+  it("keeps newer local sold-out stock ahead of stale relay detail and batch reads", async () => {
+    const dTag = "consecutive-stock-update"
+    const localProduct = makeSignedProductEvent({
+      dTag,
+      createdAt: 102,
+      title: "Locally Sold Out",
+      stock: 0,
+    })
+    const merchantPubkey = localProduct.pubkey
+    const addressId = `30402:${merchantPubkey}:${dTag}`
+    await cacheSignedProductListingEvent(localProduct)
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) => {
+        if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
+          return [
+            makeProductEvent({
+              pubkey: merchantPubkey,
+              dTag,
+              id: "event-relay-stock-12",
+              createdAt: 100,
+              title: "Stale Relay In Stock",
+              stock: 12,
+            }) as never,
+          ]
+        }
+        return []
+      },
+    })
+
+    const detail = await getProductDetail({
+      productId: addressId,
+      includeMarketHidden: true,
+    })
+    const batch = await getProductsByIds([addressId])
+
+    expect(detail.data?.eventId).toBe(localProduct.id)
+    expect(detail.data?.product.stock).toBe(0)
+    expect(detail.meta.stale).toBe(false)
+    expect(detail.meta.degraded).toBe(false)
+    expect(batch.data[0]?.eventId).toBe(localProduct.id)
+    expect(batch.data[0]?.product.stock).toBe(0)
+    expect(cachedProducts[0]?.eventId).toBe(localProduct.id)
+  })
+
   it("uses the lower event id to resolve same-timestamp product versions", async () => {
     const dTag = "same-second-edit"
     const versions = [
@@ -734,6 +829,63 @@ describe("commerce gateway", () => {
     const result = await getProductDetail({ productId: addressId })
 
     expect(result.data).toBeNull()
+  })
+
+  it("suppresses deleted products from batched live reads", async () => {
+    const dTag = "locally-deleted-batch"
+    const staleProduct = makeSignedProductEvent({
+      dTag,
+      createdAt: 100,
+      title: "Locally Deleted Batch Item",
+    })
+    const addressId = `30402:${staleProduct.pubkey}:${dTag}`
+
+    await cacheSignedProductDeletionEvent(
+      makeSignedDeletionEvent({
+        createdAt: 101,
+        tags: [["a", addressId]],
+      })
+    )
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([staleProduct] as never)
+          : [],
+    })
+
+    const result = await getProductsByIds([addressId], {
+      includeMarketHidden: true,
+    })
+
+    expect(result.meta.source).toBe("commerce")
+    expect(result.data).toHaveLength(0)
+  })
+
+  it("keeps market-hidden products out of batched Market reads", async () => {
+    const productEvent = makeProductEvent({
+      pubkey: "merchant",
+      dTag: "blocked-batch-item",
+      id: "event-blocked-batch",
+      createdAt: 100,
+      title: "Counterfeit goods display sample",
+    })
+    const addressId = "30402:merchant:blocked-batch-item"
+
+    __setCommerceTestOverrides({
+      fetchEventsFanout: async (filter) =>
+        filter.kinds?.includes(EVENT_KINDS.PRODUCT)
+          ? ([productEvent] as never)
+          : [],
+    })
+
+    const marketResult = await getProductsByIds([addressId])
+    const merchantResult = await getProductsByIds([addressId], {
+      includeMarketHidden: true,
+    })
+
+    expect(marketResult.data).toHaveLength(0)
+    expect(merchantResult.data).toHaveLength(1)
+    expect(merchantResult.data[0]?.safety?.state).toBe("blocked")
   })
 
   it("suppresses stale event-id product detail across local signed tombstones", async () => {
@@ -1554,7 +1706,7 @@ describe("commerce gateway", () => {
     expect(result.data[0]?.status).toBeNull()
   })
 
-  it("queries expanded merchant inbox relays for gift-wrapped orders", async () => {
+  it("queries only the declared merchant inbox relays for gift-wrapped orders", async () => {
     const merchantPubkey = "merchant"
     const merchantReadRelays = Array.from(
       { length: 8 },
@@ -1577,6 +1729,7 @@ describe("commerce gateway", () => {
     })
     __setCommerceTestOverrides({
       requireNdkConnected: async () => ({ signer: {} }) as never,
+      resolveInboxRelayUrls: async () => merchantReadRelays,
       fetchEventsFanout: async (filter, options) => {
         if (filter.kinds?.includes(EVENT_KINDS.GIFT_WRAP)) {
           seenRelayUrls = options?.relayUrls
@@ -1590,8 +1743,7 @@ describe("commerce gateway", () => {
       limit: 50,
     })
 
-    expect(seenRelayUrls).toContain(CANONICAL_APP_WRITE_RELAYS[0])
-    expect(seenRelayUrls).toContain("wss://merchant-read-7.example")
+    expect(seenRelayUrls).toEqual(merchantReadRelays)
   })
 
   it("retries parsed wrapped order messages when cache persistence fails", async () => {

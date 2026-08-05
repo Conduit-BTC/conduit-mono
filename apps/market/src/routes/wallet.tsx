@@ -9,8 +9,26 @@ import {
   Zap,
 } from "lucide-react"
 import { useEffect, useState } from "react"
-import { parseNwcUri, pubkeyToNpub, type NwcDiagnostic } from "@conduit/core"
-import { Button, Input, Label, StatusPill } from "@conduit/ui"
+import {
+  parseNwcUri,
+  pubkeyToNpub,
+  SUPPORTED_SHOPPER_DISPLAY_CURRENCIES,
+  type NwcDiagnostic,
+  type ShopperDisplayCurrency,
+} from "@conduit/core"
+import {
+  Button,
+  Input,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  StatusPill,
+  Switch,
+} from "@conduit/ui"
+import { useShopperPricing } from "../hooks/useShopperPricing"
 import { requireAuth } from "../lib/auth"
 import {
   useWallet,
@@ -18,10 +36,7 @@ import {
   type WalletBudgetState,
   type WalletConnectionStatus,
 } from "../hooks/useWallet"
-import {
-  formatBalanceFreshness,
-  formatWalletMsatsAsSats,
-} from "../lib/wallet-readiness"
+import { formatBalanceFreshness } from "../lib/wallet-readiness"
 import { getWalletCapabilityPills } from "../lib/wallet-capabilities"
 
 export const Route = createFileRoute("/wallet")({
@@ -153,9 +168,11 @@ function WalletCapabilities({
 function WalletBalanceRow({
   balance,
   onRefresh,
+  formatSats,
 }: {
   balance: WalletBalanceState
   onRefresh: () => Promise<void>
+  formatSats: (sats: number) => string
 }) {
   const hasBalance = balance.balanceMsats !== null
   const canRefresh =
@@ -164,7 +181,7 @@ function WalletBalanceRow({
   const freshness = formatBalanceFreshness(balance.fetchedAt, now)
   const value =
     hasBalance && balance.balanceMsats !== null
-      ? `${formatWalletMsatsAsSats(balance.balanceMsats)} sats`
+      ? formatSats(Math.floor(balance.balanceMsats / 1_000))
       : balance.status === "checking"
         ? "Checking..."
         : balance.status === "error"
@@ -215,7 +232,13 @@ function WalletBalanceRow({
   )
 }
 
-function WalletBudgetRow({ budget }: { budget: WalletBudgetState }) {
+function WalletBudgetRow({
+  budget,
+  formatSats,
+}: {
+  budget: WalletBudgetState
+  formatSats: (sats: number) => string
+}) {
   const now = useFreshnessNow(budget.fetchedAt)
 
   if (budget.status === "unavailable") return null
@@ -223,7 +246,7 @@ function WalletBudgetRow({ budget }: { budget: WalletBudgetState }) {
   const freshness = formatBalanceFreshness(budget.fetchedAt, now)
   const value =
     budget.status === "available" && budget.remainingMsats !== null
-      ? `${formatWalletMsatsAsSats(budget.remainingMsats)} sats`
+      ? formatSats(Math.floor(budget.remainingMsats / 1_000))
       : budget.status === "checking"
         ? "Checking..."
         : budget.status === "error"
@@ -231,7 +254,7 @@ function WalletBudgetRow({ budget }: { budget: WalletBudgetState }) {
           : "Not checked yet"
   const detail =
     budget.status === "available" && budget.totalMsats !== null
-      ? `${formatWalletMsatsAsSats(budget.totalMsats)} sats budget${
+      ? `${formatSats(Math.floor(budget.totalMsats / 1_000))} budget${
           freshness ? ` - ${freshness}` : ""
         }`
       : budget.status === "error"
@@ -257,12 +280,15 @@ function WalletBudgetRow({ budget }: { budget: WalletBudgetState }) {
 
 function WalletPage() {
   const wallet = useWallet({ refreshBalance: true })
+  const shopperPricing = useShopperPricing()
   const [uriInput, setUriInput] = useState("")
   const [pending, setPending] = useState(false)
   const [inputError, setInputError] = useState<string | null>(null)
   const walletNpub = wallet.connection
     ? pubkeyToNpub(wallet.connection.walletPubkey)
     : null
+  const formatSats = (sats: number) =>
+    shopperPricing.formatSatsAmount(sats).primary
 
   async function handleConnect(): Promise<void> {
     const trimmed = uriInput.trim()
@@ -324,6 +350,66 @@ function WalletPage() {
                 wallet to merchants. It cannot receive payments on your behalf,
                 and it should not be shared in support reports or public issues.
               </p>
+            </div>
+
+            <div>
+              <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--primary-500)]">
+                Price display
+              </h2>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
+                Choose how Market presents prices. Merchant quotes, Lightning
+                invoices, and payment calculations keep their original values.
+              </p>
+              <div className="mt-3 rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
+                <div className="grid gap-5 sm:grid-cols-2 sm:items-end">
+                  <div className="grid gap-2">
+                    <Label htmlFor="display-currency">Preferred currency</Label>
+                    <Select
+                      value={shopperPricing.preference.currency}
+                      onValueChange={(value) =>
+                        shopperPricing.setCurrency(
+                          value as ShopperDisplayCurrency
+                        )
+                      }
+                    >
+                      <SelectTrigger
+                        id="display-currency"
+                        className="h-11 rounded-xl"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SUPPORTED_SHOPPER_DISPLAY_CURRENCIES.map(
+                          (currency) => (
+                            <SelectItem key={currency} value={currency}>
+                              {currency === "BITCOIN"
+                                ? "Bitcoin (₿ base units)"
+                                : currency}
+                            </SelectItem>
+                          )
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex h-11 items-center justify-between gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4">
+                    <Label
+                      htmlFor="sats-standard"
+                      className="cursor-pointer text-sm font-medium"
+                    >
+                      Sats the standard
+                    </Label>
+                    <Switch
+                      id="sats-standard"
+                      checked={shopperPricing.preference.bitcoinUnit === "sats"}
+                      onCheckedChange={shopperPricing.setSatsStandard}
+                    />
+                  </div>
+                </div>
+                <p className="mt-4 text-xs leading-5 text-[var(--text-muted)]">
+                  ₿10,000 equals 10,000 sats. This preference changes labels
+                  only; it never changes a listing, order, invoice, or payment.
+                </p>
+              </div>
             </div>
 
             {/* Connection status section */}
@@ -407,8 +493,12 @@ function WalletPage() {
                       <WalletBalanceRow
                         balance={wallet.balance}
                         onRefresh={wallet.refreshBalance}
+                        formatSats={formatSats}
                       />
-                      <WalletBudgetRow budget={wallet.budget} />
+                      <WalletBudgetRow
+                        budget={wallet.budget}
+                        formatSats={formatSats}
+                      />
                       {wallet.info?.methods &&
                         wallet.info.methods.length > 0 && (
                           <div className="flex items-start justify-between gap-4 px-4 py-3">

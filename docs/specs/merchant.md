@@ -72,9 +72,17 @@ not part of the standard workflow.
 
 ### Communication
 
-1. Keep buyer communication order-linked where possible
-2. Reply via signed/encrypted NIP-17 messages
-3. Preserve payment requests, payment proofs, status updates, shipping updates, and receipts as conversation evidence
+1. Handle general buyer support conversations in the `/messages` workspace
+   (NIP-17 kind-14 direct messages), kept distinct from order conversations
+2. Keep order-specific communication order-linked (kind 16) in the Orders
+   workspace, where order-linked previews link back to the order
+3. Reply via signed/encrypted NIP-17 messages
+4. Preserve payment requests, payment proofs, status updates, shipping updates, and receipts as conversation evidence
+5. See explicit loading, stale/degraded, and decrypt-failed/retry states rather
+   than silently missing messages
+
+General direct messages and order-linked conversations stay separate. See
+`docs/specs/messaging.md`.
 
 The NIP-17 reply path applies to signed-in buyers. Guest order/payment reports
 remain visible as inbound evidence, while follow-up uses the order contact
@@ -87,13 +95,14 @@ fields and merchant self-copy records preserve the operational history.
 | `/`         | Readiness dashboard and overview      |
 | `/products` | Product list/create/edit workspace    |
 | `/orders`   | Order list and order detail workspace |
+| `/messages` | Buyer support messaging workspace     |
 | `/profile`  | Merchant/store profile setup          |
 | `/payments` | Payment and wallet readiness          |
 | `/shipping` | Shipping readiness/options            |
 | `/network`  | Relay/network settings                |
 | `/about`    | App/source/provenance surface         |
 
-Do not document `/products/new`, `/products/$id/edit`, `/orders/$id`, `/messages`, or `/settings/*` unless those routes exist again.
+Do not document `/products/new`, `/products/$id/edit`, `/orders/$id`, or `/settings/*` unless those routes exist again.
 
 ## Data Layer
 

@@ -23,6 +23,7 @@ import {
   type OrderZapReceiptStatus,
   type ParsedOrderMessage,
   type StoredPaymentAttempt,
+  type SourcePriceQuote,
 } from "@conduit/core"
 import type { StatusStepperRow, StatusStepperRowStatus } from "@conduit/ui"
 
@@ -43,6 +44,7 @@ export interface OrderViewItem {
   quantity: number
   priceAtPurchase: number
   currency: string
+  sourcePrice?: SourcePriceQuote
 }
 
 export interface OrderViewModel {
@@ -210,6 +212,7 @@ export function buildOrderViewModel(
         quantity: item.quantity,
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,
+        ...(item.sourcePrice ? { sourcePrice: item.sourcePrice } : {}),
       }))
     : (summary?.items ?? []).map((item) => ({
         productId: item.productId,
@@ -219,6 +222,7 @@ export function buildOrderViewModel(
         quantity: item.quantity,
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,
+        ...(item.sourcePrice ? { sourcePrice: item.sourcePrice } : {}),
       }))
 
   const totalSats = lifecycle?.totalSats ?? (summary ? summary.subtotal : null)
@@ -593,7 +597,11 @@ export function getOrderFilterPhase(
   return "pending"
 }
 
-export function buildOrderTimeline(vm: OrderViewModel): StatusStepperRow[] {
+export function buildOrderTimeline(
+  vm: OrderViewModel,
+  formatSats: (sats: number) => string = (sats) =>
+    `${sats.toLocaleString()} sats`
+): StatusStepperRow[] {
   const statuses = computeOrderTimelineStatuses(vm)
   const rowOrder =
     vm.buyerIdentityKind === "guest_ephemeral"
@@ -630,7 +638,7 @@ export function buildOrderTimeline(vm: OrderViewModel): StatusStepperRow[] {
       status === "complete" &&
       typeof vm.totalSats === "number"
     ) {
-      subtitle = `Payment of ${vm.totalSats.toLocaleString()} sats was sent over Lightning.`
+      subtitle = `Payment of ${formatSats(vm.totalSats)} was sent over Lightning.`
     }
     if (key === "fulfillment" && vm.tracking?.number) {
       subtitle = `Tracking: ${vm.tracking.number}`

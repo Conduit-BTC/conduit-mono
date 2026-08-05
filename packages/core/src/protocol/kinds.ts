@@ -33,6 +33,9 @@ export const EVENT_KINDS = {
   /** NIP-65: Relay list metadata */
   RELAY_LIST: 10002,
 
+  /** NIP-17: Private direct-message relay list (recipient inbox relays) */
+  PRIVATE_MESSAGE_RELAYS: 10050,
+
   /** NIP-89: Recommended application handlers */
   APPLICATION_RECOMMENDATION: 31989,
 

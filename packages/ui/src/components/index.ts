@@ -39,6 +39,30 @@ export {
 } from "./Dialog"
 export { Input, type InputProps } from "./Input"
 export { Textarea, type TextareaProps } from "./Textarea"
+export {
+  ConversationMessageBubble,
+  getConversationMessageDisplayContent,
+  type ConversationMessageBubbleProps,
+} from "./ConversationMessageBubble"
+export { MessageComposer, type MessageComposerProps } from "./MessageComposer"
+export { SearchInput, type SearchInputProps } from "./SearchInput"
+export {
+  ConversationCardScroller,
+  type ConversationCardScrollerProps,
+} from "./ConversationCardScroller"
+export {
+  DecryptFailureNotice,
+  type DecryptFailureNoticeProps,
+} from "./DecryptFailureNotice"
+export {
+  LegacyDirectMessageNotice,
+  type LegacyDirectMessageNoticeProps,
+} from "./LegacyDirectMessageNotice"
+export { LiveReadNotice, type LiveReadNoticeProps } from "./LiveReadNotice"
+export {
+  MessagingReadinessNotice,
+  type MessagingReadinessNoticeProps,
+} from "./MessagingReadinessNotice"
 export { Label } from "./Label"
 export {
   Popover,
@@ -78,6 +102,7 @@ export {
   SelectSeparator,
 } from "./Select"
 export { Skeleton } from "./Skeleton"
+export { Switch } from "./Switch"
 export { Tabs, TabsList, TabsTrigger, TabsContent } from "./Tabs"
 export {
   RelaySettingsPanel,
@@ -98,10 +123,16 @@ export {
   SignerConnectPanel,
   SignerSwitch,
   SignerUnlockCard,
+  isMobileSignerEnvironment,
+  type SignerEnvironmentInput,
   type SignerConnectPanelProps,
   type SignerSwitchProps,
   type SignerSwitchStatus,
 } from "./SignerSwitch"
+export {
+  SignerAuthUrlNotice,
+  type SignerAuthUrlNoticeProps,
+} from "./SignerAuthUrlNotice"
 export { OrderDetailCard, type OrderDetailCardProps } from "./OrderDetailCard"
 export {
   DoubleSideStatusPill,
@@ -111,6 +142,8 @@ export {
   OrderConversationMessage,
   formatProductReference,
   getConversationPreview,
+  type OrderAmountDisplay,
+  type OrderAmountFormatter,
 } from "./OrderConversationMessage"
 export {
   OrderMessagesWidget,

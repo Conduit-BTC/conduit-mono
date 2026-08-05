@@ -9,11 +9,18 @@ import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { useEffect, useRef } from "react"
 import {
   buildBugReportUrl,
+  installBrowserClientErrorTelemetry,
+  recordBrowserClientError,
   recordBrowserTelemetryEvent,
   recordBrowserTelemetryPageView,
   useAuth,
 } from "@conduit/core"
-import { ErrorPage, LegalFooter, NotFoundPage } from "@conduit/ui"
+import {
+  ErrorPage,
+  LegalFooter,
+  NotFoundPage,
+  SignerAuthUrlNotice,
+} from "@conduit/ui"
 import { MarketHeader } from "../components/MarketHeader"
 
 export const Route = createRootRoute({
@@ -74,12 +81,15 @@ function useMarketBugReportUrl(): string {
 }
 
 function RootLayout() {
-  const { status } = useAuth()
+  const { authUrl, dismissAuthUrl, method, status } = useAuth()
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   })
   const appLoadTelemetrySentRef = useRef(false)
   const previousAuthStatusRef = useRef(status)
+  const previousAuthMethodRef = useRef(method)
+
+  useEffect(() => installBrowserClientErrorTelemetry("market"), [])
 
   useEffect(() => {
     if (appLoadTelemetrySentRef.current) return
@@ -103,7 +113,7 @@ function RootLayout() {
         app: "market",
         eventName: "signer_connected",
         properties: {
-          method: "nip07",
+          method: method ?? "nip07",
           status: "success",
         },
       })
@@ -116,13 +126,14 @@ function RootLayout() {
         app: "market",
         eventName: "signer_disconnected",
         properties: {
-          method: "nip07",
+          method: previousAuthMethodRef.current ?? "nip07",
           status: "success",
         },
       })
     }
     previousAuthStatusRef.current = status
-  }, [status])
+    if (method) previousAuthMethodRef.current = method
+  }, [method, status])
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" })
@@ -137,11 +148,29 @@ function RootLayout() {
     recordBrowserTelemetryPageView({ app: "market", pathname })
   }, [pathname])
 
+  throwSyntheticClientErrorForTelemetryTest()
+
   return (
     <RootShell>
       <Outlet />
+      {authUrl && (
+        <SignerAuthUrlNotice authUrl={authUrl} onDismiss={dismissAuthUrl} />
+      )}
     </RootShell>
   )
+}
+
+function throwSyntheticClientErrorForTelemetryTest(): void {
+  if (
+    import.meta.env.MODE === "mock" &&
+    import.meta.env.VITE_ENABLE_TELEMETRY_TEST_HOOKS === "true" &&
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get(
+      "__conduit_telemetry_test"
+    ) === "react_error_boundary"
+  ) {
+    throw new TypeError("Synthetic client error telemetry test")
+  }
 }
 
 function getPageTitle(pathname: string): string {
@@ -192,6 +221,14 @@ function getPageTitle(pathname: string): string {
 }
 
 function RootErrorComponent({ error }: ErrorComponentProps) {
+  useEffect(() => {
+    recordBrowserClientError({
+      app: "market",
+      error,
+      source: "react_error_boundary",
+    })
+  }, [error])
+
   return (
     <RootShell>
       <ErrorPage

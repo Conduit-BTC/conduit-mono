@@ -25,9 +25,10 @@ import {
   ProductGridCard,
   ProductGridCardSkeleton,
 } from "../../components/ProductGridCard"
-import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
+import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import { useMarketBrowseModel } from "../../hooks/useMarketBrowseModel"
+import { createCartItemFromProduct } from "../../lib/cart-model"
 import { normalizeFacetValues } from "../../lib/facets"
 import {
   type MarketBrowseSearch,
@@ -170,8 +171,8 @@ function ProductsPage() {
   const tagCloudRef = useRef<HTMLDivElement | null>(null)
   const hasMoreRef = useRef(false)
   const loadMoreObserverRef = useRef<IntersectionObserver | null>(null)
-  const btcUsdRateQuery = useBtcUsdRate()
-  const btcUsdRate = btcUsdRateQuery.data ?? null
+  const shopperPricing = useShopperPricing()
+  const btcUsdRate = shopperPricing.quote
   const updateSearch = useCallback(
     (updates: Partial<ProductSearch>) => {
       navigate({
@@ -716,6 +717,7 @@ function ProductsPage() {
 
       {/* Empty state - filters returned nothing */}
       {!productsQuery.isInitialLoading &&
+        !productsQuery.isHydrating &&
         productData.length > 0 &&
         filtered.length === 0 && (
           <div className="rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-sm text-[var(--text-secondary)]">
@@ -760,61 +762,16 @@ function ProductsPage() {
                   merchantNamePending={merchant.status === "pending"}
                   imageLoading={index < 4 ? "eager" : "lazy"}
                   btcUsdRate={btcUsdRate}
+                  pricePreference={shopperPricing.preference}
                   cartQuantity={
                     cart.items.find((item) => item.productId === product.id)
                       ?.quantity ?? 0
                   }
                   onAddToCart={() =>
-                    cart.addItem(
-                      {
-                        productId: product.id,
-                        merchantPubkey: product.pubkey,
-                        title: product.title,
-                        price: product.price,
-                        currency: product.currency,
-                        priceSats: product.priceSats,
-                        sourcePrice: product.sourcePrice,
-                        sourceShippingCost: product.sourceShippingCost,
-                        image: product.images[0]?.url,
-                        tags: product.tags,
-                        format: product.format,
-                        shippingCostSats: product.shippingCostSats,
-                        shippingOptionId: product.shippingOptionId,
-                        shippingOptionDTag: product.shippingOptionDTag,
-                        shippingCountries: product.shippingCountries,
-                        shippingCountryRules: product.shippingCountryRules,
-                        publicZapEnabled: product.publicZapEnabled,
-                        zapMessagePolicy: product.zapMessagePolicy,
-                        publicZapPolicyKnown: product.publicZapPolicyKnown,
-                      },
-                      1
-                    )
+                    cart.addItem(createCartItemFromProduct(product), 1)
                   }
                   onIncrement={() =>
-                    cart.addItem(
-                      {
-                        productId: product.id,
-                        merchantPubkey: product.pubkey,
-                        title: product.title,
-                        price: product.price,
-                        currency: product.currency,
-                        priceSats: product.priceSats,
-                        sourcePrice: product.sourcePrice,
-                        sourceShippingCost: product.sourceShippingCost,
-                        image: product.images[0]?.url,
-                        tags: product.tags,
-                        format: product.format,
-                        shippingCostSats: product.shippingCostSats,
-                        shippingOptionId: product.shippingOptionId,
-                        shippingOptionDTag: product.shippingOptionDTag,
-                        shippingCountries: product.shippingCountries,
-                        shippingCountryRules: product.shippingCountryRules,
-                        publicZapEnabled: product.publicZapEnabled,
-                        zapMessagePolicy: product.zapMessagePolicy,
-                        publicZapPolicyKnown: product.publicZapPolicyKnown,
-                      },
-                      1
-                    )
+                    cart.addItem(createCartItemFromProduct(product), 1)
                   }
                   onDecrement={() => {
                     const existing = cart.items.find(

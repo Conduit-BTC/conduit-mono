@@ -1,17 +1,19 @@
 import { useNavigate } from "@tanstack/react-router"
 import {
+  getShopperPriceDisplay,
   getProductImageCandidates,
   pubkeyToNpub,
   type PricingRateInput,
   type Product,
+  type ShopperPricePreference,
 } from "@conduit/core"
 import {
   ProductCard,
   ProductCardSkeleton,
   ProductCartAction,
 } from "@conduit/ui"
+import { getProductAddAvailability } from "../lib/cart-model"
 import { getPendingMerchantDisplayName } from "./MerchantIdentity"
-import { getProductPriceDisplay } from "../lib/pricing"
 
 type ProductGridCardProps = {
   product: Product
@@ -20,6 +22,7 @@ type ProductGridCardProps = {
   imageLoading?: "eager" | "lazy"
   onAddToCart?: () => void
   btcUsdRate?: PricingRateInput
+  pricePreference?: ShopperPricePreference
   cartQuantity?: number
   onIncrement?: () => void
   onDecrement?: () => void
@@ -33,6 +36,7 @@ export function ProductGridCard({
   imageLoading = "lazy",
   onAddToCart,
   btcUsdRate,
+  pricePreference,
   cartQuantity = 0,
   onIncrement,
   onDecrement,
@@ -44,10 +48,15 @@ export function ProductGridCard({
   const merchantName =
     merchantNameOverride ||
     getPendingMerchantDisplayName(product.pubkey, { chars: 6 })
-  const { primary, secondary } = getProductPriceDisplay(
+  const { primary, secondary, approximateUsd } = getShopperPriceDisplay(
     product,
-    btcUsdRate ?? null
+    pricePreference,
+    typeof btcUsdRate === "object" ? btcUsdRate : null
   )
+  const soldOut = product.stock === 0
+  const atStockLimit =
+    !soldOut &&
+    getProductAddAvailability(product.stock, cartQuantity, 1).canAdd === false
 
   return (
     <ProductCard
@@ -57,8 +66,10 @@ export function ProductGridCard({
       images={getProductImageCandidates(product)}
       primaryPrice={primary}
       secondaryPrice={secondary}
+      approximateUsdPrice={approximateUsd}
       imageLoading={imageLoading}
       cartQuantity={cartQuantity}
+      soldOut={soldOut}
       onActivate={() =>
         navigate({
           to: "/products/$productId",
@@ -80,6 +91,8 @@ export function ProductGridCard({
             onAddToCart={onAddToCart}
             onIncrement={onIncrement}
             onDecrement={onDecrement}
+            soldOut={soldOut}
+            atStockLimit={atStockLimit}
           />
         ) : undefined
       }

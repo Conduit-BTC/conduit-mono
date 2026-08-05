@@ -1,11 +1,14 @@
 import {
   extractOrderSummary,
+  formatNpub,
   getOrderStatusDisplay,
+  getProfileName,
   isMerchantOrderPaid,
   type MerchantConversationSummary,
   type MerchantOrderState,
   type OrderSummary,
   type OrderStatusDisplay,
+  type Profile,
 } from "@conduit/core"
 
 export type OrderPhaseTab = "all" | "pending" | "in_progress" | "completed"
@@ -68,6 +71,23 @@ export function getMerchantOrderSummary(
     buyerPubkey: conversation.buyerPubkey,
     merchantPubkey: conversation.merchantPubkey,
   })
+}
+
+export function isMerchantGuestOrder(
+  conversation: MerchantConversationSummary
+): boolean {
+  return (
+    getMerchantOrderSummary(conversation).buyerIdentityKind ===
+    "guest_ephemeral"
+  )
+}
+
+export function getMerchantBuyerDisplayName(
+  conversation: MerchantConversationSummary,
+  profile?: Profile
+): string {
+  if (isMerchantGuestOrder(conversation)) return "Guest shopper"
+  return getProfileName(profile) || formatNpub(conversation.buyerPubkey, 8)
 }
 
 export function getMerchantOrderRequiresShipping(

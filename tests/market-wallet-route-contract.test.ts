@@ -14,7 +14,9 @@ describe("Market wallet route contracts", () => {
     const content = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
 
     expect(content).toContain("Connected wallet balance")
-    expect(content).toContain("formatWalletMsatsAsSats")
+    expect(content).toContain("useShopperPricing")
+    expect(content).toContain("Sats the standard")
+    expect(content).toContain("SUPPORTED_SHOPPER_DISPLAY_CURRENCIES")
     expect(content).toContain("useWallet({ refreshBalance: true })")
     expect(content).toContain("wallet.refreshBalance")
     expect(content).toContain("Wallet does not advertise get_balance")

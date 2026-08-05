@@ -52,6 +52,13 @@ export interface FetchEventsFanoutResult {
   relays: FetchEventsRelayStatus[]
 }
 
+export interface FetchEventsFanoutDiagnosticsResult {
+  events: NDKEvent[]
+  attemptedRelayUrls: string[]
+  successfulRelayUrls: string[]
+  failedRelayUrls: string[]
+}
+
 const EVENT_SOURCE_RELAY_URLS = "__conduitSourceRelayUrls"
 
 type EventWithSourceRelayUrls = NDKEvent & {
@@ -689,6 +696,24 @@ export async function fetchEventsFanoutDetailed(
     }
   } finally {
     if (connections !== relayConnections) closeRelayConnections(connections)
+  }
+}
+
+export async function fetchEventsFanoutWithDiagnostics(
+  filter: NDKFilter,
+  options: FetchEventsFanoutOptions = {}
+): Promise<FetchEventsFanoutDiagnosticsResult> {
+  const result = await fetchEventsFanoutDetailed(filter, options)
+
+  return {
+    events: result.events,
+    attemptedRelayUrls: result.relays.map(({ relayUrl }) => relayUrl),
+    successfulRelayUrls: result.relays
+      .filter(({ status }) => status !== "failed")
+      .map(({ relayUrl }) => relayUrl),
+    failedRelayUrls: result.relays
+      .filter(({ status }) => status !== "success")
+      .map(({ relayUrl }) => relayUrl),
   }
 }
 

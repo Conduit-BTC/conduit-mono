@@ -7,11 +7,14 @@ import {
 } from "lucide-react"
 import { createFileRoute, Link } from "@tanstack/react-router"
 import {
+  buildProductDetailActionTelemetryProperties,
   formatNpub,
   getListingSafetyDisplay,
   getProfileName,
   pubkeyToNpub,
+  recordBrowserTelemetryEvent,
   useProfile,
+  type ProductDetailTelemetryAction,
 } from "@conduit/core"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Avatar, AvatarFallback, AvatarImage, Badge, Button } from "@conduit/ui"
@@ -27,13 +30,16 @@ import {
   ProductGridCard,
   ProductGridCardSkeleton,
 } from "../../components/ProductGridCard"
-import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
+import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import {
   useProgressiveProductDetail,
   useProgressiveProducts,
 } from "../../hooks/useProgressiveProducts"
-import { getProductPriceDisplay } from "../../lib/pricing"
+import {
+  createCartItemFromProduct,
+  getProductAddAvailability,
+} from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
 
 export const Route = createFileRoute("/products/$productId")({
@@ -62,7 +68,7 @@ function ProductPage() {
       expandedHeight: 0,
     })
   const descriptionRef = useRef<HTMLDivElement>(null)
-  const btcUsdRateQuery = useBtcUsdRate()
+  const shopperPricing = useShopperPricing()
 
   const productQuery = useProgressiveProductDetail(productId)
   const product = productQuery.product
@@ -72,6 +78,7 @@ function ProductPage() {
     : null
   const productUnavailable =
     !!product && !!listingSafety && !productQuery.isMarketVisible
+  const productSoldOut = product?.stock === 0
 
   const merchantProfile = useProfile(product?.pubkey, {
     relayHints: product
@@ -113,9 +120,12 @@ function ProductPage() {
     ? cart.items.find((item) => item.productId === product.id)
     : null
   const cartQuantity = cartItem?.quantity ?? 0
-  const priceDisplay = product
-    ? getProductPriceDisplay(product, btcUsdRateQuery.data ?? null)
-    : null
+  const productAddAvailability = getProductAddAvailability(
+    product?.stock,
+    cartQuantity,
+    quantity
+  )
+  const priceDisplay = product ? shopperPricing.formatPrice(product) : null
   const updatedLabel = product
     ? new Intl.DateTimeFormat("en-US", {
         month: "short",
@@ -139,6 +149,12 @@ function ProductPage() {
     setShowAllTags(false)
     setShowFullDescription(false)
   }, [product?.id])
+
+  useEffect(() => {
+    const remainingStock = productAddAvailability.remainingStock
+    if (remainingStock === undefined || remainingStock === 0) return
+    setQuantity((current) => Math.min(current, remainingStock))
+  }, [productAddAvailability.remainingStock])
 
   useLayoutEffect(() => {
     const descriptionElement = descriptionRef.current
@@ -205,6 +221,26 @@ function ProductPage() {
       ? descriptionMetrics.expandedHeight
       : descriptionMetrics.collapsedHeight
     : undefined
+
+  function recordProductDetailAction(
+    action: ProductDetailTelemetryAction
+  ): void {
+    if (!product) return
+    recordBrowserTelemetryEvent({
+      app: "market",
+      eventName: "product_detail_action",
+      properties: buildProductDetailActionTelemetryProperties({
+        action,
+        productType: product.format === "digital" ? "digital" : "physical",
+      }),
+    })
+  }
+
+  function addProductToCart(): void {
+    if (!product || !productAddAvailability.canAdd) return
+    recordProductDetailAction("add_to_cart")
+    cart.addItem(createCartItemFromProduct(product), quantity)
+  }
 
   return (
     <div className="min-w-0 max-w-full space-y-8 overflow-x-hidden">
@@ -368,7 +404,9 @@ function ProductPage() {
                     <img
                       src={image.url}
                       alt={image.alt ?? product.title}
-                      className="h-full w-full object-cover"
+                      className={`h-full w-full object-cover ${
+                        productSoldOut ? "grayscale opacity-55" : ""
+                      }`}
                     />
                   </button>
                 ))}
@@ -380,7 +418,9 @@ function ProductPage() {
                 <img
                   src={selectedImage?.url}
                   alt={selectedImage?.alt ?? product.title}
-                  className="block h-full max-h-full w-full min-w-0 max-w-full object-contain"
+                  className={`block h-full max-h-full w-full min-w-0 max-w-full object-contain ${
+                    productSoldOut ? "grayscale opacity-55" : ""
+                  }`}
                 />
               </div>
               {hasMultipleImages && (
@@ -400,7 +440,9 @@ function ProductPage() {
                       <img
                         src={image.url}
                         alt={image.alt ?? product.title}
-                        className="h-full w-full object-cover"
+                        className={`h-full w-full object-cover ${
+                          productSoldOut ? "grayscale opacity-55" : ""
+                        }`}
                       />
                     </button>
                   ))}
@@ -478,9 +520,16 @@ function ProductPage() {
               </div>
 
               <div className="mt-5 space-y-5 border-t border-[var(--border)] pt-5">
-                <h1 className="line-clamp-3 text-2xl font-semibold leading-tight text-[var(--text-primary)] sm:text-3xl">
-                  {product.title}
-                </h1>
+                <div className="flex flex-wrap items-start gap-3">
+                  <h1 className="min-w-0 flex-1 text-2xl font-semibold leading-tight text-[var(--text-primary)] sm:text-3xl">
+                    {product.title}
+                  </h1>
+                  {productSoldOut ? (
+                    <Badge variant="warning" className="shrink-0">
+                      Sold out
+                    </Badge>
+                  ) : null}
+                </div>
 
                 <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
                   <div className="text-2xl font-bold text-secondary-400">
@@ -491,6 +540,11 @@ function ProductPage() {
                       {priceDisplay.secondary}
                     </div>
                   )}
+                  {priceDisplay?.approximateUsd && (
+                    <div className="mt-1 text-sm text-[var(--text-muted)]">
+                      {priceDisplay.approximateUsd}
+                    </div>
+                  )}
                   <div className="mt-3 text-xs text-[var(--text-secondary)]">
                     Payment and shipping are finalized with the merchant during
                     the order flow.
@@ -498,16 +552,30 @@ function ProductPage() {
                 </div>
 
                 {typeof product.stock === "number" && (
-                  <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3 text-sm text-[var(--text-primary)]">
-                    {product.stock} available
+                  <div
+                    role="status"
+                    className={`rounded-xl border px-4 py-3 text-sm ${
+                      productSoldOut
+                        ? "border-warning/40 bg-warning/10 text-warning"
+                        : "border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]"
+                    }`}
+                  >
+                    {productSoldOut
+                      ? "Sold out. This listing remains visible, but it cannot be added to your cart."
+                      : `${product.stock} available`}
                   </div>
                 )}
 
                 <div className="flex flex-wrap items-center gap-3">
-                  <div className="inline-flex h-10 items-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-elevated)]">
+                  <div
+                    className={`inline-flex h-10 items-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-elevated)] ${
+                      productSoldOut ? "opacity-50" : ""
+                    }`}
+                  >
                     <button
                       type="button"
-                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)]"
+                      disabled={productSoldOut}
+                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)] disabled:cursor-not-allowed"
                       aria-label="Decrease quantity"
                       onClick={() =>
                         setQuantity((current) => Math.max(1, current - 1))
@@ -520,9 +588,19 @@ function ProductPage() {
                     </div>
                     <button
                       type="button"
-                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)]"
-                      aria-label="Increase quantity"
-                      onClick={() => setQuantity((current) => current + 1)}
+                      disabled={
+                        productSoldOut || !productAddAvailability.canIncrement
+                      }
+                      className="flex h-full w-10 items-center justify-center text-lg text-[var(--text-primary)] transition-colors hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-40"
+                      aria-label={
+                        !productSoldOut && !productAddAvailability.canIncrement
+                          ? "Maximum available quantity selected"
+                          : "Increase quantity"
+                      }
+                      onClick={() => {
+                        if (!productAddAvailability.canIncrement) return
+                        setQuantity((current) => current + 1)
+                      }}
                     >
                       +
                     </button>
@@ -530,36 +608,16 @@ function ProductPage() {
 
                   <Button
                     className="min-w-[12rem] flex-1"
-                    onClick={() =>
-                      cart.addItem(
-                        {
-                          productId: product.id,
-                          merchantPubkey: product.pubkey,
-                          title: product.title,
-                          price: product.price,
-                          currency: product.currency,
-                          priceSats: product.priceSats,
-                          sourcePrice: product.sourcePrice,
-                          sourceShippingCost: product.sourceShippingCost,
-                          image: product.images[0]?.url,
-                          tags: product.tags,
-                          format: product.format,
-                          shippingCostSats: product.shippingCostSats,
-                          shippingOptionId: product.shippingOptionId,
-                          shippingOptionDTag: product.shippingOptionDTag,
-                          shippingCountries: product.shippingCountries,
-                          shippingCountryRules: product.shippingCountryRules,
-                          publicZapEnabled: product.publicZapEnabled,
-                          zapMessagePolicy: product.zapMessagePolicy,
-                          publicZapPolicyKnown: product.publicZapPolicyKnown,
-                        },
-                        quantity
-                      )
-                    }
+                    disabled={!productAddAvailability.canAdd}
+                    onClick={addProductToCart}
                   >
-                    {cartQuantity > 0
-                      ? `Add more (${cartQuantity} in cart)`
-                      : `Add ${quantity} to cart`}
+                    {productSoldOut
+                      ? "Sold out"
+                      : productAddAvailability.remainingStock === 0
+                        ? "Stock limit reached"
+                        : cartQuantity > 0
+                          ? `Add more (${cartQuantity} in cart)`
+                          : `Add ${quantity} to cart`}
                   </Button>
                 </div>
 
@@ -567,6 +625,7 @@ function ProductPage() {
                   <Link
                     to="/cart"
                     search={{ merchant: pubkeyToNpub(product.pubkey) }}
+                    onClick={() => recordProductDetailAction("view_cart")}
                   >
                     <ShoppingCart className="h-4 w-4" />
                     View cart
@@ -747,67 +806,18 @@ function ProductPage() {
                         merchantName={merchantName}
                         merchantNamePending={merchantIdentityPending}
                         imageLoading={index < 4 ? "eager" : "lazy"}
-                        btcUsdRate={btcUsdRateQuery.data ?? null}
+                        btcUsdRate={shopperPricing.quote}
+                        pricePreference={shopperPricing.preference}
                         cartQuantity={relatedCartQuantity}
                         onAddToCart={() =>
                           cart.addItem(
-                            {
-                              productId: relatedProduct.id,
-                              merchantPubkey: relatedProduct.pubkey,
-                              title: relatedProduct.title,
-                              price: relatedProduct.price,
-                              currency: relatedProduct.currency,
-                              priceSats: relatedProduct.priceSats,
-                              sourcePrice: relatedProduct.sourcePrice,
-                              sourceShippingCost:
-                                relatedProduct.sourceShippingCost,
-                              image: relatedProduct.images[0]?.url,
-                              tags: relatedProduct.tags,
-                              format: relatedProduct.format,
-                              shippingCostSats: relatedProduct.shippingCostSats,
-                              shippingOptionId: relatedProduct.shippingOptionId,
-                              shippingOptionDTag:
-                                relatedProduct.shippingOptionDTag,
-                              shippingCountries:
-                                relatedProduct.shippingCountries,
-                              shippingCountryRules:
-                                relatedProduct.shippingCountryRules,
-                              publicZapEnabled: relatedProduct.publicZapEnabled,
-                              zapMessagePolicy: relatedProduct.zapMessagePolicy,
-                              publicZapPolicyKnown:
-                                relatedProduct.publicZapPolicyKnown,
-                            },
+                            createCartItemFromProduct(relatedProduct),
                             1
                           )
                         }
                         onIncrement={() =>
                           cart.addItem(
-                            {
-                              productId: relatedProduct.id,
-                              merchantPubkey: relatedProduct.pubkey,
-                              title: relatedProduct.title,
-                              price: relatedProduct.price,
-                              currency: relatedProduct.currency,
-                              priceSats: relatedProduct.priceSats,
-                              sourcePrice: relatedProduct.sourcePrice,
-                              sourceShippingCost:
-                                relatedProduct.sourceShippingCost,
-                              image: relatedProduct.images[0]?.url,
-                              tags: relatedProduct.tags,
-                              format: relatedProduct.format,
-                              shippingCostSats: relatedProduct.shippingCostSats,
-                              shippingOptionId: relatedProduct.shippingOptionId,
-                              shippingOptionDTag:
-                                relatedProduct.shippingOptionDTag,
-                              shippingCountries:
-                                relatedProduct.shippingCountries,
-                              shippingCountryRules:
-                                relatedProduct.shippingCountryRules,
-                              publicZapEnabled: relatedProduct.publicZapEnabled,
-                              zapMessagePolicy: relatedProduct.zapMessagePolicy,
-                              publicZapPolicyKnown:
-                                relatedProduct.publicZapPolicyKnown,
-                            },
+                            createCartItemFromProduct(relatedProduct),
                             1
                           )
                         }

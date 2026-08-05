@@ -2,8 +2,10 @@ import {
   getPriceSats,
   getShippingCostSats,
   resolveCartShippingCost,
+  type CommerceQueryMeta,
   type ProductZapMessagePolicy,
   type PricingRateInput,
+  type Product,
 } from "@conduit/core"
 
 export type CartItem = {
@@ -42,6 +44,8 @@ export type CartItem = {
   publicZapEnabled?: boolean
   zapMessagePolicy?: ProductZapMessagePolicy
   publicZapPolicyKnown?: boolean
+  /** Last known GammaMarkets stock value. Zero means the item is sold out. */
+  stock?: number
   quantity: number
 }
 
@@ -76,6 +80,170 @@ export type CartPublicZapPolicy = {
   effectiveZapMessagePolicy: ProductZapMessagePolicy
   disabledProductIds: string[]
   missingPolicyProductIds: string[]
+}
+
+export type CartProductAvailability = {
+  productId: string
+  status: "available" | "sold_out" | "insufficient_stock" | "untracked"
+  stock?: number
+  refreshed: boolean
+}
+
+type CartAvailabilityReadMeta = Pick<
+  CommerceQueryMeta,
+  "source" | "stale" | "degraded"
+>
+
+export type ProductAddAvailability = {
+  remainingStock?: number
+  canAdd: boolean
+  canIncrement: boolean
+}
+
+export function getProductAddAvailability(
+  stock: number | undefined,
+  cartQuantity: number,
+  requestedQuantity: number
+): ProductAddAvailability {
+  if (typeof stock !== "number") {
+    return {
+      remainingStock: undefined,
+      canAdd: true,
+      canIncrement: true,
+    }
+  }
+
+  const remainingStock = Math.max(0, stock - Math.max(0, cartQuantity))
+  return {
+    remainingStock,
+    canAdd: remainingStock > 0 && requestedQuantity <= remainingStock,
+    canIncrement: requestedQuantity < remainingStock,
+  }
+}
+
+export function createCartItemFromProduct(
+  product: Product
+): Omit<CartItem, "quantity"> {
+  return {
+    productId: product.id,
+    merchantPubkey: product.pubkey,
+    title: product.title,
+    price: product.price,
+    currency: product.currency,
+    priceSats: product.priceSats,
+    sourcePrice: product.sourcePrice,
+    image: product.images[0]?.url,
+    tags: product.tags,
+    format: product.format,
+    shippingCostSats: product.shippingCostSats,
+    sourceShippingCost: product.sourceShippingCost,
+    shippingOptionId: product.shippingOptionId,
+    shippingOptionDTag: product.shippingOptionDTag,
+    shippingCountries: product.shippingCountries,
+    shippingCountryRules: product.shippingCountryRules,
+    publicZapEnabled: product.publicZapEnabled,
+    zapMessagePolicy: product.zapMessagePolicy,
+    publicZapPolicyKnown: product.publicZapPolicyKnown,
+    stock: product.stock,
+  }
+}
+
+export function getCartProductAvailability(
+  items: CartItem[],
+  refreshedProducts: Product[]
+): CartProductAvailability[] {
+  const productsById = new Map(
+    refreshedProducts.map((product) => [product.id, product])
+  )
+
+  return items.map((item) => {
+    const refreshedProduct = productsById.get(item.productId)
+    const stock = refreshedProduct ? refreshedProduct.stock : item.stock
+
+    return {
+      productId: item.productId,
+      status:
+        stock === 0
+          ? "sold_out"
+          : typeof stock === "number" && item.quantity > stock
+            ? "insufficient_stock"
+            : typeof stock === "number"
+              ? "available"
+              : "untracked",
+      stock,
+      refreshed: !!refreshedProduct,
+    }
+  })
+}
+
+export function isCartProductAvailabilityBlocking(
+  availability: Pick<CartProductAvailability, "status"> | undefined
+): boolean {
+  return (
+    availability?.status === "sold_out" ||
+    availability?.status === "insufficient_stock"
+  )
+}
+
+export function getCartAvailabilityBlockingMessage(
+  items: CartItem[],
+  availabilityByProductId: ReadonlyMap<string, CartProductAvailability>
+): string | null {
+  const unavailableItems: Array<{
+    item: CartItem
+    availability: CartProductAvailability
+  }> = []
+
+  for (const item of items) {
+    const availability = availabilityByProductId.get(item.productId)
+    if (availability && isCartProductAvailabilityBlocking(availability)) {
+      unavailableItems.push({ item, availability })
+    }
+  }
+
+  if (unavailableItems.length === 0) return null
+
+  if (unavailableItems.length === 1) {
+    const { item, availability } = unavailableItems[0]!
+    if (availability.status === "sold_out") {
+      return `${item.title} is sold out. Remove it from your cart before sending the order.`
+    }
+
+    return `${item.title} has only ${availability.stock ?? 0} available, but your cart contains ${item.quantity}. Reduce the quantity before sending the order.`
+  }
+
+  const soldOutCount = unavailableItems.filter(
+    ({ availability }) => availability.status === "sold_out"
+  ).length
+  if (soldOutCount === unavailableItems.length) {
+    return `${soldOutCount} items are sold out. Remove them from your cart before sending the order.`
+  }
+  if (soldOutCount === 0) {
+    return `${unavailableItems.length} cart quantities exceed current stock. Reduce them before sending the order.`
+  }
+
+  return "Some items are sold out or exceed current stock. Update your cart before sending the order."
+}
+
+export function isCartAvailabilityReadFresh(
+  availability: CartProductAvailability[],
+  meta: CartAvailabilityReadMeta | undefined
+): boolean {
+  return (
+    availability.length > 0 &&
+    !!meta &&
+    meta.source !== "local_cache" &&
+    !meta.stale &&
+    !meta.degraded &&
+    availability.every((entry) => entry.refreshed)
+  )
+}
+
+export function getCartItemStockForAvailability(
+  item: Pick<CartItem, "stock">,
+  availability: Pick<CartProductAvailability, "stock" | "refreshed"> | undefined
+): number | undefined {
+  return availability?.refreshed ? availability.stock : item.stock
 }
 
 const ZAP_MESSAGE_POLICY_RANK: Record<ProductZapMessagePolicy, number> = {
@@ -285,6 +453,8 @@ export function addCartItem(
   item: Omit<CartItem, "quantity">,
   quantity = 1
 ): CartItem[] {
+  if (item.stock === 0) return items
+
   const q = Math.max(1, Math.floor(quantity))
   const existing = items.find((current) => current.productId === item.productId)
   const merchantAddedAt =

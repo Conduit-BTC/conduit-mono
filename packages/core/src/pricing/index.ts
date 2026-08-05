@@ -1,5 +1,6 @@
 export const SATS_PER_BTC = 100_000_000
 export const MSATS_PER_SAT = 1_000
+export const DEFAULT_PRICING_RATE_MAX_AGE_MS = 5 * 60_000
 
 export type SourcePriceQuote = {
   amount: number
@@ -101,8 +102,79 @@ export const SUPPORTED_PRODUCT_PRICE_CURRENCIES = [
 export type SupportedProductPriceCurrency =
   (typeof SUPPORTED_PRODUCT_PRICE_CURRENCIES)[number]
 
+export const SUPPORTED_SHOPPER_DISPLAY_CURRENCIES = [
+  "BITCOIN",
+  ...SUPPORTED_PRODUCT_PRICE_CURRENCIES.filter(
+    (currency) => currency !== "SATS"
+  ),
+] as const
+
+export type ShopperDisplayCurrency =
+  (typeof SUPPORTED_SHOPPER_DISPLAY_CURRENCIES)[number]
+export type BitcoinDisplayUnit = "bitcoin" | "sats"
+
+export type ShopperPricePreference = {
+  currency: ShopperDisplayCurrency
+  bitcoinUnit: BitcoinDisplayUnit
+}
+
+export const DEFAULT_SHOPPER_PRICE_PREFERENCE: ShopperPricePreference = {
+  currency: "BITCOIN",
+  bitcoinUnit: "bitcoin",
+}
+
+export type ShopperPriceDisplayState =
+  "ready" | "rate_required" | "rate_stale" | "unsupported" | "invalid"
+
+export type ShopperPriceDisplay = {
+  state: ShopperPriceDisplayState
+  primary: string
+  secondary: string | null
+  approximateUsd: string | null
+  displayCurrency: ShopperDisplayCurrency
+  sats: number | null
+  approximate: boolean
+  source: SourcePriceQuote | null
+}
+
 export function normalizeCurrencyCode(currency: string): string {
   return currency.trim().toUpperCase()
+}
+
+export function isSupportedShopperDisplayCurrency(
+  currency: string
+): currency is ShopperDisplayCurrency {
+  const normalized = normalizeCurrencyCode(currency)
+  return SUPPORTED_SHOPPER_DISPLAY_CURRENCIES.some(
+    (supported) => supported === normalized
+  )
+}
+
+export function normalizeShopperPricePreference(
+  value: unknown
+): ShopperPricePreference {
+  if (!value || typeof value !== "object") {
+    return DEFAULT_SHOPPER_PRICE_PREFERENCE
+  }
+
+  const candidate = value as {
+    currency?: unknown
+    bitcoinUnit?: unknown
+  }
+  const currency =
+    typeof candidate.currency === "string" &&
+    isSupportedShopperDisplayCurrency(candidate.currency)
+      ? normalizeCurrencyCode(candidate.currency)
+      : DEFAULT_SHOPPER_PRICE_PREFERENCE.currency
+  const bitcoinUnit =
+    candidate.bitcoinUnit === "sats" || candidate.bitcoinUnit === "bitcoin"
+      ? candidate.bitcoinUnit
+      : DEFAULT_SHOPPER_PRICE_PREFERENCE.bitcoinUnit
+
+  return {
+    currency: currency as ShopperDisplayCurrency,
+    bitcoinUnit,
+  }
 }
 
 export function isSatsLikeCurrency(currency: string): boolean {
@@ -256,6 +328,18 @@ function getUsdPerUnitRate(
     usdPerUnit > 0
     ? usdPerUnit
     : null
+}
+
+export function isPricingRateQuoteFresh(
+  quote: BtcUsdRateQuote | null | undefined,
+  nowMs = Date.now(),
+  maxAgeMs = DEFAULT_PRICING_RATE_MAX_AGE_MS
+): boolean {
+  if (!quote) return false
+  if (quote.source === "env") return true
+  if (!Number.isFinite(quote.fetchedAt)) return false
+  const ageMs = nowMs - quote.fetchedAt
+  return ageMs >= 0 && ageMs <= maxAgeMs
 }
 
 function toSafeIntegerSats(
@@ -497,6 +581,17 @@ export function formatSats(sats: number): string {
   return `${sats.toLocaleString()} sats`
 }
 
+export function formatBitcoinBaseUnits(
+  sats: number,
+  unit: BitcoinDisplayUnit = "bitcoin",
+  locale = "en-US"
+): string {
+  const amount = new Intl.NumberFormat(locale, {
+    maximumFractionDigits: 0,
+  }).format(sats)
+  return unit === "sats" ? `${amount} sats` : `₿${amount}`
+}
+
 export function formatApproxUsdFromSats(
   sats: number,
   rateInput: PricingRateInput
@@ -509,7 +604,7 @@ export function formatApproxUsdFromSats(
   return `about ${formatFiatPrice(usd, "USD")} USD`
 }
 
-function formatSourcePrice(source: SourcePriceQuote): string {
+export function formatSourcePrice(source: SourcePriceQuote): string {
   if (isFiatCurrencyCode(source.normalizedCurrency)) {
     try {
       return `${formatFiatPrice(source.amount, source.normalizedCurrency)} ${
@@ -525,6 +620,358 @@ function formatSourcePrice(source: SourcePriceQuote): string {
   }
 
   return `${source.amount.toLocaleString()} ${source.normalizedCurrency}`
+}
+
+function getDisplaySource(price: CommercePriceLike): SourcePriceQuote | null {
+  if (price.sourcePrice) return price.sourcePrice
+  if (!Number.isFinite(price.price) || !price.currency.trim()) return null
+  return sourceQuote(price.price, price.currency)
+}
+
+function formatSourceForPreference(
+  source: SourcePriceQuote,
+  preference: ShopperPricePreference,
+  locale: string
+): string {
+  if (isSatsLikeCurrency(source.normalizedCurrency)) {
+    return formatBitcoinBaseUnits(source.amount, preference.bitcoinUnit, locale)
+  }
+
+  if (isMsatsLikeCurrency(source.normalizedCurrency)) {
+    return formatBitcoinBaseUnits(
+      source.amount / MSATS_PER_SAT,
+      preference.bitcoinUnit,
+      locale
+    )
+  }
+
+  if (isBtcLikeCurrency(source.normalizedCurrency)) {
+    return `${source.amount.toLocaleString(locale, {
+      maximumFractionDigits: 8,
+    })} ${source.normalizedCurrency}`
+  }
+
+  if (isFiatCurrencyCode(source.normalizedCurrency)) {
+    try {
+      return `${formatFiatPrice(
+        source.amount,
+        source.normalizedCurrency,
+        locale
+      )} ${source.normalizedCurrency}`
+    } catch {
+      return `${source.amount.toLocaleString(locale)} ${source.normalizedCurrency}`
+    }
+  }
+
+  return `${source.amount.toLocaleString(locale)} ${source.normalizedCurrency}`
+}
+
+function formatSourceContext(
+  source: SourcePriceQuote,
+  preference: ShopperPricePreference,
+  locale: string
+): string {
+  const label =
+    isSatsLikeCurrency(source.normalizedCurrency) ||
+    isMsatsLikeCurrency(source.normalizedCurrency) ||
+    isBtcLikeCurrency(source.normalizedCurrency)
+      ? "Bitcoin amount"
+      : "source quote"
+  return `${formatSourceForPreference(source, preference, locale)} ${label}`
+}
+
+function unavailableShopperDisplay(
+  state: Exclude<ShopperPriceDisplayState, "ready">,
+  preference: ShopperPricePreference,
+  source: SourcePriceQuote | null,
+  locale: string
+): ShopperPriceDisplay {
+  const primary =
+    state === "rate_stale"
+      ? "Price conversion is stale"
+      : state === "rate_required"
+        ? "Price conversion unavailable"
+        : state === "unsupported"
+          ? "Display currency unavailable"
+          : "Price unavailable"
+
+  return {
+    state,
+    primary,
+    secondary: source ? formatSourceContext(source, preference, locale) : null,
+    approximateUsd: null,
+    displayCurrency: preference.currency,
+    sats: null,
+    approximate: false,
+    source,
+  }
+}
+
+export interface ShopperPriceDisplayOptions {
+  locale?: string
+  nowMs?: number
+  maxRateAgeMs?: number
+  settledSatsAreAuthoritative?: boolean
+}
+
+function getApproximateUsdReference(
+  sats: number,
+  preference: ShopperPricePreference,
+  source: SourcePriceQuote | null,
+  quote: BtcUsdRateQuote | null,
+  options: ShopperPriceDisplayOptions
+): string | null {
+  if (
+    preference.currency === "USD" ||
+    source?.normalizedCurrency === "USD" ||
+    !isPricingRateQuoteFresh(
+      quote,
+      options.nowMs,
+      options.maxRateAgeMs ?? DEFAULT_PRICING_RATE_MAX_AGE_MS
+    )
+  ) {
+    return null
+  }
+
+  return formatApproxUsdFromSats(sats, quote)
+}
+
+export function getShopperPriceDisplay(
+  price: CommercePriceLike,
+  preference: ShopperPricePreference = DEFAULT_SHOPPER_PRICE_PREFERENCE,
+  quote: BtcUsdRateQuote | null = null,
+  options: ShopperPriceDisplayOptions = {}
+): ShopperPriceDisplay {
+  const normalizedPreference = normalizeShopperPricePreference(preference)
+  const locale = options.locale ?? "en-US"
+  const source = getDisplaySource(price)
+  const sourceCurrency = source?.normalizedCurrency ?? price.currency
+  const recordedSats = options.settledSatsAreAuthoritative
+    ? getPriceSats(price)
+    : null
+  const authoritativeSats = recordedSats
+    ? { sats: recordedSats.sats, approximate: false }
+    : null
+  const sourceNeedsRate =
+    isFiatCurrencyCode(sourceCurrency) && !authoritativeSats
+  const displaysExactSourceQuote =
+    !!source &&
+    isFiatCurrencyCode(source.normalizedCurrency) &&
+    source.normalizedCurrency === normalizedPreference.currency
+  const displayNeedsRate =
+    normalizedPreference.currency !== "BITCOIN" && !displaysExactSourceQuote
+  const needsRate = sourceNeedsRate || displayNeedsRate
+
+  if (displaysExactSourceQuote && source) {
+    const freshQuote = isPricingRateQuoteFresh(
+      quote,
+      options.nowMs,
+      options.maxRateAgeMs ?? DEFAULT_PRICING_RATE_MAX_AGE_MS
+    )
+    const converted = freshQuote
+      ? normalizeCommercePrice(source.amount, source.normalizedCurrency, quote)
+      : null
+    const displaySats =
+      authoritativeSats ??
+      (converted?.status === "ok"
+        ? { sats: converted.sats, approximate: converted.approximate }
+        : null)
+    return {
+      state: "ready",
+      primary: formatFiatPrice(
+        source.amount,
+        normalizedPreference.currency,
+        locale
+      ),
+      secondary: displaySats
+        ? formatBitcoinBaseUnits(
+            displaySats.sats,
+            normalizedPreference.bitcoinUnit,
+            locale
+          )
+        : null,
+      approximateUsd: displaySats
+        ? getApproximateUsdReference(
+            displaySats.sats,
+            normalizedPreference,
+            source,
+            quote,
+            options
+          )
+        : null,
+      displayCurrency: normalizedPreference.currency,
+      sats: displaySats?.sats ?? null,
+      approximate: false,
+      source,
+    }
+  }
+
+  if (needsRate && !quote) {
+    return unavailableShopperDisplay(
+      "rate_required",
+      normalizedPreference,
+      source,
+      locale
+    )
+  }
+
+  if (
+    needsRate &&
+    !isPricingRateQuoteFresh(
+      quote,
+      options.nowMs,
+      options.maxRateAgeMs ?? DEFAULT_PRICING_RATE_MAX_AGE_MS
+    )
+  ) {
+    return unavailableShopperDisplay(
+      "rate_stale",
+      normalizedPreference,
+      source,
+      locale
+    )
+  }
+
+  const normalized =
+    sourceNeedsRate && source
+      ? normalizeCommercePrice(source.amount, source.normalizedCurrency, quote)
+      : null
+  const sats =
+    authoritativeSats ??
+    (normalized
+      ? normalized.status === "ok"
+        ? { sats: normalized.sats, approximate: normalized.approximate }
+        : null
+      : getPriceSats(price, quote))
+
+  if (!sats) {
+    const state =
+      normalized?.status === "unsupported"
+        ? "unsupported"
+        : normalized?.status === "rate_required"
+          ? "rate_required"
+          : "invalid"
+    return unavailableShopperDisplay(
+      state,
+      normalizedPreference,
+      source,
+      locale
+    )
+  }
+
+  if (normalizedPreference.currency === "BITCOIN") {
+    const sourceIsNative =
+      !!source &&
+      (isSatsLikeCurrency(source.normalizedCurrency) ||
+        isMsatsLikeCurrency(source.normalizedCurrency))
+    return {
+      state: "ready",
+      primary: `${sats.approximate ? "~ " : ""}${formatBitcoinBaseUnits(
+        sats.sats,
+        normalizedPreference.bitcoinUnit,
+        locale
+      )}`,
+      secondary:
+        source && !sourceIsNative
+          ? formatSourceContext(source, normalizedPreference, locale)
+          : null,
+      approximateUsd: getApproximateUsdReference(
+        sats.sats,
+        normalizedPreference,
+        source,
+        quote,
+        options
+      ),
+      displayCurrency: normalizedPreference.currency,
+      sats: sats.sats,
+      approximate: sats.approximate,
+      source,
+    }
+  }
+
+  const usdPerDisplayUnit = getUsdPerUnitRate(
+    normalizedPreference.currency,
+    quote
+  )
+  const btcUsdRate = getBtcUsdRate(quote)
+  if (!usdPerDisplayUnit || !btcUsdRate) {
+    return unavailableShopperDisplay(
+      "rate_required",
+      normalizedPreference,
+      source,
+      locale
+    )
+  }
+
+  const displayAmount =
+    ((sats.sats / SATS_PER_BTC) * btcUsdRate) / usdPerDisplayUnit
+  if (!Number.isFinite(displayAmount) || displayAmount < 0) {
+    return unavailableShopperDisplay(
+      "invalid",
+      normalizedPreference,
+      source,
+      locale
+    )
+  }
+
+  return {
+    state: "ready",
+    primary: `~ ${formatFiatPrice(
+      displayAmount,
+      normalizedPreference.currency,
+      locale
+    )}`,
+    secondary: source
+      ? formatSourceContext(source, normalizedPreference, locale)
+      : formatBitcoinBaseUnits(
+          sats.sats,
+          normalizedPreference.bitcoinUnit,
+          locale
+        ),
+    approximateUsd: getApproximateUsdReference(
+      sats.sats,
+      normalizedPreference,
+      source,
+      quote,
+      options
+    ),
+    displayCurrency: normalizedPreference.currency,
+    sats: sats.sats,
+    approximate: true,
+    source,
+  }
+}
+
+export function getShopperSatsDisplay(
+  sats: number,
+  preference: ShopperPricePreference = DEFAULT_SHOPPER_PRICE_PREFERENCE,
+  quote: BtcUsdRateQuote | null = null,
+  options: {
+    locale?: string
+    nowMs?: number
+    maxRateAgeMs?: number
+  } = {}
+): ShopperPriceDisplay {
+  const display = getShopperPriceDisplay(
+    { price: sats, currency: "SATS", priceSats: sats },
+    preference,
+    quote,
+    options
+  )
+  if (display.state !== "rate_required" && display.state !== "rate_stale") {
+    return display
+  }
+
+  const normalizedPreference = normalizeShopperPricePreference(preference)
+  return {
+    ...display,
+    primary: formatBitcoinBaseUnits(
+      sats,
+      normalizedPreference.bitcoinUnit,
+      options.locale ?? "en-US"
+    ),
+    secondary: display.primary,
+    sats,
+  }
 }
 
 export function getProductPriceDisplay(

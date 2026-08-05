@@ -54,7 +54,7 @@ import {
 } from "../../components/MerchantIdentity"
 import { MerchantTrustSummary } from "../../components/MerchantTrustSummary"
 import { ProfileBanner } from "../../components/ProfileBanner"
-import { useBtcUsdRate } from "../../hooks/useBtcUsdRate"
+import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import { useMerchantTrustContext } from "../../hooks/useMerchantTrustContext"
 import {
@@ -62,6 +62,7 @@ import {
   getComparablePriceValue,
 } from "../../lib/pricing"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
+import { createCartItemFromProduct } from "../../lib/cart-model"
 import {
   filterProductsByFacets,
   getCategoryFacetOptions,
@@ -165,8 +166,8 @@ function StorefrontPage() {
   const queryClient = useQueryClient()
   const cart = useCart()
   const { pubkey: viewerPubkey, status } = useAuth()
-  const btcUsdRateQuery = useBtcUsdRate()
-  const btcUsdRate = btcUsdRateQuery.data ?? null
+  const shopperPricing = useShopperPricing()
+  const btcUsdRate = shopperPricing.quote
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
   const [searchDirty, setSearchDirty] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
@@ -345,7 +346,7 @@ function StorefrontPage() {
     navigate({
       to: "/messages",
       search: {
-        tab: "merchants",
+        tab: "dms",
         merchant: pubkey,
       },
     })
@@ -794,55 +795,16 @@ function StorefrontPage() {
                     merchantNamePending={merchantIdentityPending}
                     imageLoading={index < 4 ? "eager" : "lazy"}
                     btcUsdRate={btcUsdRate}
+                    pricePreference={shopperPricing.preference}
                     cartQuantity={
                       cart.items.find((item) => item.productId === product.id)
                         ?.quantity ?? 0
                     }
                     onAddToCart={() =>
-                      cart.addItem({
-                        productId: product.id,
-                        merchantPubkey: product.pubkey,
-                        title: product.title,
-                        price: product.price,
-                        currency: product.currency,
-                        priceSats: product.priceSats,
-                        sourcePrice: product.sourcePrice,
-                        sourceShippingCost: product.sourceShippingCost,
-                        image: product.images[0]?.url,
-                        tags: product.tags,
-                        format: product.format,
-                        shippingCostSats: product.shippingCostSats,
-                        shippingOptionId: product.shippingOptionId,
-                        shippingOptionDTag: product.shippingOptionDTag,
-                        shippingCountries: product.shippingCountries,
-                        shippingCountryRules: product.shippingCountryRules,
-                        publicZapEnabled: product.publicZapEnabled,
-                        zapMessagePolicy: product.zapMessagePolicy,
-                        publicZapPolicyKnown: product.publicZapPolicyKnown,
-                      })
+                      cart.addItem(createCartItemFromProduct(product))
                     }
                     onIncrement={() =>
-                      cart.addItem({
-                        productId: product.id,
-                        merchantPubkey: product.pubkey,
-                        title: product.title,
-                        price: product.price,
-                        currency: product.currency,
-                        priceSats: product.priceSats,
-                        sourcePrice: product.sourcePrice,
-                        sourceShippingCost: product.sourceShippingCost,
-                        image: product.images[0]?.url,
-                        tags: product.tags,
-                        format: product.format,
-                        shippingCostSats: product.shippingCostSats,
-                        shippingOptionId: product.shippingOptionId,
-                        shippingOptionDTag: product.shippingOptionDTag,
-                        shippingCountries: product.shippingCountries,
-                        shippingCountryRules: product.shippingCountryRules,
-                        publicZapEnabled: product.publicZapEnabled,
-                        zapMessagePolicy: product.zapMessagePolicy,
-                        publicZapPolicyKnown: product.publicZapPolicyKnown,
-                      })
+                      cart.addItem(createCartItemFromProduct(product))
                     }
                     onDecrement={() => {
                       const existing = cart.items.find(

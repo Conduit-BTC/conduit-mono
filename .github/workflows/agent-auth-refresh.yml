@@ -98,7 +98,7 @@ jobs:
 
       - name: Refresh CODEX_AUTH_JSON
         if: env.AUTH_SECRET_NAME == 'CODEX_AUTH_JSON'
-        uses: sudden-network/agent@v1.14.0
+        uses: sudden-network/agent@v1.14.1
         with:
           agent_auth_file: ${{ secrets.CODEX_AUTH_JSON }}
           agent_auth_file_secret_name: CODEX_AUTH_JSON
@@ -115,7 +115,7 @@ jobs:
 
       - name: Refresh SUDDEN_AGENT_AUTH_FILE
         if: env.AUTH_SECRET_NAME == 'SUDDEN_AGENT_AUTH_FILE'
-        uses: sudden-network/agent@v1.14.0
+        uses: sudden-network/agent@v1.14.1
         with:
           agent_auth_file: ${{ secrets.SUDDEN_AGENT_AUTH_FILE }}
           agent_auth_file_secret_name: SUDDEN_AGENT_AUTH_FILE

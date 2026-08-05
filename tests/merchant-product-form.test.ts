@@ -25,6 +25,7 @@ function form(
   return {
     title: "Pocket Node",
     price: "25",
+    stock: "",
     currency: "USD",
     format: "physical",
     shippingPricingMode: "coordinate_after_order",
@@ -159,6 +160,20 @@ describe("merchant product form validation", () => {
 
     expect(validation.canPublish).toBe(true)
     expect(validation.tags).toEqual(["gear", "hardware", "demo"])
+  })
+
+  it("accepts blank or whole-number stock and rejects unsafe inventory", () => {
+    expect(validate(form({ stock: "" })).canPublish).toBe(true)
+    expect(validate(form({ stock: "0" })).canPublish).toBe(true)
+    expect(validate(form({ stock: "12" })).canPublish).toBe(true)
+
+    expect(validate(form({ stock: "2.5" })).errors.stock).toBe(
+      "Stock must be a whole number or left blank."
+    )
+    expect(
+      validate(form({ stock: String(Number.MAX_SAFE_INTEGER + 1) })).errors
+        .stock
+    ).toBe("Stock must be a non-negative safe integer.")
   })
 
   it("canonicalizes and dedupes tags case-insensitively", () => {

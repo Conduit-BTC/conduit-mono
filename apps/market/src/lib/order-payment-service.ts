@@ -210,6 +210,7 @@ export interface OrderPaymentContext {
   walletConnection: NwcConnection | null
   tryNwc: boolean
   tryWebln?: boolean
+  formatSatsAmount?: (sats: number) => string
 }
 
 export interface OrderPaymentRuntimeState {
@@ -714,9 +715,13 @@ export async function runOrderPayment(
         ctx.totalMsats < lnurlMeta.minSendable ||
         ctx.totalMsats > lnurlMeta.maxSendable
       ) {
+        const formatMsats = (msats: number) =>
+          ctx.formatSatsAmount && msats % 1_000 === 0
+            ? ctx.formatSatsAmount(msats / 1_000)
+            : `${msats} msats`
         throw new Error(
-          `Order amount (${ctx.totalMsats} msats) is outside merchant's accepted range ` +
-            `(${lnurlMeta.minSendable}-${lnurlMeta.maxSendable} msats).`
+          `Order amount (${formatMsats(ctx.totalMsats)}) is outside merchant's accepted range ` +
+            `(${formatMsats(lnurlMeta.minSendable)}-${formatMsats(lnurlMeta.maxSendable)}).`
         )
       }
       if (
@@ -758,8 +763,15 @@ export async function runOrderPayment(
           // intentionally selects the validated private-invoice fallback below.
         }
         if (preparation?.status === "review_required") {
+          const previousAmount = ctx.formatSatsAmount
+            ? ctx.formatSatsAmount(ctx.totalSats)
+            : ctx.totalSats.toLocaleString()
+          const updatedAmount = ctx.formatSatsAmount
+            ? ctx.formatSatsAmount(preparation.checkoutPricing.totalSats)
+            : preparation.checkoutPricing.totalSats.toLocaleString()
+          const fallbackUnit = ctx.formatSatsAmount ? "" : " sats"
           throw new Error(
-            `Current signed listing pricing changed from ${ctx.totalSats.toLocaleString()} to ${preparation.checkoutPricing.totalSats.toLocaleString()} sats. No invoice was requested; review the updated order total before paying.`
+            `Current signed listing pricing changed from ${previousAmount} to ${updatedAmount}${fallbackUnit}. No invoice was requested; review the updated order total before paying.`
           )
         }
         if (preparation?.status === "prepared") {

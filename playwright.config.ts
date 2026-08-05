@@ -3,7 +3,13 @@ import { defineConfig, devices } from "@playwright/test"
 const CI = !!process.env.CI
 const marketPort = process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"
 const merchantPort = process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"
-const e2eEnv = "VITE_DISABLE_DEVTOOLS=true"
+const e2eEnv = [
+  "VITE_DISABLE_DEVTOOLS=true",
+  "VITE_ENABLE_TELEMETRY=true",
+  "VITE_ENABLE_TELEMETRY_TEST_HOOKS=true",
+  "VITE_TELEMETRY_ALLOWED_HOSTS=127.0.0.1",
+  "VITE_PLAUSIBLE_SRC=data:text/javascript,",
+].join(" ")
 const smokeArea = process.env.PLAYWRIGHT_SMOKE_AREA ?? "all"
 
 if (!new Set(["all", "market", "merchant"]).has(smokeArea)) {

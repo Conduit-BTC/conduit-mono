@@ -29,15 +29,36 @@ Runtime telemetry events may only use these fields:
 - `amount_bucket`
 - `product_type`
 
+## Retention and Redaction
+
+PostHog Cloud currently reports a plan-managed event retention window of 84
+months. The provider controls that field and does not expose it as a mutable
+project setting. This longer provider window is acceptable only while every
+event remains aggregate-only, uses a shared service identity, and passes the
+allowlist and redaction controls in this document. Maintainers must review the
+provider window at least quarterly and select a shorter plan or self-hosted
+retention policy when PostHog makes one available.
+
+Redaction happens before provider delivery. Events that fail the event-name or
+property allowlist must be dropped rather than repaired downstream. Browser
+events must remove raw paths, query strings, SDK-generated device/session
+properties, IP/fingerprint properties, and active-user identifiers. Worker
+events must construct a new payload from the documented property allowlist and
+must never spread request-derived properties into a provider payload. If an
+event outside this contract is ingested, delete it from the provider and treat
+the incident as a telemetry-policy failure.
+
 ## PostHog Dashboard Split
 
 PostHog dashboards should split Market and Merchant traffic with the shared
 `app` property. Use `app = market` for Market client panels and
 `app = merchant` for Merchant Portal panels. Do not use PostHog identity,
 grouping, person profile, or session replay features to create this split.
-PostHog project settings must enable cookieless mode and discard IP data; the
-browser SDK is configured for cookieless capture and events will not ingest
-unless the project allows cookieless traffic.
+PostHog project settings must discard IP data. Browser capture uses memory-only
+SDK state, one static browser-service distinct ID, and disabled person-profile
+processing. Do not enable PostHog's server-hashed cookieless mode for Conduit
+events because it requires raw IP, host, and user-agent inputs that this
+telemetry policy excludes.
 
 Do not include active user, signer, buyer, wallet, or session pubkeys/npubs,
 invoices, order contents, product titles, addresses, message contents, IPs,
@@ -56,6 +77,22 @@ properties or joined to viewer identity.
 ### `app_load_result`
 
 Emitted as an aggregate operational counter when an app load succeeds or fails.
+
+<!-- telemetry-event: client_error_result properties=event_name,app,page_url,page_path,surface,action,event_family,mode,status -->
+
+### `client_error_result`
+
+Emitted for aggregate browser runtime errors, unhandled promise rejections, and
+React error-boundary failures. It records only bounded source, error-family,
+handled-state, and outcome enums plus the shared sanitized route context. It
+must never include exception messages, stacks, code locations, console output,
+breadcrumbs, query strings, user-agent data, user or signer identity, product
+or order data, payment or wallet data, shipping or contact data, or any other
+free text. Identical source/family/route combinations are deduplicated for ten
+seconds, and each app emits at most five client-error events per minute.
+
+PostHog's built-in exception capture and console-log recording remain disabled;
+this bounded event is the only approved client-error capture path.
 
 <!-- telemetry-event: signer_connected properties=event_name,app,page_url,page_path,method,status,count,time_bucket -->
 
@@ -154,27 +191,46 @@ Emitted as an aggregate operational counter for wallet connection outcomes.
 
 ### `payment_attempt_result`
 
-Emitted as an aggregate operational counter for payment attempt outcomes.
+Emitted once for each automatic NWC or WebLN payment attempt, plus an
+`unavailable` result with `rail=none` when no automatic rail can run. It records
+only the automatic mode, rail enum, bounded outcome (`success`, `failure`,
+`blocked`, `unavailable`, or `ambiguous`), latency bucket, and amount bucket.
+`ambiguous` means a request may have moved funds without returning sufficient
+proof and must not be collapsed into a safe retry. It must not include invoices,
+payment hashes, preimages, wallet connection data, provider errors, order data,
+or exact amounts.
 
 <!-- telemetry-event: merchant_setup_step_result properties=event_name,app,page_url,page_path,surface,step,status,count,time_bucket -->
 
 ### `merchant_setup_step_result`
 
-Emitted when a merchant setup surface reaches an aggregate success, blocked, or
-failure state.
+Emitted once per resolved Merchant readiness step and outcome while the
+readiness provider is mounted. It records only the `profile`, `payments`,
+`shipping`, or `network` step and a `success` or `blocked` outcome. Pending
+checks are not emitted. It must not include merchant identity, profile content,
+Lightning addresses, wallet configuration, shipping destinations, or relay
+URLs.
 
 <!-- telemetry-event: product_publish_result properties=event_name,app,page_url,page_path,event_family,status,latency_bucket,count,time_bucket -->
 
 ### `product_publish_result`
 
-Emitted as an aggregate operational counter for product publish outcomes.
+Emitted after a product create, update, or signed-delivery retry reaches a
+user-visible publish outcome. It records only the operation family, bounded
+latency, and `success` or `failure`; partial relay delivery is conservatively
+counted as failure because the UI still requires retry. It must not include
+product or merchant identifiers, event coordinates, titles, descriptions,
+tags, prices, stock, shipping data, signer data, relay URLs, or provider errors.
 
 <!-- telemetry-event: shipping_publish_result properties=event_name,app,page_url,page_path,event_family,status,latency_bucket,count,time_bucket -->
 
 ### `shipping_publish_result`
 
-Emitted as an aggregate operational counter for shipping settings publish
-outcomes.
+Emitted after a shipping settings publish or clear attempt reaches a
+user-visible outcome. It records only the operation family, bounded latency,
+and `success` or `failure`. It must not include merchant identity, countries,
+postal rules, prices, event coordinates, signer data, relay URLs, or provider
+errors.
 
 <!-- telemetry-event: market_browse_action properties=event_name,app,page_url,page_path,surface,action,status,result_count_bucket,product_type,time_bucket -->
 
@@ -188,8 +244,22 @@ identifiers.
 
 ### `product_detail_action`
 
-Emitted for aggregate product detail actions. It must not include product,
-merchant, title, price, or profile identifiers.
+Emitted for the bounded `add_to_cart` and `view_cart` actions on a product
+detail page. It records only the action, product-format class, and the shared
+sanitized route class. It must not include product or merchant identifiers,
+event coordinates, titles, descriptions, tags, prices, quantities, stock,
+images, profile data, or cart contents.
+
+<!-- telemetry-event: anon_zap_signer_request_result properties=event_name,app,surface,action,status,latency_bucket -->
+
+### `anon_zap_signer_request_result`
+
+Emitted once for each authenticated signer Worker request as an aggregate
+operational outcome. It may record only the `sign` or `rate_limit` action, a
+bounded outcome status, and a latency bucket. It must not include request
+contents, origins, URLs, pubkeys, amounts, invoices, checkout/session keys,
+rate-limit keys, or any other request or user identifier. The Worker uses one
+static service-level distinct ID and disables PostHog person-profile processing.
 
 ## Agent Use
 

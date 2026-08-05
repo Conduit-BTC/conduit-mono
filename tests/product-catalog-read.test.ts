@@ -143,7 +143,7 @@ describe("product catalog read planning", () => {
     })
 
     expect(resolved).toEqual({
-      authorPubkeys: [merchantAPubkey, merchantBPubkey],
+      authorPubkeys: [viewerPubkey, merchantAPubkey, merchantBPubkey],
       source: "fallback",
     })
   })
@@ -159,7 +159,23 @@ describe("product catalog read planning", () => {
     })
 
     expect(resolved).toEqual({
-      authorPubkeys: [merchantAPubkey, merchantBPubkey],
+      authorPubkeys: [viewerPubkey, merchantAPubkey, merchantBPubkey],
+      source: "combined",
+    })
+  })
+
+  it("includes the connected merchant's own listings in combined mode", () => {
+    const resolved = resolvePerspectiveAuthorPubkeys({
+      usesPerspectiveGraph: true,
+      sourceMode: "combined",
+      perspectivePubkey: viewerPubkey,
+      refreshedAuthorPubkeys: [merchantAPubkey],
+      fallbackAuthorPubkeys: [merchantBPubkey],
+      followLookupSettled: true,
+    })
+
+    expect(resolved).toEqual({
+      authorPubkeys: [viewerPubkey, merchantAPubkey, merchantBPubkey],
       source: "combined",
     })
   })
