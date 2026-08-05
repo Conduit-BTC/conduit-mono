@@ -763,9 +763,9 @@ function StorefrontPage() {
           </div>
 
           {productsQuery.isInitialLoading && (
-            <ul className="mt-4 grid min-w-0 max-w-full auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+            <ul className="mt-4 grid min-w-0 max-w-full items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
               {Array.from({ length: 6 }).map((_, index) => (
-                <li key={index} className="h-full">
+                <li key={index}>
                   <ProductGridCardSkeleton />
                 </li>
               ))}
@@ -810,12 +810,13 @@ function StorefrontPage() {
             )}
 
           {filteredProducts.length > 0 && (
-            <ul className="mt-4 grid min-w-0 max-w-full auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+            <ul className="mt-4 grid min-w-0 max-w-full items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
               {filteredProducts.map((product, index) => (
-                <li key={product.id} className="h-full">
+                <li key={product.id}>
                   <ProductGridCard
                     product={product}
                     family={productsQuery.familiesByProductId[product.id]}
+                    familyHydrating={productsQuery.isHydrating}
                     merchantName={merchantName}
                     merchantNamePending={merchantIdentityPending}
                     imageLoading={index < 4 ? "eager" : "lazy"}
