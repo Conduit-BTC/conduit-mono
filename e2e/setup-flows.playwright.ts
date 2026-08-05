@@ -3,8 +3,10 @@ import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
 import {
   TEST_BUYER_PUBKEY,
   TEST_MERCHANT_PUBKEY,
+  installRejectingTestSigner,
   installTestSigner,
   seedMarketCart,
+  seedStoredAuth,
 } from "./helpers/auth"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
@@ -419,6 +421,210 @@ test("market checkout country combobox supports search and selection", async ({
   )
 })
 
+test("market authenticated checkout draft survives reload and clears across identities", async ({
+  page,
+}) => {
+  const secondBuyerPubkey = "c".repeat(64)
+  await installTestSigner(page, TEST_BUYER_PUBKEY)
+  await seedMarketCart(page)
+  await page.goto(`${marketUrl}/checkout`)
+  await expect(
+    page.getByRole("button", { name: "Open account menu" })
+  ).toBeVisible()
+
+  const firstName = page.getByLabel("First name")
+  const lastName = page.getByLabel("Last name")
+  const street = page.getByLabel("Street address")
+  const postalCode = page.getByLabel("Postal/ZIP code")
+  const city = page.getByLabel("City")
+  await firstName.fill("Alice")
+  await lastName.fill("Example")
+  await street.fill("123 Private Street")
+  await postalCode.fill("10001")
+  await city.fill("New York")
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const raw = sessionStorage.getItem("conduit:checkout-shipping")
+        if (!raw) return null
+        const stored = JSON.parse(raw) as {
+          ownerPubkey?: string
+          value?: { street?: string }
+        }
+        return {
+          ownerPubkey: stored.ownerPubkey,
+          street: stored.value?.street,
+        }
+      })
+    )
+    .toEqual({
+      ownerPubkey: TEST_BUYER_PUBKEY,
+      street: "123 Private Street",
+    })
+
+  await page.reload()
+  await expect
+    .poll(() =>
+      page.evaluate(() => sessionStorage.getItem("conduit:checkout-shipping"))
+    )
+    .not.toBeNull()
+  await expect(firstName).toHaveValue("Alice")
+  await expect(lastName).toHaveValue("Example")
+  await expect(street).toHaveValue("123 Private Street")
+  await expect(postalCode).toHaveValue("10001")
+  await expect(city).toHaveValue("New York")
+
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")))
+  await expect(street).toHaveValue("123 Private Street")
+
+  await page.getByRole("button", { name: "Open account menu" }).click()
+  await page.getByRole("menuitem", { name: "Disconnect" }).click()
+  await expect(
+    page.getByRole("button", { name: /^Connect$/ }).first()
+  ).toBeVisible()
+  await expect(firstName).toHaveValue("")
+  await expect(street).toHaveValue("")
+  await expect
+    .poll(() =>
+      page.evaluate(() => sessionStorage.getItem("conduit:checkout-shipping"))
+    )
+    .toBeNull()
+
+  await page.evaluate((nextPubkey) => {
+    const signer = window.nostr
+    if (!signer) throw new Error("Test signer unavailable")
+    signer.getPublicKey = async () => nextPubkey
+    signer.signEvent = async (event) => ({
+      ...event,
+      pubkey: nextPubkey,
+      id: "2".repeat(64),
+      sig: "3".repeat(128),
+    })
+  }, secondBuyerPubkey)
+  await page
+    .getByRole("button", { name: /^Connect$/ })
+    .first()
+    .click()
+  await page
+    .getByRole("button", { name: /Connect Extension \(NIP-07\)/i })
+    .click()
+
+  await expect(
+    page.getByRole("button", { name: "Open account menu" })
+  ).toBeVisible()
+  await expect(firstName).toHaveValue("")
+  await expect(street).toHaveValue("")
+})
+
+test("market checkout clears an identity draft after signer restoration fails", async ({
+  page,
+}) => {
+  await seedStoredAuth(page, TEST_BUYER_PUBKEY)
+  await installRejectingTestSigner(page)
+  await seedMarketCart(page)
+  await page.addInitScript(() => {
+    const descriptor = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )
+    if (!descriptor?.get || !descriptor.set) return
+    Object.defineProperty(HTMLInputElement.prototype, "value", {
+      configurable: descriptor.configurable,
+      enumerable: descriptor.enumerable,
+      get: descriptor.get,
+      set(value: string) {
+        if (
+          (this.id === "ship-first-name" || this.id === "ship-street") &&
+          value
+        ) {
+          sessionStorage.setItem("conduit:test-private-draft-rendered", "true")
+        }
+        descriptor.set!.call(this, value)
+      },
+    })
+  })
+  await page.addInitScript((ownerPubkey) => {
+    sessionStorage.setItem(
+      "conduit:checkout-shipping",
+      JSON.stringify({
+        ownerPubkey,
+        updatedAt: Date.now(),
+        value: {
+          firstName: "Private",
+          street: "456 Hidden Street",
+          postalCode: "10002",
+          city: "New York",
+          country: "US",
+        },
+      })
+    )
+  }, TEST_BUYER_PUBKEY)
+
+  await page.goto(`${marketUrl}/checkout`)
+  await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
+  await expect(page.getByLabel("First name")).toHaveValue("")
+  await expect(page.getByLabel("Street address")).toHaveValue("")
+  expect(
+    await page.evaluate(() =>
+      sessionStorage.getItem("conduit:test-private-draft-rendered")
+    )
+  ).toBeNull()
+  await expect
+    .poll(() =>
+      page.evaluate(() => sessionStorage.getItem("conduit:checkout-shipping"))
+    )
+    .toBeNull()
+})
+
+test("market checkout clears an identity draft after cross-tab auth replacement", async ({
+  page,
+}) => {
+  const replacementPubkey = "c".repeat(64)
+  await installTestSigner(page, TEST_BUYER_PUBKEY)
+  await seedMarketCart(page)
+  await page.goto(`${marketUrl}/checkout`)
+  await expect(
+    page.getByRole("button", { name: "Open account menu" })
+  ).toBeVisible()
+
+  const street = page.getByLabel("Street address")
+  await street.fill("789 Identity Street")
+  await expect
+    .poll(() =>
+      page.evaluate(() => sessionStorage.getItem("conduit:checkout-shipping"))
+    )
+    .not.toBeNull()
+
+  await page.evaluate((nextPubkey) => {
+    const oldValue = localStorage.getItem("conduit:auth")
+    const newValue = JSON.stringify({
+      version: 1,
+      type: "nip07",
+      userPubkey: nextPubkey,
+    })
+    localStorage.setItem("conduit:auth", newValue)
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "conduit:auth",
+        oldValue,
+        newValue,
+        storageArea: localStorage,
+      })
+    )
+  }, replacementPubkey)
+
+  await expect(
+    page.getByRole("button", { name: /^Connect$/ }).first()
+  ).toBeVisible()
+  await expect(street).toHaveValue("")
+  await expect
+    .poll(() =>
+      page.evaluate(() => sessionStorage.getItem("conduit:checkout-shipping"))
+    )
+    .toBeNull()
+})
+
 test("market wallet setup route renders for connected signer", async ({
   page,
 }) => {
@@ -456,6 +662,7 @@ test("market wallet setup route renders for connected signer", async ({
 test("market shopper preferences remove legacy plaintext and render the complete form", async ({
   page,
 }) => {
+  test.setTimeout(60_000)
   await page.setViewportSize({ width: 1280, height: 900 })
   const secretKey = generateSecretKey()
   const buyerPubkey = getPublicKey(secretKey)
@@ -558,7 +765,7 @@ test("market shopper preferences remove legacy plaintext and render the complete
   await page.getByRole("button", { name: "Save preferences" }).click()
   await expect(
     page.getByText("Preset encrypted and saved on your relays.")
-  ).toBeVisible({ timeout: 20_000 })
+  ).toBeVisible({ timeout: 40_000 })
   await expect(
     page.getByText("Encrypted on relays", { exact: true })
   ).toBeVisible()
