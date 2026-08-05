@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import {
   addCartItem,
   cartItemInputFromProduct,
+  cartItemsMatchCurrentProducts,
   clearMerchantCart,
   getCartAvailabilityBlockingMessage,
   getCartItemKey,
@@ -222,6 +223,10 @@ describe("cart model", () => {
     expect(parsed.writable).toBe(true)
     expect(parsed.shouldPersist).toBe(true)
     expect(parsed.state.items).toHaveLength(2)
+    expect(parsed.state.items.map((entry) => entry.productId)).toEqual([
+      "30402:merchant-a:legacy-d-tag",
+      "30402:merchant-b:legacy-d-tag",
+    ])
     expect(parsed.state.items[0]?.sourcePrice).toEqual({
       amount: 10,
       currency: "USD",
@@ -234,14 +239,14 @@ describe("cart model", () => {
       version: 2,
       items: [
         item({
-          productId: "shared",
+          productId: "30402:merchant-a:shared",
           merchantPubkey: "merchant-a",
           merchantAddedAt: 20,
           title: "Old title",
           quantity: 2,
         }),
         item({
-          productId: "shared",
+          productId: "30402:merchant-a:shared",
           merchantPubkey: "merchant-a",
           merchantAddedAt: 10,
           title: "Current title",
@@ -269,8 +274,9 @@ describe("cart model", () => {
       ],
     })
 
+    expect(parsed.shouldPersist).toBe(true)
     expect(parsed.state.items).toMatchObject([
-      { productId: "valid-legacy", quantity: 2 },
+      { productId: "30402:merchant-a:valid-legacy", quantity: 2 },
     ])
   })
 
@@ -327,6 +333,47 @@ describe("cart model", () => {
       title: product.title,
       stock: 0,
     })
+  })
+
+  it("requires current product price and fulfillment terms before ordering", () => {
+    const cartItem = item({
+      price: 2_500,
+      priceSats: 2_500,
+      format: "digital",
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+    })
+    const product: Product = {
+      id: cartItem.productId,
+      pubkey: cartItem.merchantPubkey,
+      title: cartItem.title,
+      price: 2_500,
+      priceSats: 2_500,
+      currency: "SATS",
+      type: "simple",
+      format: "digital",
+      visibility: "public",
+      images: [],
+      tags: [],
+      publicZapEnabled: true,
+      zapMessagePolicy: "generic_only",
+      publicZapPolicyKnown: true,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+
+    expect(cartItemsMatchCurrentProducts([cartItem], [product])).toBe(true)
+    expect(
+      cartItemsMatchCurrentProducts([cartItem], [{ ...product, price: 3_000 }])
+    ).toBe(false)
+    expect(
+      cartItemsMatchCurrentProducts(
+        [cartItem],
+        [{ ...product, format: "physical" }]
+      )
+    ).toBe(false)
+    expect(cartItemsMatchCurrentProducts([cartItem], [])).toBe(false)
   })
 
   it("flags an existing cart item when refreshed product stock reaches zero", () => {

@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 
-test("hold-to-release supports cancellation, keyboard, and optional haptics", async ({
+test("market hold-to-release supports cancellation, keyboard, assistive activation, and optional haptics", async ({
   page,
 }) => {
   await page.goto(`${marketUrl}/products`)
@@ -42,7 +42,7 @@ test("hold-to-release supports cancellation, keyboard, and optional haptics", as
       React.createElement(
         HoldToReleaseButton,
         {
-          holdDurationMs: 80,
+          holdDurationMs: 500,
           onHoldComplete: () => {
             state.__holdCount += 1
           },
@@ -67,7 +67,7 @@ test("hold-to-release supports cancellation, keyboard, and optional haptics", as
         React.createElement(
           HoldToReleaseButton,
           {
-            holdDurationMs: 80,
+            holdDurationMs: 500,
             onHoldComplete: () => root.unmount(),
             style: { width: "220px", height: "52px" },
           },
@@ -93,23 +93,36 @@ test("hold-to-release supports cancellation, keyboard, and optional haptics", as
   await expect.poll(() => page.evaluate(() => window.__holdCount)).toBe(0)
 
   await page.mouse.down()
-  await page.waitForTimeout(110)
+  await page.waitForTimeout(550)
   await expect(button).toHaveAttribute("data-hold-state", "charged")
   await page.mouse.up()
   await expect.poll(() => page.evaluate(() => window.__holdCount)).toBe(1)
 
   await page.mouse.move(center.x, center.y)
   await page.mouse.down()
-  await page.waitForTimeout(110)
+  await page.waitForTimeout(550)
   await page.mouse.move(box!.x + box!.width + 80, center.y)
   await page.mouse.up()
   await expect.poll(() => page.evaluate(() => window.__holdCount)).toBe(1)
 
   await button.focus()
   await page.keyboard.down("Space")
-  await page.waitForTimeout(110)
+  await page.waitForTimeout(550)
+  await expect(button).toHaveAttribute("data-hold-state", "charged")
   await page.keyboard.up("Space")
   await expect.poll(() => page.evaluate(() => window.__holdCount)).toBe(2)
+
+  await page.keyboard.down("Enter")
+  await page.waitForTimeout(550)
+  await expect(button).toHaveAttribute("data-hold-state", "charged")
+  await page.keyboard.up("Enter")
+  await expect.poll(() => page.evaluate(() => window.__holdCount)).toBe(3)
+
+  await button.evaluate((element) => {
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }))
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }))
+  })
+  await expect.poll(() => page.evaluate(() => window.__holdCount)).toBe(4)
   await expect
     .poll(() => page.evaluate(() => window.__vibrations))
     .toContainEqual([12, 28, 30])
@@ -129,7 +142,7 @@ test("hold-to-release supports cancellation, keyboard, and optional haptics", as
     unmountingBox!.y + unmountingBox!.height / 2
   )
   await page.mouse.down()
-  await page.waitForTimeout(110)
+  await page.waitForTimeout(550)
   await expect(unmountingButton).toHaveAttribute("data-hold-state", "charged")
   await page.mouse.up()
   await expect(unmountingButton).toBeHidden()

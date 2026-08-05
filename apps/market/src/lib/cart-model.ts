@@ -296,35 +296,40 @@ function parseShippingRules(value: unknown): CartItem["shippingCountryRules"] {
   return rules
 }
 
-function coordinateMatchesMerchant(
+function normalizeProductCoordinate(
   productId: string,
   merchantPubkey: string
-): boolean {
-  if (!productId.startsWith("30402:")) return true
+): string | null {
+  if (!productId.startsWith("30402:")) {
+    return `30402:${merchantPubkey}:${productId}`
+  }
   const [, coordinatePubkey, ...identifier] = productId.split(":")
   return coordinatePubkey === merchantPubkey && identifier.join(":").length > 0
+    ? productId
+    : null
 }
 
 function parseCartItem(value: unknown): CartItem | null {
   if (!isRecord(value)) return null
-  const productId = nonemptyString(value.productId)
+  const storedProductId = nonemptyString(value.productId)
   const merchantPubkey = nonemptyString(value.merchantPubkey)
   const title = nonemptyString(value.title)
   const currency = nonemptyString(value.currency)
   const price = finiteNonnegativeNumber(value.price)
   const quantityValue = finiteNonnegativeNumber(value.quantity)
   if (
-    !productId ||
+    !storedProductId ||
     !merchantPubkey ||
     !title ||
     !currency ||
     price === undefined ||
     quantityValue === undefined ||
-    quantityValue <= 0 ||
-    !coordinateMatchesMerchant(productId, merchantPubkey)
+    quantityValue <= 0
   ) {
     return null
   }
+  const productId = normalizeProductCoordinate(storedProductId, merchantPubkey)
+  if (!productId) return null
 
   const quantity = Math.max(1, Math.floor(quantityValue))
   const merchantAddedAt = finiteNonnegativeNumber(value.merchantAddedAt)
@@ -448,6 +453,62 @@ export function cartItemInputFromProduct(product: Product): CartItemInput {
   }
 }
 
+export function getCartCommerceFingerprint(items: readonly CartItem[]): string {
+  return JSON.stringify(
+    items
+      .map((item) => ({
+        merchantPubkey: item.merchantPubkey,
+        productId: item.productId,
+        quantity: item.quantity,
+        price: item.price,
+        currency: item.currency,
+        priceSats: item.priceSats ?? null,
+        sourcePrice: item.sourcePrice ?? null,
+        format: item.format ?? "physical",
+        shippingCostSats: item.shippingCostSats ?? null,
+        sourceShippingCost: item.sourceShippingCost ?? null,
+        shippingOptionId: item.shippingOptionId ?? null,
+        shippingOptionDTag: item.shippingOptionDTag ?? null,
+        shippingCountries: item.shippingCountries ?? null,
+        shippingCountryRules: item.shippingCountryRules ?? null,
+        publicZapEnabled: item.publicZapEnabled ?? null,
+        zapMessagePolicy: item.zapMessagePolicy ?? null,
+        publicZapPolicyKnown: item.publicZapPolicyKnown ?? null,
+      }))
+      .sort((a, b) =>
+        `${a.merchantPubkey}:${a.productId}`.localeCompare(
+          `${b.merchantPubkey}:${b.productId}`
+        )
+      )
+  )
+}
+
+export function cartItemsMatchCurrentProducts(
+  items: readonly CartItem[],
+  products: readonly Product[]
+): boolean {
+  const productsByKey = new Map(
+    products.map((product) => [
+      getCartItemKey({
+        merchantPubkey: product.pubkey,
+        productId: product.id,
+      }),
+      product,
+    ])
+  )
+  const currentItems = items.map((item) => {
+    const product = productsByKey.get(getCartItemKey(item))
+    return product
+      ? { ...cartItemInputFromProduct(product), quantity: item.quantity }
+      : null
+  })
+  return (
+    currentItems.every((item) => item !== null) &&
+    getCartCommerceFingerprint(currentItems) ===
+      getCartCommerceFingerprint(items)
+  )
+}
+
 export function parsePersistedCart(value: unknown): ParsedPersistedCart {
   if (
     isRecord(value) &&
@@ -495,9 +556,17 @@ export function parsePersistedCart(value: unknown): ParsedPersistedCart {
     })
   }
 
+  const hasLegacyProductIds = value.items.some(
+    (item) =>
+      isRecord(item) &&
+      typeof item.productId === "string" &&
+      !item.productId.startsWith("30402:")
+  )
+
   return {
     state: { items: Array.from(deduplicated.values()) },
-    shouldPersist: value.version !== CART_STORAGE_VERSION,
+    shouldPersist:
+      value.version !== CART_STORAGE_VERSION || hasLegacyProductIds,
     supported: true,
     writable: true,
   }

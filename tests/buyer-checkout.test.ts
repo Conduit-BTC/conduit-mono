@@ -8,6 +8,7 @@ import {
   validateGuestShippingFields,
   validateShippingFields,
   isFastCheckoutEligible,
+  isFastCheckoutInputPending,
   getFastCheckoutUnavailableReasons,
   getShippingPhoneDescribedBy,
   getShippingCheckoutState,
@@ -430,15 +431,14 @@ describe("isFastCheckoutEligible", () => {
     ).toBe(false)
   })
 
-  it("allows fast checkout when LNURL is ready and external-wallet fallback is available", () => {
+  it("keeps manual invoice fallback out of fast checkout eligibility", () => {
     expect(
       isFastCheckoutEligible({
         walletPayCapable: false,
         merchantLud16: "merchant@wallet.example",
         lnurlAllowsNostr: true,
-        allowsManualFallback: true,
       })
-    ).toBe(true)
+    ).toBe(false)
   })
 
   it("returns false when merchantLud16 is missing", () => {
@@ -501,6 +501,55 @@ describe("isFastCheckoutEligible", () => {
     ])
   })
 
+  it("separates an unloadable merchant profile from a missing Lightning Address", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: undefined,
+        merchantProfileUnavailable: true,
+        lnurlAllowsNostr: false,
+      })
+    ).toEqual(["Merchant profile could not be loaded from relays."])
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: undefined,
+        lnurlAllowsNostr: false,
+      })
+    ).toEqual(["Merchant has not added a Lightning Address."])
+  })
+
+  it("names an out-of-range order amount instead of blaming zap support", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        lnurlAmountWithinRange: false,
+      })
+    ).toEqual(["Merchant Lightning Address cannot accept this order amount."])
+    expect(
+      isFastCheckoutEligible({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: true,
+        lnurlAmountWithinRange: false,
+      })
+    ).toBe(false)
+  })
+
+  it("keeps an unchecked endpoint from reporting an amount problem", () => {
+    expect(
+      getFastCheckoutUnavailableReasons({
+        walletPayCapable: true,
+        merchantLud16: "merchant@wallet.example",
+        lnurlAllowsNostr: false,
+        lnurlAmountWithinRange: false,
+        requiresNostrZap: false,
+      })
+    ).toEqual(["Merchant Lightning Address could not be checked."])
+  })
+
   it("does not report zap support when the merchant has no Lightning Address", () => {
     expect(
       getFastCheckoutUnavailableReasons({
@@ -537,15 +586,16 @@ describe("isFastCheckoutEligible", () => {
     ).toEqual([])
   })
 
-  it("does not report a wallet-capability blocker when manual fallback can continue", () => {
+  it("reports wallet capability separately from the manual invoice fallback", () => {
     expect(
       getFastCheckoutUnavailableReasons({
         walletPayCapable: false,
         merchantLud16: "merchant@wallet.example",
         lnurlAllowsNostr: true,
-        allowsManualFallback: true,
       })
-    ).toEqual([])
+    ).toEqual([
+      "Connect a Lightning wallet or enable browser Lightning payments.",
+    ])
   })
 
   it("enables private checkout but disables public zap when LNURL-pay lacks NIP-57", () => {
@@ -612,6 +662,57 @@ describe("isFastCheckoutEligible", () => {
         addressValidForDirectPayment: true,
       })
     ).toBe(true)
+  })
+})
+
+// --- isFastCheckoutInputPending -----------------------------------------------
+
+describe("isFastCheckoutInputPending", () => {
+  const settled = {
+    authPending: false,
+    walletConnecting: false,
+    merchantProfileLoading: false,
+    lnurlProbing: false,
+    privateZapFallbackPending: false,
+    shippingLookupPending: false,
+    shippingState: "allowed" as const,
+    availabilityChecking: false,
+    pricingRefreshing: false,
+  }
+
+  it("reports settled inputs as decided", () => {
+    expect(isFastCheckoutInputPending(settled)).toBe(false)
+  })
+
+  it("waits for every individual unresolved input", () => {
+    const pendingFlags = [
+      "authPending",
+      "walletConnecting",
+      "merchantProfileLoading",
+      "lnurlProbing",
+      "privateZapFallbackPending",
+      "shippingLookupPending",
+      "availabilityChecking",
+      "pricingRefreshing",
+    ] as const
+
+    for (const flag of pendingFlags) {
+      expect(isFastCheckoutInputPending({ ...settled, [flag]: true })).toBe(
+        true
+      )
+    }
+    expect(
+      isFastCheckoutInputPending({ ...settled, shippingState: "loading" })
+    ).toBe(true)
+  })
+
+  it("treats a decided shipping refusal as resolved", () => {
+    expect(
+      isFastCheckoutInputPending({
+        ...settled,
+        shippingState: "country_unsupported",
+      })
+    ).toBe(false)
   })
 })
 

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import { afterEach, describe, expect, it } from "bun:test"
 import {
   connectNip07SignerForAuth,
@@ -147,6 +148,36 @@ describe("NIP-07 availability", () => {
         retryDelaysMs: [0],
       })
     ).rejects.toThrow("Your signer extension was not ready yet")
+  })
+})
+
+describe("restore attempt isolation", () => {
+  const source = readFileSync(
+    new URL("../packages/core/src/context/AuthContext.tsx", import.meta.url),
+    "utf8"
+  )
+
+  it("never clears the global signer when a restore attempt fails", () => {
+    expect(source).toContain(
+      'void connect({ mode: "restore" }).catch(() => undefined)'
+    )
+    expect(source).not.toContain(
+      "      if (cancelled) return\n        removeSigner()"
+    )
+    const removeSignerCalls = source.match(/\n\s*removeSigner\(\)/g) ?? []
+    expect(removeSignerCalls).toHaveLength(1)
+  })
+
+  it("returns silently when a queued restore finds an already connected session", () => {
+    expect(source).toContain('if (mode === "restore") return')
+  })
+
+  it("always releases the connecting flag claimed by an attempt", () => {
+    const finallyBlock = source.slice(source.indexOf("} finally {"))
+    const releaseIndex = finallyBlock.indexOf("connecting.current = false")
+    const fenceIndex = finallyBlock.indexOf("if (attemptIsCurrent())")
+    expect(releaseIndex).toBeGreaterThan(-1)
+    expect(releaseIndex).toBeLessThan(fenceIndex)
   })
 })
 

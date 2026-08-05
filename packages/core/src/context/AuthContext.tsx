@@ -306,6 +306,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       options.method ?? (mode === "restore" ? storedSession?.type : "nip07")
     if (connecting.current) return
     if (connected.current) {
+      if (mode === "restore") return
       throw new Error("Disconnect the current signer before connecting another.")
     }
     if (!requestedMethod) {
@@ -527,10 +528,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setNostrConnectUri(null)
       throw normalizedError
     } finally {
+      connecting.current = false
       if (attemptIsCurrent()) {
         activePairing.current = null
         setNostrConnectUri(null)
-        connecting.current = false
       }
     }
   }, [])
@@ -674,11 +675,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async function reconnectIfPossible() {
       if (cancelled) return
 
-      // Don't crash the app on auto-reconnect failure; surface state via `error`.
-      void connect({ mode: "restore" }).catch(() => {
-        if (cancelled) return
-        removeSigner()
-      })
+      void connect({ mode: "restore" }).catch(() => undefined)
     }
 
     void reconnectIfPossible()
