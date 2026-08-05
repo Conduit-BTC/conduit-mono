@@ -18,8 +18,11 @@ import {
 } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import {
+  decodeLightningInvoiceMetadata,
+  decodeLightningInvoicePaymentHash,
   formatBitcoinBaseUnits,
   getWalletDisplayLabels,
+  isAmountlessLightningInvoice,
   SUPPORTED_SHOPPER_DISPLAY_CURRENCIES,
   type ShopperDisplayCurrency,
   type WalletDescriptor,
@@ -47,6 +50,10 @@ import {
   SelectValue,
   StatusPill,
   Switch,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
   Textarea,
 } from "@conduit/ui"
 
@@ -63,8 +70,9 @@ import {
 } from "../lib/portable-wallet-form"
 import { formatSparkRecoveryBundleForClipboard } from "../lib/spark-recovery-bundle"
 import type {
-  SparkDirectTransferQuote,
   SparkPaymentSummary,
+  SparkSendQuote,
+  SparkSendRequest,
 } from "../lib/spark-wallet"
 import { getWalletCapabilityPills } from "../lib/wallet-capabilities"
 import {
@@ -1696,60 +1704,128 @@ function SendWalletDialog({
   onOpenChange: (open: boolean) => void
   wallets: UseWalletsReturn
 }) {
-  const [address, setAddress] = useState("")
+  const [method, setMethod] = useState<"lightning" | "spark">("lightning")
+  const [paymentRequest, setPaymentRequest] = useState("")
   const [amount, setAmount] = useState("")
-  const [quote, setQuote] = useState<SparkDirectTransferQuote | null>(null)
+  const [useMax, setUseMax] = useState(false)
+  const [quote, setQuote] = useState<SparkSendQuote | null>(null)
+  const [reviewedPaymentRequest, setReviewedPaymentRequest] = useState("")
   const [pending, setPending] = useState(false)
   const [outcome, setOutcome] = useState<"sent" | "ambiguous" | null>(null)
+  const [sentMethod, setSentMethod] = useState<"lightning" | "spark" | null>(
+    null
+  )
   const [error, setError] = useState<string | null>(null)
-  const hasUnresolvedSparkTransfer = wallets.hasUnresolvedSparkTransfer
-  const acknowledgeSparkTransfer = wallets.acknowledgeUnresolvedSparkTransfer
+  const lightningRequestRef = useRef<HTMLTextAreaElement>(null)
+  const sparkRequestRef = useRef<HTMLInputElement>(null)
+  const reviewHeadingRef = useRef<HTMLHeadingElement>(null)
+  const resultAlertRef = useRef<HTMLParagraphElement>(null)
+  const successStatusRef = useRef<HTMLDivElement>(null)
+  const hasUnresolvedSparkSend = wallets.hasUnresolvedSparkSend
+  const acknowledgeUnresolvedSparkSend = wallets.acknowledgeUnresolvedSparkSend
+  const invoiceMetadata =
+    method === "lightning" && paymentRequest.trim()
+      ? decodeLightningInvoiceMetadata(paymentRequest)
+      : null
+  const isValidInvoice =
+    invoiceMetadata !== null &&
+    invoiceMetadata.createdAt !== null &&
+    decodeLightningInvoicePaymentHash(paymentRequest) !== null
+  const isFixedAmountInvoice =
+    invoiceMetadata !== null &&
+    isValidInvoice &&
+    invoiceMetadata.msats !== null &&
+    !isAmountlessLightningInvoice(paymentRequest)
+  const isAmountlessInvoice =
+    isValidInvoice && isAmountlessLightningInvoice(paymentRequest)
+  const hasUnsupportedSubSatAmount =
+    isFixedAmountInvoice && invoiceMetadata?.sats === null
+  const canPrepare =
+    !pending &&
+    !!paymentRequest.trim() &&
+    !hasUnsupportedSubSatAmount &&
+    (method !== "spark" || !!amount.trim()) &&
+    (!isAmountlessInvoice || useMax || !!amount.trim())
 
   useEffect(() => {
     if (!wallet) {
       return
     }
     try {
-      if (hasUnresolvedSparkTransfer(wallet.id)) {
+      if (hasUnresolvedSparkSend(wallet.id)) {
         setOutcome("ambiguous")
         setError(
-          "A previous Spark transfer is unresolved. Check this wallet's payment history before clearing the safety lock."
+          "A previous Spark payment is unresolved. Check this wallet's payment history before clearing the safety lock."
         )
+        requestAnimationFrame(() => resultAlertRef.current?.focus())
       }
     } catch (caught) {
       setOutcome("ambiguous")
       setError(
         getErrorMessage(
           caught,
-          "Spark transfer safety state is unavailable. Direct transfers are disabled."
+          "Spark payment safety state is unavailable. Sending is disabled."
         )
       )
+      requestAnimationFrame(() => resultAlertRef.current?.focus())
     }
-  }, [hasUnresolvedSparkTransfer, wallet])
+  }, [hasUnresolvedSparkSend, wallet])
 
   const close = () => {
     if (wallet && quote && outcome !== "ambiguous") {
-      wallets.discardSparkTransferQuote(wallet.id, quote.id)
+      wallets.discardSparkSendQuote(wallet.id, quote.id)
     }
-    setAddress("")
+    setMethod("lightning")
+    setPaymentRequest("")
     setAmount("")
+    setUseMax(false)
     setQuote(null)
+    setReviewedPaymentRequest("")
     setPending(false)
     setOutcome(null)
+    setSentMethod(null)
     setError(null)
     onOpenChange(false)
   }
 
-  const resetQuote = () => {
+  const resetQuote = (returnFocus = false) => {
     if (outcome === "ambiguous") {
       return
     }
     if (wallet && quote) {
-      wallets.discardSparkTransferQuote(wallet.id, quote.id)
+      wallets.discardSparkSendQuote(wallet.id, quote.id)
     }
     setQuote(null)
+    setReviewedPaymentRequest("")
     setOutcome(null)
     setError(null)
+    if (returnFocus) {
+      requestAnimationFrame(() => {
+        if (method === "lightning") {
+          lightningRequestRef.current?.focus()
+        } else {
+          sparkRequestRef.current?.focus()
+        }
+      })
+    }
+  }
+
+  const changeMethod = (value: string) => {
+    if (pending || (value !== "lightning" && value !== "spark")) return
+    resetQuote()
+    setMethod(value)
+    setPaymentRequest("")
+    setAmount("")
+    setUseMax(false)
+  }
+
+  const updatePaymentRequest = (value: string) => {
+    setPaymentRequest(value)
+    resetQuote()
+    if (method === "lightning") {
+      setUseMax(false)
+      setAmount("")
+    }
   }
 
   const prepare = async () => {
@@ -1757,30 +1833,51 @@ function SendWalletDialog({
     setPending(true)
     setError(null)
     try {
-      const amountSats = Number(amount)
-      setQuote(
-        await wallets.prepareSparkTransfer(wallet.id, {
-          address,
-          amountSats,
-        })
-      )
+      const paymentRequestSnapshot = paymentRequest.trim()
+      let request: SparkSendRequest
+      if (method === "lightning") {
+        request = {
+          destination: {
+            type: "lightning_invoice",
+            invoice: paymentRequestSnapshot,
+          },
+          amount: useMax
+            ? { type: "max" }
+            : amount.trim()
+              ? { type: "exact", amountSats: Number(amount) }
+              : { type: "invoice" },
+        }
+      } else {
+        request = {
+          destination: {
+            type: "spark_address",
+            address: paymentRequestSnapshot,
+          },
+          amount: { type: "exact", amountSats: Number(amount) },
+        }
+      }
+      const nextQuote = await wallets.prepareSparkSend(wallet.id, request)
+      setReviewedPaymentRequest(paymentRequestSnapshot)
+      setQuote(nextQuote)
+      requestAnimationFrame(() => reviewHeadingRef.current?.focus())
     } catch (caught) {
       let nextError = getErrorMessage(
         caught,
-        "Could not prepare Spark transfer."
+        "Could not prepare the Spark payment."
       )
       try {
-        if (hasUnresolvedSparkTransfer(wallet.id)) {
+        if (hasUnresolvedSparkSend(wallet.id)) {
           setOutcome("ambiguous")
         }
       } catch (safetyError) {
         setOutcome("ambiguous")
         nextError = getErrorMessage(
           safetyError,
-          "Spark transfer safety state is unavailable. Direct transfers are disabled."
+          "Spark payment safety state is unavailable. Sending is disabled."
         )
       }
       setError(nextError)
+      requestAnimationFrame(() => resultAlertRef.current?.focus())
     } finally {
       setPending(false)
     }
@@ -1791,10 +1888,12 @@ function SendWalletDialog({
     setPending(true)
     setError(null)
     try {
-      const result = await wallets.confirmSparkTransfer(wallet.id, quote.id)
+      const result = await wallets.confirmSparkSend(wallet.id, quote.id)
       if (result.status === "sent") {
+        setSentMethod(result.method)
         setOutcome("sent")
         setQuote(null)
+        requestAnimationFrame(() => successStatusRef.current?.focus())
         return
       }
       if (result.status === "ambiguous") {
@@ -1803,37 +1902,36 @@ function SendWalletDialog({
         setQuote(null)
       }
       setError(result.reason)
+      requestAnimationFrame(() => resultAlertRef.current?.focus())
     } catch (caught) {
       setOutcome("ambiguous")
       setError(
         getErrorMessage(
           caught,
-          "Spark transfer status is unknown. Check history before trying again."
+          "Spark payment status is unknown. Check history before trying again."
         )
       )
+      requestAnimationFrame(() => resultAlertRef.current?.focus())
     } finally {
       setPending(false)
     }
   }
 
-  const acknowledgeUnresolvedTransfer = () => {
+  const acknowledgeUnresolvedPayment = () => {
     if (!wallet) return
     setPending(true)
     setError(null)
     try {
-      acknowledgeSparkTransfer(wallet.id)
-      setAddress("")
-      setAmount("")
-      setQuote(null)
-      setOutcome(null)
-      onOpenChange(false)
+      acknowledgeUnresolvedSparkSend(wallet.id)
+      close()
     } catch (caught) {
       setError(
         getErrorMessage(
           caught,
-          "Could not clear the Spark transfer safety lock."
+          "Could not clear the Spark payment safety lock."
         )
       )
+      requestAnimationFrame(() => resultAlertRef.current?.focus())
     } finally {
       setPending(false)
     }
@@ -1847,6 +1945,7 @@ function SendWalletDialog({
       }}
     >
       <DialogContent
+        aria-busy={pending}
         showCloseButton={!pending}
         onEscapeKeyDown={(event) => {
           if (pending) {
@@ -1862,17 +1961,21 @@ function SendWalletDialog({
         <DialogHeader>
           <DialogTitle>Send from {wallet?.label}</DialogTitle>
           <DialogDescription>
-            Direct Spark transfer is an advanced ecosystem action. Verify the
-            recipient and fee before sending; it does not use Lightning.
+            Pay a Lightning invoice from this Spark Portable Wallet. Direct
+            Spark address transfers remain available as an advanced option.
           </DialogDescription>
         </DialogHeader>
         {outcome === "sent" ? (
           <>
             <div
+              ref={successStatusRef}
               role="status"
-              className="rounded-xl border border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_8%,transparent)] p-4 text-sm text-[var(--text-secondary)]"
+              tabIndex={-1}
+              className="rounded-xl border border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_8%,transparent)] p-4 text-sm text-[var(--text-secondary)] outline-none"
             >
-              Spark transfer sent.
+              {sentMethod === "spark"
+                ? "Spark transfer sent."
+                : "Lightning payment sent."}
             </div>
             <DialogFooter>
               <Button onClick={close}>Done</Button>
@@ -1880,91 +1983,315 @@ function SendWalletDialog({
           </>
         ) : (
           <>
-            <div className="grid gap-2">
-              <Label htmlFor="spark-send-address">Spark address</Label>
-              <Input
-                id="spark-send-address"
-                value={address}
-                onChange={(event) => {
-                  setAddress(event.target.value)
-                  resetQuote()
-                }}
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="off"
-                spellCheck={false}
-                disabled={pending || outcome === "ambiguous"}
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="spark-send-amount">Amount in sats</Label>
-              <Input
-                id="spark-send-amount"
-                type="number"
-                min={1}
-                step={1}
-                value={amount}
-                onChange={(event) => {
-                  setAmount(event.target.value)
-                  resetQuote()
-                }}
-                disabled={pending || outcome === "ambiguous"}
-              />
-            </div>
-            {quote && (
-              <div className="rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_7%,transparent)] p-4 text-sm leading-6 text-[var(--text-secondary)]">
-                <div>Send: {quote.amountSats.toLocaleString()} sats</div>
-                <div>Fee: {quote.feeSats.toLocaleString()} sats</div>
-                <div className="font-medium text-[var(--text-primary)]">
-                  Total: {(quote.amountSats + quote.feeSats).toLocaleString()}{" "}
-                  sats
-                </div>
-              </div>
-            )}
+            {outcome !== "ambiguous" &&
+              (quote ? (
+                <form
+                  id="spark-send-confirm-form"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    if (!pending) void confirm()
+                  }}
+                  className="rounded-xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_7%,transparent)] p-4 text-sm text-[var(--text-secondary)]"
+                >
+                  <h3
+                    ref={reviewHeadingRef}
+                    tabIndex={-1}
+                    className="font-semibold text-[var(--text-primary)] outline-none"
+                  >
+                    Review payment
+                  </h3>
+                  <dl className="mt-3 grid gap-2">
+                    <div className="flex items-start justify-between gap-4">
+                      <dt>Method</dt>
+                      <dd className="text-right font-medium text-[var(--text-primary)]">
+                        {quote.method === "lightning"
+                          ? "Lightning invoice"
+                          : "Direct Spark address"}
+                      </dd>
+                    </div>
+                    <div className="flex items-start justify-between gap-4">
+                      <dt>Send</dt>
+                      <dd className="text-right font-medium text-[var(--text-primary)]">
+                        {quote.amountSats.toLocaleString()} sats
+                      </dd>
+                    </div>
+                    <div className="flex items-start justify-between gap-4">
+                      <dt>
+                        {quote.method === "lightning"
+                          ? "Maximum Lightning fee"
+                          : "Fee"}
+                      </dt>
+                      <dd className="text-right font-medium text-[var(--text-primary)]">
+                        {quote.feeSats.toLocaleString()} sats
+                      </dd>
+                    </div>
+                    <div className="flex items-start justify-between gap-4 border-t border-[var(--border-subtle)] pt-2">
+                      <dt>
+                        {quote.method === "lightning"
+                          ? "Maximum total"
+                          : "Total"}
+                      </dt>
+                      <dd className="text-right font-semibold text-[var(--text-primary)]">
+                        {quote.totalSats.toLocaleString()} sats
+                      </dd>
+                    </div>
+                    <div className="flex items-start justify-between gap-4">
+                      <dt>
+                        {quote.method === "lightning"
+                          ? "Estimated remaining after maximum fee"
+                          : "Estimated remaining"}
+                      </dt>
+                      <dd className="text-right font-medium text-[var(--text-primary)]">
+                        {quote.remainingSats.toLocaleString()} sats
+                      </dd>
+                    </div>
+                  </dl>
+                  <div className="mt-3 border-t border-[var(--border-subtle)] pt-3">
+                    <p className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                      Payment request
+                    </p>
+                    <code className="mt-1 block max-h-24 overflow-y-auto break-all font-mono text-xs leading-5 text-[var(--text-secondary)]">
+                      {reviewedPaymentRequest}
+                    </code>
+                  </div>
+                  {quote.amountMode === "max" && (
+                    <p className="mt-3 text-xs leading-5 text-[var(--text-muted)]">
+                      Max reserves the approved maximum Lightning fee and sends
+                      the rest. If the final fee is lower, some sats will
+                      remain.
+                    </p>
+                  )}
+                </form>
+              ) : (
+                <form
+                  id="spark-send-draft-form"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    if (canPrepare) void prepare()
+                  }}
+                  className="space-y-4"
+                >
+                  <Tabs value={method} onValueChange={changeMethod}>
+                    <TabsList className="grid w-full grid-cols-2">
+                      <TabsTrigger value="lightning" disabled={pending}>
+                        Lightning
+                      </TabsTrigger>
+                      <TabsTrigger value="spark" disabled={pending}>
+                        Spark address
+                      </TabsTrigger>
+                    </TabsList>
+                    <TabsContent value="lightning" className="space-y-2">
+                      <Label htmlFor="spark-send-lightning-invoice">
+                        Lightning invoice
+                      </Label>
+                      <Textarea
+                        ref={lightningRequestRef}
+                        id="spark-send-lightning-invoice"
+                        value={paymentRequest}
+                        onChange={(event) =>
+                          updatePaymentRequest(event.target.value)
+                        }
+                        placeholder="lnbc..."
+                        autoComplete="off"
+                        autoCorrect="off"
+                        autoCapitalize="off"
+                        spellCheck={false}
+                        disabled={pending}
+                        className="min-h-24 font-mono text-xs"
+                      />
+                      <p className="text-xs leading-5 text-[var(--text-muted)]">
+                        Paste a BOLT11 invoice from the wallet receiving the
+                        funds.
+                      </p>
+                    </TabsContent>
+                    <TabsContent value="spark" className="space-y-2">
+                      <Label htmlFor="spark-send-address">
+                        Direct Spark address
+                      </Label>
+                      <Input
+                        ref={sparkRequestRef}
+                        id="spark-send-address"
+                        value={paymentRequest}
+                        onChange={(event) =>
+                          updatePaymentRequest(event.target.value)
+                        }
+                        placeholder="spark1..."
+                        autoComplete="off"
+                        autoCorrect="off"
+                        autoCapitalize="off"
+                        spellCheck={false}
+                        disabled={pending}
+                        className="font-mono text-xs"
+                      />
+                      <p className="text-xs leading-5 text-[var(--text-muted)]">
+                        Advanced: send directly to another compatible Spark
+                        wallet without using Lightning.
+                      </p>
+                    </TabsContent>
+                  </Tabs>
+                  <div className="grid gap-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <Label htmlFor="spark-send-amount">
+                        {method === "lightning" && isFixedAmountInvoice
+                          ? "Invoice amount"
+                          : "Amount in sats"}
+                      </Label>
+                      {method === "lightning" && isAmountlessInvoice && (
+                        <Button
+                          type="button"
+                          variant={useMax ? "primary" : "outline"}
+                          size="sm"
+                          aria-pressed={useMax}
+                          onClick={() => {
+                            resetQuote()
+                            setUseMax((current) => !current)
+                            setAmount("")
+                          }}
+                          disabled={pending}
+                        >
+                          Max
+                        </Button>
+                      )}
+                    </div>
+                    {method === "lightning" && isFixedAmountInvoice ? (
+                      <Input
+                        id="spark-send-amount"
+                        value={
+                          invoiceMetadata?.sats === null
+                            ? "Unsupported sub-sat amount"
+                            : `${invoiceMetadata?.sats.toLocaleString()} sats`
+                        }
+                        readOnly
+                        aria-invalid={hasUnsupportedSubSatAmount}
+                        aria-describedby="spark-send-amount-help"
+                      />
+                    ) : (
+                      <Input
+                        id="spark-send-amount"
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={amount}
+                        onChange={(event) => {
+                          setAmount(event.target.value)
+                          resetQuote()
+                        }}
+                        aria-describedby="spark-send-amount-help"
+                        disabled={
+                          pending ||
+                          useMax ||
+                          (method === "lightning" && !isAmountlessInvoice)
+                        }
+                        placeholder={
+                          method === "lightning"
+                            ? paymentRequest.trim()
+                              ? "Enter amount"
+                              : "Paste invoice first"
+                            : undefined
+                        }
+                      />
+                    )}
+                    <p
+                      id="spark-send-amount-help"
+                      className="text-xs leading-5 text-[var(--text-muted)]"
+                    >
+                      {method === "spark"
+                        ? "Direct Spark transfers require an exact amount."
+                        : isFixedAmountInvoice
+                          ? hasUnsupportedSubSatAmount
+                            ? "Sub-sat Lightning invoices are not supported. Request a whole-sat invoice."
+                            : "This amount is encoded in the invoice and cannot be changed."
+                          : isAmountlessInvoice
+                            ? useMax
+                              ? "Max reserves the approved maximum Lightning fee and sends the rest. If the final fee is lower, some sats will remain."
+                              : "Enter an amount or choose Max for this amountless invoice."
+                            : "Paste a valid Lightning invoice to use its amount or enter sats for an amountless invoice."}
+                    </p>
+                  </div>
+                </form>
+              ))}
             {error && (
               <p
+                ref={resultAlertRef}
                 role="alert"
+                tabIndex={-1}
                 className={
                   outcome === "ambiguous"
-                    ? "rounded-xl border border-[color-mix(in_srgb,var(--warning)_45%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,transparent)] px-3 py-2 text-sm leading-6 text-[var(--text-secondary)]"
-                    : "text-sm text-[var(--text-secondary)]"
+                    ? "rounded-xl border border-[color-mix(in_srgb,var(--warning)_45%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,transparent)] px-3 py-2 text-sm leading-6 text-[var(--text-secondary)] outline-none"
+                    : "text-sm text-[var(--text-secondary)] outline-none"
                 }
               >
                 {error}
+                {outcome === "ambiguous" && (
+                  <span className="mt-2 block font-medium text-[var(--text-primary)]">
+                    If a matching payment appears in history, do not retry. Only
+                    clear the lock after confirming no matching payment exists.
+                  </span>
+                )}
               </p>
             )}
             <DialogFooter>
               {outcome === "ambiguous" ? (
                 <>
-                  <Button variant="ghost" onClick={close} disabled={pending}>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={close}
+                    disabled={pending}
+                    className="w-full whitespace-normal sm:w-auto"
+                  >
                     Close and check history
                   </Button>
                   <Button
+                    type="button"
                     variant="outline"
-                    onClick={acknowledgeUnresolvedTransfer}
+                    onClick={acknowledgeUnresolvedPayment}
                     disabled={pending}
+                    className="w-full whitespace-normal sm:w-auto"
                   >
-                    {pending && <Loader2 className="h-4 w-4 animate-spin" />}I
-                    checked history — clear safety lock
+                    {pending && <Loader2 className="h-4 w-4 animate-spin" />}
+                    {pending ? "Clearing…" : "No matching payment; allow retry"}
                   </Button>
                 </>
               ) : (
-                <Button variant="ghost" onClick={close} disabled={pending}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={close}
+                  disabled={pending}
+                >
                   Cancel
                 </Button>
               )}
               {quote && outcome !== "ambiguous" ? (
-                <Button onClick={() => void confirm()} disabled={pending}>
-                  {pending && <Loader2 className="h-4 w-4 animate-spin" />}
-                  Confirm transfer
-                </Button>
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => resetQuote(true)}
+                    disabled={pending}
+                  >
+                    Back
+                  </Button>
+                  <Button
+                    type="submit"
+                    form="spark-send-confirm-form"
+                    disabled={pending}
+                  >
+                    {pending && <Loader2 className="h-4 w-4 animate-spin" />}
+                    {pending
+                      ? "Sending…"
+                      : `Send ${quote.amountSats.toLocaleString()} sats`}
+                  </Button>
+                </>
               ) : outcome !== "ambiguous" ? (
                 <Button
-                  onClick={() => void prepare()}
-                  disabled={pending || !address.trim() || !amount}
+                  type="submit"
+                  form="spark-send-draft-form"
+                  disabled={!canPrepare}
                 >
                   {pending && <Loader2 className="h-4 w-4 animate-spin" />}
-                  Review fee
+                  {pending ? "Preparing…" : "Review payment"}
                 </Button>
               ) : null}
             </DialogFooter>

@@ -9,6 +9,11 @@ export interface SparkDirectTransferSafetyStore {
   delete(safetyScope: string): void
 }
 
+// The v2 storage key and legacy names remain stable so an unresolved direct
+// transfer from an earlier Conduit build also blocks the unified Spark send
+// flow after upgrade.
+export type SparkSendSafetyStore = SparkDirectTransferSafetyStore
+
 const STORAGE_KEY_PREFIX = "conduit:spark-direct-transfer-safety:v2:"
 
 export class BrowserSparkDirectTransferSafetyStore implements SparkDirectTransferSafetyStore {
@@ -27,7 +32,7 @@ export class BrowserSparkDirectTransferSafetyStore implements SparkDirectTransfe
     const marker = parseMarker(value)
     if (!marker) {
       throw new Error(
-        "Spark transfer safety state is invalid. Direct transfers are disabled on this device."
+        "Spark transfer safety state is invalid. Spark sends are disabled on this device."
       )
     }
     return marker
@@ -54,7 +59,7 @@ export class BrowserSparkDirectTransferSafetyStore implements SparkDirectTransfe
     }
     if (typeof window === "undefined") {
       throw new Error(
-        "Spark transfer safety storage is unavailable. Direct transfers are disabled."
+        "Spark transfer safety storage is unavailable. Spark sends are disabled."
       )
     }
     return window.localStorage
@@ -82,6 +87,8 @@ export function createSparkDirectTransferSafetyStore(): SparkDirectTransferSafet
     ? new MemorySparkDirectTransferSafetyStore()
     : new BrowserSparkDirectTransferSafetyStore()
 }
+
+export const createSparkSendSafetyStore = createSparkDirectTransferSafetyStore
 
 function getStorageKey(safetyScope: string): string {
   return `${STORAGE_KEY_PREFIX}${encodeURIComponent(safetyScope)}`

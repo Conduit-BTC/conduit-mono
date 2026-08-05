@@ -804,7 +804,7 @@ describe("first-party Spark SDK adapter", () => {
     })
   })
 
-  it("quotes, pays, and reconciles Lightning through the first-party SDK", async () => {
+  it("quotes Spark's recommended fee cap, pays, and reconciles Lightning", async () => {
     const payCalls: Array<{
       invoice: string
       maxFeeSats: number
@@ -854,7 +854,7 @@ describe("first-party Spark SDK adapter", () => {
     expect(prepared).toEqual({
       amount: 1_000n,
       paymentMethod: {
-        lightningFeeSats: 3,
+        lightningFeeSats: 5,
         type: "bolt11Invoice",
       },
     })
@@ -863,7 +863,7 @@ describe("first-party Spark SDK adapter", () => {
         amountSatsToSend: 1_000,
         idempotencyKey: "order-123",
         invoice: ZERO_PREIMAGE_INVOICE,
-        maxFeeSats: 3,
+        maxFeeSats: 5,
         preferSpark: false,
       },
     ])
@@ -882,6 +882,56 @@ describe("first-party Spark SDK adapter", () => {
     expect(response.payment.details?.htlcDetails?.paymentHash).toBe(
       ZERO_PREIMAGE_PAYMENT_HASH
     )
+  })
+
+  it("applies Spark's proportional Lightning fee cap above the minimum", async () => {
+    const payCalls: Array<{ maxFeeSats: number }> = []
+    const wallet = createNativeWallet({
+      async getLightningSendFeeEstimate() {
+        return 3
+      },
+      async payLightningInvoice(input) {
+        payCalls.push(input)
+        return {
+          id: "proportional-fee-request",
+          status: "LIGHTNING_PAYMENT_INITIATED",
+          fee: { originalValue: 3, originalUnit: "SATOSHI" },
+        }
+      },
+      async getLightningSendRequest() {
+        return {
+          id: "proportional-fee-request",
+          status: "LIGHTNING_PAYMENT_SUCCEEDED",
+          fee: { originalValue: 3, originalUnit: "SATOSHI" },
+          paymentPreimage: ZERO_PREIMAGE,
+        }
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+    const prepared = await client.prepareSendPayment({
+      paymentRequest: { type: "input", input: ZERO_PREIMAGE_INVOICE },
+      amount: 10_000n,
+    })
+
+    expect(prepared.paymentMethod).toEqual({
+      lightningFeeSats: 17,
+      type: "bolt11Invoice",
+    })
+
+    await client.sendPayment({
+      prepareResponse: prepared,
+      options: {
+        type: "bolt11Invoice",
+        preferSpark: false,
+        completionTimeoutSecs: 5,
+      },
+    })
+
+    expect(payCalls).toEqual([
+      expect.objectContaining({
+        maxFeeSats: 17,
+      }),
+    ])
   })
 
   it("rejects a regtest Lightning invoice before quoting from a mainnet wallet", async () => {
@@ -927,6 +977,28 @@ describe("first-party Spark SDK adapter", () => {
         amount: 1_000n,
       })
     ).rejects.toThrow("different Bitcoin network")
+    expect(feeQuoteRequested).toBe(false)
+  })
+
+  it("rejects an invalid Lightning amount component before quoting", async () => {
+    let feeQuoteRequested = false
+    const wallet = createNativeWallet({
+      async getLightningSendFeeEstimate() {
+        feeQuoteRequested = true
+        return 0
+      },
+    })
+    const client = await openClient(createFactory(wallet))
+
+    await expect(
+      client.prepareSendPayment({
+        paymentRequest: {
+          type: "input",
+          input: makeInvalidAmountReceiveInvoice("mainnet"),
+        },
+        amount: 10n,
+      })
+    ).rejects.toThrow("invalid amount")
     expect(feeQuoteRequested).toBe(false)
   })
 

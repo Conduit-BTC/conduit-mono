@@ -238,6 +238,12 @@ describe("Market wallet route contracts", () => {
     )
     expect(feeApproval).toContain("focusReturnRef")
     expect(feeApproval).toContain("focusTarget?.isConnected")
+    expect(feeApproval).toContain("Review maximum Lightning fee")
+    expect(feeApproval).toContain("Maximum total")
+    expect(feeApproval).toContain("No bitcoin will be sent until")
+    expect(feeApproval).toContain(
+      "The final fee may be lower than this approved maximum."
+    )
   })
 
   it("does not resolve saved-wallet checkout choices before storage is ready", async () => {
@@ -349,23 +355,63 @@ describe("Market wallet route contracts", () => {
     )
   })
 
-  it("keeps ambiguous direct transfers locked until explicit acknowledgement", async () => {
+  it("makes reviewed Lightning sends the default while retaining advanced Spark transfers", async () => {
     const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
 
-    expect(wallet).toContain("hasUnresolvedSparkTransfer")
-    expect(wallet).toContain("acknowledgeUnresolvedSparkTransfer")
+    expect(wallet).toContain('useState<"lightning" | "spark">("lightning")')
+    expect(wallet).toContain(
+      '<TabsTrigger value="lightning" disabled={pending}>'
+    )
+    expect(wallet).toContain('<TabsTrigger value="spark" disabled={pending}>')
+    expect(wallet).toContain("Lightning invoice")
+    expect(wallet).toContain("Direct Spark address")
+    expect(wallet).toContain("aria-pressed={useMax}")
+    expect(wallet).toContain(
+      "Max reserves the approved maximum Lightning fee and sends"
+    )
+    expect(wallet).toContain(
+      "If the final fee is lower, some sats will remain."
+    )
+    expect(wallet).toContain('? { type: "max" }')
+    expect(wallet).toContain("Review payment")
+    expect(wallet).toContain("Maximum total")
+    expect(wallet).toContain("Estimated remaining after maximum fee")
+    expect(wallet).toContain("Sub-sat Lightning invoices are not supported.")
+    expect(wallet).toContain("successStatusRef")
+    expect(wallet).toContain("resultAlertRef")
+    expect(wallet).toContain("aria-busy={pending}")
+    expect(wallet).toContain('"Preparing…"')
+    expect(wallet).toContain('"Sending…"')
+    expect(wallet).toContain("reviewedPaymentRequest")
+    expect(wallet).toContain('form="spark-send-draft-form"')
+    expect(wallet).toContain('form="spark-send-confirm-form"')
+    expect(wallet).toMatch(
+      /const updatePaymentRequest = \(value: string\) => \{[\s\S]{0,240}setUseMax\(false\)[\s\S]{0,80}setAmount\(""\)/
+    )
+    expect(wallet).toContain("wallets.prepareSparkSend(wallet.id")
+    expect(wallet).toContain("wallets.confirmSparkSend(wallet.id, quote.id)")
+  })
+
+  it("keeps ambiguous Spark sends locked until explicit acknowledgement", async () => {
+    const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+
+    expect(wallet).toContain("hasUnresolvedSparkSend")
+    expect(wallet).toContain("acknowledgeUnresolvedSparkSend")
     expect(wallet).toContain("Close and check history")
-    expect(wallet).toMatch(/I\s+checked history — clear safety lock/)
+    expect(wallet).toContain("No matching payment; allow retry")
+    expect(wallet).toContain(
+      "If a matching payment appears in history, do not retry"
+    )
     expect(wallet).toContain("showCloseButton={!pending}")
     expect(wallet).toMatch(
-      /wallet && quote && outcome !== "ambiguous"[\s\S]{0,100}discardSparkTransferQuote/
+      /wallet && quote && outcome !== "ambiguous"[\s\S]{0,100}discardSparkSendQuote/
     )
-    expect(wallet).toMatch(/disabled=\{pending \|\| outcome === "ambiguous"\}/)
+    expect(wallet).toContain('outcome === "ambiguous"')
     expect(wallet).toMatch(
-      /const prepare = async \(\) => \{[\s\S]{0,700}hasUnresolvedSparkTransfer\(wallet\.id\)[\s\S]{0,160}setOutcome\("ambiguous"\)/
+      /const prepare = async \(\) => \{[\s\S]{0,1200}hasUnresolvedSparkSend\(wallet\.id\)[\s\S]{0,160}setOutcome\("ambiguous"\)/
     )
     expect(wallet).toMatch(
-      /outcome === "ambiguous"\s+\? "[^"]*text-\[var\(--text-secondary\)\]"/
+      /outcome === "ambiguous"\s+\? "rounded-xl border[^"]*text-\[var\(--text-secondary\)\] outline-none"/
     )
   })
 
@@ -382,6 +428,8 @@ describe("Market wallet route contracts", () => {
     expect(content).toContain("resolveWalletPaymentInstance")
     expect(content).toContain("replaceOrderPaymentTarget")
     expect(content).toContain("retryWalletTargetIsStale")
+    expect(content).toContain("getNwcPaymentReadiness")
+    expect(content).toContain("nwcReadiness?.ready === true")
     expect(content).toContain("Previously selected wallet (unavailable)")
     expect(content).toContain("Loading saved wallets")
     expect(content).toContain("{wallets.initializationError}")

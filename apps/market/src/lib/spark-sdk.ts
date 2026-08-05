@@ -3,6 +3,7 @@ import {
   decodeLightningInvoiceAmount,
   decodeLightningInvoicePaymentHash,
   getLightningInvoiceNetwork,
+  isAmountlessLightningInvoice,
   normalizeLightningInvoice,
 } from "@conduit/core"
 
@@ -477,6 +478,10 @@ function adaptFirstPartySparkWallet(input: {
         )
       }
       const decodedAmount = decodeLightningInvoiceAmount(paymentRequest)
+      const amountlessInvoice = isAmountlessLightningInvoice(paymentRequest)
+      if (decodedAmount.msats === null && !amountlessInvoice) {
+        throw new Error("The Lightning invoice contains an invalid amount.")
+      }
       const paymentHash = decodeLightningInvoicePaymentHash(paymentRequest)
       if (!paymentHash) {
         throw new Error(
@@ -489,17 +494,20 @@ function adaptFirstPartySparkWallet(input: {
       ) {
         throw new Error("Amount in invoice does not match amount in request.")
       }
-      const amountSatsToSend =
-        decodedAmount.msats === null ? amountSats : undefined
-      const feeSats = await input.wallet.getLightningSendFeeEstimate({
+      const amountSatsToSend = amountlessInvoice ? amountSats : undefined
+      const estimatedFeeSats = await input.wallet.getLightningSendFeeEstimate({
         encodedInvoice: paymentRequest,
         ...(amountSatsToSend === undefined
           ? {}
           : { amountSats: amountSatsToSend }),
       })
-      if (!Number.isSafeInteger(feeSats) || feeSats < 0) {
+      if (!Number.isSafeInteger(estimatedFeeSats) || estimatedFeeSats < 0) {
         throw new Error("Spark returned an invalid Lightning fee.")
       }
+      const feeSats = Math.max(
+        estimatedFeeSats,
+        getRecommendedLightningMaxFeeSats(amountSats)
+      )
       const prepared: SparkPreparedPayment = {
         paymentMethod: {
           type: "bolt11Invoice",
@@ -609,6 +617,10 @@ function adaptFirstPartySparkWallet(input: {
       }
     },
   }
+}
+
+function getRecommendedLightningMaxFeeSats(amountSats: number): number {
+  return Math.max(5, Math.ceil(amountSats * 0.0017))
 }
 
 async function reconcileSparkTransfer(input: {
