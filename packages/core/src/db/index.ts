@@ -3,6 +3,7 @@ import { config } from "../config"
 import type { ProductZapMessagePolicy } from "../schemas"
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
 import type { ProductSpecification } from "../types"
+import type { WalletDescriptor, WalletProviderId } from "../wallets"
 
 export interface StoredOrder {
   id: string
@@ -437,6 +438,14 @@ export interface StoredPaymentAttempt {
   updatedAt: number
 }
 
+export interface StoredWalletCredential {
+  walletId: string
+  providerId: WalletProviderId
+  credential: string
+  createdAt: number
+  updatedAt: number
+}
+
 /** How the buyer initiated payment for this order. */
 export type OrderCheckoutMode =
   | "anonymous_public_zap"
@@ -529,6 +538,21 @@ export type OrderZapReceiptStatus =
 export type OrderLifecyclePhase =
   "pending" | "in_progress" | "completed" | "failed" | "cancelled"
 
+/**
+ * The buyer-selected local payment target for this order.
+ *
+ * This is an opaque device-local routing choice. It MUST NOT be included in the
+ * merchant order, payment proof, logs, or telemetry.
+ */
+export type OrderPaymentTarget =
+  | {
+      type: "wallet"
+      walletId: string
+      providerId: WalletProviderId
+    }
+  | { type: "webln" }
+  | { type: "manual" }
+
 export interface OrderLifecycleItem {
   productId: string
   familyProductId?: string
@@ -577,6 +601,16 @@ export interface OrderLifecycle {
   /** A public anon-zap attempt failed before invoice issuance and continued privately. */
   publicZapFallback?: boolean
   merchantLightningAddress?: string
+  /** Local-only payment routing selection. Never forwarded off device. */
+  paymentTarget?: OrderPaymentTarget
+  /**
+   * Stable opaque token for retries against the selected saved-wallet provider.
+   *
+   * This value is generated independently of `orderId`, stays device-local
+   * except when passed to the selected provider as its idempotency key, and is
+   * cleared when the buyer explicitly changes payment targets.
+   */
+  walletPaymentAttemptId?: string
 
   items: OrderLifecycleItem[]
   itemSubtotalSats: number
@@ -665,6 +699,8 @@ class ConduitDB extends Dexie {
     "pubkey"
   >
   ownContactListSnapshots!: EntityTable<CachedOwnContactListSnapshot, "pubkey">
+  wallets!: EntityTable<WalletDescriptor, "id">
+  walletCredentials!: EntityTable<StoredWalletCredential, "walletId">
 
   constructor() {
     super("conduit")
@@ -807,6 +843,12 @@ class ConduitDB extends Dexie {
 
     this.version(12).stores({
       ownContactListSnapshots: "pubkey, state, cachedAt",
+    })
+
+    this.version(13).stores({
+      wallets:
+        "id, kind, providerId, network, status, *capabilities, *defaultIntents, updatedAt, createdAt",
+      walletCredentials: "walletId, providerId, updatedAt",
     })
   }
 }

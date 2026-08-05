@@ -472,6 +472,7 @@ const BECH32_GENERATORS = [
 const BOLT11_TIMESTAMP_WORD_COUNT = 7
 const BOLT11_SIGNATURE_WORD_COUNT = 104
 const BECH32_CHECKSUM_WORD_COUNT = 6
+const BOLT11_PAYMENT_HASH_WORD_COUNT = 52
 const BOLT11_DESCRIPTION_HASH_WORD_COUNT = 52
 
 type Bolt11TaggedField = {
@@ -694,8 +695,8 @@ export function getLightningInvoiceNetwork(
 ): LightningInvoiceNetwork {
   const normalized = normalizeLightningInvoice(invoice).toLowerCase()
 
-  if (normalized.startsWith("lnbc")) return "mainnet"
   if (normalized.startsWith("lnbcrt")) return "regtest"
+  if (normalized.startsWith("lnbc")) return "mainnet"
   if (normalized.startsWith("lnsb")) return "signet"
   if (normalized.startsWith("lntb")) return "testnet"
 
@@ -846,6 +847,26 @@ function equalBytesConstantTime(left: Uint8Array, right: Uint8Array): boolean {
     difference |= left[index]! ^ right[index]!
   }
   return difference === 0
+}
+
+export function decodeLightningInvoicePaymentHash(
+  invoice: string
+): string | null {
+  const parsed = parseBolt11Invoice(invoice)
+  if (!parsed) return null
+
+  const paymentHashes = parsed.taggedFields.filter((field) => field.tag === "p")
+  if (paymentHashes.length !== 1) return null
+  const paymentHash = paymentHashes[0]!
+  if (
+    !paymentHash ||
+    paymentHash.words.length !== BOLT11_PAYMENT_HASH_WORD_COUNT
+  ) {
+    return null
+  }
+
+  const paymentHashBytes = wordsToBytes(paymentHash.words, 32)
+  return paymentHashBytes ? bytesToHex(paymentHashBytes) : null
 }
 
 export type ZapInvoiceBindingErrorCode =

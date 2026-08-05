@@ -13,8 +13,8 @@ References:
 
 Non-goals for the current client repository:
 
-- durable user account key custody or generation, escrow, refunds, or balance
-  management
+- durable Nostr user account-key custody or generation, server-side wallet
+  custody, escrow, or refunds
 - server-managed NIP-46 account custody or signer recovery beyond the current
   external-signer flow
 - service-operated checkout automation, except the scoped Anon Conduit Shopper public zap signer described below
@@ -76,6 +76,11 @@ stale/degraded after an incomplete authenticated refresh.
 The exact state machine, observation/privacy constraints, recipient-scoped
 relay policy, validation matrix, and client-first rollout/rollback contract are
 defined in `docs/knowledge/nip42-protected-read-rollout.md`.
+
+Portable Wallet credentials are not Nostr authentication keys. A client-side
+Portable Wallet provider may create or restore a separate self-custodial wallet
+seed under the requirements in `docs/specs/wallets.md`; this does not authorize
+generation, storage, or access to a user's Nostr account key.
 
 ### Client Ephemeral Guest Order Key Exception
 

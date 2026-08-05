@@ -32,17 +32,9 @@ export type NwcSessionStatus =
 
 export type NwcSessionPaymentPhase = "before_publish" | "after_publish"
 export type NwcSessionBalanceStatus =
-  | "unchecked"
-  | "checking"
-  | "available"
-  | "unavailable"
-  | "error"
+  "unchecked" | "checking" | "available" | "unavailable" | "error"
 export type NwcSessionBudgetStatus =
-  | "unchecked"
-  | "checking"
-  | "available"
-  | "unavailable"
-  | "error"
+  "unchecked" | "checking" | "available" | "unavailable" | "error"
 
 export interface NwcSessionBalanceState {
   status: NwcSessionBalanceStatus
@@ -105,6 +97,8 @@ export interface NwcSessionPayInvoiceInput {
   timeoutMs: number
   appId: ConduitAppId
   metadata?: Record<string, unknown>
+  /** Local opaque registry ID. Never sent to the wallet or telemetry. */
+  walletId?: string
 }
 
 type NwcSessionClientLike = {
@@ -220,7 +214,7 @@ export class BuyerNwcSession {
       return {
         status: "pre_publish_failed",
         phase: "before_publish",
-        reason: "No NWC wallet connection is saved.",
+        reason: "No Connected Wallet is connected.",
       }
     }
 
@@ -232,7 +226,8 @@ export class BuyerNwcSession {
       return {
         status: "pre_publish_failed",
         phase: "before_publish",
-        reason: "Saved wallet does not support outgoing payments via NWC.",
+        reason:
+          "This Connected Wallet does not support outgoing payments via NWC.",
       }
     }
 
@@ -534,7 +529,7 @@ export class BuyerNwcSession {
         lastWarmAt: Date.now(),
         error:
           status === "unsupported"
-            ? "Saved wallet does not support outgoing payments via NWC."
+            ? "This Connected Wallet does not support outgoing payments via NWC."
             : null,
       }
       this.notify()
@@ -584,7 +579,7 @@ export class BuyerNwcSession {
         result: {
           status: "pre_publish_failed",
           phase: "before_publish",
-          reason: "No NWC wallet connection is saved.",
+          reason: "No Connected Wallet is connected.",
         },
       }
     }
@@ -619,17 +614,34 @@ export class BuyerNwcSession {
   }
 }
 
-const buyerNwcSession = new BuyerNwcSession()
+const buyerNwcSessions = new Map<string, BuyerNwcSession>()
+const DEFAULT_NWC_SESSION_ID = "default"
 
-export function getBuyerNwcSession(): BuyerNwcSession {
-  return buyerNwcSession
+export function getBuyerNwcSession(
+  walletId = DEFAULT_NWC_SESSION_ID
+): BuyerNwcSession {
+  let session = buyerNwcSessions.get(walletId)
+  if (!session) {
+    session = new BuyerNwcSession()
+    buyerNwcSessions.set(walletId, session)
+  }
+  return session
+}
+
+export function closeBuyerNwcSession(walletId: string): void {
+  const session = buyerNwcSessions.get(walletId)
+  if (!session) {
+    return
+  }
+  session.close()
+  buyerNwcSessions.delete(walletId)
 }
 
 export async function payInvoiceWithBuyerNwcSession(
   connection: NwcConnection,
   input: NwcSessionPayInvoiceInput
 ): Promise<NwcSessionPaymentResult> {
-  const session = getBuyerNwcSession()
+  const session = getBuyerNwcSession(input.walletId)
   session.setConnection(connection)
   return session.payInvoice(input)
 }

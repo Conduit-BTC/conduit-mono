@@ -17,9 +17,12 @@ import {
   EVENT_KINDS,
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
+  config,
   createOrderLifecycle,
   fetchLnurlPayMetadata,
   getPriceSats,
+  getWalletDisplayLabels,
+  getAuthSignerReadiness,
   getTelemetryAmountBucket,
   getTelemetryCountBucket,
   hasWebLN,
@@ -37,11 +40,16 @@ import {
   type OrderAddressValidity,
   type OrderGuestContact,
   type OrderLifecycleItem,
+  type OrderPaymentTarget,
   type OrderShippingZoneEligibility,
+  type NwcConnection,
+  type NwcGetInfoResult,
   type Profile,
   type PricingRateInput,
   type ShopperPriceDisplay,
   type ShippingAddressSchema,
+  type WalletDescriptor,
+  type WalletNetwork,
 } from "@conduit/core"
 import {
   Avatar,
@@ -52,6 +60,11 @@ import {
   Combobox,
   Input,
   Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   Textarea,
 } from "@conduit/ui"
 import {
@@ -65,11 +78,12 @@ import { type CartItem, useCart } from "../hooks/useCart"
 import { useCartProductAvailability } from "../hooks/useCartProductAvailability"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
 import { useShopperPricing } from "../hooks/useShopperPricing"
+import { useWallets, type WalletRuntimeState } from "../hooks/useWallets"
 import {
-  useWallet,
-  type WalletBalanceState,
-  type WalletBudgetState,
-} from "../hooks/useWallet"
+  type NwcSessionBalanceState,
+  type NwcSessionBudgetState,
+  type NwcSessionSnapshot,
+} from "../lib/buyer-nwc-session"
 import {
   getCartShippingDestinationEligibility,
   getCartShippingOptionsAvailable,
@@ -84,6 +98,10 @@ import {
   type CartProductAvailability,
 } from "../lib/cart-model"
 import { LightningStrikeOverlay } from "../components/LightningStrikeOverlay"
+import {
+  SparkFeeApprovalDialog,
+  useSparkFeeApproval,
+} from "../components/SparkFeeApprovalDialog"
 import {
   isFastCheckoutEligible,
   getFastCheckoutUnavailableReasons,
@@ -126,6 +144,7 @@ import { isAnonZapSignerConfigured } from "../lib/anon-zap-signer"
 import {
   getDeliveryNotice,
   publishBuyerOrderMessage,
+  type BuyerOrderSigningIdentity,
 } from "../lib/order-publish"
 import {
   clearSessionGuestOrderSigningIdentity,
@@ -135,12 +154,21 @@ import {
   runOrderPayment,
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
+import {
+  getCheckoutPaymentTargetOptions,
+  getCheckoutPaymentTargetValue,
+  isCheckoutWalletTargetStale,
+  resolveCheckoutPaymentTarget,
+} from "../lib/checkout-payment-target"
+import type { CheckoutPaymentTarget } from "../lib/payment-rails"
+import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
 
 import {
   formatBalanceFreshness,
   getKnownWalletPaymentConstraint,
   type WalletPaymentConstraint,
 } from "../lib/wallet-readiness"
+import { getWalletProviderDescription } from "../lib/wallet-provider-label"
 
 type PriceFormatter = (price: CommercePriceLike) => ShopperPriceDisplay
 
@@ -160,6 +188,37 @@ const CHECKOUT_PRICE_REFRESH_RETRY_MS = 30_000
 type CheckoutPricingRefreshState =
   "ready" | "refreshing" | "stale_retryable" | "unavailable"
 
+function getCheckoutPaymentTargetDescription(input: {
+  target: CheckoutPaymentTarget
+  zapMode: CheckoutZapMode
+  walletConstraint: WalletPaymentConstraint | null
+  weblnAvailable: boolean
+  walletTargetStale: boolean
+}): string {
+  const invoiceDescription =
+    input.zapMode === "anonymous_public_zap"
+      ? "Conduit will deliver the private order and request an Anon-signed public zap invoice."
+      : input.zapMode === "public_zap_as_shopper"
+        ? "Conduit will deliver the order and request a shopper-signed public zap invoice."
+        : "Conduit will deliver the order and request a private LNURL invoice."
+
+  if (input.target.type === "manual") {
+    return `${invoiceDescription} The invoice will be shown for manual payment.`
+  }
+  if (input.target.type === "webln") {
+    return input.weblnAvailable
+      ? `${invoiceDescription} Your selected browser wallet will ask you to approve the payment.`
+      : `${invoiceDescription} The selected browser wallet is unavailable now. The payment will remain retryable from Orders.`
+  }
+  if (input.walletTargetStale) {
+    return `${invoiceDescription} The previously selected saved wallet is unavailable. Choose another payment target before zap out. You can still send the order first.`
+  }
+  if (input.walletConstraint) {
+    return `${invoiceDescription} Only the selected saved wallet will be used, and it cannot pay this total until the issue below is resolved.`
+  }
+  return `${invoiceDescription} Only the selected saved wallet will be used for this payment attempt.`
+}
+
 const SHIPPING_VALIDATION_FIELDS: ShippingFieldKey[] = [
   "country",
   "firstName",
@@ -176,6 +235,153 @@ function isValidationField(
   field: keyof ShippingFormState
 ): field is ShippingFieldKey {
   return SHIPPING_VALIDATION_FIELDS.includes(field as ShippingFieldKey)
+}
+
+type WalletConnectionStatus =
+  | "disconnected"
+  | "connecting"
+  | "connected"
+  | "pay-capable"
+  | "unsupported"
+  | "unreachable"
+  | "error"
+
+type WalletBalanceState = NwcSessionBalanceState
+type WalletBudgetState = NwcSessionBudgetState
+
+interface CheckoutWalletState {
+  status: WalletConnectionStatus
+  connection: NwcConnection | null
+  info: NwcGetInfoResult | null
+  balance: WalletBalanceState
+  budget: WalletBudgetState
+}
+
+function getCheckoutWalletState(input: {
+  wallet: WalletDescriptor | null
+  runtime: WalletRuntimeState | null | undefined
+  nwcSnapshot: NwcSessionSnapshot | null | undefined
+  configuredNetwork: WalletNetwork
+}): CheckoutWalletState {
+  if (!input.wallet) {
+    return {
+      status: "disconnected",
+      connection: null,
+      info: null,
+      balance: emptyCheckoutWalletBalance("unavailable"),
+      budget: emptyCheckoutWalletBudget("unavailable"),
+    }
+  }
+  if (input.wallet.providerId === "nwc" && input.nwcSnapshot) {
+    return {
+      status: getCheckoutNwcStatus(
+        input.nwcSnapshot,
+        input.wallet.network,
+        input.configuredNetwork
+      ),
+      connection: input.nwcSnapshot.connection,
+      info: input.nwcSnapshot.info,
+      balance: input.nwcSnapshot.balance,
+      budget: input.nwcSnapshot.budget,
+    }
+  }
+
+  const runtime = input.runtime
+  const balance: WalletBalanceState =
+    runtime?.status === "ready" && runtime.balanceMsats !== null
+      ? {
+          status: "available",
+          balanceMsats: runtime.balanceMsats,
+          fetchedAt: null,
+          error: null,
+        }
+      : runtime?.status === "connecting"
+        ? emptyCheckoutWalletBalance("checking")
+        : runtime?.status === "error"
+          ? {
+              status: "error",
+              balanceMsats: runtime.balanceMsats,
+              fetchedAt: null,
+              error: runtime.error,
+            }
+          : emptyCheckoutWalletBalance("unavailable")
+
+  return {
+    status:
+      runtime?.status === "ready"
+        ? "pay-capable"
+        : runtime?.status === "connecting"
+          ? "connecting"
+          : runtime?.status === "error"
+            ? "error"
+            : "disconnected",
+    connection: null,
+    info: {
+      methods: input.wallet.capabilities.map((capability) => {
+        if (capability === "receive") return "make_invoice"
+        if (capability === "history") return "list_transactions"
+        if (capability === "balance") return "get_balance"
+        return capability
+      }),
+      network: input.wallet.network,
+      alias: input.wallet.label,
+    },
+    balance,
+    budget: emptyCheckoutWalletBudget("unavailable"),
+  }
+}
+
+function getCheckoutNwcStatus(
+  snapshot: NwcSessionSnapshot,
+  walletNetwork: WalletNetwork,
+  configuredNetwork: WalletNetwork
+): WalletConnectionStatus {
+  switch (snapshot.status) {
+    case "reachable": {
+      const readiness = getNwcPaymentReadiness({
+        snapshot,
+        walletNetwork,
+        configuredNetwork,
+      })
+      return readiness.ready ? "pay-capable" : "error"
+    }
+    case "warming":
+      return "connecting"
+    case "unsupported":
+      return "unsupported"
+    case "unreachable":
+      return "unreachable"
+    case "error":
+      return "error"
+    case "disconnected":
+      return "disconnected"
+  }
+}
+
+function emptyCheckoutWalletBalance(
+  status: Extract<WalletBalanceState["status"], "checking" | "unavailable">
+): WalletBalanceState {
+  return {
+    status,
+    balanceMsats: null,
+    fetchedAt: null,
+    error: null,
+  }
+}
+
+function emptyCheckoutWalletBudget(
+  status: Extract<WalletBudgetState["status"], "unavailable">
+): WalletBudgetState {
+  return {
+    status,
+    usedMsats: null,
+    totalMsats: null,
+    remainingMsats: null,
+    renewsAt: null,
+    renewalPeriod: null,
+    fetchedAt: null,
+    error: null,
+  }
 }
 
 const COUNTRY_COMBOBOX_OPTIONS = SHIPPING_COUNTRIES.map((country) => ({
@@ -670,13 +876,59 @@ function OrderSummary({
 // ─── Checkout page ────────────────────────────────────────────────────────────
 
 function CheckoutPage() {
-  const { pubkey, status: authStatus } = useAuth()
+  const { pubkey, signer, capabilities, status: authStatus } = useAuth()
   const cart = useCart()
   const search = Route.useSearch()
   const navigate = useNavigate()
   const shopperPricing = useShopperPricing()
   const btcUsdRateQuery = shopperPricing.rateQuery
-  const wallet = useWallet({ refreshBalance: true })
+  const wallets = useWallets()
+  const checkoutWalletNetwork =
+    config.lightningNetwork === "mock" ? "regtest" : config.lightningNetwork
+  const eligibleWallets = wallets.wallets.filter(
+    (candidate) =>
+      candidate.network === checkoutWalletNetwork &&
+      candidate.capabilities.includes("pay_invoice")
+  )
+  const eligibleWalletDisplayLabels = getWalletDisplayLabels(eligibleWallets)
+  const [weblnAvailable, setWeblnAvailable] = useState(false)
+  const [paymentTargetSelection, setPaymentTargetSelection] =
+    useState<CheckoutPaymentTarget | null>(null)
+  const selectedPaymentTarget = resolveCheckoutPaymentTarget({
+    selection: paymentTargetSelection,
+    eligibleWallets,
+    weblnAvailable,
+  })
+  const selectedPaymentTargetIsStale = isCheckoutWalletTargetStale({
+    target: selectedPaymentTarget,
+    eligibleWallets,
+  })
+  const paymentTargetOptions = getCheckoutPaymentTargetOptions({
+    eligibleWallets,
+    selectedTarget: selectedPaymentTarget,
+    weblnAvailable,
+  })
+  const selectedWallet =
+    selectedPaymentTarget.type === "wallet"
+      ? (eligibleWallets.find(
+          (candidate) =>
+            candidate.id === selectedPaymentTarget.walletId &&
+            candidate.providerId === selectedPaymentTarget.providerId
+        ) ?? null)
+      : null
+  const selectedWalletRuntime = selectedWallet
+    ? wallets.runtime[selectedWallet.id]
+    : null
+  const selectedNwcSnapshot =
+    selectedWallet?.providerId === "nwc"
+      ? wallets.nwcSnapshots[selectedWallet.id]
+      : null
+  const wallet = getCheckoutWalletState({
+    wallet: selectedWallet,
+    runtime: selectedWalletRuntime,
+    nwcSnapshot: selectedNwcSnapshot,
+    configuredNetwork: checkoutWalletNetwork,
+  })
 
   const [step, setStep] = useState<CheckoutStep>("shipping")
   const [shipping, setShipping] = useState<ShippingFormState>(() =>
@@ -698,6 +950,7 @@ function CheckoutPage() {
   // Lightning-strike click feedback while the order publishes before navigation.
   const [overlayPlaying, setOverlayPlaying] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
+  const sparkFeeApproval = useSparkFeeApproval()
   // Synchronous re-entrancy guard for the payment flow. A `step`/`disabled`
   // check can't prevent a double-click because the state change doesn't commit
   // until React re-renders; this ref flips synchronously inside the click's
@@ -711,7 +964,6 @@ function CheckoutPage() {
   const [zapMode, setZapMode] = useState<CheckoutZapMode>(defaultPublicZapMode)
   const [zapContent, setZapContent] = useState("")
   const [zapContentEdited, setZapContentEdited] = useState(false)
-  const [weblnAvailable, setWeblnAvailable] = useState(false)
   const [pricingRefreshPending, setPricingRefreshPending] = useState(false)
   const [pricingRefreshFailedAt, setPricingRefreshFailedAt] = useState<
     number | null
@@ -719,10 +971,30 @@ function CheckoutPage() {
   const btcUsdRate = btcUsdRateQuery.data ?? null
   const refetchBtcUsdRate = btcUsdRateQuery.refetch
   const btcUsdRateIsFetching = btcUsdRateQuery.isFetching
-  const signerConnected = authStatus === "connected" && !!pubkey
+  const authSignerReadiness = getAuthSignerReadiness({
+    status: authStatus,
+    pubkey,
+    signer,
+    capabilities,
+  })
+  const signerConnected = authSignerReadiness === "ready"
   const signedBuyerPubkey = signerConnected ? pubkey : null
-  const authPending = authStatus === "restoring" || authStatus === "connecting"
-  const isGuestCheckout = !signerConnected && !authPending
+  const authPending = authSignerReadiness === "pending"
+  const isGuestCheckout = authSignerReadiness === "disconnected"
+  const signerBlockedMessage =
+    authSignerReadiness === "unavailable"
+      ? "Your Nostr account is connected, but its signer is unavailable. Disconnect and reconnect it before sending this order. Nothing will be sent or paid until you reconnect."
+      : authSignerReadiness === "incompatible"
+        ? "This signer cannot encrypt private Nostr orders. Connect a signer with NIP-44 support before sending. Nothing will be sent or paid until you reconnect."
+        : null
+
+  function getCheckoutBuyerIdentity(): BuyerOrderSigningIdentity | null {
+    if (!signedBuyerPubkey || !signer || authSignerReadiness !== "ready") {
+      if (signerBlockedMessage) setError(signerBlockedMessage)
+      return null
+    }
+    return { kind: "signed_in", pubkey: signedBuyerPubkey, signer }
+  }
 
   // LNURL probe state
   const [lnurlPayAvailable, setLnurlPayAvailable] = useState(false)
@@ -1068,12 +1340,31 @@ function CheckoutPage() {
     methods: wallet.info?.methods,
     formatSatsAmount: (sats) => shopperPricing.formatSatsAmount(sats).primary,
   })
-  const canTrySavedNwcWallet =
+  const selectedPaymentTargetDescription = getCheckoutPaymentTargetDescription({
+    target: selectedPaymentTarget,
+    zapMode: selectedZapMode,
+    walletConstraint: walletPaymentConstraint,
+    weblnAvailable,
+    walletTargetStale: selectedPaymentTargetIsStale,
+  })
+  const canTrySelectedNwcWallet =
+    selectedWallet?.providerId === "nwc" &&
     !!wallet.connection &&
-    wallet.status !== "unsupported" &&
-    wallet.status !== "error" &&
+    wallet.status === "pay-capable" &&
     !walletPaymentConstraint
-  const canAttemptLightningPayment = canTrySavedNwcWallet || weblnAvailable
+  const canTrySelectedSparkWallet =
+    selectedWallet?.providerId === "spark" &&
+    selectedWalletRuntime?.status === "ready" &&
+    !walletPaymentConstraint
+  const canAttemptLightningPayment =
+    !wallets.loading &&
+    !isGuestCheckout &&
+    !selectedPaymentTargetIsStale &&
+    (selectedPaymentTarget.type === "wallet"
+      ? canTrySelectedNwcWallet || canTrySelectedSparkWallet
+      : selectedPaymentTarget.type === "webln"
+        ? weblnAvailable
+        : false)
   const requiresPublicZap = isCheckoutPublicZapMode(selectedZapMode)
   const lnurlReadyForSelectedPayment =
     getLnurlReadyForCheckoutPayment({
@@ -1083,7 +1374,7 @@ function CheckoutPage() {
     }) &&
     (!requiresPublicZap || publicZapPolicy.publicZapsAllowed)
   const allowsManualLightningFallback =
-    !!merchantLud16 && lnurlReadyForSelectedPayment
+    !wallets.loading && !!merchantLud16 && lnurlReadyForSelectedPayment
   const fastEligibilityInput = {
     walletPayCapable: canAttemptLightningPayment,
     merchantLud16,
@@ -1479,8 +1770,9 @@ function CheckoutPage() {
   // ─── Order-first path (existing flow) ───────────────────────────────────
 
   async function placeOrder(): Promise<void> {
-    if (!signedBuyerPubkey || !selectedMerchant || checkoutItems.length === 0)
-      return
+    if (!selectedMerchant || checkoutItems.length === 0) return
+    const buyerIdentity = getCheckoutBuyerIdentity()
+    if (!buyerIdentity) return
     if (paymentInFlightRef.current) return
     paymentInFlightRef.current = true
 
@@ -1514,7 +1806,7 @@ function CheckoutPage() {
       const payload = {
         id: orderId,
         merchantPubkey: selectedMerchant,
-        buyerPubkey: signedBuyerPubkey,
+        buyerPubkey: buyerIdentity.pubkey,
         buyerIdentityKind: "signed_in" as const,
         items,
         subtotal: orderTotalSats,
@@ -1552,12 +1844,7 @@ function CheckoutPage() {
       setStep("sending")
 
       const [delivery] = await Promise.all([
-        publishBuyerOrderMessage(
-          rumor,
-          ndk,
-          selectedMerchant,
-          signedBuyerPubkey
-        ),
+        publishBuyerOrderMessage(rumor, ndk, selectedMerchant, buyerIdentity),
         new Promise((resolve) => window.setTimeout(resolve, 900)),
       ])
       orderDelivered = true
@@ -1572,7 +1859,7 @@ function CheckoutPage() {
       const addressValidity = computeAddressValidity(shippingAddress)
       await createOrderLifecycle({
         orderId,
-        buyerPubkey: signedBuyerPubkey,
+        buyerPubkey: buyerIdentity.pubkey,
         buyerIdentityKind: "signed_in",
         merchantPubkey: selectedMerchant,
         checkoutMode: "pay_later",
@@ -1702,7 +1989,14 @@ function CheckoutPage() {
    */
   async function payNow(): Promise<void> {
     if (!selectedMerchant || checkoutItems.length === 0) return
-    if (!signedBuyerPubkey && !isGuestCheckout) return
+    const connectedBuyerIdentity = getCheckoutBuyerIdentity()
+    if (!connectedBuyerIdentity && !isGuestCheckout) return
+    if (selectedPaymentTargetIsStale) {
+      setError(
+        "The previously selected wallet is unavailable. Choose another payment target before zap out. You can still send the order first."
+      )
+      return
+    }
     const requestedCheckoutMode = selectedZapMode
     let publishedOrderId: string | null = null
     let publishedTotalSats: number | null = null
@@ -1797,22 +2091,29 @@ function CheckoutPage() {
         formatSatsAmount: (sats) =>
           shopperPricing.formatSatsAmount(sats).primary,
       })
-      const shouldTrySavedNwcWallet =
+      const shouldTrySelectedNwcWallet =
         !isGuestCheckout &&
+        selectedWallet?.providerId === "nwc" &&
         !!wallet.connection &&
-        wallet.status !== "unsupported" &&
-        wallet.status !== "error" &&
+        wallet.status === "pay-capable" &&
+        !finalWalletPaymentConstraint
+      const shouldTrySelectedSparkWallet =
+        !isGuestCheckout &&
+        selectedWallet?.providerId === "spark" &&
+        selectedWalletRuntime?.status === "ready" &&
         !finalWalletPaymentConstraint
 
       const orderId = crypto.randomUUID()
       publishedOrderId = orderId
       publishedTotalSats = checkoutPricing.totalSats
-      const guestIdentity = signedBuyerPubkey
+      const guestIdentity = connectedBuyerIdentity
         ? null
         : createSessionGuestOrderSigningIdentity(orderId, selectedMerchant)
       guestOrderIdToClear = guestIdentity ? orderId : null
-      const buyerPubkey = signedBuyerPubkey ?? guestIdentity?.pubkey
-      if (!buyerPubkey) throw new Error("Buyer order identity is unavailable.")
+      const buyerIdentity = guestIdentity ?? connectedBuyerIdentity
+      if (!buyerIdentity)
+        throw new Error("Buyer order identity is unavailable.")
+      const buyerPubkey = buyerIdentity.pubkey
       const buyerIdentityKind = guestIdentity
         ? ("guest_ephemeral" as const)
         : ("signed_in" as const)
@@ -1863,14 +2164,29 @@ function CheckoutPage() {
         orderRumor,
         ndk,
         selectedMerchant,
-        guestIdentity ?? buyerPubkey
+        buyerIdentity
       )
       orderDelivered = true
       clearCheckoutShippingSession()
       const orderDeliveryNotice = getDeliveryNotice(orderDelivery, "Order")
 
       const canAutoPay =
-        !guestIdentity && (shouldTrySavedNwcWallet || webLnAvailableNow)
+        !guestIdentity &&
+        (selectedPaymentTarget.type === "wallet"
+          ? shouldTrySelectedNwcWallet || shouldTrySelectedSparkWallet
+          : selectedPaymentTarget.type === "webln"
+            ? webLnAvailableNow
+            : false)
+      const storedPaymentTarget: OrderPaymentTarget =
+        guestIdentity || selectedPaymentTarget.type === "manual"
+          ? { type: "manual" }
+          : selectedPaymentTarget.type === "wallet"
+            ? {
+                type: "wallet",
+                walletId: selectedPaymentTarget.walletId,
+                providerId: selectedPaymentTarget.providerId,
+              }
+            : { type: "webln" }
       // The order is now durably with the merchant. Persist the lifecycle so
       // Orders can render it immediately, then hand payment to the service.
       await createOrderLifecycle({
@@ -1886,6 +2202,7 @@ function CheckoutPage() {
             : "external_wallet",
         publicZapSigner: getCheckoutPublicZapSigner(checkoutMode) ?? undefined,
         merchantLightningAddress: merchantLud16,
+        paymentTarget: storedPaymentTarget,
         items: buildLifecycleItems(checkoutPricing.items),
         itemSubtotalSats: checkoutPricing.itemSubtotalSats,
         shippingCostSats: checkoutPricing.shippingCost.totalSats,
@@ -1964,14 +2281,30 @@ function CheckoutPage() {
                 },
               }
             : undefined,
-        walletConnection: guestIdentity ? null : wallet.connection,
-        tryNwc: !guestIdentity && shouldTrySavedNwcWallet,
-        tryWebln: !guestIdentity,
+        paymentTarget:
+          storedPaymentTarget.type === "wallet"
+            ? {
+                type: "wallet",
+                walletId: storedPaymentTarget.walletId,
+                providerId: storedPaymentTarget.providerId,
+              }
+            : storedPaymentTarget.type === "webln"
+              ? { type: "webln" }
+              : { type: "manual" },
+        approveFee:
+          storedPaymentTarget.type === "wallet" &&
+          storedPaymentTarget.providerId === "spark"
+            ? sparkFeeApproval.requestApproval
+            : undefined,
         formatSatsAmount: (sats) =>
           shopperPricing.formatSatsAmount(sats).primary,
       }
 
-      void runOrderPayment(serviceCtx)
+      if (serviceCtx.approveFee) {
+        await runOrderPayment(serviceCtx)
+      } else {
+        void runOrderPayment(serviceCtx)
+      }
 
       paymentInFlightRef.current = false
       void navigate({
@@ -2052,6 +2385,17 @@ function CheckoutPage() {
       onComplete={() => setOverlayPlaying(false)}
     />
   )
+  const sparkFeeDialog = (
+    <SparkFeeApprovalDialog
+      controller={sparkFeeApproval}
+      walletLabel={
+        selectedWallet?.providerId === "spark"
+          ? (eligibleWalletDisplayLabels.get(selectedWallet.id) ??
+            selectedWallet.label)
+          : undefined
+      }
+    />
+  )
 
   if (authPending) {
     return (
@@ -2074,6 +2418,7 @@ function CheckoutPage() {
     return (
       <div className="flex min-h-[70vh] items-center justify-center">
         {lightningOverlay}
+        {sparkFeeDialog}
         <section className="w-full max-w-3xl rounded-[2rem] bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--tertiary-500)_35%,transparent),transparent_55%),linear-gradient(180deg,var(--primary-500),var(--primary-600))] px-8 py-14 text-center text-white shadow-[0_24px_60px_color-mix(in_srgb,var(--primary-500)_40%,transparent)] sm:px-12">
           <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-[color-mix(in_srgb,var(--text-inverse)_20%,transparent)] bg-[color-mix(in_srgb,var(--text-inverse)_10%,transparent)]">
             <SpinnerIcon className="h-8 w-8 animate-spin" />
@@ -2701,14 +3046,208 @@ function CheckoutPage() {
                   {isGuestCheckout
                     ? "Send the order with a temporary guest key, then pay the Lightning invoice with your wallet."
                     : fastEligible
-                      ? wallet.status === "pay-capable"
-                        ? "Your wallet is connected and ready. Zap out now, or send the order first and pay later."
-                        : "Zap out is available for this merchant, or you can send the order first and pay later."
+                      ? selectedPaymentTarget.type === "manual"
+                        ? "Send the order and show its Lightning invoice for manual payment."
+                        : selectedPaymentTarget.type === "webln"
+                          ? weblnAvailable
+                            ? "Your browser wallet is ready. Zap out now, or send the order first and pay later."
+                            : "Your selected browser wallet is unavailable. You can still create the order and retry payment from Orders."
+                          : wallet.status === "pay-capable"
+                            ? "Your selected wallet is ready. Zap out now, or send the order first and pay later."
+                            : "Create the order now, then resolve the selected wallet before retrying payment."
                       : pricingOnlyFastCheckoutBlocker
                         ? "Conduit is refreshing the price conversion before offering zap out. You can still send the order first."
                         : "Send the order to the merchant first. They can confirm shipping and reply with payment details."}
                 </p>
               </div>
+
+              {!isGuestCheckout && (
+                <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                    <div className="min-w-0 flex-1">
+                      <Label htmlFor="checkout-wallet">Pay with</Label>
+                      <Select
+                        disabled={wallets.loading}
+                        value={getCheckoutPaymentTargetValue(
+                          selectedPaymentTarget
+                        )}
+                        onValueChange={(value) => {
+                          const option = paymentTargetOptions.find(
+                            (candidate) => candidate.value === value
+                          )
+                          if (option) setPaymentTargetSelection(option.target)
+                        }}
+                      >
+                        <SelectTrigger
+                          id="checkout-wallet"
+                          className="mt-2 h-11 rounded-xl"
+                        >
+                          {wallets.loading ? (
+                            <span className="flex items-center gap-2 text-[var(--text-muted)]">
+                              <SpinnerIcon className="h-3.5 w-3.5 animate-spin" />
+                              Loading saved wallets
+                            </span>
+                          ) : (
+                            <SelectValue />
+                          )}
+                        </SelectTrigger>
+                        <SelectContent className="w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-2rem)]">
+                          {selectedPaymentTargetIsStale &&
+                            selectedPaymentTarget.type === "wallet" && (
+                              <SelectItem
+                                value={getCheckoutPaymentTargetValue(
+                                  selectedPaymentTarget
+                                )}
+                                textValue="Previously selected wallet (unavailable)"
+                                disabled
+                              >
+                                Previously selected wallet (unavailable)
+                              </SelectItem>
+                            )}
+                          {eligibleWallets.map((candidate) => {
+                            const target: CheckoutPaymentTarget = {
+                              type: "wallet",
+                              walletId: candidate.id,
+                              providerId: candidate.providerId,
+                            }
+                            const displayLabel =
+                              eligibleWalletDisplayLabels.get(candidate.id) ??
+                              candidate.label
+                            return (
+                              <SelectItem
+                                key={candidate.id}
+                                value={getCheckoutPaymentTargetValue(target)}
+                                textValue={`${displayLabel} (${getWalletProviderDescription(candidate)})${
+                                  candidate.defaultIntents.includes(
+                                    "pay_invoice"
+                                  )
+                                    ? ", default"
+                                    : ""
+                                }`}
+                                className="max-w-full items-start overflow-hidden py-2 [&>span:last-child]:min-w-0 [&>span:last-child]:flex-1 [&>span:last-child]:overflow-hidden"
+                              >
+                                <span className="flex w-full min-w-0 items-start gap-2">
+                                  <span className="min-w-0 flex-1 whitespace-normal break-words leading-5">
+                                    {displayLabel} (
+                                    {getWalletProviderDescription(candidate)})
+                                  </span>
+                                  {candidate.defaultIntents.includes(
+                                    "pay_invoice"
+                                  ) && (
+                                    <span className="shrink-0 text-xs leading-5 text-[var(--text-muted)]">
+                                      Default
+                                    </span>
+                                  )}
+                                </span>
+                              </SelectItem>
+                            )
+                          })}
+                          {(weblnAvailable ||
+                            selectedPaymentTarget.type === "webln") && (
+                            <SelectItem
+                              value={getCheckoutPaymentTargetValue({
+                                type: "webln",
+                              })}
+                              disabled={!weblnAvailable}
+                            >
+                              Browser wallet (WebLN)
+                              {!weblnAvailable ? ", unavailable" : ""}
+                            </SelectItem>
+                          )}
+                          <SelectItem
+                            value={getCheckoutPaymentTargetValue({
+                              type: "manual",
+                            })}
+                          >
+                            Show invoice for manual payment
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
+                        {wallets.loading
+                          ? "Wait while Conduit checks the Portable and Connected Wallets saved on this device."
+                          : selectedPaymentTargetIsStale
+                            ? "The previously selected saved wallet is no longer available."
+                            : selectedPaymentTarget.type === "manual"
+                              ? "Conduit will show the invoice without opening a wallet."
+                              : selectedPaymentTarget.type === "webln"
+                                ? weblnAvailable
+                                  ? "Your browser wallet will ask you to approve this payment."
+                                  : "The selected browser wallet is unavailable. Choose another payment path or retry it from Orders."
+                                : "Only this saved wallet will be used for the payment attempt."}
+                      </p>
+                      {wallets.initializationError && (
+                        <div
+                          role="alert"
+                          className="mt-3 rounded-xl border border-[color-mix(in_srgb,var(--error)_40%,transparent)] bg-[color-mix(in_srgb,var(--error)_6%,transparent)] px-3 py-2 text-sm leading-6 text-[var(--text-secondary)]"
+                        >
+                          <div className="flex items-start gap-2">
+                            <AlertCircle
+                              aria-hidden="true"
+                              className="mt-1 h-4 w-4 shrink-0 text-[var(--text-secondary)]"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <p className="font-medium text-[var(--text-primary)]">
+                                Saved wallets could not be loaded
+                              </p>
+                              <p className="mt-1">
+                                {wallets.initializationError} Browser wallet and
+                                manual payment remain available.
+                              </p>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="mt-2 h-9 px-3 text-xs"
+                                disabled={wallets.loading}
+                                onClick={() => {
+                                  void wallets.retryInitialization()
+                                }}
+                              >
+                                {wallets.loading ? (
+                                  <>
+                                    <SpinnerIcon className="h-3.5 w-3.5 animate-spin" />
+                                    Retrying
+                                  </>
+                                ) : (
+                                  "Retry saved wallets"
+                                )}
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      {selectedPaymentTargetIsStale && (
+                        <div
+                          role="alert"
+                          className="mt-3 flex items-start gap-2 rounded-xl border border-[color-mix(in_srgb,var(--warning)_45%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,transparent)] px-3 py-2 text-sm leading-6 text-[var(--text-secondary)]"
+                        >
+                          <AlertTriangle
+                            aria-hidden="true"
+                            className="mt-1 h-4 w-4 shrink-0 text-[var(--text-secondary)]"
+                          />
+                          <span>
+                            Choose another payment target before zap out. You
+                            can still send the order first.
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                    <Link
+                      to="/wallet"
+                      className="text-sm text-[var(--text-secondary)] underline underline-offset-2 hover:text-[var(--text-primary)]"
+                    >
+                      Manage wallets
+                    </Link>
+                  </div>
+                  {selectedWallet?.providerId === "spark" &&
+                    selectedWalletRuntime?.status === "locked" && (
+                      <p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">
+                        Unlock this Portable Wallet on the Wallets page before
+                        starting payment.
+                      </p>
+                    )}
+                </div>
+              )}
 
               {isAllDigital && (
                 <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-3">
@@ -2771,20 +3310,10 @@ function CheckoutPage() {
                           ? selectedZapMode === "anonymous_public_zap"
                             ? "Conduit will deliver the private order with a guest key and request an Anon-signed public zap invoice. Payment stays in your Lightning wallet."
                             : "Conduit will deliver the private order with a guest key and request a Lightning invoice. Payment stays in your Lightning wallet."
-                          : walletPaymentConstraint
-                            ? selectedZapMode === "anonymous_public_zap"
-                              ? "Conduit will deliver the private order and request an Anon-signed public zap invoice. Your connected wallet will be skipped for this total."
-                              : selectedZapMode === "public_zap_as_shopper"
-                                ? "Conduit will deliver the order and request a shopper-signed public zap invoice. Your connected wallet will be skipped for this total."
-                                : "Conduit will deliver the order and request a private LNURL invoice. Your connected wallet will be skipped for this total."
-                            : selectedZapMode === "anonymous_public_zap"
-                              ? "Conduit will deliver the private order, request an Anon-signed public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."
-                              : selectedZapMode === "public_zap_as_shopper"
-                                ? "Conduit will deliver the order, request a shopper-signed public zap invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."
-                                : "Conduit will deliver the order, request a private LNURL invoice, and try your connected wallet first. If that path is unreachable before funds move, you can still pay the invoice with another Lightning wallet."}
+                          : selectedPaymentTargetDescription}
                     </p>
                     {!isGuestCheckout &&
-                      wallet.connection &&
+                      selectedWallet &&
                       !pricingOnlyFastCheckoutBlocker && (
                         <CheckoutWalletReadiness
                           balance={wallet.balance}
@@ -2942,7 +3471,7 @@ function CheckoutPage() {
                           : "3. You track order updates from the merchant in your order history."}
                       </li>
                     </ul>
-                    {fastUnavailableReasons.length > 0 && (
+                    {!wallets.loading && fastUnavailableReasons.length > 0 && (
                       <div className="mt-4 border-t border-[var(--border)] pt-4">
                         <div className="text-xs font-medium uppercase tracking-[0.12em] text-[var(--text-muted)]">
                           Zap out unavailable
@@ -2954,17 +3483,19 @@ function CheckoutPage() {
                         </ul>
                       </div>
                     )}
-                    {wallet.status === "disconnected" && (
-                      <div className="mt-4 border-t border-[var(--border)] pt-4 text-xs text-[var(--text-muted)]">
-                        <Link
-                          to="/wallet"
-                          className="underline underline-offset-2 hover:text-[var(--text-secondary)]"
-                        >
-                          Connect a Lightning wallet
-                        </Link>{" "}
-                        to unlock zap out on future orders.
-                      </div>
-                    )}
+                    {!wallets.loading &&
+                      !wallets.initializationError &&
+                      eligibleWallets.length === 0 && (
+                        <div className="mt-4 border-t border-[var(--border)] pt-4 text-xs text-[var(--text-muted)]">
+                          <Link
+                            to="/wallet"
+                            className="underline underline-offset-2 hover:text-[var(--text-secondary)]"
+                          >
+                            Add or connect a wallet
+                          </Link>{" "}
+                          to unlock zap out on future orders.
+                        </div>
+                      )}
                   </div>
                 )}
 
@@ -2984,10 +3515,17 @@ function CheckoutPage() {
                 {error && (
                   <div
                     role="alert"
-                    aria-live="polite"
-                    className="mt-5 rounded-xl border border-error/30 bg-error/10 p-3 text-sm text-error"
+                    className="mt-5 rounded-xl border border-error/30 bg-error/10 p-3 text-sm text-[var(--text-primary)]"
                   >
                     {error}
+                  </div>
+                )}
+                {!error && signerBlockedMessage && (
+                  <div
+                    role="alert"
+                    className="mt-5 rounded-xl border border-error/30 bg-error/10 p-3 text-sm text-[var(--text-primary)]"
+                  >
+                    {signerBlockedMessage}
                   </div>
                 )}
 
@@ -2998,7 +3536,10 @@ function CheckoutPage() {
                       className="h-11 px-5 text-sm"
                       disabled={
                         checkoutAvailability.isChecking ||
-                        hasUnavailableCheckoutItems
+                        hasUnavailableCheckoutItems ||
+                        selectedPaymentTargetIsStale ||
+                        authPending ||
+                        !!signerBlockedMessage
                       }
                       onClick={() => {
                         if (canAttemptLightningPayment) {
@@ -3010,9 +3551,13 @@ function CheckoutPage() {
                       <LightningIcon className="h-4 w-4" />
                       {isGuestCheckout
                         ? "Send order and show invoice"
-                        : walletPaymentConstraint && !weblnAvailable
-                          ? "Send order and show invoice"
-                          : "Zap out"}
+                        : selectedPaymentTargetIsStale
+                          ? "Choose how to pay"
+                          : selectedPaymentTarget.type === "manual"
+                            ? "Send order and show invoice"
+                            : canAttemptLightningPayment
+                              ? "Zap out"
+                              : "Send order and review payment"}
                     </Button>
                   )}
                   {pricingOnlyFastCheckoutBlocker && !fastEligible && (
@@ -3058,7 +3603,9 @@ function CheckoutPage() {
                       className="h-11 px-5 text-sm"
                       disabled={
                         checkoutAvailability.isChecking ||
-                        hasUnavailableCheckoutItems
+                        hasUnavailableCheckoutItems ||
+                        authPending ||
+                        !!signerBlockedMessage
                       }
                       onClick={placeOrder}
                     >
@@ -3086,6 +3633,7 @@ function CheckoutPage() {
       </div>
 
       {lightningOverlay}
+      {sparkFeeDialog}
       <SignerSwitch
         open={connectOpen}
         onOpenChange={setConnectOpen}
