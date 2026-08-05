@@ -322,7 +322,7 @@ export function ProductCartAction({
 
 export function ProductCardSkeleton() {
   return (
-    <div className="flex h-full animate-pulse flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-md)]">
+    <div className="flex animate-pulse flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-md)]">
       <div className="aspect-[4/3] bg-[var(--surface-elevated)]" />
       <div className="flex flex-1 flex-col p-3">
         <div className="min-h-[3.25rem] space-y-1.5">

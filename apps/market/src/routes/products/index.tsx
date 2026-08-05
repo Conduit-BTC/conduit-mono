@@ -685,9 +685,9 @@ function ProductsPage() {
 
       {/* Loading */}
       {productsQuery.isInitialLoading && (
-        <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+        <ul className="grid items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
           {Array.from({ length: PAGE_SIZE }).map((_, idx) => (
-            <li key={idx} className="h-full">
+            <li key={idx}>
               <ProductGridCardSkeleton />
             </li>
           ))}
@@ -741,13 +741,12 @@ function ProductsPage() {
 
       {/* Product grid */}
       {productCards.length > 0 && (
-        <ul className="grid auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+        <ul className="grid items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
           {productCards.map(({ product, family, merchant }, index) => {
             return (
               <li
                 key={product.id}
                 className={[
-                  "h-full",
                   // Keep the first page fully rendered (LCP / above the fold).
                   // Let the browser skip layout + paint for the revealed tail
                   // while reserving row height so the scrollbar stays stable.
@@ -759,6 +758,7 @@ function ProductsPage() {
                 <ProductGridCard
                   product={product}
                   family={family}
+                  familyHydrating={productsQuery.isHydrating}
                   merchantName={merchant.displayName}
                   merchantNamePending={merchant.status === "pending"}
                   imageLoading={index < 4 ? "eager" : "lazy"}

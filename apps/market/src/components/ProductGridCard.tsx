@@ -25,6 +25,7 @@ import { ProductVariationSelector } from "./ProductVariationSelector"
 type ProductGridCardProps = {
   product: Product
   family?: MarketProductFamily
+  familyHydrating?: boolean
   merchantName?: string
   merchantNamePending?: boolean
   imageLoading?: "eager" | "lazy"
@@ -41,6 +42,7 @@ type ProductGridCardProps = {
 export function ProductGridCard({
   product,
   family,
+  familyHydrating = false,
   merchantName: merchantNameOverride,
   merchantNamePending: merchantNamePendingOverride,
   imageLoading = "lazy",
@@ -67,6 +69,8 @@ export function ProductGridCard({
     selectedProductId
   )
   const hasVariations = product.type === "variable" && family?.state === "ready"
+  const showVariationSkeleton =
+    product.type === "variable" && familyHydrating && !hasVariations
   const images = getProductSelectionImages(product, selectedProduct)
   const selectedCartQuantity =
     getCartQuantity?.(selectedProduct) ?? cartQuantity
@@ -107,6 +111,7 @@ export function ProductGridCard({
 
   return (
     <ProductCard
+      className="h-auto"
       title={product.title}
       merchantName={merchantName}
       merchantNamePending={merchantNamePending}
@@ -125,6 +130,8 @@ export function ProductGridCard({
             onSelect={(variation) => setSelectedProductId(variation.id)}
             compact
           />
+        ) : showVariationSkeleton ? (
+          <ProductVariationLoadingSkeleton />
         ) : undefined
       }
       onActivate={() =>
@@ -158,6 +165,23 @@ export function ProductGridCard({
         ) : undefined
       }
     />
+  )
+}
+
+function ProductVariationLoadingSkeleton() {
+  return (
+    <div
+      role="status"
+      aria-label="Loading product options"
+      className="space-y-2 animate-pulse"
+    >
+      {Array.from({ length: 3 }).map((_, index) => (
+        <div key={index} className="space-y-1.5">
+          <div className="h-3 w-16 rounded bg-[var(--surface-elevated)]" />
+          <div className="h-8 rounded-md bg-[var(--surface-elevated)]" />
+        </div>
+      ))}
+    </div>
   )
 }
 
