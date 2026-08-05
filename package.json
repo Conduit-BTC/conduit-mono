@@ -7,6 +7,9 @@
     "apps/*",
     "packages/*"
   ],
+  "overrides": {
+    "postcss": "8.5.25"
+  },
   "scripts": {
     "seed:nsec": "bun -e 'import { nip19 } from \"@nostr-dev-kit/ndk\"; import { randomBytes } from \"node:crypto\"; console.log(nip19.nsecEncode(randomBytes(32)));'",
     "nip89:publish-handler": "bun scripts/publish_nip89_handlers.ts",
