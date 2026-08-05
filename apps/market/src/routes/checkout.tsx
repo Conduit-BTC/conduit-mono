@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
+  AUTH_STORAGE_KEY,
   EVENT_KINDS,
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
@@ -32,6 +33,7 @@ import {
   normalizePubkey,
   normalizePublicMediaUrl,
   pubkeyToNpub,
+  readAuthSession,
   recordBrowserTelemetryEvent,
   resolveWalletPaymentInstance,
   validateAddressConsistency,
@@ -961,24 +963,30 @@ function CheckoutPage() {
   const initialShippingRef = useRef<ReturnType<
     typeof readCheckoutShippingInitialization
   > | null>(null)
+  const initialIdentity = authStatus === "connected" ? pubkey : null
+  const pendingDraftOwner = initialIdentity
+    ? null
+    : (readAuthSession()?.userPubkey ?? null)
   if (!initialShippingRef.current) {
-    const initialIdentity = authStatus === "connected" ? pubkey : null
-    initialShippingRef.current = readCheckoutShippingInitialization(
-      getIdentityBoundShippingPreset(
-        initialIdentity,
-        shopperPresets.presetOwnerPubkey,
-        shopperPresets.preset.shipping
-      ),
-      undefined,
-      undefined,
-      initialIdentity
-    )
+    initialShippingRef.current = initialIdentity
+      ? readCheckoutShippingInitialization(
+          getIdentityBoundShippingPreset(
+            initialIdentity,
+            shopperPresets.presetOwnerPubkey,
+            shopperPresets.preset.shipping
+          ),
+          undefined,
+          undefined,
+          initialIdentity
+        )
+      : { value: DEFAULT_CHECKOUT_SHIPPING, hasActiveDraft: false }
   }
   const presetMaySeedShippingRef = useRef(
     !initialShippingRef.current.hasActiveDraft
   )
   const shippingEditedRef = useRef(initialShippingRef.current.hasActiveDraft)
-  const presetIdentityRef = useRef(authStatus === "connected" ? pubkey : null)
+  const presetIdentityRef = useRef(initialIdentity)
+  const pendingDraftOwnerRef = useRef(pendingDraftOwner)
   const [shipping, setShipping] = useState<ShippingFormState>(
     initialShippingRef.current.value
   )
@@ -1022,6 +1030,7 @@ function CheckoutPage() {
   const [pricingRefreshFailedAt, setPricingRefreshFailedAt] = useState<
     number | null
   >(null)
+  const [authStorageRevision, setAuthStorageRevision] = useState(0)
   const btcUsdRate = btcUsdRateQuery.data ?? null
   const refetchBtcUsdRate = btcUsdRateQuery.refetch
   const btcUsdRateIsFetching = btcUsdRateQuery.isFetching
@@ -1051,6 +1060,49 @@ function CheckoutPage() {
   }
 
   useEffect(() => {
+    const handleAuthStorage = (event: StorageEvent): void => {
+      if (event.key === AUTH_STORAGE_KEY) {
+        setAuthStorageRevision((revision) => revision + 1)
+      }
+    }
+    window.addEventListener("storage", handleAuthStorage)
+    return () => window.removeEventListener("storage", handleAuthStorage)
+  }, [])
+
+  useEffect(() => {
+    if (authPending) return
+    const recoveryOwner = pendingDraftOwnerRef.current
+    if (recoveryOwner) {
+      if (
+        !signedBuyerPubkey &&
+        authStatus === "disconnected" &&
+        readAuthSession()?.userPubkey === recoveryOwner
+      ) {
+        return
+      }
+      pendingDraftOwnerRef.current = null
+      if (signedBuyerPubkey === recoveryOwner) {
+        presetIdentityRef.current = signedBuyerPubkey
+        const preset = getIdentityBoundShippingPreset(
+          signedBuyerPubkey,
+          shopperPresets.presetOwnerPubkey,
+          shopperPresets.preset.shipping
+        )
+        const recovered = readCheckoutShippingInitialization(
+          preset,
+          undefined,
+          undefined,
+          signedBuyerPubkey
+        )
+        shippingEditedRef.current = recovered.hasActiveDraft
+        presetMaySeedShippingRef.current = !recovered.hasActiveDraft && !preset
+        if (JSON.stringify(shipping) !== JSON.stringify(recovered.value)) {
+          setShipping(recovered.value)
+        }
+        return
+      }
+      clearCheckoutShippingSession()
+    }
     if (presetIdentityRef.current === signedBuyerPubkey) return
     presetIdentityRef.current = signedBuyerPubkey
     shippingEditedRef.current = false
@@ -1078,6 +1130,9 @@ function CheckoutPage() {
     shipping,
     shopperPresets.preset.shipping,
     shopperPresets.presetOwnerPubkey,
+    authStorageRevision,
+    authStatus,
+    authPending,
     signedBuyerPubkey,
   ])
 
