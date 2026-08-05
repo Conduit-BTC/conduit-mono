@@ -17,6 +17,7 @@ import {
   getShopperPresetsValue,
   publishShopperPresets,
   useAuth,
+  useConduitSession,
   type ShopperPresetsEnvelope,
   type ShopperPresetsReadResult,
   type ShopperPresetsValue,
@@ -97,7 +98,8 @@ export async function fetchShopperPresetsForSession(
 }
 
 export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
-  const { pubkey, status } = useAuth()
+  const { pubkey, signer, status } = useAuth()
+  const { identityReady } = useConduitSession()
   const queryClient = useQueryClient()
   const identityPubkey = status === "connected" ? pubkey : null
   const identityRef = useRef(identityPubkey)
@@ -115,7 +117,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
   const remote = useQuery({
     queryKey: queryKey(identityPubkey),
     queryFn: () => fetchShopperPresetsForSession(identityPubkey!),
-    enabled: !!identityPubkey,
+    enabled: !!identityPubkey && identityReady,
     staleTime: Number.POSITIVE_INFINITY,
     retry: false,
     refetchOnMount: false,
@@ -257,7 +259,8 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       password: string,
       policy: ShopperPresetsUnlockPolicy
     ): Promise<boolean> => {
-      if (!identityPubkey || !value.shipping) return false
+      if (!identityPubkey || !identityReady || !signer || !value.shipping)
+        return false
       const identity = identityPubkey
       setSyncState("syncing")
       try {
@@ -266,6 +269,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           value,
           password,
           appId: "market",
+          dependencies: { signer },
         })
         if (identityRef.current !== identity) return false
         const next: ShopperPresetsReadResult = {
@@ -290,12 +294,12 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         return false
       }
     },
-    [identityPubkey, queryClient, rememberPassword]
+    [identityPubkey, identityReady, queryClient, rememberPassword, signer]
   )
 
   const clear = useCallback(
     async (password: string): Promise<boolean> => {
-      if (!identityPubkey) return false
+      if (!identityPubkey || !identityReady || !signer) return false
       const identity = identityPubkey
       setSyncState("syncing")
       try {
@@ -304,6 +308,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
           value: null,
           password,
           appId: "market",
+          dependencies: { signer },
         })
         if (identityRef.current !== identity) return false
         const next: ShopperPresetsReadResult = {
@@ -328,7 +333,14 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
         return false
       }
     },
-    [identityPubkey, queryClient, rememberPassword, unlockPolicy]
+    [
+      identityPubkey,
+      identityReady,
+      queryClient,
+      rememberPassword,
+      signer,
+      unlockPolicy,
+    ]
   )
 
   const lock = useCallback(() => {
@@ -343,15 +355,17 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async (): Promise<void> => {
     if (!identityPubkey) return
+    const identity = identityPubkey
     handledRemoteRef.current = null
     setSyncState("syncing")
     try {
-      const result = await remote.refetch()
-      if (result.error || !result.data) setSyncState("error")
+      const result = await fetchShopperPresets(identity)
+      if (identityRef.current !== identity) return
+      queryClient.setQueryData(queryKey(identity), result)
     } catch {
-      setSyncState("error")
+      if (identityRef.current === identity) setSyncState("error")
     }
-  }, [identityPubkey, remote])
+  }, [identityPubkey, queryClient])
 
   const discoveryDestination = useMemo(
     () => getShopperDiscoveryDestination(preset),
@@ -366,7 +380,7 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       unlockState,
       unlockPolicy,
       hasRemotePreset: remotePreset !== null,
-      canSync: !!identityPubkey,
+      canSync: !!identityPubkey && identityReady && !!signer,
       updateLocal: setPreset,
       unlock,
       save,
@@ -378,11 +392,13 @@ export function ShopperPresetsProvider({ children }: { children: ReactNode }) {
       clear,
       discoveryDestination,
       identityPubkey,
+      identityReady,
       lock,
       preset,
       refresh,
       remotePreset,
       save,
+      signer,
       syncState,
       unlock,
       unlockPolicy,

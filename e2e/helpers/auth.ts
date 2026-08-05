@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test"
+import { finalizeEvent, type EventTemplate } from "nostr-tools/pure"
 
 export const TEST_BUYER_PUBKEY = "b".repeat(64)
 export const TEST_MERCHANT_PUBKEY = "a".repeat(64)
@@ -8,6 +9,7 @@ type TestSignerOptions = {
   getRelaysThrows?: boolean
   nip44?: boolean
   relays?: Record<string, { read: boolean; write: boolean }>
+  secretKey?: Uint8Array
 }
 
 export async function installTestSigner(
@@ -15,8 +17,15 @@ export async function installTestSigner(
   pubkey: string,
   options: TestSignerOptions = {}
 ): Promise<void> {
+  const { secretKey, ...browserOptions } = options
+  const signEventBinding = `__conduitSignEvent${pubkey.slice(0, 12)}`
+  if (secretKey) {
+    await page.exposeFunction(signEventBinding, (event: EventTemplate) =>
+      finalizeEvent(event, secretKey)
+    )
+  }
   await page.addInitScript(
-    ([signerPubkey, signerOptions]) => {
+    ([signerPubkey, signerOptions, signerBinding]) => {
       if (signerOptions.rememberAuth !== false) {
         localStorage.setItem("conduit:auth", signerPubkey)
       }
@@ -38,6 +47,14 @@ export async function installTestSigner(
             )
           },
           async signEvent(event: Record<string, unknown>) {
+            if (signerBinding) {
+              return (
+                window as unknown as Record<
+                  string,
+                  (event: Record<string, unknown>) => Promise<unknown>
+                >
+              )[signerBinding]!(event)
+            }
             return {
               ...event,
               pubkey: signerPubkey,
@@ -68,7 +85,7 @@ export async function installTestSigner(
         },
       })
     },
-    [pubkey, options] as const
+    [pubkey, browserOptions, secretKey ? signEventBinding : null] as const
   )
 }
 

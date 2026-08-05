@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react"
-import { NDKNip07Signer } from "@nostr-dev-kit/ndk"
+import { NDKNip07Signer, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS } from "../config"
 import { setSigner, removeSigner } from "../protocol/ndk"
 import {
@@ -41,6 +41,7 @@ export type AuthStatus =
 
 export interface AuthContextValue {
   pubkey: string | null
+  signer: NDKSigner | null
   method: AuthMethod | null
   rememberedMethod: AuthMethod | null
   status: AuthStatus
@@ -267,6 +268,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [capabilities, setCapabilities] = useState<AuthSignerCapabilities>(
     NO_SIGNER_CAPABILITIES
   )
+  const [activeSigner, setActiveSigner] = useState<NDKSigner | null>(null)
   const connecting = useRef(false)
   const connected = useRef(false)
   const authEpoch = useRef(0)
@@ -285,6 +287,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     activeSession.current = null
     connection?.signer.invalidate()
     removeSigner()
+    setActiveSigner(null)
     setPubkey(null)
     setMethod(null)
     setRememberedMethod(null)
@@ -481,6 +484,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       uncommittedRemote = null
       activeSession.current = session
       setSigner(signer)
+      setActiveSigner(signer)
       setPubkey(pk)
       setMethod(session.type)
       setRememberedMethod(session.type)
@@ -746,6 +750,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     <AuthContext.Provider
       value={{
         pubkey,
+        signer: activeSigner,
         method,
         rememberedMethod,
         status,
