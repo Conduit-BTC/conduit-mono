@@ -25,6 +25,7 @@ type SessionStorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">
 type StoredCheckoutShipping = {
   value: Partial<ShippingFormState>
   updatedAt: number
+  ownerPubkey: string | null
 }
 
 let checkoutShippingExpiryTimer: number | null = null
@@ -83,7 +84,8 @@ function scheduleCheckoutShippingExpiry(
 
 function readStoredCheckoutShipping(
   storage: SessionStorageLike | null,
-  nowMs: number
+  nowMs: number,
+  ownerPubkey: string | null
 ): StoredCheckoutShipping | null {
   if (!storage) return null
   try {
@@ -94,6 +96,9 @@ function readStoredCheckoutShipping(
       !parsed.value ||
       typeof parsed.value !== "object" ||
       Array.isArray(parsed.value) ||
+      !("ownerPubkey" in parsed) ||
+      (parsed.ownerPubkey !== null && typeof parsed.ownerPubkey !== "string") ||
+      parsed.ownerPubkey !== ownerPubkey ||
       !Number.isFinite(parsed.updatedAt) ||
       (parsed.updatedAt ?? 0) <= 0 ||
       (parsed.updatedAt ?? 0) > nowMs ||
@@ -124,14 +129,15 @@ export function pruneExpiredCheckoutShippingSession(
   } catch {
     return false
   }
-  return readStoredCheckoutShipping(storage, nowMs) === null
+  return readStoredCheckoutShipping(storage, nowMs, null) === null
 }
 
 export function readCheckoutShippingSession(
   storage: SessionStorageLike | null = getSessionStorage(),
-  nowMs = Date.now()
+  nowMs = Date.now(),
+  ownerPubkey: string | null = null
 ): ShippingFormState {
-  const stored = readStoredCheckoutShipping(storage, nowMs)
+  const stored = readStoredCheckoutShipping(storage, nowMs, ownerPubkey)
   if (!stored) return DEFAULT_CHECKOUT_SHIPPING
   return { ...DEFAULT_CHECKOUT_SHIPPING, ...stored.value }
 }
@@ -139,9 +145,10 @@ export function readCheckoutShippingSession(
 export function readCheckoutShippingInitialization(
   preset: ShopperShippingPreset | null,
   storage: SessionStorageLike | null = getSessionStorage(),
-  nowMs = Date.now()
+  nowMs = Date.now(),
+  ownerPubkey: string | null = null
 ): { value: ShippingFormState; hasActiveDraft: boolean } {
-  const stored = readStoredCheckoutShipping(storage, nowMs)
+  const stored = readStoredCheckoutShipping(storage, nowMs, ownerPubkey)
   if (stored) {
     return {
       value: { ...DEFAULT_CHECKOUT_SHIPPING, ...stored.value },
@@ -177,14 +184,27 @@ export function getShippingFormFromPreset(
   }
 }
 
+export function getIdentityBoundShippingPreset(
+  identityPubkey: string | null,
+  presetOwnerPubkey: string | null,
+  preset: ShopperShippingPreset | null
+): ShopperShippingPreset | null {
+  return identityPubkey && identityPubkey === presetOwnerPubkey ? preset : null
+}
+
 export function writeCheckoutShippingSession(
   value: ShippingFormState,
   storage: SessionStorageLike | null = getSessionStorage(),
-  nowMs = Date.now()
+  nowMs = Date.now(),
+  ownerPubkey: string | null = null
 ): void {
   if (!storage) return
   try {
-    const stored: StoredCheckoutShipping = { value, updatedAt: nowMs }
+    const stored: StoredCheckoutShipping = {
+      value,
+      updatedAt: nowMs,
+      ownerPubkey,
+    }
     storage.setItem(CHECKOUT_SHIPPING_STORAGE_KEY, JSON.stringify(stored))
     scheduleCheckoutShippingExpiry(
       storage,

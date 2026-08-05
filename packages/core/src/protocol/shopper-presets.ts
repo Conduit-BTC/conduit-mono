@@ -507,8 +507,15 @@ export async function fetchShopperPresets(
 ): Promise<ShopperPresetsReadResult> {
   const owner = normalizePubkey(pubkey)
   const resolveRelayLists = dependencies.getRelayLists ?? getRelayLists
+  const relayListDiscoveryUrls = Array.from(
+    new Set([
+      ...config.appWriteRelayUrls,
+      ...config.corePublicFallbackRelayUrls,
+    ])
+  ).slice(0, SHOPPER_PRESETS_MAX_READ_RELAYS)
   const relayLists = await resolveRelayLists([owner], {
-    cacheOnly: true,
+    cacheOnly: false,
+    relayUrls: relayListDiscoveryUrls,
     allowInsecureRelayUrlsForPubkey: owner,
   })
   const plan = planRelayReads({
@@ -552,38 +559,25 @@ export async function fetchShopperPresets(
   const usable =
     result.relays.some(({ status }) => status === "success") ||
     result.events.length > 0
-  const candidates = result.events
-    .filter(
-      (event) =>
-        event.kind === EVENT_KINDS.APPLICATION_DATA &&
-        event.pubkey.toLowerCase() === owner &&
-        getDTag(event) === SHOPPER_PRESETS_D_TAG
-    )
-    .sort((left, right) => {
-      const timestamp = (right.created_at ?? 0) - (left.created_at ?? 0)
-      return timestamp !== 0 ? timestamp : left.id.localeCompare(right.id)
-    })
-  if (candidates.length === 0) {
+  const latest = selectLatestShopperPresetsEvent(result.events, owner)
+  if (!latest) {
     return usable
       ? { state: "not_found" }
       : { state: "unavailable", reason: "relay_read" }
   }
-  for (const candidate of candidates) {
-    try {
-      return {
-        state: "found",
-        envelope: parseShopperPresetsEnvelope(candidate.content),
-        revision: {
-          eventId: candidate.id,
-          createdAt: candidate.created_at ?? 0,
-        },
-        usable,
-      }
-    } catch {
-      continue
+  try {
+    return {
+      state: "found",
+      envelope: parseShopperPresetsEnvelope(latest.content),
+      revision: {
+        eventId: latest.id,
+        createdAt: latest.created_at ?? 0,
+      },
+      usable,
     }
+  } catch {
+    return { state: "unavailable", reason: "invalid_envelope" }
   }
-  return { state: "unavailable", reason: "invalid_envelope" }
 }
 
 export async function publishShopperPresets({
