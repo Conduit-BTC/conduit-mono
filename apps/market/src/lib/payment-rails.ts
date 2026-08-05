@@ -23,6 +23,17 @@ export type CheckoutPaymentRail = "wallet" | "webln"
  */
 export type CheckoutPaymentTarget = OrderPaymentTarget
 
+/** Marks a payment outcome that must be checked in the selected wallet first. */
+export const AMBIGUOUS_PAYMENT_WARNING =
+  "Check your wallet before trying another payment path."
+
+export function isAmbiguousCheckoutPaymentError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.includes(AMBIGUOUS_PAYMENT_WARNING)
+  )
+}
+
 export type CheckoutInvoicePaymentResult =
   | {
       status: "paid"
@@ -159,7 +170,7 @@ export async function payCheckoutInvoice(
 
     if (result.status === "ambiguous") {
       throw new Error(
-        `${result.reason} Check your wallet before trying another payment path.`
+        `${result.reason} ${AMBIGUOUS_PAYMENT_WARNING}`
       )
     }
     const reason = diagnostic
@@ -213,7 +224,7 @@ export async function payCheckoutInvoice(
         status: "ambiguous",
       })
       throw new Error(
-        `${message} Check your wallet before trying another payment path.`,
+        `${message} ${AMBIGUOUS_PAYMENT_WARNING}`,
         { cause: error }
       )
     }

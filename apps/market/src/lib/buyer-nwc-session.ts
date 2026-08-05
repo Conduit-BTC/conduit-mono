@@ -89,6 +89,8 @@ export type NwcSessionPaymentResult =
       status: "wallet_error"
       phase: "after_publish"
       reason: string
+      /** NIP-47 error code when the wallet supplied one. */
+      errorCode: string | null
     }
 
 export interface NwcSessionPayInvoiceInput {
@@ -305,6 +307,7 @@ export class BuyerNwcSession {
           status: "wallet_error",
           phase: "after_publish",
           reason: getNip47WalletErrorMessage(error, reason),
+          errorCode: getNip47ErrorCode(error),
         }
       }
 
