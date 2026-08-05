@@ -1,4 +1,5 @@
 const POSTHOG_INGEST_ORIGIN = "https://us.i.posthog.com"
+const MAX_INGEST_BODY_BYTES = 1024 * 1024
 
 const allowedIngestPaths = new Set([
   "/batch",
@@ -66,6 +67,16 @@ export async function handlePostHogProxyRequest(
   }
   upstreamHeaders.set("cache-control", "no-store")
 
+  let requestBody: ArrayBuffer | null
+  try {
+    requestBody = await readBoundedRequestBody(request)
+  } catch {
+    return corsJsonResponse({ error: "invalid_request_body" }, 400, origin)
+  }
+  if (!requestBody) {
+    return corsJsonResponse({ error: "payload_too_large" }, 413, origin)
+  }
+
   const upstreamUrl = new URL(
     `${requestUrl.pathname}${requestUrl.search}`,
     POSTHOG_INGEST_ORIGIN
@@ -76,7 +87,7 @@ export async function handlePostHogProxyRequest(
       new Request(upstreamUrl, {
         method: "POST",
         headers: upstreamHeaders,
-        body: await request.arrayBuffer(),
+        body: requestBody,
         redirect: "manual",
       })
     )
@@ -93,6 +104,41 @@ export async function handlePostHogProxyRequest(
   } catch {
     return corsJsonResponse({ error: "upstream_unavailable" }, 502, origin)
   }
+}
+
+async function readBoundedRequestBody(
+  request: Request
+): Promise<ArrayBuffer | null> {
+  const declaredLength = Number(request.headers.get("content-length") ?? "0")
+  if (
+    Number.isFinite(declaredLength) &&
+    declaredLength > MAX_INGEST_BODY_BYTES
+  ) {
+    return null
+  }
+  if (!request.body) return new ArrayBuffer(0)
+
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let totalBytes = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    totalBytes += value.byteLength
+    if (totalBytes > MAX_INGEST_BODY_BYTES) {
+      await reader.cancel("PostHog ingest body exceeded the byte limit")
+      return null
+    }
+    chunks.push(value)
+  }
+
+  const body = new Uint8Array(totalBytes)
+  let offset = 0
+  for (const chunk of chunks) {
+    body.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return body.buffer
 }
 
 function getAllowedOrigin(rawOrigin: string | null): string | null {

@@ -110,4 +110,37 @@ describe("PostHog reverse proxy", () => {
     expect(upstreamRequest?.headers.get("x-forwarded-for")).toBeNull()
     expect(await upstreamRequest?.text()).toBe("event-payload")
   })
+
+  it("rejects oversized declared and streamed payloads", async () => {
+    let upstreamCalls = 0
+    const fetcher = async (): Promise<Response> => {
+      upstreamCalls += 1
+      return new Response("ok")
+    }
+    const declared = await handlePostHogProxyRequest(
+      new Request("https://e.conduit.market/e/", {
+        method: "POST",
+        headers: {
+          "content-length": String(1024 * 1024 + 1),
+          origin: "https://shop.conduit.market",
+        },
+        body: "small",
+      }),
+      fetcher
+    )
+    const streamed = await handlePostHogProxyRequest(
+      new Request("https://e.conduit.market/e/", {
+        method: "POST",
+        headers: { origin: "https://shop.conduit.market" },
+        body: new Uint8Array(1024 * 1024 + 1),
+      }),
+      fetcher
+    )
+
+    expect(declared.status).toBe(413)
+    expect(await declared.json()).toEqual({ error: "payload_too_large" })
+    expect(streamed.status).toBe(413)
+    expect(await streamed.json()).toEqual({ error: "payload_too_large" })
+    expect(upstreamCalls).toBe(0)
+  })
 })

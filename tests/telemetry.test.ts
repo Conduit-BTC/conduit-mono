@@ -83,7 +83,7 @@ describe("browser telemetry", () => {
     expect(config.plausible).toBeNull()
     expect(config.posthog).toEqual({
       key: "ph_project_key",
-      host: "https://us.i.posthog.com",
+      host: "https://e.conduit.market",
     })
   })
 
@@ -562,6 +562,41 @@ describe("browser telemetry", () => {
         status: "failed",
         token: "phc_public_project_token",
       },
+    })
+  })
+
+  it("drops top-level PostHog person-property mutations", () => {
+    const eventUuid = "018f22e2-7b31-4a3f-8d2a-2be67b4f3f65"
+    const timestamp = new Date("2026-08-05T12:00:00.000Z")
+
+    expect(
+      sanitizePostHogCaptureEvent({
+        event: "$pageview",
+        properties: {
+          $current_url: "https://shop.conduit.market/",
+          token: "phc_public_project_token",
+        },
+        $set: { email: "private@example.com" },
+        $set_once: { pubkey: "private-pubkey" },
+        $unset: ["private-property"],
+        timestamp,
+        unexpected: "private-value",
+        uuid: eventUuid,
+      })
+    ).toEqual({
+      event: "$pageview",
+      properties: {
+        $current_url: "https://shop.conduit.market/",
+        $pathname: "/",
+        $process_person_profile: false,
+        app: "market",
+        distinct_id: "conduit-browser-telemetry",
+        page_path: "/",
+        page_url: "https://shop.conduit.market/",
+        token: "phc_public_project_token",
+      },
+      timestamp,
+      uuid: eventUuid,
     })
   })
 

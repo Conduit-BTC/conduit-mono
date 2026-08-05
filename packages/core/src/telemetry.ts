@@ -186,7 +186,7 @@ declare global {
 }
 
 const DEFAULT_PLAUSIBLE_SCRIPT_SRC = "https://plausible.io/js/script.js"
-const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com"
+const DEFAULT_POSTHOG_HOST = "https://e.conduit.market"
 const DEFAULT_POSTHOG_UI_HOST = "https://us.posthog.com"
 const POSTHOG_ANONYMOUS_DISTINCT_ID = "conduit-browser-telemetry"
 const postHogTelemetryEventNames = [
@@ -551,10 +551,18 @@ export function sanitizePostHogCaptureEvent(
     sanitizedProperties.app = inferredApp
   }
 
-  return {
-    ...event,
+  const sanitizedEvent: PostHogCaptureEvent = {
+    event: eventName,
     properties: sanitizedProperties,
   }
+  if (isTelemetryEventUuid(event.uuid)) sanitizedEvent.uuid = event.uuid
+  if (
+    event.timestamp instanceof Date &&
+    Number.isFinite(event.timestamp.getTime())
+  ) {
+    sanitizedEvent.timestamp = event.timestamp
+  }
+  return sanitizedEvent
 }
 
 function getPostHogIngestionProperties(
@@ -638,6 +646,15 @@ function isUuidV7(value: unknown): value is string {
   return (
     typeof value === "string" &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value
+    )
+  )
+}
+
+function isTelemetryEventUuid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
       value
     )
   )

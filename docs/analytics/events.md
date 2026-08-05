@@ -105,7 +105,8 @@ Browser ingestion is routed through the origin-restricted
 from the configured Market and Merchant production or single-label preview
 origins. It must not forward cookies, browser user-agent, `CF-Connecting-IP`,
 `X-Forwarded-For`, or other identity headers, and it must not cache or log
-request payloads.
+request payloads. It must reject ingest bodies larger than 1 MiB before
+forwarding them upstream.
 
 ## Events
 
