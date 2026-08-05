@@ -24,7 +24,8 @@ Output format:
 Conduit constraints to enforce:
 
 - External signer auth only (NIP-07/NIP-46)
-- No key custody
+- No Nostr account-key or operator wallet custody; any client-side Portable
+  Wallet credential handling must remain inside `docs/specs/wallets.md`
 - No message content inspection
 - No behavioral tracking/profiling
 - Payments are non-custodial Lightning payment request/proof flows

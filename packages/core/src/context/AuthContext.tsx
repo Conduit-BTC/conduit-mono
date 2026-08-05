@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react"
-import { NDKNip07Signer } from "@nostr-dev-kit/ndk"
+import { NDKNip07Signer, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS } from "../config"
 import {
   setSigner,
@@ -45,6 +45,7 @@ export type AuthStatus =
 
 export interface AuthContextValue {
   pubkey: string | null
+  signer: NDKSigner | null
   method: AuthMethod | null
   rememberedMethod: AuthMethod | null
   status: AuthStatus
@@ -64,7 +65,41 @@ export interface AuthSignerCapabilities {
   nip44: boolean
   nip04: boolean
 }
+
+export type AuthSignerReadiness =
+  | "disconnected"
+  | "pending"
+  | "ready"
+  | "unavailable"
+  | "incompatible"
+
+export function getAuthSignerReadiness(input: {
+  status: AuthStatus
+  pubkey: string | null
+  signer: NDKSigner | null
+  capabilities: AuthSignerCapabilities
+}): AuthSignerReadiness {
+  if (input.status === "restoring" || input.status === "connecting") {
+    return "pending"
+  }
+  if (input.status !== "connected") {
+    return input.pubkey ? "unavailable" : "disconnected"
+  }
+  if (!input.pubkey || !input.signer) return "unavailable"
+  if (!input.capabilities.signEvent || !input.capabilities.nip44) {
+    return "incompatible"
+  }
+  return "ready"
+}
+
 export type AuthConnectMode = "interactive" | "restore"
+
+export function shouldReuseConnectedAuthSession(
+  mode: AuthConnectMode,
+  connected: boolean
+): boolean {
+  return mode === "restore" && connected
+}
 
 export interface AuthConnectOptions {
   mode?: AuthConnectMode
@@ -256,6 +291,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [pubkey, setPubkey] = useState<string | null>(
     () => initialSessionRef.current?.userPubkey ?? null
   )
+  const [signer, setAuthSigner] = useState<NDKSigner | null>(null)
   const [method, setMethod] = useState<AuthMethod | null>(
     () => initialSessionRef.current?.type ?? null
   )
@@ -292,6 +328,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     activeSession.current = null
     connection?.signer.invalidate()
     if (signerLease) removeSigner(signerLease)
+    setAuthSigner(null)
     setPubkey(null)
     setMethod(null)
     setRememberedMethod(null)
@@ -309,6 +346,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const requestedMethod =
       options.method ?? (mode === "restore" ? storedSession?.type : "nip07")
     if (connecting.current) return
+    // StrictMode and overlapping restore callers can queue behind the browser
+    // lock. If another restore connected first, this request is satisfied.
+    if (shouldReuseConnectedAuthSession(mode, connected.current)) return
     if (connected.current) {
       throw new Error("Disconnect the current signer before connecting another.")
     }
@@ -488,6 +528,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       uncommittedRemote = null
       activeSession.current = session
       activeSignerLease.current = setSigner(signer)
+      setAuthSigner(signer)
       setPubkey(pk)
       setMethod(session.type)
       setRememberedMethod(session.type)
@@ -539,13 +580,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const connect = useCallback(
     async (options: AuthConnectOptions = {}) => {
+      const mode = options.mode ?? "interactive"
+      if (shouldReuseConnectedAuthSession(mode, connected.current)) return
       activePairing.current?.abort()
       activePairing.current = null
       setNostrConnectUri(null)
       if (connected.current) {
         throw new Error("Disconnect the current signer before connecting another.")
       }
-      const mode = options.mode ?? "interactive"
       const requestedMethod =
         options.method ??
         (mode === "restore" ? readAuthSession()?.type ?? null : "nip07")
@@ -737,6 +779,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     <AuthContext.Provider
       value={{
         pubkey,
+        signer,
         method,
         rememberedMethod,
         status,

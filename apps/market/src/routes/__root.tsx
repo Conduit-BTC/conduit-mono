@@ -200,7 +200,7 @@ function getPageTitle(pathname: string): string {
     return "Relay Settings"
   }
   if (pathname === "/wallet") {
-    return "Wallet"
+    return "Wallets"
   }
   if (pathname === "/about") {
     return "About"

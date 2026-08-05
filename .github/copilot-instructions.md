@@ -14,10 +14,16 @@ Prioritize in this order:
 
 ## Non-Negotiable Constraints
 
-- External signer auth only (NIP-07, NIP-46). Never generate or store private keys.
+- Nostr account authentication is external-signer-only (NIP-07, NIP-46).
+  Never generate or store a user's Nostr account private key. Client-side
+  Portable Wallet credentials are permitted only inside the isolated boundary
+  documented in `docs/specs/wallets.md`.
 - No behavioral tracking or profiling.
 - No message content inspection.
-- Payments are non-custodial Lightning payment requests, NWC/WebLN payment rails, and payment proofs. No custody or balance management.
+- Payments are non-custodial Lightning flows across explicit Portable,
+  Connected, WebLN, or manual targets. Local user-owned wallet balance display
+  is permitted; Conduit-operated custody, spending authority, or balance
+  management is not.
 - No Zustand/Jotai/Redux style state libraries. Use React Context + TanStack Query + Dexie patterns.
 
 ## Monorepo Boundaries
@@ -57,7 +63,9 @@ For changes touching Nostr protocol, relay behavior, NDK usage, products/listing
 - Verify NIP-17 messaging uses NIP-59 seals/gift wraps and NIP-44 v2 as the current public encryption baseline; NIP-44 v3 readiness should remain visible, but v3 implementation must be source-gated by public draft/client references and explicit capability discovery.
 - Verify kind `10050` private-message relay hints are not confused with general NIP-65 `kind:10002` relay preferences when DM routing is in scope.
 - Flag new route-local NDK event construction, `giftWrap`, publish, unwrap/decrypt, relay planning, or event parsing unless the PR explains why it cannot live behind `@conduit/core`.
-- Verify diagnostics/logs/telemetry do not include plaintext, ciphertext, invoices, order contents, addresses, signer secrets, NWC URIs, or message bodies.
+- Verify diagnostics/logs/telemetry do not include plaintext, ciphertext,
+  invoices, order contents, addresses, signer secrets, Portable Wallet seeds,
+  mnemonics, derived keys, NWC URIs, wallet balances, or message bodies.
 
 ## Agent Automation Checks
 

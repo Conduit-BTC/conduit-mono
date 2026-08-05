@@ -241,7 +241,8 @@ export function useProducts(filters?: ProductFilters) {
 
 - **Server state**: TanStack Query (relay data, profiles, products)
 - **Auth state**: React Context in `@conduit/core`
-- **Local persistence**: Dexie (IndexedDB) for orders, messages, cache
+- **Local persistence**: Dexie (IndexedDB) for orders, messages, cache, wallet
+  descriptors, and local provider credentials
 - **Ephemeral UI state**: `useState` / `useReducer`
 - **No state management library** (no Zustand, Redux, Jotai)
 
@@ -261,8 +262,11 @@ These are non-negotiable across all code:
 ### Authentication
 
 - External signers only (NIP-07, NIP-46)
-- **Never** generate, store, or manage private keys in app code
+- **Never** generate, store, or manage Nostr account private keys in app code
 - Identity = pubkey only
+- Portable Wallet recovery material is a separate, device-local credential
+  boundary governed by [the wallets specification](docs/specs/wallets.md); it
+  does not permit Nostr account-key custody
 
 ### Privacy
 
@@ -270,11 +274,15 @@ These are non-negotiable across all code:
 - **No** message content inspection
 - System metrics only (relay success rates, load times)
 - All user data stays on the user's device or their relays
+- Wallet credentials, recovery material, invoices, payment content, selected
+  wallet instance IDs, and wallet balances must not enter logs or telemetry
 
 ### Payments
 
-- Non-custodial Lightning payment requests, NWC/WebLN payment rails, and payment proofs
-- No balance management
+- Non-custodial Lightning through Portable Wallets, NWC/WebLN payment rails,
+  invoices, and payment proofs
+- Client code may display and manage device-local Portable Wallet balances
+  through the documented provider boundary
 - No fund custody
 
 ## File Organization

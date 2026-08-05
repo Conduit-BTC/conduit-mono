@@ -11,6 +11,9 @@ export * from "./schemas"
 // Utils
 export * from "./utils"
 
+// Wallets
+export * from "./wallets"
+
 // Build provenance
 export {
   conduitBuildInfo,
@@ -180,6 +183,7 @@ export {
   type CachedOrderMessage,
   type CachedNip05Verification,
   type StoredPaymentAttempt,
+  type StoredWalletCredential,
   type OrderLifecycle,
   type OrderLifecycleItem,
   type OrderLifecyclePhase,
@@ -192,6 +196,7 @@ export {
   type OrderDeliveryStatus,
   type OrderInvoiceStatus,
   type OrderPaymentStatus,
+  type OrderPaymentTarget,
   type OrderProofDeliveryStatus,
   type OrderZapReceiptStatus,
 } from "./db"
@@ -201,8 +206,10 @@ export {
   AuthProvider,
   useAuth,
   hasNip07,
+  getAuthSignerReadiness,
   isTransientNip07ConnectError,
   type AuthStatus,
+  type AuthSignerReadiness,
   type AuthContextValue,
 } from "./context/AuthContext"
 export {

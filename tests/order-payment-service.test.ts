@@ -45,8 +45,7 @@ function basePaymentContext(
     totalSats: 1,
     totalMsats: 1_000,
     items: [],
-    walletConnection: null,
-    tryNwc: false,
+    paymentTarget: { type: "manual" },
     ...overrides,
   }
 }
@@ -58,6 +57,7 @@ function lifecycle(overrides: Partial<OrderLifecycle> = {}): OrderLifecycle {
     merchantPubkey: "merchant",
     checkoutMode: "external_wallet",
     publicZapSigner: "anon",
+    paymentTarget: { type: "manual" },
     items: [],
     itemSubtotalSats: 1,
     shippingCostSats: 0,
@@ -109,6 +109,13 @@ function paymentDependencies(
         zapContent: input.zapContent,
         totalSats: input.totalSats,
         totalMsats: input.totalMsats,
+        walletPaymentAttemptId:
+          input.paymentTarget.type === "wallet"
+            ? lifecycle.walletPaymentAttemptId &&
+              lifecycle.walletPaymentAttemptId !== lifecycle.orderId
+              ? lifecycle.walletPaymentAttemptId
+              : crypto.randomUUID()
+            : undefined,
         invoiceStatus: "requesting",
         paymentStatus: "paying",
         proofDeliveryStatus: "not_started",
@@ -362,6 +369,85 @@ describe("runOrderPayment", () => {
       expect(state.error).toBe(
         "This order already has an active or completed payment state."
       )
+    }
+  })
+
+  it("keeps a confirmed no-send wallet failure retryable", async () => {
+    const orderId = "provider-pre-publish-failure"
+    const invoice = privateInvoice()
+    const paymentRequests: Array<
+      Parameters<OrderPaymentDependencies["payCheckoutInvoice"]>[0]
+    > = []
+    const paymentTarget = {
+      type: "wallet" as const,
+      walletId: "wallet-spark",
+      providerId: "spark" as const,
+    }
+    let stored = lifecycle({
+      orderId,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      paymentTarget,
+      invoice: undefined,
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+      phase: "pending",
+    })
+    const table = db.orderLifecycles as typeof db.orderLifecycles & {
+      get: typeof db.orderLifecycles.get
+      put: typeof db.orderLifecycles.put
+    }
+    const originalGet = table.get
+    const originalPut = table.put
+
+    table.get = (async () => stored) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+
+    try {
+      const context = basePaymentContext({
+        orderId,
+        merchantLud16: "merchant@wallet.example",
+        zapMode: "private_checkout",
+        paymentTarget,
+      })
+      const dependencies = paymentDependencies({
+        fetchLnurlPayMetadata: async () => lnurlMetadata(),
+        requestCheckoutLnurlInvoice: async () => ({
+          invoice,
+          zapRelayUrls: [],
+          shouldWaitForZapReceipt: false,
+        }),
+        payCheckoutInvoice: async (request) => {
+          paymentRequests.push(request)
+          return {
+            status: "retryable_failure",
+            reason: "Spark payment was not approved.",
+          }
+        },
+      })
+      const state = await runOrderPayment(context, dependencies)
+      const retryState = await runOrderPayment(context, dependencies)
+
+      expect(state.lifecycle?.invoiceStatus).toBe("failed")
+      expect(state.lifecycle?.paymentStatus).toBe("failed")
+      expect(state.lifecycle?.lastError).toBe("Spark payment was not approved.")
+      expect(state.error).toBe("Spark payment was not approved.")
+      expect(canSubmitExternalPaymentReport(state.lifecycle)).toBe(false)
+      expect(retryState.lifecycle?.paymentStatus).toBe("failed")
+      expect(paymentRequests).toHaveLength(2)
+      expect(paymentRequests[0]?.paymentTarget).toEqual(paymentTarget)
+      expect(paymentRequests[1]?.paymentTarget).toEqual(paymentTarget)
+      expect(paymentRequests[0]?.walletPaymentAttemptId).not.toBe(orderId)
+      expect(paymentRequests[0]?.walletPaymentAttemptId).not.toContain(orderId)
+      expect(paymentRequests[1]?.walletPaymentAttemptId).toBe(
+        paymentRequests[0]?.walletPaymentAttemptId
+      )
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
     }
   })
 

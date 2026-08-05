@@ -1,9 +1,13 @@
 import { describe, expect, it } from "bun:test"
 import {
   GUEST_ORDER_LOCAL_RETENTION_MS,
+  claimOrderLifecyclePayment,
+  db,
   deriveOrderLifecyclePhase,
   getOrderLifecyclePaymentAdmission,
+  getOrderPaymentTargetReplacementAdmission,
   isGuestOrderDataExpired,
+  replaceOrderPaymentTarget,
   type OrderLifecycle,
   type OrderPaymentClaimInput,
 } from "@conduit/core"
@@ -105,6 +109,11 @@ describe("order payment admission", () => {
     buyerPubkey: "buyer",
     merchantPubkey: "merchant",
     merchantLightningAddress: "merchant@wallet.example",
+    paymentTarget: {
+      type: "wallet",
+      walletId: "wallet-order",
+      providerId: "spark",
+    },
     checkoutMode: "anonymous_public_zap",
     publicZapSigner: "anon",
     items: [
@@ -146,6 +155,7 @@ describe("order payment admission", () => {
       productAddress: item.productId,
       quantity: item.quantity,
     })),
+    paymentTarget: lifecycle.paymentTarget!,
   }
 
   it("admits an exact delivered-order snapshot", () => {
@@ -159,6 +169,16 @@ describe("order payment admission", () => {
       getOrderLifecyclePaymentAdmission(lifecycle, {
         ...input,
         totalMsats: input.totalMsats + 1_000,
+      })
+    ).toBe("snapshot_mismatch")
+    expect(
+      getOrderLifecyclePaymentAdmission(lifecycle, {
+        ...input,
+        paymentTarget: {
+          type: "wallet",
+          walletId: "wallet-current-default",
+          providerId: "spark",
+        },
       })
     ).toBe("snapshot_mismatch")
   })
@@ -192,5 +212,131 @@ describe("order payment admission", () => {
         input
       )
     ).toBe("unsafe_state")
+  })
+
+  it("only permits an explicit target change before a definite payment attempt", () => {
+    expect(getOrderPaymentTargetReplacementAdmission(lifecycle)).toBe(
+      "replaceable"
+    )
+    expect(
+      getOrderPaymentTargetReplacementAdmission({
+        ...lifecycle,
+        paymentStatus: "failed",
+        invoiceStatus: "received",
+      })
+    ).toBe("replaceable")
+
+    for (const paymentStatus of [
+      "paying",
+      "paid",
+      "manual_required",
+      "ambiguous",
+    ] as const) {
+      expect(
+        getOrderPaymentTargetReplacementAdmission({
+          ...lifecycle,
+          paymentStatus,
+        })
+      ).toBe("unsafe_state")
+    }
+  })
+
+  it("persists one opaque provider token for retries and rotates it after an explicit target change", async () => {
+    let stored: OrderLifecycle = {
+      ...lifecycle,
+      // Defend against stale/corrupt local state recreating the old privacy bug.
+      walletPaymentAttemptId: `wallet-${lifecycle.orderId}`,
+    }
+    const table = db.orderLifecycles as typeof db.orderLifecycles & {
+      get: typeof db.orderLifecycles.get
+      put: typeof db.orderLifecycles.put
+    }
+    const database = db as typeof db & {
+      transaction: typeof db.transaction
+    }
+    const originalGet = table.get
+    const originalPut = table.put
+    const originalTransaction = database.transaction
+
+    table.get = (async () => stored) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+    database.transaction = (async (
+      _mode: string,
+      _table: unknown,
+      callback: () => Promise<unknown>
+    ) => callback()) as typeof database.transaction
+
+    try {
+      const first = await claimOrderLifecyclePayment(input)
+      if (first.status !== "claimed") {
+        throw new Error("Expected the first payment claim to succeed.")
+      }
+      const firstToken = first.lifecycle.walletPaymentAttemptId
+
+      expect(firstToken).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+      )
+      expect(firstToken).not.toBe(lifecycle.orderId)
+      expect(first.lifecycle.paymentTarget).toEqual(lifecycle.paymentTarget)
+
+      stored = {
+        ...first.lifecycle,
+        invoiceStatus: "failed",
+        paymentStatus: "failed",
+      }
+      const retry = await claimOrderLifecyclePayment(input)
+      if (retry.status !== "claimed") {
+        throw new Error("Expected the retry payment claim to succeed.")
+      }
+
+      expect(retry.lifecycle.walletPaymentAttemptId).toBe(firstToken)
+      expect(retry.lifecycle.paymentTarget).toEqual(lifecycle.paymentTarget)
+
+      stored = {
+        ...retry.lifecycle,
+        invoiceStatus: "failed",
+        paymentStatus: "failed",
+      }
+      const replacementTarget = {
+        type: "wallet" as const,
+        walletId: "wallet-backup",
+        providerId: "spark" as const,
+      }
+      const replacement = await replaceOrderPaymentTarget(
+        lifecycle.orderId,
+        replacementTarget
+      )
+      if (replacement.status !== "updated") {
+        throw new Error("Expected the explicit target replacement to succeed.")
+      }
+
+      expect(replacement.lifecycle.paymentTarget).toEqual(replacementTarget)
+      expect(replacement.lifecycle.walletPaymentAttemptId).toBeUndefined()
+
+      const replacementClaim = await claimOrderLifecyclePayment({
+        ...input,
+        paymentTarget: replacementTarget,
+      })
+      if (replacementClaim.status !== "claimed") {
+        throw new Error("Expected the replacement payment claim to succeed.")
+      }
+
+      expect(replacementClaim.lifecycle.walletPaymentAttemptId).not.toBe(
+        firstToken
+      )
+      expect(replacementClaim.lifecycle.walletPaymentAttemptId).not.toBe(
+        lifecycle.orderId
+      )
+      expect(replacementClaim.lifecycle.paymentTarget).toEqual(
+        replacementTarget
+      )
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+      database.transaction = originalTransaction
+    }
   })
 })

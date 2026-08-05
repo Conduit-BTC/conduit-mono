@@ -76,7 +76,10 @@ Guidance:
 
 - Conduit Market and Merchant account auth remains external-signer-only. NIP-07 and NIP-46 are signer paths, not key-custody permission. The only approved client-generated key exception is the outbound-only `guest_ephemeral` order sender in `docs/specs/protocol.md`, scoped to one guest order and its payment report; it has no Nostr inbox or merchant-status recovery. The only approved server-side private-key exception is the Anon Conduit Shopper public zap signer in `docs/specs/protocol.md`, scoped to authenticated, merchant-authorized public zap request signing. See `docs/knowledge/anon-zap-signer-handoff.md` for the public-safe signer config and request boundary.
 - NIP-42 relay AUTH is ephemeral relay-session authentication, not an app login system or persisted identity layer.
-- NWC/NIP-47 payment behavior remains non-custodial. Do not introduce balance management, custody, or wallet-secret handling.
+- NWC/NIP-47 payment behavior remains non-custodial. NWC secrets stay in the
+  isolated Connected Wallet provider path. Portable Wallet seed handling is a
+  distinct client-side exception governed by `docs/specs/wallets.md`; it does
+  not authorize Nostr account-key custody.
 - Keep NWC encryption behavior conservative; do not move wallet flows to a newer encryption version without explicit wallet capability discovery and an accepted source.
 
 ## Libraries and Tools

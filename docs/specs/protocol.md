@@ -11,7 +11,8 @@ References:
 
 Non-goals for the current client repository:
 
-- key custody, key generation, escrow, refunds, or balance management
+- Nostr account-key custody or generation, server-side wallet custody, escrow,
+  or refunds
 - broad NIP-46 product UX beyond the external-signer policy already allowed by architecture
 - service-operated checkout automation, except the scoped Anon Conduit Shopper public zap signer described below
 - making NIP-44 v3 the default send path before public draft/client references, signer support, and recipient capability detection exist
@@ -26,6 +27,11 @@ Conduit Market and Merchant Portal user authentication use external signers only
 | NIP-07 browser signer | Current client support  | Required path for current interactive signing           |
 | NIP-46 remote signer  | Architecture-compatible | Product UX depends on explicit implementation           |
 | App-generated keys    | Prohibited by default   | Only the bounded guest-order exception below is allowed |
+
+Portable Wallet credentials are not Nostr authentication keys. A client-side
+Portable Wallet provider may create or restore a separate self-custodial wallet
+seed under the requirements in `docs/specs/wallets.md`; this does not authorize
+generation, storage, or access to a user's Nostr account key.
 
 ### Client Ephemeral Guest Order Key Exception
 

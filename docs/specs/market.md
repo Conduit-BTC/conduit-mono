@@ -154,7 +154,7 @@ This messaging flow requires a signed-in buyer identity. It does not apply to
 | `/orders`              | Buyer order history/details surface |
 | `/messages`            | DM inbox                            |
 | `/network`             | Relay/network settings              |
-| `/wallet`              | Buyer wallet / NWC setup            |
+| `/wallet`              | Portable and Connected Wallets      |
 | `/profile`             | Buyer profile                       |
 | `/store/$pubkey`       | Merchant storefront                 |
 | `/u/$profileRef`       | Profile reference view              |
@@ -173,9 +173,13 @@ Do not document `/orders/$orderId` unless that route exists again.
 
 ### Persistence
 
-- Dexie stores orders, messages, product/profile caches, relay lists, social summaries, and payment attempts.
+- Dexie stores orders, messages, product/profile caches, relay lists, social
+  summaries, payment attempts, and non-secret wallet registry metadata.
 - localStorage stores cart and small preferences.
 - Sensitive payment/message/order contents should not be added to telemetry or browser storage outside the intended encrypted/local persistence paths.
+
+Wallet behavior, provider terminology, local credential boundaries, migration,
+selection, and payment safety are defined in `docs/specs/wallets.md`.
 
 ## Cart System
 
