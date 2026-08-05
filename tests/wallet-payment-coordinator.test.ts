@@ -411,4 +411,86 @@ describe("WalletPaymentCoordinator", () => {
       reason: "OTHER: Unclassified wallet response",
     })
   })
+
+  it("keeps PAYMENT_FAILED ambiguous even when its message looks like a refusal", async () => {
+    __buyerNwcSessionTestInternals.__setClientFactory(
+      () =>
+        ({
+          getInfo: async () => ({
+            methods: ["pay_invoice"],
+            network: "mainnet",
+          }),
+          getBalance: async () => ({ balance: 0 }),
+          payInvoice: async () => {
+            throw new Nip47WalletError(
+              "insufficient capacity on all routes",
+              "PAYMENT_FAILED"
+            )
+          },
+          close: () => undefined,
+          pool: {
+            ensureRelay: async () => undefined,
+          },
+        }) as never
+    )
+    const session = getBuyerNwcSession(NWC_WALLET_ID)
+    session.setConnection(NWC_CONNECTION)
+    await session.warm()
+
+    await expect(
+      marketAdapterCoordinator.payInvoice(
+        { walletId: NWC_WALLET_ID, providerId: "nwc" },
+        {
+          invoice: "lnbc1test",
+          amountMsats: 1_000,
+          idempotencyKey: "attempt-payment-failed",
+          timeoutMs: 1_000,
+          appId: "market",
+        }
+      )
+    ).resolves.toMatchObject({
+      status: "ambiguous",
+      reason: "PAYMENT_FAILED: insufficient capacity on all routes",
+    })
+  })
+
+  it("keeps a documented NWC refusal retryable", async () => {
+    __buyerNwcSessionTestInternals.__setClientFactory(
+      () =>
+        ({
+          getInfo: async () => ({
+            methods: ["pay_invoice"],
+            network: "mainnet",
+          }),
+          getBalance: async () => ({ balance: 0 }),
+          payInvoice: async () => {
+            throw new Nip47WalletError("budget exceeded", "QUOTA_EXCEEDED")
+          },
+          close: () => undefined,
+          pool: {
+            ensureRelay: async () => undefined,
+          },
+        }) as never
+    )
+    const session = getBuyerNwcSession(NWC_WALLET_ID)
+    session.setConnection(NWC_CONNECTION)
+    await session.warm()
+
+    await expect(
+      marketAdapterCoordinator.payInvoice(
+        { walletId: NWC_WALLET_ID, providerId: "nwc" },
+        {
+          invoice: "lnbc1test",
+          amountMsats: 1_000,
+          idempotencyKey: "attempt-quota-exceeded",
+          timeoutMs: 1_000,
+          appId: "market",
+        }
+      )
+    ).resolves.toMatchObject({
+      status: "failed",
+      phase: "after_publish",
+      reason: "QUOTA_EXCEEDED: budget exceeded",
+    })
+  })
 })

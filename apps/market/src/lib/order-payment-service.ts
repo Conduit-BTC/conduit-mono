@@ -53,7 +53,11 @@ import {
   publishBuyerOrderMessage,
   type BuyerOrderSigningIdentity,
 } from "./order-publish"
-import { payCheckoutInvoice, type CheckoutPaymentTarget } from "./payment-rails"
+import {
+  isAmbiguousCheckoutPaymentError,
+  payCheckoutInvoice,
+  type CheckoutPaymentTarget,
+} from "./payment-rails"
 import { savePaymentAttempt, updatePaymentAttempt } from "./payment-attempts"
 import {
   clearOrderPaymentClaim,
@@ -401,10 +405,7 @@ function requirePreparedAnonZap(
 }
 
 function isAmbiguousPaymentError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
-  return /Check your wallet before trying another payment path\./i.test(
-    error.message
-  )
+  return isAmbiguousCheckoutPaymentError(error)
 }
 
 type Listener = (state: OrderPaymentRuntimeState) => void

@@ -630,7 +630,7 @@ function ExternalWalletPanel({
       <p className="mt-1 text-sm text-[var(--text-secondary)]">
         {autoDetectReceipt
           ? "Scan or copy this invoice and pay it once. Conduit will match the public Lightning receipt and notify the merchant automatically."
-          : "No automatic wallet was available. Scan or copy this invoice and pay it in your wallet. After the wallet confirms payment, report it to the merchant for verification."}
+          : "Automatic payment did not complete. Check your wallet first, then pay this same invoice once and report it to the merchant for verification. This invoice can only settle once, so paying it again is safe if nothing was sent."}
       </p>
       {guestSession && (
         <p className="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs leading-5 text-warning">
