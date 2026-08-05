@@ -19,7 +19,7 @@
         "eslint-plugin-react-hooks": "^7.1.1",
         "husky": "^9.1.7",
         "lint-staged": "^17.3.0",
-        "nostr-tools": "2.23.12",
+        "nostr-tools": "2.24.1",
         "prettier": "^3.9.6",
         "typescript": "^6.0.3",
         "typescript-eslint": "^8.65.0",
@@ -30,7 +30,7 @@
       "version": "0.0.1",
       "dependencies": {
         "@conduit/core": "workspace:*",
-        "nostr-tools": "2.23.12",
+        "nostr-tools": "2.24.1",
       },
       "devDependencies": {
         "typescript": "^6.0.3",
@@ -47,7 +47,7 @@
         "@tanstack/react-query": "^5.101.4",
         "@tanstack/react-router": "^1.170.16",
         "lucide-react": "^1.28.0",
-        "nostr-tools": "2.23.12",
+        "nostr-tools": "2.24.1",
         "qrcode.react": "^4.2.0",
         "react": "^19.2.8",
         "react-dom": "^19.2.8",
@@ -143,7 +143,7 @@
         "country-list": "^2.4.1",
         "dexie": "^4.4.4",
         "libphonenumber-js": "^1.13.8",
-        "nostr-tools": "2.23.12",
+        "nostr-tools": "2.24.1",
         "posthog-js": "^1.391.2",
         "tailwind-merge": "^3.6.0",
         "zod": "^4.4.3",
@@ -1083,7 +1083,7 @@
 
     "node-releases": ["node-releases@2.0.50", "", {}, "sha512-J6l92tKHX6w8Jy5nO1Vuc01NoIiRGi/d6qBKVxh+IQ8Cr3b6HbVNfKiF8ZpFKufTwpwxMmce2W3iQZ861ZRyTg=="],
 
-    "nostr-tools": ["nostr-tools@2.23.12", "", { "dependencies": { "@noble/ciphers": "2.1.1", "@noble/curves": "2.0.1", "@noble/hashes": "2.0.1", "@scure/base": "2.0.0", "@scure/bip32": "2.0.1", "@scure/bip39": "2.0.1", "nostr-wasm": "0.1.0" }, "peerDependencies": { "typescript": ">=5.0.0" }, "optionalPeers": ["typescript"] }, "sha512-dLE9r0b4pCmrOKLUPD0KhUj9IXeh6RwiYoonEWeBh2AaDmlczUjJqJC8pQfggXzKUZ7+uZvhcrKkfwuZk0/e1g=="],
+    "nostr-tools": ["nostr-tools@2.24.1", "", { "dependencies": { "@noble/ciphers": "2.1.1", "@noble/curves": "2.0.1", "@noble/hashes": "2.0.1", "@scure/base": "2.0.0", "@scure/bip32": "2.0.1", "@scure/bip39": "2.0.1", "nostr-wasm": "0.1.0" }, "peerDependencies": { "typescript": ">=5.0.0" }, "optionalPeers": ["typescript"] }, "sha512-KdrKjC74n/rr6J3eCSfZj8dcbZFvolHYe4S22SefNZ5YWbhHiB0KL/mmJjEZ0u6B9mZK0YcQtl+WQ46KzwapeQ=="],
 
     "nostr-wasm": ["nostr-wasm@0.1.0", "", {}, "sha512-78BTryCLcLYv96ONU8Ws3Q1JzjlAt+43pWQhIl86xZmWeegYCNLPml7yQ+gG3vR6V5h4XGj+TxO+SS5dsThQIA=="],
 
