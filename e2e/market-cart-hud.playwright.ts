@@ -141,7 +141,7 @@ for (const viewport of [
   })
 }
 
-test("market cart HUD browsing never contacts a merchant LNURL endpoint", async ({
+test("market cart HUD browsing never contacts a merchant-controlled LNURL endpoint", async ({
   page,
 }) => {
   const lnurlRequests: string[] = []
