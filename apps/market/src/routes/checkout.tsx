@@ -39,7 +39,6 @@ import {
   type OrderAddressValidity,
   type OrderGuestContact,
   type OrderLifecycleItem,
-  type OrderPaymentTarget,
   type OrderShippingZoneEligibility,
   type NwcConnection,
   type NwcGetInfoResult,
@@ -153,6 +152,7 @@ import {
   type OrderPaymentContext,
 } from "../lib/order-payment-service"
 import {
+  getCheckoutOrderPaymentTarget,
   getCheckoutPaymentTargetOptions,
   getCheckoutPaymentTargetValue,
   isCheckoutWalletTargetStale,
@@ -2162,16 +2162,11 @@ function CheckoutPage() {
           : selectedPaymentTarget.type === "webln"
             ? webLnAvailableNow
             : false)
-      const storedPaymentTarget: OrderPaymentTarget =
-        guestIdentity || selectedPaymentTarget.type === "manual"
-          ? { type: "manual" }
-          : selectedPaymentTarget.type === "wallet"
-            ? {
-                type: "wallet",
-                walletId: selectedPaymentTarget.walletId,
-                providerId: selectedPaymentTarget.providerId,
-              }
-            : { type: "webln" }
+      const storedPaymentTarget = getCheckoutOrderPaymentTarget({
+        selectedTarget: selectedPaymentTarget,
+        canAutoPay,
+        isGuest: !!guestIdentity,
+      })
       // The order is now durably with the merchant. Persist the lifecycle so
       // Orders can render it immediately, then hand payment to the service.
       await createOrderLifecycle({
