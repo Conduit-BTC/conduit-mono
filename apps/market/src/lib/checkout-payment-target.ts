@@ -1,9 +1,26 @@
-import type { WalletDescriptor } from "@conduit/core"
+import type { OrderPaymentTarget, WalletDescriptor } from "@conduit/core"
 import type { CheckoutPaymentTarget } from "./payment-rails"
 
 export interface CheckoutPaymentTargetOption {
   target: CheckoutPaymentTarget
   value: string
+}
+
+/** Persist an automatic rail only after its final click-time readiness check. */
+export function getCheckoutOrderPaymentTarget(input: {
+  selectedTarget: CheckoutPaymentTarget
+  canAutoPay: boolean
+  isGuest: boolean
+}): OrderPaymentTarget {
+  if (input.isGuest || !input.canAutoPay) return { type: "manual" }
+  if (input.selectedTarget.type === "wallet") {
+    return {
+      type: "wallet",
+      walletId: input.selectedTarget.walletId,
+      providerId: input.selectedTarget.providerId,
+    }
+  }
+  return { type: input.selectedTarget.type }
 }
 
 function getPreferredWallet(

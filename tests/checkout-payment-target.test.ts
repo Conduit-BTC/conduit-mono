@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import type { WalletDescriptor } from "@conduit/core"
 import {
+  getCheckoutOrderPaymentTarget,
   getCheckoutPaymentTargetOptions,
   isCheckoutWalletTargetStale,
   resolveCheckoutPaymentTarget,
@@ -26,6 +27,68 @@ function wallet(
 }
 
 describe("checkout payment target selection", () => {
+  it("stores manual payment when the selected wallet cannot auto-pay", () => {
+    expect(
+      getCheckoutOrderPaymentTarget({
+        selectedTarget: {
+          type: "wallet",
+          walletId: "spark-personal",
+          providerId: "spark",
+        },
+        canAutoPay: false,
+        isGuest: false,
+      })
+    ).toEqual({ type: "manual" })
+  })
+
+  it("stores the exact selected wallet when it can auto-pay", () => {
+    expect(
+      getCheckoutOrderPaymentTarget({
+        selectedTarget: {
+          type: "wallet",
+          walletId: "spark-personal",
+          providerId: "spark",
+        },
+        canAutoPay: true,
+        isGuest: false,
+      })
+    ).toEqual({
+      type: "wallet",
+      walletId: "spark-personal",
+      providerId: "spark",
+    })
+  })
+
+  it("stores manual payment for a guest even if a wallet appears capable", () => {
+    expect(
+      getCheckoutOrderPaymentTarget({
+        selectedTarget: { type: "webln" },
+        canAutoPay: true,
+        isGuest: true,
+      })
+    ).toEqual({ type: "manual" })
+  })
+
+  it("stores manual payment when WebLN disappears before submission", () => {
+    expect(
+      getCheckoutOrderPaymentTarget({
+        selectedTarget: { type: "webln" },
+        canAutoPay: false,
+        isGuest: false,
+      })
+    ).toEqual({ type: "manual" })
+  })
+
+  it("keeps an explicit manual selection manual", () => {
+    expect(
+      getCheckoutOrderPaymentTarget({
+        selectedTarget: { type: "manual" },
+        canAutoPay: false,
+        isGuest: false,
+      })
+    ).toEqual({ type: "manual" })
+  })
+
   it("preselects the eligible default wallet with its exact provider identity", () => {
     const target = resolveCheckoutPaymentTarget({
       selection: null,
