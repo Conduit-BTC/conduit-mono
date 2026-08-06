@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test"
-import type { WalletDescriptor } from "@conduit/core"
+import { getNwcUriFingerprint, type WalletDescriptor } from "@conduit/core"
 
 import {
+  findMatchingNwcCredentialWalletIds,
   parseStoredSparkWalletRecovery,
   registerNwcWalletAtomically,
   registerSparkWalletAtomically,
@@ -40,8 +41,11 @@ const SPARK_WALLET: WalletDescriptor = {
   updatedAt: 1,
 }
 
-const NWC_URI = "nostr+walletconnect://wallet?relay=wss%3A%2F%2Frelay.example"
-const NEXT_NWC_URI = `${NWC_URI}&secret=another-wallet`
+const NWC_WALLET_PUBKEY = "a".repeat(64)
+const NWC_SECRET = "b".repeat(64)
+const NWC_URI = `nostr+walletconnect://${NWC_WALLET_PUBKEY}?relay=wss%3A%2F%2Frelay.example&secret=${NWC_SECRET}`
+const LEGACY_NWC_URI = `nostrwalletconnect://${NWC_WALLET_PUBKEY}?secret=${NWC_SECRET}&relay=wss%3A%2F%2Frelay.example`
+const NEXT_NWC_URI = NWC_URI.replace(NWC_SECRET, "c".repeat(64))
 
 const NWC_WALLET: WalletDescriptor = {
   id: "nwc-wallet",
@@ -214,6 +218,31 @@ describe("Spark wallet recovery storage", () => {
 })
 
 describe("NWC wallet credential storage", () => {
+  it("matches equivalent stored credentials by parsed connection identity", () => {
+    expect(
+      findMatchingNwcCredentialWalletIds(
+        [
+          {
+            walletId: NWC_WALLET.id,
+            providerId: "nwc",
+            credential: LEGACY_NWC_URI,
+          },
+          {
+            walletId: "invalid-row",
+            providerId: "nwc",
+            credential: "not-an-nwc-uri",
+          },
+          {
+            walletId: "spark-wallet",
+            providerId: "spark",
+            credential: "not-an-nwc-uri",
+          },
+        ],
+        NWC_URI
+      )
+    ).toEqual([NWC_WALLET.id])
+  })
+
   it("reuses an existing wallet for the same normalized credential", async () => {
     const state = createTransactionalNwcWalletState()
     const existingWallet = {
@@ -246,15 +275,37 @@ describe("NWC wallet credential storage", () => {
     expect([...state.credentials.values()]).toEqual([NWC_URI])
   })
 
+  it("reuses one wallet across equivalent modern and legacy URI spellings", async () => {
+    const state = createTransactionalNwcWalletState()
+    state.wallets.set(NWC_WALLET.id, NWC_WALLET)
+    state.credentials.set(NWC_WALLET.id, LEGACY_NWC_URI)
+    let registerCalls = 0
+
+    const wallet = await registerNwcWalletAtomically({
+      store: state.store,
+      uri: NWC_URI,
+      listWallets: async () => [...state.wallets.values()],
+      register: async () => {
+        registerCalls += 1
+        return { ...NWC_WALLET, id: "duplicate-wallet" }
+      },
+      ensureDefault: async () => undefined,
+    })
+
+    expect(wallet).toEqual(NWC_WALLET)
+    expect(registerCalls).toBe(0)
+    expect([...state.wallets.values()]).toEqual([NWC_WALLET])
+  })
+
   it("serializes concurrent registrations for the same credential", async () => {
     const state = createTransactionalNwcWalletState()
     let registerCalls = 0
     let defaultCalls = 0
 
-    const connect = () =>
+    const connect = (uri: string) =>
       registerNwcWalletAtomically({
         store: state.store,
-        uri: NWC_URI,
+        uri,
         listWallets: async () => [...state.wallets.values()],
         register: async () => {
           registerCalls += 1
@@ -270,7 +321,10 @@ describe("NWC wallet credential storage", () => {
         },
       })
 
-    const [first, second] = await Promise.all([connect(), connect()])
+    const [first, second] = await Promise.all([
+      connect(NWC_URI),
+      connect(LEGACY_NWC_URI),
+    ])
 
     expect(first.id).toBe("nwc-wallet-1")
     expect(second.id).toBe(first.id)
@@ -454,8 +508,9 @@ function createTransactionalNwcWalletState() {
         return run
       },
       async findWalletIdsByUri(uri: string): Promise<string[]> {
+        const fingerprint = getNwcUriFingerprint(uri)
         return [...credentials.entries()].flatMap(([walletId, storedUri]) =>
-          storedUri === uri ? [walletId] : []
+          getNwcUriFingerprint(storedUri) === fingerprint ? [walletId] : []
         )
       },
       async putNwcCredential(walletId: string, uri: string): Promise<void> {

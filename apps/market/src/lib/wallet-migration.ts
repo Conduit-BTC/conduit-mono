@@ -14,6 +14,7 @@ const LEGACY_NWC_STORAGE_KEY = "conduit:buyer-wallet-nwc"
 const LEGACY_NWC_CAPABILITY_STORAGE_KEY = "conduit:buyer-wallet-nwc-capability"
 
 export interface NwcCredentialStore {
+  /** Match the parsed NWC identity, not the credential URI's raw spelling. */
   findWalletIdsByUri(uri: string): Promise<string[]>
   putNwcCredential(walletId: string, uri: string): Promise<void>
   getNwcCredential(walletId: string): Promise<string | null>

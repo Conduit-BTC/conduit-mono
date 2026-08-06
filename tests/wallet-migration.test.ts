@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import {
+  getNwcUriFingerprint,
   getWalletDefaultUpdates,
   WalletRegistry,
   type SetWalletDefaultInput,
@@ -19,6 +20,12 @@ const VALID_NWC_URI =
   "a".repeat(64) +
   "?relay=wss%3A%2F%2Fwallet.example&secret=" +
   "b".repeat(64)
+const LEGACY_NWC_URI =
+  "nostrwalletconnect://" +
+  "a".repeat(64) +
+  "?secret=" +
+  "b".repeat(64) +
+  "&relay=wss%3A%2F%2Fwallet.example"
 
 describe("NWC wallet registration details", () => {
   it("does not grant payment capability without a verified wallet network", () => {
@@ -184,8 +191,9 @@ function createMemoryStore(): WalletRegistryStore & NwcCredentialStore {
       wallets.delete(id)
     },
     async findWalletIdsByUri(uri) {
+      const fingerprint = getNwcUriFingerprint(uri)
       return [...credentials.entries()].flatMap(([walletId, savedUri]) =>
-        savedUri === uri ? [walletId] : []
+        getNwcUriFingerprint(savedUri) === fingerprint ? [walletId] : []
       )
     },
     async putNwcCredential(walletId, uri) {
@@ -248,8 +256,10 @@ class InterleavingMigrationStore
   }
 
   async findWalletIdsByUri(uri: string): Promise<string[]> {
+    const fingerprint = getNwcUriFingerprint(uri)
     const result = [...this.#credentials.entries()].flatMap(
-      ([walletId, savedUri]) => (savedUri === uri ? [walletId] : [])
+      ([walletId, savedUri]) =>
+        getNwcUriFingerprint(savedUri) === fingerprint ? [walletId] : []
     )
 
     if (!this.#activeTransaction) {
@@ -594,6 +604,50 @@ describe("legacy NWC wallet migration", () => {
       existingWallet.id,
     ])
     expect(await store.getNwcCredential("later-orphan")).toBeNull()
+    await expect(registry.list()).resolves.toEqual([existingWallet])
+    expect(values.has("conduit:buyer-wallet-nwc")).toBeFalse()
+  })
+
+  it("reuses a modern registration when legacy storage uses the old URI scheme", async () => {
+    const values = new Map<string, string>([
+      ["conduit:buyer-wallet-nwc", JSON.stringify({ uri: LEGACY_NWC_URI })],
+    ])
+    const store = createMemoryStore()
+    const existingWallet: WalletDescriptor = {
+      id: "existing-wallet",
+      kind: "connected",
+      providerId: "nwc",
+      label: "Existing wallet",
+      network: "mainnet",
+      capabilities: ["pay_invoice"],
+      status: "registered",
+      defaultIntents: ["pay_invoice"],
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    await store.put(existingWallet)
+    await store.putNwcCredential(existingWallet.id, VALID_NWC_URI)
+    const registry = new WalletRegistry(store, {
+      createId: () => "should-not-register",
+    })
+
+    await expect(
+      migrateLegacyNwcWallet({
+        legacyStorage: {
+          getItem: (key) => values.get(key) ?? null,
+          removeItem: (key) => {
+            values.delete(key)
+          },
+        },
+        registry,
+        credentialStore: store,
+        fallbackNetwork: "mainnet",
+      })
+    ).resolves.toEqual({
+      status: "already_migrated",
+      wallet: existingWallet,
+    })
+
     await expect(registry.list()).resolves.toEqual([existingWallet])
     expect(values.has("conduit:buyer-wallet-nwc")).toBeFalse()
   })
