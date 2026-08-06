@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test"
+import { NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
+import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools/pure"
 import {
   connectNip07SignerForAuth,
   getNip07Capabilities,
@@ -12,6 +14,10 @@ const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
   globalThis,
   "window"
 )
+const ACCOUNT_A_SECRET = Uint8Array.from([...new Uint8Array(31), 1])
+const ACCOUNT_B_SECRET = Uint8Array.from([...new Uint8Array(31), 2])
+const ACCOUNT_A_PUBKEY = getPublicKey(ACCOUNT_A_SECRET)
+const ACCOUNT_B_PUBKEY = getPublicKey(ACCOUNT_B_SECRET)
 
 function setTestWindow(value: unknown): void {
   Object.defineProperty(globalThis, "window", {
@@ -147,6 +153,217 @@ describe("NIP-07 availability", () => {
         retryDelaysMs: [0],
       })
     ).rejects.toThrow("Your signer extension was not ready yet")
+  })
+
+  it("does not expose an event to a NIP-07 extension after its account changes", async () => {
+    let activePubkey = ACCOUNT_A_PUBKEY
+    let signCalls = 0
+    const invalidationCodes: string[] = []
+    setTestWindow({
+      nostr: {
+        getPublicKey: async () => activePubkey,
+        signEvent: async (event: {
+          created_at: number
+          kind: number
+          tags: string[][]
+          content: string
+        }) => {
+          signCalls += 1
+          return finalizeEvent(event, ACCOUNT_B_SECRET)
+        },
+      },
+    })
+
+    const { signer } = await connectNip07SignerForAuth("interactive", {
+      onSessionInvalidated: (error) => invalidationCodes.push(error.code),
+    })
+    activePubkey = ACCOUNT_B_PUBKEY
+    const event = new NDKEvent()
+    event.kind = 1
+    event.created_at = 1_700_000_000
+    event.tags = []
+    event.content = "private draft"
+
+    await expect(event.sign(signer)).rejects.toThrow("signer account changed")
+    expect(signCalls).toBe(0)
+    expect(invalidationCodes).toEqual(["identity_changed"])
+  })
+
+  it("rejects a NIP-07 event signed by an account that changes during approval", async () => {
+    let signCalls = 0
+    setTestWindow({
+      nostr: {
+        getPublicKey: async () => ACCOUNT_A_PUBKEY,
+        signEvent: async (event: {
+          created_at: number
+          kind: number
+          tags: string[][]
+          content: string
+        }) => {
+          signCalls += 1
+          return finalizeEvent(event, ACCOUNT_B_SECRET)
+        },
+      },
+    })
+
+    const { signer } = await connectNip07SignerForAuth("interactive")
+    const event = new NDKEvent()
+    event.kind = 1
+    event.created_at = 1_700_000_000
+    event.tags = []
+    event.content = "private draft"
+
+    await expect(event.sign(signer)).rejects.toThrow(
+      "signed with a different account"
+    )
+    expect(signCalls).toBe(1)
+  })
+
+  it("rejects an account switch that occurs while NIP-07 approval is open", async () => {
+    let getPublicKeyCalls = 0
+    setTestWindow({
+      nostr: {
+        getPublicKey: async () => {
+          getPublicKeyCalls += 1
+          return getPublicKeyCalls < 3 ? ACCOUNT_A_PUBKEY : ACCOUNT_B_PUBKEY
+        },
+        signEvent: async (event: {
+          created_at: number
+          kind: number
+          tags: string[][]
+          content: string
+        }) => finalizeEvent(event, ACCOUNT_A_SECRET),
+      },
+    })
+
+    const { signer } = await connectNip07SignerForAuth("interactive")
+    const event = new NDKEvent()
+    event.kind = 1
+    event.created_at = 1_700_000_000
+    event.tags = []
+    event.content = "private draft"
+
+    await expect(event.sign(signer)).rejects.toThrow("signer account changed")
+    expect(getPublicKeyCalls).toBe(3)
+  })
+
+  it("rejects a NIP-07 response that changes the signed payload", async () => {
+    setTestWindow({
+      nostr: {
+        getPublicKey: async () => ACCOUNT_A_PUBKEY,
+        signEvent: async (event: {
+          created_at: number
+          kind: number
+          tags: string[][]
+          content: string
+        }) =>
+          finalizeEvent(
+            { ...event, content: `${event.content} changed` },
+            ACCOUNT_A_SECRET
+          ),
+      },
+    })
+
+    const { signer } = await connectNip07SignerForAuth("interactive")
+    const event = new NDKEvent()
+    event.kind = 1
+    event.created_at = 1_700_000_000
+    event.tags = []
+    event.content = "private draft"
+
+    await expect(event.sign(signer)).rejects.toThrow(
+      "signer changed the event payload"
+    )
+  })
+
+  it("rejects a NIP-07 bridge that mutates the submitted tag array", async () => {
+    setTestWindow({
+      nostr: {
+        getPublicKey: async () => ACCOUNT_A_PUBKEY,
+        signEvent: async (event: {
+          created_at: number
+          kind: number
+          tags: string[][]
+          content: string
+        }) => {
+          event.tags[0]![1] = "changed"
+          return finalizeEvent(event, ACCOUNT_A_SECRET)
+        },
+      },
+    })
+
+    const { signer } = await connectNip07SignerForAuth("interactive")
+    const event = new NDKEvent()
+    event.kind = 1
+    event.created_at = 1_700_000_000
+    event.tags = [["subject", "original"]]
+    event.content = "public note"
+
+    await expect(event.sign(signer)).rejects.toThrow(
+      "signer changed the event payload"
+    )
+    expect(event.tags).toEqual([["subject", "original"]])
+  })
+
+  it("accepts an unchanged event from the connected NIP-07 account", async () => {
+    setTestWindow({
+      nostr: {
+        getPublicKey: async () => ACCOUNT_A_PUBKEY,
+        signEvent: async (event: {
+          created_at: number
+          kind: number
+          tags: string[][]
+          content: string
+        }) => finalizeEvent(event, ACCOUNT_A_SECRET),
+      },
+    })
+
+    const { signer } = await connectNip07SignerForAuth("interactive")
+    const event = new NDKEvent()
+    event.kind = 1
+    event.created_at = 1_700_000_000
+    event.tags = []
+    event.content = "public note"
+
+    await event.sign(signer)
+
+    expect(event.pubkey).toBe(ACCOUNT_A_PUBKEY)
+    expect(verifyEvent(event.rawEvent())).toBe(true)
+  })
+
+  it("does not expose encryption plaintext after the NIP-07 account changes", async () => {
+    let activePubkey = ACCOUNT_A_PUBKEY
+    let encryptCalls = 0
+    setTestWindow({
+      nostr: {
+        getPublicKey: async () => activePubkey,
+        signEvent: async (event: {
+          created_at: number
+          kind: number
+          tags: string[][]
+          content: string
+        }) => finalizeEvent(event, ACCOUNT_A_SECRET),
+        nip44: {
+          encrypt: async () => {
+            encryptCalls += 1
+            return "ciphertext"
+          },
+          decrypt: async () => "plaintext",
+        },
+      },
+    })
+
+    const { signer } = await connectNip07SignerForAuth("interactive")
+    activePubkey = ACCOUNT_B_PUBKEY
+
+    await expect(
+      signer.encrypt(
+        new NDKUser({ pubkey: ACCOUNT_B_PUBKEY }),
+        "private message",
+        "nip44"
+      )
+    ).rejects.toThrow("signer account changed")
+    expect(encryptCalls).toBe(0)
   })
 })
 

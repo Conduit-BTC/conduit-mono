@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { NDKUser } from "@nostr-dev-kit/ndk"
-import { getPublicKey, type VerifiedEvent } from "nostr-tools"
+import { finalizeEvent, getPublicKey, type VerifiedEvent } from "nostr-tools"
 
 import {
   AUTH_REVISION_STORAGE_KEY,
@@ -8,6 +8,7 @@ import {
   NdkBunkerSignerAdapter,
   RemoteSignerError,
   bumpAuthRevision,
+  claimAuthRevision,
   forgetAuthSession,
   logoutRemoteSigner,
   prepareRemoteSignerSessionStorage,
@@ -27,7 +28,8 @@ import {
 } from "../packages/core/src/protocol/remote-signer"
 
 const REMOTE_PUBKEY = "1".repeat(64)
-const USER_PUBKEY = "2".repeat(64)
+const USER_SECRET = Uint8Array.from([...new Uint8Array(31), 23])
+const USER_PUBKEY = getPublicKey(USER_SECRET)
 const OTHER_PUBKEY = "3".repeat(64)
 const CLIENT_PRIVATE_KEY = new Uint8Array(32).fill(4)
 const CLIENT_PRIVATE_KEY_HEX = "04".repeat(32)
@@ -77,15 +79,6 @@ function seededKeyVault(): MemoryKeyVault {
 function fakeSigner(
   overrides: Partial<RemoteBunkerSigner> = {}
 ): RemoteBunkerSigner {
-  const signedEvent = {
-    id: "5".repeat(64),
-    sig: "6".repeat(128),
-    pubkey: USER_PUBKEY,
-    kind: 1,
-    content: "",
-    tags: [],
-    created_at: 1,
-  } as VerifiedEvent
   return {
     bp: {
       pubkey: REMOTE_PUBKEY,
@@ -96,7 +89,7 @@ function fakeSigner(
     ping: async () => undefined,
     getPublicKey: async () => USER_PUBKEY,
     switchRelays: async () => false,
-    signEvent: async () => signedEvent,
+    signEvent: async (event) => finalizeEvent(event, USER_SECRET),
     nip04Encrypt: async (_pubkey, value) => `04:${value}`,
     nip04Decrypt: async (_pubkey, value) => value.replace("04:", ""),
     nip44Encrypt: async (_pubkey, value) => `44:${value}`,
@@ -354,6 +347,32 @@ describe("remote signer parsing and storage", () => {
     expect(second).not.toBe(first)
     expect(readAuthRevision(storage)).toBe(second)
     expect(storage.getItem(AUTH_REVISION_STORAGE_KEY)).toBe(second)
+  })
+
+  it("does not mistake an older readable revision for a newly acquired claim", () => {
+    const storage: AuthStorage = {
+      getItem: (key) =>
+        key === AUTH_REVISION_STORAGE_KEY ? "account-a-claim" : null,
+      setItem: () => {
+        throw new Error("storage blocked")
+      },
+      removeItem: () => undefined,
+    }
+
+    const claim = claimAuthRevision(storage)
+
+    expect(claim.persisted).toBe(false)
+    expect(claim.revision).not.toBe("account-a-claim")
+    expect(readAuthRevision(storage)).toBe("account-a-claim")
+  })
+
+  it("proves a new authority claim by reading it back", () => {
+    const storage = new MemoryStorage()
+
+    const claim = claimAuthRevision(storage)
+
+    expect(claim.persisted).toBe(true)
+    expect(readAuthRevision(storage)).toBe(claim.revision)
   })
 })
 
@@ -815,15 +834,14 @@ describe("NDK remote signer adapter", () => {
     expect(await adapter.decrypt(peer, "44:hello", "nip44")).toBe("hello")
     expect(await adapter.encrypt(peer, "hello", "nip04")).toBe("04:hello")
     expect(await adapter.decrypt(peer, "04:hello", "nip04")).toBe("hello")
-    expect(
-      await adapter.sign({
-        pubkey: USER_PUBKEY,
-        kind: 1,
-        content: "",
-        tags: [],
-        created_at: 1,
-      })
-    ).toBe("6".repeat(128))
+    const signature = await adapter.sign({
+      pubkey: USER_PUBKEY,
+      kind: 1,
+      content: "",
+      tags: [],
+      created_at: 1,
+    })
+    expect(signature).toHaveLength(128)
     expect((await adapter.user()).pubkey).toBe(USER_PUBKEY)
   })
 
@@ -859,6 +877,28 @@ describe("NDK remote signer adapter", () => {
             sig: "6".repeat(128),
             pubkey: USER_PUBKEY,
           }) as VerifiedEvent,
+      }),
+      USER_PUBKEY
+    )
+
+    await expect(
+      adapter.sign({
+        pubkey: USER_PUBKEY,
+        kind: 1,
+        content: "original",
+        tags: [],
+        created_at: 1,
+      })
+    ).rejects.toMatchObject({ code: "invalid_response" })
+  })
+
+  it("rejects an invalid signature over an unchanged remote event", async () => {
+    const adapter = new NdkBunkerSignerAdapter(
+      fakeSigner({
+        signEvent: async (event) => ({
+          ...finalizeEvent(event, USER_SECRET),
+          sig: "0".repeat(128),
+        }),
       }),
       USER_PUBKEY
     )

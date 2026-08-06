@@ -19,6 +19,10 @@ import {
   createBrowserRemoteSignerKeyVault,
   type RemoteSignerKeyVault,
 } from "./remote-signer-vault"
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 
 export type { RemoteSignerKeyVault } from "./remote-signer-vault"
 
@@ -439,6 +443,31 @@ export function readAuthRevision(
     return storage.getItem(AUTH_REVISION_STORAGE_KEY) ?? ""
   } catch {
     return ""
+  }
+}
+
+export interface AuthRevisionClaim {
+  revision: string
+  persisted: boolean
+}
+
+/**
+ * Acquire a fresh cross-tab authority claim and prove it was written. A caller
+ * must not treat an older readable revision as its own when setItem() fails.
+ */
+export function claimAuthRevision(
+  storage: AuthStorage | undefined = getDefaultStorage()
+): AuthRevisionClaim {
+  const revision = generateId()
+  if (!storage) return { revision, persisted: false }
+  try {
+    storage.setItem(AUTH_REVISION_STORAGE_KEY, revision)
+    return {
+      revision,
+      persisted: storage.getItem(AUTH_REVISION_STORAGE_KEY) === revision,
+    }
+  } catch {
+    return { revision, persisted: false }
   }
 }
 
@@ -1033,6 +1062,13 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
         signed.pubkey !== this.pubkey
           ? "The remote signer signed with a different account. Sign in again."
           : "The remote signer returned a changed event. The signature was not accepted.",
+        { operation: "sign event" }
+      )
+    }
+    if (!isValidSignedPublicNostrEvent(signed as SignedPublicNostrEvent)) {
+      throw new RemoteSignerError(
+        "invalid_response",
+        "The remote signer returned an invalid signature. The event was not accepted.",
         { operation: "sign event" }
       )
     }
