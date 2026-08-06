@@ -183,11 +183,9 @@ function createMemoryStore(): WalletRegistryStore & NwcCredentialStore {
     async delete(id) {
       wallets.delete(id)
     },
-    async findWalletIdByUri(uri) {
-      return (
-        [...credentials.entries()].find(
-          ([, savedUri]) => savedUri === uri
-        )?.[0] ?? null
+    async findWalletIdsByUri(uri) {
+      return [...credentials.entries()].flatMap(([walletId, savedUri]) =>
+        savedUri === uri ? [walletId] : []
       )
     },
     async putNwcCredential(walletId, uri) {
@@ -249,11 +247,10 @@ class InterleavingMigrationStore
     this.#wallets.delete(id)
   }
 
-  async findWalletIdByUri(uri: string): Promise<string | null> {
-    const result =
-      [...this.#credentials.entries()].find(
-        ([, savedUri]) => savedUri === uri
-      )?.[0] ?? null
+  async findWalletIdsByUri(uri: string): Promise<string[]> {
+    const result = [...this.#credentials.entries()].flatMap(
+      ([walletId, savedUri]) => (savedUri === uri ? [walletId] : [])
+    )
 
     if (!this.#activeTransaction) {
       this.#outsideReadCount += 1
@@ -475,6 +472,132 @@ describe("legacy NWC wallet migration", () => {
     expect(values.has("conduit:buyer-wallet-nwc")).toBeFalse()
   })
 
+  it("repairs an orphaned credential before recreating its wallet descriptor", async () => {
+    const values = new Map<string, string>([
+      ["conduit:buyer-wallet-nwc", JSON.stringify({ uri: VALID_NWC_URI })],
+    ])
+    const store = createMemoryStore()
+    await store.putNwcCredential("missing-wallet", VALID_NWC_URI)
+    const registry = new WalletRegistry(store, {
+      createId: () => "replacement-wallet",
+      now: () => 2,
+    })
+
+    await expect(
+      migrateLegacyNwcWallet({
+        legacyStorage: {
+          getItem: (key) => values.get(key) ?? null,
+          removeItem: (key) => {
+            values.delete(key)
+          },
+        },
+        registry,
+        credentialStore: store,
+        fallbackNetwork: "mainnet",
+      })
+    ).resolves.toMatchObject({
+      status: "migrated",
+      wallet: { id: "replacement-wallet" },
+    })
+
+    expect(await store.getNwcCredential("missing-wallet")).toBeNull()
+    expect(await store.getNwcCredential("replacement-wallet")).toBe(
+      VALID_NWC_URI
+    )
+    expect(await store.findWalletIdsByUri(VALID_NWC_URI)).toEqual([
+      "replacement-wallet",
+    ])
+    await expect(registry.list()).resolves.toHaveLength(1)
+    expect(values.has("conduit:buyer-wallet-nwc")).toBeFalse()
+  })
+
+  it("fails closed when a legacy credential points at a non-NWC wallet", async () => {
+    const values = new Map<string, string>([
+      ["conduit:buyer-wallet-nwc", JSON.stringify({ uri: VALID_NWC_URI })],
+    ])
+    const store = createMemoryStore()
+    await store.put({
+      id: "wrong-wallet",
+      kind: "portable",
+      providerId: "spark",
+      label: "Wrong wallet",
+      network: "mainnet",
+      capabilities: ["pay_invoice"],
+      status: "registered",
+      defaultIntents: [],
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    await store.putNwcCredential("wrong-wallet", VALID_NWC_URI)
+    const registry = new WalletRegistry(store)
+
+    await expect(
+      migrateLegacyNwcWallet({
+        legacyStorage: {
+          getItem: (key) => values.get(key) ?? null,
+          removeItem: (key) => {
+            values.delete(key)
+          },
+        },
+        registry,
+        credentialStore: store,
+        fallbackNetwork: "mainnet",
+      })
+    ).rejects.toThrow("Connected Wallet registration is inconsistent.")
+
+    expect(await store.getNwcCredential("wrong-wallet")).toBe(VALID_NWC_URI)
+    expect(values.has("conduit:buyer-wallet-nwc")).toBeTrue()
+  })
+
+  it("removes a later orphan before reusing a valid migrated wallet", async () => {
+    const values = new Map<string, string>([
+      ["conduit:buyer-wallet-nwc", JSON.stringify({ uri: VALID_NWC_URI })],
+    ])
+    const store = createMemoryStore()
+    const existingWallet: WalletDescriptor = {
+      id: "existing-wallet",
+      kind: "connected",
+      providerId: "nwc",
+      label: "Existing wallet",
+      network: "mainnet",
+      capabilities: ["pay_invoice"],
+      status: "registered",
+      defaultIntents: ["pay_invoice"],
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    await store.put(existingWallet)
+    await store.putNwcCredential(existingWallet.id, VALID_NWC_URI)
+    await store.putNwcCredential("later-orphan", VALID_NWC_URI)
+    const registry = new WalletRegistry(store, {
+      createId: () => "should-not-register",
+    })
+
+    await expect(
+      migrateLegacyNwcWallet({
+        legacyStorage: {
+          getItem: (key) => values.get(key) ?? null,
+          removeItem: (key) => {
+            values.delete(key)
+          },
+        },
+        registry,
+        credentialStore: store,
+        fallbackNetwork: "mainnet",
+      })
+    ).resolves.toEqual({
+      status: "already_migrated",
+      wallet: existingWallet,
+    })
+
+    expect(await store.findWalletIdsByUri(VALID_NWC_URI)).toEqual([
+      existingWallet.id,
+    ])
+    expect(await store.getNwcCredential("later-orphan")).toBeNull()
+    await expect(registry.list()).resolves.toEqual([existingWallet])
+    expect(values.has("conduit:buyer-wallet-nwc")).toBeFalse()
+  })
+
   it("creates one connected wallet when two tabs migrate the same legacy URI", async () => {
     const values = new Map<string, string>([
       ["conduit:buyer-wallet-nwc", JSON.stringify({ uri: VALID_NWC_URI })],
@@ -552,7 +675,7 @@ describe("legacy NWC wallet migration", () => {
     ).rejects.toThrow("NWC credential verification failed.")
 
     expect(await registry.list()).toEqual([])
-    expect(await store.findWalletIdByUri(VALID_NWC_URI)).toBeNull()
+    expect(await store.findWalletIdsByUri(VALID_NWC_URI)).toEqual([])
     expect(values.has("conduit:buyer-wallet-nwc")).toBeTrue()
   })
 })

@@ -14,7 +14,7 @@ const LEGACY_NWC_STORAGE_KEY = "conduit:buyer-wallet-nwc"
 const LEGACY_NWC_CAPABILITY_STORAGE_KEY = "conduit:buyer-wallet-nwc-capability"
 
 export interface NwcCredentialStore {
-  findWalletIdByUri(uri: string): Promise<string | null>
+  findWalletIdsByUri(uri: string): Promise<string[]>
   putNwcCredential(walletId: string, uri: string): Promise<void>
   getNwcCredential(walletId: string): Promise<string | null>
   deleteNwcCredential(walletId: string): Promise<void>
@@ -64,16 +64,33 @@ export async function migrateLegacyNwcWallet(input: {
   )
   const capabilities = registration.capabilities
   const result = await input.credentialStore.transaction(async () => {
-    const existingWalletId = await input.credentialStore.findWalletIdByUri(
+    const existingWalletIds = await input.credentialStore.findWalletIdsByUri(
       legacy.uri
     )
-    if (existingWalletId) {
-      const existingWallet = (await input.registry.list()).find(
+    const registeredWallets = await input.registry.list()
+    let existingWallet: WalletDescriptor | null = null
+    for (const existingWalletId of existingWalletIds) {
+      const registeredWallet = registeredWallets.find(
         (wallet) => wallet.id === existingWalletId
       )
-      if (existingWallet) {
-        return { status: "already_migrated", wallet: existingWallet } as const
+      if (registeredWallet) {
+        if (
+          registeredWallet.kind !== "connected" ||
+          registeredWallet.providerId !== "nwc" ||
+          existingWallet
+        ) {
+          throw new Error("Connected Wallet registration is inconsistent.")
+        }
+        existingWallet = registeredWallet
+        continue
       }
+
+      // Repair a credential left behind by a partial migration before the
+      // replacement descriptor and credential are committed atomically.
+      await input.credentialStore.deleteNwcCredential(existingWalletId)
+    }
+    if (existingWallet) {
+      return { status: "already_migrated", wallet: existingWallet } as const
     }
 
     const wallet = await input.registry.add({

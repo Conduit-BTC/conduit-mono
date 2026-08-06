@@ -302,6 +302,30 @@ describe("NWC wallet credential storage", () => {
     expect(state.credentials.get(NWC_WALLET.id)).toBe(NWC_URI)
   })
 
+  it("repairs orphaned duplicates before reusing a valid wallet", async () => {
+    const state = createTransactionalNwcWalletState()
+    state.wallets.set(NWC_WALLET.id, NWC_WALLET)
+    state.credentials.set(NWC_WALLET.id, NWC_URI)
+    state.credentials.set("missing-wallet", NWC_URI)
+    let registerCalls = 0
+
+    const wallet = await registerNwcWalletAtomically({
+      store: state.store,
+      uri: NWC_URI,
+      listWallets: async () => [...state.wallets.values()],
+      register: async () => {
+        registerCalls += 1
+        return NWC_WALLET
+      },
+      ensureDefault: async () => undefined,
+    })
+
+    expect(wallet).toEqual(NWC_WALLET)
+    expect(registerCalls).toBe(0)
+    expect([...state.wallets.values()]).toEqual([NWC_WALLET])
+    expect([...state.credentials.entries()]).toEqual([[NWC_WALLET.id, NWC_URI]])
+  })
+
   it("registers a distinct credential as another wallet", async () => {
     const state = createTransactionalNwcWalletState()
     state.wallets.set(NWC_WALLET.id, NWC_WALLET)
@@ -429,11 +453,9 @@ function createTransactionalNwcWalletState() {
         )
         return run
       },
-      async findWalletIdByUri(uri: string): Promise<string | null> {
-        return (
-          [...credentials.entries()].find(
-            ([, storedUri]) => storedUri === uri
-          )?.[0] ?? null
+      async findWalletIdsByUri(uri: string): Promise<string[]> {
+        return [...credentials.entries()].flatMap(([walletId, storedUri]) =>
+          storedUri === uri ? [walletId] : []
         )
       },
       async putNwcCredential(walletId: string, uri: string): Promise<void> {
