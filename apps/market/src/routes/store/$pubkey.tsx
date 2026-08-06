@@ -12,6 +12,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
 } from "react"
@@ -71,6 +72,11 @@ import {
 
 type SortOption = "newest" | "price_asc" | "price_desc"
 type CategoryFacetOption = ReturnType<typeof getCategoryFacetOptions>[number]
+type FollowOverride = {
+  merchantPubkey: string
+  viewerPubkey: string
+  value: boolean
+}
 
 function isPriceSort(sort: SortOption | undefined): boolean {
   return sort === "price_asc" || sort === "price_desc"
@@ -166,6 +172,7 @@ function StorefrontPage() {
   const queryClient = useQueryClient()
   const cart = useCart()
   const { pubkey: viewerPubkey, status } = useAuth()
+  const activeViewerPubkey = status === "connected" ? viewerPubkey : null
   const shopperPricing = useShopperPricing()
   const btcUsdRate = shopperPricing.quote
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
@@ -175,7 +182,7 @@ function StorefrontPage() {
   const productsQuery = useProgressiveProducts({
     scope: "storefront",
     merchantPubkey: pubkey,
-    authenticatedPubkey: status === "connected" ? viewerPubkey : null,
+    authenticatedPubkey: activeViewerPubkey,
     textQuery: search.q,
   })
   const profileRelayHints = useMemo(
@@ -192,7 +199,6 @@ function StorefrontPage() {
   const productCount = storeProducts.length
   const merchantTrust = useMerchantTrustContext({
     merchantPubkey: pubkey,
-    viewerPubkey,
     listingCount: productCount,
     profileRelayHints,
   })
@@ -202,8 +208,13 @@ function StorefrontPage() {
   const [followState, setFollowState] = useState<
     "idle" | "saving_follow" | "saving_unfollow"
   >("idle")
-  const [followOverride, setFollowOverride] = useState<boolean | null>(null)
+  const [followOverride, setFollowOverride] = useState<FollowOverride | null>(
+    null
+  )
   const [followError, setFollowError] = useState<string | null>(null)
+  const followScope = `${activeViewerPubkey ?? "anonymous"}:${pubkey}`
+  const previousFollowScopeRef = useRef(followScope)
+  const followScopeVersionRef = useRef(0)
 
   const merchantIdentityPending = merchantTrust.merchantNamePending
   const merchantName = merchantTrust.merchantName
@@ -264,7 +275,10 @@ function StorefrontPage() {
   )
 
   const isFollowing =
-    followOverride ?? merchantTrust.viewerFollowsMerchant === true
+    followOverride?.merchantPubkey === pubkey &&
+    followOverride.viewerPubkey === activeViewerPubkey
+      ? followOverride.value
+      : merchantTrust.viewerFollowsMerchant === true
   const isFollowBusy = followState !== "idle"
 
   const toggleTag = (tag: string) => {
@@ -301,6 +315,16 @@ function StorefrontPage() {
     setLocalSearch(search.q ?? "")
     setSearchDirty(false)
   }, [search.q])
+
+  useEffect(() => {
+    if (previousFollowScopeRef.current === followScope) return
+
+    previousFollowScopeRef.current = followScope
+    followScopeVersionRef.current += 1
+    setFollowOverride(null)
+    setFollowError(null)
+    setFollowState("idle")
+  }, [followScope])
 
   const normalizedSearch = localSearch.trim()
   const pendingSearch =
@@ -360,6 +384,7 @@ function StorefrontPage() {
     if (isFollowBusy) return
 
     const nextShouldFollow = !isFollowing
+    const followScopeVersion = followScopeVersionRef.current
     setFollowState(nextShouldFollow ? "saving_follow" : "saving_unfollow")
     setFollowError(null)
     try {
@@ -370,12 +395,20 @@ function StorefrontPage() {
         appId: "market",
       })
 
-      setFollowOverride(nextShouldFollow)
+      if (followScopeVersion !== followScopeVersionRef.current) return
+
+      setFollowOverride({
+        merchantPubkey: pubkey,
+        viewerPubkey,
+        value: nextShouldFollow,
+      })
       await queryClient.invalidateQueries({
         queryKey: ["merchant-trust-social", viewerPubkey, pubkey],
       })
+      if (followScopeVersion !== followScopeVersionRef.current) return
       setFollowState("idle")
     } catch (error) {
+      if (followScopeVersion !== followScopeVersionRef.current) return
       setFollowOverride(null)
       setFollowError(
         error instanceof Error
