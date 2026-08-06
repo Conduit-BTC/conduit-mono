@@ -1055,24 +1055,36 @@ export class NdkBunkerSignerAdapter implements NDKSigner {
       signed.content !== event.content ||
       JSON.stringify(signed.tags) !== JSON.stringify(event.tags)
     ) {
-      throw new RemoteSignerError(
-        signed.pubkey !== this.pubkey
-          ? "session_identity_mismatch"
-          : "invalid_response",
-        signed.pubkey !== this.pubkey
-          ? "The remote signer signed with a different account. Sign in again."
-          : "The remote signer returned a changed event. The signature was not accepted.",
-        { operation: "sign event" }
+      return this.rejectSignerIntegrityFailure(
+        new RemoteSignerError(
+          signed.pubkey !== this.pubkey
+            ? "session_identity_mismatch"
+            : "invalid_response",
+          signed.pubkey !== this.pubkey
+            ? "The remote signer signed with a different account. Sign in again."
+            : "The remote signer returned a changed event. The signature was not accepted.",
+          { operation: "sign event" }
+        )
       )
     }
     if (!isValidSignedPublicNostrEvent(signed as SignedPublicNostrEvent)) {
-      throw new RemoteSignerError(
-        "invalid_response",
-        "The remote signer returned an invalid signature. The event was not accepted.",
-        { operation: "sign event" }
+      return this.rejectSignerIntegrityFailure(
+        new RemoteSignerError(
+          "invalid_response",
+          "The remote signer returned an invalid signature. The event was not accepted.",
+          { operation: "sign event" }
+        )
       )
     }
     return signed.sig
+  }
+
+  private async rejectSignerIntegrityFailure(
+    error: RemoteSignerError
+  ): Promise<never> {
+    this.invalidated = true
+    await closeRemoteSigner(this.bunkerSigner, this.options)
+    throw error
   }
 
   async encryptionEnabled(

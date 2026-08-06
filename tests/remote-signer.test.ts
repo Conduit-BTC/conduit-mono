@@ -867,6 +867,8 @@ describe("NDK remote signer adapter", () => {
   })
 
   it("rejects an altered event returned by the remote signer", async () => {
+    let encryptCalls = 0
+    let closeCalls = 0
     const adapter = new NdkBunkerSignerAdapter(
       fakeSigner({
         signEvent: async (event) =>
@@ -877,6 +879,13 @@ describe("NDK remote signer adapter", () => {
             sig: "6".repeat(128),
             pubkey: USER_PUBKEY,
           }) as VerifiedEvent,
+        nip44Encrypt: async () => {
+          encryptCalls += 1
+          return "ciphertext"
+        },
+        close: async () => {
+          closeCalls += 1
+        },
       }),
       USER_PUBKEY
     )
@@ -890,15 +899,63 @@ describe("NDK remote signer adapter", () => {
         created_at: 1,
       })
     ).rejects.toMatchObject({ code: "invalid_response" })
+    await expect(
+      adapter.encrypt(new NDKUser({ pubkey: OTHER_PUBKEY }), "secret", "nip44")
+    ).rejects.toMatchObject({ code: "unavailable" })
+    expect(encryptCalls).toBe(0)
+    expect(closeCalls).toBe(1)
+  })
+
+  it("invalidates the adapter when the remote signer changes accounts", async () => {
+    let decryptCalls = 0
+    const adapter = new NdkBunkerSignerAdapter(
+      fakeSigner({
+        signEvent: async (event) =>
+          ({
+            ...event,
+            id: "5".repeat(64),
+            sig: "6".repeat(128),
+            pubkey: OTHER_PUBKEY,
+          }) as VerifiedEvent,
+        nip44Decrypt: async () => {
+          decryptCalls += 1
+          return "plaintext"
+        },
+      }),
+      USER_PUBKEY
+    )
+
+    await expect(
+      adapter.sign({
+        pubkey: USER_PUBKEY,
+        kind: 1,
+        content: "original",
+        tags: [],
+        created_at: 1,
+      })
+    ).rejects.toMatchObject({ code: "session_identity_mismatch" })
+    await expect(
+      adapter.decrypt(
+        new NDKUser({ pubkey: OTHER_PUBKEY }),
+        "ciphertext",
+        "nip44"
+      )
+    ).rejects.toMatchObject({ code: "unavailable" })
+    expect(decryptCalls).toBe(0)
   })
 
   it("rejects an invalid signature over an unchanged remote event", async () => {
+    let encryptCalls = 0
     const adapter = new NdkBunkerSignerAdapter(
       fakeSigner({
         signEvent: async (event) => ({
           ...finalizeEvent(event, USER_SECRET),
           sig: "0".repeat(128),
         }),
+        nip44Encrypt: async () => {
+          encryptCalls += 1
+          return "ciphertext"
+        },
       }),
       USER_PUBKEY
     )
@@ -912,6 +969,10 @@ describe("NDK remote signer adapter", () => {
         created_at: 1,
       })
     ).rejects.toMatchObject({ code: "invalid_response" })
+    await expect(
+      adapter.encrypt(new NDKUser({ pubkey: OTHER_PUBKEY }), "secret", "nip44")
+    ).rejects.toMatchObject({ code: "unavailable" })
+    expect(encryptCalls).toBe(0)
   })
 
   it("rejects an in-flight operation after the session is invalidated", async () => {

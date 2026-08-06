@@ -496,7 +496,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       const authClaim = claimAuthRevision()
-      authRevision = authClaim.revision
       if (!authClaim.persisted) {
         if (connectedRemote) {
           abandonRemoteConnection(connectedRemote)
@@ -506,6 +505,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           "This browser could not establish exclusive signer authority. Check site storage permissions, clear the saved session if needed, and reconnect."
         )
       }
+      authRevision = authClaim.revision
       if (!attemptIsCurrent()) {
         if (connectedRemote) {
           abandonRemoteConnection(connectedRemote)
