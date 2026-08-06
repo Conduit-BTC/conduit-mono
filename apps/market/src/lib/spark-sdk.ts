@@ -15,6 +15,7 @@ import {
   type SparkSdkFactory,
   type SparkSdkPayment,
 } from "./spark-wallet"
+import { isSparkWalletSessionCoordinationAvailable } from "./spark-wallet-lease"
 
 export type SparkNetwork = "mainnet" | "testnet" | "signet" | "regtest"
 export type SupportedSparkNetwork = Extract<SparkNetwork, "mainnet" | "regtest">
@@ -1123,17 +1124,41 @@ export type SparkConfiguration =
 export function getSparkConfigurationForNetwork(
   network: SparkNetwork
 ): SparkConfiguration {
-  if (network === "mainnet" || network === "regtest") {
-    return { status: "ready", network }
+  if (network !== "mainnet" && network !== "regtest") {
+    return {
+      status: "unavailable",
+      reason: `Spark Portable Wallets are not supported on ${network} by the installed first-party SDK.`,
+    }
   }
-  return {
-    status: "unavailable",
-    reason: `Spark Portable Wallets are not supported on ${network} by the installed first-party SDK.`,
-  }
+
+  return { status: "ready", network }
 }
 
-export function getSparkConfiguration(): SparkConfiguration {
-  return getSparkConfigurationForNetwork(getSparkNetwork())
+export function getSparkConfiguration(
+  options: {
+    network?: SparkNetwork
+    sessionCoordinationAvailable?: boolean
+  } = {}
+): SparkConfiguration {
+  const networkConfiguration = getSparkConfigurationForNetwork(
+    options.network ?? getSparkNetwork()
+  )
+  if (networkConfiguration.status === "unavailable") {
+    return networkConfiguration
+  }
+
+  const sessionCoordinationAvailable =
+    options.sessionCoordinationAvailable ??
+    isSparkWalletSessionCoordinationAvailable()
+  if (!sessionCoordinationAvailable) {
+    return {
+      status: "unavailable",
+      reason:
+        "This browser cannot safely coordinate Portable Wallet sessions across tabs.",
+    }
+  }
+
+  return networkConfiguration
 }
 
 let sparkWalletManager: SparkWalletManager | null = null

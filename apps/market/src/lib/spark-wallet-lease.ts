@@ -31,6 +31,13 @@ const NOOP_LEASE: SparkWalletSessionLease = {
   async release() {},
 }
 
+export function isSparkWalletSessionCoordinationAvailable(
+  lockManager: SparkWalletSessionLockManager | null = getBrowserLockManager(),
+  requireCrossTabLock = typeof window !== "undefined"
+): boolean {
+  return !requireCrossTabLock || lockManager !== null
+}
+
 export async function acquireSparkWalletManagerSessionLease(
   walletId: string,
   identityKey: string,
