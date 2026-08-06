@@ -1,5 +1,6 @@
 import {
   db,
+  getNwcUriFingerprint,
   getWalletDefaultUpdates,
   WalletRegistry,
   type SetWalletDefaultInput,
@@ -29,6 +30,27 @@ export interface StoredSparkPasswordRecovery {
 }
 
 export type StoredSparkWalletRecovery = StoredSparkPasswordRecovery
+
+export function findMatchingNwcCredentialWalletIds(
+  credentials: readonly {
+    walletId: string
+    providerId: string
+    credential: string
+  }[],
+  uri: string
+): string[] {
+  const fingerprint = getNwcUriFingerprint(uri)
+  return credentials.flatMap((credential) => {
+    if (credential.providerId !== "nwc") return []
+    try {
+      return getNwcUriFingerprint(credential.credential) === fingerprint
+        ? [credential.walletId]
+        : []
+    } catch {
+      return []
+    }
+  })
+}
 
 export interface AtomicSparkWalletRegistrationStore {
   transaction<T>(operation: () => Promise<T>): Promise<T>
@@ -159,10 +181,8 @@ export class MarketWalletStore
   }
 
   async findWalletIdsByUri(uri: string): Promise<string[]> {
-    const credentials = await db.walletCredentials
-      .filter((row) => row.providerId === "nwc" && row.credential === uri)
-      .toArray()
-    return credentials.map((credential) => credential.walletId)
+    const credentials = await db.walletCredentials.toArray()
+    return findMatchingNwcCredentialWalletIds(credentials, uri)
   }
 
   async putNwcCredential(walletId: string, uri: string): Promise<void> {
