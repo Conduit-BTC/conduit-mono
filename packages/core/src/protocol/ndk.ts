@@ -900,9 +900,8 @@ export function setSigner(signer: NDKSigner): SignerLease {
 
 export function removeSigner(lease: SignerLease): void {
   if (lease !== activeSignerLease) return
-  const removedSigner = activeSignerLease?.signer
   activeSignerLease = null
-  if (ndkInstance?.signer === removedSigner) {
+  if (ndkInstance) {
     ndkInstance.signer = undefined
   }
 }

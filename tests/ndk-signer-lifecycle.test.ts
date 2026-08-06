@@ -78,4 +78,15 @@ describe("NDK signer lifecycle", () => {
 
     expect(getNdk().signer).toBeUndefined()
   })
+
+  it("clears a divergent client signer when the active lifecycle disconnects", () => {
+    const activeSigner = fakeSigner("a".repeat(64))
+    const divergentSigner = fakeSigner("b".repeat(64))
+    const activeLease = setSigner(activeSigner)
+    getNdk().signer = divergentSigner
+
+    removeSigner(activeLease)
+
+    expect(getNdk().signer).toBeUndefined()
+  })
 })
