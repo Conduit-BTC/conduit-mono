@@ -2,6 +2,7 @@ import type { WalletDescriptor } from "@conduit/core"
 
 import {
   assertSparkWalletRegistrationSessionAvailable,
+  isSparkWalletSessionCoordinationAvailable,
   runWithSparkWalletOperationLock,
 } from "./spark-wallet-lease"
 
@@ -22,6 +23,8 @@ export interface SparkWalletLifecycleManager {
 export type SparkWalletRegistrationSessionVerifier = (
   walletId: string
 ) => Promise<void>
+
+export type SparkWalletRemovalMode = "coordinated" | "local-only"
 
 interface SparkWalletLifecycleDependencies {
   walletId: string
@@ -80,6 +83,37 @@ export async function cleanupSparkWalletState(
     input.verifySessionAvailable ??
     assertSparkWalletRegistrationSessionAvailable
   )(input.walletId)
+}
+
+export async function assertLocalSparkWalletRemovalSafe(input: {
+  managerInitialized: boolean
+}): Promise<void> {
+  if (input.managerInitialized) {
+    throw new Error(
+      "Reload this page before removing the Portable Wallet from this browser."
+    )
+  }
+}
+
+/**
+ * Preserve normal cross-tab serialization when it exists, while retaining a
+ * local-data escape hatch in browsers that cannot provide Web Locks.
+ */
+export async function runSparkWalletRemoval<T>(input: {
+  walletId: string
+  remove(mode: SparkWalletRemovalMode): Promise<T>
+  runExclusive?: SparkWalletOperationRunner
+  sessionCoordinationAvailable?: boolean
+}): Promise<T> {
+  const sessionCoordinationAvailable =
+    input.sessionCoordinationAvailable ??
+    isSparkWalletSessionCoordinationAvailable()
+  if (!sessionCoordinationAvailable) {
+    return input.remove("local-only")
+  }
+
+  const runExclusive = input.runExclusive ?? runWithSparkWalletOperationLock
+  return runExclusive(input.walletId, () => input.remove("coordinated"))
 }
 
 async function validateOpenRegistration(

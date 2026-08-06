@@ -753,7 +753,7 @@ function WalletRow({
           <Button
             size="sm"
             variant="ghost"
-            disabled={pending || sparkActionsDisabled}
+            disabled={pending}
             onClick={(event) => onRemove(wallet, event.currentTarget)}
           >
             {wallet.kind === "portable" ? (
@@ -2690,7 +2690,7 @@ function RemoveWalletDialog({
           </AlertDialogTitle>
           <AlertDialogDescription>
             {portable
-              ? "This removes local access only. It does not delete the Portable Wallet or move its funds."
+              ? "This removes the wallet registration and encrypted recovery copy from this browser. It does not delete the Portable Wallet or move its funds."
               : "This removes the private NWC authorization from this browser. The external wallet and its funds are unchanged."}
           </AlertDialogDescription>
         </AlertDialogHeader>
