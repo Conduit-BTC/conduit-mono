@@ -84,24 +84,32 @@ export async function registerNwcWalletAtomically(input: {
   }
 
   return input.store.transaction(async () => {
-    const existingWalletId = await input.store.findWalletIdByUri(normalizedUri)
-    if (existingWalletId) {
-      const existingWallet = (await input.listWallets()).find(
+    const existingWalletIds =
+      await input.store.findWalletIdsByUri(normalizedUri)
+    const registeredWallets = await input.listWallets()
+    let existingWallet: WalletDescriptor | null = null
+    for (const existingWalletId of existingWalletIds) {
+      const registeredWallet = registeredWallets.find(
         (wallet) => wallet.id === existingWalletId
       )
-      if (existingWallet) {
+      if (registeredWallet) {
         if (
-          existingWallet.kind !== "connected" ||
-          existingWallet.providerId !== "nwc"
+          registeredWallet.kind !== "connected" ||
+          registeredWallet.providerId !== "nwc" ||
+          existingWallet
         ) {
           throw new Error("Connected Wallet registration is inconsistent.")
         }
-        return existingWallet
+        existingWallet = registeredWallet
+        continue
       }
 
       // Repair an orphaned credential row inside this transaction before
       // recreating its missing public descriptor.
       await input.store.deleteNwcCredential(existingWalletId)
+    }
+    if (existingWallet) {
+      return existingWallet
     }
 
     const wallet = await input.register()
@@ -150,11 +158,11 @@ export class MarketWalletStore
     })
   }
 
-  async findWalletIdByUri(uri: string): Promise<string | null> {
-    const credential = await db.walletCredentials
+  async findWalletIdsByUri(uri: string): Promise<string[]> {
+    const credentials = await db.walletCredentials
       .filter((row) => row.providerId === "nwc" && row.credential === uri)
-      .first()
-    return credential?.walletId ?? null
+      .toArray()
+    return credentials.map((credential) => credential.walletId)
   }
 
   async putNwcCredential(walletId: string, uri: string): Promise<void> {
