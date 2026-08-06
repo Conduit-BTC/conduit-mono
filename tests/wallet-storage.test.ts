@@ -3,6 +3,7 @@ import type { WalletDescriptor } from "@conduit/core"
 
 import {
   parseStoredSparkWalletRecovery,
+  registerNwcWalletAtomically,
   registerSparkWalletAtomically,
   serializeStoredSparkWalletRecovery,
 } from "../apps/market/src/lib/wallet-storage"
@@ -31,6 +32,22 @@ const SPARK_WALLET: WalletDescriptor = {
   kind: "portable",
   providerId: "spark",
   label: "Spending",
+  network: "mainnet",
+  capabilities: ["pay_invoice"],
+  status: "registered",
+  defaultIntents: [],
+  createdAt: 1,
+  updatedAt: 1,
+}
+
+const NWC_URI = "nostr+walletconnect://wallet?relay=wss%3A%2F%2Frelay.example"
+const NEXT_NWC_URI = `${NWC_URI}&secret=another-wallet`
+
+const NWC_WALLET: WalletDescriptor = {
+  id: "nwc-wallet",
+  kind: "connected",
+  providerId: "nwc",
+  label: "Zeus",
   network: "mainnet",
   capabilities: ["pay_invoice"],
   status: "registered",
@@ -196,6 +213,143 @@ describe("Spark wallet recovery storage", () => {
   })
 })
 
+describe("NWC wallet credential storage", () => {
+  it("reuses an existing wallet for the same normalized credential", async () => {
+    const state = createTransactionalNwcWalletState()
+    const existingWallet = {
+      ...NWC_WALLET,
+      label: "Original label",
+      defaultIntents: ["pay_invoice" as const],
+    }
+    state.wallets.set(existingWallet.id, existingWallet)
+    state.credentials.set(existingWallet.id, NWC_URI)
+    let registerCalls = 0
+    let defaultCalls = 0
+
+    const wallet = await registerNwcWalletAtomically({
+      store: state.store,
+      uri: `  ${NWC_URI}  `,
+      listWallets: async () => [...state.wallets.values()],
+      register: async () => {
+        registerCalls += 1
+        return { ...NWC_WALLET, label: "Replacement label" }
+      },
+      ensureDefault: async () => {
+        defaultCalls += 1
+      },
+    })
+
+    expect(wallet).toEqual(existingWallet)
+    expect(registerCalls).toBe(0)
+    expect(defaultCalls).toBe(0)
+    expect([...state.wallets.values()]).toEqual([existingWallet])
+    expect([...state.credentials.values()]).toEqual([NWC_URI])
+  })
+
+  it("serializes concurrent registrations for the same credential", async () => {
+    const state = createTransactionalNwcWalletState()
+    let registerCalls = 0
+    let defaultCalls = 0
+
+    const connect = () =>
+      registerNwcWalletAtomically({
+        store: state.store,
+        uri: NWC_URI,
+        listWallets: async () => [...state.wallets.values()],
+        register: async () => {
+          registerCalls += 1
+          const wallet = {
+            ...NWC_WALLET,
+            id: `nwc-wallet-${registerCalls}`,
+          }
+          state.wallets.set(wallet.id, wallet)
+          return wallet
+        },
+        ensureDefault: async () => {
+          defaultCalls += 1
+        },
+      })
+
+    const [first, second] = await Promise.all([connect(), connect()])
+
+    expect(first.id).toBe("nwc-wallet-1")
+    expect(second.id).toBe(first.id)
+    expect(registerCalls).toBe(1)
+    expect(defaultCalls).toBe(1)
+    expect([...state.wallets.values()]).toHaveLength(1)
+    expect([...state.credentials.entries()]).toEqual([
+      ["nwc-wallet-1", NWC_URI],
+    ])
+  })
+
+  it("repairs an orphaned credential row before recreating its wallet", async () => {
+    const state = createTransactionalNwcWalletState()
+    state.credentials.set("missing-wallet", NWC_URI)
+
+    const wallet = await registerNwcWalletAtomically({
+      store: state.store,
+      uri: NWC_URI,
+      listWallets: async () => [...state.wallets.values()],
+      register: async () => {
+        state.wallets.set(NWC_WALLET.id, NWC_WALLET)
+        return NWC_WALLET
+      },
+      ensureDefault: async () => undefined,
+    })
+
+    expect(wallet).toEqual(NWC_WALLET)
+    expect(state.credentials.has("missing-wallet")).toBeFalse()
+    expect(state.credentials.get(NWC_WALLET.id)).toBe(NWC_URI)
+  })
+
+  it("registers a distinct credential as another wallet", async () => {
+    const state = createTransactionalNwcWalletState()
+    state.wallets.set(NWC_WALLET.id, NWC_WALLET)
+    state.credentials.set(NWC_WALLET.id, NWC_URI)
+    const nextWallet = {
+      ...NWC_WALLET,
+      id: "nwc-wallet-2",
+      label: "Blink",
+    }
+
+    const wallet = await registerNwcWalletAtomically({
+      store: state.store,
+      uri: NEXT_NWC_URI,
+      listWallets: async () => [...state.wallets.values()],
+      register: async () => {
+        state.wallets.set(nextWallet.id, nextWallet)
+        return nextWallet
+      },
+      ensureDefault: async () => undefined,
+    })
+
+    expect(wallet).toEqual(nextWallet)
+    expect([...state.wallets.values()]).toHaveLength(2)
+    expect(state.credentials.get(nextWallet.id)).toBe(NEXT_NWC_URI)
+  })
+
+  it("rolls back a new descriptor when credential readback fails", async () => {
+    const state = createTransactionalNwcWalletState()
+    state.returnMissingCredential = true
+
+    await expect(
+      registerNwcWalletAtomically({
+        store: state.store,
+        uri: NWC_URI,
+        listWallets: async () => [...state.wallets.values()],
+        register: async () => {
+          state.wallets.set(NWC_WALLET.id, NWC_WALLET)
+          return NWC_WALLET
+        },
+        ensureDefault: async () => undefined,
+      })
+    ).rejects.toThrow("Connected Wallet credential verification failed.")
+
+    expect([...state.wallets.values()]).toEqual([])
+    expect([...state.credentials.values()]).toEqual([])
+  })
+})
+
 function createTransactionalWalletState() {
   type Recovery = Parameters<typeof serializeStoredSparkWalletRecovery>[0]
   const wallets = new Map<string, WalletDescriptor>()
@@ -236,6 +390,62 @@ function createTransactionalWalletState() {
         return state.returnMissingRecovery
           ? null
           : (recoveries.get(walletId) ?? null)
+      },
+    },
+  }
+  return state
+}
+
+function createTransactionalNwcWalletState() {
+  const wallets = new Map<string, WalletDescriptor>()
+  const credentials = new Map<string, string>()
+  let transactionTail: Promise<void> = Promise.resolve()
+  const state = {
+    wallets,
+    credentials,
+    returnMissingCredential: false,
+    store: {
+      async transaction<T>(operation: () => Promise<T>): Promise<T> {
+        const run = transactionTail.then(async () => {
+          const walletSnapshot = new Map(wallets)
+          const credentialSnapshot = new Map(credentials)
+          try {
+            return await operation()
+          } catch (error) {
+            wallets.clear()
+            credentials.clear()
+            for (const [id, wallet] of walletSnapshot) {
+              wallets.set(id, wallet)
+            }
+            for (const [id, uri] of credentialSnapshot) {
+              credentials.set(id, uri)
+            }
+            throw error
+          }
+        })
+        transactionTail = run.then(
+          () => undefined,
+          () => undefined
+        )
+        return run
+      },
+      async findWalletIdByUri(uri: string): Promise<string | null> {
+        return (
+          [...credentials.entries()].find(
+            ([, storedUri]) => storedUri === uri
+          )?.[0] ?? null
+        )
+      },
+      async putNwcCredential(walletId: string, uri: string): Promise<void> {
+        credentials.set(walletId, uri)
+      },
+      async getNwcCredential(walletId: string): Promise<string | null> {
+        return state.returnMissingCredential
+          ? null
+          : (credentials.get(walletId) ?? null)
+      },
+      async deleteNwcCredential(walletId: string): Promise<void> {
+        credentials.delete(walletId)
       },
     },
   }

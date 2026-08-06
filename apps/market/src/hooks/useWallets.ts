@@ -45,6 +45,7 @@ import {
   getMarketWalletRegistry,
   getMarketWalletStore,
   getSparkRecoveryBinding,
+  registerNwcWalletAtomically,
   registerSparkWalletAtomically,
   type StoredSparkWalletRecovery,
 } from "../lib/wallet-storage"
@@ -438,21 +439,19 @@ export function useWallets(): UseWalletsReturn {
           info,
           getConfiguredWalletNetwork()
         )
-        const connectedWallet = await store.transaction(async () => {
-          const wallet = await registry.add({
-            kind: "connected",
-            providerId: "nwc",
-            label: label?.trim() || info?.alias?.trim() || "Connected wallet",
-            network: registration.network,
-            capabilities: registration.capabilities,
-          })
-          await store.putNwcCredential(wallet.id, uri.trim())
-          const saved = await store.getNwcCredential(wallet.id)
-          if (saved !== uri.trim()) {
-            throw new Error("Connected Wallet credential verification failed.")
-          }
-          await ensureDefault(wallet)
-          return wallet
+        const connectedWallet = await registerNwcWalletAtomically({
+          store,
+          uri,
+          listWallets: () => registry.list(),
+          register: () =>
+            registry.add({
+              kind: "connected",
+              providerId: "nwc",
+              label: label?.trim() || info?.alias?.trim() || "Connected wallet",
+              network: registration.network,
+              capabilities: registration.capabilities,
+            }),
+          ensureDefault,
         })
         const session = getBuyerNwcSession(connectedWallet.id)
         session.setConnection(connection)

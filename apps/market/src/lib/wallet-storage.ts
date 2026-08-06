@@ -64,6 +64,60 @@ export async function registerSparkWalletAtomically(input: {
   })
 }
 
+/**
+ * Registers one logical Connected Wallet per normalized NWC credential.
+ *
+ * The duplicate lookup and credential write share the same IndexedDB write
+ * transaction so concurrent tabs cannot create two wallet descriptors for the
+ * same external wallet connection.
+ */
+export async function registerNwcWalletAtomically(input: {
+  store: NwcCredentialStore
+  uri: string
+  listWallets(): Promise<WalletDescriptor[]>
+  register(): Promise<WalletDescriptor>
+  ensureDefault(wallet: WalletDescriptor): Promise<void>
+}): Promise<WalletDescriptor> {
+  const normalizedUri = input.uri.trim()
+  if (!normalizedUri) {
+    throw new Error("Connected Wallet credential is required.")
+  }
+
+  return input.store.transaction(async () => {
+    const existingWalletId = await input.store.findWalletIdByUri(normalizedUri)
+    if (existingWalletId) {
+      const existingWallet = (await input.listWallets()).find(
+        (wallet) => wallet.id === existingWalletId
+      )
+      if (existingWallet) {
+        if (
+          existingWallet.kind !== "connected" ||
+          existingWallet.providerId !== "nwc"
+        ) {
+          throw new Error("Connected Wallet registration is inconsistent.")
+        }
+        return existingWallet
+      }
+
+      // Repair an orphaned credential row inside this transaction before
+      // recreating its missing public descriptor.
+      await input.store.deleteNwcCredential(existingWalletId)
+    }
+
+    const wallet = await input.register()
+    if (wallet.kind !== "connected" || wallet.providerId !== "nwc") {
+      throw new Error("Connected Wallet registration is invalid.")
+    }
+    await input.store.putNwcCredential(wallet.id, normalizedUri)
+    const saved = await input.store.getNwcCredential(wallet.id)
+    if (saved !== normalizedUri) {
+      throw new Error("Connected Wallet credential verification failed.")
+    }
+    await input.ensureDefault(wallet)
+    return wallet
+  })
+}
+
 export class MarketWalletStore
   implements WalletRegistryStore, NwcCredentialStore
 {
