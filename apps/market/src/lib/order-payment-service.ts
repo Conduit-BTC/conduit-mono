@@ -15,6 +15,7 @@ import {
   normalizePubkey,
   patchOrderLifecycle,
   signNdkEventWithTransientNip07Retry,
+  transitionOrderPrivateFallback,
   validateAnonZapRequestDraft,
   validateLightningInvoiceForPayment,
   waitForZapReceipt,
@@ -1171,48 +1172,13 @@ export async function runOrderPrivateFallback(
   privateFallbackTransitions.add(ctx.orderId)
 
   try {
-    const lifecycle = await getOrderLifecycle(ctx.orderId)
-    const publicZapSigner = lifecycle
-      ? (lifecycle.publicZapSigner ??
-        getOrderPublicZapSigner(lifecycle.checkoutMode))
-      : null
-    if (
-      !lifecycle ||
-      publicZapSigner !== "anon" ||
-      lifecycle.invoiceStatus !== "failed" ||
-      lifecycle.paymentStatus !== "failed"
-    ) {
+    const transition = await transitionOrderPrivateFallback(ctx.orderId)
+    if (transition.status !== "transitioned") {
       throw new Error(
         "A private invoice is only available after a failed anonymous zap attempt."
       )
     }
-
-    const transitioned = await patchAndEmit(ctx.orderId, {
-      checkoutMode: "private_checkout",
-      publicZapSigner: undefined,
-      publicZapFallback: true,
-      zapContent: "",
-      invoiceStatus: "not_requested",
-      paymentStatus: "not_started",
-      proofDeliveryStatus: "not_started",
-      zapReceiptStatus: "not_applicable",
-      invoice: undefined,
-      paymentHash: undefined,
-      preimage: undefined,
-      feeMsats: undefined,
-      zapRequestId: undefined,
-      zapRequestCreatedAt: undefined,
-      zapReceiptId: undefined,
-      zapReceiptRelayUrls: undefined,
-      zapLnurl: undefined,
-      zapReceiptPubkey: undefined,
-      invoiceExpiresAt: undefined,
-      zapReceiptObservationDeadline: undefined,
-      lastError: undefined,
-    })
-    if (!transitioned) {
-      throw new Error("Order payment state is no longer available.")
-    }
+    emit(ctx.orderId, { lifecycle: transition.lifecycle })
   } finally {
     privateFallbackTransitions.delete(ctx.orderId)
   }

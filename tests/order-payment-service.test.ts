@@ -18,19 +18,25 @@ import {
 } from "../apps/market/src/lib/order-payment-service"
 import type { OrderLifecycle } from "../packages/core/src/db"
 import {
-  bolt11PaymentHashField,
   bolt11PlainDescriptionField,
+  bytesToBolt11Words,
   makeBolt11Fixture,
 } from "./support/bolt11-fixture"
 
 const ANON_SIGNER_SECRET = Uint8Array.from([...new Uint8Array(31), 13])
 const ANON_SIGNER_PUBKEY = getPublicKey(ANON_SIGNER_SECRET)
 
-function privateInvoice(amountHrp = "lnbc10n"): string {
+function privateInvoice(amountHrp = "lnbc10n", paymentHashByte = 7): string {
   return makeBolt11Fixture({
     hrp: amountHrp,
     createdAt: Math.floor(Date.now() / 1000),
-    fields: [bolt11PaymentHashField(), bolt11PlainDescriptionField()],
+    fields: [
+      {
+        tag: "p",
+        words: bytesToBolt11Words(new Uint8Array(32).fill(paymentHashByte)),
+      },
+      bolt11PlainDescriptionField(),
+    ],
   })
 }
 
@@ -179,6 +185,21 @@ describe("shopper zap signing authority", () => {
     ).rejects.toThrow("invalid public zap request")
   })
 })
+
+function mockImmediateOrderLifecycleTransaction(): () => void {
+  const database = db as typeof db & {
+    transaction: typeof db.transaction
+  }
+  const originalTransaction = database.transaction
+  database.transaction = (async (
+    _mode: string,
+    _table: unknown,
+    callback: () => Promise<unknown>
+  ) => callback()) as typeof database.transaction
+  return () => {
+    database.transaction = originalTransaction
+  }
+}
 
 describe("runOrderPayment", () => {
   it("only accepts the first private manual-wallet payment report", () => {
@@ -1121,6 +1142,7 @@ describe("runOrderPayment", () => {
     }
     const originalGet = table.get
     const originalPut = table.put
+    const restoreTransaction = mockImmediateOrderLifecycleTransaction()
     const requestedVisibilities: string[] = []
 
     table.get = (async () => stored) as typeof table.get
@@ -1156,6 +1178,83 @@ describe("runOrderPayment", () => {
     } finally {
       table.get = originalGet
       table.put = originalPut
+      restoreTransaction()
+    }
+  })
+
+  it("rotates the wallet attempt when private recovery requests a new invoice", async () => {
+    const orderId = "anon-zap-private-wallet-attempt-rotation"
+    const previousWalletPaymentAttemptId =
+      "11111111-1111-4111-8111-111111111111"
+    const paymentTarget = {
+      type: "wallet" as const,
+      walletId: "wallet-spark",
+      providerId: "spark" as const,
+    }
+    let stored = lifecycle({
+      orderId,
+      checkoutMode: "anonymous_public_zap",
+      publicZapSigner: "anon",
+      paymentTarget,
+      walletPaymentAttemptId: previousWalletPaymentAttemptId,
+      invoice: privateInvoice("lnbc10n", 7),
+      invoiceStatus: "failed",
+      paymentStatus: "failed",
+      lastError: "Anonymous zap payment failed.",
+    })
+    const table = db.orderLifecycles as typeof db.orderLifecycles & {
+      get: typeof db.orderLifecycles.get
+      put: typeof db.orderLifecycles.put
+    }
+    const originalGet = table.get
+    const originalPut = table.put
+    const restoreTransaction = mockImmediateOrderLifecycleTransaction()
+    const walletPaymentAttemptIds: string[] = []
+
+    table.get = (async () => stored) as typeof table.get
+    table.put = (async (next: OrderLifecycle) => {
+      stored = next
+      return next.orderId
+    }) as typeof table.put
+
+    try {
+      const state = await runOrderPrivateFallback(
+        basePaymentContext({
+          orderId,
+          merchantLud16: "merchant@wallet.example",
+          zapMode: "anonymous_public_zap",
+          paymentTarget,
+        }),
+        paymentDependencies({
+          fetchLnurlPayMetadata: async () => lnurlMetadata(),
+          requestCheckoutLnurlInvoice: async () => ({
+            invoice: privateInvoice("lnbc10n", 8),
+            zapRelayUrls: [],
+            shouldWaitForZapReceipt: false,
+          }),
+          payCheckoutInvoice: async (request) => {
+            walletPaymentAttemptIds.push(request.walletPaymentAttemptId ?? "")
+            return {
+              status: "retryable_failure",
+              reason: "Payment declined.",
+            }
+          },
+        })
+      )
+
+      expect(walletPaymentAttemptIds).toHaveLength(1)
+      expect(walletPaymentAttemptIds[0]).not.toBe(
+        previousWalletPaymentAttemptId
+      )
+      expect(walletPaymentAttemptIds[0]).toBeTruthy()
+      expect(state.lifecycle?.checkoutMode).toBe("private_checkout")
+      expect(state.lifecycle?.walletPaymentAttemptId).toBe(
+        walletPaymentAttemptIds[0]
+      )
+    } finally {
+      table.get = originalGet
+      table.put = originalPut
+      restoreTransaction()
     }
   })
 
@@ -1176,6 +1275,7 @@ describe("runOrderPayment", () => {
     }
     const originalGet = table.get
     const originalPut = table.put
+    const restoreTransaction = mockImmediateOrderLifecycleTransaction()
     const requestedVisibilities: string[] = []
 
     table.get = (async () => stored) as typeof table.get
@@ -1209,6 +1309,7 @@ describe("runOrderPayment", () => {
     } finally {
       table.get = originalGet
       table.put = originalPut
+      restoreTransaction()
     }
   })
 

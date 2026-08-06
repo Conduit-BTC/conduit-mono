@@ -296,6 +296,77 @@ export async function claimOrderLifecyclePayment(
   })
 }
 
+export type OrderPrivateFallbackTransitionResult =
+  | { status: "transitioned"; lifecycle: OrderLifecycle }
+  | { status: "missing"; lifecycle: null }
+  | { status: "unsafe_state"; lifecycle: OrderLifecycle }
+
+function canTransitionOrderPrivateFallback(lifecycle: OrderLifecycle): boolean {
+  const publicZapSigner =
+    lifecycle.publicZapSigner ?? getOrderPublicZapSigner(lifecycle.checkoutMode)
+  return (
+    publicZapSigner === "anon" &&
+    lifecycle.orderDeliveryStatus === "sent" &&
+    lifecycle.phase !== "completed" &&
+    lifecycle.phase !== "cancelled" &&
+    lifecycle.invoiceStatus === "failed" &&
+    lifecycle.paymentStatus === "failed"
+  )
+}
+
+/**
+ * Moves one definitely failed anonymous zap into a fresh private-invoice
+ * attempt. The previous wallet idempotency token is discarded because the
+ * private fallback will request a different invoice.
+ */
+export async function transitionOrderPrivateFallback(
+  orderId: string
+): Promise<OrderPrivateFallbackTransitionResult> {
+  return db.transaction("rw", db.orderLifecycles, async () => {
+    const lifecycle = await db.orderLifecycles.get(orderId)
+    if (!lifecycle) {
+      return { status: "missing", lifecycle: null }
+    }
+    if (!canTransitionOrderPrivateFallback(lifecycle)) {
+      return { status: "unsafe_state", lifecycle }
+    }
+
+    const updated: OrderLifecycle = {
+      ...lifecycle,
+      checkoutMode: "private_checkout",
+      publicZapSigner: undefined,
+      publicZapFallback: true,
+      zapContent: "",
+      invoiceStatus: "not_requested",
+      paymentStatus: "not_started",
+      walletPaymentAttemptId: undefined,
+      proofDeliveryStatus: "not_started",
+      zapReceiptStatus: "not_applicable",
+      invoice: undefined,
+      paymentHash: undefined,
+      preimage: undefined,
+      feeMsats: undefined,
+      zapRequestId: undefined,
+      zapRequestCreatedAt: undefined,
+      zapReceiptId: undefined,
+      zapReceiptRelayUrls: undefined,
+      zapLnurl: undefined,
+      zapReceiptPubkey: undefined,
+      invoiceExpiresAt: undefined,
+      zapReceiptObservationDeadline: undefined,
+      lastError: undefined,
+      phase: deriveOrderLifecyclePhase({
+        ...lifecycle,
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+      }),
+      updatedAt: Date.now(),
+    }
+    await db.orderLifecycles.put(updated)
+    return { status: "transitioned", lifecycle: updated }
+  })
+}
+
 export type OrderPaymentTargetReplacementAdmission =
   "replaceable" | "missing" | "unsafe_state"
 
