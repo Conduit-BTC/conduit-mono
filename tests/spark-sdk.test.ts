@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test"
 import {
   FirstPartySparkSdkFactory,
   getDefaultSparkAccountNumber,
+  getSparkConfiguration,
   getSparkConfigurationForNetwork,
   type SparkNativeModule,
   type SparkNativeWallet,
@@ -36,6 +37,39 @@ describe("first-party Spark SDK adapter", () => {
       status: "unavailable",
       reason:
         "Spark Portable Wallets are not supported on testnet by the installed first-party SDK.",
+    })
+  })
+
+  it("fails closed when the browser cannot coordinate Spark sessions", () => {
+    expect(
+      getSparkConfiguration({
+        network: "mainnet",
+        sessionCoordinationAvailable: false,
+      })
+    ).toEqual({
+      status: "unavailable",
+      reason:
+        "This browser cannot safely coordinate Portable Wallet sessions across tabs.",
+    })
+    expect(
+      getSparkConfiguration({
+        network: "regtest",
+        sessionCoordinationAvailable: false,
+      })
+    ).toEqual({
+      status: "unavailable",
+      reason:
+        "This browser cannot safely coordinate Portable Wallet sessions across tabs.",
+    })
+    expect(
+      getSparkConfiguration({
+        network: "signet",
+        sessionCoordinationAvailable: false,
+      })
+    ).toEqual({
+      status: "unavailable",
+      reason:
+        "Spark Portable Wallets are not supported on signet by the installed first-party SDK.",
     })
   })
 

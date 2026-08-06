@@ -5,6 +5,7 @@ import {
   acquireSparkWalletManagerSessionLease,
   acquireSparkWalletSessionLease,
   assertSparkWalletRegistrationSessionAvailable,
+  isSparkWalletSessionCoordinationAvailable,
   runWithSparkWalletOperationLock,
   type SparkWalletOperationLockManager,
   type SparkWalletSessionLockManager,
@@ -31,6 +32,14 @@ class MemoryLockManager implements SparkWalletSessionLockManager {
 }
 
 describe("Spark wallet session lease", () => {
+  it("reports whether the current environment requires and provides cross-tab coordination", () => {
+    expect(isSparkWalletSessionCoordinationAvailable(null, true)).toBeFalse()
+    expect(isSparkWalletSessionCoordinationAvailable(null, false)).toBeTrue()
+    expect(
+      isSparkWalletSessionCoordinationAvailable(new MemoryLockManager(), true)
+    ).toBeTrue()
+  })
+
   it("excludes the same wallet session while keeping other wallets isolated", async () => {
     const locks = new MemoryLockManager()
     const primary = await acquireSparkWalletSessionLease(

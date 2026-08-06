@@ -223,7 +223,9 @@ function WalletsPage() {
                 role="status"
                 className="rounded-2xl border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_9%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]"
               >
-                <p className="font-medium">Spark wallet setup is unavailable</p>
+                <p className="font-medium">
+                  Spark Portable Wallets are unavailable
+                </p>
                 <p className="mt-1">{wallets.sparkAvailability.reason}</p>
               </div>
             ) : null}
@@ -238,6 +240,9 @@ function WalletsPage() {
                   wallets={wallets.portableWallets}
                   runtime={wallets.runtime}
                   nwcSnapshots={wallets.nwcSnapshots}
+                  providerActionsDisabled={
+                    wallets.sparkAvailability.status !== "ready"
+                  }
                   formatSats={formatSats}
                   onDefault={wallets.setDefaultPaymentWallet}
                   onRefresh={wallets.refreshBalance}
@@ -416,6 +421,7 @@ function WalletSection({
   wallets,
   runtime,
   nwcSnapshots,
+  providerActionsDisabled = false,
   formatSats,
   onDefault,
   onRefresh,
@@ -434,6 +440,7 @@ function WalletSection({
   wallets: WalletDescriptor[]
   runtime: Record<string, WalletRuntimeState>
   nwcSnapshots: Record<string, NwcSessionSnapshot>
+  providerActionsDisabled?: boolean
   formatSats: (sats: number) => string
   onDefault: (walletId: string) => Promise<void>
   onRefresh: (walletId: string) => Promise<void>
@@ -482,6 +489,7 @@ function WalletSection({
                 displayLabel={displayLabels.get(wallet.id) ?? wallet.label}
                 runtime={runtime[wallet.id] ?? lockedRuntime()}
                 nwcSnapshot={nwcSnapshots[wallet.id]}
+                providerActionsDisabled={providerActionsDisabled}
                 formatSats={formatSats}
                 onDefault={onDefault}
                 onRefresh={onRefresh}
@@ -527,6 +535,7 @@ function WalletRow({
   displayLabel,
   runtime,
   nwcSnapshot,
+  providerActionsDisabled,
   formatSats,
   onDefault,
   onRefresh,
@@ -542,6 +551,7 @@ function WalletRow({
   displayLabel: string
   runtime: WalletRuntimeState
   nwcSnapshot?: NwcSessionSnapshot
+  providerActionsDisabled: boolean
   formatSats: (sats: number) => string
   onDefault: (walletId: string) => Promise<void>
   onRefresh: (walletId: string) => Promise<void>
@@ -567,6 +577,8 @@ function WalletRow({
     wallet.providerId === "nwc"
       ? getWalletCapabilityPills(nwcSnapshot?.info)
       : []
+  const sparkActionsDisabled =
+    wallet.providerId === "spark" && providerActionsDisabled
 
   const run = async (
     actionName: Exclude<typeof pendingAction, null>,
@@ -631,7 +643,7 @@ function WalletRow({
             <Button
               size="sm"
               variant="outline"
-              disabled={pending}
+              disabled={pending || sparkActionsDisabled}
               aria-busy={pendingAction === "make-default"}
               onClick={() =>
                 void run("make-default", () => onDefault(wallet.id))
@@ -652,7 +664,7 @@ function WalletRow({
               <Button
                 size="sm"
                 variant="outline"
-                disabled={pending}
+                disabled={pending || sparkActionsDisabled}
                 onClick={(event) => onUnlock(wallet, event.currentTarget)}
               >
                 <Lock className="h-3.5 w-3.5" />
@@ -664,7 +676,7 @@ function WalletRow({
               <Button
                 size="sm"
                 variant="outline"
-                disabled={pending}
+                disabled={pending || sparkActionsDisabled}
                 onClick={(event) => onReceive(wallet, event.currentTarget)}
               >
                 <ArrowDownToLine className="h-3.5 w-3.5" />
@@ -673,7 +685,7 @@ function WalletRow({
               <Button
                 size="sm"
                 variant="outline"
-                disabled={pending}
+                disabled={pending || sparkActionsDisabled}
                 onClick={(event) => onSend(wallet, event.currentTarget)}
               >
                 <ArrowUpFromLine className="h-3.5 w-3.5" />
@@ -682,7 +694,7 @@ function WalletRow({
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={pending}
+                disabled={pending || sparkActionsDisabled}
                 onClick={(event) => onHistory(wallet, event.currentTarget)}
               >
                 <History className="h-3.5 w-3.5" />
@@ -691,7 +703,7 @@ function WalletRow({
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={pending}
+                disabled={pending || sparkActionsDisabled}
                 aria-busy={pendingAction === "lock"}
                 onClick={() => void run("lock", () => onLock(wallet.id))}
               >
@@ -721,7 +733,7 @@ function WalletRow({
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={pending}
+                disabled={pending || sparkActionsDisabled}
                 aria-busy={pendingAction === "refresh"}
                 aria-label={
                   runtime.status === "ready"
@@ -741,7 +753,7 @@ function WalletRow({
           <Button
             size="sm"
             variant="ghost"
-            disabled={pending}
+            disabled={pending || sparkActionsDisabled}
             onClick={(event) => onRemove(wallet, event.currentTarget)}
           >
             {wallet.kind === "portable" ? (
