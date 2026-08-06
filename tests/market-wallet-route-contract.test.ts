@@ -44,7 +44,7 @@ describe("Market wallet route contracts", () => {
     expect(hook.match(/afterOpen: \(\) =>/g)).toHaveLength(1)
     expect(hook.match(/onValidated: notifyWalletsChanged/g)).toHaveLength(1)
     expect(hook).toMatch(
-      /requestedWallet\.providerId === "spark"[\s\S]{0,180}runWithSparkWalletOperationLock/
+      /requestedWallet\.providerId === "spark"[\s\S]{0,180}runSparkWalletRemoval/
     )
     expect(hook).toMatch(
       /await cleanupSparkWalletState\(\{[\s\S]{0,500}await store\.transaction/
@@ -280,6 +280,22 @@ describe("Market wallet route contracts", () => {
       /role="alert"[\s\S]{0,240}text-\[var\(--text-secondary\)\]/
     )
     expect(content).not.toContain("setPaymentTargetSelection(null)")
+  })
+
+  it("keeps local Spark removal available when provider actions are unavailable", async () => {
+    const hook = await readFile("apps/market/src/hooks/useWallets.ts", "utf8")
+    const wallet = await readFile("apps/market/src/routes/wallet.tsx", "utf8")
+
+    expect(hook).toContain("runSparkWalletRemoval")
+    expect(hook).toContain('mode === "local-only"')
+    expect(hook).toContain("assertLocalSparkWalletRemovalSafe")
+    expect(hook).toContain("isSparkWalletManagerInitialized")
+    expect(wallet).toMatch(
+      /disabled=\{pending\}\s+onClick=\{\(event\) => onRemove\(wallet, event\.currentTarget\)\}/
+    )
+    expect(wallet).toContain(
+      "This removes the wallet registration and encrypted recovery copy from this browser."
+    )
   })
 
   it("keeps multi-wallet controls accessible on narrow screens and failure states", async () => {

@@ -16,6 +16,7 @@ import {
   getDefaultSparkAccountNumber,
   getSparkConfiguration,
   getSparkWalletManager,
+  isSparkWalletManagerInitialized,
 } from "../lib/spark-sdk"
 import type {
   SparkPaymentSummary,
@@ -32,10 +33,12 @@ import {
   normalizeSparkMnemonic,
 } from "../lib/spark-recovery"
 import {
+  assertLocalSparkWalletRemovalSafe,
   cleanupSparkWalletState,
   openRegisteredSparkWallet,
+  runSparkWalletRemoval,
+  type SparkWalletRemovalMode,
 } from "../lib/spark-wallet-lifecycle"
-import { runWithSparkWalletOperationLock } from "../lib/spark-wallet-lease"
 import {
   getNwcWalletRegistrationDetails,
   migrateLegacyNwcWallet,
@@ -782,7 +785,9 @@ export function useWallets(): UseWalletsReturn {
         return
       }
 
-      const removeCurrentRegistration = async (): Promise<boolean> => {
+      const removeCurrentRegistration = async (
+        mode: SparkWalletRemovalMode = "coordinated"
+      ): Promise<boolean> => {
         const wallet = (await registry.list()).find(
           (candidate) => candidate.id === walletId
         )
@@ -792,10 +797,16 @@ export function useWallets(): UseWalletsReturn {
           wallet.createdAt !== requestedWallet.createdAt
         ) {
           if (!wallet && requestedWallet.providerId === "spark") {
-            await cleanupSparkWalletState({
-              walletId,
-              manager: getSparkWalletManager(),
-            })
+            if (mode === "local-only") {
+              await assertLocalSparkWalletRemovalSafe({
+                managerInitialized: isSparkWalletManagerInitialized(),
+              })
+            } else {
+              await cleanupSparkWalletState({
+                walletId,
+                manager: getSparkWalletManager(),
+              })
+            }
           }
           return false
         }
@@ -805,10 +816,16 @@ export function useWallets(): UseWalletsReturn {
           )
         }
         if (wallet.providerId === "spark") {
-          await cleanupSparkWalletState({
-            walletId: wallet.id,
-            manager: getSparkWalletManager(),
-          })
+          if (mode === "local-only") {
+            await assertLocalSparkWalletRemovalSafe({
+              managerInitialized: isSparkWalletManagerInitialized(),
+            })
+          } else {
+            await cleanupSparkWalletState({
+              walletId: wallet.id,
+              manager: getSparkWalletManager(),
+            })
+          }
         } else if (wallet.providerId === "nwc") {
           closeBuyerNwcSession(wallet.id)
         }
@@ -831,10 +848,10 @@ export function useWallets(): UseWalletsReturn {
 
       const removed =
         requestedWallet.providerId === "spark"
-          ? await runWithSparkWalletOperationLock(
+          ? await runSparkWalletRemoval({
               walletId,
-              removeCurrentRegistration
-            )
+              remove: removeCurrentRegistration,
+            })
           : await removeCurrentRegistration()
       if (removed) {
         await finalizeWalletMutation()

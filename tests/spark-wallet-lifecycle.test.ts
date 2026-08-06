@@ -3,8 +3,10 @@ import { describe, expect, it } from "bun:test"
 import type { WalletDescriptor } from "@conduit/core"
 
 import {
+  assertLocalSparkWalletRemovalSafe,
   cleanupSparkWalletState,
   openRegisteredSparkWallet,
+  runSparkWalletRemoval,
   type SparkWalletOperationRunner,
 } from "../apps/market/src/lib/spark-wallet-lifecycle"
 import {
@@ -32,6 +34,58 @@ const WALLET: WalletDescriptor = {
 }
 
 describe("Spark wallet lifecycle coordination", () => {
+  it("allows local-only removal when this page has no Spark manager", async () => {
+    await expect(
+      assertLocalSparkWalletRemovalSafe({ managerInitialized: false })
+    ).resolves.toBeUndefined()
+  })
+
+  it("requires a reload whenever this page has initialized Spark", async () => {
+    await expect(
+      assertLocalSparkWalletRemovalSafe({ managerInitialized: true })
+    ).rejects.toThrow("Reload this page before removing")
+  })
+
+  it("uses local-only removal when cross-tab coordination is unavailable", async () => {
+    const modes: string[] = []
+    let lockCalls = 0
+
+    const result = await runSparkWalletRemoval({
+      walletId: WALLET.id,
+      sessionCoordinationAvailable: false,
+      runExclusive: async () => {
+        lockCalls += 1
+        throw new Error("cross-tab lock should not be requested")
+      },
+      remove: async (mode) => {
+        modes.push(mode)
+        return "removed"
+      },
+    })
+
+    expect(result).toBe("removed")
+    expect(lockCalls).toBe(0)
+    expect(modes).toEqual(["local-only"])
+  })
+
+  it("keeps coordinated removal inside the wallet operation lock", async () => {
+    const calls: string[] = []
+
+    await runSparkWalletRemoval({
+      walletId: WALLET.id,
+      sessionCoordinationAvailable: true,
+      runExclusive: async (walletId, operation) => {
+        calls.push(`lock:${walletId}`)
+        return operation()
+      },
+      remove: async (mode) => {
+        calls.push(`remove:${mode}`)
+      },
+    })
+
+    expect(calls).toEqual([`lock:${WALLET.id}`, "remove:coordinated"])
+  })
+
   it("keeps removal queued through a delayed password unlock", async () => {
     const operations = new SerializedWalletOperations()
     const password = deferred<{

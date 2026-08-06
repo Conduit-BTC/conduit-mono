@@ -1176,6 +1176,11 @@ export function getSparkWalletManager(): SparkWalletManager | null {
   return sparkWalletManager
 }
 
+/** Report local manager state without initializing Spark. */
+export function isSparkWalletManagerInitialized(): boolean {
+  return sparkWalletManager !== null
+}
+
 export async function payInvoiceWithSparkWallet(
   walletId: string,
   input: SparkPayInvoiceInput
