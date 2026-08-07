@@ -8,6 +8,12 @@ import {
   type ProductDraftTarget,
 } from "../apps/merchant/src/lib/productDraft"
 import type { MerchantProductFormValues } from "../apps/merchant/src/lib/productForm"
+import {
+  createProductVariationAxis,
+  createEmptyProductVariationForm,
+  generateProductVariationRows,
+  updateProductVariationOverride,
+} from "../apps/merchant/src/lib/productVariations"
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>()
@@ -69,6 +75,7 @@ function form(
     summary: "A local-first relay appliance",
     price: "25",
     stock: "12",
+    variations: createEmptyProductVariationForm(),
     currency: "USD",
     format: "physical",
     shippingPricingMode: "fixed",
@@ -124,6 +131,30 @@ describe("merchant product drafts", () => {
 
     expect(clearProductDraft(draftTarget, storage)).toBe(true)
     expect(loadProductDraft(draftTarget, storage).draft).toBeNull()
+  })
+
+  it("round-trips constrained variation options and overrides", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const generated = generateProductVariationRows({
+      ...createEmptyProductVariationForm(),
+      enabled: true,
+      axes: [createProductVariationAxis("size", "S, M, L, XL")],
+    })
+    const medium = generated.rows.find((row) => row.identity === "size:m")
+    if (!medium) throw new Error("Expected M row")
+    const variations = updateProductVariationOverride(
+      updateProductVariationOverride(generated, medium.identity, "price", "30"),
+      medium.identity,
+      "stock",
+      "4"
+    )
+    const values = form({ variations })
+
+    expect(saveProductDraft(draftTarget, values, storage)).toBe(true)
+    expect(loadProductDraft(draftTarget, storage).draft?.variations).toEqual(
+      variations
+    )
   })
 
   it("migrates legacy blank shipping drafts to explicit coordination", () => {
@@ -200,6 +231,29 @@ describe("merchant product drafts", () => {
       title: "Pocket Relay",
       stock: "",
     })
+  })
+
+  it("adds disabled product options to version 3 drafts", () => {
+    const storage = new MemoryStorage()
+    const draftTarget = target()
+    const storageKey = getProductDraftStorageKey(draftTarget)
+    if (!storageKey) throw new Error("Expected a product draft storage key")
+    const storedForm: Record<string, unknown> = { ...form() }
+    delete storedForm.variations
+
+    storage.setItem(
+      storageKey,
+      JSON.stringify({
+        version: 3,
+        baseEventId: null,
+        savedAt: Date.now(),
+        form: storedForm,
+      })
+    )
+
+    expect(loadProductDraft(draftTarget, storage).draft?.variations).toEqual(
+      createEmptyProductVariationForm()
+    )
   })
 
   it("does not restore an edit draft after the source event changes", () => {

@@ -6,6 +6,11 @@ export type EventId = string
 export type Signature = string
 
 // Product types
+export interface ProductSpecification {
+  key: string
+  value: string
+}
+
 export interface Product {
   id: string
   pubkey: Pubkey
@@ -20,6 +25,10 @@ export interface Product {
     normalizedCurrency: string
   }
   type: "simple" | "variable" | "variation"
+  /** Full kind-30402 coordinate of this variation's variable parent. */
+  parentProductId?: string
+  /** GammaMarkets `spec` tags preserved in signed-event order. */
+  specifications: ProductSpecification[]
   /** Whether the product requires physical shipping. Defaults to "physical". */
   format: "physical" | "digital"
   /** Per-item shipping cost in sats. Omitted means shipping is coordinated manually. */
@@ -88,6 +97,8 @@ export interface Order {
 
 export interface OrderItem {
   productId: string
+  familyProductId?: string
+  selectedSpecifications?: ProductSpecification[]
   format: "physical" | "digital"
   quantity: number
   priceAtPurchase: number

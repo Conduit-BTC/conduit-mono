@@ -3,6 +3,7 @@ import { EVENT_KINDS, type CommerceProductRecord } from "@conduit/core"
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   buildOrderStockAdjustments,
+  getProductFamilyStockDisplay,
   getProductStockDisplay,
   getProductStockInputError,
   isPlainStockInput,
@@ -100,6 +101,25 @@ describe("merchant product stock", () => {
       label: "6 in stock",
       variant: "success",
     })
+    expect(
+      getProductFamilyStockDisplay({
+        tracking: "tracked",
+        availability: "available",
+        totalStock: 8,
+      })
+    ).toEqual({ label: "8 in stock", variant: "success" })
+    expect(
+      getProductFamilyStockDisplay({
+        tracking: "partial",
+        availability: "available",
+      })
+    ).toEqual({ label: "Partially tracked", variant: "warning" })
+    expect(
+      getProductFamilyStockDisplay({
+        tracking: "untracked",
+        availability: "unavailable",
+      })
+    ).toEqual({ label: "No purchasable variants", variant: "error" })
   })
 
   it("groups repeated order lines and calculates a non-negative decrement", () => {
@@ -130,6 +150,36 @@ describe("merchant product stock", () => {
       productRecords: [record],
     })[0]
     expect(oversold).toMatchObject({ nextStock: 0, shortfall: 3 })
+  })
+
+  it("decrements the exact variation child selected by the order", () => {
+    const parentId = `30402:${"a".repeat(64)}:shirt`
+    const variation = productRecord({
+      id: `30402:${"a".repeat(64)}:shirt-large-blue`,
+      type: "variation",
+      parentProductId: parentId,
+      specifications: [
+        { key: "size", value: "Large" },
+        { key: "color", value: "Blue" },
+      ],
+      stock: 3,
+    })
+    variation.addressId = variation.product.id
+    variation.dTag = "shirt-large-blue"
+
+    const adjustment = buildOrderStockAdjustments({
+      orderId: "order-variation",
+      merchantPubkey: variation.product.pubkey,
+      items: [{ productId: variation.addressId, quantity: 2 }],
+      productRecords: [variation],
+    })[0]
+
+    expect(adjustment).toMatchObject({
+      addressId: variation.addressId,
+      quantity: 2,
+      currentStock: 3,
+      nextStock: 1,
+    })
   })
 
   it("does not prompt for untracked, sold-out, foreign, or variable listings", () => {

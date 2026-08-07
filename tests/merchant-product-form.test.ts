@@ -18,6 +18,11 @@ import {
   type MerchantProductFormValues,
   type ProductPublishFormValues,
 } from "../apps/merchant/src/lib/productForm"
+import {
+  createProductVariationAxis,
+  createEmptyProductVariationForm,
+  generateProductVariationRows,
+} from "../apps/merchant/src/lib/productVariations"
 
 function form(
   overrides: Partial<ProductPublishFormValues> = {}
@@ -174,6 +179,30 @@ describe("merchant product form validation", () => {
       validate(form({ stock: String(Number.MAX_SAFE_INTEGER + 1) })).errors
         .stock
     ).toBe("Stock must be a non-negative safe integer.")
+  })
+
+  it("requires complete, valid variation options before publishing", () => {
+    const missingOptions = validate(
+      form({
+        variations: {
+          ...createEmptyProductVariationForm(),
+          enabled: true,
+        },
+      })
+    )
+    const validOptions = validate(
+      form({
+        variations: generateProductVariationRows({
+          ...createEmptyProductVariationForm(),
+          enabled: true,
+          axes: [createProductVariationAxis("size", "S, M, L, XL")],
+        }),
+      })
+    )
+
+    expect(missingOptions.canPublish).toBe(false)
+    expect(missingOptions.errors.variations).toContain("at least one")
+    expect(validOptions.canPublish).toBe(true)
   })
 
   it("canonicalizes and dedupes tags case-insensitively", () => {

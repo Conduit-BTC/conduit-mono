@@ -124,6 +124,7 @@ describeIfRelay("merchant products CRUD (relay smoke)", () => {
       price: 12.34,
       currency: "USD",
       type: "simple",
+      specifications: [],
       format: "physical",
       visibility: "public",
       stock: 12,

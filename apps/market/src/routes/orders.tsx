@@ -498,6 +498,16 @@ function OrderItemsSection({
                   <div className="text-[var(--text-primary)]">
                     {product?.title ?? item.displayTitle}
                   </div>
+                  {(item.selectedSpecifications?.length ?? 0) > 0 ? (
+                    <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
+                      {item.selectedSpecifications
+                        ?.map(
+                          (specification) =>
+                            `${specification.key}: ${specification.value}`
+                        )
+                        .join(" · ")}
+                    </div>
+                  ) : null}
                   <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
                     Qty {item.quantity}
                   </div>

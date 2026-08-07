@@ -40,8 +40,6 @@ import {
   pubkeyToNpub,
   recordBrowserTelemetryEvent,
   useAuth,
-  type PricingRateInput,
-  type Product,
 } from "@conduit/core"
 import { SignerSwitch } from "../../components/SignerSwitch"
 import { RichProfileText } from "../../components/RichProfileText"
@@ -60,17 +58,17 @@ import { ProfileBanner } from "../../components/ProfileBanner"
 import { useShopperPricing } from "../../hooks/useShopperPricing"
 import { useCart } from "../../hooks/useCart"
 import { useMerchantTrustContext } from "../../hooks/useMerchantTrustContext"
-import {
-  compareCommercePrices,
-  getComparablePriceValue,
-} from "../../lib/pricing"
 import { useProgressiveProducts } from "../../hooks/useProgressiveProducts"
-import { createCartItemFromProduct } from "../../lib/cart-model"
 import {
   filterProductsByFacets,
   getCategoryFacetOptions,
   normalizeFacetValues,
 } from "../../lib/facets"
+import { cartItemInputFromProductSelection } from "../../lib/productVariations"
+import {
+  hasUnavailablePriceForBrowseSort,
+  sortBrowseProducts,
+} from "../../lib/marketBrowseModel"
 import {
   createStorefrontFollowState,
   isStorefrontFollowScopeEqual,
@@ -79,10 +77,6 @@ import {
 
 type SortOption = "newest" | "price_asc" | "price_desc"
 type CategoryFacetOption = ReturnType<typeof getCategoryFacetOptions>[number]
-
-function isPriceSort(sort: SortOption | undefined): boolean {
-  return sort === "price_asc" || sort === "price_desc"
-}
 
 type StoreSearch = {
   q?: string
@@ -106,30 +100,6 @@ export const Route = createFileRoute("/store/$pubkey")({
     }
   },
 })
-
-function sortProducts(
-  products: Product[],
-  sort: SortOption | undefined,
-  btcUsdRate: PricingRateInput
-): Product[] {
-  switch (sort) {
-    case "price_asc":
-      return [...products].sort(
-        (a, b) =>
-          compareCommercePrices(a, b, btcUsdRate, "asc") ||
-          b.createdAt - a.createdAt
-      )
-    case "price_desc":
-      return [...products].sort(
-        (a, b) =>
-          compareCommercePrices(a, b, btcUsdRate, "desc") ||
-          b.createdAt - a.createdAt
-      )
-    case "newest":
-    default:
-      return [...products].sort((a, b) => b.createdAt - a.createdAt)
-  }
-}
 
 function CategoryFacetButton({
   option,
@@ -306,15 +276,33 @@ function StorefrontPage() {
   }, [search.q, selectedTags, storeProducts])
 
   const hasUnavailablePriceForSort = useMemo(() => {
-    if (!isPriceSort(search.sort)) return false
-    return matchingProducts.some(
-      (product) => getComparablePriceValue(product, btcUsdRate) === null
+    return hasUnavailablePriceForBrowseSort(
+      matchingProducts,
+      search.sort,
+      btcUsdRate,
+      productsQuery.familiesByProductId
     )
-  }, [btcUsdRate, matchingProducts, search.sort])
+  }, [
+    btcUsdRate,
+    matchingProducts,
+    productsQuery.familiesByProductId,
+    search.sort,
+  ])
 
   const filteredProducts = useMemo(
-    () => sortProducts(matchingProducts, search.sort, btcUsdRate),
-    [btcUsdRate, matchingProducts, search.sort]
+    () =>
+      sortBrowseProducts(
+        matchingProducts,
+        search.sort,
+        btcUsdRate,
+        productsQuery.familiesByProductId
+      ),
+    [
+      btcUsdRate,
+      matchingProducts,
+      productsQuery.familiesByProductId,
+      search.sort,
+    ]
   )
 
   useEffect(() => {
@@ -779,9 +767,9 @@ function StorefrontPage() {
           </div>
 
           {productsQuery.isInitialLoading && (
-            <ul className="mt-4 grid min-w-0 max-w-full auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+            <ul className="mt-4 grid min-w-0 max-w-full items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
               {Array.from({ length: 6 }).map((_, index) => (
-                <li key={index} className="h-full">
+                <li key={index}>
                   <ProductGridCardSkeleton />
                 </li>
               ))}
@@ -826,36 +814,56 @@ function StorefrontPage() {
             )}
 
           {filteredProducts.length > 0 && (
-            <ul className="mt-4 grid min-w-0 max-w-full auto-rows-fr list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
+            <ul className="mt-4 grid min-w-0 max-w-full items-start list-none grid-cols-2 gap-3 p-0 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
               {filteredProducts.map((product, index) => (
-                <li key={product.id} className="h-full">
+                <li key={product.id}>
                   <ProductGridCard
                     product={product}
+                    family={productsQuery.familiesByProductId[product.id]}
+                    familyHydrating={productsQuery.isHydrating}
                     merchantName={merchantName}
                     merchantNamePending={merchantIdentityPending}
                     imageLoading={index < 4 ? "eager" : "lazy"}
                     btcUsdRate={btcUsdRate}
                     pricePreference={shopperPricing.preference}
-                    cartQuantity={
-                      cart.items.find((item) => item.productId === product.id)
-                        ?.quantity ?? 0
+                    getCartQuantity={(selectedProduct) =>
+                      cart.items.find(
+                        (item) =>
+                          item.merchantPubkey === selectedProduct.pubkey &&
+                          item.productId === selectedProduct.id
+                      )?.quantity ?? 0
                     }
-                    onAddToCart={() =>
-                      cart.addItem(createCartItemFromProduct(product))
+                    onAddToCart={(selectedProduct) =>
+                      cart.addItem(
+                        cartItemInputFromProductSelection(
+                          product,
+                          selectedProduct
+                        )
+                      )
                     }
-                    onIncrement={() =>
-                      cart.addItem(createCartItemFromProduct(product))
+                    onIncrement={(selectedProduct) =>
+                      cart.addItem(
+                        cartItemInputFromProductSelection(
+                          product,
+                          selectedProduct
+                        )
+                      )
                     }
-                    onDecrement={() => {
+                    onDecrement={(selectedProduct) => {
                       const existing = cart.items.find(
-                        (item) => item.productId === product.id
+                        (item) =>
+                          item.merchantPubkey === selectedProduct.pubkey &&
+                          item.productId === selectedProduct.id
                       )
                       if (!existing) return
                       if (existing.quantity <= 1) {
-                        cart.removeItem(product.id)
+                        cart.removeItem(selectedProduct.id)
                         return
                       }
-                      cart.setQuantity(product.id, existing.quantity - 1)
+                      cart.setQuantity(
+                        selectedProduct.id,
+                        existing.quantity - 1
+                      )
                     }}
                   />
                 </li>

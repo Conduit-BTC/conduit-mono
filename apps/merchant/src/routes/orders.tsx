@@ -7,12 +7,12 @@ import {
   convertCommerceAmountToSats,
   decodeLightningInvoiceAmount,
   formatNpub,
+  getAtomicProductDetail,
   getCachedMerchantConversationList,
   getCurrencyAmountStep,
   getLightningNetworkMismatchMessage,
   getMerchantConversationList,
   getMerchantOrderActions,
-  getProductDetail,
   getProductImageCandidates,
   getProductsByIds,
   hasWebLN,
@@ -331,6 +331,8 @@ function OrderItemsCard({
 }: {
   items: Array<{
     productId: string
+    familyProductId?: string
+    selectedSpecifications?: Array<{ key: string; value: string }>
     title?: string
     quantity: number
     priceAtPurchase: number
@@ -376,6 +378,16 @@ function OrderItemsCard({
                 </div>
                 <div className="min-w-0">
                   <div className="text-[var(--text-primary)]">{title}</div>
+                  {(item.selectedSpecifications?.length ?? 0) > 0 ? (
+                    <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
+                      {item.selectedSpecifications
+                        ?.map(
+                          (specification) =>
+                            `${specification.key}: ${specification.value}`
+                        )
+                        .join(" · ")}
+                    </div>
+                  ) : null}
                   <div className="mt-0.5 text-xs text-[var(--text-secondary)]">
                     Qty {item.quantity}
                   </div>
@@ -990,7 +1002,7 @@ function OrdersPage() {
         }
       }
 
-      const latest = await getProductDetail({
+      const latest = await getAtomicProductDetail({
         productId: payload.adjustment.addressId,
         includeMarketHidden: true,
       })
@@ -1006,9 +1018,12 @@ function OrdersPage() {
           "The current merchant listing could not be verified. Refresh orders and try again."
         )
       }
-      if (record.product.type !== "simple") {
+      if (
+        record.product.type !== "simple" &&
+        record.product.type !== "variation"
+      ) {
         throw new Error(
-          "Automatic stock updates are not available for variable listings yet."
+          "Automatic stock updates require a purchasable product listing."
         )
       }
       if (record.eventId !== payload.adjustment.sourceEventId) {

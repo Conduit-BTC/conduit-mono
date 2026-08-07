@@ -104,6 +104,13 @@ export function useMarketBrowseModel({
     () => globalSearchQuery.data?.data.map((record) => record.product) ?? [],
     [globalSearchQuery.data]
   )
+  const familiesByProductId = useMemo(() => {
+    const families = { ...productsQuery.familiesByProductId }
+    for (const record of globalSearchQuery.data?.data ?? []) {
+      if (record.family) families[record.product.id] = record.family
+    }
+    return families
+  }, [globalSearchQuery.data, productsQuery.familiesByProductId])
   const productData = useMemo(
     () =>
       globalSearchEnabled
@@ -148,13 +155,20 @@ export function useMarketBrowseModel({
       hasUnavailablePriceForBrowseSort(
         filteredProducts,
         search.sort,
-        btcUsdRate
+        btcUsdRate,
+        familiesByProductId
       ),
-    [btcUsdRate, filteredProducts, search.sort]
+    [btcUsdRate, familiesByProductId, filteredProducts, search.sort]
   )
   const filtered = useMemo(
-    () => sortBrowseProducts(filteredProducts, search.sort, btcUsdRate),
-    [btcUsdRate, filteredProducts, search.sort]
+    () =>
+      sortBrowseProducts(
+        filteredProducts,
+        search.sort,
+        btcUsdRate,
+        familiesByProductId
+      ),
+    [btcUsdRate, familiesByProductId, filteredProducts, search.sort]
   )
   const visibleProducts = useMemo(
     () => filtered.slice(0, visibleCount),
@@ -225,9 +239,10 @@ export function useMarketBrowseModel({
     () =>
       visibleProducts.map((product) => ({
         product,
+        family: familiesByProductId[product.id],
         merchant: getMerchantIdentity(product.pubkey),
       })),
-    [getMerchantIdentity, visibleProducts]
+    [familiesByProductId, getMerchantIdentity, visibleProducts]
   )
   const searchKey = useMemo(
     () =>
