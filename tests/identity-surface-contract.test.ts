@@ -120,4 +120,29 @@ describe("identity surface contracts", () => {
     expect(store).toContain("Nip05TrustIndicator")
     expect(store).toContain("<MerchantTrustSummary trust={merchantTrust} />")
   })
+
+  it("derives merchant trust only from the authenticated Conduit session", async () => {
+    const trustHook = await readFile(
+      "apps/market/src/hooks/useMerchantTrustContext.ts",
+      "utf8"
+    )
+    const store = await readFile(
+      "apps/market/src/routes/store/$pubkey.tsx",
+      "utf8"
+    )
+    const checkout = await readFile(
+      "apps/market/src/routes/checkout.tsx",
+      "utf8"
+    )
+    const marketRoot = await readFile("apps/market/src/main.tsx", "utf8")
+
+    expect(trustHook).toContain("useConduitSession")
+    expect(trustHook).toContain('session.mode === "signed_in"')
+    expect(trustHook).not.toContain("viewerPubkey?: string | null")
+    expect(store).not.toContain("merchantPubkey: pubkey,\n    viewerPubkey,")
+    expect(store).toContain("storefrontFollowReducer")
+    expect(store).toContain('type: "scope_changed"')
+    expect(checkout).not.toContain("viewerPubkey: signedBuyerPubkey")
+    expect(marketRoot).not.toContain('root === "merchant-trust-social"')
+  })
 })

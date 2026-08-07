@@ -12,6 +12,7 @@ import {
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
+const merchantTrustHarnessUrl = "/src/test-fixtures/merchant-trust-harness.tsx"
 
 async function openMarketSignerDialog(page: Page): Promise<void> {
   await page.goto(`${marketUrl}/products`)
@@ -92,6 +93,64 @@ test("market getRelays failure does not block signer connect", async ({
       timeout: 10_000,
     })
     .toBe(TEST_BUYER_PUBKEY)
+})
+
+test("market trust ignores a remembered viewer until auth is connected", async ({
+  page,
+}) => {
+  await seedStoredAuth(page, TEST_BUYER_PUBKEY)
+  await installLockedTestSigner(page)
+  await page.goto(`${marketUrl}/products`)
+
+  await page.evaluate(
+    async ({ harnessUrl, viewerPubkey, merchantPubkey }) => {
+      const container = document.createElement("div")
+      container.id = "merchant-trust-harness"
+      document.body.append(container)
+      const { mountMerchantTrustHarness } = (await import(harnessUrl)) as {
+        mountMerchantTrustHarness: (
+          element: HTMLElement,
+          staleViewerPubkey: string,
+          merchantPubkey: string
+        ) => void
+      }
+      mountMerchantTrustHarness(container, viewerPubkey, merchantPubkey)
+    },
+    {
+      harnessUrl: merchantTrustHarnessUrl,
+      viewerPubkey: TEST_BUYER_PUBKEY,
+      merchantPubkey: TEST_MERCHANT_PUBKEY,
+    }
+  )
+
+  const probe = page.getByTestId("merchant-trust-probe")
+  await expect(probe).toHaveAttribute("data-social-state", "disconnected")
+  await expect(probe).toHaveAttribute("data-mutual-count", "none")
+  await expect(probe).toHaveAttribute("data-viewer-follows", "null")
+})
+
+test("market signer authority storage failure remains retryable", async ({
+  page,
+}) => {
+  await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
+  await page.addInitScript(() => {
+    const setItem = Storage.prototype.setItem
+    Storage.prototype.setItem = function (key: string, value: string): void {
+      if (key === "conduit:auth:revision") return
+      setItem.call(this, key, value)
+    }
+  })
+  await openMarketSignerDialog(page)
+
+  const connectButton = page.getByRole("button", {
+    name: /Connect Extension \(NIP-07\)/i,
+  })
+  await connectButton.click()
+
+  await expect(
+    page.getByText(/could not establish exclusive signer authority/i)
+  ).toBeVisible({ timeout: 10_000 })
+  await expect(connectButton).toBeEnabled()
 })
 
 test("merchant locked signer shows waiting state then connects after unlock", async ({

@@ -117,7 +117,7 @@ bun run dev:merchant:mainnet
 | `VITE_PLAUSIBLE_DOMAIN`        | —                          | Optional legacy Plausible site domain                    |
 | `VITE_PLAUSIBLE_SRC`           | —                          | Optional deploy-time Plausible script URL                |
 | `VITE_POSTHOG_KEY`             | —                          | Optional deploy-time PostHog browser project key         |
-| `VITE_POSTHOG_HOST`            | `https://us.i.posthog.com` | Optional PostHog API host                                |
+| `VITE_POSTHOG_HOST`            | `https://e.conduit.market` | Optional first-party PostHog proxy host                  |
 | `VITE_NIP89_RELAY_HINT`        | `VITE_RELAY_URL`           | Relay hint for Conduit NIP-89 handler metadata           |
 | `VITE_NIP89_MARKET_PUBKEY`     | —                          | Official Conduit Market handler pubkey                   |
 | `VITE_NIP89_MERCHANT_PUBKEY`   | —                          | Official Conduit Merchant Portal handler pubkey          |

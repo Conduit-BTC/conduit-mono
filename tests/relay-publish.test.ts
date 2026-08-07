@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { finalizeEvent, getPublicKey } from "nostr-tools/pure"
 import {
   __resetRelayListTestOverrides,
   __resetRelayPublishTestOverrides,
@@ -13,9 +15,35 @@ import {
 } from "@conduit/core"
 
 const NOW = 1_700_000_000_000
+const AUTHOR_SECRET = Uint8Array.from([...new Uint8Array(31), 21])
+const OTHER_AUTHOR_SECRET = Uint8Array.from([...new Uint8Array(31), 22])
+const AUTHOR_PUBKEY = getPublicKey(AUTHOR_SECRET)
+const OTHER_AUTHOR_PUBKEY = getPublicKey(OTHER_AUTHOR_SECRET)
 const APP_WRITE_ATTEMPT_RELAYS = CANONICAL_APP_WRITE_RELAYS.map(
   (url) => `${url}/`
 )
+
+function signedTestEvent(input: {
+  kind?: number
+  tags?: string[][]
+  content?: string
+  publish: (relaySet: unknown, timeoutMs?: number) => Promise<unknown>
+}): NDKEvent {
+  const event = new NDKEvent(
+    undefined,
+    finalizeEvent(
+      {
+        kind: input.kind ?? 1,
+        created_at: 1_700_000_000,
+        tags: input.tags ?? [],
+        content: input.content ?? "test",
+      },
+      AUTHOR_SECRET
+    )
+  )
+  event.publish = input.publish as never
+  return event
+}
 
 function relayList(
   pubkey: string,
@@ -140,6 +168,67 @@ describe("planPublishRelays", () => {
     expect(relayList("zz").pubkey).toBe("zz")
   })
 
+  it("refuses an invalid signed event before planning any relay", async () => {
+    let planned = false
+    const rawEvent = finalizeEvent(
+      { kind: 1, created_at: 1_700_000_000, tags: [], content: "hello" },
+      AUTHOR_SECRET
+    )
+    const event = new NDKEvent(undefined, {
+      ...rawEvent,
+      sig: "0".repeat(128),
+    })
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => {
+        planned = true
+        return {
+          intent: "author_event",
+          primaryRelayUrls: [],
+          broadcastRelayUrls: [],
+          parkedRelayUrls: [],
+        }
+      },
+    })
+
+    await expect(
+      publishWithPlanner(event, {
+        intent: "author_event",
+        authorPubkey: AUTHOR_PUBKEY,
+      })
+    ).rejects.toThrow("invalid signed Nostr event")
+    expect(planned).toBe(false)
+  })
+
+  it("refuses an author event signed by a different account", async () => {
+    let planned = false
+    const event = new NDKEvent(
+      undefined,
+      finalizeEvent(
+        { kind: 1, created_at: 1_700_000_000, tags: [], content: "hello" },
+        AUTHOR_SECRET
+      )
+    )
+    __setRelayPublishTestOverrides({
+      planPublishRelays: async () => {
+        planned = true
+        return {
+          intent: "author_event",
+          primaryRelayUrls: [],
+          broadcastRelayUrls: [],
+          parkedRelayUrls: [],
+        }
+      },
+    })
+
+    await expect(
+      publishWithPlanner(event, {
+        intent: "author_event",
+        authorPubkey: OTHER_AUTHOR_PUBKEY,
+      })
+    ).rejects.toThrow("signed by a different account")
+    expect(planned).toBe(false)
+  })
+
   it("refuses tiny NIP-65 relay-list publishes before planning relays", async () => {
     await expect(
       publishWithPlanner(
@@ -169,7 +258,7 @@ describe("planPublishRelays", () => {
 
     await expect(
       publishWithPlanner(
-        {
+        signedTestEvent({
           kind: EVENT_KINDS.RELAY_LIST,
           tags: [
             ["r", "wss://one.example"],
@@ -183,10 +272,10 @@ describe("planPublishRelays", () => {
             publishAttempts.push(relayUrls)
             return new Set(relayUrls.map((url) => ({ url })))
           },
-        } as never,
+        }),
         {
           intent: "author_event",
-          authorPubkey: "alice",
+          authorPubkey: AUTHOR_PUBKEY,
         }
       )
     ).resolves.toMatchObject({
@@ -230,7 +319,7 @@ describe("planPublishRelays", () => {
     const primaryRelay = "wss://recipient.example"
     const broadcastRelay = "wss://sender.example"
     const attempts: string[][] = []
-    const fakeEvent = {
+    const fakeEvent = signedTestEvent({
       publish: async (relaySet: unknown) => {
         const relayUrls = [
           ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
@@ -242,7 +331,7 @@ describe("planPublishRelays", () => {
         }
         return new Set(relayUrls.map((url) => ({ url })))
       },
-    } as never
+    })
 
     __setRelayPublishTestOverrides({
       planPublishRelays: async () => ({
@@ -268,7 +357,7 @@ describe("planPublishRelays", () => {
   it("returns broadcast failures as diagnostics after primary delivery succeeds", async () => {
     const primaryRelay = "wss://recipient.example"
     const broadcastRelay = "wss://sender.example"
-    const fakeEvent = {
+    const fakeEvent = signedTestEvent({
       publish: async (relaySet: unknown) => {
         const relayUrls = [
           ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
@@ -279,7 +368,7 @@ describe("planPublishRelays", () => {
         }
         return new Set(relayUrls.map((url) => ({ url })))
       },
-    } as never
+    })
 
     __setRelayPublishTestOverrides({
       planPublishRelays: async () => ({
@@ -304,7 +393,7 @@ describe("planPublishRelays", () => {
     const primaryRelay = "wss://planned.example"
     const inboxRelay = "wss://inbox-10050.example"
     let attempted: string[] = []
-    const fakeEvent = {
+    const fakeEvent = signedTestEvent({
       kind: EVENT_KINDS.GIFT_WRAP,
       publish: async (relaySet: unknown) => {
         attempted = [
@@ -313,7 +402,7 @@ describe("planPublishRelays", () => {
         ]
         return new Set(attempted.map((url) => ({ url })))
       },
-    } as never
+    })
 
     __setRelayPublishTestOverrides({
       planPublishRelays: async () => ({
@@ -331,7 +420,7 @@ describe("planPublishRelays", () => {
       extraRelayUrls: [inboxRelay, "ws://insecure.example"],
     })
 
-    expect((fakeEvent as { ndk?: unknown }).ndk).toBeDefined()
+    expect(fakeEvent.ndk).toBeDefined()
     expect(attempted.some((url) => url.includes("planned.example"))).toBe(true)
     expect(attempted.some((url) => url.includes("inbox-10050.example"))).toBe(
       true
@@ -345,7 +434,7 @@ describe("planPublishRelays", () => {
   it("never leaves the exclusive relay set after every declared relay rejects", async () => {
     const exclusiveRelay = "wss://declared-inbox.example"
     const attempts: string[][] = []
-    const fakeEvent = {
+    const fakeEvent = signedTestEvent({
       kind: EVENT_KINDS.GIFT_WRAP,
       publish: async (relaySet: unknown) => {
         const relayUrls = [
@@ -355,7 +444,7 @@ describe("planPublishRelays", () => {
         attempts.push(relayUrls)
         throw new Error("declared inbox rejected the wrap")
       },
-    } as never
+    })
 
     await expect(
       publishWithPlanner(fakeEvent, {
@@ -375,7 +464,7 @@ describe("planPublishRelays", () => {
     const primaryRelay = "wss://configured-write.example"
     const normalizedPrimaryRelay = `${primaryRelay}/`
     const attempts: string[][] = []
-    const fakeEvent = {
+    const fakeEvent = signedTestEvent({
       kind: EVENT_KINDS.PRODUCT,
       publish: async (relaySet: unknown) => {
         const relayUrls = [
@@ -388,7 +477,7 @@ describe("planPublishRelays", () => {
         }
         return new Set(relayUrls.slice(0, 1).map((url) => ({ url })))
       },
-    } as never
+    })
 
     __setRelayPublishTestOverrides({
       planPublishRelays: async () => ({
@@ -401,7 +490,7 @@ describe("planPublishRelays", () => {
 
     const result = await publishWithPlanner(fakeEvent, {
       intent: "author_event",
-      authorPubkey: "alice",
+      authorPubkey: AUTHOR_PUBKEY,
     })
 
     expect(attempts).toHaveLength(2)
@@ -416,7 +505,7 @@ describe("planPublishRelays", () => {
     const primaryRelay = "wss://configured-write.example"
     const normalizedPrimaryRelay = `${primaryRelay}/`
     const attempts: string[][] = []
-    const fakeEvent = {
+    const fakeEvent = signedTestEvent({
       kind: EVENT_KINDS.RELAY_LIST,
       tags: [
         ["r", "wss://one.example"],
@@ -433,7 +522,7 @@ describe("planPublishRelays", () => {
         }
         return new Set(relayUrls.map((url) => ({ url })))
       },
-    } as never
+    })
 
     __setRelayPublishTestOverrides({
       planPublishRelays: async () => ({
@@ -446,7 +535,7 @@ describe("planPublishRelays", () => {
 
     const result = await publishWithPlanner(fakeEvent, {
       intent: "author_event",
-      authorPubkey: "alice",
+      authorPubkey: AUTHOR_PUBKEY,
     })
 
     expect(result.successfulRelayUrls).toEqual(CANONICAL_APP_WRITE_RELAYS)
@@ -458,7 +547,7 @@ describe("planPublishRelays", () => {
 
   it("includes relay failure reasons in publish diagnostics", async () => {
     const primaryRelay = "wss://configured-write.example"
-    const fakeEvent = {
+    const fakeEvent = signedTestEvent({
       kind: EVENT_KINDS.RELAY_LIST,
       tags: [
         ["r", "wss://one.example"],
@@ -467,7 +556,7 @@ describe("planPublishRelays", () => {
       publish: async () => {
         throw new Error("relay rejected the event kind")
       },
-    } as never
+    })
 
     __setRelayPublishTestOverrides({
       planPublishRelays: async () => ({
@@ -481,7 +570,7 @@ describe("planPublishRelays", () => {
     await expect(
       publishWithPlanner(fakeEvent, {
         intent: "author_event",
-        authorPubkey: "alice",
+        authorPubkey: AUTHOR_PUBKEY,
       })
     ).rejects.toThrow(
       "wss://configured-write.example (relay rejected the event kind)"
@@ -493,7 +582,7 @@ describe("planPublishRelays", () => {
     const normalizedPrimaryRelay = `${primaryRelay}/`
     const attempts: { relayUrls: string[]; timeoutMs: number | undefined }[] =
       []
-    const fakeEvent = {
+    const fakeEvent = signedTestEvent({
       publish: async (relaySet: unknown, timeoutMs?: number) => {
         const relayUrls = [
           ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
@@ -505,7 +594,7 @@ describe("planPublishRelays", () => {
         }
         return new Set(relayUrls.map((url) => ({ url })))
       },
-    } as never
+    })
 
     __setRelayPublishTestOverrides({
       planPublishRelays: async () => ({
@@ -535,7 +624,7 @@ describe("planPublishRelays", () => {
     const primaryRelay = "wss://recipient.example"
     const normalizedPrimaryRelay = `${primaryRelay}/`
     const attempts: string[][] = []
-    const fakeEvent = {
+    const fakeEvent = signedTestEvent({
       publish: async (relaySet: unknown) => {
         const relayUrls = [
           ...((relaySet as { relayUrls?: Set<string> | string[] }).relayUrls ??
@@ -547,7 +636,7 @@ describe("planPublishRelays", () => {
         }
         return new Set(relayUrls.slice(0, 1).map((url) => ({ url })))
       },
-    } as never
+    })
 
     __setRelayPublishTestOverrides({
       planPublishRelays: async () => ({
