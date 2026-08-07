@@ -1,0 +1,16 @@
+{
+  "name": "@conduit/posthog-proxy",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint \"src/**/*.ts\""
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "wrangler": "4.114.0"
+  }
+}

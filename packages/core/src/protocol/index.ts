@@ -22,6 +22,7 @@ export * from "./lightning"
 export * from "./commerce"
 export * from "./follows"
 export * from "./nip89"
+export * from "./nip07-signer"
 export * from "./nwc-diagnostics"
 export * from "./relay-settings"
 export * from "./relay-list"
@@ -33,6 +34,7 @@ export * from "./remote-signer"
 export * from "./signing-retry"
 export * from "./social-hydrator"
 export * from "./session"
+export * from "./session-signer"
 export * from "./shipping"
 export {
   getNdk,
@@ -50,6 +52,7 @@ export {
   getNdkState,
   type NdkConnectionState,
   type NdkState,
+  type SignerLease,
   type FetchEventsFanoutResult,
   type FetchEventsRelayStatus,
 } from "./ndk"
