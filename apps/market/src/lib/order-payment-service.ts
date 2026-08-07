@@ -1,4 +1,4 @@
-import { NDKEvent } from "@nostr-dev-kit/ndk"
+import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
   buildLightningPaymentProofMessage,
   claimOrderLifecyclePayment,
@@ -47,6 +47,37 @@ export function getLifecyclePaymentProofAction(
   const publicZapSigner =
     lifecycle.publicZapSigner ?? getOrderPublicZapSigner(lifecycle.checkoutMode)
   return publicZapSigner ? "zap" : "private_checkout"
+}
+
+export async function signShopperCheckoutZapRequest(
+  draft: CheckoutZapRequestDraft,
+  expectedBuyerPubkeyInput: string,
+  signer: NDKSigner
+): Promise<SignedCheckoutZapRequest> {
+  const expectedBuyerPubkey = normalizePubkey(expectedBuyerPubkeyInput)
+  const signerPubkey = normalizePubkey((await signer.user()).pubkey)
+  if (!expectedBuyerPubkey || signerPubkey !== expectedBuyerPubkey) {
+    throw new Error(
+      "The connected signer does not match this checkout account. No public zap was requested."
+    )
+  }
+
+  const zapRequest = new NDKEvent()
+  zapRequest.kind = draft.kind
+  zapRequest.created_at = draft.createdAt
+  zapRequest.content = draft.content
+  zapRequest.tags = draft.tags
+  await signNdkEventWithTransientNip07Retry(zapRequest, signer)
+  const rawEvent = zapRequest.rawEvent() as SignedPublicNostrEvent
+  if (
+    rawEvent.pubkey !== expectedBuyerPubkey ||
+    !isValidSignedPublicNostrEvent(rawEvent)
+  ) {
+    throw new Error(
+      "The signer returned an invalid public zap request. No invoice was requested."
+    )
+  }
+  return { id: zapRequest.id, rawEvent }
 }
 
 /**
@@ -812,13 +843,12 @@ export async function runOrderPayment(
               if (publicZapSigner !== "shopper") {
                 throw new Error("Public zap signer was not selected.")
               }
-              const zapRequest = new NDKEvent(ndk)
-              zapRequest.kind = draft.kind
-              zapRequest.created_at = draft.createdAt
-              zapRequest.content = draft.content
-              zapRequest.tags = draft.tags
-              await signNdkEventWithTransientNip07Retry(zapRequest, ndk.signer)
-              return { id: zapRequest.id, rawEvent: zapRequest.rawEvent() }
+              if (!ndk.signer) throw new Error("Signer not connected")
+              return signShopperCheckoutZapRequest(
+                draft,
+                ctx.buyerPubkey,
+                ndk.signer
+              )
             },
           }
         )
